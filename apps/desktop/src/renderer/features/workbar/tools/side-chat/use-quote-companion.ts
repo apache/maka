@@ -29,11 +29,13 @@ import {
 } from '@maka/ui';
 import type {
   SandboxBoundaryRequestEvent,
+  ClientCapabilityRequestEvent,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
 } from '@maka/core/events';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type { PermissionMode } from '@maka/core/permission';
 import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -137,6 +139,7 @@ export interface UseQuoteCompanionResult {
   activeModel: { llmConnectionSlug: string; model: string } | undefined;
   /** Pending sandbox-boundary / user-question prompt raised by the companion's run. */
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
+  activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
@@ -147,6 +150,7 @@ export interface UseQuoteCompanionResult {
   regenerate: (turnId: string) => Promise<boolean>;
   stop: () => Promise<void>;
   respondToSandboxBoundary: (response: SandboxBoundaryResponse) => Promise<void>;
+  respondToClientCapability: (response: ClientCapabilityResponse) => Promise<void>;
   respondToUserQuestion: (response: UserQuestionResponse) => Promise<void>;
 }
 
@@ -1025,6 +1029,19 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     [mountedRef, sideChat],
   );
 
+  const respondToClientCapability = useCallback(
+    async (response: ClientCapabilityResponse): Promise<void> => {
+      const id = companionIdRef.current;
+      if (!mountedRef.current || !id) return;
+      try {
+        await sideChat.respondToClientCapability(id, response);
+      } catch {
+        if (mountedRef.current) setError(copyRef.current.errors.respondFailed);
+      }
+    },
+    [mountedRef, sideChat],
+  );
+
   // Only the companion's own turns render; the forked parent history stays as
   // hidden model context.
   const messages = allMessages.filter(
@@ -1043,6 +1060,8 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     : undefined;
   const activeSandboxBoundary =
     activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
+  const activeClientCapability =
+    activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
   const activeQuestion =
     activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
 
@@ -1061,6 +1080,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     error,
     activeModel,
     activeSandboxBoundary,
+    activeClientCapability,
     activeQuestion,
     send,
     steer,
@@ -1068,6 +1088,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     regenerate,
     stop,
     respondToSandboxBoundary,
+    respondToClientCapability,
     respondToUserQuestion,
   };
 }

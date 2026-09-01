@@ -169,6 +169,13 @@ export function questionCanonicalOutcome(
   return { kind: 'question_answer', answers: [...answer.answers], committedAt };
 }
 
+export function clientCapabilityCanonicalOutcome(
+  answer: Extract<InteractionAnswer, { kind: 'client_capability' }>,
+  committedAt: number,
+): Extract<InteractionCanonicalOutcome, { kind: 'client_capability_decision' }> {
+  return { kind: 'client_capability_decision', decision: answer.decision, committedAt };
+}
+
 export function runtimeQuestionOutcome(
   outcome: InteractionCanonicalOutcome,
 ): RuntimeUserQuestionOutcome {
@@ -231,6 +238,9 @@ function canonicalOutcomeForHistoricalAnswer(
     throw new RuntimeInteractionInvariantError(
       'Sandbox boundary answers require their canonical boundary settlement',
     );
+  }
+  if (answer.kind === 'client_capability') {
+    return clientCapabilityCanonicalOutcome(answer, committedAt);
   }
   return answer.decision === 'deny'
     ? {

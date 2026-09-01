@@ -31,6 +31,7 @@ import {
   dequeueInteractionByToolUseId,
   enqueueInteraction,
   reconcileInteractions,
+  reduceInteractionQueues,
   type InteractionQueues,
 } from '../interaction-queue.js';
 
@@ -72,6 +73,31 @@ describe('composer interaction queue', () => {
     assert.equal(activeInteractionFor(queues, 's')?.requestId, 'boundary');
     queues = dequeueInteractionByRequestId(queues, 's', 'boundary');
     assert.equal(activeInteractionFor(queues, 's')?.requestId, 'question');
+  });
+
+  test('Client Capability requests enter and leave the shared queue', () => {
+    let queues = reduceInteractionQueues({}, 's', {
+      type: 'client_capability_request',
+      id: 'evt_capability',
+      turnId: 'turn_1',
+      ts: 0,
+      requestId: 'capability',
+      toolUseId: 'call_capability',
+      capability: 'browser',
+      scope: { kind: 'browser_origin', origin: 'https://example.com' },
+    });
+    assert.equal(activeInteractionFor(queues, 's')?.requestId, 'capability');
+
+    queues = reduceInteractionQueues(queues, 's', {
+      type: 'client_capability_decision_ack',
+      id: 'evt_ack',
+      turnId: 'turn_1',
+      ts: 1,
+      requestId: 'capability',
+      toolUseId: 'call_capability',
+      decision: 'allow',
+    });
+    assert.equal(activeInteractionFor(queues, 's'), undefined);
   });
 
   test('deduplicates replays and isolates sessions', () => {

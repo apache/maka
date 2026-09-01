@@ -23,6 +23,7 @@ import {
   CLIENT_CAPABILITY_RESULT_CHUNK_MAX_BYTES,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityResult,
+  type ClientCapabilityAdmissionEvidence,
   type ClientCapabilityCallFrame,
   type ClientCapabilityClientFrame,
   type ClientCapabilityHostFrame,
@@ -282,13 +283,13 @@ export class ClientCapabilityChannel {
     invocation: ClientCapabilityInvocation,
     execute: (options: {
       readonly signal: AbortSignal;
-      accept(): Promise<void>;
+      accept(evidence: ClientCapabilityAdmissionEvidence): Promise<void>;
       progress(current: number, total: number): void;
     }) => Promise<ReturnType<typeof decodeClientCapabilityResult>>,
   ): Promise<void> {
     let accepted = false;
     let accepting: Promise<void> | undefined;
-    const accept = (): Promise<void> => {
+    const accept = (evidence: ClientCapabilityAdmissionEvidence): Promise<void> => {
       if (invocation.released) {
         return Promise.reject(capabilityInvocationAbortReason(invocation));
       }
@@ -297,6 +298,7 @@ export class ClientCapabilityChannel {
         this.#options.write({
           kind: 'client.capability.accepted',
           invocationId,
+          admissionEvidence: evidence,
         }),
         admission.promise,
       ]).then(() => {
@@ -335,7 +337,7 @@ export class ClientCapabilityChannel {
         }),
       );
       if (invocation.released) return;
-      await accept();
+      await accept({ kind: 'none' });
       await this.#sendResult(invocationId, result, invocation);
     } catch (error) {
       if (invocation.released) return;

@@ -1364,7 +1364,7 @@ test('keeps a formerly accepted local-only grant inert when opening an existing 
   }
 });
 
-test('releases a retired operation grant when opening an existing access file', async () => {
+test('migrates or releases retired operation grants when opening an existing access file', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-access-authority-retired-grant-'));
   const credential = 'maka_rh_existing_usage_client';
   try {
@@ -1383,7 +1383,14 @@ test('releases a retired operation grant when opening an existing access file', 
             // Claude subscription provider. A file issued before that must
             // still open — failing decode here kept the Host from starting —
             // with the unservable grant released rather than migrated.
-            operationGrants: ['host.status', 'oauth.account.usage.fetch'],
+            operationGrants: [
+              'host.status',
+              'oauth.account.usage.fetch',
+              // Task Ledger was replaced by the SessionTodo authority. Keep
+              // the existing principal's equivalent read authority without
+              // requiring credential rotation during a Host update.
+              'task.ledger.query',
+            ],
             canPublishClientCapabilities: false,
             canUseHostPaths: false,
             createdAt: '2026-01-01T00:00:00.000Z',
@@ -1394,7 +1401,10 @@ test('releases a retired operation grant when opening an existing access file', 
     );
 
     const authority = await openRuntimeHostAccessAuthority(directory);
-    assert.deepEqual(authority.authenticate(credential)?.operationGrants, ['host.status']);
+    assert.deepEqual(authority.authenticate(credential)?.operationGrants, [
+      'host.status',
+      'session.todo.query',
+    ]);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

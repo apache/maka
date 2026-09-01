@@ -32,6 +32,8 @@ export { SessionRailProvider } from './session-rail-context.js';
 export type {
   SessionRailChrome,
   SessionRailData,
+  SessionRailRowSelection,
+  SessionRailSelection,
   SessionViewMode,
 } from './session-rail-context.js';
 export type { SidebarUpdateReminder } from './session-sidebar-nav.js';
@@ -40,6 +42,7 @@ export { describeLoadToolResult, formatRedactedJson, formatToolIntent, loadToolD
 export { formatBytes, ToolCallDetail, ToolTrow } from './tool-activity.js';
 export { ToolResultPreview } from './tool-activity/tool-result-preview.js';
 export { SandboxBoundaryPrompt } from './sandbox-boundary-prompt.js';
+export { ClientCapabilityPrompt } from './client-capability-prompt.js';
 export { ChatSurfaceLayout } from './chat-surface-layout.js';
 export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export {

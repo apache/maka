@@ -21,7 +21,12 @@ import { useCallback, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionSummary } from '@maka/core/session';
 import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-kind';
-import { useUiLocale, type SessionHistoryGroup } from '@maka/ui';
+import {
+  useUiLocale,
+  type SessionHistoryGroup,
+  type SessionRailRowSelection,
+  type SessionRailSelection,
+} from '@maka/ui';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
 import { deriveSessionNavigationGroups } from '../model/session-navigation-groups.js';
 import { deriveWorktreeSessionIds } from '../model/session-project-grouping.js';
@@ -37,6 +42,7 @@ import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
+import { useSessionSelection } from './use-session-selection.js';
 
 export type SessionNavigationToastApi = {
   success(title: string, description?: string): void;
@@ -99,6 +105,9 @@ export interface SessionNavigationController {
   layout: SessionRailLayoutState;
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
+  selection: SessionRailSelection;
+  /** The narrow half every row subscribes to; see `useSessionSelection`. */
+  rowSelection: SessionRailRowSelection;
 }
 
 /**
@@ -190,8 +199,10 @@ export function useSessionNavigationController(
     [groups, sessionMeta, worktreeSessionIds],
   );
 
+  const { selection, rowSelection } = useSessionSelection({ sessions: rail.sessions, commands });
+
   return useMemo(
-    () => ({ layout, selectors, commands }),
-    [commands, layout, selectors],
+    () => ({ layout, selectors, commands, selection, rowSelection }),
+    [commands, layout, rowSelection, selection, selectors],
   );
 }

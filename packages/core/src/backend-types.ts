@@ -190,11 +190,12 @@ export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
  * The live session-event vocabulary accepted from a backend. `queue_update`
- * belongs to the runtime kernel, while legacy permission requests and
+ * belongs to the runtime kernel, Client Capability approval events belong to
+ * the Host-owned Interaction projection, and legacy permission requests and
  * acknowledgements were replaced by sandbox-boundary events. `send` stays
  * typed as `SessionEvent` for implementation ergonomics; the flow drops these
- * retired variants at ingress so they are never mapped, observed, or persisted
- * by a new run.
+ * non-backend variants at ingress so they are never mapped or persisted by a
+ * new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
@@ -204,6 +205,8 @@ export type BackendSessionEvent = Exclude<
       type:
         | 'queue_update'
         | 'message_admission'
+        | 'client_capability_request'
+        | 'client_capability_decision_ack'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'

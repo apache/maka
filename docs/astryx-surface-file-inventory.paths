@@ -180,6 +180,7 @@ packages/ui/src/chat-model-switcher.tsx
 packages/ui/src/chat-surface-layout.tsx
 packages/ui/src/chat-turn.tsx
 packages/ui/src/chat-view.tsx
+packages/ui/src/client-capability-prompt.tsx
 packages/ui/src/components.tsx
 packages/ui/src/composer-message-queue.tsx
 packages/ui/src/composer.tsx
@@ -215,6 +216,7 @@ packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
+packages/ui/src/session-selection-bar.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx

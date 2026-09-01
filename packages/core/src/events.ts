@@ -38,6 +38,10 @@ import type {
 import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
 import type { UserQuestionRequest } from './user-question.js';
 import type {
+  ClientCapabilityGrantCapability,
+  ClientCapabilityGrantScope,
+} from './client-capability-grant.js';
+import type {
   PipeShellOutput,
   PtyShellOutput,
   ShellOutput,
@@ -557,6 +561,8 @@ export type SessionEvent =
   | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
   | SandboxBoundaryDecisionAckEvent
+  | ClientCapabilityRequestEvent
+  | ClientCapabilityDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
@@ -1016,12 +1022,23 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   expansion: SandboxBoundaryExpansion;
 }
 
+export interface ClientCapabilityRequestEvent extends BaseEvent {
+  type: 'client_capability_request';
+  requestId: string;
+  toolUseId: string;
+  capability: ClientCapabilityGrantCapability;
+  scope: ClientCapabilityGrantScope;
+}
+
 /**
  * The requests a session can park on while it waits for the user. Both are
  * registered by RuntimeKernel while unanswered, so a surface that missed the
  * live event can rehydrate the prompt instead of stranding the run.
  */
-export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type ActiveInteractionRequestEvent =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | ClientCapabilityRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';
@@ -1030,6 +1047,13 @@ export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   decision: 'allow' | 'deny';
   status: Exclude<SandboxBoundaryRequestStatus, 'pending'>;
   revision: number;
+}
+
+export interface ClientCapabilityDecisionAckEvent extends BaseEvent {
+  type: 'client_capability_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
 }
 
 /**

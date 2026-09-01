@@ -28,7 +28,10 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
@@ -1306,6 +1309,7 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1371,6 +1375,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const trace: RunTraceEvent[] = [];
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1381,21 +1386,26 @@ test('production backend preserves coordinator Client Capability semantics acros
       clientCapabilityConnectionIdentity('client-capability-provider'),
       {
         send: async (frame) => {
-          if (frame.kind !== 'client.capability.call') return;
-          calls.push(frame);
-          queueMicrotask(() => {
-            connection?.accept({
-              kind: 'client.capability.accepted',
-              invocationId: frame.invocationId,
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
             });
-            connection?.accept({
-              kind: 'client.capability.result',
-              invocationId: frame.invocationId,
-              result: {
-                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-              },
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
             });
-          });
+          }
         },
       },
     );
@@ -1509,7 +1519,7 @@ test('production backend preserves coordinator Client Capability semantics acros
         (event) =>
           event.type === 'tool_started' &&
           event.data?.toolName === tool.name &&
-          event.data?.categoryHint === 'client_capability',
+          event.data?.categoryHint === 'custom_tool',
       ),
     );
     const runtimeEvents = await store.readImmutableRuntimeEvents(sessionId, runId);

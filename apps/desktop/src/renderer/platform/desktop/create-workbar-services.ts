@@ -160,6 +160,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
+      respondToClientCapability: (sessionId, response) =>
+        bridge.sessions.respondToClientCapability(sessionId, response),
       respondToUserQuestion: (sessionId, response) =>
         bridge.sessions.respondToUserQuestion(sessionId, response),
       subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>

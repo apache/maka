@@ -43,6 +43,12 @@ interface FatalStartupDiagnosticDialogDeps {
   readonly showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxReturnValue>;
 }
 
+export interface RuntimeHostStartupRecoveryDialogInput {
+  readonly startupError: Error;
+  readonly repairError?: Error;
+  readonly activeTasks: boolean;
+}
+
 export async function showMessageBoxWithDiagnostics(
   options: MessageBoxOptions,
   deps: DiagnosticDialogDeps,
@@ -112,6 +118,36 @@ export async function showMainRendererProcessGoneDialog(
     deps,
   );
   return result.response === 0 ? 'relaunch' : 'exit';
+}
+
+export async function showRuntimeHostStartupRecoveryDialog(
+  input: RuntimeHostStartupRecoveryDialogInput,
+  deps: DiagnosticDialogDeps,
+): Promise<'repair' | 'exit'> {
+  const copy = RUNTIME_HOST_STARTUP_RECOVERY_COPY[deps.locale];
+  const detail = [
+    copy.detail,
+    input.activeTasks ? copy.activeTasks : undefined,
+    input.repairError
+      ? `${copy.repairFailed}\n${input.repairError.message}`
+      : undefined,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  const result = await showMessageBoxWithDiagnostics(
+    {
+      type: 'warning',
+      title: copy.title,
+      message: copy.message,
+      detail,
+      buttons: [input.activeTasks ? copy.repairAndRestart : copy.repair, copy.exit],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    },
+    deps,
+  );
+  return result.response === 0 ? 'repair' : 'exit';
 }
 
 async function copyDiagnostics(
@@ -192,6 +228,32 @@ const MAIN_RENDERER_GONE_COPY = {
     message: 'Maka 界面意外停止运行。',
     detail: '重新启动 Maka 以继续，或退出后稍后再打开。',
     relaunch: '重新启动',
+    exit: '退出',
+  },
+} as const;
+
+const RUNTIME_HOST_STARTUP_RECOVERY_COPY = {
+  en: {
+    title: 'Maka needs to repair Runtime Host',
+    message: 'The Runtime Host for this workspace could not start.',
+    detail:
+      'Maka can repair the managed Runtime Host selected by this Desktop. Your workspace, Host identity, credentials, and settings will be preserved. Repair may replace the installed Host with the version selected for this Desktop even when automatic update compatibility cannot be confirmed.',
+    activeTasks:
+      'The Host may still own active work. Continuing can interrupt that work before the Host restarts.',
+    repairFailed: 'The previous repair attempt did not finish:',
+    repair: 'Repair Runtime Host',
+    repairAndRestart: 'Repair and Restart Host',
+    exit: 'Exit',
+  },
+  zh: {
+    title: 'Maka 需要修复 Runtime Host',
+    message: '管理此工作区的 Runtime Host 无法启动。',
+    detail:
+      'Maka 可以修复此 Desktop 选择的托管 Runtime Host。工作区、Host 身份、凭证和设置都会保留。即使无法确认自动更新兼容性，修复也可能使用此 Desktop 选择的版本替换当前 Host。',
+    activeTasks: 'Host 可能仍有正在运行的任务。继续会先中断这些任务，再重启 Host。',
+    repairFailed: '上一次修复未能完成：',
+    repair: '修复 Runtime Host',
+    repairAndRestart: '修复并重启 Host',
     exit: '退出',
   },
 } as const;

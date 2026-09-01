@@ -34,6 +34,7 @@ import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review
 import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   SessionChangedEvent,
   SessionSummary,
@@ -255,6 +256,10 @@ export interface SideChatSessionPort {
   respondToSandboxBoundary(
     sessionId: string,
     response: SandboxBoundaryResponse,
+  ): Promise<void>;
+  respondToClientCapability(
+    sessionId: string,
+    response: ClientCapabilityResponse,
   ): Promise<void>;
   respondToUserQuestion(
     sessionId: string,

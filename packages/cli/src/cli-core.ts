@@ -559,6 +559,7 @@ export async function runMakaCli(
           ...(command.operatorDeploymentId
             ? { operatorDeploymentId: command.operatorDeploymentId }
             : {}),
+          ...(command.allowManualUpdate ? { allowManualUpdate: true } : {}),
           ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
         });
       }

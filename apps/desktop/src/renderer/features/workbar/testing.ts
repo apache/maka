@@ -136,6 +136,7 @@ export function createFakeWorkbarServices(
       },
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
+      respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();

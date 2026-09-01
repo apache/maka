@@ -47,6 +47,10 @@ const TURN_QUERY_REPLACEMENT_GRANTS = [
   TURN_QUERY_GRANT,
   'session.turn_landmarks.query',
 ] as const satisfies readonly OperationKey[];
+const LEGACY_TASK_LEDGER_QUERY_GRANT = 'task.ledger.query';
+const TASK_LEDGER_QUERY_REPLACEMENT_GRANTS = [
+  'session.todo.query',
+] as const satisfies readonly OperationKey[];
 // Operations that left the protocol entirely. A previously issued access file
 // may still grant them; the grant is released on decode — there is nothing to
 // migrate it to — because failing the whole file would keep the Host from
@@ -450,7 +454,9 @@ function migrateStoredOperationGrants(grants: readonly string[]): readonly strin
         ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
         : stored === TURN_QUERY_GRANT
           ? TURN_QUERY_REPLACEMENT_GRANTS
-          : [stored];
+          : stored === LEGACY_TASK_LEDGER_QUERY_GRANT
+            ? TASK_LEDGER_QUERY_REPLACEMENT_GRANTS
+            : [stored];
     for (const replacement of replacements) {
       if (seen.has(replacement)) continue;
       seen.add(replacement);

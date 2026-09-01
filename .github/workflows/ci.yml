@@ -67,6 +67,11 @@ jobs:
       - name: Test PR effort classification
         run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
 
+      # The scheduled lifecycle workflow imports this pure policy module. Keep
+      # its time boundaries and exemptions deterministic before it can write.
+      - name: Test issue and PR lifecycle policy
+        run: node --test --test-concurrency=1 scripts/issue-pr-lifecycle.test.mjs
+
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
       # an install.

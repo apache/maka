@@ -38,6 +38,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  CircleCheckBig,
   FolderOpen,
   Pencil,
   Pin,
@@ -60,7 +61,12 @@ import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
-import { useSessionRailData } from './session-rail-context.js';
+import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
+import {
+  useSessionRailData,
+  useSessionRailRowSelection,
+  useSessionRailSelection,
+} from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
@@ -134,12 +140,36 @@ export interface SessionHistoryGroup {
 
 export function SessionHistoryList() {
   const rail = useSessionRailData();
+  const selection = useSessionRailSelection();
   const locale = useUiLocale();
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    if (event.key !== 'Escape' && event.key !== 'Delete' && event.key !== 'Backspace') return;
+    // The text-entry guard comes first, and now covers Escape too: a rename
+    // field is where Escape means "abandon this edit", and answering it by
+    // clearing the selection behind the dialog would be a second, invisible
+    // effect of one keypress.
     const active = document.activeElement as HTMLElement | null;
     if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
+    const selecting = selection?.active === true;
+    const marked = selecting && selection.selectedIds.size > 0;
+    if (event.key === 'Escape') {
+      // Escape leaves the mode, matching the 取消 button. Without it the only
+      // way out is finding that button, and a mode entered by accident from the
+      // row menu becomes one the user is stuck in.
+      if (!selecting) return;
+      event.preventDefault();
+      selection.onExit();
+      return;
+    }
+    if (marked) {
+      // Delete is about the marked set once one exists. Deleting the focused
+      // row instead would act on one of several rows the user marked, which is
+      // the shape of an unrecoverable surprise. The sweep confirms first.
+      event.preventDefault();
+      void selection?.onDeleteSelected();
+      return;
+    }
     const row = active.closest<HTMLElement>(
       '[data-maka-contract="session-row"], [data-session-id]',
     );
@@ -152,6 +182,27 @@ export function SessionHistoryList() {
     }
   }
 
+  // Memoized on what it derives from. Rebuilt per render it would give
+  // `SessionListGroups` a new `props.groups` every time, which defeats the
+  // per-group memo below it — and this component re-renders on every session
+  // switch, because `rail.activeId` is part of the value it reads.
+  const groups = useMemo(
+    () =>
+      rail.groups
+        ? rail.groups.map((g) => ({
+            key: g.id,
+            label: g.label,
+            sessions: g.sessions,
+            project: g.project,
+          }))
+        : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
+            key: g.id,
+            label: g.label,
+            sessions: g.sessions,
+          })),
+    [locale, rail.groups, rail.sessions],
+  );
+
   // Outer SideNav is the sole navigation landmark and it already carries this
   // panel's name; naming this element too put "任务列表" inside "任务列表",
   // which is one ambiguous match for anything selecting by that name and no
@@ -159,22 +210,7 @@ export function SessionHistoryList() {
   // handler, nothing an assistive tech user needs to be told about separately.
   return (
     <div className="maka-session-list" onKeyDown={handleListKeyDown}>
-      <SessionListGroups
-        groups={
-          rail.groups
-            ? rail.groups.map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-                project: g.project,
-              }))
-            : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-              }))
-        }
-      />
+      <SessionListGroups groups={groups} />
     </div>
   );
 }
@@ -326,6 +362,8 @@ function SessionListGroups(props: {
     <>
       {renameDialog}
       {props.groups.map((group) => {
+        // Once per group, never per row: a fresh array for each row would hand
+        // every `SessionNavRow` a new prop identity and defeat its memo.
         const items = group.sessions.map((session) => renderSessionRow(session));
         if (!group.label) {
           return (
@@ -397,7 +435,9 @@ function ProjectNavRow(props: {
       >
         {/* sidebar.css keeps an 8px nest so session titles share the project x. */}
         {hasSessions ? (
-          <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
+          <VStack gap={0.5}>
+            {props.sessions.map((session) => props.renderSession(session))}
+          </VStack>
         ) : undefined}
       </SideNavItem>
       <ProjectHoverCardDescription
@@ -457,6 +497,13 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
   const locale = useUiLocale();
+  // The ROW half of the selection, not the whole of it. Read here rather than
+  // threaded through `renderSessionRow`, which is memoized on the rail value —
+  // but read from the narrow context, because a consumer re-renders on any
+  // change to the value it subscribes to and the wide one carries
+  // `listedSessionIds`, which moves whenever the catalog does (#4109).
+  const selection = useSessionRailRowSelection();
+  const marked = selection?.selectedIds.has(props.session.id) ?? false;
   const copy = getConversationCopy(locale).sessions;
   const signals = sessionRowSignals(
     props.session,
@@ -496,7 +543,24 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
       data-worktree={props.worktree ? 'true' : undefined}
+      data-selected={marked ? 'true' : undefined}
+      data-selecting={selection?.active ? 'true' : undefined}
     >
+      {/* Outside the SideNavItem, not in its icon slot: that slot is the status
+          dot's fixed gutter, and a checkbox there would take the one column the
+          rail uses to say what a task is doing. The box gets its own leading
+          column, which only exists while the mode does. */}
+      {selection?.active ? (
+        <span className="maka-session-row-check">
+          <CheckboxInput
+            size="sm"
+            value={marked}
+            label={props.session.name}
+            isLabelHidden
+            onChange={(checked) => selection.onToggleRow(props.session.id, checked)}
+          />
+        </span>
+      ) : null}
       <SideNavItem
         label={props.session.name}
         aria-describedby={hoverDescriptionId}
@@ -934,6 +998,11 @@ function SessionItemActions(props: {
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const trailingRef = useRef<HTMLSpanElement>(null);
+  // The way in. ⌘-click is invisible to anyone who has not been told about it,
+  // and this menu is where a person already looks for what a row can do — so
+  // selection is discoverable from the same place as pin, rename, and archive.
+  // The narrow context again: this renders once per row.
+  const selection = useSessionRailRowSelection();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
   const actionContext = [
@@ -994,6 +1063,18 @@ function SessionItemActions(props: {
           if (intent) window.requestAnimationFrame(intent);
         }}
         items={[
+          ...(selection && !selection.active
+            ? [
+                {
+                  label: copy.selectRow,
+                  icon: CircleCheckBig,
+                  // Enters the mode AND marks this row: the person picked a
+                  // row, not an abstract mode, and landing them in an empty
+                  // selection would discard the choice they just made.
+                  onClick: () => selection.onEnter(props.session.id),
+                },
+              ]
+            : []),
           {
             label: props.session.isFlagged ? copy.unpin : copy.pin,
             icon: props.session.isFlagged ? PinOff : Pin,

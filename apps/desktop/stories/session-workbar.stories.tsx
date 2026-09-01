@@ -24,7 +24,7 @@ import type { ArtifactRecord } from '@maka/core/artifacts';
 import type { BrowserState } from '@maka/core/browser';
 import type { GitReviewReadResult, GitReviewSnapshot } from '@maka/core/git-review';
 import type { SessionSummary } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { SessionTrace } from '@maka/core/session-trace';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
 import { ToastProvider } from '@maka/ui';
@@ -147,57 +147,19 @@ const RICH_TERMINAL_BUFFER = [
 
 // ---- ledgers -------------------------------------------------------------
 
-// Mirrors the `task-ledger` e2e fixture (apps/desktop/src/main/e2e-fixture/
-// scenarios-chat.ts), which builds this tree through the SQLite store; that
-// store cannot run in a browser, so the shapes are restated rather than
-// imported. The long subject is deliberate: it is what proves a deep indent
-// still wraps instead of pushing owner and reason off the panel.
-function task(input: Partial<Task> & Pick<Task, 'id' | 'key' | 'subject'>): Task {
-  return { status: 'pending', createdAt: NOW, updatedAt: NOW, ...input };
-}
-
-const tasks: Task[] = [
-  task({
-    id: 'task-1',
-    key: 'T1',
-    subject: '完成会话任务台账升级',
-    status: 'in_progress',
-    owner: { actor: 'main_agent', runId: 'run-task-parent' },
-  }),
-  task({
-    id: 'task-2',
-    key: 'T1.1',
-    subject: '验证 SQLite authority 与并发短 key 分配',
-    parentId: 'task-1',
-    status: 'completed',
-    completionEvidence: 'Core 与 Storage 定向测试全部通过。',
-    endedAt: NOW - 120_000,
-    updatedAt: NOW - 120_000,
-  }),
-  task({
-    id: 'task-3',
-    key: 'T1.2',
-    subject: '检查窄窗口下的任务树布局',
-    parentId: 'task-1',
-    status: 'blocked',
-    blockedReason: '等待视觉回归截图确认 990px 视口没有文字重叠。',
-    owner: { actor: 'child_agent', agentId: 'local-read' },
-  }),
-  task({
-    id: 'task-4',
-    key: 'T1.2.1',
-    subject: '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
-    parentId: 'task-3',
-  }),
-  task({ id: 'task-5', key: 'T2', subject: '同步生命周期文档与边界说明' }),
-  task({
-    id: 'task-6',
-    key: 'T3',
-    subject: '验证 Goal 一次提醒门禁',
-    status: 'completed',
-    endedAt: NOW - 60_000,
-    updatedAt: NOW - 60_000,
-  }),
+// The long item is deliberate: it is what proves a long subject still wraps
+// instead of pushing the panel sideways.
+const tasks: SessionTodoItem[] = [
+  { content: '完成会话任务台账升级', status: 'in_progress' },
+  { content: '验证 SQLite authority 与并发短 key 分配', status: 'completed' },
+  { content: '检查窄窗口下的任务树布局', status: 'pending' },
+  {
+    content:
+      '核对深层缩进、超长任务描述、owner 与阻塞原因在窄窗口中仍可完整换行且不遮挡后续内容',
+    status: 'pending',
+  },
+  { content: '同步生命周期文档与边界说明', status: 'pending' },
+  { content: '验证 Goal 一次提醒门禁', status: 'completed' },
 ];
 
 const artifacts: ArtifactRecord[] = [
@@ -812,7 +774,7 @@ const unsubscribe = () => () => undefined;
  * varies, and everything else stays on the populated default.
  */
 function bridge(options: {
-  tasks?: Task[];
+  tasks?: SessionTodoItem[];
   tasksFail?: boolean;
   trace?: SessionTrace;
   traceNextCursor?: string;
@@ -838,13 +800,7 @@ function bridge(options: {
     todo: {
       read: async () => {
         if (options.tasksFail) throw new Error('读取任务失败');
-        return (options.tasks ?? tasks).map((task) => ({
-          content: task.subject,
-          status:
-            task.status === 'in_progress' || task.status === 'completed'
-              ? task.status
-              : 'pending' as const,
-        }));
+        return options.tasks ?? tasks;
       },
       subscribeChanges: unsubscribe,
     },
@@ -954,6 +910,7 @@ function bridge(options: {
       }),
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
+      respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();
@@ -1442,8 +1399,7 @@ export const TraceCompositionUnrecorded: Story = {
   render: () => <Workbar tab="inspector" />,
 };
 
-// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet — the
-// state the task-ledger e2e fixture opens on.
+// Real path: 任务工作栏 → 追踪 on a session that has not run a turn yet.
 export const TraceEmpty: Story = {
   decorators: [bridge()],
   render: () => <Workbar tab="inspector" />,

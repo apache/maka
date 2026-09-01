@@ -18,7 +18,14 @@
  */
 
 import { useLayoutEffect, useRef, type ComponentProps, type RefObject } from 'react';
-import { Button, Composer, SandboxBoundaryPrompt, UserQuestionPrompt, Banner } from '@maka/ui';
+import {
+  Banner,
+  Button,
+  ClientCapabilityPrompt,
+  Composer,
+  SandboxBoundaryPrompt,
+  UserQuestionPrompt,
+} from '@maka/ui';
 import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
@@ -95,8 +102,7 @@ interface ChatComposerRegionProps
   newTaskSendPending: boolean;
   stopPendingBySession: Record<string, boolean>;
   respondToSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['onRespond'];
-  activeSandboxBoundary: ComponentProps<typeof SandboxBoundaryPrompt>['request'] | undefined;
-  activeQuestion: ComponentProps<typeof UserQuestionPrompt>['request'] | undefined;
+  respondToClientCapability: ComponentProps<typeof ClientCapabilityPrompt>['onRespond'];
   respondToUserQuestion: ComponentProps<typeof UserQuestionPrompt>['onRespond'];
   stop: ComponentProps<typeof UserQuestionPrompt>['onStop'];
   boundaryUnreadableNotice?: BoundaryUnreadableNotice;
@@ -117,8 +123,7 @@ export function ChatComposerRegion({
   newTaskSendPending,
   stopPendingBySession,
   respondToSandboxBoundary,
-  activeSandboxBoundary,
-  activeQuestion,
+  respondToClientCapability,
   respondToUserQuestion,
   stop,
   boundaryUnreadableNotice,
@@ -127,6 +132,11 @@ export function ChatComposerRegion({
   ...composerRest
 }: ChatComposerRegionProps) {
   const mentions = useComposerMentionsContext();
+  const activeSandboxBoundary =
+    activeInteraction?.type === 'sandbox_boundary_request' ? activeInteraction : undefined;
+  const activeClientCapability =
+    activeInteraction?.type === 'client_capability_request' ? activeInteraction : undefined;
+  const activeQuestion = activeInteraction?.type === 'user_question_request' ? activeInteraction : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);
   useLayoutEffect(() => {
     const previous = previousNewTaskDraftKey.current;
@@ -214,6 +224,12 @@ export function ChatComposerRegion({
           <SandboxBoundaryPrompt
             request={activeSandboxBoundary}
             onRespond={respondToSandboxBoundary}
+          />
+        )}
+        {activeClientCapability && (
+          <ClientCapabilityPrompt
+            request={activeClientCapability}
+            onRespond={respondToClientCapability}
           />
         )}
         {activeQuestion && (

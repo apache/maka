@@ -49,6 +49,7 @@ import {
 import type { SessionInteractionProjection } from '../protocol/index.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import {
+  ClientCapabilityApprovalClosedError,
   HostInteractionCoordinator,
   type HostInteractionCoordinatorOptions,
 } from '../server/interaction-coordinator.js';
@@ -112,6 +113,49 @@ describe('HostInteractionCoordinator', () => {
       );
       assert.equal(conflicting.ok, false);
       if (!conflicting.ok) assert.equal(conflicting.error.code, 'already_resolved');
+
+      await owner.close('turn_terminal');
+      owner.release();
+      await coordinator.close();
+    });
+  });
+
+  test('closes a pending Client Capability approval when its provider disconnects', async () => {
+    await withStore(async ({ store }) => {
+      const coordinator = createCoordinator(store);
+      const owner = coordinator.bindRun(RUN);
+      const provider = new AbortController();
+      const approval = coordinator.requestClientCapabilityApproval({
+        ...RUN,
+        toolCallId: 'browser-call-disconnected',
+        providerSignal: provider.signal,
+        target: {
+          providerId: 'provider-1',
+          contractId: 'contract-1',
+          serverId: 'desktop_browser',
+          toolName: 'browser_snapshot',
+          capability: 'browser',
+          scope: { kind: 'browser_origin', origin: 'https://example.com' },
+        },
+      });
+      let pending = await store.listSessionPending(RUN.sessionId);
+      while (pending.length === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+        pending = await store.listSessionPending(RUN.sessionId);
+      }
+
+      provider.abort();
+      await assert.rejects(
+        approval,
+        (error: unknown) =>
+          error instanceof ClientCapabilityApprovalClosedError &&
+          error.reason === 'provider_disconnected',
+      );
+      const record = await store.readInteraction(pending[0]?.requestId ?? 'missing');
+      assert.equal(record?.outcome?.outcome.kind, 'closure');
+      if (record?.outcome?.outcome.kind === 'closure') {
+        assert.equal(record.outcome.outcome.reason, 'provider_disconnected');
+      }
 
       await owner.close('turn_terminal');
       owner.release();

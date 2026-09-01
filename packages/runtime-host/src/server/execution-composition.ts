@@ -1073,6 +1073,8 @@ export async function createExecutionRuntimeHostComposition(
     clientCapabilities = new HostClientCapabilityCoordinator({
       activation: runtimePolicyActivation,
       onModelToolsChanged: registerBackendInvalidation,
+      interactions,
+      grants: stores.interactionStore,
     });
     oauth = new HostOAuthCoordinator({
       runtimePolicy: runtimePolicyStores,
