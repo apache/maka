@@ -17,29 +17,15 @@
  * under the License.
  */
 
-/* This file used to open with a wrapper pin.
-   `:is(#root, #storybook-root) [data-astryx-theme] { font: inherit; color:
-   inherit }` existed because Astryx's <Theme> wrapper establishes an
-   inheritance baseline of `color: var(--color-text-primary)` and
-   `font-family: var(--font-family-body)`, and both of those used to disagree
-   with the product's. The type scale moved into makaTheme.ts first, so the
-   font halves already agreed; `--color-text-primary: var(--foreground)` in the
-   same file closes the colour half. The pin now restates values the wrapper
-   already resolves to, so it is gone.
-
-   Measured rather than reasoned about, on the terms the note it replaces
-   demanded: every element under #storybook-root on four built stories
-   (official appshell native-conversation and waiting-for-permission, settings
-   memory-populated, module-hub mcp-inspector — 2 622 elements in total) was
-   compared for computed color, font-family, font-size, font-weight,
-   line-height, style and variant with the rule live and with its declarations
-   removed. Identical in every case.
-
-   Re-pinning a token here stays a last resort. The theme declares its tokens
-   through an `@scope` root, so a name both sides define can be shadowed for a
-   whole subtree in ways layer order alone does not predict — point Astryx's
-   token at the product's value in makaTheme.ts, which is what the root actually
-   emits, rather than shadowing it on the wrapper. */
+/* No token is pinned on the Astryx <Theme> wrapper here, and none should be.
+   Its inheritance baseline (`color: var(--color-text-primary)`, the body font
+   family) resolves to the product's own values because makaTheme.ts points
+   those tokens at the product — measured identical across 2 622 elements on
+   four built stories with and without the `font: inherit; color: inherit` pin
+   this file used to carry. A name both sides define can be shadowed for a
+   whole subtree through the theme's `@scope` root in ways layer order does not
+   predict, so the fix for a disagreeing token is in makaTheme.ts, never a
+   re-pin on the wrapper. */
 
 /* Titlebar tooltips only: take the popover out of the hit test.
 

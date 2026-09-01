@@ -1272,8 +1272,12 @@
    (.astryx-banner.info, .astryx-progressbar.accent, the on-dark/on-light
    blocks), and those beat a root declaration inside the same layer. This
    block is unlayered, so it outranks the whole @layer astryx-tokens import
-   regardless of specificity. What it still cannot beat is a declaration on
-   the banner ELEMENT itself — see the info note in DESIGN.md §8.
+   regardless of specificity. What it cannot beat is a declaration on the
+   banner ELEMENT itself: `.astryx-banner.info` pins the tint, the accent and
+   the text pair there, to upstream's fixed blue. So that selector is listed
+   here too — the same unlayered block, so the 0.24 construction is spelled
+   once — and its ink is the solid accent, the same-hue-over-tint shape the
+   other three status banners already have (DESIGN.md §8).
 
    Scoped to [data-astryx-theme] — the attribute Astryx's <Theme> writes on
    both <html> and its own wrapper — so only the Astryx token surface moves,
@@ -1284,11 +1288,20 @@
    --accent-solid tier in both modes (see the contrast notes at that token).
 ============================================================================= */
 
-[data-astryx-theme] {
+[data-astryx-theme],
+.astryx-banner.info {
   --color-accent: var(--accent-solid);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.24);
+}
+
+[data-astryx-theme] {
   --color-text-accent: var(--accent-solid);
   --color-icon-accent: var(--accent-solid);
-  --color-accent-muted: oklch(from var(--accent) l c h / 0.24);
+}
+
+.astryx-banner.info {
+  --color-text-primary: var(--accent-solid);
+  --color-text-secondary: var(--accent-solid);
 }
 
 /* =============================================================================
