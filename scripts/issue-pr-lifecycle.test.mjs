@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
-import { planLifecycle, STALE_WARNING_MARKER } from './issue-pr-lifecycle.mjs';
+import { planLifecycle, STALE_REOPEN_MARKER, STALE_WARNING_MARKER } from './issue-pr-lifecycle.mjs';
 
 const NOW = '2026-09-01T12:00:00.000Z';
 
@@ -86,6 +86,11 @@ describe('issue lifecycle', () => {
     assert.equal(plan.action, 'warn');
   });
 
+  it('treats a lifecycle reopen marker as a fresh activity timestamp', () => {
+    const plan = planLifecycle(issue({ comments: [botComment(2, STALE_REOPEN_MARKER)] }), NOW);
+    assert.deepEqual(plan, { action: 'none', reason: 'recent qualifying activity' });
+  });
+
   it('closes only after the full 30-day grace period', () => {
     const pending = issue({ labels: ['stale'], comments: [warning(29)] });
     const expired = issue({ labels: ['stale'], comments: [warning(30)] });
@@ -146,6 +151,25 @@ describe('pull request lifecycle', () => {
     assert.deepEqual(plan, {
       action: 'unstale',
       reason: 'qualifying activity after warning',
+    });
+  });
+
+  it('treats a lifecycle reopen marker as a fresh PR activity timestamp', () => {
+    const plan = planLifecycle(
+      pullRequest({ comments: [botComment(2, STALE_REOPEN_MARKER)] }),
+      NOW,
+    );
+    assert.deepEqual(plan, { action: 'none', reason: 'recent qualifying activity' });
+  });
+
+  it('still finds human activity when more than 100 comments are present', () => {
+    const comments = [
+      humanComment(1),
+      ...Array.from({ length: 100 }, (_, index) => botComment(index + 2)),
+    ];
+    assert.deepEqual(planLifecycle(issue({ comments }), NOW), {
+      action: 'none',
+      reason: 'recent qualifying activity',
     });
   });
 });

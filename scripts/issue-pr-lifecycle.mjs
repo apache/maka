@@ -21,6 +21,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export const STALE_WARNING_MARKER = '<!-- maka-lifecycle:stale-warning -->';
 export const STALE_CLOSE_MARKER = '<!-- maka-lifecycle:stale-close -->';
+export const STALE_REOPEN_MARKER = '<!-- maka-lifecycle:reopened -->';
 
 export const LIFECYCLE_LABELS = [
   {
@@ -79,14 +80,26 @@ function latestTimestamp(values, fallback, field) {
 
 function issueActivityAt(item) {
   const createdAt = time(item.createdAt, 'createdAt');
-  const humanComments = (item.comments ?? [])
-    .filter((comment) => !isBot(comment))
+  const qualifyingComments = (item.comments ?? [])
+    .filter(
+      (comment) => !isBot(comment) || String(comment.body ?? '').includes(STALE_REOPEN_MARKER),
+    )
     .map((comment) => comment.createdAt);
-  return latestTimestamp(humanComments, createdAt, 'comment.createdAt');
+  return latestTimestamp(qualifyingComments, createdAt, 'comment.createdAt');
 }
 
 function pullRequestActivityAt(item) {
-  return time(item.lastCommitAt ?? item.createdAt, 'lastCommitAt');
+  const lastCommitAt = time(item.lastCommitAt ?? item.createdAt, 'lastCommitAt');
+  const reopenAt = latestTimestamp(
+    (item.comments ?? [])
+      .filter(
+        (comment) => isBot(comment) && String(comment.body ?? '').includes(STALE_REOPEN_MARKER),
+      )
+      .map((comment) => comment.createdAt),
+    Number.NEGATIVE_INFINITY,
+    'comment.createdAt',
+  );
+  return Math.max(lastCommitAt, reopenAt);
 }
 
 function latestWarningAt(item) {
