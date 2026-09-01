@@ -817,9 +817,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(replayJson.includes('RAW_SPAN_TWO_'), true);
   });
 
-  test('ends the turn with context_budget_exhausted when over the window with no safe span', async () => {
+  test('sends an over-window request no shaper could rescue, rather than ending the turn', async () => {
     // No prior turns and a window the first step's usage already exceeds: the
-    // pool is [anchor, one open call/result pair], so no safe completed span.
+    // pool is [anchor, one open call/result pair], so no safe completed span
+    // and nothing to compact. Only the provider can say whether that request
+    // fits, so it goes out and the turn runs to its own end.
     const fixture = buildFixture({
       contextWindow: 120,
       reserveTokens: 100,
@@ -828,18 +830,12 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // Explicit outcome, not a raw provider error.
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     assert.equal(
       fixture.events.some((event) => event.type === 'error'),
       false,
     );
-    // The over-budget request was aborted before it could stream (the second
-    // doStream attempt sees an already-aborted signal and rejects).
-    assert.equal(fixture.model.doStreamCalls.length <= 2, true);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.equal(
       fixture.events.some(
         (event) =>
@@ -847,11 +843,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
           event.toolName === 'Read' &&
           JSON.stringify(event.args).includes('two.md'),
       ),
-      false,
+      true,
     );
   });
 
-  test('preserves no_safe_completed_span when no summary input can fit', async () => {
+  test('a summary that cannot fit its own input fails open and still dispatches', async () => {
     const fixture = buildFixture({
       contextWindow: 150,
       reserveTokens: 100,
@@ -864,57 +860,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     assert.equal(fixture.summarizerCalls > 0, true);
   });
 
-  test('ends the turn with summarizer_failed detail when over the window and the summary fails', async () => {
-    // Estimate at the first boundary ≈ 120 real usage + result chars/4 ≈ 200;
-    // window 150 puts it over the hard cap while priors leave a safe span.
-    const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      summarize: () => {
-        throw new Error('summarizer down');
-      },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-  });
-
-  test('ends the turn with head_anchor_exceeds_capacity when even the minimal projection cannot fit', async () => {
-    // Big priors leave a safe span, the summary succeeds, and the fold
-    // GENUINELY shrinks the payload — but the last request's real input
-    // (1400 tokens) is so large that even the [block, anchor, open pair]
-    // projection stays over the 150-token window: the irreducible remainder
-    // exceeds capacity. (A non-shrinking fold is a different failure —
-    // summarizer_failed via replacement_not_smaller.)
-    const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      priorChars: 2_000,
-      firstStepUsage: { input: 1_400, output: 20 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'head_anchor_exceeds_capacity');
-    // The fold itself was valid and durable; it just could not rescue.
-    assert.equal(fixture.recorded.length, 1);
-  });
-
-  test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
+  test('fails open with write_failed diagnostics when the checkpoint write fails', async () => {
     const fixture = buildFixture({
       record: () => {
         throw new Error('disk full');
@@ -975,41 +925,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     await runFixtureTurn(fixture, consumer);
 
+    // One repair budget for the whole turn: a later step never re-runs it.
     assert.equal(fixture.summarizerCalls, 1);
     assert.equal(fixture.recorded.length, 0);
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'malformed_summary_missing_section');
-  });
-
-  test('exhausts with write_failed in the durable diagnostics when the write fails over the window', async () => {
-    // Big priors make folding rescue the over-window estimate, so the plan
-    // compacts and the failure happens AT the recorder — over the window that
-    // is the explicit exhausted outcome, and the durable diagnostics must
-    // carry write_failed even though the terminal enum has no write member.
-    const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      priorChars: 2_000,
-      record: () => {
-        throw new Error('disk full');
-      },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-
-    const lastCall = fixture.llmCalls.at(-1);
-    const exhaustedDecision = (lastCall?.contextBudget?.compactionDecisions ?? []).find(
-      (decision) => decision.phase === 'mid_turn' && decision.reason === 'context_budget_exhausted',
-    );
-    assert.equal(exhaustedDecision?.skippedReasonCounts?.write_failed, 1);
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
@@ -1051,90 +971,20 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.match(thirdPrompt, /active_current_turn_tool_result_pruned_before_next_step/);
   });
 
-  test('a rolling second compaction that still exceeds the window ends explicitly (review finding A)', async () => {
-    // Review round-3 finding A: the old post-fold re-estimate subtracted the
-    // RAW covered span from a usage estimate anchored to the ALREADY-compacted
-    // previous request, over-crediting the second fold and letting a
-    // still-over-window request stream. The final-payload owner measures the
-    // real replacement projection instead: the third step's huge result makes
-    // even [second block, anchor, tail] exceed the window, so the turn must
-    // end with the explicit outcome — never send the over-window request.
+  test('a second mid-turn compaction rolls forward from the first checkpoint', async () => {
     const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
     await runFixtureTurn(fixture, consumer);
 
-    // The first fold happened and its projection was used (three requests ran).
     assert.equal(fixture.recorded.length, 2);
     assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
-    // The second fold rolled forward from the first checkpoint...
     assert.equal(fixture.recorded[1]?.previousCheckpointId, fixture.recorded[0]?.checkpointId);
-    // ...but its replacement still exceeds the window: explicit outcome.
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'head_anchor_exceeds_capacity');
-    // The over-window fourth request never streamed.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
-      false,
-    );
   });
 
-  test('an aborted multi-step send records the accumulated usage of the completed steps', async () => {
-    // The terminal LLM-call record is fail-closed on usage evidence (#972),
-    // and an aborted send may never resolve the SDK's final usage promise. But
-    // every COMPLETED step reported real usage at its finish-step boundary,
-    // so the terminal record must carry that accumulated sum — the capacity
-    // verdict diagnostics ride this record and the completed steps' cost is
-    // real. Three steps stream (100/20 + 150/30 + 150/30) before the step-4
-    // verdict aborts the send.
-    const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(
-      complete?.type === 'complete' ? complete.stopReason : undefined,
-      'context_budget_exhausted',
-    );
-    // Three requests streamed; the fourth is rejected locally before the
-    // provider adapter is called and therefore reports no usage.
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const lastCall = fixture.llmCalls.at(-1);
-    assert.equal(lastCall?.status, 'error');
-    assert.equal(lastCall?.errorClass, 'ContextBudgetExhausted');
-    assert.equal(lastCall?.inputTokens, 400);
-    assert.equal(lastCall?.outputTokens, 80);
-    assert.equal(lastCall?.totalTokens, 480);
-  });
-
-  test('an unusable completed-step usage sample fails the whole record closed — no partial sum (review round-7)', async () => {
-    // #972 semantics: incomplete usage evidence fails closed. The first
-    // completed step's usage is unusable (normalization returns undefined),
-    // so the sum of the remaining steps (150/30 + 150/30) is a PARTIAL cost.
-    // LlmCallRecord has no partial marker — downstream reads any record as
-    // the whole call — so the truthful outcome is no record at all; the
-    // terminal result stays observable on the durable CompleteEvent.
-    const fixture = buildFixture({
-      priorChars: 2_000,
-      rollingOverflow: true,
-      firstStepUsage: 'missing',
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(
-      complete?.type === 'complete' ? complete.stopReason : undefined,
-      'context_budget_exhausted',
-    );
-    assert.equal(fixture.llmCalls.length, 0);
-  });
-
-  test('the verdict is issued after pruning — a prune-rescuable step is not exhausted (review finding C)', async () => {
+  test('a prune-rescuable step is rescued by the prune, not compacted (review finding C)', async () => {
     // Review round-3 finding C repro: one huge tool result, no safe completed
     // span for the capacity hook, but the active tool-result prune (which runs
     // AFTER the capacity hook) archives the result down to a placeholder that
-    // fits the window. A verdict inside the capacity hook would have declared
-    // context_budget_exhausted before the rescue could run.
+    // fits the window.
     const fixture = buildFixture({
       contextWindow: 500,
       reserveTokens: 100,
@@ -1162,9 +1012,8 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   test('the trigger counts same-turn tool-schema growth from tool_search (review finding D)', async () => {
     // Review round-3 finding D repro: the model activates a ~12.7k-char tool
     // group mid-turn. The schema lands in every later request, so the payload
-    // estimate must count it: the next request cannot fit the 500-token window
-    // and the pool has no safe completed span, so the turn ends explicitly
-    // instead of streaming a ~3k-token request into a 500-token window.
+    // estimate must count it — without that the 500-token window is never
+    // crossed and the trigger never fires at all.
     const fixture = buildFixture({
       contextWindow: 500,
       reserveTokens: 100,
@@ -1173,16 +1022,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // The over-window second request never streamed the expanded schema.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
-      false,
+    // The pool has no safe completed span, so the fired trigger fails open.
+    const failedOpen = compactionDecisions(fixture).find(
+      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
+    assert.equal(failedOpen?.failOpenReason, 'no_safe_completed_span');
   });
 
   test('a fold that cannot shrink the real payload is refused, not applied (runaway summary)', async () => {
@@ -1260,11 +1104,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('an over-window runaway summary terminates as summarizer_failed, not head_anchor_exceeds_capacity (review finding 4)', async () => {
-    // A non-shrinking replacement proves the summarizer's output is unusable,
-    // not that the irreducible remainder (anchor + overhead) exceeds
-    // capacity — the terminal detail must say so; the diagnostic reason keeps
-    // the precise replacement_not_smaller cause.
+  test('a runaway summary is rejected as replacement_not_smaller and never persisted', async () => {
     const fixture = buildFixture({
       contextWindow: 150,
       reserveTokens: 100,
@@ -1273,52 +1113,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-    const lastCall = fixture.llmCalls.at(-1);
-    const exhaustedDecision = (lastCall?.contextBudget?.compactionDecisions ?? []).find(
-      (decision) => decision.phase === 'mid_turn' && decision.reason === 'context_budget_exhausted',
+    const failedOpen = compactionDecisions(fixture).find(
+      (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
-    assert.equal(exhaustedDecision?.skippedReasonCounts?.replacement_not_smaller, 1);
-    // The rejected checkpoint was never persisted.
+    assert.equal(failedOpen?.failOpenReason, 'replacement_not_smaller');
     assert.equal(fixture.recorded.length, 0);
-  });
-
-  test('the cold-start estimate covers the FULL provider input including the system prompt (review round-5 finding 2)', async () => {
-    // The system prompt travels in the separate `system` field, not in
-    // messages. With usage missing, a cold-start estimate over messages+tools
-    // alone (~2150 tokens) stays under the 2900 high water and lets a real
-    // ~3650-token request stream into a 3000-token window. The single payload
-    // measure must include the system prompt: constant between adjacent
-    // requests (signed deltas unaffected), decisive for cold start.
-    const fixture = buildFixture({
-      contextWindow: 3_000,
-      reserveTokens: 100,
-      withoutPriorTurns: true,
-      hugeFirstResult: true,
-      finalAtSecondCall: true,
-      firstStepUsage: 'missing',
-      systemPromptChars: 6_000,
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // The over-window second request never streamed.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
-      false,
-    );
-    // Every completed step's usage was unusable, so there is no usage
-    // evidence at all: the fail-closed terminal record is skipped and the
-    // exhausted outcome is observable only through the CompleteEvent above.
-    assert.equal(fixture.llmCalls.length, 0);
   });
 
   test("a completed step's assistant text is never dropped from the replacement (review finding B)", async () => {
@@ -1520,7 +1319,7 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('rejects one oversized prior turn locally when its summary fails', async () => {
+  test('dispatches an oversized prior turn when its summary fails, after trying once', async () => {
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       withoutContextWindow: true,
@@ -1531,12 +1330,9 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     await runFixtureTurn(fixture);
 
     assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(fixture.model.doStreamCalls.length, 0);
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
   test('compacts an oversized latest turn when an older turn is also retained', async () => {
@@ -1710,11 +1506,10 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     );
   });
 
-  test('an unrescuable turn under the shipped default ends with the explicit context_budget_exhausted outcome', async () => {
+  test('an unrescuable turn under the shipped default still dispatches', async () => {
     // Same runtime-derived default (window 120 → reserve 30, high water 90):
     // no prior turns leaves no safe completed span, and the request genuinely
-    // exceeds the window — the turn must end with the first-class outcome, not
-    // a raw provider error.
+    // exceeds the local window — which only the provider can act on.
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 120,
@@ -1723,10 +1518,8 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     await runFixtureTurn(fixture);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     assert.equal(
       fixture.events.some((event) => event.type === 'error'),
       false,

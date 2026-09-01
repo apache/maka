@@ -29,7 +29,7 @@ import {
   type DurableToolResultProjection,
   type DurableToolResultProjectionPart,
 } from '@maka/core/durable-tool-result-projection';
-import { MATERIALIZED_IMAGE_TOKENS, MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
+import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import {
   isCanonicalArtifactEntityId,
   normalizeArtifactImagePreviewMime,
@@ -175,12 +175,12 @@ export function durableProjectionToToolResultOutput(
 
 /** One image a Tool Result puts in the request. */
 export interface MaterializedToolResultMedia {
-  mediaType: string;
   /** How the model is told to name it once it is gone. */
   label: string;
 }
 
-function projectionArtifactMedia(
+/** The images the artifact parts of one durable projection put in the request. */
+export function projectionArtifactMedia(
   projection: DurableToolResultProjection,
 ): MaterializedToolResultMedia[] {
   if (projection.kind !== 'content') return [];
@@ -188,7 +188,6 @@ function projectionArtifactMedia(
     part.kind === 'artifact'
       ? [
           {
-            mediaType: part.mediaType,
             label: part.ref.kind === 'session_context' ? part.ref.refId : part.ref.relativePath,
           },
         ]
@@ -211,23 +210,9 @@ export function effectiveToolResultMedia(
   if (!image) return [];
   return [
     {
-      mediaType: image.mimeType,
       label: image.ref.kind === 'session_context' ? image.ref.refId : image.ref.relativePath,
     },
   ];
-}
-
-/** Tokens the artifact parts of one projection cost once materialized. */
-export function estimateProjectionMediaTokens(projection: DurableToolResultProjection): number {
-  return projectionArtifactMedia(projection).length * MATERIALIZED_IMAGE_TOKENS;
-}
-
-/** Tokens the images of one decoded Tool Result cost once materialized. */
-export function estimateEffectiveMediaTokens(
-  effective: EffectiveToolResultProjection,
-  sessionId: string,
-): number {
-  return effectiveToolResultMedia(effective, sessionId).length * MATERIALIZED_IMAGE_TOKENS;
 }
 
 /**

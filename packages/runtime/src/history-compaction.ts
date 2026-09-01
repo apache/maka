@@ -46,10 +46,8 @@ import {
  * selected model's context window. This module is turn-agnostic and side-effect
  * free, and it only SHAPES: it selects the largest safe covered prefix and
  * builds the checkpoint + replacement projection, failing open when it cannot.
- * The safety-critical pass/terminate verdict is NOT issued here — the backend's
- * final-request estimate owner measures the actual outgoing (messages, tools)
- * payload after every shaping hook has run and decides `context_budget_exhausted`
- * there, so the verdict is always about the request that really goes out.
+ * Nothing here decides whether a request fits: that answer belongs to the
+ * provider, and a rejection is recovered from by compacting and retrying once.
  */
 
 export interface EstimateNextRequestTokensInput {
@@ -139,8 +137,8 @@ export type SafePrefixBoundary =
  *  - it leaves at least `reserveTailEvents` trailing events as the verbatim tail.
  *
  * Returns `no_safe_completed_span` when no such cut exists (e.g. the remaining
- * pool is a single atomic call/result pair), which the caller surfaces as an
- * explicit `context_budget_exhausted` outcome rather than a provider error.
+ * pool is a single atomic call/result pair); the caller then fails open and
+ * sends the request unchanged.
  */
 export function selectSafeCompactionPrefix(
   events: readonly RuntimeEvent[],
@@ -279,12 +277,8 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * Execute a triggered compaction command by deterministically folding the
  * largest safe prefix. Trigger policy is owned by callers; once this function
  * is called it always attempts the transaction. This plan is a pure shaper:
- * when it cannot fold a safe
- * completed prefix it FAILS OPEN (keep the raw projection + diagnostic) and
- * never terminates the turn itself. The two failure tiers — fail open under
- * the window, explicit `context_budget_exhausted` over it — are applied by the
- * backend's final-request estimate owner, which re-measures the actual outgoing
- * payload after all shaping (including this fold) has been applied.
+ * when it cannot fold a safe completed prefix it FAILS OPEN (keep the raw
+ * projection + diagnostic) and the request goes out unchanged.
  */
 export async function planHistoryCompaction(
   input: PlanHistoryCompactionInput,

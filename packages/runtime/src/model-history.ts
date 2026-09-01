@@ -73,8 +73,9 @@ import type {
 import {
   decodeEffectiveToolResultProjection,
   durableProjectionToToolResultOutput,
-  estimateEffectiveMediaTokens,
+  effectiveToolResultMedia,
 } from './durable-tool-result-projection.js';
+import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import { estimateTokens, stableJsonLength, turnKey } from './context-budget-helpers.js';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 
@@ -177,7 +178,7 @@ function effectiveToolResultSize(
         : effective.kind === 'invalid_legacy'
           ? effective.message.length
           : stableJsonLength(effective.output),
-    mediaTokens: estimateEffectiveMediaTokens(effective, sessionId),
+    mediaTokens: effectiveToolResultMedia(effective, sessionId).length * MATERIALIZED_IMAGE_TOKENS,
   };
   effectiveToolResultSizes.set(content, size);
   return size;

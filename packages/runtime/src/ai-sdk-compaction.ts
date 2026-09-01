@@ -95,7 +95,7 @@ import {
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 
-import type { ContextBudgetExhaustedDetail, SessionEvent } from '@maka/core/events';
+import type { SessionEvent } from '@maka/core/events';
 import type { AsyncEventQueue } from './async-queue.js';
 import type { MakaTool } from './tool-runtime.js';
 import {
@@ -117,8 +117,8 @@ import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import {
   collectHistoricalImageToolResults,
   type HistoricalImageToolResult,
+  isInlineImageFilePart,
   omitHistoricalImageToolResults,
-  selectHistoricalImageOmissions,
 } from './provider-image-overflow-recovery.js';
 
 /**
@@ -803,9 +803,8 @@ export class AiSdkCompaction {
    * opt-in via `historyCompact.midTurn.enabled`; requires the checkpoint
    * writer seams plus the durable turn-ledger read, the persisted head anchor
    * for this turn. A model that declares no context window still gets this
-   * state: without a window there is nothing to enforce proactively, but
-   * reactive recovery runs off a real provider rejection and needs no window
-   * at all — gating the state on one is what left those models with neither.
+   * state: reactive recovery runs off a real provider rejection and needs no
+   * window at all.
    */
   public buildMidTurnCapacityCompactState(
     input: BackendSendInput,
@@ -856,13 +855,10 @@ export class AiSdkCompaction {
    * `[compact block, verbatim head anchor]`.
    *
    * This hook never terminates the turn: every failure fails open with a
-   * diagnostic and records itself for the final-request estimate owner, which
-   * re-measures the payload after ALL shaping (including active tool-result
-   * pruning, which runs later and can still rescue the step) and issues the
-   * context_budget_exhausted verdict only when the request that would really
-   * go out exceeds the window. The trigger threshold here is deliberately
-   * approximate — a missed or spurious trigger is recoverable; the verdict is
-   * not, so it does not live here.
+   * diagnostic and the request goes out. The trigger threshold is approximate
+   * on purpose — a missed or spurious trigger costs at most one compaction,
+   * and whether the request actually fits is the provider's answer, not a
+   * local estimate's.
    */
   public buildMidTurnCapacityCompactProjection(
     turnId: string,
@@ -900,7 +896,7 @@ export class AiSdkCompaction {
         projectedMessages ? { messages: projectedMessages } : undefined;
       // Step 0 is shaped by the pre_turn path; the mid-turn trigger only runs
       // between steps, once completed-step usage and events exist.
-      if (options.stepNumber < 1 || state.exhaustedDetail) return keepProjection();
+      if (options.stepNumber < 1) return keepProjection();
 
       // Real usage for the last finished step, read synchronously from the
       // SDK's own step results (the same numbers the finish-step chunk
@@ -947,15 +943,10 @@ export class AiSdkCompaction {
         });
         return keepProjection();
       };
-      // A shaping failure additionally records itself for the final-request
-      // estimate owner: when the final payload is still over the window, the
-      // owner turns this step's failure into the terminal detail instead of
-      // re-entering a shaper that already attempted and failed.
-      const shapeFailure = (
-        detail: ContextBudgetExhaustedDetail,
-        diagnosticReason: string,
-      ): RequestProjection | undefined => {
-        state.lastShapeFailure = { stepNumber: options.stepNumber, detail, diagnosticReason };
+      // A shaping failure records the step so the rescue re-entry does not
+      // re-run a shaper that already attempted and failed this step.
+      const shapeFailure = (diagnosticReason: string): RequestProjection | undefined => {
+        state.lastShapeFailure = { stepNumber: options.stepNumber };
         return failOpen(diagnosticReason);
       };
 
@@ -1014,7 +1005,7 @@ export class AiSdkCompaction {
         abortSignal,
       });
       if (outcome.decision === 'fail') {
-        return shapeFailure(outcome.detail, outcome.diagnosticReason);
+        return shapeFailure(outcome.diagnosticReason);
       }
       acceptedProjection = {
         sourceSignatures: incomingMessages.map(modelMessageSignature),
@@ -1072,7 +1063,6 @@ export class AiSdkCompaction {
     if (state.malformedSummaryFailure) {
       return {
         decision: 'fail',
-        detail: state.malformedSummaryFailure,
         diagnosticReason: state.malformedSummaryFailure,
       };
     }
@@ -1121,14 +1111,12 @@ export class AiSdkCompaction {
       if (abortSignal?.aborted) {
         return {
           decision: 'fail',
-          detail: 'no_safe_completed_span',
           diagnosticReason: 'ledger_wait_aborted',
         };
       }
       if (queue.consumerDetached) {
         return {
           decision: 'fail',
-          detail: 'no_safe_completed_span',
           diagnosticReason: 'ledger_wait_aborted',
         };
       }
@@ -1142,7 +1130,6 @@ export class AiSdkCompaction {
     } catch {
       return {
         decision: 'fail',
-        detail: 'no_safe_completed_span',
         diagnosticReason: 'ledger_read_failed',
       };
     }
@@ -1154,7 +1141,6 @@ export class AiSdkCompaction {
     if (!currentTurnEvents.some((event) => event.id === state.headAnchor.id)) {
       return {
         decision: 'fail',
-        detail: 'no_safe_completed_span',
         diagnosticReason: 'head_anchor_not_durable',
       };
     }
@@ -1212,9 +1198,6 @@ export class AiSdkCompaction {
       }
       return {
         decision: 'fail',
-        detail: isMalformedHistoryCompactSummaryReason(diagnosticReason)
-          ? diagnosticReason
-          : plan.reason,
         diagnosticReason,
       };
     }
@@ -1235,7 +1218,6 @@ export class AiSdkCompaction {
     ) {
       return {
         decision: 'fail',
-        detail: 'no_safe_completed_span',
         diagnosticReason: 'replacement_unmaterializable',
       };
     }
@@ -1266,7 +1248,6 @@ export class AiSdkCompaction {
     if (replacedPayloadChars >= input.referencePayloadChars) {
       return {
         decision: 'fail',
-        detail: 'summarizer_failed',
         diagnosticReason: 'replacement_not_smaller',
       };
     }
@@ -1282,7 +1263,6 @@ export class AiSdkCompaction {
     if (!replayFit.fits) {
       return {
         decision: 'fail',
-        detail: 'head_anchor_exceeds_capacity',
         diagnosticReason: `replay_rejected_${replayFit.reason}`,
       };
     }
@@ -1295,7 +1275,6 @@ export class AiSdkCompaction {
     } catch {
       return {
         decision: 'fail',
-        detail: 'summarizer_failed',
         diagnosticReason: 'write_failed',
       };
     }
@@ -1353,17 +1332,7 @@ export class AiSdkCompaction {
     if (input.retryAlreadyUsed || !state) return undefined;
     if (this.modelAdapter.classifyError(input.error) !== 'ContextLength') return undefined;
 
-    // The provider counted the rejected request, so the overshoot is known:
-    // give back that much of the image cost, not every image in the history.
-    // Without a usable count nothing bounds the drop, so it stays all-or-nothing.
-    const overshootTokens =
-      state.lastRequestInputTokens !== undefined
-        ? state.lastRequestInputTokens - (state.capacity ?? state.lastRequestInputTokens)
-        : undefined;
-    const eligibleImages = selectHistoricalImageOmissions(
-      collectHistoricalImageToolResults(state.priorContentEvents),
-      overshootTokens,
-    );
+    const eligibleImages = collectHistoricalImageToolResults(state.priorContentEvents);
     const imageOmission = omitHistoricalImageToolResults(input.currentMessages, eligibleImages);
     if (imageOmission.omittedParts > 0) {
       state.omittedImageToolResults = new Map(
@@ -1457,8 +1426,8 @@ export class AiSdkCompaction {
    * invariant. Every request-projection stage only shapes; this wrapper measures the
    * FINAL outgoing (messages, tools) payload — the bytes the provider will
    * actually see, after capacity compaction, active tool-result pruning, and
-   * semantic/active-full compaction have all run — and issues the one
-   * safety-critical verdict:
+   * semantic/active-full compaction have all run — and spends the last
+   * chance to shrink it:
    *
    *  - estimate = the last request's real INPUT tokens + signed char/4 delta
    *    against the previous request's measured payload (recorded here on
@@ -1468,18 +1437,12 @@ export class AiSdkCompaction {
    *    cold start rather than a zero baseline;
    *  - over the window with no capacity attempt this step (the approximate
    *    trigger missed, e.g. growth the trigger under-weighted), force ONE
-   *    capacity re-entry — the verdict must not terminate a turn a shaper can
-   *    still rescue, and one bounded re-entry preserves termination;
-   *  - still over the window → context_budget_exhausted, with the terminal
-   *    detail taken from this step's capacity outcome: a replacement that
-   *    remains too large is head_anchor_exceeds_capacity (the irreducible
-   *    remainder exceeds capacity); a recorded shaping failure keeps its own
-   *    detail and diagnostic reason.
+   *    capacity re-entry.
    *
-   * Step 0 is shaped by the pre_turn path. It is still measured here so an
-   * unshapable first request cannot bypass the capacity invariant.
+   * Still over afterwards, the request goes out anyway: only the provider
+   * knows whether it fits, and a rejection is recovered from.
    */
-  public buildMidTurnFinalRequestVerdict(input: {
+  public buildMidTurnFinalRequestRescue(input: {
     shaped: RequestProjectionStage;
     reentry: RequestProjectionStage;
     state: MidTurnCapacityCompactState;
@@ -1487,8 +1450,6 @@ export class AiSdkCompaction {
     fallbackActiveTools: () => readonly string[];
     charsPerToken: number;
     systemPromptChars: number;
-    onDiagnosticPatch: (patch: Partial<ContextBudgetDiagnostic>) => void;
-    abortController?: AbortController | null;
   }): RequestProjectionStage {
     const {
       shaped,
@@ -1498,8 +1459,6 @@ export class AiSdkCompaction {
       fallbackActiveTools,
       charsPerToken,
       systemPromptChars,
-      onDiagnosticPatch,
-      abortController,
     } = input;
     return async (options) => {
       let result = await Promise.resolve(shaped(options));
@@ -1519,7 +1478,7 @@ export class AiSdkCompaction {
           charsPerToken,
         );
       let payloadChars = finalPayloadChars();
-      if (state.capacity !== undefined && options.stepNumber >= 1 && !state.exhaustedDetail) {
+      if (state.capacity !== undefined && options.stepNumber >= 1) {
         const estimateFinal = (): number =>
           estimateNextRequestTokens({
             ...(state.lastRequestInputTokens !== undefined
@@ -1529,18 +1488,16 @@ export class AiSdkCompaction {
             charsPerToken,
             coldStartChars: payloadChars,
           });
-        let estimate = estimateFinal();
+        const estimate = estimateFinal();
         const capacityAttemptedThisStep =
           state.replacedStepNumber === options.stepNumber ||
           state.lastShapeFailure?.stepNumber === options.stepNumber;
-        if (options.stepNumber >= 1 && estimate > state.capacity && !capacityAttemptedThisStep) {
-          // One bounded capacity re-entry: the trigger threshold is
-          // approximate on purpose (recoverable), so a miss must become a
-          // rescue attempt before it can become a terminal verdict. Re-run
-          // only the capacity + prune shapers over the already-shaped
-          // projection; a second attempt after a same-step failure is
-          // pointless (the failure was not a trigger miss) and would double
-          // recorder counters and summarizer calls.
+        if (estimate > state.capacity && !capacityAttemptedThisStep) {
+          // One bounded capacity re-entry. Re-run only the capacity + prune
+          // shapers over the already-shaped projection; a second attempt
+          // after a same-step failure is pointless (the failure was not a
+          // trigger miss) and would double recorder counters and summarizer
+          // calls.
           state.forcedTriggerEstimate = estimate;
           const reshaped = await Promise.resolve(
             reentry({
@@ -1558,34 +1515,6 @@ export class AiSdkCompaction {
             };
           }
           payloadChars = finalPayloadChars();
-          estimate = estimateFinal();
-        }
-        if (estimate > state.capacity) {
-          const failure =
-            state.lastShapeFailure?.stepNumber === options.stepNumber
-              ? state.lastShapeFailure
-              : undefined;
-          const replacedThisStep = state.replacedStepNumber === options.stepNumber;
-          const detail: ContextBudgetExhaustedDetail = replacedThisStep
-            ? 'head_anchor_exceeds_capacity'
-            : (failure?.detail ?? 'no_safe_completed_span');
-          const diagnosticReason = replacedThisStep
-            ? 'head_anchor_exceeds_capacity'
-            : (failure?.diagnosticReason ?? 'no_safe_completed_span');
-          state.exhaustedDetail = detail;
-          onDiagnosticPatch({
-            ...compactionDecisionDiagnosticPatch({
-              stage: 'activeStep',
-              sourceKind: 'runtimeEvents',
-              decision: 'unchanged',
-              phase: 'mid_turn',
-              boundaryKind: 'historyCompact',
-              reason: 'context_budget_exhausted',
-              skippedReasonCounts: { [diagnosticReason]: 1 },
-            }),
-          });
-          abortController?.abort(new Error(`mid-turn context budget exhausted: ${detail}`));
-          return result;
         }
       }
       state.lastRequestPayloadChars = payloadChars;
@@ -1732,8 +1661,6 @@ export class MidTurnCapacityCompactState {
   previousCheckpoint: HistoryCompactCheckpoint | undefined;
   /** Checkpoint accepted during this send; pins every later durable projection. */
   projectionCheckpoint: HistoryCompactCheckpoint | undefined;
-  /** Set when the turn must end with a context_budget_exhausted outcome. */
-  exhaustedDetail: ContextBudgetExhaustedDetail | undefined;
   /**
    * Step whose request the capacity hook replaced. Semantic/active-full
    * compaction yields on that exact step so one step never runs two
@@ -1756,18 +1683,11 @@ export class MidTurnCapacityCompactState {
   /** Exact historical image results omitted after a provider overflow. */
   omittedImageToolResults = new Map<string, HistoricalImageToolResult>();
   /**
-   * The capacity hook's most recent shaping failure. The owner reads it (for
-   * the same step only) to pick the terminal detail and diagnostic reason
-   * when the final payload is over the window, and to avoid re-entering a
-   * shaper that already attempted and failed this step.
+   * The step of the capacity hook's most recent shaping failure. The rescue
+   * re-entry reads it so it never re-runs a shaper that already attempted and
+   * failed on the same step.
    */
-  lastShapeFailure:
-    | {
-        stepNumber: number;
-        detail: ContextBudgetExhaustedDetail;
-        diagnosticReason: string;
-      }
-    | undefined;
+  lastShapeFailure: { stepNumber: number } | undefined;
   /** Malformed summaries spend one bounded repair budget for this whole Turn. */
   malformedSummaryFailure: MalformedHistoryCompactSummaryReason | undefined;
 
@@ -1783,15 +1703,15 @@ export class MidTurnCapacityCompactState {
 /**
  * Char measure of the FULL provider-visible request input: the system prompt
  * (sent through the separate `system` field), the (projected) messages, and
- * the serialized schemas of the active tool subset. The capacity trigger and
- * the final-request estimate owner both measure with this ONE function, so
- * their raw payload comparisons against `lastRequestPayloadChars` are
- * commensurable and
+ * the serialized schemas of the active tool subset. Media is billed in tokens
+ * converted to chars, so the whole measure stays in one unit. The capacity
+ * trigger and the rescue re-entry both measure with this ONE function, so
+ * their comparisons against `lastRequestPayloadChars` are commensurable and
  * same-turn tool-schema growth (a `tool_search` activation) is counted like
  * any other payload growth. The system prompt is constant between adjacent
  * requests — signed deltas cancel it — but the cold-start estimate (no usable
  * usage sample) is the whole payload, so omitting it would under-estimate by
- * exactly the system prompt and let an over-window request stream.
+ * exactly the system prompt.
  *
  * A media part is worth what the provider charges for it, not what it
  * serializes to: materialized bytes reach the request as base64 or a byte map,
@@ -1809,7 +1729,7 @@ function midTurnRequestPayloadChars(
 ): number {
   let mediaParts = 0;
   const serializedMessages = JSON.stringify(messages, (_key, value) => {
-    if (!isMaterializedMediaPart(value)) return value;
+    if (!isInlineImageFilePart(value)) return value;
     mediaParts += 1;
     return { type: value.type, mediaType: value.mediaType };
   });
@@ -1818,20 +1738,6 @@ function midTurnRequestPayloadChars(
     (serializedMessages?.length ?? 0) +
     mediaParts * MATERIALIZED_IMAGE_TOKENS * Math.max(1, charsPerToken) +
     toolSchemaCharsForDiagnostics(providerTools, activeTools)
-  );
-}
-
-/** A `file` part carrying inline bytes, as opposed to a URL the provider fetches. */
-function isMaterializedMediaPart(
-  value: unknown,
-): value is { type: 'file'; mediaType: string; data: object } {
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
-  const part = value as { type?: unknown; mediaType?: unknown; data?: unknown };
-  return (
-    part.type === 'file' &&
-    typeof part.mediaType === 'string' &&
-    part.data !== null &&
-    typeof part.data === 'object'
   );
 }
 
@@ -1845,7 +1751,6 @@ function isMaterializedMediaPart(
 type ActiveRequestCompactionOutcome =
   | {
       decision: 'fail';
-      detail: ContextBudgetExhaustedDetail;
       diagnosticReason: string;
     }
   | {

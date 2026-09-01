@@ -1784,20 +1784,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 1);
   });
 
-  test('a checkpoint fold never sneaks an injected steering message past the capacity verdict', async () => {
-    // Round-5 F2: injected steering is PINNED out of the foldable span. If a
-    // mid-turn fold could cover it, the verdict would credit the fold with
-    // chars the request never actually sheds (the accumulator re-appends the
-    // directive), passing a request whose real payload it never measured.
+  test('a checkpoint fold never covers an injected steering message', async () => {
+    // Round-5 F2: injected steering is PINNED out of the foldable span, so a
+    // measurement of the folded request is a measurement of what the provider
+    // actually receives — the accumulator re-appends the directive either way.
     //
-    // Scenario: steer once at step 1 (6k chars — folds fine, stays in the
-    // tail, measured). At step 2 a second, window-breaking steer (12k chars)
-    // arrives and the fold's cut can now reach PAST the first steering
-    // event. Unpinned, the fold covers it, the verdict sees a shrunken
-    // payload and passes, and the post-verdict re-append ships an unmeasured
-    // over-window request to a happy end_turn. Pinned, the fold cannot cover
-    // it, the honest estimate exceeds the window, and the verdict terminates
-    // explicitly BEFORE the request goes out.
+    // Scenario: steer once at step 1 (6k chars), then again at step 2 (12k)
+    // so the fold's cut can reach PAST the first steering event. Unpinned,
+    // the fold would swallow the first steer and the request that goes out
+    // would carry chars nothing measured.
     const fixture = buildReactiveFixture({
       script: ['tool', 'tool', 'done'],
       contextWindow: 2_000,
@@ -1825,15 +1820,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
       return [];
     });
 
-    // The verdict measured the pinned, steering-inclusive payload and refused
-    // it explicitly instead of completing on an unmeasured over-window request
-    // (unpinned, the fold hides the first steer from the measurement and the
-    // turn ends happily on end_turn). The third request is rejected locally
-    // before the provider adapter is called.
-    assert.equal(complete(fixture)?.stopReason, 'context_budget_exhausted');
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    // Both steers were durably delivered to the ledger before the verdict —
-    // they are owned by history, not lost.
+    // The first steer survives the fold verbatim in the last request: it was
+    // pinned out of the covered span, not summarized away.
+    assert.match(JSON.stringify(fixture.model.doStreamCalls.at(-1)?.prompt), /PIN_STEER_ONE/);
+    // Both steers were durably delivered to the ledger — owned by history.
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 2);
   });
 

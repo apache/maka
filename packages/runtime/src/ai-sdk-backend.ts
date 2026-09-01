@@ -1030,21 +1030,15 @@ class TurnScope {
   ) {}
 }
 
-type PriorReplayResult =
-  | {
-      status: 'ready';
-      messages: ModelMessage[];
-      gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
-      diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
-      runtimeEventCount?: number;
-      contextBudget?: ContextBudgetDiagnostic;
-      latestHistoryCompactCheckpoint?: HistoryCompactCheckpoint;
-    }
-  | {
-      status: 'context_budget_exhausted';
-      detail: ContextBudgetExhaustedDetail;
-      contextBudget?: ContextBudgetDiagnostic;
-    };
+type PriorReplayResult = {
+  status: 'ready';
+  messages: ModelMessage[];
+  gate: RuntimeEventReplayFallbackGate | 'stored_message_projection';
+  diagnostics: RuntimeEventModelReplayPlan['diagnostics'];
+  runtimeEventCount?: number;
+  contextBudget?: ContextBudgetDiagnostic;
+  latestHistoryCompactCheckpoint?: HistoryCompactCheckpoint;
+};
 
 export class AiSdkBackend implements AgentBackend {
   readonly kind: BackendKind = 'ai-sdk';
@@ -1736,20 +1730,6 @@ export class AiSdkBackend implements AgentBackend {
       yield* this.drain(queue);
       return;
     }
-    if (priorReplayResult.status === 'context_budget_exhausted') {
-      trace.modelStreamCompleted('context_budget_exhausted');
-      queue.push({
-        type: 'complete',
-        id: this.newId(),
-        turnId,
-        ts: this.now(),
-        stopReason: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: priorReplayResult.detail,
-      } satisfies CompleteEvent);
-      queue.close();
-      yield* this.drain(queue);
-      return;
-    }
     const priorReplay = priorReplayResult;
     if (input.continuation && priorReplay.messages.length === 0) {
       const replay = priorReplayFailureTrace(priorReplay);
@@ -1994,7 +1974,7 @@ export class AiSdkBackend implements AgentBackend {
         // owner measures the final payload and decides pass/terminate.
         const requestProjection =
           midTurnState && midTurnCapacityHook && shapedProjection
-            ? this.compaction.buildMidTurnFinalRequestVerdict({
+            ? this.compaction.buildMidTurnFinalRequestRescue({
                 shaped: shapedProjection,
                 reentry: composeRequestProjection(
                   undefined,
@@ -2006,8 +1986,6 @@ export class AiSdkBackend implements AgentBackend {
                 fallbackActiveTools: () => currentRepairToolNames(),
                 charsPerToken: this.input.contextBudget?.charsPerToken ?? 4,
                 systemPromptChars: midTurnSystemPromptChars,
-                onDiagnosticPatch: onMidTurnDiagnosticPatch,
-                abortController: turnAbortController,
               })
             : shapedProjection;
 
@@ -2038,11 +2016,6 @@ export class AiSdkBackend implements AgentBackend {
                 messages: requestMessages,
               })
             : undefined;
-          if (midTurnState?.exhaustedDetail) {
-            throw new Error(
-              `context budget exhausted before provider dispatch: ${midTurnState.exhaustedDetail}`,
-            );
-          }
           const projectedMessages = shaped?.messages ?? requestMessages;
           const finalChildSummaryStep =
             this.input.header.collaborationMode === 'agent' &&
@@ -2402,7 +2375,7 @@ export class AiSdkBackend implements AgentBackend {
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
 
-            if (attemptFailure && !scope.aborted && !midTurnState?.exhaustedDetail) {
+            if (attemptFailure && !scope.aborted) {
               const failure =
                 settledWatchdogTimeout || providerOutcome.kind === 'completed'
                   ? this.modelAdapter.normalizeFailure(attemptFailure)
@@ -2542,16 +2515,6 @@ export class AiSdkBackend implements AgentBackend {
           // persist a partial assistant turn and emit a false end_turn completion.
           if (scope.aborted) {
             throw Object.assign(new Error('aborted'), { name: 'AbortError' });
-          }
-
-          // Mid-turn exhaustion aborts the SDK stream, but streamText ends
-          // gracefully on abort instead of throwing; route to the explicit
-          // outcome regardless of how the stream wound down.
-          if (midTurnState?.exhaustedDetail) {
-            throw Object.assign(
-              new Error(`mid-turn context budget exhausted: ${midTurnState.exhaustedDetail}`),
-              { name: 'MidTurnContextBudgetExhaustedError' },
-            );
           }
 
           // Catch-all: flush any residual step content if the provider closed the
@@ -2884,20 +2847,7 @@ export class AiSdkBackend implements AgentBackend {
         // BOTH exits — user stop and provider error / watchdog timeout — so
         // partialOutputRetained reflects what the user actually saw.
         await flushStep().catch(() => {});
-        if (!scope.aborted && midTurnState?.exhaustedDetail) {
-          // Mid-turn compaction could not produce a provider-safe request: end
-          // the turn with the explicit first-class outcome, not a raw error.
-          streamErrorClass = 'ContextBudgetExhausted';
-          trace.modelStreamCompleted('context_budget_exhausted');
-          queue.push({
-            type: 'complete',
-            id: this.newId(),
-            turnId,
-            ts: this.now(),
-            stopReason: 'context_budget_exhausted',
-            contextBudgetExhaustedDetail: midTurnState.exhaustedDetail,
-          } satisfies CompleteEvent);
-        } else if (scope.aborted) {
+        if (scope.aborted) {
           queue.push({
             type: 'abort',
             id: this.newId(),
@@ -3429,7 +3379,6 @@ export class AiSdkBackend implements AgentBackend {
     const needsCompaction =
       maxHistoryTokens !== undefined &&
       estimateRuntimeEventsTokens(runtimeContext, contextBudget?.charsPerToken) > maxHistoryTokens;
-    let compactionFailure: ContextBudgetExhaustedDetail | undefined;
     if (
       needsCompaction &&
       contextBudget?.historyCompact?.enabled === true &&
@@ -3486,14 +3435,6 @@ export class AiSdkBackend implements AgentBackend {
           });
         }
       }
-      if (compactResult.outcome.kind === 'failed') {
-        compactionFailure =
-          compactResult.outcome.reason === 'no_safe_completed_span'
-            ? 'no_safe_completed_span'
-            : isMalformedHistoryCompactSummaryReason(compactResult.outcome.reason)
-              ? compactResult.outcome.reason
-              : 'summarizer_failed';
-      }
       contextBudgetDiagnostic = mergeContextBudgetDiagnostic(
         contextBudgetDiagnostic ??
           buildContextBudgetDiagnosticShell(priorRuntimeContext, runtimeContext, contextBudget),
@@ -3501,16 +3442,6 @@ export class AiSdkBackend implements AgentBackend {
       );
     }
 
-    if (
-      maxHistoryTokens !== undefined &&
-      estimateRuntimeEventsTokens(runtimeContext, contextBudget?.charsPerToken) > maxHistoryTokens
-    ) {
-      return {
-        status: 'context_budget_exhausted',
-        detail: compactionFailure ?? 'no_safe_completed_span',
-        ...(contextBudgetDiagnostic ? { contextBudget: contextBudgetDiagnostic } : {}),
-      };
-    }
     // The boundary belongs to the runtime-event projection above. A gate that
     // falls back to the stored-message projection returns a prompt no
     // checkpoint shaped, so it reports none rather than one the request never

@@ -47,9 +47,7 @@ export interface HistoryCompactSummaryInput {
   /**
    * Estimated provider-input ceiling for this compaction call. A compactor
    * should fail before dispatch when its projection cannot fit this budget.
-   * The ceiling is absent when the selected model declares no context window:
-   * there is no honest number to fit against, and inventing one is what #4458
-   * was about.
+   * The ceiling is absent when the selected model declares no context window.
    */
   inputBudget?: {
     maxEstimatedTokens?: number;

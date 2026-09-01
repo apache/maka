@@ -52,7 +52,6 @@ import {
 import {
   archiveToolResultAsTransition,
   serializedToolResultProjection,
-  toolResultProjectionEstimatedTokens,
   type ToolResultArchiveTransitionServices,
 } from './tool-result-archive-transition.js';
 import {
@@ -290,11 +289,7 @@ async function rewriteToolResultPart(input: {
   if (!address || address.toolName !== part.toolName) return { changed: false };
   const sourceProjection = address.projection;
   const serializedResult = serializedToolResultProjection(sourceProjection);
-  const originalEstimatedTokens = toolResultProjectionEstimatedTokens(
-    sourceProjection,
-    serializedResult,
-    input.charsPerToken,
-  );
+  const originalEstimatedTokens = estimateTokens(serializedResult.length, input.charsPerToken);
   if (
     input.supersession
       ? originalEstimatedTokens < input.minSupersededResultEstimatedTokens

@@ -40,6 +40,7 @@
  * explain, and none in which a completed tool effect is repeated.
  */
 
+import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { DURABLE_TOOL_RESULT_PROJECTION_VERSION } from '@maka/core/durable-tool-result-projection';
 import {
@@ -58,7 +59,7 @@ import {
 } from './context-budget-helpers.js';
 import {
   durableProjectionToToolResultOutput,
-  estimateProjectionMediaTokens,
+  projectionArtifactMedia,
 } from './durable-tool-result-projection.js';
 import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
 import {
@@ -90,23 +91,6 @@ export function serializedToolResultProjection(projection: DurableToolResultProj
   const output = durableProjectionToToolResultOutput(projection);
   return serializeToolResultForArchive(
     output.type === 'execution-denied' ? { kind: 'text', text: output.reason ?? '' } : output.value,
-  );
-}
-
-/**
- * What one Tool Result costs the request, in tokens.
- *
- * Its serialized bytes plus the media its artifact parts rehydrate into. An
- * artifact serializes to a short reference and materializes to real image
- * bytes, so measuring the string alone would price a screenshot at nothing.
- */
-export function toolResultProjectionEstimatedTokens(
-  projection: DurableToolResultProjection,
-  serialized: string,
-  charsPerToken: number,
-): number {
-  return (
-    estimateTokens(serialized.length, charsPerToken) + estimateProjectionMediaTokens(projection)
   );
 }
 
@@ -309,11 +293,11 @@ export function collectStaleToolResultArchiveCandidates(
     if (!sourceProjection) continue;
     const serializedResult = serializedToolResultProjection(sourceProjection);
     const originalBytes = utf8ByteLength(serializedResult);
-    const originalEstimatedTokens = toolResultProjectionEstimatedTokens(
-      sourceProjection,
-      serializedResult,
-      charsPerToken,
-    );
+    // An artifact serializes to a short reference and materializes to real
+    // image bytes, so the string alone would price a screenshot at nothing.
+    const originalEstimatedTokens =
+      estimateTokens(serializedResult.length, charsPerToken) +
+      projectionArtifactMedia(sourceProjection).length * MATERIALIZED_IMAGE_TOKENS;
     if (originalEstimatedTokens <= maxResultEstimatedTokens) continue;
     candidates.push({
       runtimeEventId: event.id,

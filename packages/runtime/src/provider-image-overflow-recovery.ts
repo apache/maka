@@ -22,14 +22,11 @@ import type { ModelMessage } from './model-protocol.js';
 import {
   decodeEffectiveToolResultProjection,
   effectiveToolResultMedia,
-  estimateEffectiveMediaTokens,
 } from './durable-tool-result-projection.js';
 
 export interface HistoricalImageToolResult {
   toolName: string;
   artifactLabel: string;
-  /** What dropping this result's images gives back, by the same ruler the budget uses. */
-  estimatedTokens: number;
 }
 
 export interface HistoricalImageOmissionResult {
@@ -59,38 +56,15 @@ export function collectHistoricalImageToolResults(
     const effective = decodeEffectiveToolResultProjection(content, event.sessionId);
     const [media] = effectiveToolResultMedia(effective, event.sessionId);
     if (!media || media.label.length === 0) continue;
-    collected.set(content.id, {
-      toolName: content.name,
-      artifactLabel: media.label,
-      estimatedTokens: estimateEffectiveMediaTokens(effective, event.sessionId),
-    });
+    collected.set(content.id, { toolName: content.name, artifactLabel: media.label });
   }
   return collected;
 }
 
-/**
- * The cheapest set of image Tool Results whose removal covers `targetTokens`,
- * largest first. An overflow is a fixed overshoot, so dropping everything the
- * model can still see costs visual context the retry never needed. An unknown
- * target keeps the old all-or-nothing behaviour.
- */
-export function selectHistoricalImageOmissions(
-  eligible: ReadonlyMap<string, HistoricalImageToolResult>,
-  targetTokens: number | undefined,
-): Map<string, HistoricalImageToolResult> {
-  if (targetTokens === undefined || targetTokens <= 0) return new Map(eligible);
-  const selected = new Map<string, HistoricalImageToolResult>();
-  let covered = 0;
-  const byCostDesc = [...eligible].sort(([, a], [, b]) => b.estimatedTokens - a.estimatedTokens);
-  for (const [toolCallId, image] of byCostDesc) {
-    if (covered >= targetTokens) break;
-    selected.set(toolCallId, image);
-    covered += image.estimatedTokens;
-  }
-  return selected;
-}
-
-function isInlineImageFilePart(value: unknown): value is UnknownRecord {
+/** A `file` part carrying inline image bytes, not a URL the provider fetches. */
+export function isInlineImageFilePart(
+  value: unknown,
+): value is { type: 'file'; mediaType: string; data: object } {
   if (
     !isRecord(value) ||
     value.type !== 'file' ||

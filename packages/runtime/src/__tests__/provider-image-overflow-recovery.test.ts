@@ -26,7 +26,6 @@ import type { ModelMessage } from '../model-protocol.js';
 import {
   collectHistoricalImageToolResults,
   omitHistoricalImageToolResults,
-  selectHistoricalImageOmissions,
 } from '../provider-image-overflow-recovery.js';
 
 /** A pre-artifact image result: no durable projection, materialized raw. */
@@ -172,18 +171,6 @@ describe('provider image overflow recovery projection', () => {
     assert.match(prompt(result.messages), /read-image:owner-1/);
   });
 
-  test('prices an image artifact by its materialized cost, not its reference text', () => {
-    const eligible = collectHistoricalImageToolResults([
-      imageResultEvent('prior-image-call', {
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-screenshot-1',
-      }),
-    ]);
-
-    assert.equal(eligible.get('prior-image-call')?.estimatedTokens, 2000);
-  });
-
   test('still recovers a pre-artifact image result that has no durable projection', () => {
     const eligible = collectHistoricalImageToolResults([
       legacyImageResultEvent('prior-image-call', 'screenshots/screenshot.png'),
@@ -193,33 +180,8 @@ describe('provider image overflow recovery projection', () => {
       eligible,
     );
 
-    assert.equal(eligible.get('prior-image-call')?.estimatedTokens, 2000);
+    assert.equal(eligible.size, 1);
     assert.equal(result.omittedParts, 1);
     assert.match(prompt(result.messages), /screenshots\/screenshot\.png/);
-  });
-
-  test('drops the largest images only until the overshoot is covered', () => {
-    const eligible = collectHistoricalImageToolResults([
-      imageResultEvent('call-a', {
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-a',
-      }),
-      imageResultEvent('call-b', {
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-b',
-      }),
-      imageResultEvent('call-c', {
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-c',
-      }),
-    ]);
-
-    assert.equal(selectHistoricalImageOmissions(eligible, 1).size, 1);
-    assert.equal(selectHistoricalImageOmissions(eligible, 2500).size, 2);
-    assert.equal(selectHistoricalImageOmissions(eligible, 99_000).size, 3);
-    assert.equal(selectHistoricalImageOmissions(eligible, undefined).size, 3);
   });
 });
