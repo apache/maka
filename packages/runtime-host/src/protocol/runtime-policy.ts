@@ -143,6 +143,26 @@ export type ConnectionCatalogHeaderItem = Omit<
   readonly catalogEntryCount: number;
 };
 
+/**
+ * The seam between the Host, which owns the model catalog, and every client,
+ * which may only project it. Read this before adding a field.
+ *
+ * The Host answers, and a client never re-derives against a registry or
+ * metadata copy it bundles itself: which models a connection has
+ * (`model` items), what is true about each one (`catalog_entry` items —
+ * display name, context window, thinking levels, whether it may be a chat
+ * default), and which of them the user enabled (`enabled_model_id` items).
+ * Two clients of different versions on one Host must describe a model
+ * identically, and they can only do that by not deciding.
+ *
+ * A field belongs here when a client renders it or acts on it. It does not
+ * belong here when the Host writes it for the Host: discovery and test
+ * bookkeeping, invalidation markers, override provenance. Those have leaked
+ * onto this type before — `modelsFetchedAt` and `factOverriddenFields` both
+ * shipped, neither was ever read, and each grew its own encode/decode path on
+ * the way. A field nothing renders is a second authority for a fact the Host
+ * already owns; name its client-side reader here or leave it off.
+ */
 export type ConnectionCatalogPageItem =
   | ConnectionCatalogHeaderItem
   | {

@@ -24,14 +24,12 @@ import {
   type ProviderType,
 } from './llm-connections.js';
 
-export const PROVIDER_AUTH_ACTIONS = [
-  'save_secret',
-  'test_credentials',
-  'fetch_models',
-  'start_oauth',
-  'refresh_oauth',
-  'revoke_auth',
-] as const;
+/**
+ * The credential operations this contract admits. One entry per operation the
+ * storage coordinator actually gates — an operation with no admission point
+ * does not belong here, however natural it sounds beside these three.
+ */
+export const PROVIDER_AUTH_ACTIONS = ['test_credentials', 'fetch_models', 'start_oauth'] as const;
 export type ProviderAuthAction = (typeof PROVIDER_AUTH_ACTIONS)[number];
 
 export interface ProviderAuthContract {
@@ -81,43 +79,20 @@ export function deriveProviderAuthContract(input: {
         test_credentials: hasSecret,
         fetch_models: hasSecret && canFetchModels,
         start_oauth: !hasSecret,
-        refresh_oauth: hasSecret,
-        revoke_auth: hasSecret,
       }),
     };
   }
 
-  if (defaults.authKind === 'optional_api_key') {
-    // The instance may need no key at all, so testing and fetching stay open
-    // whether or not one is saved.
-    return {
-      requiresSecret,
-      actionAvailability: actions({
-        save_secret: true,
-        test_credentials: true,
-        fetch_models: canFetchModels,
-        revoke_auth: hasSecret,
-      }),
-    };
-  }
-
-  if (defaults.authKind === 'none') {
-    return {
-      requiresSecret,
-      actionAvailability: actions({
-        test_credentials: true,
-        fetch_models: canFetchModels,
-      }),
-    };
-  }
-
+  // `none` needs no key, and `optional_api_key` may need none for this
+  // instance, so both leave testing and fetching open whether or not one is
+  // saved. Only a provider that requires a key waits for one.
+  const reachableWithoutSecret =
+    defaults.authKind === 'none' || defaults.authKind === 'optional_api_key';
   return {
     requiresSecret,
     actionAvailability: actions({
-      save_secret: true,
-      test_credentials: hasSecret,
-      fetch_models: hasSecret && canFetchModels,
-      revoke_auth: hasSecret,
+      test_credentials: reachableWithoutSecret || hasSecret,
+      fetch_models: canFetchModels && (reachableWithoutSecret || hasSecret),
     }),
   };
 }

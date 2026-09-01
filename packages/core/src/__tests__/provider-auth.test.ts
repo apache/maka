@@ -29,7 +29,6 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(missing.requiresSecret, true);
-    assert.strictEqual(missing.actionAvailability.save_secret, true);
     assert.strictEqual(missing.actionAvailability.test_credentials, false);
     assert.strictEqual(missing.actionAvailability.fetch_models, false);
     assert.strictEqual(missing.actionAvailability.start_oauth, false);
@@ -41,7 +40,6 @@ describe('ProviderAuth contract', () => {
 
     assert.strictEqual(configured.actionAvailability.test_credentials, true);
     assert.strictEqual(configured.actionAvailability.fetch_models, true);
-    assert.strictEqual(configured.actionAvailability.revoke_auth, true);
   });
 
   test('OAuth subscription providers expose validation actions after login', () => {
@@ -51,11 +49,8 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(contract.requiresSecret, true);
-    assert.strictEqual(contract.actionAvailability.save_secret, false);
     assert.strictEqual(contract.actionAvailability.test_credentials, true);
     assert.strictEqual(contract.actionAvailability.start_oauth, false);
-    assert.strictEqual(contract.actionAvailability.refresh_oauth, true);
-    assert.strictEqual(contract.actionAvailability.revoke_auth, true);
   });
 
   test('a discovery-capable OAuth provider keeps fetch_models available after login', () => {
@@ -85,19 +80,19 @@ describe('ProviderAuth contract', () => {
     });
 
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.actionAvailability.save_secret, false);
     assert.strictEqual(contract.actionAvailability.test_credentials, true);
     assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
 
-  test('LocalAI keeps API-key setup available without making the key required', () => {
+  test('an optional-key provider admits testing and fetching before a key exists', () => {
+    // LocalAI accepts a key but does not require one, so waiting for a saved
+    // secret would refuse an instance that is already reachable.
     const contract = deriveProviderAuthContract({
       providerType: 'localai',
       hasSecret: false,
     });
 
     assert.strictEqual(contract.requiresSecret, false);
-    assert.strictEqual(contract.actionAvailability.save_secret, true);
     assert.strictEqual(contract.actionAvailability.test_credentials, true);
     assert.strictEqual(contract.actionAvailability.fetch_models, true);
   });
