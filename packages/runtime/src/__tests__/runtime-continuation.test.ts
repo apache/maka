@@ -94,7 +94,6 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
     backgroundOperationsSettled: true,
-    admissionRoute: sameRouteAdmission(),
     availableToolNames: [],
   });
 
@@ -178,6 +177,7 @@ test('RuntimeContinuationPlanner restores a durable denial when its RuntimeEvent
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
     backgroundOperationsSettled: true,
+    admissionRoute: sameRouteAdmission(),
     availableToolNames: [],
   });
 
