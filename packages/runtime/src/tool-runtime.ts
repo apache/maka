@@ -223,6 +223,13 @@ export interface MakaTool<P = any, R = unknown> {
    * settlement instead of detaching, so late side effects cannot outlive `exec`.
    */
   impl: (args: P, ctx: MakaToolContext) => Promise<R> | R;
+  /** Best-effort compensation after T2 rejects a result that already produced side effects. */
+  compensateDurableOutcomeCommitFailure?: (input: {
+    readonly result: unknown;
+    readonly isError: boolean;
+    readonly sessionId: string;
+    readonly operationId: string;
+  }) => Promise<void> | void;
   /** Optional synchronous provider-visible content mapping, used for screenshot image parts. */
   toModelOutput?: (options: {
     toolCallId: string;
@@ -2312,6 +2319,17 @@ export class ToolRuntime {
             committedAt: responseEvent.ts,
           });
         } catch (error) {
+          try {
+            await input.tool.compensateDurableOutcomeCommitFailure?.({
+              result,
+              isError,
+              sessionId: this.input.sessionId,
+              operationId,
+            });
+          } catch {
+            // T2 remains authoritative. Compensation is deliberately best-effort
+            // and must never replace the persistence failure that triggered it.
+          }
           throw new RuntimeCommitBoundaryError('T2', error);
         }
         committedOutcome = {

@@ -511,8 +511,9 @@ export class HostSessionRevisionCoordinator {
       );
       const sourceContextRefIds = collectConversationCopySessionContextRefIds({
         sourceSessionId: input.sourceSessionId,
-        copiedMessages: slice.messages,
-        plan,
+        messages: slice.messages,
+        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+        archivedResults: archivePreflight.serializedResults,
       });
       if (sourceContextRefIds.length > 0 && !this.options.contextOffload) {
         throw new Error('Session context copy authority is unavailable');

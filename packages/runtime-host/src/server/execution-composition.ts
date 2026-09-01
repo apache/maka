@@ -287,10 +287,15 @@ export async function createExecutionRuntimeHostComposition(
     const openedContextOffloadReader = openedContextOffloadStore
       ? createInteractiveContextOffloadReader(openedContextOffloadStore)
       : undefined;
-    const contextOffloadRetirement = openedContextOffloadStore
+    const contextOffloadAuthority = openedContextOffloadStore
       ? openedContextOffloadStore
       : storage.contextOffloadUnavailable
         ? {
+            copyReferences: async (): Promise<never> => {
+              throw new Error('Context-offload Store is unavailable during Session copy', {
+                cause: storage.contextOffloadUnavailable?.cause,
+              });
+            },
             retireSession: async (_sessionId: string): Promise<never> => {
               throw new Error('Context-offload Store is unavailable during Session retirement', {
                 cause: storage.contextOffloadUnavailable?.cause,
@@ -420,6 +425,12 @@ export async function createExecutionRuntimeHostComposition(
                 bytes: input.bytes,
                 mimeType: input.mimeType,
               }),
+            releaseImageSnapshot: async (input: {
+              readonly sessionId: string;
+              readonly refId: string;
+            }) => {
+              await openedContextOffloadStore.releaseReference(input);
+            },
           }
         : {}),
       ...(sandboxManager ? { sandboxManager } : {}),
@@ -1566,7 +1577,7 @@ export async function createExecutionRuntimeHostComposition(
       stores,
       artifacts: openedArtifactStore,
       sessionTodo: sessionTodoStore,
-      ...(contextOffloadRetirement ? { contextOffload: contextOffloadRetirement } : {}),
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
@@ -1591,7 +1602,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       sessionTodo: sessionTodoStore,
-      ...(contextOffloadRetirement ? { contextOffload: contextOffloadRetirement } : {}),
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);

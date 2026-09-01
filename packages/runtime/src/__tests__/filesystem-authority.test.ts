@@ -78,6 +78,7 @@ function runTool(
       turnId: 'turn-1',
       cwd,
       toolCallId: 'tool-1',
+      operationId: 'toolop-1',
       abortSignal: new AbortController().signal,
       emitOutput: () => {},
       ...(executionBoundary ? { executionBoundary } : {}),

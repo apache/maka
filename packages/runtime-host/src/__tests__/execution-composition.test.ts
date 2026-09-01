@@ -105,6 +105,32 @@ test('production composition owns the long-term memory database lifecycle', asyn
 
 test('production composition reaches Ready when the optional context Store cannot open', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
+    const requestFingerprint = `sha256:${'a'.repeat(64)}` as const;
+    const preparingSessionId = 'preparing-context-copy';
+    const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+    await stores.sessionStore.createStableSession({
+      sessionId: preparingSessionId,
+      requestFingerprint,
+      input: {
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Preparing context copy',
+        labels: [],
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'source-turn',
+        conversationCopy: {
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          requestFingerprint,
+          state: 'preparing',
+        },
+      },
+    });
+    await stores.sessionStore.close?.();
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
     const originalConsoleError = console.error;
     const diagnostics: string[] = [];
@@ -117,9 +143,34 @@ test('production composition reaches Ready when the optional context Store canno
         diagnostics.some((message) => message.includes('optional context-offload Store')),
         true,
       );
+      await assert.rejects(
+        composition.recover(),
+        (error) =>
+          error instanceof AggregateError &&
+          error.errors.some((failure) =>
+            String(failure).includes(
+              'Context-offload Store is unavailable during Session retirement',
+            ),
+          ),
+      );
     } finally {
       console.error = originalConsoleError;
-      await composition?.close();
+      if (composition) {
+        await assert.rejects(
+          composition.close(),
+          /Unable to close Runtime Host execution composition/,
+        );
+      }
+    }
+    const reopened = await openInteractiveExecutionStoresForWrite(owner.lease);
+    try {
+      assert.equal(
+        (await reopened.sessionStore.readHeaderSnapshot(preparingSessionId)).conversationCopy
+          ?.state,
+        'preparing',
+      );
+    } finally {
+      await reopened.sessionStore.close?.();
     }
   });
 });

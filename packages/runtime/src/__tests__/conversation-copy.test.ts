@@ -745,6 +745,11 @@ test('conversation copy rewrites owned references without changing opaque tool p
         sessionId: 'session-source',
         runId: 'run-source',
         artifactId: 'artifact-source',
+        opaqueStorageRefShape: {
+          kind: 'session_context',
+          sessionId: 'session-source',
+          refId: 'context-opaque',
+        },
       },
       providerOptions: {
         sourceInvocationId: 'invocation-source',
@@ -833,15 +838,49 @@ test('conversation copy rewrites owned references without changing opaque tool p
   assert.deepEqual(
     collectConversationCopySessionContextRefIds({
       sourceSessionId: 'session-source',
-      copiedMessages: messages,
-      plan: {
-        sourceSessionId: 'session-source',
-        copyTurnIds: ['turn-1'],
-        inlineRuntimeEvents: [],
-        runs: [],
-      },
+      messages,
+      runtimeEvents: [
+        runtimeEvent({
+          id: 'selected-image-result',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-image',
+            name: 'Read',
+            result: {
+              kind: 'image',
+              mimeType: 'image/png',
+              ref: {
+                kind: 'session_context',
+                sessionId: 'session-source',
+                refId: 'context-selected-event',
+              },
+            },
+          },
+        }),
+        runtimeEvent({
+          id: 'opaque-json-result',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-opaque',
+            name: 'opaque',
+            result: {
+              kind: 'json',
+              value: {
+                kind: 'session_context',
+                sessionId: 'session-source',
+                refId: 'context-opaque-event',
+              },
+            },
+          },
+        }),
+      ],
+      archivedResults: [],
     }),
-    ['context-source'],
+    ['context-selected-event', 'context-source'],
   );
   assert.throws(
     () =>

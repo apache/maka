@@ -25,7 +25,7 @@ import type {
 } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/core/events';
+import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
@@ -163,29 +163,44 @@ export interface ConversationRuntimeLedgerCopyPlan {
 /** Finds durable Session context references that the exact copy will rewrite. */
 export function collectConversationCopySessionContextRefIds(input: {
   readonly sourceSessionId: string;
-  readonly copiedMessages: readonly StoredMessage[];
-  readonly plan: ConversationRuntimeLedgerCopyPlan;
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
 }): readonly string[] {
   const refIds = new Set<string>();
-  const seen = new WeakSet<object>();
-  const visit = (value: unknown): void => {
-    if (isStorageRef(value)) {
-      if (value.kind === 'session_context' && value.sessionId === input.sourceSessionId) {
-        refIds.add(value.refId);
-      }
-      return;
+  const addRef = (ref: StorageRef): void => {
+    if (ref.kind === 'session_context' && ref.sessionId === input.sourceSessionId) {
+      refIds.add(ref.refId);
     }
-    if (typeof value !== 'object' || value === null || seen.has(value)) return;
-    seen.add(value);
-    if (Array.isArray(value)) {
-      for (const item of value) visit(item);
-      return;
-    }
-    for (const item of Object.values(value)) visit(item);
   };
-  visit(input.copiedMessages);
-  visit(input.plan.inlineRuntimeEvents);
-  for (const run of input.plan.runs) visit(run.runtimeEvents);
+  const addContent = (content: ToolResultContent): void => {
+    if (content.kind === 'image') addRef(content.ref);
+  };
+  const addSerialized = (value: unknown): void => {
+    if (isArchivedToolResultPlaceholder(value)) return;
+    try {
+      addContent(decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)));
+    } catch {
+      // Opaque tool results carry no typed Session context reference.
+    }
+  };
+  for (const message of input.messages) {
+    if (message.type === 'user' && message.attachments) {
+      for (const attachment of message.attachments) addRef(attachment.ref);
+    } else if (message.type === 'tool_result') {
+      addContent(message.content);
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'text' && event.content.attachments) {
+      for (const attachment of event.content.attachments) addRef(attachment.ref);
+    } else if (event.content?.kind === 'function_response') {
+      addSerialized(event.content.result);
+    }
+  }
+  for (const serializedResult of input.archivedResults) {
+    addSerialized(deserializeToolResultArchive(serializedResult));
+  }
   return [...refIds].sort();
 }
 
@@ -676,7 +691,10 @@ export function archivedToolResultContainsConversationOwnedReferences(
 
   if (content.kind === 'archived_tool_result') return true;
   if (content.kind === 'image') {
-    return content.ref.kind === 'session_file' && content.ref.sessionId === sourceSessionId;
+    return (
+      (content.ref.kind === 'session_file' || content.ref.kind === 'session_context') &&
+      content.ref.sessionId === sourceSessionId
+    );
   }
   if (content.kind === 'subagent') {
     const [linked] = conversationCopyLinkedChildReferences(content);
