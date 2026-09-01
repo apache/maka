@@ -187,6 +187,37 @@ describe('projectRuntimeHostModelChoices', () => {
 
     assert.equal(choices[0]?.displayName, 'GPT-5 Mini');
   });
+
+  test('a model that exists only in the resolved catalog still carries its context window', () => {
+    // A provider with no model-list endpoint stores no rows, so its models are
+    // reachable only through the Host's resolved catalog. The TUI reads its
+    // opening context window from these choices for exactly this reason: the
+    // stored list it used to read is empty here, and the very first status
+    // line would have had no denominator.
+    const choices = projectRuntimeHostModelChoices(
+      catalog([
+        {
+          connectionId: 'fallback-id',
+          revision: 1,
+          slug: 'codex',
+          name: 'Codex',
+          providerType: 'openai-codex',
+          enabled: true,
+          enabledModelIds: ['gpt-5.5'],
+          models: [],
+        },
+      ]),
+    );
+
+    assert.ok(choices.length > 0, 'a fallback-only connection still offers models');
+    for (const choice of choices) {
+      assert.equal(
+        typeof choice.contextWindow,
+        'number',
+        `${choice.model} reached the picker without a context window`,
+      );
+    }
+  });
 });
 
 describe('projectProviders', () => {

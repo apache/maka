@@ -185,8 +185,15 @@ export async function createRuntimeHostTuiContext(
         }),
       });
     }
-    const modelContextWindow = selectedTarget.connection?.models.find(
-      (model) => model.id === selectedTarget.model,
+    // From the Host-resolved choice, not the connection's stored rows: a
+    // fallback or provider-default model exists only in the resolved catalog,
+    // so reading `models` left the very first status line and its diagnostics
+    // without a denominator until some later transition happened to refresh
+    // it. Every later read of this value already comes from `modelChoices`.
+    const modelContextWindow = modelChoices.find(
+      (choice) =>
+        choice.connectionSlug === selectedTarget.connectionSlug &&
+        choice.model === selectedTarget.model,
     )?.contextWindow;
     return {
       connection,
