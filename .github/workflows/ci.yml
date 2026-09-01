@@ -102,6 +102,12 @@ jobs:
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
 
+      # The packaged Windows lane drives the updater through this wiring. It
+      # is a few lines, so it is asserted here on every change rather than by
+      # naming its module in that lane's 25-minute path filter.
+      - name: Test the packaged update feed wiring
+        run: node --test --test-concurrency=1 scripts/update-test-feed-wiring.test.mjs
+
       # Install-free like its neighbours: the gate reads one source file and
       # compares it to a hand-edited inventory, so a hook that silently widens
       # its scope to the whole tree fails here rather than in a profile (#4109).

@@ -46,11 +46,13 @@ on:
       - 'scripts/package-windows-autoupdate-next.mjs'
       # The Abort-path rollback hook ships inside the installer itself.
       - 'apps/desktop/build/installer.nsh'
-      # The packaged updater's feed behavior — and the boot wiring that hands
-      # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
+      # The packaged updater's feed behavior is only observable on this path.
+      # The boot wiring that hands MAKA_UPDATE_TEST_FEED to it is not here:
+      # that is a few lines, `scripts/update-test-feed-wiring.test.mjs` asserts
+      # them on every change for free, and naming the file made a 1900-line
+      # module the single largest source of runs on this 25-minute lane.
       - 'apps/desktop/src/main/app-update-service.ts'
       - 'apps/desktop/src/main/main-window.ts'
-      - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'packages/runtime-host/src/client/connect-or-spawn.ts'
       - 'packages/runtime-host/src/client/launcher.ts'
       - 'apps/desktop/src/main/windows-maximize-renderer-sync.ts'
@@ -94,6 +96,11 @@ on:
       - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-windows-check.yml'
+  # The installer upgrade and rollback steps below qualify a transition from a
+  # pinned historical release, so their input is that release rather than the
+  # diff. They run here instead, which is still far ahead of release day.
+  schedule:
+    - cron: '17 5 * * *'
   workflow_dispatch:
 
 permissions:
@@ -135,8 +142,13 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
 
+      # Qualifies a transition out of a pinned historical release, so a pull
+      # request cannot change the outcome. Downloading that release is also
+      # this lane's most frequent failure, on branches that cannot have caused
+      # it, and each false red costs another 25-minute Windows runner.
       - name: Download and verify the pinned Windows upgrade baseline
         id: previous
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -146,6 +158,7 @@ jobs:
           echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
 
       - name: Exercise pinned-version upgrade and uninstall
+        if: github.event_name != 'pull_request'
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer -- \
@@ -163,6 +176,7 @@ jobs:
             apps/desktop/release-autoupdate-next
 
       - name: Prove deterministic mid-install failure rollback
+        if: github.event_name != 'pull_request'
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer-rollback -- \
