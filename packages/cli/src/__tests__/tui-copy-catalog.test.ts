@@ -35,6 +35,9 @@ const MESSAGE_VALUES = {
   request: 'nope',
   reason: 'not found',
   limit: 3,
+  minimum: 1,
+  maximum: 3,
+  format: 'email',
   notice: 'The original account was deleted.',
   recovery: 'Add or enable a connection first.',
 } as const;
