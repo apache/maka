@@ -18,7 +18,7 @@
  */
 
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { PermissionMode } from '@maka/core/permission';
 import {
   latestAssistantModelId,
@@ -62,7 +62,7 @@ export interface AppShellSessionSettingsActions {
 export function createAppShellSessionSettingsActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  connections: readonly LlmConnection[];
+  connections: readonly ProjectedLlmConnection[];
   messages: readonly StoredMessage[];
   permissionModePending: SessionPendingClaim;
   sessionModelPending: SessionPendingClaim;
@@ -90,10 +90,11 @@ export function createAppShellSessionSettingsActions(deps: {
   } = deps;
   const copy = getShellCopy(uiLocale).sessionSettingsActions;
 
+  // The Host's entries, not the stored rows: a provider with no model-list
+  // endpoint stores bare ids, and the pickers beside this show resolved names.
   function modelLabel(connectionSlug: string, model: string): string {
     const connection = connections.find((entry) => entry.slug === connectionSlug);
-    const displayName = connection?.models?.find((entry) => entry.id === model)?.displayName?.trim();
-    return displayName || model;
+    return connection?.catalogEntries.find((entry) => entry.id === model)?.displayName?.trim() || model;
   }
 
   function modelEndpointLabel(connectionSlug: string, model: string, includeConnection: boolean): string {

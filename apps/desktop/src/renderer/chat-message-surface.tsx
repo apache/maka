@@ -25,8 +25,8 @@ import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
 import {
   ChatView,
+  ChatViewGoalProjectionConsumer,
   useUiLocale,
-  type LiveContentActivationSnapshot,
   type LiveTurnProjection,
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
@@ -61,6 +61,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'initialLiveContentSnapshot'
   | 'liveTurn'
   | 'shellRunUpdates'
+  | 'goalIndicator'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -95,9 +96,7 @@ interface ChatMessageSurfaceProps extends Omit<
   onReturnToLatestHistory: () => Promise<void> | void;
 }
 
-function captureLiveContent(
-  liveTurn: LiveTurnProjection | undefined,
-): LiveContentActivationSnapshot | undefined {
+function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
   if (!liveTurn) return undefined;
   return {
     turnId: liveTurn.turnId,
@@ -235,25 +234,30 @@ export function ChatMessageSurface({
 
   return (
     <>
-      <ChatView
-        {...chatViewRest}
-        liveTurn={seededLiveTurn}
-        // Every branch above reseeds `sessionId` to `activeSessionId`, and a
-        // render-phase setState re-runs this body before anything commits, so
-        // the activation reaching the DOM is always this session's.
-        initialLiveContentSnapshot={activation.initialLiveContent}
-        shellRunUpdates={shellRunUpdates}
-        deepResearchRun={deepResearchRun}
-        emptyOverride={emptyOverride}
-        hasOlderHistory={hasOlderHistory}
-        onLoadEarlierHistory={onLoadEarlierHistory}
-        returnToLatest={hasNewerHistory ? {
-          title: transcriptCopy.partialHistoryTitle,
-          label: transcriptCopy.returnLatest,
-          isPending: historyLoadPending,
-          onClick: onReturnToLatestHistory,
-        } : undefined}
-      />
+      <ChatViewGoalProjectionConsumer>
+        {(goalProjection) => (
+          <ChatView
+            {...chatViewRest}
+            liveTurn={seededLiveTurn}
+            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            // render-phase setState re-runs this body before anything commits, so
+            // the activation reaching the DOM is always this session's.
+            initialLiveContentSnapshot={activation.initialLiveContent}
+            shellRunUpdates={shellRunUpdates}
+            deepResearchRun={deepResearchRun}
+            emptyOverride={emptyOverride}
+            goalIndicator={goalProjection.goalIndicator}
+            hasOlderHistory={hasOlderHistory}
+            onLoadEarlierHistory={onLoadEarlierHistory}
+            returnToLatest={hasNewerHistory ? {
+              title: transcriptCopy.partialHistoryTitle,
+              label: transcriptCopy.returnLatest,
+              isPending: historyLoadPending,
+              onClick: onReturnToLatestHistory,
+            } : undefined}
+          />
+        )}
+      </ChatViewGoalProjectionConsumer>
       {taskReadinessNotice && (
         <ChatRecoveryNotice
           status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}

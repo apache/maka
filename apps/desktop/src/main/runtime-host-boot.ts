@@ -36,7 +36,7 @@ import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from "@maka/core/llm-connections";
 import { BotRegistry, type BotIncomingMessage } from '@maka/runtime/bots';
@@ -1511,7 +1511,7 @@ function registerHostClientIpc(
           ({ slug }) => slug === connection.slug,
         );
         if (!entry) return false;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const status = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
@@ -1543,7 +1543,7 @@ function registerHostClientIpc(
         }
         const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
         if (!entry) return { kind: "connection_missing", connectionSlug } as const;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,

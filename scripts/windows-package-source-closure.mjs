@@ -32,15 +32,26 @@ export const windowsPackageSourceEntrypoints = [
 ];
 
 export async function collectWindowsPackageSourceClosure(repoRoot = defaultRepoRoot) {
+  return collectWorkspaceSourceClosure(windowsPackageSourceEntrypoints, repoRoot);
+}
+
+/**
+ * Workspace sources `entryPoints` reach, transitively, resolved through the
+ * workspace `exports` map back to `src` rather than to built `dist`. Two lanes
+ * derive a path filter from this instead of maintaining one by hand, so a
+ * dependency added anywhere under an entry point cannot escape the filter that
+ * is supposed to schedule the runner able to observe it.
+ */
+export async function collectWorkspaceSourceClosure(entryPoints, repoRoot = defaultRepoRoot) {
   const workspaces = loadWorkspacePackages(repoRoot);
   const result = await build({
     absWorkingDir: repoRoot,
     bundle: true,
-    entryPoints: windowsPackageSourceEntrypoints,
+    entryPoints,
     format: 'esm',
     logLevel: 'silent',
     metafile: true,
-    outdir: 'windows-package-source-closure',
+    outdir: 'workspace-source-closure',
     packages: 'external',
     platform: 'node',
     plugins: [workspaceSourcePlugin(repoRoot, workspaces)],
@@ -54,11 +65,15 @@ export async function collectWindowsPackageSourceClosure(repoRoot = defaultRepoR
 }
 
 export function readWindowsReleasePathPatterns(repoRoot = defaultRepoRoot) {
-  const workflowPath = join(repoRoot, '.github', 'workflows', 'release-windows-check.yml');
+  return readPullRequestPathPatterns('release-windows-check.yml', repoRoot);
+}
+
+export function readPullRequestPathPatterns(workflowName, repoRoot = defaultRepoRoot) {
+  const workflowPath = join(repoRoot, '.github', 'workflows', workflowName);
   const workflow = parseYaml(readFileSync(workflowPath, 'utf8'));
   const paths = workflow?.on?.pull_request?.paths;
   if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string')) {
-    throw new Error('Release Windows check must declare pull_request.paths as strings.');
+    throw new Error(`${workflowName} must declare pull_request.paths as strings.`);
   }
   return paths;
 }

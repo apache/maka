@@ -20,8 +20,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMainInvokeEvent } from 'electron';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OAUTH_IPC_CHANNELS,
   registerRuntimeHostOAuthIpc,
@@ -54,7 +57,7 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
   const presentation = new RuntimeHostOAuthPresentation(async (url) => {
     opened.push(url);
   });
-  const modelId = PROVIDER_DEFAULTS[provider].fallbackModels[0];
+  const modelId = PROVIDER_REGISTRY[provider].fallbackModels[0];
   assert.ok(modelId);
   let phase: 'awaiting_authorization' | 'authenticated' | 'cancelled' =
     'awaiting_authorization';
@@ -71,7 +74,8 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         name: 'OpenAI Codex',
         providerType: provider,
         enabled: true,
-        enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+        enabledModelIds: [...PROVIDER_REGISTRY[provider].fallbackModels],
+        catalogEntries: [],
         models: [],
       },
     ],
@@ -115,7 +119,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         revision: current.revision + 1,
         models: [{ id: modelId }],
         modelSource: 'fetched' as const,
-        modelsFetchedAt: 1,
       };
       catalog = {
         revision: catalog.revision + 1,
@@ -215,7 +218,8 @@ test('provider-scoped OAuth IPC rejects a Connection ID owned by another provide
     name: 'xAI Grok',
     providerType: 'xai-oauth' as const,
     enabled: true,
-    enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    enabledModelIds: [...PROVIDER_REGISTRY['xai-oauth'].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   let starts = 0;
@@ -334,7 +338,8 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       name: 'OpenAI Codex 2',
       providerType: provider,
       enabled: true,
-      enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      enabledModelIds: [...PROVIDER_REGISTRY[provider].fallbackModels],
+      catalogEntries: [],
       models: [],
     },
     {
@@ -344,7 +349,8 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
       name: 'OpenAI Codex 3',
       providerType: provider,
       enabled: true,
-      enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+      enabledModelIds: [...PROVIDER_REGISTRY[provider].fallbackModels],
+      catalogEntries: [],
       models: [],
     },
   ];
@@ -355,7 +361,8 @@ test('a second OAuth start cannot replace or cancel a pending active attempt', a
     name: 'xAI Grok',
     providerType: 'xai-oauth' as const,
     enabled: true,
-    enabledModelIds: [...PROVIDER_DEFAULTS['xai-oauth'].fallbackModels],
+    enabledModelIds: [...PROVIDER_REGISTRY['xai-oauth'].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   const presentation = new RuntimeHostOAuthPresentation(async () => undefined);
@@ -526,7 +533,7 @@ test('completion rejects a terminal projection that changes Connection identity'
 
 test('keeps a committed OAuth login successful when model discovery fails without replacing the existing default', async () => {
   const provider = 'openai-codex' as const;
-  const modelId = PROVIDER_DEFAULTS[provider].fallbackModels[0];
+  const modelId = PROVIDER_REGISTRY[provider].fallbackModels[0];
   assert.ok(modelId);
   const existing = {
     connectionId: '00000000-0000-4000-8000-000000000002',
@@ -535,7 +542,8 @@ test('keeps a committed OAuth login successful when model discovery fails withou
     name: 'OpenAI Codex',
     providerType: provider,
     enabled: true,
-    enabledModelIds: [...PROVIDER_DEFAULTS[provider].fallbackModels],
+    enabledModelIds: [...PROVIDER_REGISTRY[provider].fallbackModels],
+    catalogEntries: [],
     models: [],
   };
   const created = {

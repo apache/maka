@@ -21,10 +21,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { AppSettings } from '@maka/core/settings';
 import type {
-  ConnectionCatalogSnapshot,
   CredentialLocator,
 } from '@maka/core/runtime-policy';
-import { gatherRuntimeHostConfig } from '../runtime-host-config-ipc-main.js';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';import { gatherRuntimeHostConfig } from '../runtime-host-config-ipc-main.js';
 
 const CATALOG: ConnectionCatalogSnapshot = {
   revision: 1,
@@ -41,6 +43,7 @@ const CATALOG: ConnectionCatalogSnapshot = {
       providerType: 'deepseek',
       enabled: true,
       enabledModelIds: ['deepseek-v4-pro'],
+      catalogEntries: [],
       models: [{ id: 'deepseek-v4-pro' }],
     },
   ],

@@ -815,11 +815,11 @@ test('V1 workspace policy includes portable inputs, excludes rebuildable data, a
     ],
     ['../escape', 'file', { kind: 'reject', category: 'unsafe_path' }],
     ['a\\b', 'file', { kind: 'reject', category: 'unsafe_path' }],
-    ['CON', 'file', { kind: 'reject', category: 'unsafe_path' }],
-    ['nested/LPT1.txt', 'file', { kind: 'reject', category: 'unsafe_path' }],
-    ['foo:bar', 'file', { kind: 'reject', category: 'unsafe_path' }],
-    ['name.', 'file', { kind: 'reject', category: 'unsafe_path' }],
-    ['name ', 'directory', { kind: 'reject', category: 'unsafe_path' }],
+    ['CON', 'file', { kind: 'reject', category: 'unsupported_portable_path' }],
+    ['nested/LPT1.txt', 'file', { kind: 'reject', category: 'unsupported_portable_path' }],
+    ['foo:bar', 'file', { kind: 'reject', category: 'unsupported_portable_path' }],
+    ['name.', 'file', { kind: 'reject', category: 'unsupported_portable_path' }],
+    ['name ', 'directory', { kind: 'reject', category: 'unsupported_portable_path' }],
   ] as const;
 
   for (const [relativePath, kind, expected] of cases) {

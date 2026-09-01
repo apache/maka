@@ -44,18 +44,18 @@ export function sessionTodoActiveCount(items: readonly SessionTodoItem[]): numbe
 export function SessionTodoPanel(props: SessionTodoPanelProps) {
   const copy = getSharedUiCopy(useUiLocale()).sessionTodo;
   return (
-    <section className="maka-task-ledger-panel" aria-label={copy.ariaLabel}>
+    <section className="maka-session-todo-panel" aria-label={copy.ariaLabel}>
       {props.error ? (
         <Banner
           status="error"
           role="alert"
-          className="maka-task-ledger-message"
+          className="maka-session-todo-message"
           title={props.error}
           endContent={props.onRetry ? (
             <IconButton
               variant="ghost"
               size="sm"
-              className="maka-task-ledger-retry"
+              className="maka-session-todo-retry"
               onClick={props.onRetry}
               label={copy.retry}
               tooltip={copy.retry}
@@ -64,20 +64,20 @@ export function SessionTodoPanel(props: SessionTodoPanelProps) {
           ) : undefined}
         />
       ) : props.loading && props.items.length === 0 ? (
-        <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-task-ledger-message" />
+        <Spinner size="sm" shade="subtle" label={copy.loading} className="maka-session-todo-message" />
       ) : props.items.length === 0 ? (
         <EmptyState
           isCompact
-          className="maka-task-ledger-empty"
+          className="maka-session-todo-empty"
           icon={<ListTodo size={ICON_SIZE.empty} aria-hidden="true" />}
           title={copy.empty}
         />
       ) : (
-        <ol className="maka-task-ledger-tree" aria-label={copy.activeAriaLabel}>
+        <ol className="maka-session-todo-tree" aria-label={copy.activeAriaLabel}>
           {props.items.map((item, index) => {
             const StatusIcon = STATUS_ICONS[item.status];
             return (
-              <li className="maka-task-ledger-row" key={`${index}:${item.status}:${item.content}`}>
+              <li className="maka-session-todo-row" key={`${index}:${item.status}:${item.content}`}>
                 <StatusIcon size={ICON_SIZE.control} aria-hidden="true" />
                 <span>{item.content}</span>
               </li>

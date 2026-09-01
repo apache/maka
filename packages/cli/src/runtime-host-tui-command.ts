@@ -97,7 +97,6 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
       connectionSlug: context.connectionSlug,
       connectionId: context.connectionId,
       connectionIdentities: context.connectionIdentities,
-      providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,
       turnActivity: context.turnActivity,

@@ -95,7 +95,14 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 86 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 87 as const;
+// 87: The connection catalog projects each model as the Host resolved it —
+// a `catalog_entry` item per model, counted by the connection header. Clients
+// render those entries instead of merging the stored row against their own
+// bundled model metadata, so a Desktop and a TUI attached to one Host cannot
+// describe the same model differently. An older client ignores the new items
+// but would still resolve locally; an older Host sends none, leaving a newer
+// client with an empty catalog. Both are rejected at the handshake.
 // 86: Client Capability accepted frames carry typed admission evidence used to
 // enforce Session Grant scopes. Older peers cannot preserve that boundary.
 // 85: Plugin package and Entry composition operations become Host-owned protocol

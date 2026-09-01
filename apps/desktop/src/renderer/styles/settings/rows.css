@@ -252,3 +252,17 @@
   border-end-start-radius: var(--radius-surface);
   border-end-end-radius: var(--radius-surface);
 }
+
+/*
+ * Import · the batch selection bar.
+ *
+ * It heads the catalog List directly below it, so it carries no rule of its
+ * own: the List already draws dividers between its rows, and a second line
+ * here would read as a divider above a row that is not one.
+ *
+ * The spacer takes the leftover width so 导入所选 stays on the trailing edge
+ * whatever the locale does to the count's length.
+ */
+.maka-import-selection-spacer {
+  flex: 1 1 auto;
+}

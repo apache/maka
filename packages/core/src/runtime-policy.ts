@@ -49,6 +49,7 @@ export {
 export {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
   CONNECTION_NAME_MAX_LENGTH,
@@ -73,6 +74,7 @@ export {
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
 } from './runtime-policy/connection-catalog-codec.js';
+export { decodeModelCatalogEntry } from './runtime-policy/model-catalog-entry-codec.js';
 export {
   decodeCredentialLocator,
   decodeCredentialStatus,

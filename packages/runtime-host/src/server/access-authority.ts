@@ -69,7 +69,9 @@ import {
 import {
   ACCESS_FILE_NAME,
   assertAccessCredentialFileCapacity,
+  CAPABILITY_PROVIDER_OPERATION_GRANTS,
   createAccessCredentialFile,
+  effectiveOperationGrants,
   issuedAccessGrants,
   readAccessCredentialFile,
   RuntimeHostAccessCommitOutcomeUnknownError,
@@ -83,11 +85,7 @@ import {
 const ACCESS_CREDENTIAL_PREFIX = 'maka_rh_';
 const PENDING_CREDENTIAL_LIFETIME_MS = 15 * 60_000;
 const TURN_ACCESS_REQUEST_ACTIVE_MAX = 4;
-const CAPABILITY_PROVIDER_GRANTS = new Set([
-  'host.status',
-  'client.capability.replace',
-  'client.capability.unregister',
-]);
+const CAPABILITY_PROVIDER_GRANTS = new Set<string>(CAPABILITY_PROVIDER_OPERATION_GRANTS);
 
 function createNextAccessCredentialFile(
   current: AccessCredentialFile,
@@ -231,8 +229,8 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
           operationGrants: match.bindClientInstanceOnFinalize
             ? ['host.status', 'access.credential.finalize']
             : match.clientInstanceId
-              ? [...match.operationGrants, 'access.credential.finalize']
-              : match.operationGrants,
+              ? [...effectiveOperationGrants(match), 'access.credential.finalize']
+              : effectiveOperationGrants(match),
           canPublishClientCapabilities:
             !match.bindClientInstanceOnFinalize && match.canPublishClientCapabilities,
           canUseHostPaths: !match.bindClientInstanceOnFinalize && match.canUseHostPaths,
@@ -271,7 +269,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         principalId,
         principalKind: 'session_guest',
         status: 'pending',
-        operationGrants: SESSION_GUEST_OPERATION_GRANTS,
+        grants: SESSION_GUEST_OPERATION_GRANTS,
         canPublishClientCapabilities: false,
         canUseHostPaths: false,
         createdAt,
@@ -617,13 +615,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
         {
           principalId: current.principalId,
           principalKind: current.principalKind,
-          operationGrants: current.operationGrants,
+          operationGrants: effectiveOperationGrants(current),
           canPublishClientCapabilities: current.canPublishClientCapabilities,
           canUseHostPaths: current.canUseHostPaths,
           bindClientInstance: current.clientInstanceId !== undefined,
         },
         'prepare',
-        current.operationGrants,
+        current.grants,
       );
     });
   }
@@ -638,8 +636,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
   async #createCredential(
     input: AccessCredentialIssueInput | AccessCredentialPrepareInput,
     mode: 'issue' | 'replace' | 'prepare',
-    operationGrants = issuedAccessGrants(input.operationGrants),
+    // Rotation exchanges the secret and keeps the authority, so it hands over
+    // the predecessor's record verbatim — including keys this build cannot
+    // account for. Every other path records exactly what it just issued.
+    inheritedGrants?: readonly string[],
   ): Promise<AccessCredentialIssueResult> {
+    const operationGrants = issuedAccessGrants(input.operationGrants);
+    const grants = inheritedGrants ?? operationGrants;
     assertCredentialAuthority(input, operationGrants);
     const capabilityOwner = this.#resolveCapabilityOwner(
       'capabilityOwnerCredentialId' in input ? input.capabilityOwnerCredentialId : undefined,
@@ -671,7 +674,7 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
       principalId: input.principalId,
       principalKind: input.principalKind,
       status: mode === 'prepare' ? 'pending' : 'active',
-      operationGrants,
+      grants,
       canPublishClientCapabilities: input.canPublishClientCapabilities,
       canUseHostPaths: input.canUseHostPaths,
       ...(capabilityOwner ? { capabilityOwner } : {}),

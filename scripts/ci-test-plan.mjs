@@ -49,12 +49,14 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
   '.github/workflows/release-windows-check.yml',
+  '.github/workflows/windows-recovery.yml',
   'scripts/package-macos-arm64.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/prepare-windows-upgrade-baseline.test.mjs',
   'scripts/generate-third-party-notices.test.mjs',
   'scripts/product-release.test.mjs',
   'scripts/qualify-released-cli-state-root.test.mjs',
@@ -75,6 +77,22 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
   'scripts/windows-package-source-closure.test.mjs',
+]);
+
+// What decides whether a build can read durable state an earlier release wrote.
+// `operations.ts` is here because it owns the operation vocabulary: the rename
+// that stranded workspaces holding an older credential (#4420) changed that file
+// and none of the decoders, so a trigger listing only decoders would not have
+// run on the very change it exists to catch.
+const DURABLE_STATE_DECODER_FILES = new Set([
+  'packages/runtime-host/src/protocol/operations.ts',
+  'packages/runtime-host/src/server/access-authority.ts',
+  'packages/runtime-host/src/server/access-credential-store.ts',
+  'packages/storage/src/operational-state-store.ts',
+  'packages/storage/src/root-authority.ts',
+  'packages/storage/src/state-root-composition.ts',
+  'scripts/qualify-released-cli-state-root.mjs',
+  'scripts/released-cli-state-root-fixture.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([
@@ -241,6 +259,27 @@ function isAstryxSurfaceInventoryPath(path) {
   return isUiProductSourcePath(path);
 }
 
+/**
+ * The two app-icon drift tests read exactly this surface: the committed
+ * artwork, the generator that must still reproduce it, the `APP_ICONS` catalog
+ * they check it against, the packaged-resource list that has to keep naming
+ * every file, and the packaging config, which the drift test opens by path to
+ * prove the bundle icon is still `DEFAULT_APP_ICON`. Regenerating the artwork
+ * costs about a minute, which every unrelated code change used to pay.
+ */
+const APP_ICON_FILES = new Set([
+  'apps/desktop/electron-builder.config.mjs',
+  'packages/core/src/settings.ts',
+  'scripts/generate-app-icons.py',
+  'scripts/generate-app-icons.test.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-packaged-app-icons.test.mjs',
+]);
+
+function isAppIconPath(path) {
+  return APP_ICON_FILES.has(path) || path.startsWith('apps/desktop/assets/app-icons/');
+}
+
 function isE2eProductPath(path) {
   if (E2E_DRIVING_SCRIPTS.has(path)) return true;
   if (isDocumentation(path)) return false;
@@ -347,6 +386,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      appIcons: true,
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
@@ -359,6 +399,7 @@ export function planTests(changedFiles, options = {}) {
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
       // every unrelated merge into a 10K-chunk pressure run.
+      stateRootCompat: true,
       storageStress: false,
       storybook: true,
       workspaces,
@@ -415,6 +456,7 @@ export function planTests(changedFiles, options = {}) {
 
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
+    appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
@@ -430,6 +472,14 @@ export function planTests(changedFiles, options = {}) {
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
     runtimeSandbox: workspaces.includes('packages/cli'),
+    // The released forward roll: a build under test reads durable state a
+    // published predecessor wrote. Selected by the decoders and the operation
+    // vocabulary they decode against, plus the SQLite schemas.
+    stateRootCompat: files.some(
+      (path) =>
+        DURABLE_STATE_DECODER_FILES.has(path) ||
+        /^packages\/storage\/src\/sqlite-[^/]*schema[^/]*\.ts$/u.test(path),
+    ),
     storageStress,
     // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
@@ -442,7 +492,8 @@ export function planTests(changedFiles, options = {}) {
 
 export function requiresHeavyValidation(plan) {
   return Boolean(
-    plan.asfSource ||
+    plan.appIcons ||
+      plan.asfSource ||
       plan.astryxSurface ||
       plan.cliPackage ||
       plan.code ||
@@ -450,6 +501,7 @@ export function requiresHeavyValidation(plan) {
       plan.releaseContract ||
       plan.runtimeHost ||
       plan.runtimeSandbox ||
+      plan.stateRootCompat ||
       plan.storybook ||
       plan.standardWorkspaces.length > 0,
   );
@@ -457,6 +509,7 @@ export function requiresHeavyValidation(plan) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
@@ -466,6 +519,7 @@ export function formatGitHubOutputs(plan) {
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
+    `state_root_compat=${plan.stateRootCompat}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,
