@@ -23,6 +23,7 @@ import {
   ATTACHMENT_MIME_SNIFF_BYTES,
   formatAttachmentResourceRef,
   parseAttachmentResourceRef,
+  PDF_HEADER_SCAN_BYTES,
   resolveAttachmentMimeType,
   sniffAttachmentMimeType,
 } from '../attachments.js';
@@ -80,14 +81,36 @@ describe('attachment content sniffing', () => {
     assert.equal(sniffAttachmentMimeType(Buffer.from('BM harmless text')), undefined);
   });
 
-  test('does not infer a type from an extension-like payload or bytes after the sniffing prefix', () => {
-    assert.equal(sniffAttachmentMimeType(Buffer.from('report.png')), undefined);
+  test('finds a PDF header behind a preamble, but keeps image sniffing at offset 0', () => {
+    // PDF readers tolerate junk before %PDF- and scan the first ~1 KiB, so a
+    // header past the sniffing prefix must still resolve as a PDF.
     assert.equal(
       sniffAttachmentMimeType(
         Buffer.concat([Buffer.alloc(ATTACHMENT_MIME_SNIFF_BYTES), Buffer.from('%PDF-1.7')]),
       ),
+      'application/pdf',
+    );
+    // Image signatures are only valid at their fixed offset: a PNG header behind
+    // a preamble is not a decodable image stream, so it is not sniffed.
+    assert.equal(
+      sniffAttachmentMimeType(
+        Buffer.concat([
+          Buffer.alloc(4),
+          Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+        ]),
+      ),
       undefined,
     );
+    // Still bounded: a PDF header past the scan window is not a match, so
+    // sniffing never becomes an unbounded read.
+    assert.equal(
+      sniffAttachmentMimeType(
+        Buffer.concat([Buffer.alloc(PDF_HEADER_SCAN_BYTES), Buffer.from('%PDF-1.7')]),
+      ),
+      undefined,
+    );
+    // An extension-like payload is not a signature.
+    assert.equal(sniffAttachmentMimeType(Buffer.from('report.png')), undefined);
   });
 });
 

@@ -22,7 +22,6 @@ import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import {
   attachmentKindFromMimeType,
-  guessMimeFromName,
   MAX_ATTACHMENT_BYTES,
   MAX_ATTACHMENT_COUNT,
   ATTACHMENT_MIME_SNIFF_BYTES,
@@ -89,15 +88,18 @@ export async function resolveAttachmentRefs(input: {
  * than its extension. Mirrors the send-path precedence in
  * {@link resolveAttachmentMimeType}: a real image named `report.pdf` resolves
  * to its image MIME (so the composer shows a thumbnail and the vision notice),
- * a disguised file loses its spoofed image/PDF claim. An unreadable prefix
- * falls back to the name so a transient read error never blocks staging.
+ * a disguised file loses its spoofed image/PDF claim. A read failure resolves
+ * an empty prefix through the same policy, so staging stays unblocked without
+ * reinstating the name's unverified image/PDF claim (the send path re-reads).
  */
 export async function sniffPickedAttachmentMimeType(path: string, name: string): Promise<string> {
-  let prefix: Uint8Array;
+  let prefix: Uint8Array = new Uint8Array();
   try {
     prefix = await readFilePrefix(path, ATTACHMENT_MIME_SNIFF_BYTES);
   } catch {
-    return guessMimeFromName(name);
+    // Fall through with the empty prefix: routing it through
+    // resolveAttachmentMimeType downgrades a claimed image/PDF name rather than
+    // trusting it, keeping one owner for the content-first policy.
   }
   return resolveAttachmentMimeType(prefix, undefined, name);
 }

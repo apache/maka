@@ -94,6 +94,16 @@ const MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
 
 export const ATTACHMENT_MIME_SNIFF_BYTES = 16;
 
+/**
+ * PDF permits arbitrary bytes before the `%PDF-` header and readers
+ * conventionally scan roughly the first kilobyte for it. Searching that window
+ * keeps a PDF with a preamble from sniffing as nothing — which downstream would
+ * otherwise decode as UTF-8 text — while staying bounded so sniffing never
+ * becomes an unbounded read. Only the PDF header needs it: image signatures are
+ * valid solely at their fixed offset within {@link ATTACHMENT_MIME_SNIFF_BYTES}.
+ */
+export const PDF_HEADER_SCAN_BYTES = 1024;
+
 export type SniffedAttachmentMimeType =
   | 'image/png'
   | 'image/jpeg'
@@ -103,9 +113,11 @@ export type SniffedAttachmentMimeType =
 
 /**
  * Identify the attachment formats whose bytes affect how Maka processes them.
- * Only a fixed prefix is inspected, so callers can apply this before handing
- * untrusted input to an image decoder without turning sniffing into another
- * unbounded read.
+ * Image signatures are read from the fixed {@link ATTACHMENT_MIME_SNIFF_BYTES}
+ * prefix at their required offset; the PDF header may sit behind a short
+ * preamble, so it is searched across the first {@link PDF_HEADER_SCAN_BYTES}.
+ * Both bounds are fixed, so callers can apply this before handing untrusted
+ * input to an image decoder without turning sniffing into an unbounded read.
  */
 export function sniffAttachmentMimeType(bytes: Uint8Array): SniffedAttachmentMimeType | undefined {
   const prefix = bytes.subarray(0, ATTACHMENT_MIME_SNIFF_BYTES);
@@ -115,7 +127,7 @@ export function sniffAttachmentMimeType(bytes: Uint8Array): SniffedAttachmentMim
   if (startsWithBytes(prefix, [0xff, 0xd8, 0xff])) return 'image/jpeg';
   if (startsWithAscii(prefix, 'GIF87a') || startsWithAscii(prefix, 'GIF89a')) return 'image/gif';
   if (startsWithAscii(prefix, 'RIFF') && startsWithAscii(prefix, 'WEBP', 8)) return 'image/webp';
-  if (startsWithAscii(prefix, '%PDF-')) return 'application/pdf';
+  if (containsAscii(bytes.subarray(0, PDF_HEADER_SCAN_BYTES), '%PDF-')) return 'application/pdf';
   return undefined;
 }
 
@@ -132,6 +144,16 @@ function startsWithAscii(bytes: Uint8Array, signature: string, offset = 0): bool
     if (bytes[offset + index] !== signature.charCodeAt(index)) return false;
   }
   return true;
+}
+
+/** True if `signature` appears anywhere in `bytes` (bounded by the caller's
+ * slice), for headers a format allows to sit behind a preamble. */
+function containsAscii(bytes: Uint8Array, signature: string): boolean {
+  const lastOffset = bytes.length - signature.length;
+  for (let offset = 0; offset <= lastOffset; offset += 1) {
+    if (startsWithAscii(bytes, signature, offset)) return true;
+  }
+  return false;
 }
 
 /**

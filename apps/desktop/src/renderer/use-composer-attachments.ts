@@ -129,17 +129,19 @@ async function fileToPending(file: File): Promise<PendingAttachment> {
 }
 
 /** Content type for a dropped/pasted blob, from its {@link ATTACHMENT_MIME_SNIFF_BYTES}
- * prefix. Falls back to the browser-declared type if the slice cannot be read. */
+ * prefix. A failed slice read resolves an empty prefix through the same policy
+ * rather than falling back to the renderer-declared type — reinstating that
+ * unverified image/PDF claim is exactly what this content-first path avoids. */
 async function sniffFileMimeType(file: File): Promise<string> {
   const declared = file.type || undefined;
+  let prefix = new Uint8Array();
   try {
-    const prefix = new Uint8Array(
-      await file.slice(0, ATTACHMENT_MIME_SNIFF_BYTES).arrayBuffer(),
-    );
-    return resolveAttachmentMimeType(prefix, declared, file.name);
+    prefix = new Uint8Array(await file.slice(0, ATTACHMENT_MIME_SNIFF_BYTES).arrayBuffer());
   } catch {
-    return declared ?? guessMimeFromName(file.name);
+    // Fall through with the empty prefix so the declared image/PDF claim is
+    // downgraded, not trusted; staging stays unblocked and the send path re-reads.
   }
+  return resolveAttachmentMimeType(prefix, declared, file.name);
 }
 
 function retainedToPending(attachment: AttachmentRef): PendingAttachment {
@@ -370,8 +372,14 @@ export function useComposerAttachments(options: {
 
   async function attachFilePaths(files: File[]): Promise<void> {
     if (files.length === 0) return;
-    const ownerKey = options.draftKey;
+    // Bind the owner AFTER the sniff reads resolve, never before: fileToPending
+    // became async to read each file's leading bytes, so the surface can change
+    // during that I/O (a network volume or spun-down drive makes it seconds).
+    // The files belong in the composer the user is looking at now — not a bucket
+    // they have since left, where they would be invisible but still sendable.
+    // Same reasoning as pickAttachments above.
     const staged = await Promise.all(files.map(fileToPending));
+    const ownerKey = liveOptionsRef.current.draftKey;
     updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
     notifyStagedImages(ownerKey, staged);

@@ -274,6 +274,32 @@ describe('resolveAttachmentRefs', () => {
     }
   });
 
+  test('recognises a PDF whose header sits behind a preamble, not as an ordinary file', async () => {
+    // A PDF may carry bytes before %PDF-; readers scan the first ~1 KiB for it.
+    // Missing it here would route the file to `other` and let a downstream text
+    // read decode binary as UTF-8 — so it must still resolve as a PDF.
+    const content = Buffer.concat([Buffer.alloc(64), Buffer.from('%PDF-1.7\nfixture')]);
+    let captured: AttachmentSnapshotInput | undefined;
+
+    await resolveAttachmentRefs({
+      files: [{ name: 'notes.txt', size: content.byteLength, content }],
+      snapshot: async (input) => {
+        captured = input;
+        return {
+          kind: input.attachmentKind,
+          name: input.name,
+          mimeType: input.mimeType,
+          bytes: input.content.byteLength,
+          ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'attachment-1' },
+        };
+      },
+    });
+
+    assert.equal(captured?.mimeType, 'application/pdf');
+    assert.equal(captured?.attachmentKind, 'pdf');
+    assert.equal(captured?.artifactKind, 'pdf');
+  });
+
   test('uses PNG magic bytes instead of conflicting renderer metadata', async () => {
     const content = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     let resizeCalls = 0;
@@ -432,8 +458,18 @@ describe('sniffPickedAttachmentMimeType (pick-time staging kind)', () => {
     }
   });
 
-  test('falls back to the name when the prefix cannot be read', async () => {
-    const mimeType = await sniffPickedAttachmentMimeType('/no/such/file.pdf', 'file.pdf');
-    assert.equal(mimeType, 'application/pdf');
+  test('a read failure downgrades a claimed image/PDF name rather than trusting it', async () => {
+    // The prefix read failing must not reinstate the extension-based image/PDF
+    // claim resolveAttachmentMimeType exists to reject: staging stays unblocked
+    // but the spoofed kind is dropped (the send path re-reads and confirms).
+    const spoofed = await sniffPickedAttachmentMimeType('/no/such/file.pdf', 'file.pdf');
+    assert.equal(spoofed, 'application/octet-stream');
+    assert.equal(attachmentKindFromMimeType(spoofed, 'file.pdf'), 'other');
+    // A non-image/PDF claim still resolves, so genuine document kinds still stage.
+    const docx = await sniffPickedAttachmentMimeType('/no/such/file.docx', 'file.docx');
+    assert.equal(
+      docx,
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
   });
 });
