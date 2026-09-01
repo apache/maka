@@ -69,7 +69,6 @@ interface MainRendererReloadSource {
 
 export interface MainRendererFrameIdentity {
   readonly processId: number;
-  readonly routingId: number;
   readonly frameToken: string;
 }
 
@@ -176,7 +175,6 @@ function sameFrame(
   if (!expected) return false;
   return (
     actual.processId === expected.processId &&
-    actual.routingId === expected.routingId &&
     actual.frameToken === expected.frameToken
   );
 }

@@ -704,7 +704,6 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 function rendererFrameIdentity(frame: Electron.WebFrameMain): MainRendererFrameIdentity {
   return {
     processId: frame.processId,
-    routingId: frame.routingId,
     frameToken: frame.frameToken,
   };
 }

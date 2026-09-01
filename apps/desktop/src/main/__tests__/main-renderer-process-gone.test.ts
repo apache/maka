@@ -67,8 +67,8 @@ test('ignores clean exits and app shutdown', () => {
 test('accepts first-paint readiness only from the frame committed by this reload', async () => {
   const source = reloadSource();
   const readiness = rendererReadiness();
-  const previousFrame = frameIdentity(1, 10, 'previous');
-  const currentFrame = frameIdentity(2, 20, 'current');
+  const previousFrame = frameIdentity(1, 'previous');
+  const currentFrame = frameIdentity(2, 'current');
   let observed = false;
   const result = reloadMainRendererProcess({
     source,
@@ -176,12 +176,8 @@ function rendererReadiness(): {
   };
 }
 
-function frameIdentity(
-  processId: number,
-  routingId: number,
-  frameToken: string,
-): MainRendererFrameIdentity {
-  return { processId, routingId, frameToken };
+function frameIdentity(processId: number, frameToken: string): MainRendererFrameIdentity {
+  return { processId, frameToken };
 }
 
 function reloadSource(): EventEmitter & {

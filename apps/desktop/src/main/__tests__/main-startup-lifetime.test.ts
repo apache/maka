@@ -119,7 +119,10 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
   );
   assert.match(reloadHandler, /reloadMainRendererProcess\(/u);
   assert.match(reloadHandler, /subscribeMainFrameCommitted:/u);
-  assert.match(reloadHandler, /webFrameMain\.fromId\(frameProcessId, frameRoutingId\)/u);
+  assert.match(
+    reloadHandler,
+    /if \(!isMainFrame\) return;\s*const frame = webFrameMain\.fromId\(frameProcessId, frameRoutingId\);\s*if \(frame\) listener\(rendererFrameIdentity\(frame\)\);/u,
+  );
   assert.match(
     readyHandler,
     /sender !== mainWindow\.webContents\) return;/u,
