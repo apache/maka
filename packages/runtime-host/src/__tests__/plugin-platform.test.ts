@@ -63,6 +63,7 @@ function createPlatform(
     packages,
     packageLoader,
     store,
+    ...(options.tools ? { tools: options.tools } : {}),
   });
   testPlatformInternals.set(platform, { composition, packages, store });
   return platform;
@@ -182,6 +183,59 @@ test('Plugin Platform coordinator keeps package and composition operations gener
       null as never,
     );
     assert.equal(reloaded.ok && reloaded.result.convergence, 'converged');
+    await platform.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('Plugin Platform query exposes bounded Tool contribution inspection', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-plugin-tool-inspection-'));
+  try {
+    const platform = createPlatform(join(root, 'control'), {
+      tools: {
+        inspect: (rootId) =>
+          rootId === undefined || rootId === 'session:alpha'
+            ? [
+                {
+                  entryId: 'tool-entry',
+                  scopeId: 'session:alpha',
+                  extensionId: 'tool-package',
+                  generation: 3,
+                  toolName: 'fixture_tool',
+                  activeCalls: 1,
+                  retired: false,
+                },
+              ]
+            : [],
+      },
+    });
+    const coordinator = new HostPluginPlatformCoordinator(platform);
+    await platform.recover();
+
+    const queried = await coordinator.handlers['plugin.platform.query'](
+      { view: 'tools', rootId: 'session:alpha' },
+      null as never,
+    );
+
+    assert.deepEqual(queried, {
+      ok: true,
+      result: {
+        view: 'tools',
+        items: [
+          {
+            entryId: 'tool-entry',
+            scopeId: 'session:alpha',
+            extensionId: 'tool-package',
+            generation: 3,
+            toolName: 'fixture_tool',
+            activeCalls: 1,
+            retired: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    });
     await platform.close();
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -703,6 +757,36 @@ test('Plugin Platform protocol rejects open and malformed generic composition sh
       },
     }).operation,
     'plugin.composition.apply',
+  );
+  assert.equal(
+    decodeRequestFrame({
+      requestId: 'plugin-tools',
+      operation: 'plugin.platform.query',
+      input: { view: 'tools', rootId: 'session:one' },
+    }).operation,
+    'plugin.platform.query',
+  );
+  assert.doesNotThrow(() =>
+    decodeResponseFrame({
+      requestId: 'plugin-tools',
+      operation: 'plugin.platform.query',
+      ok: true,
+      result: {
+        view: 'tools',
+        items: [
+          {
+            entryId: 'tool-entry',
+            scopeId: 'session:one',
+            extensionId: 'tool-package',
+            generation: 1,
+            toolName: 'fixture_tool',
+            activeCalls: 0,
+            retired: false,
+          },
+        ],
+        nextCursor: null,
+      },
+    }),
   );
   assert.throws(() =>
     decodeRequestFrame({

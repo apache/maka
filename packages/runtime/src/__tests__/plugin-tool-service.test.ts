@@ -1,0 +1,139 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { Context } from '../plugin-kernel.js';
+import { MakaCompositionLoader } from '../plugin-composition-loader.js';
+import { PluginToolService } from '../plugin-tool-service.js';
+import type { MakaPluginPackage } from '../plugin-runtime.js';
+import type { MakaTool } from '../tool-runtime.js';
+
+test('Profile tools are inherited and exact Session tools shadow them', async () => {
+  const changed: string[] = [];
+  const root = new Context();
+  const tools = new PluginToolService(root, { onChanged: (rootId) => changed.push(rootId) });
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(toolPackage('profile-package', tool('answer', 'profile')));
+  await loader.install(toolPackage('session-package', tool('answer', 'session')));
+  await loader.create('profile', { id: 'profile-entry', packageId: 'profile-package' });
+  await loader.create('session:alpha', { id: 'session-entry', packageId: 'session-package' });
+
+  const alpha = tools.resolve('alpha', []);
+  const beta = tools.resolve('beta', []);
+  assert.equal(await invoke(alpha.tools[0]!), 'session');
+  assert.equal(await invoke(beta.tools[0]!), 'profile');
+  assert.notEqual(alpha.revision, beta.revision);
+  assert.deepEqual(changed, ['profile', 'session:alpha']);
+
+  await loader.remove('session-entry');
+  assert.equal(await invoke(tools.resolve('alpha', []).tools[0]!), 'profile');
+  await loader.close();
+});
+
+test('Tool publication is atomic with Entry activation', async () => {
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install({
+    packageId: 'broken-package',
+    host: (ctx) => {
+      ctx.tools.register(tool('partial', 'never-visible'));
+      throw new Error('activation failed');
+    },
+  });
+
+  await assert.rejects(
+    () => loader.create('profile', { id: 'broken-entry', packageId: 'broken-package' }),
+    /activation failed/u,
+  );
+  assert.deepEqual(tools.inspect(), []);
+  assert.deepEqual(tools.resolve('alpha', []).tools, []);
+  await loader.close();
+});
+
+test('retirement rejects stale starts and waits for an active call to drain', async () => {
+  let finish!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    finish = resolve;
+  });
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(
+    toolPackage('slow-package', {
+      ...tool('slow', 'done'),
+      impl: async () => {
+        await gate;
+        return 'done';
+      },
+    }),
+  );
+  await loader.create('profile', { id: 'slow-entry', packageId: 'slow-package' });
+  const exposed = tools.resolve('alpha', []).tools[0]!;
+  const call = invoke(exposed);
+  let retired = false;
+  const removal = loader.remove('slow-entry').then(() => {
+    retired = true;
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(retired, false);
+  await assert.rejects(() => invoke(exposed), /no longer active/u);
+  finish();
+  assert.equal(await call, 'done');
+  await removal;
+  assert.deepEqual(tools.inspect(), []);
+  await loader.close();
+});
+
+test('desktop-ui and Host-owned Tool conflicts fail closed', async () => {
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(toolPackage('plugin-package', tool('Read', 'plugin')));
+  await assert.rejects(
+    () => loader.create('desktop-ui', { id: 'ui-entry', packageId: 'plugin-package' }),
+    /desktop-ui plugins cannot register Host tools/u,
+  );
+  await loader.create('profile', { id: 'host-conflict-entry', packageId: 'plugin-package' });
+  assert.throws(() => tools.resolve('alpha', [tool('Read', 'host')]), /Host-owned Tool/u);
+  await loader.close();
+});
+
+function tool(name: string, result: string): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: {},
+    impl: async () => result,
+  };
+}
+
+function toolPackage(packageId: string, definition: MakaTool): MakaPluginPackage {
+  return {
+    packageId,
+    host: (ctx) => {
+      ctx.tools.register(definition);
+    },
+  };
+}
+
+async function invoke(definition: MakaTool): Promise<unknown> {
+  return await definition.impl({}, {} as never);
+}

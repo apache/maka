@@ -1078,6 +1078,11 @@ export class SessionManager {
     return this.runtimeKernel.invalidateCachedBackends();
   }
 
+  /** Invalidate one Session backend snapshot now, or after its active turn settles. */
+  refreshSessionBackend(sessionId: string): Promise<void> {
+    return this.runtimeKernel.invalidateBackend(sessionId);
+  }
+
   disposeSessionBackend(sessionId: string): Promise<void> {
     return this.runtimeKernel.disposeBackend(sessionId);
   }

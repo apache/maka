@@ -109,6 +109,7 @@ export interface InteractiveRunComposerInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly toolSourceRevisions?: readonly RunCompositionSourceRevision[];
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -184,7 +185,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       return Promise.resolve(
         Object.freeze({
           text: runProfile.systemPrompt,
-          sourceRevisions: [],
+          sourceRevisions: Object.freeze([...(input.toolSourceRevisions ?? [])]),
         }),
       );
     }
@@ -233,12 +234,15 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
             ]);
         return Object.freeze({
           text,
-          sourceRevisions: interactiveSourceRevisions({
-            runtimePolicyRevision: promptState.runtimePolicyRevision,
-            memoryBundleRevision: promptState.memoryBundleRevision,
-            memoryRevision: promptState.memoryRevision,
-            skillCatalogRevision: inventory.revision,
-          }),
+          sourceRevisions: Object.freeze([
+            ...interactiveSourceRevisions({
+              runtimePolicyRevision: promptState.runtimePolicyRevision,
+              memoryBundleRevision: promptState.memoryBundleRevision,
+              memoryRevision: promptState.memoryRevision,
+              skillCatalogRevision: inventory.revision,
+            }),
+            ...(input.toolSourceRevisions ?? []),
+          ]),
         });
       })
       .catch((error: unknown) => {
@@ -270,6 +274,10 @@ export interface InteractiveRunComposerFactoryInput
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
+  readonly resolvePluginTools?: (sessionId: string) => Promise<{
+    readonly tools: readonly MakaTool[];
+    readonly revision: string;
+  }>;
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
@@ -359,13 +367,24 @@ export function createInteractiveRunComposerFactory(
               backendContext.abortSignal,
             )
           : [];
+      const pluginTools =
+        input.resolvePluginTools && !backendContext.tools
+          ? await readDuringBackendCreation(
+              () => input.resolvePluginTools!(backendContext.sessionId),
+              backendContext.abortSignal,
+            )
+          : undefined;
       const tavilyReady = shouldResolveHostTavilyWebSearchReadiness(runtimePolicy.policy)
         ? await readDuringBackendCreation(
             input.resolveTavilyWebSearchReadiness,
             backendContext.abortSignal,
           )
         : false;
-      const candidateHostTools = [...(input.hostTools ?? []), ...rootTools];
+      const candidateHostTools = [
+        ...(input.hostTools ?? []),
+        ...rootTools,
+        ...(pluginTools?.tools ?? []),
+      ];
       const toolSurface = routeInteractiveRunToolSurface({
         runtimePolicy,
         connection,
@@ -394,6 +413,13 @@ export function createInteractiveRunComposerFactory(
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),
+        ...(pluginTools
+          ? {
+              toolSourceRevisions: Object.freeze([
+                Object.freeze({ id: 'plugin.tools', revision: pluginTools.revision }),
+              ]),
+            }
+          : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
         ...(input.goalTools ? { goalTools: input.goalTools } : {}),
         ...(parentAgentTools ? { parentAgentTools } : {}),

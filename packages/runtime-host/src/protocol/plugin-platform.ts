@@ -26,6 +26,7 @@ import {
   type MakaCompositionOperation,
   type MakaPluginRootId,
 } from '@maka/runtime/plugin-runtime';
+import type { PluginToolInspection } from '@maka/runtime/plugin-tool-service';
 import {
   requireCount,
   requireEncodedByteLimit,
@@ -86,7 +87,7 @@ export interface PluginPackageProjection {
 }
 
 export interface PluginPlatformQueryInput {
-  readonly view: 'status' | 'packages' | 'entries' | 'failures';
+  readonly view: 'status' | 'packages' | 'entries' | 'tools' | 'failures';
   readonly rootId?: MakaPluginRootId;
   readonly cursor?: string;
   readonly limit?: number;
@@ -113,6 +114,11 @@ export type PluginPlatformQueryResult =
   | {
       readonly view: 'entries';
       readonly items: readonly MakaCompositionEntryInspection[];
+      readonly nextCursor: string | null;
+    }
+  | {
+      readonly view: 'tools';
+      readonly items: readonly PluginToolInspection[];
       readonly nextCursor: string | null;
     }
   | {
@@ -255,7 +261,7 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
     ['view'],
     ['rootId', 'cursor', 'limit'],
   );
-  if (!['status', 'packages', 'entries', 'failures'].includes(input.view as string)) {
+  if (!['status', 'packages', 'entries', 'tools', 'failures'].includes(input.view as string)) {
     throw invalidProtocolFrame('Invalid Plugin Platform query view');
   }
   const view = input.view as PluginPlatformQueryInput['view'];
@@ -276,8 +282,8 @@ function decodePluginPlatformQueryInput(value: unknown): PluginPlatformQueryInpu
   ) {
     throw invalidProtocolFrame('Plugin Platform status query does not accept paging');
   }
-  if (input.rootId !== undefined && view !== 'entries') {
-    throw invalidProtocolFrame('Plugin root identity is only valid for Entry queries');
+  if (input.rootId !== undefined && view !== 'entries' && view !== 'tools') {
+    throw invalidProtocolFrame('Plugin root identity is only valid for Entry and Tool queries');
   }
   let rootId: MakaPluginRootId | undefined;
   if (input.rootId !== undefined) {
@@ -349,7 +355,7 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
     if (
       !Array.isArray(output.items) ||
       output.items.length > 64 ||
-      !['packages', 'entries', 'failures'].includes(view as string)
+      !['packages', 'entries', 'tools', 'failures'].includes(view as string)
     ) {
       throw invalidProtocolFrame('Invalid Plugin Platform page');
     }
@@ -362,7 +368,9 @@ function decodePluginPlatformQueryResult(value: unknown): PluginPlatformQueryRes
         ? { view, items: output.items.map(decodePackageProjection), nextCursor }
         : view === 'entries'
           ? { view, items: decodeInspections(output.items), nextCursor }
-          : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
+          : view === 'tools'
+            ? { view, items: output.items.map(decodeToolInspection), nextCursor }
+            : { view: 'failures', items: output.items.map(decodePlatformFailure), nextCursor };
   }
   requireEncodedByteLimit(
     decoded,
@@ -668,6 +676,27 @@ function decodeInspections(value: unknown): readonly MakaCompositionEntryInspect
         : { diagnostic: requireString(inspection.diagnostic, 'Plugin diagnostic', 4096) }),
     };
   });
+}
+
+function decodeToolInspection(value: unknown): PluginToolInspection {
+  const inspection = requireExactRecord(value, 'Plugin Tool inspection', [
+    'entryId',
+    'scopeId',
+    'extensionId',
+    'generation',
+    'toolName',
+    'activeCalls',
+    'retired',
+  ]);
+  return {
+    entryId: requireId(inspection.entryId, 'Plugin Tool Entry identity'),
+    scopeId: decodeRootId(inspection.scopeId),
+    extensionId: requireId(inspection.extensionId, 'Plugin Tool package identity'),
+    generation: requireCount(inspection.generation, 'Plugin Tool generation'),
+    toolName: requireString(inspection.toolName, 'Plugin Tool name', 128),
+    activeCalls: requireCount(inspection.activeCalls, 'Plugin Tool active call count'),
+    retired: requireBoolean(inspection.retired),
+  };
 }
 
 function decodeEntries(value: unknown): readonly MakaCompositionEntry[] {
