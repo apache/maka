@@ -48,6 +48,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-cli-finalize.yml',
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
+  '.github/workflows/release-linux-check.yml',
   '.github/workflows/release-windows-check.yml',
   '.github/workflows/windows-recovery.yml',
   'scripts/package-macos.mjs',
