@@ -1972,6 +1972,66 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.supersessions.has('delegation-source-action'), true);
   });
 
+  test('rejects a conflicting post-migration claim before replaying a prepared replacement', async () => {
+    const effects = fakeEffects([session('source'), session('destination')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'c'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Wrong target',
+        },
+        'source-turn',
+      ),
+    );
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'migrated-prepared-replacement',
+      userText: 'No, send this to destination',
+      candidateSetId: snapshot.candidateSetId,
+      confirmation: { kind: 'user_correction' as const },
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: snapshot.candidates.find(
+            (candidate) => candidate.sessionId === 'destination',
+          )!.candidateRef,
+        },
+      },
+    };
+    const prepareReplacement = effects.prepareReplacement;
+    effects.prepareReplacement = async (replacement) => {
+      await prepareReplacement(replacement);
+      throw new WorkHubActionEffectFailure('internal_failure', 'simulated pre-retirement crash');
+    };
+
+    await assert.rejects(gate.act(input, CONTEXT));
+    assert.equal(effects.replacements.has('delegation-source-action'), true);
+    assert.equal(effects.retirements.length, 0);
+
+    effects.actionClaims.clear();
+    effects.actionClaims.set(input.actionId, {
+      actionId: input.actionId,
+      operation: 'answer_here',
+      actionFingerprint: `sha256:${'d'.repeat(64)}`,
+      subject: 'coordination-session',
+    });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.retirements.length, 0);
+    assert.equal(effects.assignments.length, 0);
+  });
+
   test('refreshes replacement target display identity after retiring the source', async () => {
     const effects = fakeEffects([
       session('source'),

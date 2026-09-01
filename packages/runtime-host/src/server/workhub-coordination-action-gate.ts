@@ -503,6 +503,12 @@ export class WorkHubCoordinationActionGate {
           );
         }
         await this.#assertReplacementReplayTarget(input, prepared.targetSessionId);
+        await this.#claimAction(
+          prepared.actionId,
+          'replace',
+          prepared.actionFingerprint,
+          prepared.replacesDelegationId,
+        );
         return this.#replace(prepared, context);
       }
       const replacement = await this.#replacementAssignment(input, replaced);
