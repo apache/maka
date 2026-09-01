@@ -981,7 +981,7 @@
 .maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-truncated-note {
   font: var(--maka-text-supporting);
- display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--muted-foreground); }
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--foreground); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
 .maka-tool-terminal-copy { flex: 0 0 auto; }
 .maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }

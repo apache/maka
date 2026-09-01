@@ -298,7 +298,7 @@
 .plan-execution-step-marker[data-status="in_progress"] {
   border-color: var(--border);
   background: var(--color-accent-muted);
-  color: var(--accent-solid);
+  color: var(--foreground);
 }
 
 .plan-execution-step-marker[data-status="completed"] {
