@@ -283,15 +283,13 @@ test('a successful Windows upgrade invalidates stale backup authority before bes
   assert.ok(snapshotRemoval > markerInvalidation);
 });
 
-test('platform package verifiers keep Git checks out of current artifacts', async () => {
+test('platform package verifiers keep Git checks out of every artifact', async () => {
   const windowsSource = await readFile(join(repoRoot, 'scripts', 'verify-windows-x64.mjs'), 'utf8');
+  assert.doesNotMatch(windowsSource, /bundledGitContract/u);
+  assert.doesNotMatch(windowsSource, /requirePath\(join\(resources, ['"]git['"]/u);
   assert.match(
     windowsSource,
-    /bundledGitContract: requiresCurrentContract \? ['"]forbidden['"] : ['"]legacy-required['"]/u,
-  );
-  assert.match(
-    windowsSource,
-    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}\s*else await requirePath\(join\(resources, ['"]git['"]/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}/u,
   );
 
   const macosSource = await readFile(

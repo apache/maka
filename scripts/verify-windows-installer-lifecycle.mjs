@@ -424,7 +424,7 @@ export async function verifyWindowsInstallerLifecycle(
       await verifyApp(installDirectory, {
         workingDirectory: smokeDirectory,
         expectedVersion: previousVersion,
-        artifactContract: 'legacy-baseline',
+        artifactContract: 'upgrade-baseline',
       });
       console.log('[verify-windows-installer] waiting for previous-version processes to exit');
       await waitForProcessesToExit(installDirectory);

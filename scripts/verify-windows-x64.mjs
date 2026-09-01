@@ -129,7 +129,7 @@ export async function verifyPackagedWindowsApp(
     environment = process.env,
   } = {},
 ) {
-  if (artifactContract !== 'current' && artifactContract !== 'legacy-baseline') {
+  if (artifactContract !== 'current' && artifactContract !== 'upgrade-baseline') {
     throw new Error(`Unknown packaged Windows artifact contract: ${artifactContract}`);
   }
   const requiresCurrentContract = artifactContract === 'current';
@@ -146,17 +146,19 @@ export async function verifyPackagedWindowsApp(
     forbidPath,
     requireWindowsSandbox: requiresCurrentContract,
     requireDisclaimer: requiresCurrentContract,
-    bundledGitContract: requiresCurrentContract ? 'forbidden' : 'legacy-required',
     requireCanonicalIcon: requiresCurrentContract,
     requireAppIconCatalog: requiresCurrentContract,
     requireDirectPeerArtifact: requiresCurrentContract,
   });
+  // The upgrade baseline is a build that shipped on its own channel, from its
+  // own commit: its update feed and dependency closure are the ones that were
+  // right for it, not the ones this checkout expects.
   if (requiresCurrentContract) {
     await assertPackagedUpdateConfiguration(resources, {
       channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
     });
     await assertPackagedDependencyClosure(resources);
-  } else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
+  }
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);
