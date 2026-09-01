@@ -101,14 +101,10 @@ export function createRuntimeSessionSnapshotQuiescenceAuthority(
             },
           );
         }
-        throw new SessionSnapshotError(
-          'io_failure',
-          'Unable to enter the Session snapshot boundary',
-          {
-            cause: error,
-            details: { phase: 'admission' },
-          },
-        );
+        // The coordinator owns normalization of failures from the admitted
+        // operation. In particular, AbortError must remain visible so it is
+        // reported as snapshot_cancelled rather than an admission I/O error.
+        throw error;
       }
     },
   } as SessionSnapshotQuiescenceAuthority;

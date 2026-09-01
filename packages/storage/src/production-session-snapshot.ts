@@ -221,6 +221,25 @@ export interface PackQuiescentSessionBundleInput {
   readonly deadlineAt?: number;
 }
 
+/**
+ * Cleanup of the private staging copy after the immutable Bundle is written.
+ * A pending cleanup does not invalidate the already-written Bundle; callers
+ * should record the failure. Its persisted lease becomes eligible for recovery
+ * after the current process lifetime ends.
+ */
+export type SessionSnapshotPackCleanup =
+  | { readonly state: 'released' }
+  | { readonly state: 'pending_recovery'; readonly error: SessionSnapshotError };
+
+/**
+ * A production Bundle artifact plus the status of its separate private-staging
+ * cleanup. The artifact fields remain available at the top level so existing
+ * consumers can use it as an ordinary SessionBundleArtifact.
+ */
+export interface ProductionSessionBundleArtifact extends SessionBundleArtifact {
+  readonly snapshotCleanup: SessionSnapshotPackCleanup;
+}
+
 export interface FileProductionSessionSnapshotService {
   recover(): Promise<SessionSnapshotStagingCleanupRecovery>;
   prepare(input: {
@@ -228,7 +247,7 @@ export interface FileProductionSessionSnapshotService {
     readonly signal?: AbortSignal;
     readonly deadlineAt?: number;
   }): Promise<PreparedSessionBundleHandle>;
-  pack(input: PackQuiescentSessionBundleInput): Promise<SessionBundleArtifact>;
+  pack(input: PackQuiescentSessionBundleInput): Promise<ProductionSessionBundleArtifact>;
 }
 
 /**
@@ -315,7 +334,7 @@ export async function createFileProductionSessionSnapshotService(
   return Object.freeze({
     recover: () => stagingCleanup.recover(),
     prepare,
-    async pack(input: PackQuiescentSessionBundleInput): Promise<SessionBundleArtifact> {
+    async pack(input: PackQuiescentSessionBundleInput): Promise<ProductionSessionBundleArtifact> {
       const prepared = await prepare(input);
       let artifact: SessionBundleArtifact | undefined;
       let primaryFailure: unknown;
@@ -334,21 +353,31 @@ export async function createFileProductionSessionSnapshotService(
       } catch (error) {
         primaryFailure = error;
       }
+      let cleanup: SessionSnapshotPackCleanup = { state: 'released' };
       try {
         await prepared.release();
       } catch (cleanupFailure) {
+        const error = normalizePackCleanupFailure(cleanupFailure);
         if (primaryFailure !== undefined) {
           throw new AggregateError(
-            [primaryFailure, cleanupFailure],
+            [primaryFailure, error],
             'Session Bundle packing failed and snapshot cleanup also failed',
           );
         }
-        throw cleanupFailure;
+        cleanup = { state: 'pending_recovery', error };
       }
       if (primaryFailure !== undefined) throw primaryFailure;
       if (!artifact) throw new Error('Session Bundle packing completed without an artifact');
-      return artifact;
+      return Object.freeze({ ...artifact, snapshotCleanup: Object.freeze(cleanup) });
     },
+  });
+}
+
+function normalizePackCleanupFailure(error: unknown): SessionSnapshotError {
+  if (error instanceof SessionSnapshotError && error.code === 'cleanup_failed') return error;
+  return new SessionSnapshotError('cleanup_failed', 'Session snapshot cleanup failed', {
+    cause: error,
+    details: { phase: 'cleanup' },
   });
 }
 
@@ -616,9 +645,17 @@ function assertWorkspacePathBudget(
 ): void {
   const archivePath = `workspace/${relativePath}${kind === 'directory' ? '/' : ''}`;
   if (!isSessionBundleUstarPathV1(archivePath)) {
-    throw new SessionSnapshotError('unsafe_source', 'Workspace contains an unsafe path', {
-      details: { phase: 'workspace', policyCategory: 'unsafe_path' },
-    });
+    throw new SessionSnapshotError(
+      'unsafe_source',
+      'Workspace path is not portable in Session Bundles',
+      {
+        details: {
+          phase: 'workspace',
+          policyCategory: 'unsupported_portable_path',
+          observed: 1,
+        },
+      },
+    );
   }
   if (
     Buffer.byteLength(archivePath, 'utf8') > limits.maxPathBytes ||

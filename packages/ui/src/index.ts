@@ -43,6 +43,7 @@ export * from './tool-activity/sandbox-denial.js';
 export * from './chat-input-behavior.js';
 export * from './runtime-resume-copy.js';
 export * from './input-history.js';
+export * from './listed-selection.js';
 export * from './daily-review-helpers.js';
 export * from './locale-helpers.js';
 export * from './locale-context.js';
