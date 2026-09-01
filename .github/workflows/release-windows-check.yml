@@ -96,9 +96,9 @@ on:
       - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-windows-check.yml'
-  # The installer upgrade and rollback steps below qualify a transition from a
-  # pinned historical release, so their input is that release rather than the
-  # diff. They run here instead, which is still far ahead of release day.
+  # The list above is a pre-filter, not this lane's import closure, so a
+  # transitive edit it cannot match would otherwise first be observed on release
+  # day. Same pairing as the other two Windows lanes.
   schedule:
     - cron: '17 5 * * *'
   workflow_dispatch:
@@ -142,13 +142,21 @@ jobs:
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
 
-      # Qualifies a transition out of a pinned historical release, so a pull
-      # request cannot change the outcome. Downloading that release is also
-      # this lane's most frequent failure, on branches that cannot have caused
-      # it, and each false red costs another 25-minute Windows runner.
+      # The baseline is pinned by version, tag, asset name and SHA-256 in
+      # `scripts/windows-upgrade-baseline.json`, so it is immutable and the
+      # cache key is that file. Downloading it is this lane's most frequent
+      # failure — 14 of 36 across 300 runs, always on branches that could not
+      # have caused it, each false red costing another 25-minute Windows
+      # runner. A hit skips the network; the step below re-verifies the
+      # checksum either way, so a corrupt entry still fails loudly.
+      - name: Restore the pinned Windows upgrade baseline
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: artifacts/windows-upgrade-baseline
+          key: windows-upgrade-baseline-${{ hashFiles('scripts/windows-upgrade-baseline.json') }}
+
       - name: Download and verify the pinned Windows upgrade baseline
         id: previous
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -157,8 +165,10 @@ jobs:
             "$version" artifacts/windows-upgrade-baseline)"
           echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
 
+      # The pinned release is only one input here. The other is the installer
+      # this run just built, which this step installs over it, so a pull request
+      # does decide the outcome.
       - name: Exercise pinned-version upgrade and uninstall
-        if: github.event_name != 'pull_request'
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer -- \
@@ -175,8 +185,10 @@ jobs:
             "apps/desktop/release/Maka-${version}-win-x64.exe" \
             apps/desktop/release-autoupdate-next
 
+      # Consumes only what this run built — the candidate installer and the
+      # version-bumped one — so it is the pull request's own evidence that the
+      # `installer.nsh` Abort path still restores the previous installation.
       - name: Prove deterministic mid-install failure rollback
-        if: github.event_name != 'pull_request'
         run: |
           version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer-rollback -- \
