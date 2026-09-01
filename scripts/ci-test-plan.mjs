@@ -26,6 +26,46 @@ import { fileURLToPath } from 'node:url';
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = dirname(dirname(scriptPath));
 
+/** npm gate scripts whose `scripts/*.test.mjs` inputs select a planner lane. */
+export const GATE_SCRIPT_LANES = [
+  ['check:release', 'releaseContract'],
+  ['check:asf-source', 'asfSource'],
+];
+
+const SCRIPT_TEST_FILE_PATTERN = /scripts\/[\w.-]+\.test\.mjs/gu;
+const NPM_RUN_SCRIPT_PATTERN = /\bnpm run ([\w:-]+)/gu;
+
+export function extractScriptTestFiles(command) {
+  return [...new Set(command.match(SCRIPT_TEST_FILE_PATTERN) ?? [])];
+}
+
+export function collectGateScriptTestFiles(scriptName, scripts, visited = new Set()) {
+  if (visited.has(scriptName)) return [];
+  visited.add(scriptName);
+  const command = scripts[scriptName];
+  if (typeof command !== 'string') return [];
+
+  const files = extractScriptTestFiles(command);
+  for (const match of command.matchAll(NPM_RUN_SCRIPT_PATTERN)) {
+    files.push(...collectGateScriptTestFiles(match[1], scripts, visited));
+  }
+  return [...new Set(files)];
+}
+
+export function loadGateTestFiles(repoRoot = defaultRepoRoot, readFile = readFileSync) {
+  const { scripts } = JSON.parse(readFile(join(repoRoot, 'package.json'), 'utf8'));
+  const byLane = {
+    releaseContract: new Set(),
+    asfSource: new Set(),
+  };
+  for (const [scriptName, lane] of GATE_SCRIPT_LANES) {
+    for (const file of collectGateScriptTestFiles(scriptName, scripts)) {
+      byLane[lane].add(file);
+    }
+  }
+  return byLane;
+}
+
 const FULL_SUITE_FILES = new Set([
   '.github/workflows/ci.yml',
   'package-lock.json',
@@ -56,27 +96,19 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
-  'scripts/prepare-windows-upgrade-baseline.test.mjs',
-  'scripts/generate-third-party-notices.test.mjs',
-  'scripts/product-release.test.mjs',
-  'scripts/qualify-released-cli-state-root.test.mjs',
   'scripts/release-eval-smoke-sitecustomize.py',
   'scripts/release-version.mjs',
-  'scripts/third-party-closure.test.mjs',
   'scripts/verify-macos-arm64-cli.mjs',
   'scripts/verify-macos-arm64-dmg.mjs',
   'scripts/verify-macos-autoupdate.mjs',
   'scripts/desktop-update-contract.mjs',
   'scripts/product-nightly.mjs',
-  'scripts/product-nightly.test.mjs',
   'scripts/verify-packaged-app.mjs',
-  'scripts/verify-packaged-app.test.mjs',
   'scripts/verify-windows-autoupdate.mjs',
   'scripts/verify-windows-installer-lifecycle.mjs',
   'scripts/verify-windows-x64.mjs',
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
-  'scripts/windows-package-source-closure.test.mjs',
 ]);
 
 // What decides whether a build can read durable state an earlier release wrote.
@@ -127,19 +159,15 @@ const ASF_SOURCE_FILES = new Set([
   'package.json',
   'packages/eval/harbor/deepseek-harness-profile/cordis.patch.yml',
   'scripts/asf-license-headers.mjs',
-  'scripts/asf-license-headers.test.mjs',
   'scripts/asf-source-release.mjs',
-  'scripts/asf-source-release.test.mjs',
-  'scripts/asf-source-workflow-policy.test.mjs',
   'scripts/model-metadata/models-dev-api.snapshot.json',
-  'scripts/source-legal-inventory.test.mjs',
   'scripts/sync-model-metadata.mjs',
-  'scripts/sync-model-metadata.test.mjs',
 ]);
 
-function isAsfSourcePath(path) {
+function isAsfSourcePath(path, gateTestFiles) {
   return (
     ASF_SOURCE_FILES.has(path) ||
+    gateTestFiles.asfSource.has(path) ||
     path.startsWith('patches/') ||
     path.startsWith('apps/desktop/resources/licenses/renderer/') ||
     path.startsWith('apps/desktop/src/renderer/assets/provider-brands/')
@@ -166,9 +194,10 @@ function isCliPackagePath(path) {
   );
 }
 
-function isReleaseContractPath(path) {
+function isReleaseContractPath(path, gateTestFiles) {
   return (
     RELEASE_CONTRACT_FILES.has(path) ||
+    gateTestFiles.releaseContract.has(path) ||
     path.startsWith('scripts/desktop-nightly') ||
     path.startsWith('scripts/product-release-') ||
     path.startsWith('scripts/release-cli-')
@@ -380,6 +409,8 @@ function workspaceLanes(workspaces, graph) {
 
 export function planTests(changedFiles, options = {}) {
   const graph = options.graph ?? loadWorkspaceGraph(options.repoRoot);
+  const gateTestFiles =
+    options.gateTestFiles ?? loadGateTestFiles(options.repoRoot, options.readFile);
   const files = [...new Set(changedFiles.map(normalizePath).filter(Boolean))];
   const forceFull = options.forceFull ?? false;
   const full = forceFull || files.some((path) => FULL_SUITE_FILES.has(path));
@@ -457,7 +488,7 @@ export function planTests(changedFiles, options = {}) {
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
     appIcons: files.some((path) => isAppIconPath(path)),
-    asfSource: files.some((path) => isAsfSourcePath(path)),
+    asfSource: files.some((path) => isAsfSourcePath(path, gateTestFiles)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
     code,
@@ -466,7 +497,8 @@ export function planTests(changedFiles, options = {}) {
     // boots, and packages/ui unit-test-only PRs must not either.
     e2e: files.some((path) => isE2eProductPath(path)),
     full: false,
-    releaseContract: cliPackage || files.some((path) => isReleaseContractPath(path)),
+    releaseContract:
+      cliPackage || files.some((path) => isReleaseContractPath(path, gateTestFiles)),
     // packages/cli/src/__tests__/runtime-host-session-driver.test.ts executes real sandboxed
     // shell tools, so the bubblewrap + user-namespace setup is required whenever
     // the cli workspace runs in the dependency closure, not only for direct

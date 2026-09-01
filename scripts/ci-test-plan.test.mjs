@@ -33,7 +33,10 @@ import test from 'node:test';
 
 import {
   changedFilesBetween,
+  collectGateScriptTestFiles,
   formatGitHubOutputs,
+  GATE_SCRIPT_LANES,
+  loadGateTestFiles,
   planTests,
   requiresHeavyValidation,
 } from './ci-test-plan.mjs';
@@ -248,28 +251,41 @@ test('release authority changes select their dedicated contract gate', () => {
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
 });
 
-// Derived from the gate scripts themselves, because the sets above are hand
-// maintained and drift silently in both directions: a test the gate runs but
-// no lane selects can be edited green, and a listed path that no longer exists
-// is dead weight nothing reports. Both had happened — three of the release
-// gate's own tests reached no lane, and the set named a
-// `prepare-windows-upgrade-baseline.test.mjs` that never existed.
-test('every test a gate script runs reaches a lane that runs that gate', () => {
-  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+// Gate-owned contract tests are inputs to their lane because the planner reads
+// them from the gate script text in package.json — not from a parallel list that
+// can drift in either direction.
+test('gate script test files select the lane that gate script runs', () => {
+  const gateTestFiles = loadGateTestFiles();
+  assert.ok(gateTestFiles.releaseContract.size > 0);
+  assert.ok(gateTestFiles.asfSource.size > 0);
+
+  for (const [scriptName, lane] of GATE_SCRIPT_LANES) {
+    for (const file of collectGateScriptTestFiles(
+      scriptName,
+      JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts,
+    )) {
+      const plan = planTests([file], { graph, gateTestFiles });
+      assert.equal(plan[lane], true, `${file} must select ${lane} via ${scriptName}`);
+      assert.ok(existsSync(new URL(`../${file}`, import.meta.url)), file);
+    }
+  }
+});
+
+test('a test file two gates share selects at least one of their lanes', () => {
+  const gateTestFiles = loadGateTestFiles();
   const lanesByTest = new Map();
-  for (const [script, lane] of [
-    ['check:release', 'releaseContract'],
-    ['check:asf-source', 'asfSource'],
-  ]) {
-    for (const file of scripts[script].match(/scripts\/[\w.-]+\.test\.mjs/gu) ?? []) {
+  for (const [scriptName, lane] of GATE_SCRIPT_LANES) {
+    const { scripts } = JSON.parse(
+      readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
+    );
+    for (const file of collectGateScriptTestFiles(scriptName, scripts)) {
       lanesByTest.set(file, (lanesByTest.get(file) ?? new Set()).add(lane));
     }
   }
-  assert.ok(lanesByTest.size > 0, 'no gate script names a test file');
 
-  // A test two gates share needs only one of them: either run executes it.
   for (const [file, lanes] of lanesByTest) {
-    const plan = planTests([file], { graph });
+    if (lanes.size < 2) continue;
+    const plan = planTests([file], { graph, gateTestFiles });
     assert.ok(
       [...lanes].some((lane) => plan[lane]),
       `${file} reaches no ${[...lanes].join('/')}`,
@@ -277,12 +293,7 @@ test('every test a gate script runs reaches a lane that runs that gate', () => {
   }
 });
 
-// The other direction of the same drift. Every literal path in the planner is
-// matched against a changed file, so one that no longer exists can never match
-// and nothing reports it: the phantom baseline test sat here for a month, and
-// `agent-run-store.test.ts` stayed in the storage stress set for a month after
-// #1994 deleted it.
-test('the planner names no path that no longer exists', () => {
+test('the planner names no static path that no longer exists', () => {
   const source = readFileSync(new URL('ci-test-plan.mjs', import.meta.url), 'utf8');
   const paths = [...source.matchAll(/^ {2}'([\w.-]+(?:\/[\w.-]+)+)',$/gmu)].map(([, path]) => path);
   assert.ok(paths.length > 0, 'the planner names no paths');
@@ -290,6 +301,16 @@ test('the planner names no path that no longer exists', () => {
   for (const path of paths) {
     assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), path);
   }
+});
+
+test('nested npm run invocations contribute gate-owned test files', () => {
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const releaseTests = collectGateScriptTestFiles('check:release', scripts);
+
+  assert.ok(
+    releaseTests.includes('scripts/asf-npm-workflow-policy.test.mjs'),
+    'check:release delegates to check:asf-npm',
+  );
 });
 
 test('Product Nightly authority changes select the release contract gate', () => {
