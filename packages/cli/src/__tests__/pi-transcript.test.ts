@@ -5148,6 +5148,7 @@ describe('shortenCwd', () => {
     skip: process.platform === 'win32',
   }, () => {
     assert.equal(shortenCwd('/Users/alice/work/project', '/Users/alice'), '~/work/project');
+    assert.equal(shortenCwd('/Users/alice/..\\notes', '/Users/alice'), '~/..\\notes');
     assert.equal(shortenCwd('/Users/alice', '/Users/alice'), '~');
   });
 

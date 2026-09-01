@@ -53,7 +53,7 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, relative } from 'node:path';
+import { basename, isAbsolute, relative, sep } from 'node:path';
 import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -1947,7 +1947,7 @@ export function shortenCwd(cwd: string, homeDir?: string): string {
   if (!home) return cwd;
   const rel = relative(home, cwd);
   if (rel === '') return '~';
-  if (isAbsolute(rel) || rel === '..' || rel.startsWith('../') || rel.startsWith('..\\')) {
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) {
     return cwd;
   }
   return `~/${rel}`;
