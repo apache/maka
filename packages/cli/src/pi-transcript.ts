@@ -53,7 +53,7 @@ import {
 } from '@maka/core/tool-result-status';
 import { type ShellRunUpdate } from '@maka/core/events';
 import { homedir } from 'node:os';
-import { basename } from 'node:path';
+import { basename, isAbsolute, relative } from 'node:path';
 import type { MakaSessionDriver, MakaSideConversationParentStatus } from './session-driver.js';
 import { BoundedChunkBuffer } from './bounded-chunk-buffer.js';
 import { ansi } from './tui-ansi.js';
@@ -1938,12 +1938,19 @@ function firstLinePreview(text: string): string {
  * Shorten an absolute path to a `~`-relative form for the statusline.
  * `/Users/alice/workspace/project` → `~/workspace/project`.
  * Falls back to the original path if it is not under the home directory.
+ * Comparison runs through `path.relative`, so Windows profile paths and
+ * case-only differences shorten as well; the remainder keeps its native
+ * separators (`~/Videos\Clips` on Windows).
  */
-function shortenCwd(cwd: string, homeDir?: string): string {
+export function shortenCwd(cwd: string, homeDir?: string): string {
   const home = homeDir ?? homedir();
-  if (home && cwd.startsWith(home + '/')) return `~${cwd.slice(home.length)}`;
-  if (home && cwd === home) return '~';
-  return cwd;
+  if (!home) return cwd;
+  const rel = relative(home, cwd);
+  if (rel === '') return '~';
+  if (isAbsolute(rel) || rel === '..' || rel.startsWith('../') || rel.startsWith('..\\')) {
+    return cwd;
+  }
+  return `~/${rel}`;
 }
 
 function formatCost(costUsd: number): string {
