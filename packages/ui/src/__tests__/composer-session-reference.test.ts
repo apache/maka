@@ -33,12 +33,16 @@ function readSource(relativePath: string): string {
   return readFileSync(fileURLToPath(new URL(`../../src/${relativePath}`, import.meta.url)), 'utf8');
 }
 
+function readRepoFile(relativePath: string): string {
+  return readFileSync(fileURLToPath(new URL(`../../../../${relativePath}`, import.meta.url)), 'utf8');
+}
+
 test('Composer exposes Session references through the @ trigger without serializing them as text', () => {
   const source = readSource('composer.tsx');
   assert.match(source, /sessionReferences\?: ReadonlyArray<ComposerSessionReference>/);
   assert.match(source, /onPickSessionReference\?\(session: ComposerSessionReference\)/);
   assert.match(source, /id: `session:\$\{session\.id\}`/);
-  assert.match(source, /BookOpen/);
+  assert.match(source, /MessagesSquare/);
   assert.match(
     source,
     /onPickSessionReference\?\.\(suggestion\.session\)[\s\S]*?return '';/,
@@ -51,7 +55,17 @@ test('Composer copy tells users that @ can reference files or Sessions', () => {
   assert.match(source, /@ to reference files or sessions/);
 });
 
-test('Session Quote chips use the book icon so they are distinct from pasted excerpts', () => {
+test('Session search stays name-only and @ keeps the menu open after spaces', () => {
+  const composer = readSource('composer.tsx');
+  const dependencyPatch = readRepoFile('patches/@astryxdesign+core+0.5.0.patch');
+
+  assert.match(composer, /const searchQuery = query\.trim\(\)/);
+  assert.match(composer, /mentionQueryMatches\(searchQuery, session\.name\)/);
+  assert.doesNotMatch(composer, /session\.lastMessagePreview \?\?/);
+  assert.match(dependencyPatch, /if \(trigger\.character !== '@' && \/\[ \\n\]\/u\.test\(query\)\) return null;/);
+});
+
+test('Session Quote chips use the conversation icon so they are distinct from pasted excerpts', () => {
   const source = readSource('quote-ref-chip.tsx');
-  assert.match(source, /props\.quote\.sourceSessionId \? BookOpen : TextQuote/);
+  assert.match(source, /props\.quote\.sourceSessionId \? MessagesSquare : TextQuote/);
 });

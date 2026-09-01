@@ -38,9 +38,9 @@ import {
   ICON_SIZE,
   ArrowUp,
   CircleGauge,
-  BookOpen,
   FileText,
   ListTodo,
+  MessagesSquare,
   Network,
   Pencil,
   Plus,
@@ -944,22 +944,18 @@ export const Composer = forwardRef<
   if (!searchSourcesRef.current) {
     const runMentionSearch = (query: string): Promise<SearchableItem[]> => {
       const source = mentionSourceRef.current;
+      const searchQuery = query.trim();
       const files = source.onSearchMentionFiles
-        ? source.onSearchMentionFiles(query).then((entries) =>
+        ? source.onSearchMentionFiles(searchQuery).then((entries) =>
             entries
-              .filter((file) => mentionQueryMatches(query, file.relativePath))
+              .filter((file) => mentionQueryMatches(searchQuery, file.relativePath))
               .slice(0, 25)
               .map((file) => ({ id: file.relativePath, label: file.relativePath })),
           )
         : Promise.resolve<SearchableItem[]>([]);
       const sessions = source.onPickSessionReference
         ? (source.sessionReferences ?? [])
-            .filter((session) =>
-              mentionQueryMatches(
-                query,
-                `${session.name} ${session.lastMessagePreview ?? ''} ${session.status ?? ''}`,
-              ),
-            )
+            .filter((session) => mentionQueryMatches(searchQuery, session.name))
             .slice(0, 25)
             .map((session) => ({
               id: `session:${session.id}`,
@@ -1060,13 +1056,8 @@ export const Composer = forwardRef<
             const { session } = suggestion;
             return (
               <>
-                <BookOpen size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
-                <span className="maka-composer-mention-text">
-                  <span className="maka-composer-mention-name">{session.name}</span>
-                  <span className="maka-composer-mention-secondary">
-                    {session.lastMessagePreview ?? session.status ?? mentionCopy.sessionsGroup}
-                  </span>
-                </span>
+                <MessagesSquare size={ICON_SIZE.control} aria-hidden="true" className="maka-composer-mention-icon" />
+                <span className="maka-composer-mention-name">{session.name}</span>
               </>
             );
           }
@@ -1080,17 +1071,9 @@ export const Composer = forwardRef<
             </>
           );
         },
-        // The token serializes back to `@<path>`, so the mention reaches the
-        // model exactly as the plain-text popup used to splice it in — it just
-        // reads as a chip while the draft is being composed.
-        //
-        // One difference, and it is not free: `insertToken` anchors the token
-        // with U+00A0 rather than a plain space. `composerWireText` normalizes
-        // that away on send, and the skill token grammar's `\s` boundary
-        // matches it either way — but `findActiveTrigger` accepts only ' ' and
-        // '\n' as a trigger boundary, so typing `@` directly after a chip
-        // opens no menu until the user types a space. That boundary set is
-        // internal to `useTriggerMenu`; the fix belongs upstream.
+        // File references remain inline tokens; Session references are held as
+        // QuoteRefs by the host so selecting one does not add an opaque id to
+        // the message text.
         onSelect: (item): string | ChatComposerToken => {
           const suggestion = item.auxiliaryData as ComposerMentionSuggestion | undefined;
           if (suggestion?.kind === 'session') {
@@ -1830,7 +1813,7 @@ export const Composer = forwardRef<
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
                     size="sm"
-                    icon={quote.sourceSessionId ? <BookOpen aria-hidden="true" /> : undefined}
+                    icon={quote.sourceSessionId ? <MessagesSquare aria-hidden="true" /> : undefined}
                     label={quote.label?.trim() || stripQuoteHeadingMarkers(quote.text.slice(0, 48)) || copy.pastedQuoteLabel}
                     onRemove={props.onRemoveQuote ? () => props.onRemoveQuote?.(index) : undefined}
                   />
