@@ -26,6 +26,10 @@ const mainSource = readFileSync(
   fileURLToPath(new URL('../../../src/main/main.ts', import.meta.url)),
   'utf8',
 );
+const bootSource = readFileSync(
+  fileURLToPath(new URL('../../../src/main/runtime-host-boot.ts', import.meta.url)),
+  'utf8',
+);
 
 test('retains process lifetime before a standalone startup dialog can close', () => {
   const retentionPolicy = mainSource.search(
@@ -36,4 +40,22 @@ test('retains process lifetime before a standalone startup dialog can close', ()
   assert.notEqual(retentionPolicy, -1);
   assert.notEqual(singleInstanceDecision, -1);
   assert.ok(retentionPolicy < singleInstanceDecision);
+});
+
+test('resolves persisted locale before first post-settings recovery prompt', () => {
+  const rendererRecoveryStart = bootSource.indexOf('onRendererProcessGone: async');
+  const rendererRecovery = bootSource.slice(
+    rendererRecoveryStart,
+    bootSource.indexOf('resolveBrowserDialogParent =', rendererRecoveryStart),
+  );
+  const hostRecoveryStart = bootSource.indexOf('prompt: async (input)');
+  const hostRecovery = bootSource.slice(
+    hostRecoveryStart,
+    bootSource.indexOf('}).catch((error: unknown)', hostRecoveryStart),
+  );
+
+  assert.match(rendererRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
+  assert.match(hostRecovery, /const locale = await desktopLocale\.resolve\(\)/u);
+  assert.doesNotMatch(rendererRecovery, /desktopLocale\.current\(\)/u);
+  assert.doesNotMatch(hostRecovery, /desktopLocale\.current\(\)/u);
 });

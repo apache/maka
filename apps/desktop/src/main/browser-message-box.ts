@@ -25,6 +25,7 @@ import { isThemePalette, type ThemePalette } from '@maka/core/settings';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   BrowserWindow,
+  BrowserWindowConstructorOptions,
   MessageBoxOptions,
   MessageBoxReturnValue,
   Rectangle,
@@ -45,6 +46,19 @@ export interface BrowserMessageBoxAppearance {
   readonly locale: UiLocale;
   readonly palette?: ThemePalette;
   readonly dark?: boolean;
+}
+
+export interface BrowserMessageBoxRuntime {
+  readonly ready: boolean;
+  readonly shouldUseDarkColors: boolean;
+  readonly createWindow: (options: BrowserWindowConstructorOptions) => BrowserWindow;
+  readonly resolveWorkArea: (parent: BrowserWindow | undefined) => Rectangle;
+  readonly showNative: (
+    options: MessageBoxOptions,
+    parent: BrowserWindow | undefined,
+  ) => Promise<MessageBoxReturnValue>;
+  readonly onBrowserError: (error: unknown) => void;
+  readonly presentationTimeoutMs?: number;
 }
 
 /** Whether closing a temporary dialog must not be interpreted as app shutdown. */
@@ -68,10 +82,11 @@ export async function showBrowserMessageBox(
   // Keep the presentation helpers importable under plain `node --test`.
   // Electron itself is only required when a dialog is actually presented.
   const electron = await import('electron');
-  return showBrowserMessageBoxWithRuntime(options, parent, {
+  return showBrowserMessageBoxWithRuntime(options, parent, appearance, {
     ready: electron.app.isReady(),
-    showBrowser: (nextOptions, nextParent) =>
-      presentBrowserMessageBox(electron, nextOptions, nextParent, appearance),
+    shouldUseDarkColors: electron.nativeTheme.shouldUseDarkColors,
+    createWindow: (windowOptions) => new electron.BrowserWindow(windowOptions),
+    resolveWorkArea: (nextParent) => resolveWorkArea(electron, nextParent),
     showNative: (nextOptions, nextParent) =>
       showNativeMessageBox(electron, nextOptions, nextParent),
     onBrowserError: (error) => {
@@ -83,18 +98,8 @@ export async function showBrowserMessageBox(
 export async function showBrowserMessageBoxWithRuntime(
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
-  runtime: {
-    readonly ready: boolean;
-    readonly showBrowser: (
-      options: MessageBoxOptions,
-      parent: BrowserWindow | undefined,
-    ) => Promise<MessageBoxReturnValue>;
-    readonly showNative: (
-      options: MessageBoxOptions,
-      parent: BrowserWindow | undefined,
-    ) => Promise<MessageBoxReturnValue>;
-    readonly onBrowserError: (error: unknown) => void;
-  },
+  appearance: BrowserMessageBoxAppearance,
+  runtime: BrowserMessageBoxRuntime,
 ): Promise<MessageBoxReturnValue> {
   activeBrowserMessageBoxPresentations += 1;
   try {
@@ -104,7 +109,7 @@ export async function showBrowserMessageBoxWithRuntime(
         : undefined;
     if (!runtime.ready) return await runtime.showNative(options, visibleParent());
     try {
-      return await runtime.showBrowser(options, visibleParent());
+      return await presentBrowserMessageBox(runtime, options, visibleParent(), appearance);
     } catch (error) {
       runtime.onBrowserError(error);
       return await runtime.showNative(options, visibleParent());
@@ -125,23 +130,23 @@ async function showNativeMessageBox(
 }
 
 async function presentBrowserMessageBox(
-  electron: typeof import('electron'),
+  runtime: BrowserMessageBoxRuntime,
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
   appearance: BrowserMessageBoxAppearance,
 ): Promise<MessageBoxReturnValue> {
   const presentation = normalizeBrowserMessageBoxPresentation(options, {
     ...appearance,
-    dark: appearance.dark ?? electron.nativeTheme.shouldUseDarkColors,
+    dark: appearance.dark ?? runtime.shouldUseDarkColors,
   });
-  const workArea = resolveWorkArea(electron, parent);
+  const workArea = runtime.resolveWorkArea(parent);
   const width = Math.max(320, Math.min(DIALOG_WIDTH, workArea.width - WORK_AREA_MARGIN * 2));
   const initialHeight = Math.max(
     MIN_HEIGHT,
     Math.min(INITIAL_HEIGHT, workArea.height - WORK_AREA_MARGIN * 2),
   );
   const initialBounds = centeredBounds(parent?.getBounds(), workArea, width, initialHeight);
-  const win = new electron.BrowserWindow({
+  const win = runtime.createWindow({
     ...initialBounds,
     title: presentation.title,
     show: false,
@@ -190,7 +195,7 @@ async function presentBrowserMessageBox(
       };
       presentationTimeout = setTimeout(
         () => fail(new Error('Dialog renderer did not become interactive in time')),
-        DIALOG_PRESENTATION_TIMEOUT_MS,
+        runtime.presentationTimeoutMs ?? DIALOG_PRESENTATION_TIMEOUT_MS,
       );
 
       win.on('closed', () => finish(presentation.cancelId));

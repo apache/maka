@@ -27,7 +27,6 @@ interface RenderProcessGoneSource {
 }
 
 interface MainRendererReloadSource {
-  once(event: 'did-finish-load', listener: () => void): void;
   once(event: 'unresponsive', listener: () => void): void;
   once(
     event: 'render-process-gone',
@@ -46,7 +45,6 @@ interface MainRendererReloadSource {
       frameRoutingId: number,
     ) => void,
   ): void;
-  off(event: 'did-finish-load', listener: () => void): void;
   off(event: 'unresponsive', listener: () => void): void;
   off(
     event: 'render-process-gone',
@@ -81,9 +79,9 @@ export function observeMainRendererProcessGone(deps: {
 }
 
 /**
- * Waits for a crashed main Renderer to finish loading before recovery is
- * reported as successful. The ordinary one-shot crash observer is re-armed
- * synchronously by `onLoaded`, leaving no successful-load gap unobserved.
+ * Waits for a crashed main Renderer to report its first committed paint before
+ * recovery is successful. The ordinary one-shot crash observer is re-armed
+ * synchronously by `onReady`, leaving no successful-recovery gap unobserved.
  */
 export function reloadMainRendererProcess(deps: {
   readonly source: MainRendererReloadSource;
@@ -97,14 +95,11 @@ export function reloadMainRendererProcess(deps: {
   }
   return new Promise<boolean>((resolve) => {
     let settled = false;
-    let documentLoaded = false;
-    let rendererReady = false;
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let unsubscribeRendererReady = (): void => {};
     const cleanup = (): void => {
       if (timeout) clearTimeout(timeout);
       unsubscribeRendererReady();
-      deps.source.off('did-finish-load', onDocumentLoaded);
       deps.source.off('did-fail-load', onFailed);
       deps.source.off('unresponsive', onUnresponsive);
       deps.source.off('render-process-gone', onGone);
@@ -117,22 +112,13 @@ export function reloadMainRendererProcess(deps: {
       cleanup();
       resolve(loaded);
     };
-    const finishWhenReady = (): void => {
-      if (!documentLoaded || !rendererReady) return;
+    const onRendererReady = (): void => {
       try {
         deps.onReady();
         settle(true);
       } catch {
         settle(false);
       }
-    };
-    const onDocumentLoaded = (): void => {
-      documentLoaded = true;
-      finishWhenReady();
-    };
-    const onRendererReady = (): void => {
-      rendererReady = true;
-      finishWhenReady();
     };
     const onFailed = (
       _event: Event,
@@ -149,7 +135,6 @@ export function reloadMainRendererProcess(deps: {
     const onAborted = (): void => settle(false);
 
     unsubscribeRendererReady = deps.subscribeRendererReady(onRendererReady);
-    deps.source.once('did-finish-load', onDocumentLoaded);
     deps.source.on('did-fail-load', onFailed);
     deps.source.once('unresponsive', onUnresponsive);
     deps.source.once('render-process-gone', onGone);

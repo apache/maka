@@ -464,7 +464,7 @@ const mainWindowController = createMainWindowController({
       details: `Exit code: ${details.exitCode}`,
     });
     for (;;) {
-      const locale = desktopLocale.current();
+      const locale = await desktopLocale.resolve();
       const decision = await showMainRendererProcessGoneDialog({
         locale,
         copyDiagnostics: () =>
@@ -1171,7 +1171,7 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
       repairError: input.repairError,
       activeTasks: input.activeTasks,
     });
-    const locale = desktopLocale.current();
+    const locale = await desktopLocale.resolve();
     return showRuntimeHostStartupRecoveryDialog(input, {
       locale,
       showMessageBox: (options) => showDesktopMessageBox(options, { locale }),

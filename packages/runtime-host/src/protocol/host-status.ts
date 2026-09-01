@@ -39,6 +39,14 @@ export interface HostActivitySnapshot {
   readonly residencies: readonly { readonly label: string; readonly count: number }[];
 }
 
+export function isHostActivityIdle(activity: HostActivitySnapshot): boolean {
+  return (
+    activity.connections === 0 &&
+    activity.activeOperations === 0 &&
+    activity.residencies.length === 0
+  );
+}
+
 export interface HostUpgradePrepareInput {
   readonly expectedHostEpoch: string;
   readonly allowInterruptActiveTasks: boolean;

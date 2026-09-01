@@ -18,9 +18,15 @@
  */
 
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
-import type { BrowserWindow, MessageBoxReturnValue } from 'electron';
+import type {
+  BrowserWindow,
+  BrowserWindowConstructorOptions,
+  MessageBoxReturnValue,
+} from 'electron';
 import {
+  type BrowserMessageBoxRuntime,
   buildBrowserMessageBoxHtml,
   centeredBounds,
   isBrowserMessageBoxPresentationActive,
@@ -36,38 +42,46 @@ test('falls back natively and never attaches to an inaccessible parent', async (
     isVisible: () => parentState.visible,
     isMinimized: () => parentState.minimized,
     isDestroyed: () => parentState.destroyed,
+    getBounds: () => ({ x: 100, y: 100, width: 900, height: 700 }),
   } as BrowserWindow;
   const nativeParents: Array<BrowserWindow | undefined> = [];
-  const showNative = async (
-    _options: typeof options,
-    actualParent: BrowserWindow | undefined,
-  ): Promise<MessageBoxReturnValue> => {
-    nativeParents.push(actualParent);
-    return nativeResult;
+  const runtimeBase = {
+    shouldUseDarkColors: false,
+    resolveWorkArea: () => ({ x: 0, y: 0, width: 1_200, height: 800 }),
+    showNative: async (
+      _options: typeof options,
+      actualParent: BrowserWindow | undefined,
+    ): Promise<MessageBoxReturnValue> => {
+      nativeParents.push(actualParent);
+      return nativeResult;
+    },
+    onBrowserError: () => assert.fail('native presentation must not report a browser error'),
   };
 
   assert.equal(
-    await showBrowserMessageBoxWithRuntime(options, parent, {
+    await showBrowserMessageBoxWithRuntime(options, parent, { locale: 'en' }, {
+      ...runtimeBase,
       ready: false,
-      showBrowser: async () => assert.fail('pre-ready presentation must stay native'),
-      showNative,
-      onBrowserError: () => assert.fail('native presentation must not report a browser error'),
+      createWindow: () => assert.fail('pre-ready presentation must stay native'),
     }),
     nativeResult,
   );
 
   parentState.visible = true;
   const failure = new Error('renderer failed');
+  const failedWindow = fakeBrowserWindow({ loadError: failure });
   let reported: unknown;
   assert.equal(
-    await showBrowserMessageBoxWithRuntime(options, parent, {
+    await showBrowserMessageBoxWithRuntime(options, parent, { locale: 'en' }, {
+      ...runtimeBase,
       ready: true,
-      showBrowser: async (_nextOptions, actualParent) => {
-        assert.equal(actualParent, parent);
+      createWindow: (windowOptions) => {
+        assert.equal(windowOptions.parent, parent);
+        assert.equal(windowOptions.modal, true);
         parentState.minimized = true;
-        throw failure;
+        failedWindow.options = windowOptions;
+        return failedWindow.window;
       },
-      showNative,
       onBrowserError: (error) => {
         reported = error;
       },
@@ -76,33 +90,99 @@ test('falls back natively and never attaches to an inaccessible parent', async (
   );
   assert.equal(reported, failure);
   assert.deepEqual(nativeParents, [undefined, undefined]);
+  assert.equal(failedWindow.destroyed(), true);
 });
 
-test('presents a ready dialog without an inaccessible modal parent', async () => {
-  const result = { response: 0, checkboxChecked: false };
+test('drives the BrowserWindow lifecycle through a safe response URL', async () => {
   const parent = {
     isVisible: () => true,
     isMinimized: () => true,
     isDestroyed: () => false,
   } as BrowserWindow;
+  const presented = fakeBrowserWindow();
+  let createdOptions: BrowserWindowConstructorOptions | undefined;
 
-  let finishPresentation!: (value: MessageBoxReturnValue) => void;
-  const presentation = showBrowserMessageBoxWithRuntime({ message: 'Recover Maka' }, parent, {
+  const presentation = showBrowserMessageBoxWithRuntime(
+    { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
+    parent,
+    { locale: 'en', dark: true },
+    {
       ready: true,
-      showBrowser: async (_options, actualParent) => {
+      shouldUseDarkColors: false,
+      createWindow: (options) => {
+        createdOptions = options;
+        return presented.window;
+      },
+      resolveWorkArea: (actualParent) => {
         assert.equal(actualParent, undefined);
-        return new Promise<MessageBoxReturnValue>((resolve) => {
-          finishPresentation = resolve;
-        });
+        return { x: 0, y: 0, width: 1_200, height: 800 };
       },
       showNative: async () => assert.fail('successful browser presentation must not fall back'),
       onBrowserError: () => assert.fail('successful browser presentation must not report error'),
-    });
-  await Promise.resolve();
+    },
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
   assert.equal(isBrowserMessageBoxPresentationActive(), true);
-  finishPresentation(result);
-  assert.equal(await presentation, result);
+  assert.equal(createdOptions?.parent, undefined);
+  assert.equal(createdOptions?.modal, undefined);
+  assert.equal(presented.shown(), true);
+  assert.equal(presented.focused(), true);
+  assert.match(presented.loadedUrl(), /^data:text\/html/u);
+  assert.equal(presented.deniesWindowOpen(), true);
+
+  let prevented = false;
+  presented.webContents.emit(
+    'will-navigate',
+    {
+      preventDefault: () => {
+        prevented = true;
+      },
+    },
+    'maka-dialog://response/0',
+  );
+  assert.deepEqual(await presentation, { response: 0, checkboxChecked: false });
+  assert.equal(prevented, true);
+  assert.equal(presented.destroyed(), true);
   assert.equal(isBrowserMessageBoxPresentationActive(), false);
+});
+
+test('maps close to cancel and falls back after each BrowserWindow presentation failure', async () => {
+  const closed = fakeBrowserWindow();
+  const closeResult = showBrowserMessageBoxWithRuntime(
+    { message: 'Recover Maka', buttons: ['Recover', 'Cancel'], cancelId: 1 },
+    undefined,
+    { locale: 'en' },
+    runtimeForWindow(closed),
+  );
+  closed.window.emit('closed');
+  assert.deepEqual(await closeResult, { response: 1, checkboxChecked: false });
+  assert.equal(closed.destroyed(), true);
+
+  for (const scenario of ['unresponsive', 'renderer-gone', 'timeout'] as const) {
+    const presented = fakeBrowserWindow({ pendingLoad: scenario === 'timeout' });
+    const errors: unknown[] = [];
+    const nativeResult = { response: 0, checkboxChecked: false };
+    const result = showBrowserMessageBoxWithRuntime(
+      { message: 'Recover Maka' },
+      undefined,
+      { locale: 'en' },
+      runtimeForWindow(presented, {
+        presentationTimeoutMs: scenario === 'timeout' ? 1 : undefined,
+        onBrowserError: (error) => errors.push(error),
+        nativeResult,
+      }),
+    );
+    if (scenario === 'unresponsive') presented.window.emit('unresponsive');
+    if (scenario === 'renderer-gone') {
+      presented.webContents.emit('render-process-gone', {}, { reason: 'crashed' });
+    }
+
+    assert.equal(await result, nativeResult);
+    assert.equal(errors.length, 1, scenario);
+    assert.equal(presented.destroyed(), true, scenario);
+    assert.equal(isBrowserMessageBoxPresentationActive(), false, scenario);
+  }
 });
 
 test('accepts only an in-range response URL produced by the dialog', () => {
@@ -155,7 +235,9 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
 
   assert.match(html, /data-theme="dark"/u);
   assert.match(html, /data-maka-theme="nord"/u);
-  assert.match(html, /--shadow-med:/u);
+  assert.match(html, /--surface-overlay:/u);
+  assert.match(html, /--accent-solid:/u);
+  assert.match(html, /--space-4:/u);
   assert.match(html, /color: var\(--maka-brand\)/u);
   assert.doesNotMatch(html, /--control-overlay-hover:/u);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/u);
@@ -213,3 +295,90 @@ test('uses the resolved locale instead of guessing from user-controlled text', (
   assert.doesNotMatch(html, /globalThis\.pwned/u);
   assert.match(html, /data-response="0" autofocus/u);
 });
+
+interface FakeBrowserWindow {
+  readonly window: BrowserWindow;
+  readonly webContents: EventEmitter;
+  options?: BrowserWindowConstructorOptions;
+  loadedUrl(): string;
+  shown(): boolean;
+  focused(): boolean;
+  destroyed(): boolean;
+  deniesWindowOpen(): boolean;
+}
+
+function fakeBrowserWindow(input: {
+  readonly loadError?: Error;
+  readonly pendingLoad?: boolean;
+} = {}): FakeBrowserWindow {
+  let loadedUrl = '';
+  let shown = false;
+  let focused = false;
+  let destroyed = false;
+  let deniesWindowOpen = false;
+  const webContents = Object.assign(new EventEmitter(), {
+    setWindowOpenHandler(handler: () => { action: string }) {
+      deniesWindowOpen = handler().action === 'deny';
+    },
+    async executeJavaScript(script: string): Promise<number | undefined> {
+      return script.includes('scrollHeight') ? 340 : undefined;
+    },
+  });
+  const window = Object.assign(new EventEmitter(), {
+    webContents,
+    setMenuBarVisibility() {},
+    loadURL(url: string): Promise<void> {
+      loadedUrl = url;
+      if (input.loadError) return Promise.reject(input.loadError);
+      if (input.pendingLoad) return new Promise<void>(() => undefined);
+      return Promise.resolve();
+    },
+    isDestroyed: () => destroyed,
+    destroy: () => {
+      destroyed = true;
+    },
+    setBounds() {},
+    show: () => {
+      shown = true;
+    },
+    focus: () => {
+      focused = true;
+    },
+  }) as unknown as BrowserWindow;
+  return {
+    window,
+    webContents,
+    loadedUrl: () => loadedUrl,
+    shown: () => shown,
+    focused: () => focused,
+    destroyed: () => destroyed,
+    deniesWindowOpen: () => deniesWindowOpen,
+  };
+}
+
+function runtimeForWindow(
+  presented: FakeBrowserWindow,
+  options: {
+    readonly presentationTimeoutMs?: number;
+    readonly onBrowserError?: (error: unknown) => void;
+    readonly nativeResult?: MessageBoxReturnValue;
+  } = {},
+): BrowserMessageBoxRuntime {
+  return {
+    ready: true,
+    shouldUseDarkColors: false,
+    createWindow: (windowOptions) => {
+      presented.options = windowOptions;
+      return presented.window;
+    },
+    resolveWorkArea: () => ({ x: 0, y: 0, width: 1_200, height: 800 }),
+    showNative: async () =>
+      options.nativeResult ?? assert.fail('successful browser presentation must not fall back'),
+    onBrowserError:
+      options.onBrowserError ??
+      (() => assert.fail('successful browser presentation must not report an error')),
+    ...(options.presentationTimeoutMs === undefined
+      ? {}
+      : { presentationTimeoutMs: options.presentationTimeoutMs }),
+  };
+}

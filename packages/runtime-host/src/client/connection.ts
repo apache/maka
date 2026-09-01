@@ -42,6 +42,7 @@ import {
   type ConfigurationChangedFrame,
   type HostOperationErrorCode,
   type HostIncompatible,
+  isHostActivityIdle,
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
@@ -1281,9 +1282,7 @@ export async function connectResolvedRuntimeHost(
       return registration.lifecycleMode === 'ephemeral' &&
         result.handshake.state === 'ready' &&
         result.handshake.activity !== undefined &&
-        result.handshake.activity.connections === 0 &&
-        result.handshake.activity.activeOperations === 0 &&
-        result.handshake.activity.residencies.length === 0
+        isHostActivityIdle(result.handshake.activity)
         ? {
             kind: 'upgrade_required',
             registration,

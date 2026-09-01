@@ -76,6 +76,7 @@ export type {
   HostUpgradePrepareInput,
   HostUpgradePrepareResult,
 } from './host-status.js';
+export { isHostActivityIdle } from './host-status.js';
 export type {
   HostOperationError,
   HostOperationErrorCode,

@@ -63,11 +63,10 @@ test('ignores clean exits and app shutdown', () => {
   }
 });
 
-test('reports reload success only after the main document loads and the Renderer paints', async () => {
+test('reports reload success only after the Renderer commits its first paint', async () => {
   const source = reloadSource();
   const readiness = rendererReadiness();
   let observed = false;
-  let settled = false;
   const result = reloadMainRendererProcess({
     source,
     shutdownSignal: new AbortController().signal,
@@ -76,15 +75,9 @@ test('reports reload success only after the main document loads and the Renderer
       observed = true;
     },
   });
-  void result.then(() => {
-    settled = true;
-  });
 
   assert.equal(source.reloadCalls, 1);
   source.emit('did-fail-load', {}, -3, 'subframe failed', 'https://example.test/frame', false, 1, 2);
-  source.emit('did-finish-load');
-  await Promise.resolve();
-  assert.equal(settled, false);
   readiness.notify();
   assert.equal(await result, true);
   assert.equal(observed, true);
@@ -116,7 +109,6 @@ test('keeps recovery active when a Renderer reload fails, exits, or stops respon
     fail(source);
     assert.equal(await result, false);
     assert.equal(observed, false);
-    assert.equal(source.listenerCount('did-finish-load'), 0);
     assert.equal(source.listenerCount('unresponsive'), 0);
     assert.equal(readiness.subscribed(), false);
   }
@@ -134,7 +126,6 @@ test('bounds a Renderer reload that emits no terminal event', async () => {
   });
 
   assert.equal(await result, false);
-  assert.equal(source.listenerCount('did-finish-load'), 0);
   assert.equal(source.listenerCount('did-fail-load'), 0);
   assert.equal(source.listenerCount('unresponsive'), 0);
   assert.equal(source.listenerCount('render-process-gone'), 0);

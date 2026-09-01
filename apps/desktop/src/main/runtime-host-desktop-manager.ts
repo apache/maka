@@ -36,7 +36,7 @@ import {
   type RuntimeHostRetirementMode,
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
-import type { HostActivitySnapshot, HostRegistration } from '@maka/runtime-host/protocol';
+import { isHostActivityIdle, type HostRegistration } from '@maka/runtime-host/protocol';
 import type { DesktopTargetSessionRef } from '../shared/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
@@ -150,14 +150,6 @@ export type RuntimeHostNonRestartableAction =
   | 'replace_may_interrupt_work'
   | 'wait'
   | 'cancel_only';
-
-function isObservedRuntimeHostIdle(activity: HostActivitySnapshot): boolean {
-  return (
-    activity.connections === 0 &&
-    activity.activeOperations === 0 &&
-    activity.residencies.length === 0
-  );
-}
 
 export interface RuntimeHostLocalReplacement {
   replace(activeWorkPolicy: RuntimeHostRetirementMode): Promise<'replaced' | 'active_tasks'>;
@@ -925,7 +917,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       if (result.kind === 'upgrade_required' && result.restartable) {
         const activity = result.handshake?.activity;
         const decision =
-          activity && isObservedRuntimeHostIdle(activity)
+          activity && isHostActivityIdle(activity)
             ? 'restart'
             : await this.#resolveRestartable(result);
         if (decision === 'cancel') {
@@ -947,11 +939,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           ? undefined
           : await this.resolveLocalHostReplacement?.(result.registration, signal);
         const activity = result.handshake?.activity;
-        if (replacement && (!activity || isObservedRuntimeHostIdle(activity))) {
-          // The managed-service operator can check active work even when an
-          // older Host cannot include an activity snapshot in its handshake.
-          // A present snapshot remains authoritative for connections as well
-          // as operations/residencies; interruption still requires consent.
+        if (replacement && activity && isHostActivityIdle(activity)) {
+          // Only a complete, observed snapshot can authorize silent
+          // replacement. The replacement transaction closes races with new
+          // operations; an absent snapshot requires explicit consent because
+          // it cannot prove that other clients are disconnected.
           const attempt = await replacement.replace('refuse_active_work');
           if (attempt === 'replaced') {
             takeoverHostEpoch = undefined;
