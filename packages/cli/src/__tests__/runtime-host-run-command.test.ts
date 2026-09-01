@@ -500,15 +500,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
   });
 
-  test('classifies a standalone context-budget completion as failed', async () => {
-    const outcome = await observeFixtureOutcome({
-      turnEvents: completionEvents('turn-1', 'context_budget_exhausted'),
-    });
-
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'context_budget_exhausted');
-  });
-
   test('uses the latest durable terminal state for a Graph Turn', async () => {
     const outcome = await observeFixtureOutcome({
       graph: true,

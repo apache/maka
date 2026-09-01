@@ -333,8 +333,7 @@ test('projects structured context-budget failure detail to the Desktop event', (
         runId: 'run-1',
         status: 'failed',
         terminalEventId: 'terminal-1',
-        failureClass: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+        failureClass: 'context_overflow',
       },
     }),
   }).events;
@@ -346,9 +345,8 @@ test('projects structured context-budget failure detail to the Desktop event', (
       turnId: 'turn-1',
       ts: 10,
       recoverable: false,
-      reason: 'context_budget_exhausted',
-      message: 'Turn failed: context_budget_exhausted',
-      details: { contextBudgetExhaustedDetail: 'malformed_summary_missing_section' },
+      reason: 'context_overflow',
+      message: 'Turn failed: context_overflow',
     },
   ]);
 });

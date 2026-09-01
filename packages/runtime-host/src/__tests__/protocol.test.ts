@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { CONTEXT_BUDGET_EXHAUSTED_DETAILS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -2238,28 +2238,6 @@ describe('Runtime Host bootstrap protocol', () => {
     };
 
     assert.deepEqual(decodeHostFrame(response), response);
-    for (const contextBudgetExhaustedDetail of CONTEXT_BUDGET_EXHAUSTED_DETAILS) {
-      const withContextDetail = {
-        ...response,
-        result: {
-          ...response.result,
-          failureClass: 'context_budget_exhausted',
-          contextBudgetExhaustedDetail,
-        },
-      };
-      assert.deepEqual(decodeHostFrame(withContextDetail), withContextDetail);
-    }
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          ...response,
-          result: {
-            ...response.result,
-            contextBudgetExhaustedDetail: 'unknown_detail',
-          },
-        }),
-      isInvalidFrame,
-    );
     assert.throws(
       () =>
         decodeHostFrame({

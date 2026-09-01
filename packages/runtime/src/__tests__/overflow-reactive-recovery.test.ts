@@ -1691,7 +1691,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // First-request overflow with no prior turns: the pool is just the current
     // user message, so there is no safe completed span to fold. Recovery is not
     // possible, so the provider error is surfaced honestly (not a fake success,
-    // and not a synthesized context_budget_exhausted — the provider rejected).
+    // and not a locally synthesized verdict — the provider rejected).
     const fixture = buildReactiveFixture({ script: ['overflow'], withoutPriorTurns: true });
     await runTurn(fixture);
 

@@ -1561,6 +1561,48 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
+  test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {
+    // The runtime no longer decides locally that a request cannot be made to
+    // fit, so that outcome is gone from the live contract. Sessions persisted
+    // before still carry it, and must still decode — as the one name that
+    // survives.
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-budget-exhausted',
+          ts: ts + 9,
+          status: 'failed',
+          actions: {
+            endInvocation: true,
+            stateDelta: {
+              stopReason: 'context_budget_exhausted',
+              failureClass: 'context_budget_exhausted',
+              contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+            },
+          },
+        }),
+      ],
+      {
+        runHeaders: [{ ...header, status: 'failed', failureClass: 'context_budget_exhausted' }],
+      },
+    );
+
+    assert.deepStrictEqual(
+      out.messages.find((message) => message.type === 'turn_state'),
+      {
+        type: 'turn_state',
+        id: 'evt-budget-exhausted',
+        turnId,
+        ts: ts + 9,
+        status: 'failed',
+        parentTurnId: 'parent-turn',
+        errorClass: 'context_overflow',
+        partialOutputRetained: false,
+      },
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
+  });
+
   test('tool step cap terminal fact projects a persistent system notice', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

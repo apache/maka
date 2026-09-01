@@ -1331,8 +1331,8 @@ export class AiSdkCompaction {
    * latch (pi's `_overflowRecoveryAttempted`). Returns the compacted messages
    * to resend, or undefined when recovery is impossible or already spent, in
    * which case the caller surfaces the real provider error rather than a
-   * fabricated success or a synthesized `context_budget_exhausted` (the
-   * provider — not the runtime — rejected the request). Non-context-length
+   * fabricated success or a locally synthesized verdict (the provider — not the
+   * runtime — rejected the request). Non-context-length
    * errors and turns without the mid-turn seam never reach compaction, so the
    * default (no seam) behavior is already better than the old fake end_turn.
    */
