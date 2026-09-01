@@ -134,5 +134,8 @@ keeps one use observation tokens for UIA semantic mutations. The backend
 supports `list_apps`, `observe`, `screenshot`, `set_value`, and
 `click_element`; unsupported coordinate/global input actions return a typed
 `unsupported_action` refusal. Helper restarts invalidate every session's
-observation lease. See `docs/windows-support.md` for preparing a development
-artifact and the packaged distribution gate.
+observation lease. The helper publish is a managed single-file payload with
+Windows Desktop native companion files; the manifest pins every file's size
+and SHA-256 and the Desktop host verifies the complete closure before launch.
+See `docs/windows-support.md` for preparing a development artifact and the
+packaged distribution gate.

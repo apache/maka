@@ -55,6 +55,8 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/prepare-windows-cu-helper.mjs',
+  'scripts/prepare-windows-cu-helper.test.mjs',
   'scripts/generate-third-party-notices.test.mjs',
   'scripts/prepare-windows-upgrade-baseline.test.mjs',
   'scripts/product-release.test.mjs',

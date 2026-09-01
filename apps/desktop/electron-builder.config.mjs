@@ -138,10 +138,10 @@ const baseDesktopBuilderConfig = {
     },
     ...(process.platform === 'win32'
       ? [
-          ...(existsSync('resources/bin/maka-cu-windows.exe')
+          ...(existsSync('resources/bin/maka-cu-windows/maka-cu-windows.exe')
             ? [{
-                from: 'resources/bin/maka-cu-windows.exe',
-                to: 'bin/maka-cu-windows.exe',
+                from: 'resources/bin/maka-cu-windows',
+                to: 'bin/maka-cu-windows',
               }]
             : []),
           {

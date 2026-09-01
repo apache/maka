@@ -22,7 +22,8 @@
 ## Native Computer Use helper
 
 Windows Computer Use uses the C#/.NET `maka.cu.windows/0` helper. The desktop
-host starts it as a direct stdio child, verifies the SHA-256 recorded in
+host starts it as a direct stdio child, verifies the SHA-256 and size pins for
+the executable and every native companion recorded in
 `apps/desktop/bundled-tools.json`, and invalidates observations whenever the
 helper generation exits or restarts. The protocol is private to Windows and
 does not reuse the macOS `maka.cu/2` executor.
@@ -34,8 +35,12 @@ single use snapshot token. Ambiguous app/window matches fail closed. Global
 input, screen rectangle capture, post-message, and unsupported actions are not
 fallbacks. A packaged build is enabled only when the Windows manifest entry
 sets `distributionReady: true`; development artifacts are prepared with
-`MAKA_CU_WINDOWS_SOURCE=<path-to-maka-cu> node scripts/prepare-windows-cu-helper.mjs`
-and remain distribution-ineligible by default.
+`MAKA_CU_WINDOWS_SOURCE=<path-to-maka-cu> node scripts/prepare-windows-cu-helper.mjs`.
+The script follows the native publish contract (`win-x64`, self-contained,
+single-file, uncompressed, untrimmed, embedded debug), copies the executable
+and required Windows Desktop native companion files together, rejects the
+small framework-dependent apphost, and remains distribution-ineligible by
+default.
 
 Windows is an active enablement target, not a fully supported Maka platform yet. The CLI and Electron desktop application can run from source, and release workflows produce a verified unsigned Windows x64 preview. The x64 package includes an AppContainer sandbox for the managed filesystem-worker surface, with packaged lifecycle and adversarial evidence, and automatic updates are verified end to end in CI on the unsigned preview channel. Signing, the wider general-command sandbox tier, direct Credential Manager/DPAPI probes, independent security review, and computer-use guarantees remain incomplete. Progress is tracked in [GitHub issue #2142](https://github.com/apache/maka/issues/2142).
 

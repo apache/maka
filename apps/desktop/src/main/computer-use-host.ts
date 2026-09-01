@@ -25,6 +25,7 @@ import {
   fstatSync,
   openSync,
   readFileSync,
+  readdirSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +46,11 @@ export interface ComputerUseHostState {
 
 type BundledToolManifest = {
   makaCu?: { binarySha256?: string; distributionReady?: boolean };
-  windowsCu?: { binarySha256?: string; distributionReady?: boolean; file?: string };
+  windowsCu?: {
+    binarySha256?: string;
+    distributionReady?: boolean;
+    files?: Array<{ name?: string; sizeBytes?: number; sha256?: string }>;
+  };
 };
 
 function readRegularFile(path: string): Buffer {
@@ -58,6 +63,39 @@ function readRegularFile(path: string): Buffer {
   } finally {
     closeSync(fd);
   }
+}
+
+function hasPinnedWindowsHelperFiles(
+  binaryPath: string,
+  files: NonNullable<BundledToolManifest['windowsCu']>['files'],
+): boolean {
+  if (!files || files.length === 0) return false;
+  const expected = new Map<string, { sizeBytes: number; sha256: string }>();
+  for (const file of files) {
+    const sizeBytes = file.sizeBytes;
+    const sha256 = file.sha256;
+    if (
+      !file.name || file.name !== file.name.split(/[\\/]/).pop() ||
+      typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) || sizeBytes < 0 ||
+      typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) || expected.has(file.name)
+    ) return false;
+    expected.set(file.name, { sizeBytes, sha256 });
+  }
+  const directory = dirname(binaryPath);
+  const actual = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name !== 'bundled-tools.json')
+    .map((entry) => entry.name);
+  if (actual.length !== expected.size || actual.some((name) => !expected.has(name))) return false;
+  for (const [name, pin] of expected) {
+    try {
+      const bytes = readRegularFile(join(directory, name));
+      if (bytes.byteLength !== pin.sizeBytes) return false;
+      if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) return false;
+    } catch {
+      return false;
+    }
+  }
+  return expected.has(binaryPath.split(/[\\/]/).pop() ?? '');
 }
 
 export function createComputerUseHost(input: {
@@ -88,8 +126,16 @@ export function createComputerUseHost(input: {
   const windows = platform === 'win32';
   const binaryPath = input.binaryPath ?? (windows
     ? (process.env.MAKA_WINDOWS_CU_HELPER_PATH ?? (input.isPackaged
-      ? join(input.resourcesPath, 'bin', 'maka-cu-windows.exe')
-      : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'resources', 'bin', 'maka-cu-windows.exe')))
+      ? join(input.resourcesPath, 'bin', 'maka-cu-windows', 'maka-cu-windows.exe')
+      : resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          '..',
+          '..',
+          'resources',
+          'bin',
+          'maka-cu-windows',
+          'maka-cu-windows.exe',
+        )))
     : (input.isPackaged
       ? join(input.resourcesPath, 'bin', 'maka-cu')
       : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'resources', 'bin', 'maka-cu')));
@@ -101,6 +147,9 @@ export function createComputerUseHost(input: {
       return { selected: selectComputerUseBackend({ platform }) };
     }
     if (!expectedBinarySha256 || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
+      return { selected: selectComputerUseBackend({ platform }) };
+    }
+    if (windows && !hasPinnedWindowsHelperFiles(binaryPath, manifest.windowsCu?.files)) {
       return { selected: selectComputerUseBackend({ platform }) };
     }
     accessSync(binaryPath, constants.R_OK | constants.X_OK);

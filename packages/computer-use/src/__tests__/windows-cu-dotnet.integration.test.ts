@@ -56,11 +56,12 @@ test('Windows backend drives the published helper against the WinForms fixture',
     return;
   }
   const child = spawn(fixture, [], { stdio: ['ignore', 'ignore', 'ignore'] });
+  let backend: ReturnType<typeof createWindowsCuBackend> | undefined;
   try {
     const expectedBinarySha256 = createHash('sha256')
       .update(await readFile(helper))
       .digest('hex');
-    const backend = createWindowsCuBackend({ binaryPath: helper, expectedBinarySha256 });
+    backend = createWindowsCuBackend({ binaryPath: helper, expectedBinarySha256 });
     let apps = [] as Awaited<ReturnType<NonNullable<typeof backend.listApps>>>;
     for (let attempt = 0; attempt < 20; attempt += 1) {
       apps = await backend.listApps!(new AbortController().signal);
@@ -71,9 +72,11 @@ test('Windows backend drives the published helper against the WinForms fixture',
       app.name?.toLowerCase().includes('maka-cu-windows-fixture'),
     );
     assert.ok(fixtureApp, 'fixture window did not appear in list_apps');
+    const fixtureWindowId = fixtureApp.windows?.[0]?.windowId;
+    assert.ok(fixtureWindowId, 'fixture app did not expose a target window');
     const context = { sessionId: 'dotnet-fixture', turnId: 'integration', toolCallId: 'observe' };
     const observation = await backend.observeApp!(
-      { app: 'maka-cu-windows-fixture', includeScreenshot: true },
+      { windowId: fixtureWindowId, includeScreenshot: true },
       new AbortController().signal,
       context,
     );
@@ -101,8 +104,8 @@ test('Windows backend drives the published helper against the WinForms fixture',
         (element) => element.role === 'edit' && element.value === 'host-integration-ok',
       ),
     );
-    (backend as { dispose?: () => void }).dispose?.();
   } finally {
+    backend?.dispose();
     child.kill();
   }
 });
