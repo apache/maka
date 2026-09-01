@@ -37,7 +37,12 @@ import {
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { mergeShellRunStateWithDiagnostics } from '@maka/core/shell-run-result';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
@@ -1871,29 +1876,41 @@ function formatElapsedDuration(elapsedMs: number): string {
  * turn). A trailing hint reminds the user that alt+↑ takes them back to edit.
  * Renders nothing when both queues are empty.
  */
+interface TuiPendingQueueCopy {
+  readonly steeringLabel: string;
+  readonly queuedLabel: string;
+  readonly requeueHint: string;
+}
+
+const TUI_PENDING_QUEUE_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPendingQueueCopy>()(TUI_COPY_RESOURCES['pending-queue']),
+);
+
 export function renderMakaPiPendingQueue(
   state: MakaPiTranscriptState,
   width: number,
   platform: NodeJS.Platform = process.platform,
+  locale: UiLocale = 'en',
 ): string[] {
   if (state.steering.length === 0 && state.followup.length === 0) {
     return [];
   }
+  const copy = TUI_PENDING_QUEUE_COPY[locale];
   const safeWidth = Math.max(1, width);
   const steering = state.steering;
   const followup = state.followup;
   const lines: string[] = [];
   for (const text of steering) {
     lines.push(
-      fitLine(`${ansi.accent('Steering:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+      fitLine(`${ansi.accent(copy.steeringLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
   }
   for (const text of followup) {
-    lines.push(fitLine(`${ansi.dim('Queued:')} ${ansi.dim(firstLinePreview(text))}`, safeWidth));
+    lines.push(
+      fitLine(`${ansi.dim(copy.queuedLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
+    );
   }
-  lines.push(
-    fitLine(ansi.dim(renderTuiShortcutCopy('Alt+↑ 取回队列以重新编辑', platform)), safeWidth),
-  );
+  lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.requeueHint, platform)), safeWidth));
   return lines;
 }
 

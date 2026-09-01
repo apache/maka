@@ -27,6 +27,7 @@ import type {
   MutateRuntimePolicyInput,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
@@ -445,17 +446,36 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       enabledModelIds,
       models,
       relayModelProfiles,
-      // This marker is durable invalidation metadata, not part of the
-      // client-visible catalog protocol.
+      // When the Host last ran discovery, and the marker that invalidates a
+      // test when model facts change: both are the Host's own bookkeeping,
+      // not part of the client-visible catalog protocol.
+      modelsFetchedAt: _modelsFetchedAt,
       lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
       ...header
     } = connection;
+    // The Host resolves the catalog because it owns the model metadata the
+    // resolution merges in. A client that merged its own bundled copy would
+    // describe a model by the version it happens to ship, so two clients on
+    // one Host could disagree about the same model.
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -468,7 +488,14 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       });
     }
     for (const [itemIndex, model] of models.entries()) {
-      items.push({ kind: 'model', connectionIndex, itemIndex, model });
+      // The override's effect travels; which fields it touched does not. That
+      // provenance answers one Host-side question — whether a context window
+      // was set by hand — and this page is not where it gets asked.
+      const { factOverriddenFields: _factOverriddenFields, ...projected } = model;
+      items.push({ kind: 'model', connectionIndex, itemIndex, model: projected });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;

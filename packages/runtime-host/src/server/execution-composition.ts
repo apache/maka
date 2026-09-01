@@ -178,6 +178,7 @@ import { HostSkillCatalogCoordinator } from './skill-catalog-coordinator.js';
 import { SkillCatalogRepository } from './skill-catalog-repository.js';
 import { HostSessionTodoCoordinator } from './session-todo-coordinator.js';
 import { HostTurnControlCoordinator } from './turn-control-coordinator.js';
+import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
@@ -1181,6 +1182,16 @@ export async function createExecutionRuntimeHostComposition(
       turns: stores.agentRunStore,
       runtime: manager,
     });
+    // Compile-time guarantee that the three Turn coordinators together cover
+    // every key in TURN_OPERATION_SPECS. Domain composition seeds all domain
+    // operations with the operation_unavailable fallback, so a Turn operation
+    // that no coordinator claims would otherwise be swept into that fallback
+    // silently; `satisfies` turns such an omission into a typecheck error here.
+    ({
+      ...turnControl.handlers,
+      ...interactiveTurns.handlers,
+      ...coordinator.handlers,
+    }) satisfies TurnOperationHandlerMap;
     const turnAccessRequests = context.sessionAccessAuthority
       ? new SessionTurnAccessRequestCoordinator({
           authority: context.sessionAccessAuthority,

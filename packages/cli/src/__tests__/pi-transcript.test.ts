@@ -152,8 +152,12 @@ describe('Maka Pi TUI transcript', () => {
     const renderFor = (platform: NodeJS.Platform) =>
       renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
 
-    assert.equal(renderFor('darwin').at(-1), '⌥+↑ 取回队列以重新编辑');
-    assert.equal(renderFor('linux').at(-1), 'Alt+↑ 取回队列以重新编辑');
+    assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
+    assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
+    assert.equal(
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh').map(stripAnsi).at(-1),
+      'Alt+↑ 取回队列以重新编辑',
+    );
   });
 
   test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {

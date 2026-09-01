@@ -119,7 +119,6 @@ export const ALLOWED = {
     useCommandPalette: 1,
     useComposerAttachments: 1,
     useEffect: 14,
-    useGoalController: 1,
     useKeyboardHelp: 1,
     useLayoutEffect: 2,
     useModuleHubController: 1,

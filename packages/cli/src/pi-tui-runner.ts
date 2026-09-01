@@ -33,14 +33,13 @@ import {
   type Terminal,
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
-import {
-  isThinkingLevel,
-  thinkingVariantsForModel,
-  type ThinkingLevel,
-} from '@maka/core/model-thinking';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
-import type { SkillInvocationResult } from '@maka/core/skill-invocation';
+import type {
+  SkillInvocationFailureReason,
+  SkillInvocationResult,
+} from '@maka/core/skill-invocation';
 import { projectRevisionLinkedSessionTree } from '@maka/core/session-revisions';
 import {
   slashCommandsForSurface,
@@ -52,7 +51,12 @@ import {
   type SessionSummary,
   type StoredMessage,
 } from '@maka/core/session';
-import { formatUiMessage, type UiLocale } from '@maka/core/ui-locale';
+import {
+  defineUiMessageCatalog,
+  formatUiMessage,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
 import {
   buildForeignSessionHandoffMessage,
   foreignSessionHandoffDisplayText,
@@ -167,6 +171,7 @@ import {
   isLiveGoalStatus,
 } from './pi-goal.js';
 import { getTuiPrimaryGuidance } from './tui-primary-guidance.js';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
 import type { GoalControlAction, GoalProjection } from '@maka/runtime-host/protocol';
 
 export interface MakaPiTuiInput {
@@ -189,7 +194,6 @@ export interface MakaPiTuiInput {
   connectionId?: string;
   connectionIdentities?: readonly ConnectionIdentity[];
   connectionSlug: string;
-  providerType?: ProviderType;
   permissionMode: PermissionMode;
   /** Maximum context tokens for the active model, for the statusline ctx segment. */
   modelContextWindow?: number;
@@ -323,36 +327,81 @@ export function safeBoundaryResumeParkedCopy(reason: TurnResumeParkReason): {
   }
 }
 
+interface TuiRewindCopy {
+  readonly pickerTitle: string;
+  readonly pending: string;
+  readonly doneRefilled: string;
+  readonly doneKeptDraft: string;
+  readonly noTargets: string;
+  readonly busy: string;
+  readonly pickerHint: string;
+}
+
+interface TuiSkillsCopy {
+  readonly pickerTitle: string;
+  readonly usage: string;
+  readonly noneAvailable: string;
+  readonly loaded: string;
+  readonly loadFailed: string;
+  readonly outcomeNoRequest: string;
+  readonly outcomeMarkersNotSent: string;
+  readonly failedItem: string;
+  readonly tooManyRequestsItem: string;
+  readonly listSeparator: string;
+  readonly failureReasons: Readonly<Record<SkillInvocationFailureReason, string>>;
+}
+
+interface TuiConnectionIdentityCopy {
+  readonly withRecovery: string;
+  readonly emptyChoiceRecovery: string;
+  readonly confirmAccount: string;
+  readonly accountDeleted: string;
+  readonly identityMismatch: string;
+  readonly accountDisabled: string;
+}
+
+interface TuiSessionActionsCopy {
+  readonly foreignScanFailed: string;
+  readonly newSessionFailed: string;
+}
+
+const TUI_REWIND_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiRewindCopy>()(TUI_COPY_RESOURCES.rewind),
+);
+
+const TUI_SKILLS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSkillsCopy>()(TUI_COPY_RESOURCES.skills),
+);
+
+const TUI_CONNECTION_IDENTITY_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiConnectionIdentityCopy>()(TUI_COPY_RESOURCES['connection-identity']),
+);
+
+const TUI_SESSION_ACTIONS_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiSessionActionsCopy>()(TUI_COPY_RESOURCES['session-actions']),
+);
+
 function sessionConnectionIdentityNotice(
   session: Pick<SessionSummary, 'llmConnectionId' | 'llmConnectionSlug'>,
   identities: MakaPiTuiInput['connectionIdentities'],
   locale: UiLocale,
 ): string | undefined {
   if (!identities) return undefined;
-  const emptyChoiceRecovery =
-    locale === 'zh'
-      ? '如果 /model 没有可选项，请先添加或启用连接（API Key 连接可运行 /setup）。'
-      : 'If /model has no choices, add or enable a connection first (run /setup for API-key connections).';
+  const copy = TUI_CONNECTION_IDENTITY_COPY[locale];
+  const withRecovery = (notice: string) =>
+    formatUiMessage(copy.withRecovery, { notice, recovery: copy.emptyChoiceRecovery }, locale);
   if (!session.llmConnectionId) {
-    return locale === 'zh'
-      ? `此任务来自旧版本，需要确认一次账号。运行 /model 选择现有账号和模型。${emptyChoiceRecovery}`
-      : `This task comes from an older version and needs a one-time account confirmation. Run /model and choose an existing account and model. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.confirmAccount);
   }
   const identified = identities.find((entry) => entry.connectionId === session.llmConnectionId);
   if (!identified) {
-    return locale === 'zh'
-      ? `原账号已删除；运行 /model 选择新账号和模型后继续。${emptyChoiceRecovery}`
-      : `The original account was deleted. Run /model and choose a new account and model to continue. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.accountDeleted);
   }
   if (identified.connectionSlug !== session.llmConnectionSlug) {
-    return locale === 'zh'
-      ? `任务保存的账号身份与当前连接不一致；运行 /model 重新选择账号和模型。${emptyChoiceRecovery}`
-      : `The saved account identity no longer matches its connection. Run /model and choose an account and model again. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.identityMismatch);
   }
   if (!identified.enabled) {
-    return locale === 'zh'
-      ? `原账号已停用；请启用该账号，或运行 /model 选择新账号和模型。${emptyChoiceRecovery}`
-      : `The original account is disabled. Enable it, or run /model and choose a new account and model. ${emptyChoiceRecovery}`;
+    return withRecovery(copy.accountDisabled);
   }
   return undefined;
 }
@@ -387,21 +436,17 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let model = input.model;
   let connectionId = input.connectionId;
   let connectionSlug = input.connectionSlug;
-  // Mutable: a cross-connection /model switch rebinds the provider, which changes
-  // both the connection and the thinking variants the new model supports.
-  let providerType = input.providerType;
   let modelContextWindow = input.modelContextWindow;
   let permissionMode = input.permissionMode;
   let orchestrationMode = input.driver.getOrchestrationMode?.() ?? 'default';
   let thinkingLevel: ThinkingLevel | undefined = undefined;
-  // The boot connection's declared capabilities win (an openai-compatible
-  // relay can declare relayModelProfiles[model].thinkingLevels). The
-  // providerType+model metadata variant is the fallback for modelChoices-free
-  // embeddings of the runner.
+  // The Host resolved these when it projected the choice — including a relay's
+  // declared `relayModelProfiles[model].thinkingLevels`. A model no choice
+  // describes offers none rather than a locally guessed list.
   let thinkingLevels: readonly ThinkingLevel[] =
     input.modelChoices?.find(
       (choice) => choice.connectionSlug === connectionSlug && choice.model === model,
-    )?.thinkingLevels ?? (providerType ? thinkingVariantsForModel(providerType, model) : []);
+    )?.thinkingLevels ?? [];
   let sessionListScope: 'current' | 'all' = input.sessionListScope ?? 'current';
   let connectionIdentityNotice: string | undefined;
   let busy = false;
@@ -584,7 +629,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
 
   const transcript = new MakaTranscriptComponent(state, metadata);
   const activityStrip = new MakaActivityStripComponent(metadata);
-  const pendingQueue = new MakaPendingQueueComponent(state);
+  const pendingQueue = new MakaPendingQueueComponent(state, locale);
   const statusLine = new MakaStatusLineComponent(metadata);
   // Use the vendor editor's full 20-item autocomplete capacity. Larger command
   // catalogs remain scrollable and keep an exact position/total counter.
@@ -737,35 +782,51 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // autocomplete or picker open.
   void listSkillsCached(true);
 
-  const SKILL_INVOCATION_FAILURE_REASON_LABEL: Record<string, string> = {
-    not_found: '未找到',
-    disabled: '已禁用',
-    host_incompatible: '当前主机缺少其依赖的工具',
-    invalid_name: '名称无效',
-    too_many_requests: '调用请求过多',
-  };
+  const skillsCopy = TUI_SKILLS_COPY[locale];
 
   const showSkillInvocation = (skillInvocation: SkillInvocationResult): void => {
     const failed = skillInvocation.failed;
     const failedLabels = failed.map((entry) =>
       entry.reason === 'too_many_requests'
-        ? `请求超过 ${entry.requestLimit} 个上限（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason]}）`
-        : `/skill:${entry.request}（${SKILL_INVOCATION_FAILURE_REASON_LABEL[entry.reason] ?? entry.reason}）`,
+        ? formatUiMessage(
+            skillsCopy.tooManyRequestsItem,
+            { limit: entry.requestLimit, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          )
+        : formatUiMessage(
+            skillsCopy.failedItem,
+            { request: entry.request, reason: skillsCopy.failureReasons[entry.reason] },
+            locale,
+          ),
     );
     if (failed.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `未能加载技能 ${failedLabels.join('、')}；${
-          skillInvocation.loaded.length === 0 ? '未发起模型请求。' : '失败的调用标记未发送给模型。'
-        }`,
+        text: formatUiMessage(
+          skillsCopy.loadFailed,
+          {
+            failures: failedLabels.join(skillsCopy.listSeparator),
+            outcome:
+              skillInvocation.loaded.length === 0
+                ? skillsCopy.outcomeNoRequest
+                : skillsCopy.outcomeMarkersNotSent,
+          },
+          locale,
+        ),
       });
     }
     if (skillInvocation.loaded.length > 0) {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: `已加载技能：${skillInvocation.loaded.map((skill) => skill.name).join('、')}`,
+        text: formatUiMessage(
+          skillsCopy.loaded,
+          {
+            names: skillInvocation.loaded.map((skill) => skill.name).join(skillsCopy.listSeparator),
+          },
+          locale,
+        ),
       });
     }
     requestRender();
@@ -1466,17 +1527,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({ kind: 'notice', level: 'error', text: identityNotice });
     }
     connectionIdentityNotice = identityNotice;
-    const matchingChoice = modelChoices?.find(
-      (choice) =>
-        choice.connectionId === summary.llmConnectionId &&
-        choice.connectionSlug === summary.llmConnectionSlug,
-    );
-    providerType =
-      matchingChoice?.providerType ??
-      (previousConnectionId === summary.llmConnectionId &&
-      previousConnectionSlug === summary.llmConnectionSlug
-        ? providerType
-        : undefined);
     const contextWindowMatch = modelChoices?.find(
       (choice) =>
         choice.connectionId === summary.llmConnectionId &&
@@ -1495,12 +1545,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     permissionMode = input.driver.getPermissionMode?.() ?? summary.permissionMode;
     orchestrationMode = summary.orchestrationMode ?? 'default';
     thinkingLevel = summary.thinkingLevel;
-    // Choice-first: a relay model's user-declared levels live on the ModelChoice;
-    // the metadata fallback serves providers whose variants derive from the
-    // model id alone.
-    thinkingLevels =
-      contextWindowMatch?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, summary.model) : []);
+    thinkingLevels = contextWindowMatch?.thinkingLevels ?? [];
     refreshEditorCwd?.(cwd);
   };
 
@@ -1525,9 +1570,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     );
     if (match) modelContextWindow = match.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      match?.thinkingLevels ??
-      (providerType ? thinkingVariantsForModel(providerType, nextModel) : []);
+    thinkingLevels = match?.thinkingLevels ?? [];
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1546,9 +1589,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       return;
     }
-    if (!choice.connectionId) {
-      throw new Error('Model choice is missing its exact Connection identity');
-    }
     const previousModel = transcriptLastUsedModel ?? model;
     const previousConnectionSlug = connectionSlug;
     const connectionLabels = modelChoiceConnectionLabels(modelChoices ?? [choice]);
@@ -1556,11 +1596,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     model = choice.model;
     connectionId = choice.connectionId;
     connectionSlug = choice.connectionSlug;
-    providerType = choice.providerType;
     modelContextWindow = choice.contextWindow;
     thinkingLevel = undefined;
-    thinkingLevels =
-      choice.thinkingLevels ?? thinkingVariantsForModel(choice.providerType, choice.model);
+    thinkingLevels = choice.thinkingLevels;
     state.entries.push({
       kind: 'notice',
       level: 'info',
@@ -1932,7 +1970,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     const pendingNotice: (typeof state.entries)[number] = {
       kind: 'notice',
       level: 'info',
-      text: '正在回退到该轮之前…',
+      text: TUI_REWIND_COPY[locale].pending,
     };
     state.entries.push(pendingNotice);
     requestRender();
@@ -1957,9 +1995,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: refill
-          ? '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。'
-          : '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+        text: refill ? TUI_REWIND_COPY[locale].doneRefilled : TUI_REWIND_COPY[locale].doneKeptDraft,
       });
       requestRender();
     } catch (error) {
@@ -2167,7 +2203,6 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         apiKey: wizardApiKey,
         baseUrl: wizardBaseUrl,
         enabledModelIds,
-        models: wizardModels,
       })
       .then(
         (result) => {
@@ -2486,6 +2521,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     // prefixed select value so they never collide with Maka session ids. A scan
     // error is surfaced (not silently swallowed): degrade to no rows but tell
     // the user why, so a real store bug isn't mistaken for "no sessions".
+    // Deliberate #2672 exception: the interpolated detail is a local
+    // file-scan diagnostic (not backend copy) and the TUI has no log channel
+    // to carry it, so dropping it would hide the only debugging signal.
     const foreignByValue = new Map<string, ForeignSessionSummary>();
     if ('error' in foreignScan) {
       const detail =
@@ -2493,7 +2531,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text: `读取外部对话失败：${detail}`,
+        text: formatUiMessage(
+          TUI_SESSION_ACTIONS_COPY[locale].foreignScanFailed,
+          { detail },
+          locale,
+        ),
       });
     } else {
       for (const summary of foreignScan.summaries) {
@@ -2578,7 +2620,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '没有可回退的轮次。',
+        text: TUI_REWIND_COPY[locale].noTargets,
       });
       requestRender();
       return;
@@ -2587,9 +2629,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       value: target.turnId,
       label: target.label,
     }));
+    const rewindCopy = TUI_REWIND_COPY[locale];
     showSelectPicker(
-      'Rewind',
-      'Rewind',
+      rewindCopy.pickerTitle,
+      rewindCopy.pickerTitle,
       items,
       (item) => {
         // runControl drops the action silently when busy is already held (e.g.
@@ -2600,7 +2643,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+            text: rewindCopy.busy,
           });
           requestRender();
           return;
@@ -2610,7 +2653,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       {
         minPrimaryColumnWidth: 24,
         maxPrimaryColumnWidth: 48,
-        hint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
+        hint: rewindCopy.pickerHint,
       },
     );
   };
@@ -2618,17 +2661,15 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   const newSession = async (): Promise<boolean> => {
     try {
       await input.driver.startNewSession();
-    } catch (error) {
+    } catch {
       // The identity swap was aborted driver-side: the previous Session, its
       // transcript, and every user-command card stay exactly as they were.
-      // Surface why instead of silently stranding the running commands.
+      // Surface the failure instead of silently stranding the running
+      // commands; the driver's raw error text is not product copy (#2672).
       state.entries.push({
         kind: 'notice',
         level: 'error',
-        text:
-          error instanceof Error && error.message.length > 0
-            ? error.message
-            : '无法开始新会话：停止本地命令失败，请稍后重试。',
+        text: TUI_SESSION_ACTIONS_COPY[locale].newSessionFailed,
       });
       requestRender();
       return false;
@@ -2792,13 +2833,13 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       state.entries.push({
         kind: 'notice',
         level: 'info',
-        text: '当前没有可调用的技能。',
+        text: skillsCopy.noneAvailable,
       });
       requestRender();
       return;
     }
     showSelectPicker(
-      'Invoke Skill',
+      skillsCopy.pickerTitle,
       String(entries.length),
       skillPickerItems(entries),
       (item) => {
@@ -3341,7 +3382,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /skill，或直接在消息中输入 /skill:<name>',
+            text: skillsCopy.usage,
           });
           requestRender();
           return;

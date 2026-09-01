@@ -26,18 +26,19 @@ import type {
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import {
   connectionEnabledModelIds,
   defaultEnabledModelIdsWhenOmitted,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
+import type { CredentialLocator } from '@maka/core/runtime-policy';
 import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogSnapshot,
-  CredentialLocator,
-} from '@maka/core/runtime-policy';
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
 import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
@@ -299,11 +300,7 @@ export function registerRuntimeHostConnectionsIpc(
     }
     deps.emitConnectionListChanged();
     const latest = requireConnectionIdentity(await snapshot(), connectionIdentity(current));
-    return {
-      models: [...latest.models],
-      source: result.source,
-      fetchedAt: result.fetchedAt,
-    };
+    return { models: [...latest.models], source: result.source };
   });
   deps.ipcMain.handle(
     'connections:test',
@@ -357,7 +354,7 @@ export function projectHostConnectionTest(result: ConnectionTestRunResult): Conn
 
 export function projectHostConnections(
   catalog: ConnectionCatalogSnapshot,
-): IdentifiedLlmConnection[] {
+): ProjectedLlmConnection[] {
   return catalog.connections.map((connection) => {
     const defaultModel =
       catalog.defaultTarget?.connectionId === connection.connectionId
@@ -373,6 +370,7 @@ export function projectHostConnections(
       defaultModel,
       enabledModelIds: [...connection.enabledModelIds],
       models: [...connection.models],
+      catalogEntries: connection.catalogEntries,
       ...(connection.relayModelProfiles === undefined
         ? {}
         : { relayModelProfiles: connection.relayModelProfiles }),
@@ -380,9 +378,6 @@ export function projectHostConnections(
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(connection.modelsFetchedAt === undefined
-        ? {}
-        : { modelsFetchedAt: connection.modelsFetchedAt }),
       ...(connection.lastTest === undefined
         ? {}
         : {
@@ -431,7 +426,7 @@ async function updateCredential(
 }
 
 function connectionCredential(connection: ConnectionCatalogEntry): CredentialLocator {
-  const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
   return {
     scope: 'connection',
     connectionId: connection.connectionId,
@@ -504,7 +499,7 @@ function requireProjectedConnection(
 function requireProjectedConnectionIdentity(
   catalog: ConnectionCatalogSnapshot,
   identity: DesktopConnectionIdentity,
-): IdentifiedLlmConnection {
+): ProjectedLlmConnection {
   const connection = requireConnectionIdentity(catalog, identity);
   const projected = projectHostConnections(catalog).find(
     (candidate) => candidate.connectionId === connection.connectionId,

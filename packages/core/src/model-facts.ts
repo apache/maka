@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { PROVIDER_REGISTRY, type ProviderType } from './provider-registry.js';
+import { providerDefaultsOf, type ProviderType } from './provider-registry.js';
 import type { ModelFactField, ModelInfo } from './llm-connections.js';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
@@ -61,7 +61,7 @@ export function modelFactKey(providerType: ProviderType | string, modelId: strin
   if (!provider || !model || !PROVIDER_ID_PATTERN.test(provider) || !MODEL_ID_PATTERN.test(model)) {
     throw new Error('Model fact keys must use a non-empty provider:model identifier');
   }
-  if (!Object.hasOwn(PROVIDER_REGISTRY, provider)) {
+  if (providerDefaultsOf(provider) === undefined) {
     throw new Error(`Unknown model-facts provider: ${provider}`);
   }
   const key = `${provider}:${model}`;
@@ -80,18 +80,6 @@ export function lookupModelFactOverride(
   } catch {
     return undefined;
   }
-}
-
-/** Return model ids with facts for one provider without exposing other providers. */
-export function modelFactOverrideIdsForProvider(
-  overrides: ModelFactOverrides | undefined,
-  providerType: ProviderType | string,
-): string[] {
-  if (!overrides) return [];
-  const prefix = `${providerType.trim()}:`;
-  return Object.keys(overrides)
-    .filter((key) => key.startsWith(prefix))
-    .map((key) => key.slice(prefix.length));
 }
 
 export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
@@ -115,6 +103,14 @@ export function decodeModelFactsDocument(value: unknown): ModelFactsDocument {
   return { schemaVersion: MODEL_FACTS_SCHEMA_VERSION, overrides };
 }
 
+/**
+ * `structuredOutput` and `lastUpdated` are declared, generated, decoded and
+ * overridable here, and nothing reads either one. They stay anyway: this
+ * validator fails closed on an unknown key, and it fails the whole document, so
+ * retiring a field would make one stale line in a user's `model-facts.json`
+ * discard every override in the file. Dropping them is a release decision with
+ * a migration, not a cleanup.
+ */
 export function normalizeModelFactOverride(value: unknown): ModelFactOverride {
   if (!isRecord(value)) throw new Error('Model fact override must be an object');
   const allowed = new Set([

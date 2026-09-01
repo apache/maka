@@ -25,7 +25,10 @@ import {
   executionBoundaryDisplayMode,
 } from '@maka/core/sandbox-boundary';
 import { findProjectByIdentity } from '@maka/core/project';
-import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
@@ -78,7 +81,6 @@ export interface RuntimeHostTuiContext {
   readonly connectionId?: string;
   readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
-  readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
@@ -182,8 +184,15 @@ export async function createRuntimeHostTuiContext(
         }),
       });
     }
-    const modelContextWindow = selectedTarget.connection?.models.find(
-      (model) => model.id === selectedTarget.model,
+    // From the Host-resolved choice, not the connection's stored rows: a
+    // fallback or provider-default model exists only in the resolved catalog,
+    // so reading `models` left the very first status line and its diagnostics
+    // without a denominator until some later transition happened to refresh
+    // it. Every later read of this value already comes from `modelChoices`.
+    const modelContextWindow = modelChoices.find(
+      (choice) =>
+        choice.connectionSlug === selectedTarget.connectionSlug &&
+        choice.model === selectedTarget.model,
     )?.contextWindow;
     return {
       connection,
@@ -195,9 +204,6 @@ export async function createRuntimeHostTuiContext(
         : { connectionId: selectedTarget.connectionId }),
       connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
-      ...(selectedTarget.connection
-        ? { providerType: selectedTarget.connection.providerType }
-        : {}),
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,

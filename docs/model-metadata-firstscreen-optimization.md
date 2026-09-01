@@ -44,8 +44,8 @@ Five independent runtime import paths make the metadata reachable at startup:
 
 1. `thinkingVariantsForModel` → `model-thinking.ts` → `model-metadata.ts`
 2. `buildChatModelChoices` → `model-catalog-choices.ts` → `model-catalog.ts`
-3. `@maka/ui` `modelMenuGroups` → `PROVIDER_DEFAULTS`
-4. `provider-display.tsx` → `PROVIDER_DEFAULTS`
+3. `@maka/ui` `modelMenuGroups` → `PROVIDER_REGISTRY`
+4. `provider-display.tsx` → `PROVIDER_REGISTRY`
 5. `OnboardingHero` → `RECOMMENDED_PROVIDER_TYPES`
 
 Each path eventually reaches `model-metadata.generated.ts`. Removing only one path, or assigning the metadata to a Vite `manualChunks` entry, does not remove the static startup dependency.
@@ -66,8 +66,8 @@ The session health notice uses the last completed snapshot while an event-trigge
 
 Remove the remaining provider-registry dependencies from the startup path:
 
-- `modelMenuGroups` receives the required label from the startup projection instead of reading `PROVIDER_DEFAULTS`.
-- `providerDisplay` uses the existing exhaustive `PROVIDER_DISPLAY_COPY`; an unknown cross-version type falls back to the type string and generic local description instead of `PROVIDER_DEFAULTS`.
+- `modelMenuGroups` receives the required label from the startup projection instead of reading `PROVIDER_REGISTRY`.
+- `providerDisplay` uses the existing exhaustive `PROVIDER_DISPLAY_COPY`; an unknown cross-version type falls back to the type string and generic local description instead of `PROVIDER_REGISTRY`.
 - OnboardingHero gets its four first-run provider types from a small metadata-free product constant or equivalent lightweight projection instead of importing `RECOMMENDED_PROVIDER_TYPES` at runtime.
 
 Full metadata remains available to the main process and lazy-loaded SettingsModal. This renderer optimization does not otherwise change the metadata generation flow.
@@ -117,8 +117,8 @@ Acceptance criteria:
 
 1. `thinkingVariantsForModel` → `model-thinking.ts` → `model-metadata.ts`
 2. `buildChatModelChoices` → `model-catalog-choices.ts` → `model-catalog.ts`
-3. `@maka/ui` 的 `modelMenuGroups` → `PROVIDER_DEFAULTS`
-4. `provider-display.tsx` → `PROVIDER_DEFAULTS`
+3. `@maka/ui` 的 `modelMenuGroups` → `PROVIDER_REGISTRY`
+4. `provider-display.tsx` → `PROVIDER_REGISTRY`
 5. `OnboardingHero` → `RECOMMENDED_PROVIDER_TYPES`
 
 这些链最终都会进入 `model-metadata.generated.ts`。只处理其中一条或使用 Vite `manualChunks` 都不会解除首屏静态依赖。
@@ -139,8 +139,8 @@ Session health notice 在 event 触发的异步刷新完成前继续使用上一
 
 同时切断其余 provider registry 依赖：
 
-- `modelMenuGroups` 从首屏投影获取所需 label，不再直接读取 `PROVIDER_DEFAULTS`。
-- `providerDisplay` 使用已有且类型完整的 `PROVIDER_DISPLAY_COPY`；遇到跨版本未知 type 时直接显示 type 和通用本地描述，不再 fallback 到 `PROVIDER_DEFAULTS`。
+- `modelMenuGroups` 从首屏投影获取所需 label，不再直接读取 `PROVIDER_REGISTRY`。
+- `providerDisplay` 使用已有且类型完整的 `PROVIDER_DISPLAY_COPY`；遇到跨版本未知 type 时直接显示 type 和通用本地描述，不再 fallback 到 `PROVIDER_REGISTRY`。
 - OnboardingHero 的 4 个首次引导 provider 使用不依赖 provider registry 的小型产品常量或等价轻量投影，不再运行时引用 `RECOMMENDED_PROVIDER_TYPES`。
 
 完整元数据继续保留在 main process 和懒加载的 SettingsModal 中；这项 renderer 优化本身不再改变元数据生成流程。

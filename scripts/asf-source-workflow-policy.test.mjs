@@ -75,7 +75,7 @@ describe('ASF source CI policy', () => {
     assert.ok(installIndex < sourceGateIndex);
     assert.match(
       workflow,
-      /name: Install dependencies\n\s+if: .*needs\.plan\.outputs\.asf_source == 'true'/,
+      /name: Install dependencies\n\s+if: .*steps\.plan\.outputs\.asf_source == 'true'/,
     );
   });
 });

@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   cpSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -50,6 +51,7 @@ export function parseQualificationArgs(argv) {
     '--target',
     '--source-sha256',
     '--target-sha256',
+    '--target-workspace',
     '--expect-epoch-relation',
   ]);
   const values = new Map();
@@ -64,13 +66,29 @@ export function parseQualificationArgs(argv) {
     values.set(name, value);
   }
   const source = requireAbsolutePath(values, '--source');
-  const target = requireAbsolutePath(values, '--target');
   const sourceSha256 = requireSha256(values, '--source-sha256');
-  const targetSha256 = requireSha256(values, '--target-sha256');
   const expectedEpochRelation = values.get('--expect-epoch-relation') ?? 'any';
   if (!['same', 'different', 'any'].includes(expectedEpochRelation)) {
     throw new Error('Expected epoch relation must be same, different, or any');
   }
+  // A pull request qualifies the built workspace rather than a packaged
+  // artifact: what decides whether durable state still opens is the compiled
+  // storage and Runtime Host code, and packaging only moves it. The release
+  // lanes keep naming an exact tarball, which is why identity stays required
+  // there rather than optional everywhere.
+  if (values.has('--target-workspace')) {
+    if (values.has('--target') || values.has('--target-sha256')) {
+      throw new Error('A workspace target cannot also name a tarball target');
+    }
+    return {
+      source,
+      sourceSha256,
+      targetWorkspace: requireAbsolutePath(values, '--target-workspace'),
+      expectedEpochRelation,
+    };
+  }
+  const target = requireAbsolutePath(values, '--target');
+  const targetSha256 = requireSha256(values, '--target-sha256');
   return { source, target, sourceSha256, targetSha256, expectedEpochRelation };
 }
 
@@ -134,7 +152,9 @@ export async function qualifyReleasedCliStateRoot(input) {
     assertCommandAvailable('/usr/bin/setpriv');
   }
   assertTarballDigest(input.source, input.sourceSha256, 'source');
-  assertTarballDigest(input.target, input.targetSha256, 'target');
+  if (!input.targetWorkspace) {
+    assertTarballDigest(input.target, input.targetSha256, 'target');
+  }
   const scope = mkdtempSync(join(tmpdir(), 'maka-released-state-root-'));
   try {
     const sandbox = prepareSandbox(scope);
@@ -144,12 +164,14 @@ export async function qualifyReleasedCliStateRoot(input) {
       scope,
       sandbox,
     });
-    const target = installArtifact({
-      role: 'target',
-      tarball: input.target,
-      scope,
-      sandbox,
-    });
+    const target = input.targetWorkspace
+      ? workspaceArtifact({ repoRoot: input.targetWorkspace, scope, sandbox })
+      : installArtifact({
+          role: 'target',
+          tarball: input.target,
+          scope,
+          sandbox,
+        });
     const epochRelation = assertExpectedEpochRelation(
       source.compatibilityEpoch,
       target.compatibilityEpoch,
@@ -174,23 +196,41 @@ export async function qualifyReleasedCliStateRoot(input) {
   }
 }
 
+// The State Root is not the whole durable surface. The Runtime Host access file
+// and the rest of the control records live in the account-local control
+// namespace, and the Host opens them before the Kernel starts — so a golden
+// copy that captured only the State Root could not restore, or observe, the
+// state that decides whether the Host starts at all. The control path mirrors
+// resolveRootControlNamespace in @maka/storage; this harness runs on Linux
+// only, so it names the Linux location rather than importing across the
+// installed artifacts it is here to compare.
+export function durableStateLocations(scope) {
+  return [
+    { live: join(scope, 'state-root'), golden: join(scope, 'golden-root') },
+    {
+      live: join(userInfo().homedir, '.cache', 'maka', 'runtime-hosts'),
+      golden: join(scope, 'golden-control'),
+    },
+  ];
+}
+
 async function qualifyInstalledArtifacts(input) {
   const { scope, source, target } = input;
-  const rootPath = join(scope, 'state-root');
-  const goldenPath = join(scope, 'golden-root');
+  const locations = durableStateLocations(scope);
+  const rootPath = locations[0].live;
   mkdirSync(rootPath, { recursive: true });
   const seeded = runFixture({ action: 'seed', artifact: source, rootPath, scope });
   assertFacts(seeded);
-  cpSync(rootPath, goldenPath, { recursive: true, force: true });
+  captureGolden(locations);
 
   const sourceReady = await runInstalledRuntimeHost({ artifact: source, rootPath, scope });
   const sourceFacts = runFixture({ action: 'inspect', artifact: source, rootPath, scope });
   assertSameFacts(seeded, sourceFacts, 'source self-reopen');
 
-  restoreGolden(rootPath, goldenPath);
+  restoreGolden(locations);
   const writerFence = await proveWriterFence({ source, target, rootPath, scope });
 
-  restoreGolden(rootPath, goldenPath);
+  restoreGolden(locations);
   const targetReady = await runInstalledRuntimeHost({ artifact: target, rootPath, scope });
   const targetFacts = runFixture({ action: 'inspect', artifact: target, rootPath, scope });
   assertSameFacts(seeded, targetFacts, 'target transition');
@@ -332,6 +372,42 @@ function installArtifact({ role, tarball, scope, sandbox }) {
     throw new Error(`The ${role} CLI reports ${version}; expected ${manifest.version}`);
   }
   return { role, prefix, packageRoot, cliPath, version, compatibilityEpoch: Number(epoch) };
+}
+
+// The workspace already carries the compiled packages the fixture loads: npm
+// workspaces link node_modules/@maka/* at the repository root, which is the
+// same shape an installed tarball presents. Nothing is installed, so the
+// packaging chain in front of this check is skipped entirely.
+function workspaceArtifact({ repoRoot, scope, sandbox }) {
+  const cliPath = join(repoRoot, 'packages/cli/dist/cli.js');
+  const protocolPath = join(repoRoot, 'node_modules/@maka/runtime-host/dist/protocol/index.js');
+  for (const required of [cliPath, protocolPath]) {
+    if (!existsSync(required)) {
+      throw new Error(`The workspace target is not built: ${required} is missing`);
+    }
+  }
+  const epoch = readFileSync(protocolPath, 'utf8').match(
+    /RUNTIME_HOST_COMPATIBILITY_EPOCH\s*=\s*(\d+)/u,
+  )?.[1];
+  if (!epoch) throw new Error('The workspace target has no compatibility epoch');
+  const versionResult = spawnSync(process.execPath, [cliPath, '--version'], {
+    cwd: scope,
+    env: sandbox.environment,
+    encoding: 'utf8',
+    maxBuffer: MAX_OUTPUT_BYTES,
+    timeout: PROCESS_TIMEOUT_MS,
+  });
+  if (versionResult.status !== 0) {
+    throw new Error(`The workspace CLI version check failed: ${versionResult.stderr}`);
+  }
+  return {
+    role: 'target',
+    kind: 'workspace',
+    packageRoot: repoRoot,
+    cliPath,
+    version: versionResult.stdout.trim(),
+    compatibilityEpoch: Number(epoch),
+  };
 }
 
 export function qualificationSandboxArgs({ innerInputPath, sandbox, scope }) {
@@ -529,7 +605,8 @@ function assertFacts(value) {
     !value.rootId ||
     !value.session?.id ||
     !value.session?.message?.id ||
-    !value.scheduledTask?.id
+    !value.scheduledTask?.id ||
+    !value.access?.credentialId
   ) {
     throw new Error('Released fixture evidence is incomplete');
   }
@@ -542,19 +619,43 @@ function assertSameFacts(expected, actual, stage) {
   }
 }
 
-function restoreGolden(rootPath, goldenPath) {
-  for (const entry of readdirSync(rootPath)) {
-    rmSync(join(rootPath, entry), { recursive: true, force: true });
+function captureGolden(locations) {
+  for (const { live, golden } of locations) {
+    rmSync(golden, { recursive: true, force: true });
+    if (!existsSync(live)) continue;
+    cpSync(live, golden, { recursive: true, force: true });
   }
-  for (const entry of readdirSync(goldenPath)) {
-    cpSync(join(goldenPath, entry), join(rootPath, entry), {
-      recursive: true,
-      force: true,
-    });
+}
+
+function restoreGolden(locations) {
+  for (const { live, golden } of locations) {
+    if (existsSync(live)) {
+      for (const entry of readdirSync(live)) {
+        rmSync(join(live, entry), { recursive: true, force: true });
+      }
+    }
+    if (!existsSync(golden)) continue;
+    mkdirSync(live, { recursive: true });
+    for (const entry of readdirSync(golden)) {
+      cpSync(join(golden, entry), join(live, entry), {
+        recursive: true,
+        force: true,
+      });
+    }
   }
 }
 
 function artifactEvidence(artifact, sha256) {
+  // A workspace target has no published identity to pin, and saying so keeps
+  // this report from reading as evidence about a release it never touched.
+  if (artifact.kind === 'workspace') {
+    return {
+      version: artifact.version,
+      compatibilityEpoch: artifact.compatibilityEpoch,
+      kind: 'workspace',
+      sha256: 'not_applicable',
+    };
+  }
   return {
     version: artifact.version,
     compatibilityEpoch: artifact.compatibilityEpoch,

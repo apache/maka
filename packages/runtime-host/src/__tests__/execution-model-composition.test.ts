@@ -37,7 +37,7 @@ import {
   createManagedExecutionBoundary,
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { AgentRunHeader } from '@maka/core/agent-run';
@@ -1147,7 +1147,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const subscriptionModelId = PROVIDER_DEFAULTS['openai-codex'].fallbackModels[0] ?? '';
+    const subscriptionModelId = PROVIDER_REGISTRY['openai-codex'].fallbackModels[0] ?? '';
     assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,

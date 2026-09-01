@@ -36,7 +36,7 @@ import {
   type MutateRuntimePolicyInput,
   type RuntimePolicy,
 } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
   resolveStorageRoot,
   StorageRootAuthorityError,
@@ -3817,7 +3817,7 @@ describe('runtime policy stores', () => {
           'openai-codex',
           'Concurrent Codex entity',
         ),
-        enabledModelIds: [...PROVIDER_DEFAULTS['openai-codex'].fallbackModels],
+        enabledModelIds: [...PROVIDER_REGISTRY['openai-codex'].fallbackModels],
       });
       assert.deepEqual(
         await stores.operations.completeInteractiveOAuthLogin(
@@ -4045,10 +4045,7 @@ describe('runtime policy stores', () => {
           attemptId: 'copilot-login',
           target: { kind: 'existing', connectionId: copilot.connectionId },
         }),
-        {
-          kind: 'provider_action_unavailable',
-          availability: 'hidden',
-        },
+        { kind: 'provider_action_unavailable' },
       );
 
       // A retired provider keeps its stored connection, so the login entry
@@ -4064,10 +4061,7 @@ describe('runtime policy stores', () => {
           attemptId: 'retired-oauth-login',
           target: { kind: 'existing', connectionId: retired.connectionId },
         }),
-        {
-          kind: 'provider_action_unavailable',
-          availability: 'hidden',
-        },
+        { kind: 'provider_action_unavailable' },
       );
     });
   });

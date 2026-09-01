@@ -35,7 +35,7 @@ import {
 } from '@maka/core/runtime-policy';
 import {
   deriveConnectionSlug,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -114,7 +114,7 @@ export function prepareConnectionOnboardingIntent(
       'Onboarding requires an API-key provider',
     );
   }
-  const definition = PROVIDER_DEFAULTS[providerType];
+  const definition = PROVIDER_REGISTRY[providerType];
   const discovery = decode(() => normalizeConnectionModelDiscoveryResult(input.discovery));
   // Non-empty is the requirement; `source` is write provenance, not a
   // quality bar. A provider without a model-list endpoint runs discovery by

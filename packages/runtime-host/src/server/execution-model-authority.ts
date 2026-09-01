@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
@@ -844,7 +844,7 @@ export async function resolveExecutionTarget(
       `Runtime Host model connection is not ready: ${resolved.kind}`,
     );
   }
-  const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
+  const provider = PROVIDER_REGISTRY[resolved.connection.providerType];
   if (!provider) {
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
