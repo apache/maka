@@ -111,9 +111,11 @@ export function createSessionSnapshot(
       continue;
     }
     if (selected.length === 0) {
+      const prefixLength = formatSnapshotItem({ ...candidate, text: '' }).length;
+      const contentBudget = Math.max(0, available - prefixLength);
       selected.push({
         ...candidate,
-        text: line.slice(0, available).trimEnd(),
+        text: candidate.text.slice(0, contentBudget).trimEnd(),
       });
       usedChars = maxChars;
     }
