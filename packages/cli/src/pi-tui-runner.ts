@@ -129,7 +129,7 @@ import {
   type ExpansionEntryKind,
   type MakaPiTranscriptMetadata,
 } from './pi-transcript.js';
-import { FormInteractionOverlay } from './pi-tui-form-interaction.js';
+import { FormInteractionOverlay, type TuiFormDraft } from './pi-tui-form-interaction.js';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import { runMakaPiTuiTurn, type MakaPiTuiTurnRequest } from './pi-tui-turn.js';
 import { editorTheme, selectListTheme } from './tui-ansi.js';
@@ -523,6 +523,16 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   let formOverlay: OverlayHandle | undefined;
   let formOverlayComponent: FormInteractionOverlay | undefined;
   let formOverlayRequestId: string | undefined;
+  let formOverlaySessionId: string | undefined;
+  let formOverlaySchema: string | undefined;
+  let retainedFormDraft:
+    | {
+        readonly sessionId: string;
+        readonly requestId: string;
+        readonly schema: string;
+        readonly drafts: readonly TuiFormDraft[];
+      }
+    | undefined;
   let turnRunning = false;
   // Monotonic generation for visible agent turns. A mid-turn `/session`
   // switch-away (#3380) bumps it to orphan the in-flight drain: every callback
@@ -2180,11 +2190,27 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     }
   };
 
-  const closeFormOverlay = (): void => {
+  const closeFormOverlay = (retainDraft = true): void => {
+    if (
+      retainDraft &&
+      formOverlayComponent &&
+      formOverlaySessionId &&
+      formOverlayRequestId &&
+      formOverlaySchema
+    ) {
+      retainedFormDraft = {
+        sessionId: formOverlaySessionId,
+        requestId: formOverlayRequestId,
+        schema: formOverlaySchema,
+        drafts: formOverlayComponent.snapshotDrafts(),
+      };
+    }
     formOverlay?.hide();
     formOverlay = undefined;
     formOverlayComponent = undefined;
     formOverlayRequestId = undefined;
+    formOverlaySessionId = undefined;
+    formOverlaySchema = undefined;
   };
 
   const finishUserForm = (response: InteractionFormResponse): void => {
@@ -2195,6 +2221,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       reportError(new Error('User forms are unavailable on this driver.'));
       return;
     }
+    const responseSessionId = formOverlaySessionId ?? input.driver.getSessionId();
     formResponseInFlightRequestId = response.requestId;
     void respond
       .call(input.driver, response)
@@ -2202,10 +2229,24 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         if (formResponseInFlightRequestId === response.requestId) {
           formResponseInFlightRequestId = undefined;
         }
-        if (activeFormRequest(state)?.requestId === response.requestId) {
+        if (
+          input.driver.getSessionId() === responseSessionId &&
+          activeFormRequest(state)?.requestId === response.requestId
+        ) {
           completePendingInteraction(state, response.requestId);
         }
-        closeFormOverlay();
+        if (
+          retainedFormDraft?.sessionId === responseSessionId &&
+          retainedFormDraft.requestId === response.requestId
+        ) {
+          retainedFormDraft = undefined;
+        }
+        if (
+          formOverlaySessionId === responseSessionId &&
+          formOverlayRequestId === response.requestId
+        ) {
+          closeFormOverlay(false);
+        }
         syncInteractionOverlays();
         requestRender();
       })
@@ -2215,6 +2256,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         }
         if (
           activeFormRequest(state)?.requestId === response.requestId &&
+          formOverlaySessionId === responseSessionId &&
           formOverlayRequestId === response.requestId
         ) {
           formOverlayComponent?.setSubmissionFailed();
@@ -2233,13 +2275,44 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       closeFormOverlay();
       return;
     }
-    if (formOverlayRequestId !== request.requestId) closeFormOverlay();
+    const sessionId = input.driver.getSessionId();
+    if (!sessionId) {
+      closeFormOverlay();
+      return;
+    }
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId !== request.requestId
+    ) {
+      retainedFormDraft = undefined;
+    }
+    if (
+      formOverlaySessionId !== sessionId ||
+      formOverlayRequestId !== request.requestId
+    ) closeFormOverlay();
     if (formResponseInFlightRequestId || formOverlayComponent) return;
+    const schema = JSON.stringify(request.fields);
+    const restoredDrafts =
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema === schema
+        ? retainedFormDraft.drafts
+        : undefined;
+    if (
+      retainedFormDraft?.sessionId === sessionId &&
+      retainedFormDraft.requestId === request.requestId &&
+      retainedFormDraft.schema !== schema
+    ) {
+      retainedFormDraft = undefined;
+    }
     formOverlayComponent = new FormInteractionOverlay(tui, {
       locale,
       request,
+      initialDrafts: restoredDrafts,
       onRespond: finishUserForm,
     });
+    formOverlaySessionId = sessionId;
+    formOverlaySchema = schema;
     formOverlayRequestId = request.requestId;
     formOverlay = showBottomPicker(formOverlayComponent);
   };

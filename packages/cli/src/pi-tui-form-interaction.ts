@@ -57,6 +57,16 @@ interface TuiFormCopy {
   readonly omitted: string;
   readonly empty: string;
   readonly invalid: string;
+  readonly minimumLength: string;
+  readonly maximumLength: string;
+  readonly lengthRange: string;
+  readonly minimumValue: string;
+  readonly maximumValue: string;
+  readonly valueRange: string;
+  readonly minimumItems: string;
+  readonly maximumItems: string;
+  readonly itemRange: string;
+  readonly format: string;
   readonly reviewHint: string;
   readonly textHint: string;
   readonly choiceHint: string;
@@ -129,11 +139,14 @@ export class FormInteractionOverlay implements Component {
     private readonly input: {
       readonly locale: UiLocale;
       readonly request: FormRequestEvent;
+      readonly initialDrafts?: readonly TuiFormDraft[];
       readonly onRespond: (response: InteractionFormResponse) => void;
     },
   ) {
     this.#copy = FORM_COPY[input.locale];
-    this.#drafts = createTuiFormDrafts(input.request.fields);
+    this.#drafts = input.initialDrafts?.length === input.request.fields.length
+      ? cloneTuiFormDrafts(input.initialDrafts)
+      : createTuiFormDrafts(input.request.fields);
     this.#editor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.#editor.onChange = (value) => {
       if (this.#mode.kind !== 'text') return;
@@ -147,6 +160,10 @@ export class FormInteractionOverlay implements Component {
 
   setSubmissionFailed(): void {
     this.#submitting = false;
+  }
+
+  snapshotDrafts(): readonly TuiFormDraft[] {
+    return cloneTuiFormDrafts(this.#drafts);
   }
 
   handleInput(data: string): void {
@@ -359,6 +376,10 @@ export class FormInteractionOverlay implements Component {
       if (index === this.#activeIndex && field.description) {
         lines.push(padLine(`  ${ansi.dim(safeDisplay(field.description))}`, width));
       }
+      if (index === this.#activeIndex) {
+        const constraint = this.#constraint(field);
+        if (constraint) lines.push(padLine(`  ${ansi.dim(constraint)}`, width));
+      }
     });
     if (window.end < this.input.request.fields.length) {
       lines.push(
@@ -380,7 +401,7 @@ export class FormInteractionOverlay implements Component {
         `${safeDisplay(field.label)} (${field.required ? this.#copy.required : this.#copy.optional})`,
         width,
       ),
-      ...(field.description ? [padLine(ansi.dim(safeDisplay(field.description)), width)] : []),
+      ...this.#fieldDetails(field, width),
       ...this.#editor.render(width),
       padLine(ansi.dim(this.#copy.textHint), width),
     ];
@@ -396,7 +417,7 @@ export class FormInteractionOverlay implements Component {
     const window = visibleWindow(options.length, mode.optionIndex, FORM_CHOICE_MAX_VISIBLE_OPTIONS);
     return [
       padLine(safeDisplay(field.label), width),
-      ...(field.description ? [padLine(ansi.dim(safeDisplay(field.description)), width)] : []),
+      ...this.#fieldDetails(field, width),
       ...(window.start > 0 ? [padLine(ansi.dim(`  … ↑ ${window.start}`), width)] : []),
       ...options.slice(window.start, window.end).map((label, offset) => {
         const index = window.start + offset;
@@ -425,7 +446,7 @@ export class FormInteractionOverlay implements Component {
     );
     return [
       padLine(safeDisplay(field.label), width),
-      ...(field.description ? [padLine(ansi.dim(safeDisplay(field.description)), width)] : []),
+      ...this.#fieldDetails(field, width),
       ...(window.start > 0 ? [padLine(ansi.dim(`  … ↑ ${window.start}`), width)] : []),
       ...field.options.slice(window.start, window.end).map((option, offset) => {
         const index = window.start + offset;
@@ -458,6 +479,76 @@ export class FormInteractionOverlay implements Component {
       ? safeDisplay(draft.value)
       : ansi.dim(this.#copy.empty);
   }
+
+  #fieldDetails(field: InteractionFormField, width: number): string[] {
+    const details = field.description ? [safeDisplay(field.description)] : [];
+    const constraint = this.#constraint(field);
+    if (constraint) details.push(constraint);
+    return details.map((detail) => padLine(ansi.dim(detail), width));
+  }
+
+  #constraint(field: InteractionFormField): string | undefined {
+    const constraints: string[] = [];
+    if (field.kind === 'string') {
+      if (field.minLength !== undefined && field.maxLength !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.lengthRange, {
+          minimum: field.minLength,
+          maximum: field.maxLength,
+        }, this.input.locale));
+      } else if (field.minLength !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.minimumLength, {
+          minimum: field.minLength,
+        }, this.input.locale));
+      } else if (field.maxLength !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.maximumLength, {
+          maximum: field.maxLength,
+        }, this.input.locale));
+      }
+      if (field.format !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.format, {
+          format: field.format,
+        }, this.input.locale));
+      }
+    } else if (field.kind === 'number' || field.kind === 'integer') {
+      if (field.minimum !== undefined && field.maximum !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.valueRange, {
+          minimum: field.minimum,
+          maximum: field.maximum,
+        }, this.input.locale));
+      } else if (field.minimum !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.minimumValue, {
+          minimum: field.minimum,
+        }, this.input.locale));
+      } else if (field.maximum !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.maximumValue, {
+          maximum: field.maximum,
+        }, this.input.locale));
+      }
+    } else if (field.kind === 'multi_select') {
+      if (field.minItems !== undefined && field.maxItems !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.itemRange, {
+          minimum: field.minItems,
+          maximum: field.maxItems,
+        }, this.input.locale));
+      } else if (field.minItems !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.minimumItems, {
+          minimum: field.minItems,
+        }, this.input.locale));
+      } else if (field.maxItems !== undefined) {
+        constraints.push(formatUiMessage(this.#copy.maximumItems, {
+          maximum: field.maxItems,
+        }, this.input.locale));
+      }
+    }
+    return constraints.length === 0 ? undefined : constraints.join(' · ');
+  }
+}
+
+function cloneTuiFormDrafts(drafts: readonly TuiFormDraft[]): TuiFormDraft[] {
+  return drafts.map((draft) => ({
+    included: draft.included,
+    value: Array.isArray(draft.value) ? [...draft.value] : draft.value,
+  }));
 }
 
 function draftValue(field: InteractionFormField, draft: TuiFormDraft): InteractionFormValue {
