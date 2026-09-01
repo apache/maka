@@ -337,8 +337,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const parameters = requireZodSchema(binding.tool);
-  const args = await parameters.parseAsync(frame.arguments);
+  const args = await parseToolArguments(binding.tool, frame.arguments);
   signal.throwIfAborted();
   const sessionId =
     frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
@@ -448,13 +447,15 @@ function capabilityOffer(
 }
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
-  const schema = toJSONSchema(requireZodSchema(tool), {
-    io: "input",
-    target: "draft-07",
-    unrepresentable: "any",
-    cycles: "ref",
-    reused: "inline",
-  });
+  const schema = tool.parameters instanceof z.ZodType
+    ? toJSONSchema(tool.parameters, {
+        io: "input",
+        target: "draft-07",
+        unrepresentable: "any",
+        cycles: "ref",
+        reused: "inline",
+      })
+    : cloneDeclaredJsonSchema(tool);
   delete schema.$schema;
   if (schema.type !== "object") {
     throw new Error(
@@ -464,13 +465,42 @@ function toolInputSchema(tool: MakaTool): Record<string, unknown> {
   return Object.freeze(schema);
 }
 
-function requireZodSchema(tool: MakaTool): z.ZodType {
-  if (!(tool.parameters instanceof z.ZodType)) {
+function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
+  const parameters = tool.parameters as { readonly jsonSchema?: unknown } | undefined;
+  const schema = parameters?.jsonSchema;
+  if (!isPlainRecord(schema)) {
     throw new Error(
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return tool.parameters;
+  return structuredClone(schema);
+}
+
+async function parseToolArguments(tool: MakaTool, args: unknown): Promise<unknown> {
+  if (tool.parameters instanceof z.ZodType) {
+    return tool.parameters.parseAsync(args);
+  }
+  const parameters = tool.parameters as {
+    readonly validate?: (
+      value: unknown,
+    ) =>
+      | { readonly success: true; readonly value: unknown }
+      | { readonly success: false; readonly error: unknown }
+      | Promise<
+          | { readonly success: true; readonly value: unknown }
+          | { readonly success: false; readonly error: unknown }
+        >;
+  };
+  if (typeof parameters?.validate !== "function") return args;
+  const result = await parameters.validate(args);
+  if (result.success) return result.value;
+  throw result.error;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function indexBindings(

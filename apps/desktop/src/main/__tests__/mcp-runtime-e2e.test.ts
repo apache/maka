@@ -23,6 +23,8 @@ import { test } from 'node:test';
 import { MCP_CONFIG_VERSION } from '@maka/core/mcp';
 import { McpClientManager } from '@maka/mcp';
 import { buildMcpTools } from '@maka/runtime/mcp-tools';
+import { decodeClientCapabilityReplaceInput } from '@maka/runtime-host/protocol';
+import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 
 const fixturePath = fileURLToPath(new URL('../../../../../packages/mcp/dist/__fixtures__/stdio-server.js', import.meta.url));
 
@@ -41,6 +43,61 @@ test('MCP tools stay bound to the connection generation that advertised them', a
     const echo = tools.find((tool) => tool.name === 'mcp__fixture__echo');
     assert.ok(echo);
     assert.equal(echo.categoryHint, 'network_send');
+
+    const provider = createDesktopNativeCapabilityProvider({
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools connected by this Desktop client.',
+          tools,
+        },
+      ],
+    });
+    assert.doesNotThrow(() =>
+      decodeClientCapabilityReplaceInput({
+        registrationId: 'registration-1',
+        offers: provider.offers(),
+      }),
+    );
+    assert.deepEqual(provider.offers()[0]?.tools[0]?.inputSchema, {
+      type: 'object',
+      properties: { value: { type: 'string' } },
+    });
+    if (!provider.call) throw new Error('Expected a callable Desktop capability provider');
+    assert.deepEqual(
+      await provider.call(
+        {
+          kind: 'client.capability.call',
+          invocationId: 'invocation-1',
+          registrationId: 'registration-1',
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: 'mcp__fixture__echo',
+          arguments: { value: 'desktop-capability' },
+          sessionId: 'session',
+          turnId: 'turn',
+          toolCallId: 'capability-call',
+          cwd: process.cwd(),
+        },
+        {
+          signal: new AbortController().signal,
+          accept: async () => undefined,
+        },
+      ),
+      {
+        content: [
+          { type: 'text', text: 'desktop-capability' },
+          { type: 'text', text: '{"structuredContent":{"echoed":"desktop-capability"}}' },
+        ],
+      },
+    );
+
     const result = await echo.impl({ value: 'runtime-e2e' }, {
       sessionId: 'session', turnId: 'turn', cwd: process.cwd(), toolCallId: 'call',
       abortSignal: new AbortController().signal, emitOutput() {},
