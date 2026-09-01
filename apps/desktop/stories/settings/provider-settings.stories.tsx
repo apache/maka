@@ -83,7 +83,6 @@ function makeConnection(input: {
     enabled: input.enabled ?? true,
     ...(input.models ? { models: input.models } : {}),
     ...(input.modelSource ? { modelSource: input.modelSource } : {}),
-    modelsFetchedAt: NOW - 18 * 60 * 1000,
     ...(input.lastTestStatus ? { lastTestStatus: input.lastTestStatus } : {}),
     lastTestAt: new Date(NOW - 12 * 60 * 1000).toISOString(),
     ...(input.lastTestMessage ? { lastTestMessage: input.lastTestMessage } : {}),

@@ -116,7 +116,6 @@ function makeConnection(input: {
     providerType: input.providerType,
     defaultModel: 'glm-4.7',
     enabled: input.enabled ?? true,
-    modelsFetchedAt: NOW - 18 * 60_000,
     lastTestStatus: 'verified',
     lastTestAt: new Date(NOW - 12 * 60_000).toISOString(),
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,

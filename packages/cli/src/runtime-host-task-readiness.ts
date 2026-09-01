@@ -107,7 +107,6 @@ function catalogEntryAsLlmConnection(
     enabledModelIds: [...entry.enabledModelIds],
     models: [...entry.models],
     ...(entry.modelSource ? { modelSource: entry.modelSource } : {}),
-    ...(entry.modelsFetchedAt ? { modelsFetchedAt: entry.modelsFetchedAt } : {}),
     ...(entry.lastTest
       ? { lastTestStatus: entry.lastTest.status, lastTestAt: entry.lastTest.checkedAt }
       : {}),

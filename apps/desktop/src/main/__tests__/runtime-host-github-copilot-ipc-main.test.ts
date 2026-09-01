@@ -130,7 +130,6 @@ test('imports a local GitHub credential through the shared Host account path', a
         revision: current.revision + 1,
         models: [{ id: discoveredModelId }],
         modelSource: 'fetched',
-        modelsFetchedAt: 1,
       };
       catalog = {
         ...catalog,

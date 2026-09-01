@@ -300,11 +300,7 @@ export function registerRuntimeHostConnectionsIpc(
     }
     deps.emitConnectionListChanged();
     const latest = requireConnectionIdentity(await snapshot(), connectionIdentity(current));
-    return {
-      models: [...latest.models],
-      source: result.source,
-      fetchedAt: result.fetchedAt,
-    };
+    return { models: [...latest.models], source: result.source };
   });
   deps.ipcMain.handle(
     'connections:test',
@@ -382,9 +378,6 @@ export function projectHostConnections(
         ? {}
         : { requestBodyOverlay: connection.requestBodyOverlay }),
       ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
-      ...(connection.modelsFetchedAt === undefined
-        ? {}
-        : { modelsFetchedAt: connection.modelsFetchedAt }),
       ...(connection.lastTest === undefined
         ? {}
         : {

@@ -184,8 +184,6 @@ export interface LlmConnection extends RuntimeExecutionConnection {
   /** Model ids shown in model pickers. Legacy connections omit this and enable only their default model. */
   enabledModelIds?: string[];
   modelSource?: ModelDiscoverySource;
-  /** Unix ms timestamp for the last successful model discovery result. */
-  modelsFetchedAt?: number;
   lastTestStatus?: ConnectionLastTestStatus;
   /** ISO timestamp of the last explicit connection test. */
   lastTestAt?: string;
@@ -767,7 +765,6 @@ export interface UpdateConnectionInput {
   apiKey?: string;
   models?: ModelInfo[];
   modelSource?: ModelDiscoverySource;
-  modelsFetchedAt?: number;
   lastTestStatus?: ConnectionLastTestStatus;
   lastTestAt?: string;
   lastTestMessage?: string;

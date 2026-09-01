@@ -49,7 +49,6 @@ function catalogWithoutDefault(): ConnectionCatalogSnapshot {
         catalogEntries: [],
         models: [{ id: 'gpt-5-codex' }, { id: 'gpt-5-codex-mini' }],
         modelSource: 'fallback',
-        modelsFetchedAt: 0,
       },
     ],
   };

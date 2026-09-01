@@ -119,7 +119,6 @@ test('adapts every Host OAuth provider through one Desktop flow', async () => {
         revision: current.revision + 1,
         models: [{ id: modelId }],
         modelSource: 'fetched' as const,
-        modelsFetchedAt: 1,
       };
       catalog = {
         revision: catalog.revision + 1,

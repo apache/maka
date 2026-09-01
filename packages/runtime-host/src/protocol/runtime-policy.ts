@@ -153,7 +153,15 @@ export type ConnectionCatalogQueryInput =
 
 export type ConnectionCatalogHeaderItem = Omit<
   ConnectionCatalogEntry,
-  'enabledModelIds' | 'models' | 'relayModelProfiles'
+  // The three the paginator splits into their own items, plus two the Host
+  // keeps to itself: `modelsFetchedAt` is when the Host last ran discovery —
+  // its own bookkeeping, which no client reads — and
+  // `lastTestModelFactsFingerprint` is durable invalidation metadata.
+  | 'enabledModelIds'
+  | 'models'
+  | 'relayModelProfiles'
+  | 'modelsFetchedAt'
+  | 'lastTestModelFactsFingerprint'
 > & {
   readonly kind: 'connection';
   readonly connectionIndex: number;
@@ -677,7 +685,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'baseUrl',
       'enabled',
       'modelSource',
-      'modelsFetchedAt',
       'lastTest',
       'requestBodyOverlay',
       'enabledModelIdCount',
@@ -698,9 +705,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
       'catalogEntryCount',
     ],
   );
-  if ((header.modelSource === undefined) !== (header.modelsFetchedAt === undefined)) {
-    throw invalidProtocolFrame('Invalid connection header model discovery fields');
-  }
   const provider = decodeDomain(() => decodeProviderType(header.providerType));
   const baseUrl =
     header.baseUrl === undefined
@@ -741,16 +745,6 @@ function catalogPageItem(value: unknown): ConnectionCatalogPageItem {
     ...(baseUrl === undefined ? {} : { baseUrl }),
     enabled: boolean(header.enabled, 'connection enabled'),
     ...(header.modelSource === undefined ? {} : { modelSource: modelSource(header.modelSource) }),
-    ...(header.modelsFetchedAt === undefined
-      ? {}
-      : {
-          modelsFetchedAt: integer(
-            header.modelsFetchedAt,
-            'models fetched at',
-            0,
-            Number.MAX_SAFE_INTEGER,
-          ),
-        }),
     ...(header.lastTest === undefined
       ? {}
       : { lastTest: decodeDomain(() => decodeConnectionTestSummary(header.lastTest)) }),

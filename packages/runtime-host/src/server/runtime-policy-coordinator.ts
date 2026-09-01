@@ -446,8 +446,10 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       enabledModelIds,
       models,
       relayModelProfiles,
-      // This marker is durable invalidation metadata, not part of the
-      // client-visible catalog protocol.
+      // When the Host last ran discovery, and the marker that invalidates a
+      // test when model facts change: both are the Host's own bookkeeping,
+      // not part of the client-visible catalog protocol.
+      modelsFetchedAt: _modelsFetchedAt,
       lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
       ...header
     } = connection;
