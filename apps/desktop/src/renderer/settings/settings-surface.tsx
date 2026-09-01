@@ -95,9 +95,10 @@ import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
-  runtimeHostConnectionsBridge,
+  ConnectionSettingsServicesConsumer,
+  type ConnectionSettingsServices,
   type RuntimeHostSettingsConnectionsBridge,
-} from './runtime-host-settings-bridge.js';
+} from '../features/connection-settings';
 import {
   hasRuntimeHostSettingsPatch,
   projectClientOwnedSettings,
@@ -148,7 +149,7 @@ function readyRuntimeHost(
   return { profileId: entry.profile.id, hostId: entry.hostId };
 }
 
-export function SettingsSurface(props: {
+type SettingsSurfaceProps = {
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -171,7 +172,26 @@ export function SettingsSurface(props: {
   onRemoteHostAdded(profileId: string): void;
   onSelectedRuntimeHostProfileIdChange(profileId: string | undefined): void;
   snapshotCache?: SettingsSnapshotCache;
-}) {
+};
+
+export function SettingsSurface(props: SettingsSurfaceProps) {
+  return (
+    <ConnectionSettingsServicesConsumer>
+      {(connectionSettingsServices) => (
+        <SettingsSurfaceContent
+          {...props}
+          connectionSettingsServices={connectionSettingsServices}
+        />
+      )}
+    </ConnectionSettingsServicesConsumer>
+  );
+}
+
+function SettingsSurfaceContent(
+  props: SettingsSurfaceProps & {
+    readonly connectionSettingsServices: ConnectionSettingsServices;
+  },
+) {
   const locale = useUiLocale();
   const copy = getSettingsSharedCopy(locale);
   const localizedNav = groupedNav(locale);
@@ -348,12 +368,14 @@ export function SettingsSurface(props: {
     ),
     [runtimeHostLifecycleByProfile, runtimeHosts, selectedProfileId],
   );
-  const connectionsBridge = useMemo(
+  const connectionBridges = useMemo(
     () => selectedRuntimeHost
-      ? runtimeHostConnectionsBridge(selectedRuntimeHost)
+      ? props.connectionSettingsServices.forHost(selectedRuntimeHost)
       : undefined,
-    [selectedRuntimeHost],
+    [props.connectionSettingsServices, selectedRuntimeHost],
   );
+  const connectionsBridge = connectionBridges?.connections;
+  const apiKeyOnboardingBridge = connectionBridges?.apiKeyOnboarding;
   const selectedRuntimeHostKey = selectedRuntimeHost
     ? runtimeHostSettingsKey(selectedRuntimeHost)
     : undefined;
@@ -1015,6 +1037,7 @@ export function SettingsSurface(props: {
                             }
                             connections={connections}
                             connectionsBridge={connectionsBridge}
+                            apiKeyOnboardingBridge={apiKeyOnboardingBridge}
                             defaultSlug={defaultSlug}
                             runtimeHost={selectedRuntimeHost}
                             runtimeHostAvailabilityStatus={runtimeHostAvailabilityStatus}
@@ -1070,6 +1093,9 @@ function SettingsPageBody(props: {
   usageStats: UsageStats | null;
   connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
+  apiKeyOnboardingBridge:
+    | ReturnType<ConnectionSettingsServices['forHost']>['apiKeyOnboarding']
+    | undefined;
   defaultSlug: string | null;
   runtimeHost: DesktopRuntimeHostRef | undefined;
   runtimeHostAvailabilityStatus: RuntimeHostAvailabilityStatus;
@@ -1116,6 +1142,7 @@ function SettingsPageBody(props: {
         <SettingsPage className="settingsModelsPage">
           <ProvidersPanel
             bridge={props.connectionsBridge}
+            apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
             initialPage={props.openProviderCatalog ? 'catalog' : 'connections'}
             initialConnectionSlug={props.initialConnectionSlug}
             initialCreateProviderType={props.initialCreateProviderType}

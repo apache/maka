@@ -40,7 +40,14 @@ import type {
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
 } from '@maka/runtime-host/client';
 import { normalizeRequestHeaderUpdates } from '@maka/core/runtime-policy';
-import type { ConnectionTestRunResult } from '@maka/runtime-host/protocol';
+import {
+  CONNECTION_EFFECT_OPERATION_SPECS,
+  type ConnectionTestRunResult,
+} from '@maka/runtime-host/protocol';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
   handleReconnectableRead,
@@ -56,6 +63,7 @@ import type {
   DesktopConnectionIdentity,
   DesktopConnectionSnapshot,
 } from '../shared/desktop-connection-snapshot.js';
+import type { DesktopConnectionOnboardingSaveOutcome } from '../preload/bridge-contract.js';
 
 type HostConnectionsClient = Pick<
   DesktopRuntimeHostClient,
@@ -71,6 +79,8 @@ type HostConnectionsClient = Pick<
   | 'setDefaultConnectionTarget'
   | 'testConnection'
   | 'updateConnection'
+  | 'verifyConnectionOnboarding'
+  | 'saveConnectionOnboarding'
 >;
 
 export interface RuntimeHostConnectionsIpcDeps {
@@ -155,6 +165,37 @@ export function registerRuntimeHostConnectionsIpc(
       'set default model',
     );
     deps.emitConnectionListChanged();
+  });
+  deps.ipcMain.handle('connections:onboardingVerify', async (_event, raw: unknown) => {
+    const input = CONNECTION_EFFECT_OPERATION_SPECS[
+      'connection.onboarding.verify'
+    ].decodeInput(raw);
+    return deps.client.verifyConnectionOnboarding(input);
+  });
+  deps.ipcMain.handle('connections:onboardingSave', async (_event, raw: unknown) => {
+    const input = CONNECTION_EFFECT_OPERATION_SPECS[
+      'connection.onboarding.save'
+    ].decodeInput(raw);
+    try {
+      const result = await deps.client.saveConnectionOnboarding(input);
+      if (result.kind === 'saved') deps.emitConnectionListChanged();
+      return { kind: 'result', result } satisfies DesktopConnectionOnboardingSaveOutcome;
+    } catch (error) {
+      if (error instanceof RuntimeHostOperationError) {
+        return {
+          kind: error.code === 'commit_outcome_unknown' ? 'outcome_unknown' : 'not_saved',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
+      }
+      if (error instanceof RuntimeHostRequestInterruptedError) {
+        return {
+          kind: error.dispatch === 'not_dispatched' ? 'not_saved' : 'outcome_unknown',
+        } satisfies DesktopConnectionOnboardingSaveOutcome;
+      }
+      // A protocol/decode failure can arrive only after the command response
+      // has started coming back. Without affirmative evidence that the Host
+      // did not commit, allowing another create risks duplicating the account.
+      return { kind: 'outcome_unknown' } satisfies DesktopConnectionOnboardingSaveOutcome;
+    }
   });
   deps.ipcMain.handle('connections:create', async (_event, raw: unknown) => {
     const input = normalizeCreateInput(raw);

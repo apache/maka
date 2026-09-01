@@ -55,6 +55,8 @@ import { buildHealthSnapshot } from '@maka/core/health';
 import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
+import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
+import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import {
   createSettingsSnapshotCache,
@@ -1599,6 +1601,9 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
   // holds both in AppShell state and applies them optimistically on click.
   const [themePref, setThemePref] = useState<ThemePreference>('auto');
   const [themePalette, setThemePalette] = useState<ThemePalette>('default');
+  const [connectionSettingsServices] = useState(
+    createDesktopConnectionSettingsServices,
+  );
 
   return (
     <>
@@ -1616,27 +1621,29 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
           minHeight: 640,
         }}
       >
-        <SettingsSurface
-          onClose={noop}
-          themePref={themePref}
-          onThemeChange={setThemePref}
-          themePalette={themePalette}
-          onThemePaletteChange={setThemePalette}
-          onUiLocalePreferenceChange={noop}
-          uiLocaleUpdateGate={uiLocaleUpdateGate}
-          onDefaultPermissionModeChange={noop}
-          request={{ section: props.section }}
-          openProviderCatalog={props.openProviderCatalog}
-          initialConnectionSlug={props.initialConnectionSlug}
-          initialFocusRef={initialFocusRef}
-          onOpenDailyReview={noop}
-          onOpenSession={noop}
-          archivedTasks={archivedTasks}
-          onTaskImported={noop}
-          onRemoteHostAdded={noop}
-          onSelectedRuntimeHostProfileIdChange={noop}
-          snapshotCache={snapshotCache}
-        />
+        <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
+          <SettingsSurface
+            onClose={noop}
+            themePref={themePref}
+            onThemeChange={setThemePref}
+            themePalette={themePalette}
+            onThemePaletteChange={setThemePalette}
+            onUiLocalePreferenceChange={noop}
+            uiLocaleUpdateGate={uiLocaleUpdateGate}
+            onDefaultPermissionModeChange={noop}
+            request={{ section: props.section }}
+            openProviderCatalog={props.openProviderCatalog}
+            initialConnectionSlug={props.initialConnectionSlug}
+            initialFocusRef={initialFocusRef}
+            onOpenDailyReview={noop}
+            onOpenSession={noop}
+            archivedTasks={archivedTasks}
+            onTaskImported={noop}
+            onRemoteHostAdded={noop}
+            onSelectedRuntimeHostProfileIdChange={noop}
+            snapshotCache={snapshotCache}
+          />
+        </ConnectionSettingsServicesProvider>
       </div>
     </>
   );

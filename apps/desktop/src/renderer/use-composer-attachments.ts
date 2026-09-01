@@ -18,7 +18,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
+import {
+  ATTACHMENT_MIME_SNIFF_BYTES,
+  attachmentKindFromMimeType,
+  guessMimeFromName,
+  resolveAttachmentMimeType,
+} from '@maka/core/attachments';
 import {
   DIRECTORY_REFERENCE_MAX_COUNT,
   type AttachmentRef,
@@ -108,16 +113,35 @@ function approvalToPending(file: {
   };
 }
 
-function fileToPending(file: File): PendingAttachment {
-  const mimeType = file.type || undefined;
+async function fileToPending(file: File): Promise<PendingAttachment> {
+  // Sniff the leading bytes so a spoofed extension (a real image named
+  // `report.pdf`, or a PDF named `photo.png`) stages under its true kind —
+  // matching how main resolves picked files and how the send path routes.
+  const mimeType = await sniffFileMimeType(file);
   return {
     stagingKey: crypto.randomUUID(),
     displayName: file.name,
     mimeType,
-    kind: attachmentKindFromMimeType(mimeType ?? '', file.name),
+    kind: attachmentKindFromMimeType(mimeType, file.name),
     size: file.size,
     source: { type: 'file', file },
   };
+}
+
+/** Content type for a dropped/pasted blob, from its {@link ATTACHMENT_MIME_SNIFF_BYTES}
+ * prefix. A failed slice read resolves an empty prefix through the same policy
+ * rather than falling back to the renderer-declared type — reinstating that
+ * unverified image/PDF claim is exactly what this content-first path avoids. */
+async function sniffFileMimeType(file: File): Promise<string> {
+  const declared = file.type || undefined;
+  let prefix = new Uint8Array();
+  try {
+    prefix = new Uint8Array(await file.slice(0, ATTACHMENT_MIME_SNIFF_BYTES).arrayBuffer());
+  } catch {
+    // Fall through with the empty prefix so the declared image/PDF claim is
+    // downgraded, not trusted; staging stays unblocked and the send path re-reads.
+  }
+  return resolveAttachmentMimeType(prefix, declared, file.name);
 }
 
 function retainedToPending(attachment: AttachmentRef): PendingAttachment {
@@ -348,8 +372,14 @@ export function useComposerAttachments(options: {
 
   async function attachFilePaths(files: File[]): Promise<void> {
     if (files.length === 0) return;
-    const ownerKey = options.draftKey;
-    const staged = files.map(fileToPending);
+    // Bind the owner AFTER the sniff reads resolve, never before: fileToPending
+    // became async to read each file's leading bytes, so the surface can change
+    // during that I/O (a network volume or spun-down drive makes it seconds).
+    // The files belong in the composer the user is looking at now — not a bucket
+    // they have since left, where they would be invisible but still sendable.
+    // Same reasoning as pickAttachments above.
+    const staged = await Promise.all(files.map(fileToPending));
+    const ownerKey = liveOptionsRef.current.draftKey;
     updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
     notifyStagedImages(ownerKey, staged);

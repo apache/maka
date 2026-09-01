@@ -20,46 +20,11 @@
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
 import {
   type ConnectionTestResult,
-  type CreateConnectionInput,
-  type IdentifiedLlmConnection,
-  type LlmConnection,
-  type ModelDiscoveryResult,
-  type RequestHeaderUpdate,
-  type SavedRequestHeaders,
   type ProviderCategory,
-  type ProviderType,
-  type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
-import { cleanErrorMessage } from '../model-connection-errors.js';
-import type {
-  DesktopConnectionIdentity,
-  DesktopConnectionSnapshot,
-} from '../../shared/desktop-connection-snapshot.js';
-
-export interface ConnectionsBridge {
-  getSnapshot(): Promise<DesktopConnectionSnapshot>;
-  setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
-  create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;
-  update(connection: DesktopConnectionIdentity, patch: UpdateConnectionInput): Promise<LlmConnection>;
-  delete(connection: DesktopConnectionIdentity): Promise<void>;
-  test(connection: DesktopConnectionIdentity, opts?: { model?: string }): Promise<ConnectionTestResult>;
-  /**
-   * What the discovery run found, minus when it ran: the Host records that
-   * timestamp for its own invalidation, and no surface here shows it.
-   */
-  fetchModels(
-    connection: DesktopConnectionIdentity,
-  ): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
-  hasSecret(connection: DesktopConnectionIdentity): Promise<boolean>;
-  getRequestHeaders(connection: DesktopConnectionIdentity): Promise<SavedRequestHeaders>;
-  setRequestHeaders(
-    connection: DesktopConnectionIdentity,
-    headers: readonly RequestHeaderUpdate[],
-  ): Promise<SavedRequestHeaders>;
-  subscribeEvents?(handler: () => void): () => void;
-}
+import { getProviderSettingsCopy } from './settings-provider-copy.js';
+import { cleanErrorMessage } from '../../application/contracts/connection-error-cleaner.js';
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
 

@@ -52,7 +52,6 @@ import {
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsRow } from './settings-section';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
@@ -64,9 +63,10 @@ import {
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import type { StatusSemantic } from '@maka/ui';
 import {
   useConnectionDetail,

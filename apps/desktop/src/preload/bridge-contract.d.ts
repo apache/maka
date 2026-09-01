@@ -354,6 +354,14 @@ export interface DesktopRuntimeHostRef {
   readonly hostId: string;
 }
 
+export type DesktopConnectionOnboardingSaveOutcome =
+  | {
+      readonly kind: 'result';
+      readonly result: OperationOutput<'connection.onboarding.save'>;
+    }
+  | { readonly kind: 'not_saved' }
+  | { readonly kind: 'outcome_unknown' };
+
 /** Desktop-local OAuth intent. Runtime Host remains the identity allocator. */
 export type DesktopOAuthLoginTarget =
   | { readonly kind: 'create' }
@@ -1360,6 +1368,14 @@ export interface MakaBridge {
     setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
     create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection>;
+    verifyOnboarding(
+      input: OperationInput<'connection.onboarding.verify'>,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'connection.onboarding.verify'>>;
+    saveOnboarding(
+      input: OperationInput<'connection.onboarding.save'>,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<DesktopConnectionOnboardingSaveOutcome>;
     update(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
     delete(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void>;
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;

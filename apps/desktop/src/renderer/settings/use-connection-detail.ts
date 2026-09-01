@@ -46,7 +46,6 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
@@ -58,10 +57,11 @@ import type {
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
