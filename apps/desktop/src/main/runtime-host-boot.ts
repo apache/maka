@@ -435,19 +435,19 @@ const mainWindowController = createMainWindowController({
       description: `Reason: ${details.reason}`,
       details: `Exit code: ${details.exitCode}`,
     });
-    const decision = await showMainRendererProcessGoneDialog({
-      locale: desktopLocale.current(),
-      copyDiagnostics: () =>
-        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
-      // The dialog has its own sandboxed renderer, but stays attached to a
-      // visible main window so Recover can transition directly back into that
-      // same window. A pre-first-paint crash uses a standalone dialog instead.
-      showMessageBox: (options) => {
-        const parent = mainWindowController.browserWindow();
-        return showBrowserMessageBox(options, parent?.isVisible() ? parent : undefined);
-      },
-    });
-    if (decision === "recover" && mainWindowController.reloadMainRenderer()) return;
+    for (;;) {
+      const decision = await showMainRendererProcessGoneDialog({
+        locale: desktopLocale.current(),
+        copyDiagnostics: () =>
+          copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
+        // showBrowserMessageBox attaches only to a visible, non-minimized
+        // parent. A pre-first-paint crash therefore gets a standalone window.
+        showMessageBox: showDesktopMessageBox,
+      });
+      if (decision !== "recover") break;
+      if (await mainWindowController.reloadMainRenderer()) return;
+      if (!mainWindowController.browserWindow()) break;
+    }
     app.quit();
   },
 });

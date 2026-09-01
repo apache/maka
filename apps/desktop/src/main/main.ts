@@ -58,6 +58,12 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
 
+// Electron otherwise quits implicitly when the last BrowserWindow closes.
+// Startup and fatal-recovery surfaces can be the only window, so keep process
+// lifetime explicit; runtime-host-boot installs the normal platform policy
+// after startup, and every early terminal path calls app.exit itself.
+app.on('window-all-closed', () => {});
+
 const updateTestUserData = resolveUpdateTestUserDataDirectory({
   feedUrl: process.env.MAKA_UPDATE_TEST_FEED,
   explicitDirectory: process.env.MAKA_UPDATE_TEST_USER_DATA_DIR,
@@ -94,11 +100,6 @@ if (!app.requestSingleInstanceLock()) {
     const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
     if (!resultReported && shouldShowLoserDialog(process.argv)) {
       const profilePath = app.getPath('userData');
-      // With no surviving window-all-closed listener in this losing process,
-      // destroying the temporary dialog would let Electron quit with code 0
-      // before the promised loser exit code is published.
-      const keepAliveUntilReported = (): void => {};
-      app.on('window-all-closed', keepAliveUntilReported);
       void app
         .whenReady()
         .then(() => {
@@ -125,7 +126,6 @@ if (!app.requestSingleInstanceLock()) {
           );
         })
         .finally(() => {
-          app.off('window-all-closed', keepAliveUntilReported);
           app.exit(DEV_LOSER_EXIT_CODE);
         });
     } else app.exit(DEV_LOSER_EXIT_CODE);

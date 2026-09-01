@@ -1290,13 +1290,9 @@ test('prompts only after a non-restartable Local Host reports active tasks', asy
       },
       upgradePrompts: {
         restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
-        nonRestartable: async (_conflict, actions) => {
+        nonRestartable: async (_conflict, action) => {
           prompts += 1;
-          assert.deepEqual(actions, {
-            canReplace: true,
-            canWait: false,
-            activeTasksDetected: true,
-          });
+          assert.equal(action, 'replace_active_work');
           return 'replace';
         },
       },
@@ -1351,9 +1347,9 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
       startCandidate: async () => conflict,
       upgradePrompts: {
         restartable: async () => assert.fail('incompatible Host used restart prompt'),
-        nonRestartable: async (actual, actions) => {
+        nonRestartable: async (actual, action) => {
           presented = actual;
-          assert.deepEqual(actions, { canReplace: false, canWait: true });
+          assert.equal(action, 'wait');
           return 'cancel';
         },
       },

@@ -339,6 +339,13 @@ test('replaces a conflicting supervised Host with the requested active-work poli
             error: { code: 'active_tasks', message: 'active work remains' },
           } as never;
         }
+        if (policies.length === 3) {
+          return {
+            kind: 'result' as const,
+            action: 'update' as const,
+            update: { kind: 'already_current', version: '0.2.0' },
+          } as never;
+        }
         return {
           kind: 'result' as const,
           action: 'update' as const,
@@ -357,7 +364,11 @@ test('replaces a conflicting supervised Host with the requested active-work poli
   assert.ok(replacement);
   assert.equal(await replacement.replace('refuse_active_work'), 'active_tasks');
   assert.equal(await replacement.replace('interrupt_active_work'), 'replaced');
-  assert.deepEqual(policies, [undefined, true]);
+  await assert.rejects(
+    replacement.replace('interrupt_active_work'),
+    /did not replace the observed Host/u,
+  );
+  assert.deepEqual(policies, [undefined, true, true]);
 });
 
 test('does not persist recoverable setup authority before Desktop ownership commits', async (t) => {

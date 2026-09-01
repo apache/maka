@@ -21,7 +21,10 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import type { RenderProcessGoneDetails } from 'electron';
-import { observeMainRendererProcessGone } from '../main-renderer-process-gone.js';
+import {
+  observeMainRendererProcessGone,
+  reloadMainRendererProcess,
+} from '../main-renderer-process-gone.js';
 
 test('observes one unexpected main Renderer exit while the app is running', () => {
   const source = new EventEmitter();
@@ -59,3 +62,63 @@ test('ignores clean exits and app shutdown', () => {
     assert.equal(observed, false);
   }
 });
+
+test('reports reload success only after the main document finishes loading', async () => {
+  const source = reloadSource();
+  let observed = false;
+  const result = reloadMainRendererProcess({
+    source,
+    shutdownSignal: new AbortController().signal,
+    onLoaded: () => {
+      observed = true;
+    },
+  });
+
+  assert.equal(source.reloadCalls, 1);
+  source.emit('did-fail-load', {}, -3, 'subframe failed', 'https://example.test/frame', false, 1, 2);
+  source.emit('did-finish-load');
+  assert.equal(await result, true);
+  assert.equal(observed, true);
+  assert.equal(source.listenerCount('did-fail-load'), 0);
+  assert.equal(source.listenerCount('render-process-gone'), 0);
+});
+
+test('keeps recovery active when a Renderer reload fails or exits', async () => {
+  for (const fail of [
+    (source: ReturnType<typeof reloadSource>) =>
+      source.emit('did-fail-load', {}, -105, 'name not resolved', 'https://bad.test', true, 1, 2),
+    (source: ReturnType<typeof reloadSource>) =>
+      source.emit('render-process-gone', {}, { reason: 'crashed', exitCode: 11 }),
+  ]) {
+    const source = reloadSource();
+    let observed = false;
+    const result = reloadMainRendererProcess({
+      source,
+      shutdownSignal: new AbortController().signal,
+      onLoaded: () => {
+        observed = true;
+      },
+    });
+
+    fail(source);
+    assert.equal(await result, false);
+    assert.equal(observed, false);
+    assert.equal(source.listenerCount('did-finish-load'), 0);
+  }
+});
+
+function reloadSource(): EventEmitter & {
+  reloadCalls: number;
+  reload(): void;
+  isDestroyed(): boolean;
+} {
+  return Object.assign(new EventEmitter(), {
+    reloadCalls: 0,
+    reload() {
+      this.reloadCalls += 1;
+    },
+    isDestroyed() {
+      return false;
+    },
+  });
+}

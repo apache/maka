@@ -146,17 +146,13 @@ export class DesktopLocalHostRetirementError extends Error {
 
 export type RuntimeHostRestartDecision = 'restart' | 'wait' | 'cancel';
 export type RuntimeHostNonRestartableDecision = 'replace' | 'wait' | 'cancel';
-
-export interface RuntimeHostNonRestartableActions {
-  readonly canReplace: boolean;
-  readonly canWait: boolean;
-  readonly activeTasksDetected?: true;
-}
+export type RuntimeHostNonRestartableAction =
+  | 'replace_active_work'
+  | 'wait'
+  | 'cancel_only';
 
 export interface RuntimeHostLocalReplacement {
-  replace(
-    activeWorkPolicy: 'refuse_active_work' | 'interrupt_active_work',
-  ): Promise<'replaced' | 'active_tasks'>;
+  replace(activeWorkPolicy: RuntimeHostRetirementMode): Promise<'replaced' | 'active_tasks'>;
 }
 
 export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconnectError {
@@ -193,7 +189,7 @@ export interface RuntimeHostUpgradePrompts {
   ): Promise<RuntimeHostRestartDecision>;
   nonRestartable(
     conflict: RuntimeHostWaitConflict,
-    actions: RuntimeHostNonRestartableActions,
+    action: RuntimeHostNonRestartableAction,
   ): Promise<RuntimeHostNonRestartableDecision>;
 }
 
@@ -956,12 +952,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             continue;
           }
         }
-        const decision = await this.#resolveNonRestartable(result, {
-          canReplace: replacement !== undefined,
-          canWait:
-            replacement === undefined && result.registration.lifecycleMode !== 'service',
-          ...(replacement ? { activeTasksDetected: true as const } : {}),
-        });
+        const action: RuntimeHostNonRestartableAction = replacement
+          ? 'replace_active_work'
+          : result.registration.lifecycleMode !== 'service'
+            ? 'wait'
+            : 'cancel_only';
+        const decision = await this.#resolveNonRestartable(result, action);
         if (decision === 'cancel') throw new RuntimeHostUpgradeCancelledError();
         if (decision === 'replace') {
           if (!replacement) {
@@ -996,9 +992,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   #resolveNonRestartable(
     conflict: RuntimeHostWaitConflict,
-    actions: RuntimeHostNonRestartableActions,
+    action: RuntimeHostNonRestartableAction,
   ): Promise<RuntimeHostNonRestartableDecision> {
-    if (this.upgradePrompts) return this.upgradePrompts.nonRestartable(conflict, actions);
+    if (this.upgradePrompts) return this.upgradePrompts.nonRestartable(conflict, action);
     return this.#missingUpgradePrompt();
   }
 

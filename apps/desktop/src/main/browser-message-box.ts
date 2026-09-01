@@ -50,13 +50,16 @@ export async function showBrowserMessageBox(
   // Keep the presentation helpers importable under plain `node --test`.
   // Electron itself is only required when a dialog is actually presented.
   const electron = await import('electron');
-  const liveParent = parent && !parent.isDestroyed() ? parent : undefined;
-  if (!electron.app.isReady()) return showNativeMessageBox(electron, options, liveParent);
+  const visibleParent =
+    parent && !parent.isDestroyed() && parent.isVisible() && !parent.isMinimized()
+      ? parent
+      : undefined;
+  if (!electron.app.isReady()) return showNativeMessageBox(electron, options, visibleParent);
   try {
-    return await presentBrowserMessageBox(electron, options, liveParent);
+    return await presentBrowserMessageBox(electron, options, visibleParent);
   } catch (error) {
     console.error('[dialog] BrowserWindow presentation failed; using native fallback:', error);
-    return showNativeMessageBox(electron, options, liveParent);
+    return showNativeMessageBox(electron, options, visibleParent);
   }
 }
 
@@ -65,7 +68,10 @@ async function showNativeMessageBox(
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
 ): Promise<MessageBoxReturnValue> {
-  return parent && !parent.isDestroyed()
+  return parent &&
+    !parent.isDestroyed() &&
+    parent.isVisible() &&
+    !parent.isMinimized()
     ? electron.dialog.showMessageBox(parent, options)
     : electron.dialog.showMessageBox(options);
 }
@@ -75,7 +81,10 @@ async function presentBrowserMessageBox(
   options: MessageBoxOptions,
   parent: BrowserWindow | undefined,
 ): Promise<MessageBoxReturnValue> {
-  const presentation = normalizePresentation(options);
+  const presentation = normalizeBrowserMessageBoxPresentation(
+    options,
+    electron.nativeTheme.shouldUseDarkColors,
+  );
   const workArea = resolveWorkArea(electron, parent);
   const width = Math.max(320, Math.min(DIALOG_WIDTH, workArea.width - WORK_AREA_MARGIN * 2));
   const initialHeight = Math.max(
@@ -85,7 +94,7 @@ async function presentBrowserMessageBox(
   const initialBounds = centeredBounds(parent?.getBounds(), workArea, width, initialHeight);
   const win = new electron.BrowserWindow({
     ...initialBounds,
-    title: options.title || options.message,
+    title: presentation.title,
     show: false,
     frame: false,
     transparent: true,
@@ -106,77 +115,98 @@ async function presentBrowserMessageBox(
       allowRunningInsecureContent: false,
     },
   });
-  win.setMenuBarVisibility(false);
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  try {
+    win.setMenuBarVisibility(false);
+    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
 
-  return await new Promise<MessageBoxReturnValue>((resolve, reject) => {
-    let settled = false;
-    const finish = (response: number): void => {
-      if (settled) return;
-      settled = true;
-      resolve({ response, checkboxChecked: false });
-      if (!win.isDestroyed()) win.destroy();
-    };
-    const fail = (error: unknown): void => {
-      if (settled) return;
-      settled = true;
-      reject(error instanceof Error ? error : new Error(String(error)));
-      if (!win.isDestroyed()) win.destroy();
-    };
+    return await new Promise<MessageBoxReturnValue>((resolve, reject) => {
+      let settled = false;
+      const finish = (response: number): void => {
+        if (settled) return;
+        settled = true;
+        resolve({ response, checkboxChecked: false });
+      };
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
 
-    win.on('closed', () => finish(presentation.cancelId));
-    win.webContents.on('render-process-gone', (_event, details) => {
-      fail(new Error(`Dialog renderer exited: ${details.reason}`));
+      win.on('closed', () => finish(presentation.cancelId));
+      win.on('unresponsive', () => fail(new Error('Dialog renderer became unresponsive')));
+      win.webContents.on('render-process-gone', (_event, details) => {
+        fail(new Error(`Dialog renderer exited: ${details.reason}`));
+      });
+      win.webContents.on('will-navigate', (event, url) => {
+        const response = parseBrowserMessageBoxResponse(url, presentation.buttons.length);
+        event.preventDefault();
+        if (response !== undefined) finish(response);
+      });
+      void win
+        .loadURL(
+          `data:text/html;charset=utf-8,${encodeURIComponent(
+            buildBrowserMessageBoxHtml(presentation),
+          )}`,
+        )
+        .then(async () => {
+          if (settled || win.isDestroyed()) return;
+          const naturalHeight = await measureDialogHeight(win).catch(() => initialHeight);
+          const height = Math.max(
+            MIN_HEIGHT,
+            Math.min(naturalHeight, workArea.height - WORK_AREA_MARGIN * 2),
+          );
+          win.setBounds(centeredBounds(parent?.getBounds(), workArea, width, height), false);
+          await win.webContents.executeJavaScript(
+            "document.body.classList.add('maka-dialog-constrained')",
+            true,
+          );
+          if (settled || win.isDestroyed()) return;
+          win.show();
+          win.focus();
+        })
+        .catch(fail);
     });
-    win.webContents.on('will-navigate', (event, url) => {
-      const response = parseBrowserMessageBoxResponse(url, presentation.buttons.length);
-      event.preventDefault();
-      if (response !== undefined) finish(response);
-    });
-    void win
-      .loadURL(
-        `data:text/html;charset=utf-8,${encodeURIComponent(
-          buildBrowserMessageBoxHtml(options, {
-            ...presentation,
-            dark: electron.nativeTheme.shouldUseDarkColors,
-          }),
-        )}`,
-      )
-      .then(async () => {
-        if (settled || win.isDestroyed()) return;
-        const naturalHeight = await measureDialogHeight(win).catch(() => initialHeight);
-        const height = Math.max(
-          MIN_HEIGHT,
-          Math.min(naturalHeight, workArea.height - WORK_AREA_MARGIN * 2),
-        );
-        win.setBounds(centeredBounds(parent?.getBounds(), workArea, width, height), false);
-        await win.webContents.executeJavaScript(
-          "document.body.classList.add('maka-dialog-constrained')",
-          true,
-        );
-        if (settled || win.isDestroyed()) return;
-        win.show();
-        win.focus();
-      })
-      .catch(fail);
-  });
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
 }
 
-interface BrowserMessageBoxPresentation {
+export interface BrowserMessageBoxPresentation {
+  readonly type: 'none' | 'info' | 'warning' | 'error' | 'question';
+  readonly title: string;
+  readonly message: string;
+  readonly detail: string;
   readonly buttons: readonly string[];
   readonly defaultId: number;
   readonly cancelId: number;
+  readonly dark: boolean;
+  readonly isChinese: boolean;
 }
 
-function normalizePresentation(options: MessageBoxOptions): BrowserMessageBoxPresentation {
-  const buttons = options.buttons?.length ? options.buttons : ['OK'];
+export function normalizeBrowserMessageBoxPresentation(
+  options: MessageBoxOptions,
+  dark: boolean,
+): BrowserMessageBoxPresentation {
+  const buttons = options.buttons?.length ? [...options.buttons] : ['OK'];
   const cancelId = validButtonId(options.cancelId, buttons.length)
     ? options.cancelId
     : buttons.length - 1;
   const defaultId = validButtonId(options.defaultId, buttons.length)
     ? options.defaultId
     : 0;
-  return { buttons, defaultId, cancelId };
+  const title = options.title || 'Maka';
+  const message = options.message || title;
+  return {
+    type: messageBoxType(options.type),
+    title,
+    message,
+    detail: options.detail ?? '',
+    buttons,
+    defaultId,
+    cancelId,
+    dark,
+    isChinese: /\p{Script=Han}/u.test(`${title}${message}`),
+  };
 }
 
 function validButtonId(value: number | undefined, count: number): value is number {
@@ -237,17 +267,9 @@ export function parseBrowserMessageBoxResponse(
     : undefined;
 }
 
-export function buildBrowserMessageBoxHtml(
-  options: MessageBoxOptions,
-  input: BrowserMessageBoxPresentation & { readonly dark: boolean },
-): string {
+export function buildBrowserMessageBoxHtml(input: BrowserMessageBoxPresentation): string {
   const nonce = randomUUID().replaceAll('-', '');
-  const type = messageBoxType(options.type);
-  const title = options.title || 'Maka';
-  const message = options.message || title;
-  const detail = options.detail ?? '';
-  const isChinese = /\p{Script=Han}/u.test(`${title}${message}`);
-  const closeLabel = isChinese ? '关闭' : 'Close';
+  const closeLabel = input.isChinese ? '关闭' : 'Close';
   const closeButton = `<button class="window-close" type="button" data-response="${input.cancelId}" aria-label="${closeLabel}">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
   </button>`;
@@ -274,23 +296,23 @@ export function buildBrowserMessageBoxHtml(
       }>${escapeHtml(label)}</button>`;
     })
     .join('');
-  const detailBlock = detail
-    ? `<div class="detail" data-testid="dialog-detail">${escapeHtml(detail)}</div>`
+  const detailBlock = input.detail
+    ? `<div class="detail" data-testid="dialog-detail">${escapeHtml(input.detail)}</div>`
     : '';
   const statusIcon =
-    type === 'question'
+    input.type === 'question'
       ? '<path d="M9.1 9a3 3 0 1 1 5.1 2.1c-1.2 1.1-2.2 1.6-2.2 3.4M12 18h.01" />'
-      : type === 'info' || type === 'none'
+      : input.type === 'info' || input.type === 'none'
         ? '<path d="M12 11v5M12 8h.01" />'
         : '<path d="M12 8v5M12 17h.01" />';
 
   return `<!doctype html>
-<html lang="${isChinese ? 'zh-CN' : 'en'}" data-theme="${input.dark ? 'dark' : 'light'}">
+<html lang="${input.isChinese ? 'zh-CN' : 'en'}" data-theme="${input.dark ? 'dark' : 'light'}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'nonce-${nonce}'; script-src 'nonce-${nonce}'; base-uri 'none'; form-action 'none'">
-  <title>${escapeHtml(title)}</title>
+  <title>${escapeHtml(input.title)}</title>
   <style nonce="${nonce}">
     :root {
       color-scheme: light;
@@ -517,7 +539,7 @@ export function buildBrowserMessageBoxHtml(
   </style>
 </head>
 <body>
-  <main class="card ${type}" role="alertdialog" aria-labelledby="dialog-title" aria-describedby="dialog-message">
+  <main class="card ${input.type}" role="alertdialog" aria-labelledby="dialog-title" aria-describedby="dialog-message">
     <div class="drag-region">
       <svg class="wordmark" viewBox="0 0 460 120" aria-hidden="true"><g transform="translate(0,120) scale(0.1,-0.1)" fill="currentColor"><path d="${MAKA_WORDMARK_PATH}" /></g></svg>
       ${closeButton}
@@ -526,8 +548,8 @@ export function buildBrowserMessageBoxHtml(
       <div class="heading-row">
         <div class="icon" aria-hidden="true"><svg viewBox="0 0 24 24">${statusIcon}</svg></div>
         <div class="heading-copy">
-          <h1 id="dialog-title">${escapeHtml(title)}</h1>
-          <div class="message" id="dialog-message">${escapeHtml(message)}</div>
+          <h1 id="dialog-title">${escapeHtml(input.title)}</h1>
+          <div class="message" id="dialog-message">${escapeHtml(input.message)}</div>
         </div>
       </div>
       ${detailBlock}
@@ -554,7 +576,7 @@ export function buildBrowserMessageBoxHtml(
 </html>`;
 }
 
-function messageBoxType(value: MessageBoxOptions['type']): string {
+function messageBoxType(value: MessageBoxOptions['type']): BrowserMessageBoxPresentation['type'] {
   return value === 'warning' || value === 'error' || value === 'question' || value === 'info'
     ? value
     : 'none';

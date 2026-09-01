@@ -17,13 +17,54 @@
  * under the License.
  */
 
-import type { RenderProcessGoneDetails } from 'electron';
+import type { Event, RenderProcessGoneDetails } from 'electron';
 
 interface RenderProcessGoneSource {
   once(
     event: 'render-process-gone',
     listener: (event: unknown, details: RenderProcessGoneDetails) => void,
   ): void;
+}
+
+interface MainRendererReloadSource {
+  once(event: 'did-finish-load', listener: () => void): void;
+  once(
+    event: 'render-process-gone',
+    listener: (event: Event, details: RenderProcessGoneDetails) => void,
+  ): void;
+  once(event: 'destroyed', listener: () => void): void;
+  on(
+    event: 'did-fail-load',
+    listener: (
+      event: Event,
+      errorCode: number,
+      errorDescription: string,
+      validatedURL: string,
+      isMainFrame: boolean,
+      frameProcessId: number,
+      frameRoutingId: number,
+    ) => void,
+  ): void;
+  off(event: 'did-finish-load', listener: () => void): void;
+  off(
+    event: 'render-process-gone',
+    listener: (event: Event, details: RenderProcessGoneDetails) => void,
+  ): void;
+  off(event: 'destroyed', listener: () => void): void;
+  off(
+    event: 'did-fail-load',
+    listener: (
+      event: Event,
+      errorCode: number,
+      errorDescription: string,
+      validatedURL: string,
+      isMainFrame: boolean,
+      frameProcessId: number,
+      frameRoutingId: number,
+    ) => void,
+  ): void;
+  isDestroyed(): boolean;
+  reload(): void;
 }
 
 export function observeMainRendererProcessGone(deps: {
@@ -34,5 +75,67 @@ export function observeMainRendererProcessGone(deps: {
   deps.source.once('render-process-gone', (_event, details) => {
     if (deps.shutdownSignal.aborted || details.reason === 'clean-exit') return;
     deps.onUnexpectedExit(details);
+  });
+}
+
+/**
+ * Waits for a crashed main Renderer to finish loading before recovery is
+ * reported as successful. The ordinary one-shot crash observer is re-armed
+ * synchronously by `onLoaded`, leaving no successful-load gap unobserved.
+ */
+export function reloadMainRendererProcess(deps: {
+  readonly source: MainRendererReloadSource;
+  readonly shutdownSignal: AbortSignal;
+  readonly onLoaded: () => void;
+}): Promise<boolean> {
+  if (deps.shutdownSignal.aborted || deps.source.isDestroyed()) {
+    return Promise.resolve(false);
+  }
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const cleanup = (): void => {
+      deps.source.off('did-finish-load', onLoaded);
+      deps.source.off('did-fail-load', onFailed);
+      deps.source.off('render-process-gone', onGone);
+      deps.source.off('destroyed', onDestroyed);
+      deps.shutdownSignal.removeEventListener('abort', onAborted);
+    };
+    const settle = (loaded: boolean): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(loaded);
+    };
+    const onLoaded = (): void => {
+      try {
+        deps.onLoaded();
+        settle(true);
+      } catch {
+        settle(false);
+      }
+    };
+    const onFailed = (
+      _event: Event,
+      _errorCode: number,
+      _errorDescription: string,
+      _validatedURL: string,
+      isMainFrame: boolean,
+    ): void => {
+      if (isMainFrame) settle(false);
+    };
+    const onGone = (_event: Event, _details: RenderProcessGoneDetails): void => settle(false);
+    const onDestroyed = (): void => settle(false);
+    const onAborted = (): void => settle(false);
+
+    deps.source.once('did-finish-load', onLoaded);
+    deps.source.on('did-fail-load', onFailed);
+    deps.source.once('render-process-gone', onGone);
+    deps.source.once('destroyed', onDestroyed);
+    deps.shutdownSignal.addEventListener('abort', onAborted, { once: true });
+    try {
+      deps.source.reload();
+    } catch {
+      settle(false);
+    }
   });
 }

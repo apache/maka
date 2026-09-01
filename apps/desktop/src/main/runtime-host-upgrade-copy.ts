@@ -20,6 +20,7 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
 import type {
+  RuntimeHostNonRestartableAction,
   RuntimeHostRestartableConflict,
   RuntimeHostWaitConflict,
 } from './runtime-host-desktop-manager.js';
@@ -27,11 +28,10 @@ import type {
 type Conflict = RuntimeHostRestartableConflict | RuntimeHostWaitConflict;
 export type RuntimeHostUpgradeDialogDecision = 'restart' | 'replace' | 'wait' | 'cancel';
 
-interface RuntimeHostUpgradeAvailability {
-  readonly action: 'restart' | 'replace' | undefined;
-  readonly canWait: boolean;
-  readonly activeTasksDetected?: true;
-}
+type RuntimeHostUpgradeAvailability =
+  | RuntimeHostNonRestartableAction
+  | 'restart'
+  | 'restart_or_wait';
 
 export interface RuntimeHostUpgradeDialog {
   readonly options: MessageBoxOptions;
@@ -53,24 +53,31 @@ export function buildRuntimeHostUpgradeDialog(
 ): RuntimeHostUpgradeDialog {
   const activity = conflict.handshake?.activity;
   const hasWork =
-    availability.activeTasksDetected === true ||
+    availability === 'replace_active_work' ||
     (activity?.activeOperations ?? 0) > 0 ||
     (activity?.residencies.length ?? 0) > 0;
   const copy = UPGRADE_COPY[locale];
   const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
     [];
-  if (availability.action) {
+  const action =
+    availability === 'restart' || availability === 'restart_or_wait'
+      ? 'restart'
+      : availability === 'replace_active_work'
+        ? 'replace'
+        : undefined;
+  const canWait = availability === 'restart_or_wait' || availability === 'wait';
+  if (action) {
     choices.push({
-      label: availability.action === 'restart' ? copy.restart : copy.replace,
-      decision: availability.action,
+      label: action === 'restart' ? copy.restart : copy.replace,
+      decision: action,
     });
   }
-  if (availability.canWait) choices.push({ label: copy.wait, decision: 'wait' });
+  if (canWait) choices.push({ label: copy.wait, decision: 'wait' });
   choices.push({ label: copy.cancel, decision: 'cancel' });
   const defaultDecision =
-    availability.action === 'restart' && !hasWork
+    action === 'restart' && !hasWork
       ? 'restart'
-      : availability.canWait
+      : canWait
         ? 'wait'
         : 'cancel';
   return {
@@ -105,17 +112,19 @@ function formatActivity(
     for (const residency of activity.residencies) {
       lines.push(`${copy.activity[activityKey(residency.label)]}: ${residency.count}`);
     }
-  } else if (availability.activeTasksDetected) lines.push(copy.activeTasksDetected);
+  } else if (availability === 'replace_active_work') lines.push(copy.activeTasksDetected);
   else lines.push(copy.unknownActivity);
-  if (availability.action === 'replace') {
+  if (availability === 'replace_active_work') {
     lines.push('', copy.replaceWarning, copy.replaceExplanation);
-  } else if (availability.action === 'restart') {
+  } else if (availability === 'restart' || availability === 'restart_or_wait') {
     lines.push('', copy.restartWarning);
   } else if (conflict.kind !== 'upgrade_required' || !conflict.restartable) {
     lines.push('');
     lines.push(copy.exitOwner(conflict.registration.pid));
   }
-  if (availability.canWait) lines.push(copy.waitExplanation);
+  if (availability === 'restart_or_wait' || availability === 'wait') {
+    lines.push(copy.waitExplanation);
+  }
   return lines.join('\n');
 }
 

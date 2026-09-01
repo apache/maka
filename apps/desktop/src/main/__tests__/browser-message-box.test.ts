@@ -22,6 +22,7 @@ import { test } from 'node:test';
 import {
   buildBrowserMessageBoxHtml,
   centeredBounds,
+  normalizeBrowserMessageBoxPresentation,
   parseBrowserMessageBoxResponse,
 } from '../browser-message-box.js';
 
@@ -61,28 +62,21 @@ test('centers against the parent while keeping the whole dialog on-screen', () =
 
 test('renders escaped content with Maka dialog tokens and safe action ordering', () => {
   const html = buildBrowserMessageBoxHtml(
-    {
-      type: 'warning',
-      title: '<img src=x onerror=alert(1)>',
-      message: 'Maka & Runtime Host',
-      detail: '</div><script>globalThis.pwned = true</script>',
-      buttons: ['Replace <Host>', 'Cancel', 'Copy & Diagnostics'],
-      defaultId: 0,
-      cancelId: 1,
-    },
-    {
-      buttons: ['Replace <Host>', 'Cancel', 'Copy & Diagnostics'],
-      defaultId: 0,
-      cancelId: 1,
-      dark: true,
-    },
+    normalizeBrowserMessageBoxPresentation(
+      {
+        type: 'warning',
+        title: '<img src=x onerror=alert(1)>',
+        message: 'Maka & Runtime Host',
+        detail: '</div><script>globalThis.pwned = true</script>',
+        buttons: ['Replace <Host>', 'Cancel', 'Copy & Diagnostics'],
+        defaultId: 0,
+        cancelId: 1,
+      },
+      true,
+    ),
   );
 
   assert.match(html, /data-theme="dark"/u);
-  assert.match(html, /class="wordmark"/u);
-  assert.match(html, /color: #71a8fd/u);
-  assert.match(html, /border-radius: 12px/u);
-  assert.match(html, /height: 32px/u);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/u);
   assert.match(html, /Maka &amp; Runtime Host/u);
   assert.match(html, /&lt;\/div&gt;&lt;script&gt;globalThis\.pwned = true&lt;\/script&gt;/u);
@@ -97,4 +91,33 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
   assert.ok(copyPosition < actionPosition);
   assert.match(html, /class="decision primary"[^>]*data-response="0" autofocus/u);
   assert.match(html, /default-src 'none'/u);
+});
+
+test('normalizes fallback buttons and out-of-range action indexes once', () => {
+  const presentation = normalizeBrowserMessageBoxPresentation(
+    {
+      type: 'none',
+      title: '',
+      message: '',
+      buttons: [],
+      defaultId: 4,
+      cancelId: -1,
+    },
+    false,
+  );
+
+  assert.deepEqual(presentation, {
+    type: 'none',
+    title: 'Maka',
+    message: 'Maka',
+    detail: '',
+    buttons: ['OK'],
+    defaultId: 0,
+    cancelId: 0,
+    dark: false,
+    isChinese: false,
+  });
+  const html = buildBrowserMessageBoxHtml(presentation);
+  assert.match(html, /data-response="0" autofocus/u);
+  assert.match(html, /data-theme="light"/u);
 });

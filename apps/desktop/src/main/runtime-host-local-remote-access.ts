@@ -757,6 +757,12 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
             if (frame.update.kind === 'active_tasks') {
               return 'active_tasks';
             }
+            if (frame.update.kind === 'already_current') {
+              throw conflictReplacementError(
+                registration.pid,
+                'the managed service did not replace the observed Host',
+              );
+            }
             return 'replaced';
           }),
       };

@@ -42,12 +42,12 @@ const conflict = {
 test('localizes upgrade activity without changing decision indexes', () => {
   const en = buildRuntimeHostUpgradeDialog(
     conflict,
-    { action: 'restart', canWait: true },
+    'restart_or_wait',
     'en',
   ).options;
   const zh = buildRuntimeHostUpgradeDialog(
     conflict,
-    { action: 'restart', canWait: true },
+    'restart_or_wait',
     'zh',
   ).options;
   assert.deepEqual(en.buttons, ['Restart Runtime Host', 'Wait', 'Cancel Startup']);
@@ -65,9 +65,9 @@ test('maps the non-default replacement choice to the replace decision', async ()
   const prompts = createRuntimeHostUpgradePrompts(
     async () => 'en',
     async (options) => {
-      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Wait', 'Cancel Startup']);
+      assert.deepEqual(options.buttons, ['Stop Host and Continue', 'Cancel Startup']);
       assert.equal(options.defaultId, 1);
-      assert.equal(options.cancelId, 2);
+      assert.equal(options.cancelId, 1);
       assert.match(options.detail ?? '', /Maka will stop this Host/);
       return { response: 0, checkboxChecked: false };
     },
@@ -79,7 +79,7 @@ test('maps the non-default replacement choice to the replace decision', async ()
         restartable: false,
         registration: { pid: 42 },
       } as never,
-      { canReplace: true, canWait: true },
+      'replace_active_work',
     ),
     'replace',
   );
@@ -102,7 +102,7 @@ test('does not offer passive waiting for a supervised Host', async () => {
     },
   );
   assert.equal(
-    await prompts.nonRestartable(conflict, { canReplace: true, canWait: false }),
+    await prompts.nonRestartable(conflict, 'replace_active_work'),
     'cancel',
   );
 });
@@ -115,7 +115,7 @@ test('explains when the safe replacement check found active background work', ()
   } as Parameters<typeof buildRuntimeHostUpgradeDialog>[0];
   const dialog = buildRuntimeHostUpgradeDialog(
     conflict,
-    { action: 'replace', canWait: false, activeTasksDetected: true },
+    'replace_active_work',
     'zh',
   );
 

@@ -29,7 +29,10 @@ import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
-import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
+import {
+  observeMainRendererProcessGone,
+  reloadMainRendererProcess,
+} from './main-renderer-process-gone.js';
 import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
@@ -47,7 +50,7 @@ export interface MainWindowController {
    * Reload only the crashed main Renderer, preserving the Desktop process,
    * Runtime Host, background services, and current BrowserWindow.
    */
-  reloadMainRenderer(): boolean;
+  reloadMainRenderer(): Promise<boolean>;
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
@@ -528,7 +531,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 
   return {
     createWindow,
-    reloadMainRenderer() {
+    async reloadMainRenderer() {
       const target = mainWindow;
       const signal = mainWindowShutdownSignal;
       if (
@@ -538,21 +541,20 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         !signal ||
         signal.aborted
       ) return false;
-      // The previous one-shot observer was consumed by the crash. Arm the
-      // replacement before reload so a second crash still reaches recovery.
       clearShowFallbackTimer();
       const contents = target.webContents;
-      const onLoaded = (): void => armShowFallbackTimer(target);
-      contents.once('did-finish-load', onLoaded);
-      try {
-        observeRendererProcess(target, signal);
-        contents.reload();
-        return true;
-      } catch (error) {
-        if (!contents.isDestroyed()) contents.off('did-finish-load', onLoaded);
-        console.error('[renderer] failed to reload main Renderer:', error);
-        return false;
-      }
+      const loaded = await reloadMainRendererProcess({
+        source: contents,
+        shutdownSignal: signal,
+        onLoaded: () => {
+          // The previous one-shot observer was consumed by the crash. Re-arm
+          // it before successful recovery is exposed to the caller.
+          observeRendererProcess(target, signal);
+          armShowFallbackTimer(target);
+        },
+      });
+      if (!loaded) console.error('[renderer] main Renderer reload did not finish');
+      return loaded;
     },
     send: safeSendToRenderer,
     notifyRendererReady() {
