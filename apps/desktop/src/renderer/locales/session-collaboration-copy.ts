@@ -90,10 +90,21 @@ const ZH = {
     turnRequestBlocked: '未能开始',
     turnRequestFailed: '准入失败',
     dismissTurnRequest: '关闭',
+    sharedTask: '共享任务',
+    newTurnRequestTitle: (count: number) => count === 1 ? '新的轮次请求' : `${count} 个新的轮次请求`,
+    newTurnRequestSummary: (count: number) => `${count} 个轮次请求正在等待审批`,
+    reviewTurnRequest: '查看并审批',
+    ownerTurnRequestTitle: '访客请求开始新轮次',
+    moreTurnRequests: (count: number) => `还有 ${count} 个请求等待审批`,
+    pendingTurnRequestCount: (count: number) => `${count} 个待审批轮次请求`,
 };
 
 type SessionCollaborationCopy = {
-  readonly [Key in keyof typeof ZH]: string;
+  readonly [Key in keyof typeof ZH]: (typeof ZH)[Key] extends (
+    ...args: infer Args
+  ) => string
+    ? (...args: Args) => string
+    : string;
 };
 
 const EN = {
@@ -168,6 +179,13 @@ const EN = {
     turnRequestBlocked: 'Could not start',
     turnRequestFailed: 'Admission failed',
     dismissTurnRequest: 'Dismiss',
+    sharedTask: 'Shared task',
+    newTurnRequestTitle: (count: number) => count === 1 ? 'New Turn request' : `${count} new Turn requests`,
+    newTurnRequestSummary: (count: number) => `${count} Turn requests are waiting for approval`,
+    reviewTurnRequest: 'Review',
+    ownerTurnRequestTitle: 'A Guest requested a new Turn',
+    moreTurnRequests: (count: number) => `${count} more ${count === 1 ? 'request' : 'requests'} waiting`,
+    pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
 const COPY = { zh: ZH, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;

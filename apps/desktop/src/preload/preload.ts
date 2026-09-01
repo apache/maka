@@ -222,6 +222,8 @@ import {
   type OperationInput,
   type OperationOutcome,
   type OperationOutput,
+  type CollaborationTurnRequestQueryResult,
+  type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
@@ -1330,6 +1332,31 @@ const makaBridge = {
         session.scope,
         session.sessionId,
       );
+    },
+    async getPendingTurnRequests() {
+      const scopes = (await runtimeHostScopeList()).filter(
+        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+      );
+      const results = await Promise.all(
+        scopes.map(async (scope) => {
+          const result = await ipcRenderer.invoke(
+            'session-collaboration:turn-request:inbox',
+            scope,
+          ) as CollaborationTurnRequestQueryResult;
+          return result.requests
+            .filter((request) => request.state.kind === 'pending')
+            .map((request): SessionTurnAccessRequest => ({
+              ...request,
+              intent: {
+                ...request.intent,
+                sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
+              },
+            }));
+        }),
+      );
+      return results
+        .flat()
+        .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     },
     async acknowledgeTurnRequest(sessionId, requestId) {
       const session = await runtimeHostSessionRef(sessionId);

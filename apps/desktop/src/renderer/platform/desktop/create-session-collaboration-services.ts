@@ -31,6 +31,9 @@ export function createDesktopSessionCollaborationServices(
     cancelImport: (operationId) => bridge.sessionCollaboration.cancelImport(operationId),
     listMounts: () => bridge.sessionCollaboration.listMounts(),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
+    getPendingTurnRequests: () => bridge.sessionCollaboration.getPendingTurnRequests(),
+    decideTurnRequest: (sessionId, requestId, decision) =>
+      bridge.sessionCollaboration.decideTurnRequest(sessionId, requestId, decision),
     createOperationId: () => crypto.randomUUID(),
   };
 }

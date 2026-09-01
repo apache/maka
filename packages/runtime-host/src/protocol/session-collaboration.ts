@@ -136,7 +136,8 @@ export interface CollaborationTurnRequestCreateInput {
 }
 
 export interface CollaborationTurnRequestQueryInput {
-  readonly sessionId: string;
+  /** Omit to query every request visible to the authenticated principal. */
+  readonly sessionId?: string;
 }
 
 export interface CollaborationTurnRequestQueryResult {
@@ -424,8 +425,10 @@ function decodeCollaborationTurnRequestCreateInput(
 function decodeCollaborationTurnRequestQueryInput(
   value: unknown,
 ): CollaborationTurnRequestQueryInput {
-  const record = requireExactRecord(value, 'collaboration Turn request query', ['sessionId']);
-  return { sessionId: requireEntityId(record.sessionId, 'sessionId') };
+  const record = requireShapedRecord(value, 'collaboration Turn request query', [], ['sessionId']);
+  return record.sessionId === undefined
+    ? {}
+    : { sessionId: requireEntityId(record.sessionId, 'sessionId') };
 }
 
 function decodeCollaborationTurnRequestQueryResult(

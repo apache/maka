@@ -32,21 +32,24 @@ import {
 } from '@maka/ui';
 import type {
   CollaborationAccessQueryResult,
+  CollaborationInvitationPrepareResult,
   SessionCollaborationGrant,
   SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
-import type { DesktopSessionCollaborationPrepareResult } from '../preload/bridge-contract.js';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
 import { turnRequestStateLabel } from './session-turn-request-composer.js';
 
 type Props = {
-  readonly mode: 'share';
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
-  readonly onEnableRemoteAccess: () => void;
+  readonly target?: {
+    readonly sessionId: string;
+    readonly sessionName: string;
+    readonly requiresRemoteAccess: boolean;
+  };
+  readonly onOpenRemoteAccessSettings: () => void;
   readonly onClose: () => void;
 };
+
+type ShareSessionDialogProps = NonNullable<Props['target']> & Omit<Props, 'target'>;
 
 type CollaborationAuthorityState =
   | 'loading'
@@ -54,16 +57,24 @@ type CollaborationAuthorityState =
   | 'remote_access_off'
   | 'unavailable';
 
-type PreparedInvitation = Extract<
-  DesktopSessionCollaborationPrepareResult,
-  { readonly kind: 'prepared' }
->['invitation'];
+type PreparedInvitation = CollaborationInvitationPrepareResult & {
+  readonly connectivity:
+    | { readonly kind: 'peer'; readonly coordinationRelayCount: number }
+    | { readonly kind: 'configured' };
+};
 
 export function SessionCollaborationDialog(props: Props) {
-  return <ShareSessionDialog {...props} />;
+  if (!props.target) return null;
+  return (
+    <ShareSessionDialog
+      {...props.target}
+      onOpenRemoteAccessSettings={props.onOpenRemoteAccessSettings}
+      onClose={props.onClose}
+    />
+  );
 }
 
-function ShareSessionDialog(props: Props) {
+function ShareSessionDialog(props: ShareSessionDialogProps) {
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
@@ -138,14 +149,14 @@ function ShareSessionDialog(props: Props) {
     setWorking(true);
     try {
       if (authorityState === 'remote_access_off') {
-        props.onEnableRemoteAccess();
+        openRemoteAccessSettings();
         return;
       }
       if (authorityState !== 'available') return;
       if (props.requiresRemoteAccess) {
         const access = await window.maka.localRuntimeHostRemoteAccess.getSnapshot();
         if (access.state !== 'on') {
-          props.onEnableRemoteAccess();
+          openRemoteAccessSettings();
           return;
         }
       }
@@ -171,6 +182,12 @@ function ShareSessionDialog(props: Props) {
     } finally {
       setWorking(false);
     }
+  }
+
+  function openRemoteAccessSettings(): void {
+    props.onClose();
+    toast.info(copy.enableRemoteAccessTitle, copy.enableRemoteAccessBody);
+    props.onOpenRemoteAccessSettings();
   }
 
   async function copyInvitation(): Promise<void> {

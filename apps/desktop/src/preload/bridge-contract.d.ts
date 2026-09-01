@@ -763,6 +763,8 @@ export interface MakaBridge {
       input: { readonly turnId: string; readonly text: string },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
+    /** Pending Owner decisions across every connected Owner Runtime Host. */
+    getPendingTurnRequests(): Promise<readonly SessionTurnAccessRequest[]>;
     acknowledgeTurnRequest(
       sessionId: string,
       requestId: string,

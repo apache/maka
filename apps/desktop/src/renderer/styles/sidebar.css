@@ -357,6 +357,11 @@
   max-width: 88px;
 }
 
+.maka-session-row-attention-badge {
+  display: inline-flex;
+  flex: none;
+}
+
 .maka-session-row-host-badge > span {
   overflow: hidden;
   max-width: 100%;

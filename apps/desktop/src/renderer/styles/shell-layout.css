@@ -584,6 +584,25 @@ dialog:modal {
   background: var(--background);
 }
 
+.sessionTurnRequestApproval {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3) 0;
+  background: var(--background);
+}
+
+.sessionTurnRequestApprovalActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sessionTurnRequestApprovalMore {
+  color: var(--foreground-secondary);
+  font: var(--typography-caption);
+  text-align: end;
+}
+
 .sessionTurnRequestComposer {
   padding: var(--space-3);
 }

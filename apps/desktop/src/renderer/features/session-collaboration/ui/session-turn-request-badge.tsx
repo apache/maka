@@ -17,20 +17,16 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { Badge } from '@maka/ui';
+import { useSessionTurnRequestInboxContext } from '../turn-request-inbox-context.js';
 
-export interface SessionCollaborationDialogTarget {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
-}
-
-export function useSessionCollaborationDialog() {
-  const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
-
-  return {
-    target,
-    open: setTarget,
-    close: () => setTarget(undefined),
-  };
+export function SessionTurnRequestBadge(props: { readonly sessionId: string }) {
+  const inbox = useSessionTurnRequestInboxContext();
+  const count = inbox.requestsBySession.get(props.sessionId)?.length ?? 0;
+  if (count === 0) return null;
+  return (
+    <span title={inbox.copy.pendingTurnRequestCount(count)}>
+      <Badge variant="warning" label={count > 99 ? '99+' : String(count)} />
+    </span>
+  );
 }
