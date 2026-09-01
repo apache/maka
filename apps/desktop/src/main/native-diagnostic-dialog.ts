@@ -141,7 +141,7 @@ export async function showRuntimeHostStartupRecoveryDialog(
       message: copy.message,
       detail,
       buttons: [input.activeTasks ? copy.repairAndRestart : copy.repair, copy.exit],
-      defaultId: input.activeTasks ? 1 : 0,
+      defaultId: input.activeTasks || input.repairError ? 1 : 0,
       cancelId: 1,
       noLink: true,
     },

@@ -181,4 +181,23 @@ test('managed Host recovery preserves the workspace and confirms active-work int
   assert.match(shown?.detail ?? '', /automatic update compatibility cannot be confirmed/);
   assert.match(shown?.detail ?? '', /interrupt that work/);
   assert.match(shown?.detail ?? '', /service update failed/);
+
+  let unknownShown: MessageBoxOptions | undefined;
+  const unknownDecision = await showRuntimeHostStartupRecoveryDialog(
+    {
+      startupError: new Error('managed service unavailable'),
+      repairError: new Error('safe repair could not verify Host activity'),
+      activeTasks: false,
+    },
+    {
+      locale: 'en',
+      copyDiagnostics() {},
+      showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
+        unknownShown = options;
+        return { response: 1, checkboxChecked: false };
+      },
+    },
+  );
+  assert.equal(unknownDecision, 'exit');
+  assert.equal(unknownShown?.defaultId, unknownShown?.cancelId);
 });

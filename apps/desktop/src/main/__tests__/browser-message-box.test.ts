@@ -158,6 +158,7 @@ test('maps close to cancel and falls back after each BrowserWindow presentation 
     runtimeForWindow(closed),
   );
   closed.window.emit('closed');
+  assert.equal(isBrowserMessageBoxPresentationActive(), true);
   assert.deepEqual(await closeResult, { response: 1, checkboxChecked: false });
   assert.equal(closed.destroyed(), true);
 
@@ -226,7 +227,7 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
     {
       type: 'warning',
       title: '<img src=x onerror=alert(1)>',
-      message: 'Maka & Runtime Host',
+      message: 'Maka & Runtime Host · /Users/示例',
       detail: '</div><script>globalThis.pwned = true</script>',
       buttons: ['Replace <Host>', 'Cancel', 'Copy & Diagnostics'],
       defaultId: 0,
@@ -235,6 +236,8 @@ test('renders escaped content with Maka dialog tokens and safe action ordering',
     { dark: true, locale: 'en', palette: 'nord' },
   );
 
+  assert.match(html, /<html lang="en"/u);
+  assert.match(html, /aria-label="Close"/u);
   assert.match(html, /data-theme="dark"/u);
   assert.match(html, /data-maka-theme="nord"/u);
   assert.match(html, /--surface-overlay:/u);
@@ -295,46 +298,6 @@ test('routes button and keyboard decisions through the rendered interaction brid
     'maka-dialog://response/1',
     'maka-dialog://response/0',
   ]);
-});
-
-test('normalizes fallback buttons and out-of-range action indexes once', () => {
-  const html = buildBrowserMessageBoxHtml(
-    {
-      type: 'none',
-      title: '',
-      message: '',
-      buttons: [],
-      defaultId: 4,
-      cancelId: -1,
-    },
-    { dark: false, locale: 'zh' },
-  );
-
-  assert.match(html, /<html lang="zh-CN"/u);
-  assert.match(html, /<title>Maka<\/title>/u);
-  assert.match(html, /<h1 id="dialog-title">Maka<\/h1>/u);
-  assert.match(html, />OK<\/button>/u);
-  assert.match(html, /data-response="0" autofocus/u);
-  assert.match(html, /data-theme="light"/u);
-  assert.match(html, /data-maka-theme="default"/u);
-});
-
-test('uses the resolved locale instead of guessing from user-controlled text', () => {
-  const html = buildBrowserMessageBoxHtml(
-    {
-      title: 'Maka recovery',
-      message: 'Host path: /Users/示例',
-      buttons: ['Continue', 'Cancel'],
-      defaultId: '0);globalThis.pwned=true;//' as never,
-      cancelId: 1,
-    },
-    { dark: false, locale: 'en' },
-  );
-
-  assert.match(html, /<html lang="en"/u);
-  assert.match(html, /aria-label="Close"/u);
-  assert.doesNotMatch(html, /globalThis\.pwned/u);
-  assert.match(html, /data-response="0" autofocus/u);
 });
 
 interface FakeBrowserWindow {

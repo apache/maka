@@ -556,31 +556,42 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         listener?: () => void;
       } = { contents };
       rendererRecoveryReadiness = readiness;
-      const loaded = await reloadMainRendererProcess({
-        source: contents,
-        shutdownSignal: signal,
-        subscribeRendererReady: (listener) => {
-          readiness.listener = listener;
-          return () => {
-            if (readiness.listener === listener) readiness.listener = undefined;
-          };
-        },
-        onReady: () => {
-          // The previous one-shot observer was consumed by the crash. Re-arm
-          // it before successful recovery is exposed to the caller.
-          observeRendererProcess(target, signal);
-        },
-      }).finally(() => {
-        if (rendererRecoveryReadiness === readiness) rendererRecoveryReadiness = undefined;
-      });
-      if (!loaded) console.error('[renderer] main Renderer reload did not become ready');
-      return loaded;
+      let loaded = false;
+      try {
+        loaded = await reloadMainRendererProcess({
+          source: contents,
+          shutdownSignal: signal,
+          subscribeRendererReady: (listener) => {
+            readiness.listener = listener;
+            return () => {
+              if (readiness.listener === listener) readiness.listener = undefined;
+            };
+          },
+          onReady: () => {
+            // The previous one-shot observer was consumed by the crash. Re-arm
+            // it before successful recovery is exposed to the caller.
+            observeRendererProcess(target, signal);
+          },
+        });
+        if (!loaded) console.error('[renderer] main Renderer reload did not become ready');
+        return loaded;
+      } finally {
+        if (rendererRecoveryReadiness === readiness) {
+          if (loaded) rendererRecoveryReadiness = undefined;
+          else readiness.listener = undefined;
+        }
+      }
     },
     send: safeSendToRenderer,
     notifyRendererReady(sender) {
       if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
       const recovery = rendererRecoveryReadiness;
-      if (recovery?.contents === sender) recovery.listener?.();
+      if (recovery?.contents === sender) {
+        // A failed attempt stays as a tombstone so a late ready signal cannot
+        // reveal an unobserved Renderer behind the next recovery prompt.
+        if (!recovery.listener) return;
+        recovery.listener();
+      }
       // PR-SHOW-AFTER-FIRST-COMMIT: the renderer finished its first React
       // commit. Cancel the fallback timer and reveal the window through the
       // shared gate — idempotent, so an HMR reload re-firing this signal (or a

@@ -119,7 +119,11 @@ test('routes the first-paint IPC only to the active Renderer recovery listener',
   );
   assert.match(
     readyHandler,
-    /if \(recovery\?\.contents === sender\) recovery\.listener\?\.\(\);/u,
+    /if \(recovery\?\.contents === sender\) \{\s*[^}]*if \(!recovery\.listener\) return;\s*recovery\.listener\(\);\s*\}/u,
+  );
+  assert.match(
+    reloadHandler,
+    /if \(rendererRecoveryReadiness === readiness\) \{\s*if \(loaded\) rendererRecoveryReadiness = undefined;\s*else readiness\.listener = undefined;\s*\}/u,
   );
   assert.match(readyHandler, /revealGate\.markReady\(mainWindow\)/u);
 });
