@@ -32,7 +32,7 @@ import {
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
+import { modelRowsEqual, resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
@@ -899,27 +899,12 @@ function connectionDetailDraftMatchesSnapshot(
   },
   snapshot: ConnectionDetailSnapshot,
 ): boolean {
+  // Core's comparison, not a second one: the two answers drive the same
+  // editor, and the local copy compared a different field set — a refetch that
+  // changed only a display name read as "in sync" here and "diverged" there.
   return draft.baseUrl === snapshot.baseUrl &&
     draft.modelSource === snapshot.modelSource &&
-    modelListsEqual(draft.models, snapshot.models);
-}
-
-function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftModel = left[index];
-    const rightModel = right[index];
-    if (leftModel.id !== rightModel.id) return false;
-    if (leftModel.contextWindow !== rightModel.contextWindow) return false;
-    if (leftModel.maxOutputTokens !== rightModel.maxOutputTokens) return false;
-    if (leftModel.capabilities?.chat !== rightModel.capabilities?.chat) return false;
-    if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
-    if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
-    if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
-    if (leftModel.capabilities?.parallelToolCalls !== rightModel.capabilities?.parallelToolCalls) return false;
-    if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
-  }
-  return true;
+    modelRowsEqual(draft.models, snapshot.models);
 }
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {

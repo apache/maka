@@ -421,7 +421,7 @@ function draftMatchesConnection(
  * whose facts may differ under the same id; comparing fields no entry is built
  * from would throw the Host's entries away over a change nothing can render.
  */
-function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[]): boolean {
+export function modelRowsEqual(left: readonly ModelInfo[], right: readonly ModelInfo[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((model, index) => {
     const other = right[index];

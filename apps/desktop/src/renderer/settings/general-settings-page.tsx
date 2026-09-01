@@ -33,7 +33,7 @@ import type {
   NetworkProxySettings,
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import type { ThinkingLevel } from '@maka/core/model-thinking';
+import { THINKING_LEVELS, type ThinkingLevel } from '@maka/core/model-thinking';
 import type {
   IdentifiedLlmConnection,
   ProjectedLlmConnection,
@@ -482,7 +482,6 @@ function isRejectedShellPreference(error: unknown): boolean {
  */
 /** Sentinel for "no preference" — Selector needs a value, absence is not one. */
 const FOLLOW_MODEL_DEFAULT = "__follow_model__";
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function GeneralDefaultsCard(props: {
   connections: readonly ProjectedLlmConnection[];
