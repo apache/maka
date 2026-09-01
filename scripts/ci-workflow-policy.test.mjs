@@ -407,6 +407,25 @@ test('no lane asks for the one runner label that queues', () => {
   }
 });
 
+test('installed-package validation discards superseded pull request runs', () => {
+  const workflow = readWorkflow('cli-package-validation.yml');
+
+  // This lane fans out to about fourteen jobs per run and holds more runner
+  // slots than any other workflow here. A group without this setting does not
+  // cancel a superseded run, it queues the replacement behind it, so obsolete
+  // work finishes at full price. Release callers reach this through
+  // `workflow_call`, where `github.event_name` belongs to the caller, which is
+  // what keeps a publication run from ever being cancelled.
+  assert.match(
+    workflow,
+    /group: cli-package-validation-\$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /\n {2}cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/u,
+  );
+});
+
 test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 
