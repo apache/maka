@@ -60,15 +60,6 @@ test('falls back natively and never attaches to an inaccessible parent', async (
     onBrowserError: () => assert.fail('native presentation must not report a browser error'),
   };
 
-  assert.equal(
-    await showBrowserMessageBoxWithRuntime(options, parent, { locale: 'en' }, {
-      ...runtimeBase,
-      ready: false,
-      createWindow: () => assert.fail('pre-ready presentation must stay native'),
-    }),
-    nativeResult,
-  );
-
   parentState.visible = true;
   const failure = new Error('renderer failed');
   const failedWindow = fakeBrowserWindow({ loadError: failure });
@@ -76,7 +67,6 @@ test('falls back natively and never attaches to an inaccessible parent', async (
   assert.equal(
     await showBrowserMessageBoxWithRuntime(options, parent, { locale: 'en' }, {
       ...runtimeBase,
-      ready: true,
       createWindow: (windowOptions) => {
         assert.equal(windowOptions.parent, parent);
         assert.equal(windowOptions.modal, true);
@@ -91,7 +81,7 @@ test('falls back natively and never attaches to an inaccessible parent', async (
     nativeResult,
   );
   assert.equal(reported, failure);
-  assert.deepEqual(nativeParents, [undefined, undefined]);
+  assert.deepEqual(nativeParents, [undefined]);
   assert.equal(failedWindow.destroyed(), true);
 });
 
@@ -109,7 +99,6 @@ test('drives the BrowserWindow lifecycle through a safe response URL', async () 
     parent,
     { locale: 'en', dark: true },
     {
-      ready: true,
       shouldUseDarkColors: false,
       createWindow: (options) => {
         createdOptions = options;
@@ -369,7 +358,6 @@ function runtimeForWindow(
   } = {},
 ): BrowserMessageBoxRuntime {
   return {
-    ready: true,
     shouldUseDarkColors: false,
     createWindow: (windowOptions) => {
       presented.options = windowOptions;

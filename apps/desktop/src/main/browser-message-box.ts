@@ -49,7 +49,6 @@ export interface BrowserMessageBoxAppearance {
 }
 
 export interface BrowserMessageBoxRuntime {
-  readonly ready: boolean;
   readonly shouldUseDarkColors: boolean;
   readonly createWindow: (options: BrowserWindowConstructorOptions) => BrowserWindow;
   readonly resolveWorkArea: (parent: BrowserWindow | undefined) => Rectangle;
@@ -70,9 +69,7 @@ export function isBrowserMessageBoxPresentationActive(): boolean {
  * Product-styled replacement for Electron's native MessageBox.
  *
  * BrowserWindow can fail for exactly the class of failures these dialogs
- * report, so the native MessageBox remains the last-resort fallback. A truly
- * pre-ready caller also falls back because BrowserWindow is unavailable by
- * Electron contract; current startup callers wait for ready when they can.
+ * report, so the native MessageBox remains the last-resort fallback.
  */
 export async function showBrowserMessageBox(
   options: MessageBoxOptions,
@@ -83,7 +80,6 @@ export async function showBrowserMessageBox(
   // Electron itself is only required when a dialog is actually presented.
   const electron = await import('electron');
   return showBrowserMessageBoxWithRuntime(options, parent, appearance, {
-    ready: electron.app.isReady(),
     shouldUseDarkColors: electron.nativeTheme.shouldUseDarkColors,
     createWindow: (windowOptions) => new electron.BrowserWindow(windowOptions),
     resolveWorkArea: (nextParent) => resolveWorkArea(electron, nextParent),
@@ -107,7 +103,6 @@ export async function showBrowserMessageBoxWithRuntime(
       parent && !parent.isDestroyed() && parent.isVisible() && !parent.isMinimized()
         ? parent
         : undefined;
-    if (!runtime.ready) return await runtime.showNative(options, visibleParent());
     try {
       return await presentBrowserMessageBox(runtime, options, visibleParent(), appearance);
     } catch (error) {
