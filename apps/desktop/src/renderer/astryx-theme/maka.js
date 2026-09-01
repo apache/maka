@@ -421,13 +421,6 @@ export const makaTheme = {
       "base": {
         "padding": "var(--spacing-3)"
       }
-    },
-    "app-shell-sidenav": {
-      "variant:elevated": {
-        "borderInlineEndWidth": "1px",
-        "borderInlineEndStyle": "solid",
-        "borderInlineEndColor": "var(--color-border)"
-      }
     }
   },
   __onDark: {

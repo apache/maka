@@ -62,12 +62,9 @@
 }
 
 /* Sidebar and canvas share one floor colour; the content plate is the only
-   step. Drop the theme sidenav hairline (generated maka.css) so the plate edge
-   is the single seam. Width 0: a transparent 1px border still reserved layout. */
+   step, and the plate edge is the single seam. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
   background: var(--agents-layout-bg);
-  border-inline-end-color: transparent;
-  border-inline-end-width: 0;
 }
 
 

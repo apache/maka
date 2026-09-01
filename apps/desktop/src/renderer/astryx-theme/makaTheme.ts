@@ -158,34 +158,9 @@ export const makaTheme = defineTheme({
     '--color-background-popover': 'var(--background-elevated)',
     '--color-background-muted': 'var(--muted)',
     '--color-border': 'var(--border)',
-  },
-  // The column edge itself. Astryx draws a divider only on
-  // `AppShell variant="section"`, which is a hardcoded `variant === 'section'`
-  // in AppShell.tsx and pairs the line with no wash at all. Cursor and Codex
-  // both do the opposite of one-or-the-other: a 1px rule AND a wash, with the
-  // wash pulled far back (measured off their windows, sidebar→content ΔL 0.025
-  // and ~0.010 against Maka's 0.045). The line states the boundary; the wash
-  // only says the two columns are different material. Authored here rather than
-  // as a product override so the shell keeps one paint authority — this emits
-  // `.astryx-app-shell-sidenav { border-inline-end }` inside the theme's own
-  // @scope. It draws with --color-border, the same token Divider, Card and the
-  // generated `hr` rule use, so the column edge cannot drift away from every
-  // other hairline in the app; that token is remapped to the product's --border
-  // just above. Keyed on the variant, not `base`: the edge belongs to the
-  // elevated treatment, so a future variant change re-decides it instead of
-  // inheriting a line that no longer matches the columns.
-  components: {
-    'app-shell-sidenav': {
-      // No color ease on the column: neither half of the edge changes across the
-      // collapse any more. The wash is one material in both states (the rail
-      // wears --color-background-body throughout, see shell-layout.css) and the
-      // hairline is transparent in both, so a background-color/border-color
-      // transition here had nothing left to interpolate.
-      'variant:elevated': {
-        borderInlineEndWidth: '1px',
-        borderInlineEndStyle: 'solid',
-        borderInlineEndColor: 'var(--color-border)',
-      },
-    },
+    '--radius-inner': 'var(--radius-control)',
+    '--radius-element': 'var(--radius-surface)',
+    '--radius-container': 'var(--radius-modal)',
+    '--radius-full': 'var(--radius-pill)',
   },
 });

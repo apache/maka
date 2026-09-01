@@ -450,12 +450,6 @@
     --astryx-section-padding: var(--spacing-3);
   }
 
-  .astryx-app-shell-sidenav.elevated {
-    border-inline-end-width: 1px;
-    border-inline-end-style: solid;
-    border-inline-end-color: var(--color-border);
-  }
-
   .astryx-text.primary { color: var(--color-text-primary); }
 
   .astryx-heading.primary { color: var(--color-text-primary); }
