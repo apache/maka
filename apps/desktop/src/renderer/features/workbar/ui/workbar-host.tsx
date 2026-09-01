@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
+import { lazy, Suspense, type ComponentProps, type CSSProperties, type ReactNode } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import { Composer, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
+import type { ProviderType } from '@maka/core/llm-connections';
 import type { SessionSummary } from '@maka/core/session';
 import { getShellCopy } from '../../../locales/shell-copy';
 import type {
@@ -127,6 +128,7 @@ export interface WorkbarHostModel {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  renderProviderMark?: (type: ProviderType) => ReactNode;
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -210,6 +212,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
+              renderProviderMark={props.renderProviderMark}
             />
           </Suspense>
         </div>

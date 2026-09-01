@@ -251,6 +251,10 @@ export interface SideChatSessionPort {
     sessionId: string,
     mode: PermissionMode,
   ): Promise<SessionSummary>;
+  setModel(
+    sessionId: string,
+    input: { llmConnectionId: string; llmConnectionSlug: string; model: string },
+  ): Promise<SessionSummary>;
   regenerateTurn(sessionId: string, input: RegenerateTurnInput): Promise<void>;
   respondToSandboxBoundary(
     sessionId: string,
