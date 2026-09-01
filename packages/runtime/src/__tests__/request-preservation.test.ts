@@ -27,9 +27,9 @@ import type {
 } from '@maka/core/model-call-attempt';
 import type { AgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
 import {
-  deriveAttemptSemanticPrefixContinuity,
-  deriveSemanticPrefixContinuity,
-} from '../semantic-prefix-continuity.js';
+  deriveAttemptRequestPreservation,
+  deriveRequestPreservation,
+} from '../request-preservation.js';
 
 test('keeps every earlier cacheable segment when the current request only appends', () => {
   const previous = observation([message(0, 'system'), message(1, 'user-1')]);
@@ -39,7 +39,7 @@ test('keeps every earlier cacheable segment when the current request only append
     message(2, 'assistant-1'),
   ]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'preserved',
     previousSegmentCount: 2,
     preservedSegmentCount: 2,
@@ -50,7 +50,7 @@ test('does not treat opaque digests as evidence of divergence', () => {
   const previous = observation([{ ...message(0, 'redacted-a'), comparison: 'opaque' }]);
   const current = observation([{ ...message(0, 'redacted-b'), comparison: 'opaque' }]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'unknown',
     previousSegmentCount: 1,
     preservedSegmentCount: 0,
@@ -61,7 +61,7 @@ test('reports the first changed earlier segment', () => {
   const previous = observation([message(0, 'system'), message(1, 'user-1')]);
   const current = observation([message(0, 'system'), message(1, 'edited-user-1')]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'diverged',
     previousSegmentCount: 2,
     preservedSegmentCount: 1,
@@ -73,7 +73,7 @@ test('reports the first removed earlier segment', () => {
   const previous = observation([message(0, 'system'), message(1, 'user-1')]);
   const current = observation([message(0, 'system')]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'diverged',
     previousSegmentCount: 2,
     preservedSegmentCount: 1,
@@ -89,7 +89,7 @@ test('reports the current segment at the first middle deletion', () => {
   ]);
   const current = observation([message(0, 'system'), message(2, 'assistant-1')]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'diverged',
     previousSegmentCount: 3,
     preservedSegmentCount: 1,
@@ -105,7 +105,7 @@ test('reports an inserted segment as the first divergence', () => {
     message(2, 'assistant-1'),
   ]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'diverged',
     previousSegmentCount: 2,
     preservedSegmentCount: 1,
@@ -125,7 +125,7 @@ test('reports the first moved segment after a reorder', () => {
     message(1, 'user-1'),
   ]);
 
-  assert.deepEqual(deriveSemanticPrefixContinuity(current, previous), {
+  assert.deepEqual(deriveRequestPreservation(current, previous), {
     status: 'diverged',
     previousSegmentCount: 3,
     preservedSegmentCount: 1,
@@ -266,11 +266,11 @@ test('does not compare a child run against its parent session run', async () => 
   assert.equal(
     await statusOf(
       current,
-      [run('run-parent', 'turn-1', PROVIDER_STATE), run('run-child', 'turn-1', PROVIDER_STATE)],
+      [
+        run('run-parent', 'turn-1', PROVIDER_STATE),
+        run('run-child', 'turn-1', PROVIDER_STATE, { parentRunId: 'run-parent' }),
+      ],
       [previous],
-      undefined,
-      false,
-      { parentRunId: 'run-parent' },
     ),
     'unavailable',
   );
@@ -281,16 +281,11 @@ async function statusOf(
   runs: AgentRunHeader[],
   attempts: ModelCallAttempt[],
   admission?: { runId: string; previousRootTurnId: string | null },
-  currentSessionInline = true,
-  lineage: { parentRunId?: string } = {},
 ) {
   return (
-    await deriveAttemptSemanticPrefixContinuity({
+    await deriveAttemptRequestPreservation({
       current,
-      currentProviderStateIdentity: PROVIDER_STATE,
-      currentSessionInline,
-      lineage,
-      store: prefixStore(runs, attempts, admission),
+      store: preservationStore(runs, attempts, admission),
     })
   ).status;
 }
@@ -382,7 +377,7 @@ function continuationSource(
   };
 }
 
-function prefixStore(
+function preservationStore(
   runs: AgentRunHeader[],
   attempts: ModelCallAttempt[],
   admission?: { runId: string; previousRootTurnId: string | null },

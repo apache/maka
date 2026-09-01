@@ -30,7 +30,7 @@ import {
   type AgentRunStore,
 } from '@maka/core/agent-run';
 
-export type SemanticPrefixContinuity =
+export type RequestPreservation =
   | {
       status: 'no_predecessor' | 'unavailable';
       previousSegmentCount: 0;
@@ -45,15 +45,15 @@ export type SemanticPrefixContinuity =
       status: 'diverged';
       previousSegmentCount: number;
       preservedSegmentCount: number;
-      firstDivergentSegment: SemanticPrefixSegmentRef;
+      firstDivergentSegment: RequestPreservationSegmentRef;
     };
 
-export type SemanticPrefixSegmentRef = Pick<
+export type RequestPreservationSegmentRef = Pick<
   PreparedRequestObservationSegment,
   'kind' | 'index' | 'role' | 'label'
 >;
 
-type PrefixStore = Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+type PreservationStore = Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
 
 interface RootAdmissionReader {
   readRootTurnAdmission?(
@@ -62,44 +62,37 @@ interface RootAdmissionReader {
   ): Promise<{ runId: string; previousRootTurnId?: string | null } | undefined>;
 }
 
-interface AttemptContinuityInput {
+interface AttemptPreservationInput {
   current: ModelCallAttempt;
-  currentProviderStateIdentity?: `sha256:${string}`;
-  currentSessionInline: boolean;
-  lineage: {
-    parentRunId?: string;
-    parentTurnId?: string;
-    retriedFromTurnId?: string;
-    regeneratedFromTurnId?: string;
-    branchOfTurnId?: string;
-    parentSessionId?: string;
-  };
-  store: PrefixStore;
+  store: PreservationStore;
 }
 
-export async function deriveAttemptSemanticPrefixContinuity(
-  input: AttemptContinuityInput,
-): Promise<SemanticPrefixContinuity> {
-  const { current } = input;
-  if (!input.currentSessionInline || current.callKind !== 'main' || !current.requestObservation) {
+export async function deriveAttemptRequestPreservation(
+  input: AttemptPreservationInput,
+): Promise<RequestPreservation> {
+  const { current, store } = input;
+  if (current.callKind !== 'main' || !current.requestObservation) {
     return unavailable();
   }
+  const runs = await store.listSessionRuns(current.sessionId);
+  const currentRun = runs.find((run) => run.runId === current.runId);
+  if (!currentRun || !isSessionInlineRun(currentRun)) return unavailable();
 
-  const predecessor = await predecessorAttempt(input);
+  const predecessor = await predecessorAttempt(current, currentRun, runs, store);
   if (predecessor === null) {
     return { status: 'no_predecessor', previousSegmentCount: 0, preservedSegmentCount: 0 };
   }
-  if (!predecessor || !sameDomain(input, predecessor)) return unavailable();
-  return deriveSemanticPrefixContinuity(
+  if (!predecessor || !sameDomain(current, currentRun, predecessor)) return unavailable();
+  return deriveRequestPreservation(
     current.requestObservation,
     predecessor.attempt.requestObservation!,
   );
 }
 
-export function deriveSemanticPrefixContinuity(
+export function deriveRequestPreservation(
   currentObservation: PreparedRequestObservation,
   previousObservation: PreparedRequestObservation,
-): SemanticPrefixContinuity {
+): RequestPreservation {
   const current = currentObservation.segments.filter((segment) => segment.cacheable);
   const previous = previousObservation.segments.filter((segment) => segment.cacheable);
   const previousSegmentCount = representedCount(previous);
@@ -155,7 +148,7 @@ function representedCount(segments: readonly PreparedRequestObservationSegment[]
   return segments.reduce((count, segment) => count + (segment.representedSegments ?? 1), 0);
 }
 
-function segmentRef(segment: PreparedRequestObservationSegment): SemanticPrefixSegmentRef {
+function segmentRef(segment: PreparedRequestObservationSegment): RequestPreservationSegmentRef {
   return {
     kind: segment.kind,
     index: segment.index,
@@ -165,13 +158,11 @@ function segmentRef(segment: PreparedRequestObservationSegment): SemanticPrefixS
 }
 
 async function predecessorAttempt(
-  input: AttemptContinuityInput,
+  current: ModelCallAttempt,
+  currentRun: AgentRunHeader,
+  runs: readonly AgentRunHeader[],
+  store: PreservationStore,
 ): Promise<{ attempt: ModelCallAttempt; run: AgentRunHeader } | null | undefined> {
-  const { current, lineage, store } = input;
-  const runs = await store.listSessionRuns(current.sessionId);
-  const currentRun = runs.find((run) => run.runId === current.runId);
-  if (!currentRun) return undefined;
-
   if (current.attempt > 0) {
     return uniqueAttempt(
       currentRun,
@@ -189,24 +180,23 @@ async function predecessorAttempt(
       ),
     );
   }
-  if (lineage.parentRunId) {
-    const parent = runs.find((run) => run.runId === lineage.parentRunId);
+  if (currentRun.parentRunId) {
+    const parent = runs.find((run) => run.runId === currentRun.parentRunId);
     return parent ? latestAttempt(parent, await attemptsFor(store, parent)) : undefined;
   }
   if (
-    lineage.parentSessionId ||
-    lineage.parentTurnId ||
-    lineage.retriedFromTurnId ||
-    lineage.regeneratedFromTurnId ||
-    lineage.branchOfTurnId
+    currentRun.parentSessionId ||
+    currentRun.parentTurnId ||
+    currentRun.retriedFromTurnId ||
+    currentRun.regeneratedFromTurnId ||
+    currentRun.branchOfTurnId
   ) {
     return undefined;
   }
 
-  const admission = await (store as PrefixStore & RootAdmissionReader).readRootTurnAdmission?.(
-    current.sessionId,
-    current.turnId,
-  );
+  const admission = await (
+    store as PreservationStore & RootAdmissionReader
+  ).readRootTurnAdmission?.(current.sessionId, current.turnId);
   if (
     !admission ||
     admission.runId !== current.runId ||
@@ -248,7 +238,10 @@ function uniqueDurableRunTip(runs: readonly AgentRunHeader[]): AgentRunHeader | 
   return visited.size === runs.length ? tips[0] : undefined;
 }
 
-async function attemptsFor(store: PrefixStore, run: AgentRunHeader): Promise<ModelCallAttempt[]> {
+async function attemptsFor(
+  store: PreservationStore,
+  run: AgentRunHeader,
+): Promise<ModelCallAttempt[]> {
   const attempts: ModelCallAttempt[] = [];
   for (const event of await store.readEvents(run.sessionId, run.runId)) {
     if (event.type !== 'model_call_attempt_recorded') continue;
@@ -301,20 +294,17 @@ function uniqueAttempt(
 }
 
 function sameDomain(
-  input: {
-    current: ModelCallAttempt;
-    currentProviderStateIdentity?: `sha256:${string}`;
-  },
+  current: ModelCallAttempt,
+  currentRun: AgentRunHeader,
   previous: { attempt: ModelCallAttempt; run: AgentRunHeader },
 ): boolean {
-  const current = input.current;
   const before = previous.attempt;
   if (!before.requestObservation) return false;
   const currentPartition = exactProviderPartition(current.requestObservation!);
   const previousPartition = exactProviderPartition(before.requestObservation);
   return (
-    input.currentProviderStateIdentity !== undefined &&
-    input.currentProviderStateIdentity === previous.run.providerStateIdentity &&
+    currentRun.providerStateIdentity !== undefined &&
+    currentRun.providerStateIdentity === previous.run.providerStateIdentity &&
     current.sessionId === before.sessionId &&
     current.connectionSlug !== undefined &&
     current.connectionSlug === before.connectionSlug &&
@@ -331,11 +321,11 @@ function exactProviderPartition(observation: PreparedRequestObservation): string
   return segments.map((segment) => `${segment.index}:${segment.digest}`).join('|');
 }
 
-function unavailable(): SemanticPrefixContinuity {
+function unavailable(): RequestPreservation {
   return { status: 'unavailable', previousSegmentCount: 0, preservedSegmentCount: 0 };
 }
 
-export function isSemanticPrefixContinuity(value: unknown): value is SemanticPrefixContinuity {
+export function isRequestPreservation(value: unknown): value is RequestPreservation {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as {
     status?: unknown;

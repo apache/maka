@@ -70,7 +70,7 @@ test('rejects v2 snapshots that the canonical writer cannot produce', () => {
     },
     {
       ...base,
-      requestPrefix: {
+      requestPreservation: {
         status: 'diverged',
         previousSegmentCount: 1,
         preservedSegmentCount: 0,
@@ -79,7 +79,7 @@ test('rejects v2 snapshots that the canonical writer cannot produce', () => {
     },
     {
       ...base,
-      requestPrefix: {
+      requestPreservation: {
         status: 'preserved',
         previousSegmentCount: 1,
         preservedSegmentCount: 1,

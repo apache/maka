@@ -35,7 +35,7 @@ export * from './tools/inspector/session-inspector-panel-model.js';
 export {
   compactNumberFormatter,
   InspectorCompositionSection,
-  InspectorRequestPrefixBadge,
+  InspectorRequestPreservationBadge,
 } from './tools/inspector/session-inspector-panel.js';
 export * from './tools/inspector/session-inspector-overview-model.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';

@@ -263,7 +263,7 @@ export interface DesktopConversationCopy {
       /** The three figures a reader opens this tab for, as headline stats. */
       cacheHit: string;
       providerCache: string;
-      requestPrefix: {
+      requestPreservation: {
         preserved: (preserved: number, previous: number) => string;
         diverged: (segment: string, index: number) => string;
         cannotJudge: string;
@@ -607,10 +607,10 @@ const COPY = {
         },
         cacheHit: '缓存命中率',
         providerCache: 'Provider 缓存读取 / 写入',
-        requestPrefix: {
-          preserved: (preserved, previous) => `请求前缀 ${preserved}/${previous} 保持`,
-          diverged: (segment, index) => `请求前缀在${segment} ${index}处分叉`,
-          cannotJudge: '请求前缀无法判断',
+        requestPreservation: {
+          preserved: (preserved, previous) => `上次请求内容已保留 ${preserved}/${previous}`,
+          diverged: (segment, index) => `上次请求从${segment} ${index}起有变化`,
+          cannotJudge: '无法比较上次请求',
           segment: {
             tool_schema: '工具',
             system_prompt: '系统提示',
@@ -854,11 +854,11 @@ const COPY = {
         },
         cacheHit: 'Cache hit rate',
         providerCache: 'Provider cache read / write',
-        requestPrefix: {
+        requestPreservation: {
           preserved: (preserved, previous) =>
-            `Request prefix ${preserved}/${previous} preserved`,
-          diverged: (segment, index) => `Request prefix diverged at ${segment} ${index}`,
-          cannotJudge: 'Request prefix unavailable',
+            `Previous request ${preserved}/${previous} preserved`,
+          diverged: (segment, index) => `Previous request changed at ${segment} ${index}`,
+          cannotJudge: 'Previous request could not be compared',
           segment: {
             tool_schema: 'tool',
             system_prompt: 'system prompt',

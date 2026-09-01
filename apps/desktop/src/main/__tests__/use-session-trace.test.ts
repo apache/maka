@@ -317,7 +317,7 @@ describe('useSessionTrace', () => {
     assert.equal(harness.reads.length, 2, 'a closing burst is one re-read, not three');
   });
 
-  it('does not keep an earlier request-prefix verdict while its refresh fails', async () => {
+  it('does not keep an earlier request-preservation verdict while its refresh fails', async () => {
     const { root } = installReactRenderer();
     const harness = createTraceHarness({
       context: async (_sessionId, readIndex) => {
@@ -329,7 +329,7 @@ describe('useSessionTrace', () => {
             providerId: 'anthropic',
             modelId: 'model',
             completedAt: 1,
-            requestPrefix: {
+            requestPreservation: {
               status: 'preserved',
               previousSegmentCount: 1,
               preservedSegmentCount: 1,

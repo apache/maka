@@ -149,7 +149,7 @@ export function SessionInspectorPanel(props: { sessionId: string; active: boolea
             {copy.summaryUnavailable}
           </Text>
         )}
-        {(snapshot.summary || overview.context || overview.composition || overview.requestPrefix) && (
+        {(snapshot.summary || overview.context || overview.composition || overview.requestPreservation) && (
           <InspectorOverview
             copy={copy}
             locale={locale}
@@ -273,8 +273,8 @@ function InspectorOverview(props: {
 
   return (
     <VStack gap={6} data-maka-contract="session-inspector-overview">
-      {overview.requestPrefix && (
-        <InspectorRequestPrefixBadge copy={copy} requestPrefix={overview.requestPrefix} />
+      {overview.requestPreservation && (
+        <InspectorRequestPreservationBadge copy={copy} requestPreservation={overview.requestPreservation} />
       )}
       {props.showTotals && (
         <VStack gap={2} data-maka-contract="session-inspector-stats">
@@ -320,41 +320,41 @@ function InspectorOverview(props: {
   );
 }
 
-export function InspectorRequestPrefixBadge(props: {
+export function InspectorRequestPreservationBadge(props: {
   copy: InspectorCopy;
-  requestPrefix: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['requestPrefix']>;
+  requestPreservation: NonNullable<ReturnType<typeof deriveInspectorOverviewModel>['requestPreservation']>;
 }) {
-  const { requestPrefix, copy } = props;
-  if (requestPrefix.status === 'no_predecessor') return null;
-  if (requestPrefix.status === 'preserved') {
+  const { requestPreservation, copy } = props;
+  if (requestPreservation.status === 'no_predecessor') return null;
+  if (requestPreservation.status === 'preserved') {
     return (
       <Badge
         variant="neutral"
-        label={copy.overview.requestPrefix.preserved(
-          requestPrefix.preservedSegmentCount,
-          requestPrefix.previousSegmentCount,
+        label={copy.overview.requestPreservation.preserved(
+          requestPreservation.preservedSegmentCount,
+          requestPreservation.previousSegmentCount,
         )}
-        data-maka-contract="request-prefix-continuity"
+        data-maka-contract="request-preservation"
       />
     );
   }
-  if (requestPrefix.status === 'diverged') {
+  if (requestPreservation.status === 'diverged') {
     return (
       <Badge
         variant="error"
-        label={copy.overview.requestPrefix.diverged(
-          copy.overview.requestPrefix.segment[requestPrefix.firstDivergentSegment.kind],
-          requestPrefix.firstDivergentSegment.index + 1,
+        label={copy.overview.requestPreservation.diverged(
+          copy.overview.requestPreservation.segment[requestPreservation.firstDivergentSegment.kind],
+          requestPreservation.firstDivergentSegment.index + 1,
         )}
-        data-maka-contract="request-prefix-continuity"
+        data-maka-contract="request-preservation"
       />
     );
   }
   return (
     <Badge
-      variant={requestPrefix.status === 'unknown' ? 'warning' : 'neutral'}
-      label={copy.overview.requestPrefix.cannotJudge}
-      data-maka-contract="request-prefix-continuity"
+      variant={requestPreservation.status === 'unknown' ? 'warning' : 'neutral'}
+      label={copy.overview.requestPreservation.cannotJudge}
+      data-maka-contract="request-preservation"
     />
   );
 }

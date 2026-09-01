@@ -48,7 +48,7 @@ import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 
-test('real consecutive sends seal a preserved prefix verdict that survives restart', async () => {
+test('real consecutive sends preserve the previous request across restart', async () => {
   // Tracker → backend → the kernel seam a backend is actually built with →
   // AgentRun → the storage transaction. Every layer in that list once had a
   // signature that compiled while dropping the row, and no test crossed all of
@@ -137,7 +137,7 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
       diagnostics.composition?.segments.some((segment) => segment.kind === 'messages'),
       'and the request describes what it was made of',
     );
-    assert.deepEqual(diagnostics.requestPrefix, {
+    assert.deepEqual(diagnostics.requestPreservation, {
       status: 'no_predecessor',
       previousSegmentCount: 0,
       preservedSegmentCount: 0,
@@ -155,11 +155,11 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
     const successor = await readLatestContextDiagnostics(runStore, session.id);
     assert.equal(successor.status, 'available');
     if (successor.status !== 'available') return;
-    assert.ok(successor.requestPrefix);
-    assert.equal(successor.requestPrefix.status, 'preserved');
+    assert.ok(successor.requestPreservation);
+    assert.equal(successor.requestPreservation.status, 'preserved');
     assert.equal(
-      successor.requestPrefix.preservedSegmentCount,
-      successor.requestPrefix.previousSegmentCount,
+      successor.requestPreservation.preservedSegmentCount,
+      successor.requestPreservation.previousSegmentCount,
     );
 
     await manager.stopSession(session.id, { source: 'stop_button' });
@@ -188,7 +188,7 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
       const restarted = await readLatestContextDiagnostics(reopened, session.id);
       assert.equal(restarted.status, 'available');
       if (restarted.status !== 'available') return;
-      assert.deepEqual(restarted.requestPrefix, successor.requestPrefix);
+      assert.deepEqual(restarted.requestPreservation, successor.requestPreservation);
 
       let coldScans = 0;
       const cold = await readLatestContextDiagnostics(
@@ -210,7 +210,7 @@ test('real consecutive sends seal a preserved prefix verdict that survives resta
       assert.equal(cold.status, 'available');
       if (cold.status !== 'available') return;
       assert.deepEqual(cold.composition, successor.composition);
-      assert.deepEqual(cold.requestPrefix, successor.requestPrefix);
+      assert.deepEqual(cold.requestPreservation, successor.requestPreservation);
     } finally {
       reopened.close?.();
     }

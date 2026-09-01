@@ -28,7 +28,7 @@ import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeContextCompactionOutcome, decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
 import type { ContextCompactionOutcome } from '@maka/core/events';
-import type { SemanticPrefixContinuity } from '@maka/runtime/context-diagnostics';
+import { isRequestPreservation, type RequestPreservation } from '@maka/runtime/context-diagnostics';
 
 export interface ContextDiagnosticsQueryInput {
   readonly sessionId: string;
@@ -72,7 +72,7 @@ export interface ContextDiagnosticsComposition {
   readonly unlabelledToolBytes?: number;
 }
 
-export type ContextDiagnosticsRequestPrefix = SemanticPrefixContinuity;
+export type ContextDiagnosticsRequestPreservation = RequestPreservation;
 
 export type ContextDiagnosticsResult =
   | {
@@ -102,7 +102,7 @@ export type ContextDiagnosticsResult =
         readonly estimatedTokens: number;
       };
       /** Runtime-owned verdict; Host and Desktop must not recompute it. */
-      readonly requestPrefix?: ContextDiagnosticsRequestPrefix;
+      readonly requestPreservation?: ContextDiagnosticsRequestPreservation;
     };
 
 const QUERY_ERRORS = [
@@ -179,7 +179,7 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
       'contextWindow',
       'composition',
       'compaction',
-      'requestPrefix',
+      'requestPreservation',
     ],
   );
   if (record.status === 'unavailable') {
@@ -208,7 +208,7 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
       'contextWindow',
       'composition',
       'compaction',
-      'requestPrefix',
+      'requestPreservation',
     ],
   );
   return {
@@ -236,80 +236,22 @@ function decodeContextDiagnosticsResult(value: unknown): ContextDiagnosticsResul
     ...(available.compaction === undefined
       ? {}
       : { compaction: decodeContextDiagnosticsCompaction(available.compaction) }),
-    ...(available.requestPrefix === undefined
+    ...(available.requestPreservation === undefined
       ? {}
-      : { requestPrefix: decodeContextDiagnosticsRequestPrefix(available.requestPrefix) }),
+      : {
+          requestPreservation: decodeContextDiagnosticsRequestPreservation(
+            available.requestPreservation,
+          ),
+        }),
   };
 }
 
-function decodeContextDiagnosticsRequestPrefix(value: unknown): ContextDiagnosticsRequestPrefix {
-  const prefix = requireShapedRecord(
-    value,
-    'Context diagnostics request prefix',
-    ['status', 'previousSegmentCount', 'preservedSegmentCount'],
-    ['firstDivergentSegment'],
-  );
-  const previousSegmentCount = requireCount(prefix.previousSegmentCount, 'previousSegmentCount');
-  const preservedSegmentCount = requireCount(prefix.preservedSegmentCount, 'preservedSegmentCount');
-  if (preservedSegmentCount > previousSegmentCount) {
-    throw invalidProtocolFrame('Invalid request prefix segment counts');
+function decodeContextDiagnosticsRequestPreservation(
+  value: unknown,
+): ContextDiagnosticsRequestPreservation {
+  if (!isRequestPreservation(value)) {
+    throw invalidProtocolFrame('Invalid context diagnostics request preservation');
   }
-  if (prefix.status === 'no_predecessor' || prefix.status === 'unavailable') {
-    if (
-      prefix.firstDivergentSegment !== undefined ||
-      previousSegmentCount !== 0 ||
-      preservedSegmentCount !== 0
-    ) {
-      throw invalidProtocolFrame('Invalid unavailable request prefix');
-    }
-    return { status: prefix.status, previousSegmentCount: 0, preservedSegmentCount: 0 };
-  }
-  if (prefix.status === 'preserved' || prefix.status === 'unknown') {
-    if (
-      prefix.firstDivergentSegment !== undefined ||
-      (prefix.status === 'preserved' && preservedSegmentCount !== previousSegmentCount)
-    ) {
-      throw invalidProtocolFrame('Invalid request prefix result');
-    }
-    return { status: prefix.status, previousSegmentCount, preservedSegmentCount };
-  }
-  if (prefix.status !== 'diverged' || prefix.firstDivergentSegment === undefined) {
-    throw invalidProtocolFrame('Invalid request prefix status');
-  }
-  const segment = requireShapedRecord(
-    prefix.firstDivergentSegment,
-    'Request prefix divergent segment',
-    ['kind', 'index'],
-    ['role', 'label'],
-  );
-  if (
-    segment.kind !== 'tool_schema' &&
-    segment.kind !== 'system_prompt' &&
-    segment.kind !== 'message' &&
-    segment.kind !== 'provider_options'
-  ) {
-    throw invalidProtocolFrame('Invalid request prefix segment kind');
-  }
-  return {
-    status: 'diverged',
-    previousSegmentCount,
-    preservedSegmentCount,
-    firstDivergentSegment: {
-      kind: segment.kind,
-      index: requireCount(segment.index, 'requestPrefixSegmentIndex'),
-      ...(segment.role === undefined
-        ? {}
-        : { role: requireOptionalSegmentText(segment.role, 'requestPrefixSegmentRole') }),
-      ...(segment.label === undefined
-        ? {}
-        : { label: requireOptionalSegmentText(segment.label, 'requestPrefixSegmentLabel') }),
-    },
-  };
-}
-
-function requireOptionalSegmentText(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.length > 256)
-    throw invalidProtocolFrame(`Invalid ${label}`);
   return value;
 }
 

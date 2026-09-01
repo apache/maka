@@ -23,7 +23,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   InspectorCompositionSection,
-  InspectorRequestPrefixBadge,
+  InspectorRequestPreservationBadge,
 } from '../../renderer/features/workbar/testing.js';
 import { getDesktopConversationCopy } from '../../renderer/locales/conversation-copy.js';
 
@@ -66,9 +66,9 @@ test('maps each request-composition category to the same colour in the chart and
 
 test('renders the Runtime divergence location as a compact badge', () => {
   const markup = renderToStaticMarkup(
-    createElement(InspectorRequestPrefixBadge, {
+    createElement(InspectorRequestPreservationBadge, {
       copy: getDesktopConversationCopy('en').inspector,
-      requestPrefix: {
+      requestPreservation: {
         status: 'diverged',
         previousSegmentCount: 8,
         preservedSegmentCount: 2,
@@ -77,6 +77,6 @@ test('renders the Runtime divergence location as a compact badge', () => {
     }),
   );
 
-  assert.match(markup, /Request prefix diverged at message 3/);
-  assert.match(markup, /data-maka-contract="request-prefix-continuity"/);
+  assert.match(markup, /Previous request changed at message 3/);
+  assert.match(markup, /data-maka-contract="request-preservation"/);
 });

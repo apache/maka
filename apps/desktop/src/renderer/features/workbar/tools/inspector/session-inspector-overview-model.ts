@@ -142,8 +142,8 @@ export interface InspectorOverviewModel {
   cacheHitRate?: number;
   /** Provider-reported cache usage; independent of semantic continuity. */
   providerCacheUsage?: { readTokens: number; writeTokens: number };
-  /** Runtime-owned semantic prefix verdict; Desktop only presents it. */
-  requestPrefix?: Extract<ContextDiagnosticsResult, { status: 'available' }>['requestPrefix'];
+  /** Runtime-owned request-preservation verdict; Desktop only presents it. */
+  requestPreservation?: Extract<ContextDiagnosticsResult, { status: 'available' }>['requestPreservation'];
 }
 
 export function estimatedSessionCost(
@@ -193,9 +193,9 @@ export function deriveInspectorOverviewModel(
     ...(cacheHitRate !== undefined ? { cacheHitRate } : {}),
     ...(providerCacheUsage ? { providerCacheUsage } : {}),
     ...(diagnostics?.status === 'available' &&
-    diagnostics.requestPrefix &&
-    diagnostics.requestPrefix.status !== 'no_predecessor'
-      ? { requestPrefix: diagnostics.requestPrefix }
+    diagnostics.requestPreservation &&
+    diagnostics.requestPreservation.status !== 'no_predecessor'
+      ? { requestPreservation: diagnostics.requestPreservation }
       : {}),
   };
 }

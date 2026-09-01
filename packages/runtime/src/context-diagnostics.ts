@@ -41,12 +41,12 @@ import {
   type HistoryCompactCheckpoint,
 } from './history-compact-checkpoint.js';
 import {
-  deriveAttemptSemanticPrefixContinuity,
+  deriveAttemptRequestPreservation,
   isCanonicalAttemptForRun,
-  type SemanticPrefixContinuity,
-} from './semantic-prefix-continuity.js';
+  type RequestPreservation,
+} from './request-preservation.js';
 
-export type { SemanticPrefixContinuity } from './semantic-prefix-continuity.js';
+export { isRequestPreservation, type RequestPreservation } from './request-preservation.js';
 
 export type ContextDiagnosticsUnavailableReason = 'no_completed_request' | 'trace_unavailable';
 
@@ -107,7 +107,7 @@ export type ContextDiagnostics =
       composition?: ContextDiagnosticsComposition;
       compaction?: ContextDiagnosticsCompaction;
       /** Absent only for historical projections written before this diagnostic existed. */
-      requestPrefix?: SemanticPrefixContinuity;
+      requestPreservation?: RequestPreservation;
     };
 
 export interface ContextDiagnosticsComposition {
@@ -262,13 +262,10 @@ async function rebuildContextFromLedger(
     (anchor && !anchor.hasRequestObservation
       ? exactHistoricalComposition(anchor, historicalAttempts)
       : undefined);
-  const requestPrefix =
+  const requestPreservation =
     anchor?.attempt && anchor.run
-      ? await deriveAttemptSemanticPrefixContinuity({
+      ? await deriveAttemptRequestPreservation({
           current: anchor.attempt,
-          currentProviderStateIdentity: anchor.run.providerStateIdentity,
-          currentSessionInline: true,
-          lineage: anchor.run,
           store: runStore,
         })
       : undefined;
@@ -285,7 +282,7 @@ async function rebuildContextFromLedger(
     ...(resolved.contextWindow !== undefined ? { contextWindow: resolved.contextWindow } : {}),
     ...(composition ? { composition } : {}),
     ...(boundary ? { compaction: contextDiagnosticsCompactionOf(boundary.checkpoint) } : {}),
-    ...(requestPrefix ? { requestPrefix } : {}),
+    ...(requestPreservation ? { requestPreservation } : {}),
   };
   // Repair on the way out, so this scan happens once per session rather than
   // on every panel refresh. Best-effort: the caller already has its answer,
@@ -383,7 +380,7 @@ function availableFrom(snapshot: LatestContextSnapshot): ContextDiagnostics {
     ...(snapshot.contextWindow !== undefined ? { contextWindow: snapshot.contextWindow } : {}),
     ...(snapshot.composition ? { composition: snapshot.composition } : {}),
     ...(snapshot.compaction ? { compaction: snapshot.compaction } : {}),
-    ...(snapshot.requestPrefix ? { requestPrefix: snapshot.requestPrefix } : {}),
+    ...(snapshot.requestPreservation ? { requestPreservation: snapshot.requestPreservation } : {}),
   };
 }
 

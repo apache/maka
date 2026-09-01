@@ -71,7 +71,7 @@ test('context operations preserve bounded exact wire values', () => {
           turnCount: 2,
           estimatedTokens: 12,
         },
-        requestPrefix: {
+        requestPreservation: {
           status: 'diverged',
           previousSegmentCount: 8,
           preservedSegmentCount: 2,
@@ -102,7 +102,7 @@ test('context operations preserve bounded exact wire values', () => {
           turnCount: 2,
           estimatedTokens: 12,
         },
-        requestPrefix: {
+        requestPreservation: {
           status: 'diverged',
           previousSegmentCount: 8,
           preservedSegmentCount: 2,

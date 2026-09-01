@@ -91,7 +91,7 @@ import {
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
-import { deriveAttemptSemanticPrefixContinuity } from './semantic-prefix-continuity.js';
+import { deriveAttemptRequestPreservation } from './request-preservation.js';
 
 export interface AgentRunActiveSession {
   sessionId: string;
@@ -479,11 +479,8 @@ export class AgentRun {
       if (!runStore) return;
       let projected = latestContext;
       if (projected && attempt.callKind === 'main') {
-        const requestPrefix = await deriveAttemptSemanticPrefixContinuity({
+        const requestPreservation = await deriveAttemptRequestPreservation({
           current: attempt,
-          currentProviderStateIdentity: this.providerStateIdentity,
-          currentSessionInline: this.isSessionInline(),
-          lineage: this.lineage,
           store: runStore,
         }).catch(() => ({
           status: 'unavailable' as const,
@@ -492,7 +489,7 @@ export class AgentRun {
         }));
         projected = {
           ...projected,
-          snapshot: { ...projected.snapshot, requestPrefix },
+          snapshot: { ...projected.snapshot, requestPreservation },
         };
       }
       await runStore.appendEvent(

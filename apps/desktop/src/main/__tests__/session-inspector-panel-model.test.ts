@@ -139,7 +139,7 @@ test('does not estimate a cache-hit ratio from partial usage', () => {
   assert.equal(overview.cacheHitRate, undefined);
 });
 
-test('keeps provider cache read and write usage separate from prefix continuity', () => {
+test('keeps provider cache read and write usage separate from request preservation', () => {
   const overview = deriveInspectorOverviewModel(undefined, {
     range: { from: 0, to: 1 },
     totalRequests: 1,
@@ -172,11 +172,11 @@ test('keeps provider cache read and write usage separate from prefix continuity'
   });
 
   assert.deepEqual(overview.providerCacheUsage, { readTokens: 7, writeTokens: 4 });
-  assert.equal(overview.requestPrefix, undefined);
+  assert.equal(overview.requestPreservation, undefined);
 });
 
-test('passes the Runtime request-prefix verdict through without recomputing it', () => {
-  const requestPrefix = {
+test('passes the Runtime request-preservation verdict through without recomputing it', () => {
+  const requestPreservation = {
     status: 'diverged' as const,
     previousSegmentCount: 8,
     preservedSegmentCount: 2,
@@ -187,10 +187,10 @@ test('passes the Runtime request-prefix verdict through without recomputing it',
     providerId: 'anthropic',
     modelId: 'claude',
     completedAt: 10,
-    requestPrefix,
+    requestPreservation,
   });
 
-  assert.equal(overview.requestPrefix, requestPrefix);
+  assert.equal(overview.requestPreservation, requestPreservation);
 });
 
 test('does not create an empty overview for a request without a predecessor', () => {
@@ -199,14 +199,14 @@ test('does not create an empty overview for a request without a predecessor', ()
     providerId: 'anthropic',
     modelId: 'claude',
     completedAt: 10,
-    requestPrefix: {
+    requestPreservation: {
       status: 'no_predecessor',
       previousSegmentCount: 0,
       preservedSegmentCount: 0,
     },
   });
 
-  assert.equal(overview.requestPrefix, undefined);
+  assert.equal(overview.requestPreservation, undefined);
 });
 
 test('derives per-turn cost only from priced model-call step totals', () => {
