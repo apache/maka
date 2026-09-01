@@ -225,7 +225,77 @@ const EN = {
     dismissTurnRequest: 'Dismiss',
 } satisfies SessionCollaborationCopy;
 
-const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN, ko: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const KO = {
+    shareAction: '이 작업 공유',
+    shareTitle: '작업 공유',
+    shareDescription: '다른 Maka 설치에 일회용 초대를 만듭니다.',
+    enableRemoteAccessTitle: '먼저 원격 액세스를 켜세요',
+    enableRemoteAccessBody:
+      'Runtime Host 설정이 열렸습니다. 원격 액세스를 켠 뒤 이 작업을 공유하세요.',
+    disclosureTitle: '공유 전 확인',
+    disclosureBody:
+      '게스트는 이 작업의 기존 및 이후에 생성되는 모든 표시 가능한 콘텐츠(파일 경로, 자격 증명, 기타 비밀 포함)를 볼 수 있습니다. 액세스를 취소해도 이후 읽기만 막을 수 있으며, 이미 복사한 내용은 회수할 수 없습니다.',
+    accessLabel: '액세스',
+    observe: '읽기 전용',
+    observeHelp: '전체 기록과 실시간 업데이트 보기',
+    requestTurn: '턴 요청 가능',
+    revokeTurnRequests: '턴 요청 권한 취소',
+    requestTurnHelp: '작업 전체를 보고, 건별 승인이 필요한 새 턴을 요청',
+    createInvitation: '초대 만들기',
+    invitationCode: '일회용 초대 코드',
+    invitationHelp: '코드에는 연결 주소와 게스트 자격 증명이 포함되며, 소유자 자격 증명은 포함되지 않습니다.',
+    copy: '초대 복사',
+    copied: '초대가 복사됨',
+    close: '완료',
+    activeAccess: '현재 액세스',
+    accessUnavailable: '공유 제어를 일시적으로 사용할 수 없습니다. 이 창이 자동으로 다시 시도합니다.',
+    guest: '게스트',
+    noAccess: '아직 액세스 권한이 있는 사람이 없습니다',
+    pending: '대기 중',
+    active: '연결됨',
+    revoke: '취소',
+    joinAction: '공유 작업 참가',
+    joinTitle: '공유 작업 참가',
+    joinDescription: '초대를 붙여넣어 독립적인 게스트 연결을 만듭니다.',
+    code: '초대 코드',
+    join: '참가',
+    validatingInvitation: '초대를 확인하는 중…',
+    discoveringHost: '이 작업의 Runtime Host를 찾는 중…',
+    preparingRoute: '사용 가능한 경로를 준비하는 중…',
+    connectingHost: 'Runtime Host에 연결하는 중…',
+    authenticatingGuest: '게스트 자격 증명을 확인하는 중…',
+    finalizingAccess: '게스트 액세스를 확인하는 중…',
+    loadingSession: '공유 작업을 불러오는 중…',
+    invalidCode: '초대 코드가 유효하지 않습니다',
+    connectionFailed: '공유 작업에 참가할 수 없습니다',
+    directPathUnavailable:
+      '이 작업의 Runtime Host에 연결할 수 없습니다. 이 Desktop Client와 Host가 같은 Peer Mesh에 있고, 직접 연결 또는 멤버 전달 경로가 있는지 확인하세요. Peer Mesh 설정에서 경로를 동기화하고 멤버 전달을 확인하세요.',
+    insecureTitle: '이 연결은 암호화되지 않았습니다',
+    insecureBody:
+      '게스트 자격 증명, 작업 전체 내용, 턴 요청이 같은 네트워크의 다른 사용자에게 가로채일 수 있습니다. 위험을 이해하고 감수할 때만 계속하세요.',
+    shareInsecure: '위험을 감수하고 만들기',
+    joinInsecure: '위험을 감수하고 참가',
+    retainedTasks: '참가한 공유 작업',
+    disconnect: '연결 해제',
+    disconnectFailed: '공유 작업 연결을 해제할 수 없습니다',
+    turnRequests: '턴 요청',
+    noTurnRequests: '턴 요청 없음',
+    approve: '승인',
+    reject: '거부',
+    turnRequestPlaceholder: '시작하려는 새 턴을 설명하세요',
+    submitTurnRequest: '새 턴 요청',
+    turnRequestSent: '요청이 전송되었습니다. 소유자 승인을 기다리는 중',
+    turnRequestReconciling: 'Host가 이 요청을 받았는지 확인하는 중…',
+    turnRequestPending: '승인 대기 중',
+    turnRequestApproved: '승인됨',
+    turnRequestRejected: '거부됨',
+    turnRequestStarted: '시작됨',
+    turnRequestBlocked: '시작할 수 없음',
+    turnRequestFailed: '승인 실패',
+    dismissTurnRequest: '닫기',
+} satisfies SessionCollaborationCopy;
+
+const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN, ko: KO } satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];
