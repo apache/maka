@@ -99,6 +99,19 @@ type DesktopConnectivityPolicyState =
   | { readonly kind: 'failed'; readonly message: string }
   | { readonly kind: 'ready'; readonly policy: RuntimeHostWebRtcStunPolicy };
 
+interface DesktopConnectivityControls {
+  readonly state: DesktopConnectivityPolicyState;
+  readonly selectedKind: RuntimeHostWebRtcStunPolicy['kind'];
+  readonly customUrls: string;
+  readonly restartRequired: boolean;
+  readonly saving: boolean;
+  readonly inputInvalid: boolean;
+  readonly onKindChange: (kind: RuntimeHostWebRtcStunPolicy['kind']) => void;
+  readonly onCustomUrlsChange: (value: string) => void;
+  readonly onSave: () => void;
+  readonly onReset: () => void;
+}
+
 interface ActivePeerMeshOperation {
   readonly operationId: string;
   readonly cancellable: boolean;
@@ -520,20 +533,11 @@ export function RuntimeHostPeerMeshDialog(props: {
     override?: RuntimeHostWebRtcStunPolicy,
   ): Promise<void> {
     if (savingConnectivityPolicy || (!override && connectivityPolicy.kind !== 'ready')) return;
-    const candidate =
-      override ??
-      (connectivityPolicyKind === 'custom'
-        ? {
-            kind: 'custom' as const,
-            urls: customStunUrls
-              .split(',')
-              .map((url) => url.trim())
-              .filter(Boolean),
-          }
-        : { kind: connectivityPolicyKind });
     let normalizedCandidate: RuntimeHostWebRtcStunPolicy;
     try {
-      normalizedCandidate = decodeRuntimeHostWebRtcStunPolicy(candidate);
+      normalizedCandidate = override
+        ? decodeRuntimeHostWebRtcStunPolicy(override)
+        : decodeConnectivityPolicyDraft(connectivityPolicyKind, customStunUrls);
     } catch {
       setConnectivityPolicyInputInvalid(true);
       return;
@@ -726,27 +730,6 @@ export function RuntimeHostPeerMeshDialog(props: {
                   </Text>
                 </div>
               ) : null}
-              {activeTarget.kind === 'desktop' && view.kind === 'overview' ? (
-                <DesktopConnectivityPolicy
-                  state={connectivityPolicy}
-                  selectedKind={connectivityPolicyKind}
-                  customUrls={customStunUrls}
-                  restartRequired={connectivityPolicyRestartRequired}
-                  saving={savingConnectivityPolicy}
-                  inputInvalid={connectivityPolicyInputInvalid}
-                  copy={copy}
-                  onKindChange={(kind) => {
-                    setConnectivityPolicyKind(kind);
-                    setConnectivityPolicyInputInvalid(false);
-                  }}
-                  onCustomUrlsChange={(value) => {
-                    setCustomStunUrls(value);
-                    setConnectivityPolicyInputInvalid(false);
-                  }}
-                  onSave={() => void saveConnectivityPolicy()}
-                  onReset={() => void saveConnectivityPolicy({ kind: 'default' })}
-                />
-              ) : null}
               {workingAction ? (
                 <Banner
                   status="info"
@@ -769,35 +752,66 @@ export function RuntimeHostPeerMeshDialog(props: {
               ) : view.kind === 'join' ? (
                 <JoinView value={joinDraft} working={working} copy={copy} onChange={setJoinDraft} />
               ) : (
-                <Overview
-                  snapshot={snapshot}
-                  copy={copy}
-                  working={working}
-                  localPeerLabel={
-                    selectedEndpoint === 'local_host' ? copy.thisRuntimeHost : copy.thisDesktop
-                  }
-                  onInvite={(meshId) => void createInvitation(meshId)}
-                  onRemove={(meshId, peerId) => void mutate('remove', meshId, peerId)}
-                  onLeave={(meshId) => void mutate('leave', meshId)}
-                  onClose={(meshId) => void mutate('close', meshId)}
-                  onJoin={() => setView({ kind: 'join' })}
-                  onCreate={() => void createMesh()}
-                  onRefresh={() => void refreshNow()}
-                  onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
-                  onRename={rename}
-                  onRenameMesh={renameMesh}
-                  onCopyPeerId={(peerId) => void copyPeerId(peerId)}
-                  onCopyMeshId={(meshId) => void copyMeshId(meshId)}
-                  localHost={localHost}
-                  onAddLocalHost={offerLocalHost ? (meshId) => void addLocalHost(meshId) : undefined}
-                  managedHostPeerSetup={managedHostPeerSetup}
-                  onEnableManagedHostPeer={() => void enableManagedHostPeer()}
-                  onInspectManagedHostPeer={
-                    managedProfileId
-                      ? () => void inspectManagedHostPeer(managedProfileId)
-                      : undefined
-                  }
-                />
+                <>
+                  <Overview
+                    snapshot={snapshot}
+                    copy={copy}
+                    working={working}
+                    localPeerLabel={
+                      selectedEndpoint === 'local_host' ? copy.thisRuntimeHost : copy.thisDesktop
+                    }
+                    onInvite={(meshId) => void createInvitation(meshId)}
+                    onRemove={(meshId, peerId) => void mutate('remove', meshId, peerId)}
+                    onLeave={(meshId) => void mutate('leave', meshId)}
+                    onClose={(meshId) => void mutate('close', meshId)}
+                    onJoin={() => setView({ kind: 'join' })}
+                    onCreate={() => void createMesh()}
+                    onRefresh={() => void refreshNow()}
+                    onSetTransit={(meshId, enabled) => void setTransit(meshId, enabled)}
+                    onRename={rename}
+                    onRenameMesh={renameMesh}
+                    onCopyPeerId={(peerId) => void copyPeerId(peerId)}
+                    onCopyMeshId={(meshId) => void copyMeshId(meshId)}
+                    localHost={localHost}
+                    onAddLocalHost={offerLocalHost ? (meshId) => void addLocalHost(meshId) : undefined}
+                    managedHostPeerSetup={managedHostPeerSetup}
+                    onEnableManagedHostPeer={() => void enableManagedHostPeer()}
+                    onInspectManagedHostPeer={
+                      managedProfileId
+                        ? () => void inspectManagedHostPeer(managedProfileId)
+                        : undefined
+                    }
+                  />
+                  {activeTarget.kind === 'desktop' || snapshot?.available ? (
+                    <PeerMeshAdvancedSettings
+                      localPeerId={snapshot?.available ? snapshot.localPeerId : undefined}
+                      connectivity={
+                        activeTarget.kind === 'desktop'
+                          ? {
+                              state: connectivityPolicy,
+                              selectedKind: connectivityPolicyKind,
+                              customUrls: customStunUrls,
+                              restartRequired: connectivityPolicyRestartRequired,
+                              saving: savingConnectivityPolicy,
+                              inputInvalid: connectivityPolicyInputInvalid,
+                              onKindChange: (kind) => {
+                                setConnectivityPolicyKind(kind);
+                                setConnectivityPolicyInputInvalid(false);
+                              },
+                              onCustomUrlsChange: (value) => {
+                                setCustomStunUrls(value);
+                                setConnectivityPolicyInputInvalid(false);
+                              },
+                              onSave: () => void saveConnectivityPolicy(),
+                              onReset: () => void saveConnectivityPolicy({ kind: 'default' }),
+                            }
+                          : undefined
+                      }
+                      copy={copy}
+                      onCopyPeerId={(peerId) => void copyPeerId(peerId)}
+                    />
+                  ) : null}
+                </>
               )}
             </div>
           </LayoutContent>
@@ -837,95 +851,155 @@ export function RuntimeHostPeerMeshDialog(props: {
   );
 }
 
-function DesktopConnectivityPolicy(props: {
-  readonly state: DesktopConnectivityPolicyState;
-  readonly selectedKind: RuntimeHostWebRtcStunPolicy['kind'];
-  readonly customUrls: string;
-  readonly restartRequired: boolean;
-  readonly saving: boolean;
-  readonly inputInvalid: boolean;
+function PeerMeshAdvancedSettings(props: {
+  readonly localPeerId?: string;
+  readonly connectivity?: DesktopConnectivityControls;
   readonly copy: ReturnType<typeof peerMeshCopy>;
-  readonly onKindChange: (kind: RuntimeHostWebRtcStunPolicy['kind']) => void;
-  readonly onCustomUrlsChange: (value: string) => void;
-  readonly onSave: () => void;
-  readonly onReset: () => void;
+  readonly onCopyPeerId: (peerId: string) => void;
 }) {
+  const { connectivity } = props;
+  const savedPolicy =
+    connectivity?.state.kind === 'ready' ? connectivity.state.policy : undefined;
+  const connectivitySummary =
+    savedPolicy !== undefined
+      ? savedPolicy.kind === 'default'
+        ? props.copy.connectivityAutomatic
+        : savedPolicy.kind === 'disabled'
+          ? props.copy.connectivityKnownRoutesOnly
+          : props.copy.connectivityCustom
+      : undefined;
+  const draftPolicy = connectivity
+    ? tryDecodeConnectivityPolicyDraft(connectivity.selectedKind, connectivity.customUrls)
+    : undefined;
+  const connectivityPolicyChanged = savedPolicy
+    ? draftPolicy === undefined || !connectivityPoliciesEqual(savedPolicy, draftPolicy)
+    : false;
   return (
     <details className="settingsPeerMeshConnectivity">
       <summary>
-        <span>{props.copy.adaptiveConnectivity}</span>
-        <Tooltip content={props.copy.adaptiveConnectivityHelp}>
-          <span className="settingsPeerMeshConnectivityHelp" aria-label={props.copy.adaptiveConnectivityHelp}>
-            <HelpCircle size={ICON_SIZE.control} aria-hidden="true" />
+        <span className="settingsPeerMeshConnectivitySummary">
+          <span>
+            <Text type="body" weight="semibold">{props.copy.advancedSettings}</Text>
+            <Text type="supporting" color="secondary">
+              {connectivitySummary ?? props.copy.technicalDetails}
+            </Text>
           </span>
-        </Tooltip>
+          {connectivity?.restartRequired ? (
+            <Badge variant="info" label={props.copy.restartRequired} />
+          ) : null}
+        </span>
+        <ChevronDown
+          className="settingsPeerMeshConnectivityChevron"
+          size={ICON_SIZE.chrome}
+          aria-hidden="true"
+        />
       </summary>
-      {props.state.kind === 'loading' ? (
-        <Text type="supporting" color="secondary">{props.copy.connectivityPolicyLoading}</Text>
-      ) : props.state.kind === 'failed' ? (
-        <div className="settingsPeerMeshConnectivityBody">
-          <Banner status="error" title={props.copy.connectivityPolicyLoadFailed} description={props.state.message} />
-          <HStack hAlign="end">
-            <Button
-              variant="secondary"
-              size="sm"
-              label={props.copy.restoreDefaultConnectivityPolicy}
-              isDisabled={props.saving}
-              onClick={props.onReset}
+      <div className="settingsPeerMeshConnectivityBody">
+        {props.localPeerId ? (
+          <div className="settingsPeerMeshTechnicalIdentity">
+            <div>
+              <Text type="supporting" weight="semibold">{props.copy.peerId}</Text>
+              <Text type="supporting" color="secondary">{props.copy.peerIdHelp}</Text>
+            </div>
+            <PeerIdText
+              peerId={props.localPeerId}
+              copy={props.copy}
+              onCopy={props.onCopyPeerId}
             />
-          </HStack>
-        </div>
-      ) : (
-        <div className="settingsPeerMeshConnectivityBody">
-          <Selector
-            label={props.copy.publicAddressDiscovery}
-            value={props.selectedKind}
-            options={[
-              { value: 'default', label: props.copy.publicStunDefault },
-              { value: 'disabled', label: props.copy.publicStunDisabled },
-              { value: 'custom', label: props.copy.publicStunCustom },
-            ]}
-            isDisabled={props.saving}
-            onChange={(value) => props.onKindChange(value as RuntimeHostWebRtcStunPolicy['kind'])}
-          />
-          {props.selectedKind === 'custom' ? (
-            <TextInput
-              label={props.copy.customStunUrls}
-              value={props.customUrls}
-              placeholder="stun:stun.example.com:3478"
-              isDisabled={props.saving}
-              status={
-                props.inputInvalid
-                  ? { type: 'error', message: props.copy.customStunUrlsInvalid }
-                  : undefined
-              }
-              onChange={props.onCustomUrlsChange}
-            />
-          ) : null}
-          <Text type="supporting" color="secondary">
-            {props.selectedKind === 'default'
-              ? props.copy.publicStunDefaultHelp
-              : props.selectedKind === 'disabled'
-                ? props.copy.publicStunDisabledHelp
-                : props.copy.publicStunCustomHelp}
-          </Text>
-          {props.restartRequired ? (
-            <Banner status="info" title={props.copy.connectivityPolicyRestartRequired} />
-          ) : null}
-          <HStack hAlign="end">
-            <Button
-              variant="secondary"
-              size="sm"
-              label={props.copy.saveConnectivityPolicy}
-              isDisabled={
-                props.saving ||
-                (props.selectedKind === 'custom' && props.customUrls.trim().length === 0)
-              }
-              onClick={props.onSave}
-            />
-          </HStack>
-        </div>
-      )}
+          </div>
+        ) : null}
+        {connectivity ? (
+          <div className="settingsPeerMeshConnectivitySection">
+            <div className="settingsPeerMeshConnectivityHeading">
+              <Text type="supporting" weight="semibold">{props.copy.adaptiveConnectivity}</Text>
+              <Tooltip content={props.copy.adaptiveConnectivityHelp}>
+                <span
+                  className="settingsPeerMeshConnectivityHelp"
+                  aria-label={props.copy.adaptiveConnectivityHelp}
+                >
+                  <HelpCircle size={ICON_SIZE.control} aria-hidden="true" />
+                </span>
+              </Tooltip>
+            </div>
+            {connectivity.state.kind === 'loading' ? (
+              <Text type="supporting" color="secondary">
+                {props.copy.connectivityPolicyLoading}
+              </Text>
+            ) : connectivity.state.kind === 'failed' ? (
+              <>
+                <Banner
+                  status="error"
+                  title={props.copy.connectivityPolicyLoadFailed}
+                  description={connectivity.state.message}
+                />
+                <HStack hAlign="end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={props.copy.restoreDefaultConnectivityPolicy}
+                    isDisabled={connectivity.saving}
+                    onClick={connectivity.onReset}
+                  />
+                </HStack>
+              </>
+            ) : (
+              <>
+                <Selector
+                  label={props.copy.publicAddressDiscovery}
+                  value={connectivity.selectedKind}
+                  options={[
+                    { value: 'default', label: props.copy.publicStunDefault },
+                    { value: 'disabled', label: props.copy.publicStunDisabled },
+                    { value: 'custom', label: props.copy.publicStunCustom },
+                  ]}
+                  isDisabled={connectivity.saving}
+                  onChange={(value) =>
+                    connectivity.onKindChange(value as RuntimeHostWebRtcStunPolicy['kind'])
+                  }
+                />
+                {connectivity.selectedKind === 'custom' ? (
+                  <TextInput
+                    label={props.copy.customStunUrls}
+                    value={connectivity.customUrls}
+                    placeholder="stun:stun.example.com:3478"
+                    isDisabled={connectivity.saving}
+                    status={
+                      connectivity.inputInvalid
+                        ? { type: 'error', message: props.copy.customStunUrlsInvalid }
+                        : undefined
+                    }
+                    onChange={connectivity.onCustomUrlsChange}
+                  />
+                ) : null}
+                <Text type="supporting" color="secondary">
+                  {connectivity.selectedKind === 'default'
+                    ? props.copy.publicStunDefaultHelp
+                    : connectivity.selectedKind === 'disabled'
+                      ? props.copy.publicStunDisabledHelp
+                      : props.copy.publicStunCustomHelp}
+                </Text>
+                {connectivity.restartRequired ? (
+                  <Banner status="info" title={props.copy.connectivityPolicyRestartRequired} />
+                ) : null}
+                <HStack hAlign="end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    label={props.copy.saveConnectivityPolicy}
+                    isDisabled={
+                      connectivity.saving ||
+                      !connectivityPolicyChanged ||
+                      (connectivity.selectedKind === 'custom' &&
+                        connectivity.customUrls.trim().length === 0)
+                    }
+                    onClick={connectivity.onSave}
+                  />
+                </HStack>
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
     </details>
   );
 }
@@ -956,6 +1030,7 @@ function Overview(props: {
   const { snapshot, copy } = props;
   const [editingName, setEditingName] = useState(false);
   const [nameDraft, setNameDraft] = useState('');
+  const [showClosedMeshes, setShowClosedMeshes] = useState(false);
   if (!snapshot) {
     return (
       <Text type="supporting" color="secondary">
@@ -975,6 +1050,9 @@ function Overview(props: {
       />
     );
   }
+  const activeMeshes = snapshot.meshes.filter((mesh) => !mesh.closed);
+  const closedMeshCount = snapshot.meshes.length - activeMeshes.length;
+  const visibleMeshes = showClosedMeshes ? snapshot.meshes : activeMeshes;
   return (
     <>
       <div className="settingsPeerMeshIdentity">
@@ -982,19 +1060,14 @@ function Overview(props: {
           <Network size={ICON_SIZE.chrome} />
         </span>
         <div>
-          <Text type="supporting" color="secondary">
-            {props.localPeerLabel}
+          <Text type="body" weight="semibold">
+            {snapshot.localDisplayName ?? props.localPeerLabel}
           </Text>
           {snapshot.localDisplayName ? (
-            <Text type="body" weight="semibold">
-              {snapshot.localDisplayName}
+            <Text type="supporting" color="secondary">
+              {props.localPeerLabel}
             </Text>
           ) : null}
-          {snapshot.localPeerId ? (
-            <PeerIdText peerId={snapshot.localPeerId} copy={copy} onCopy={props.onCopyPeerId} />
-          ) : (
-            <code>—</code>
-          )}
         </div>
         <Button
           variant="ghost"
@@ -1085,7 +1158,7 @@ function Overview(props: {
                 {copy.meshes}
               </Text>
               <Text type="supporting" color="secondary">
-                {copy.meshCount(snapshot.meshes.length)}
+                {copy.activeMeshCount(activeMeshes.length)}
               </Text>
             </div>
             <HStack gap={2}>
@@ -1106,32 +1179,49 @@ function Overview(props: {
               />
             </HStack>
           </div>
-          <div className="settingsPeerMeshList">
-            {snapshot.meshes.map((mesh) => (
-              <MeshCard
-                key={mesh.meshId}
-                mesh={mesh}
-                transit={snapshot.transit}
-                copy={copy}
-                working={props.working}
-                onInvite={() => props.onInvite(mesh.meshId)}
-                onRemove={(peerId) => props.onRemove(mesh.meshId, peerId)}
-                onLeave={() => props.onLeave(mesh.meshId)}
-                onClose={() => props.onClose(mesh.meshId)}
-                onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
-                onRename={(displayName) => props.onRenameMesh(mesh.meshId, displayName)}
-                onCopyPeerId={props.onCopyPeerId}
-                onCopyMeshId={props.onCopyMeshId}
-                localPeerLabel={props.localPeerLabel}
-                localHost={props.localHost}
-                onAddLocalHost={
-                  props.onAddLocalHost
-                    ? () => props.onAddLocalHost?.(mesh.meshId)
-                    : undefined
-                }
+          {closedMeshCount > 0 ? (
+            <div className="settingsPeerMeshFilter">
+              <Switch
+                label={copy.showClosedMeshes(closedMeshCount)}
+                value={showClosedMeshes}
+                isDisabled={props.working}
+                onChange={setShowClosedMeshes}
               />
-            ))}
-          </div>
+            </div>
+          ) : null}
+          {visibleMeshes.length === 0 ? (
+            <div className="settingsPeerMeshFilteredEmpty">
+              <Text type="body" weight="semibold">{copy.noActiveMeshes}</Text>
+              <Text type="supporting" color="secondary">{copy.noActiveMeshesHint}</Text>
+            </div>
+          ) : (
+            <div className="settingsPeerMeshList">
+              {visibleMeshes.map((mesh) => (
+                <MeshCard
+                  key={mesh.meshId}
+                  mesh={mesh}
+                  transit={snapshot.transit}
+                  copy={copy}
+                  working={props.working}
+                  onInvite={() => props.onInvite(mesh.meshId)}
+                  onRemove={(peerId) => props.onRemove(mesh.meshId, peerId)}
+                  onLeave={() => props.onLeave(mesh.meshId)}
+                  onClose={() => props.onClose(mesh.meshId)}
+                  onSetTransit={(enabled) => props.onSetTransit(mesh.meshId, enabled)}
+                  onRename={(displayName) => props.onRenameMesh(mesh.meshId, displayName)}
+                  onCopyPeerId={props.onCopyPeerId}
+                  onCopyMeshId={props.onCopyMeshId}
+                  localPeerLabel={props.localPeerLabel}
+                  localHost={props.localHost}
+                  onAddLocalHost={
+                    props.onAddLocalHost
+                      ? () => props.onAddLocalHost?.(mesh.meshId)
+                      : undefined
+                  }
+                />
+              ))}
+            </div>
+          )}
         </>
       )}
     </>
@@ -1347,8 +1437,16 @@ function MeshCard(props: {
             />
           )}
         >
-          <span className="settingsPeerMeshCardTitle">
-            {mesh.displayName ?? copy.unnamedMesh}
+          <span className="settingsPeerMeshCardTitleBlock">
+            <span className="settingsPeerMeshCardTitle">
+              {mesh.displayName ?? copy.unnamedMesh}
+            </span>
+            <span className="settingsPeerMeshCardSubtitle">
+              {copy.memberCount(mesh.members.length)}
+              {mesh.pendingInvitationCount > 0
+                ? ` · ${copy.pending(mesh.pendingInvitationCount)}`
+                : ''}
+            </span>
           </span>
         </Button>
         <div className="settingsPeerMeshCardControls">
@@ -1397,13 +1495,6 @@ function MeshCard(props: {
             />
           ) : null}
         </div>
-      </div>
-      <div className="settingsPeerMeshCardMeta">
-        <MeshIdText meshId={mesh.meshId} copy={copy} onCopy={props.onCopyMeshId} />
-        <Text type="supporting" color="secondary">
-          {copy.memberCount(mesh.members.length)}
-          {mesh.pendingInvitationCount > 0 ? ` · ${copy.pending(mesh.pendingInvitationCount)}` : ''}
-        </Text>
       </div>
       {expanded ? (
         <div className="settingsPeerMeshCardDetails">
@@ -1578,6 +1669,13 @@ function MeshCard(props: {
               </div>
             ))}
           </div>
+          <div className="settingsPeerMeshTechnicalIdentity settingsPeerMeshMeshId">
+            <div>
+              <Text type="supporting" weight="semibold">{copy.meshId}</Text>
+              <Text type="supporting" color="secondary">{copy.meshIdHelp}</Text>
+            </div>
+            <MeshIdText meshId={mesh.meshId} copy={copy} onCopy={props.onCopyMeshId} />
+          </div>
         </div>
       ) : null}
     </section>
@@ -1632,6 +1730,46 @@ function MeshIdText(props: {
     >
       <code>{fingerprint(props.meshId)}</code>
     </Button>
+  );
+}
+
+function decodeConnectivityPolicyDraft(
+  kind: RuntimeHostWebRtcStunPolicy['kind'],
+  customUrls: string,
+): RuntimeHostWebRtcStunPolicy {
+  return decodeRuntimeHostWebRtcStunPolicy(
+    kind === 'custom'
+      ? {
+          kind,
+          urls: customUrls
+            .split(',')
+            .map((url) => url.trim())
+            .filter(Boolean),
+        }
+      : { kind },
+  );
+}
+
+function tryDecodeConnectivityPolicyDraft(
+  kind: RuntimeHostWebRtcStunPolicy['kind'],
+  customUrls: string,
+): RuntimeHostWebRtcStunPolicy | undefined {
+  try {
+    return decodeConnectivityPolicyDraft(kind, customUrls);
+  } catch {
+    return undefined;
+  }
+}
+
+function connectivityPoliciesEqual(
+  left: RuntimeHostWebRtcStunPolicy,
+  right: RuntimeHostWebRtcStunPolicy,
+): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind !== 'custom' || right.kind !== 'custom') return true;
+  return (
+    left.urls.length === right.urls.length &&
+    left.urls.every((url, index) => url === right.urls[index])
   );
 }
 
@@ -1707,6 +1845,12 @@ function peerMeshCopy(locale: string) {
         hostEndpoint: '本机 Runtime Host',
         desktopEndpointHelp: '此 Client 用于连接 Mesh 中的 Runtime Host。',
         hostEndpointHelp: '此 Host 加入后，其他成员才能连接本机分享的任务。',
+        advancedSettings: '高级设置',
+        technicalDetails: '身份与连接配置',
+        connectivityAutomatic: '自动连接（推荐）',
+        connectivityKnownRoutesOnly: '仅使用已知路径',
+        connectivityCustom: '自定义地址发现',
+        restartRequired: '需要重启',
         adaptiveConnectivity: '自适应连接',
         adaptiveConnectivityHelp:
           'Maka 会自动竞速可用的直连方式，并在获准时使用成员转发；这里不需要选择具体协议。',
@@ -1729,7 +1873,11 @@ function peerMeshCopy(locale: string) {
           '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
         publicStunCustomHelp:
           '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
-        saveConnectivityPolicy: '保存连接策略',
+        saveConnectivityPolicy: '保存更改',
+        peerId: 'Peer ID',
+        peerIdHelp: '此 endpoint 在 Mesh 中的技术身份；点击 ID 可复制完整值。',
+        meshId: 'Mesh ID',
+        meshIdHelp: '用于诊断和识别此 Mesh；点击 ID 可复制完整值。',
         thisRuntimeHost: '本机 Runtime Host',
         thisDesktop: '本机 Desktop',
         displayName: '在 Mesh 中显示的名称',
@@ -1747,7 +1895,10 @@ function peerMeshCopy(locale: string) {
         meshes: 'Mesh',
         mesh: 'Mesh',
         members: '成员',
-        meshCount: (value: number) => `${value} 个`,
+        activeMeshCount: (value: number) => `${value} 个使用中`,
+        showClosedMeshes: (value: number) => `显示已关闭（${value}）`,
+        noActiveMeshes: '没有使用中的 Mesh',
+        noActiveMeshesHint: '已关闭的 Mesh 默认隐藏；可通过上方筛选查看。',
         authority: '管理者',
         member: '成员',
         closed: '已关闭',
@@ -1854,6 +2005,12 @@ function peerMeshCopy(locale: string) {
         hostEndpoint: 'Local Runtime Host',
         desktopEndpointHelp: 'This Client connects to Runtime Hosts in the Mesh.',
         hostEndpointHelp: 'Add this Host so other members can reach tasks shared from this device.',
+        advancedSettings: 'Advanced settings',
+        technicalDetails: 'Identity and connectivity details',
+        connectivityAutomatic: 'Automatic connectivity (recommended)',
+        connectivityKnownRoutesOnly: 'Known routes only',
+        connectivityCustom: 'Custom address discovery',
+        restartRequired: 'Restart required',
         adaptiveConnectivity: 'Adaptive connectivity',
         adaptiveConnectivityHelp:
           'Maka races available direct paths automatically and uses approved member transit when needed. You do not choose a transport protocol here.',
@@ -1876,7 +2033,11 @@ function peerMeshCopy(locale: string) {
           'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
         publicStunCustomHelp:
           'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
-        saveConnectivityPolicy: 'Save connectivity policy',
+        saveConnectivityPolicy: 'Save changes',
+        peerId: 'Peer ID',
+        peerIdHelp: 'Technical identity for this endpoint. Select the ID to copy its full value.',
+        meshId: 'Mesh ID',
+        meshIdHelp: 'Used to identify and diagnose this Mesh. Select the ID to copy its full value.',
         thisRuntimeHost: 'This Runtime Host',
         thisDesktop: 'This Desktop',
         displayName: 'Name shown in the Mesh',
@@ -1894,11 +2055,14 @@ function peerMeshCopy(locale: string) {
         meshes: 'Meshes',
         mesh: 'Mesh',
         members: 'Members',
-        meshCount: (value: number) => `${value}`,
-        authority: 'Authority',
+        activeMeshCount: (value: number) => `${value} active`,
+        showClosedMeshes: (value: number) => `Show closed (${value})`,
+        noActiveMeshes: 'No active Meshes',
+        noActiveMeshesHint: 'Closed Meshes are hidden by default. Use the filter above to show them.',
+        authority: 'Owner',
         member: 'Member',
         closed: 'Closed',
-        memberCount: (value: number) => `${value} members`,
+        memberCount: (value: number) => value === 1 ? '1 member' : `${value} members`,
         pending: (value: number) => `${value} pending invites`,
         transit: 'Member transit',
         transitHelp: 'Let members of this Mesh connect through this device using its bandwidth.',

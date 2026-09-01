@@ -158,6 +158,8 @@ import {
 } from './project-directory-authority.js';
 import { HostProjectCatalogCoordinator } from './project-catalog-coordinator.js';
 import { HostProjectMembershipGate } from './project-membership-gate.js';
+import { HostPluginPlatformCoordinator } from './plugin-platform-coordinator.js';
+import { HostPluginPlatform } from './plugin-platform.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { RootTurnCoordinator } from './root-turn-coordinator.js';
 import { RuntimePolicyActivationGate } from './runtime-policy-activation-gate.js';
@@ -201,6 +203,7 @@ import {
 
 export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition {
   readonly workspaceExecution: RuntimeHostWorkspaceExecutionComposition;
+  readonly plugins: HostPluginPlatform;
 }
 
 const CONTEXT_OFFLOAD_READER_LIMITS: ContextOffloadLimits = Object.freeze({
@@ -268,7 +271,10 @@ export async function createExecutionRuntimeHostComposition(
   let unsubscribeUsageChanges: (() => void) | undefined;
   let workspaceExecution: RuntimeHostWorkspaceExecutionComposition | undefined;
   let goalExecutions: HostGoalExecutionCoordinator | undefined;
+  let pluginPlatform: HostPluginPlatform | undefined;
   try {
+    pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory);
+    const pluginPlatformCoordinator = new HostPluginPlatformCoordinator(pluginPlatform);
     const openedProjectCatalog = storage.projectCatalog;
     const runtimePolicyStores = storage.runtimePolicy;
     const oauthCredentials = new HostOAuthExecutionAuthority(runtimePolicyStores);
@@ -1610,6 +1616,13 @@ export async function createExecutionRuntimeHostComposition(
     let recoverySessions: Awaited<ReturnType<typeof stores.sessionStore.listForRecovery>> = [];
     domainModules = [
       createRuntimeHostDomainModule({
+        id: 'plugin-platform',
+        handlers: [pluginPlatformCoordinator.handlers],
+        recovery: { state: () => pluginPlatform!.recover() },
+        drain: [() => pluginPlatform!.beginDrain()],
+        close: [() => pluginPlatform!.close()],
+      }),
+      createRuntimeHostDomainModule({
         id: 'memory',
         handlers: [requireMemory(memory).handlers],
         recovery: {
@@ -1866,6 +1879,7 @@ export async function createExecutionRuntimeHostComposition(
       handlers,
       moduleIds: Object.freeze(domainModules.map(({ id }) => id)),
       workspaceExecution: requireWorkspaceExecution(workspaceExecution),
+      plugins: pluginPlatform,
       continuity: continuityCoordinator,
       clientCapabilities,
       hostChanges,
@@ -1878,6 +1892,11 @@ export async function createExecutionRuntimeHostComposition(
     };
   } catch (error) {
     const errors: unknown[] = [error];
+    try {
+      await pluginPlatform?.close();
+    } catch (closeError) {
+      errors.push(closeError);
+    }
     goalExecutions?.beginDrain();
     try {
       await workspaceExecution?.close();

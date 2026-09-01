@@ -95,14 +95,16 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 85 as const;
-// 85: The connection catalog projects each model as the Host resolved it —
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 86 as const;
+// 86: The connection catalog projects each model as the Host resolved it —
 // a `catalog_entry` item per model, counted by the connection header. Clients
 // render those entries instead of merging the stored row against their own
 // bundled model metadata, so a Desktop and a TUI attached to one Host cannot
 // describe the same model differently. An older client ignores the new items
 // but would still resolve locally; an older Host sends none, leaving a newer
 // client with an empty catalog. Both are rejected at the handshake.
+// 85: Plugin package and Entry composition operations become Host-owned protocol
+// surfaces. Older peers cannot safely exchange these strict operation shapes.
 // 84: Message content carries Host-bound directory references. Older peers
 // reject this field and cannot preserve its identity through admission/replay.
 // 83: WorkHub Coordination actions add linked replacement proposals,

@@ -153,6 +153,7 @@ export type WebSearchOperationKey = Extract<OperationKey, `web-search.${string}`
 export type NetworkProxyOperationKey = Extract<OperationKey, `network-proxy.${string}`>;
 export type ConfigurationOperationKey = Extract<OperationKey, `configuration.${string}`>;
 export type WorkHubCoordinationOperationKey = Extract<OperationKey, `workhub.${string}`>;
+export type PluginPlatformOperationKey = Extract<OperationKey, `plugin.${string}`>;
 export type DomainOperationHandlerMap = Pick<OperationHandlerMap, DomainOperationKey>;
 export type TurnOperationHandlerMap = Pick<OperationHandlerMap, TurnOperationKey>;
 export type ContextOperationHandlerMap = Pick<OperationHandlerMap, ContextOperationKey>;
@@ -222,6 +223,10 @@ export type ConfigurationOperationHandlerMap = Pick<OperationHandlerMap, Configu
 export type WorkHubCoordinationOperationHandlerMap = Pick<
   OperationHandlerMap,
   WorkHubCoordinationOperationKey
+>;
+export type PluginPlatformOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  PluginPlatformOperationKey
 >;
 export type AccessAuthorityOperationHandlerMap = Pick<
   OperationHandlerMap,

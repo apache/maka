@@ -302,6 +302,26 @@ export type RuntimeHostCliCommand =
       prefer: boolean;
     }
   | {
+      kind: 'runtime-host-plugin';
+      rootPath?: string;
+      action:
+        | 'status'
+        | 'list'
+        | 'inspect'
+        | 'failures'
+        | 'install'
+        | 'uninstall'
+        | 'reload'
+        | 'export'
+        | 'apply'
+        | 'reconcile';
+      subject?: string;
+      targetPath?: string;
+      rootId?: string;
+      cursor?: string;
+      limit?: number;
+    }
+  | {
       kind: 'runtime-host-capability-provider-serve';
       url: string;
       mcpConfigPath: string;
@@ -360,6 +380,7 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   if (argv[0] === 'service') return parseServiceManagementCommand(argv.slice(1));
   if (argv[0] === 'access') return parseAccessCommand(argv.slice(1));
   if (argv[0] === 'project') return parseProjectCommand(argv.slice(1));
+  if (argv[0] === 'plugin') return parsePluginCommand(argv.slice(1));
   if (argv[0] === 'capability-provider') {
     return parseCapabilityProviderCommand(argv.slice(1));
   }
@@ -367,7 +388,7 @@ export function parseRuntimeHostCommand(argv: string[]): RuntimeHostCliCommand {
   return error(
     argv[0]
       ? `Unexpected runtime-host command: ${argv[0]}`
-      : 'runtime-host requires the activate, connect, serve, setup, service, access, project, profile, or capability-provider command',
+      : 'runtime-host requires the activate, connect, serve, setup, service, access, project, plugin, profile, or capability-provider command',
   );
 }
 
@@ -1542,6 +1563,88 @@ function parseProjectCommand(argv: string[]): RuntimeHostCliCommand {
     path,
     prefer,
     ...(rootPath ? { rootPath } : {}),
+  };
+}
+
+function parsePluginCommand(argv: string[]): RuntimeHostCliCommand {
+  const action = argv[0];
+  const actions = [
+    'status',
+    'list',
+    'inspect',
+    'failures',
+    'install',
+    'uninstall',
+    'reload',
+    'export',
+    'apply',
+    'reconcile',
+  ] as const;
+  if (!actions.includes(action as (typeof actions)[number])) {
+    return error(
+      action
+        ? `Unexpected runtime-host plugin command: ${action}`
+        : 'runtime-host plugin requires an action',
+    );
+  }
+  let rootPath: string | undefined;
+  let rootId: string | undefined;
+  let cursor: string | undefined;
+  let limit: number | undefined;
+  const positional: string[] = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (
+      argument === '--root' ||
+      argument === '--scope' ||
+      argument === '--cursor' ||
+      argument === '--limit'
+    ) {
+      const parsed = optionValue(argv, index, argument);
+      if (typeof parsed !== 'string') return parsed;
+      if (argument === '--root') rootPath = parsed;
+      else if (argument === '--scope') rootId = parsed;
+      else if (argument === '--cursor') cursor = parsed;
+      else {
+        const numeric = Number(parsed);
+        if (!Number.isSafeInteger(numeric) || numeric < 0 || numeric < 1 || numeric > 64) {
+          return error('--limit requires an integer between 1 and 64');
+        }
+        limit = numeric;
+      }
+      index += 1;
+      continue;
+    }
+    positional.push(argument ?? '');
+  }
+  const selected = action as (typeof actions)[number];
+  const expected =
+    selected === 'export'
+      ? 2
+      : ['install', 'uninstall', 'reload', 'apply'].includes(selected)
+        ? 1
+        : 0;
+  if (positional.length !== expected) {
+    return error(
+      `runtime-host plugin ${selected} requires ${expected} target${expected === 1 ? '' : 's'}`,
+    );
+  }
+  if (rootId && selected !== 'inspect') return error('--scope is only valid for plugin inspect');
+  if (
+    (cursor !== undefined || limit !== undefined) &&
+    !['list', 'inspect', 'failures'].includes(selected)
+  ) {
+    return error('--cursor and --limit require a paged Plugin query');
+  }
+  return {
+    kind: 'runtime-host-plugin',
+    action: selected,
+    ...(rootPath ? { rootPath } : {}),
+    ...(positional[0] ? { subject: positional[0] } : {}),
+    ...(positional[1] ? { targetPath: positional[1] } : {}),
+    ...(rootId ? { rootId } : {}),
+    ...(cursor ? { cursor } : {}),
+    ...(limit === undefined ? {} : { limit }),
   };
 }
 
