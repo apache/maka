@@ -371,6 +371,77 @@ test('unknown top-level code fails safe to full selection', () => {
   assert.equal(planTests(['unknown.config'], { graph }).full, true);
 });
 
+// Everything below reached that fail-safe until now. `native/` alone was the
+// largest single source of full-suite runs — 14 of the last 300 first-parent
+// commits, ahead of `package-lock.json` — because the classifier had no opinion
+// about a directory that three dedicated lanes already own.
+
+test('a Rust crate with its own admission lane selects no JavaScript surface', () => {
+  // `gitoxide-helper-admission.yml` owns `cargo fmt`, `cargo test`, and the
+  // JavaScript invocation contract for this crate on three operating systems.
+  // No step in `ci.yml` reads it, so the plan has nothing to select.
+  for (const path of ['native/gitoxide-helper/src/main.rs', 'native/gitoxide-helper/Cargo.toml']) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.code, false, path);
+    assert.equal(plan.cliPackage, false, path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('the direct-peer crate and its lint policy select CLI packaging alone', () => {
+  // `release:cli:pack` builds this addon into the tarball and runs `cargo deny`
+  // against that policy, so CLI packaging is the one JavaScript gate with a
+  // stake here. Lint, typecheck, Storybook, and a real window have none.
+  for (const path of [
+    'native/runtime-host-peer/src/engine.rs',
+    'native/runtime-host-peer/Cargo.lock',
+    'deny.toml',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.releaseContract, true, path);
+    assert.equal(plan.e2e, false, path);
+    assert.equal(plan.storybook, false, path);
+    assert.equal(plan.appIcons, false, path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('a native root without an admission lane still fails safe to full', () => {
+  // The exemption above is owned by a lane, not by the language. A crate added
+  // under `native/` has no lane on the commit that introduces it, so nothing
+  // but this fallback would compile or test it at all.
+  for (const path of ['native/new-helper/src/main.rs', 'native/new-helper/Cargo.toml']) {
+    assert.equal(planTests([path], { graph }).full, true, path);
+  }
+});
+
+test('branch protection reaches the suite that parses it', () => {
+  // `.asf.yaml` names the required contexts and the release-environment
+  // admission rules. `product-release.test.mjs` is the only suite that reads
+  // it, and it runs behind `check:release` — so selecting the release contract
+  // is what proves a change to the merge gate still passes its own policy test.
+  const plan = planTests(['.asf.yaml'], { graph });
+  assert.equal(plan.full, false);
+  assert.equal(plan.releaseContract, true);
+  assert.equal(plan.code, false);
+  assert.deepEqual(plan.workspaces, []);
+});
+
+test('a dependency patch keeps the full suite until a consumer map exists', () => {
+  // A patch rewrites a dependency's behaviour, and which suite proves that
+  // behaviour is a property of the patch rather than of the directory. The
+  // node-pty patch is regressed by
+  // `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts`, while
+  // the packaging smoke that a build-shaped selection would run only asserts
+  // that a method name still appears in the tarball. Narrowing this bucket
+  // needs an explicit patch-to-consumer mapping; until then it stays here,
+  // where the cost is runner minutes rather than a silent regression.
+  assert.equal(planTests(['patches/node-pty+1.2.0-beta.15.patch'], { graph }).full, true);
+});
+
 test('full-suite authority files select every surface', () => {
   for (const path of ['package-lock.json', '.github/workflows/ci.yml']) {
     assert.equal(planTests([path], { graph }).full, true, path);

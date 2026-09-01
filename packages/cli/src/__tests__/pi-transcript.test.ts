@@ -42,6 +42,7 @@ import {
   makaPiToolPresentationStatus,
   retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
+  shortenCwd,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -5141,3 +5142,46 @@ function subagentResult(
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
+
+describe('shortenCwd', () => {
+  test('shortens POSIX paths under the home directory', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice/work/project', '/Users/alice'), '~/work/project');
+    assert.equal(shortenCwd('/Users/alice/..\\notes', '/Users/alice'), '~/..\\notes');
+    assert.equal(shortenCwd('/Users/alice', '/Users/alice'), '~');
+  });
+
+  test('keeps POSIX paths outside the home directory absolute', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice-shared', '/Users/alice'), '/Users/alice-shared');
+    assert.equal(shortenCwd('/Users', '/Users/alice'), '/Users');
+    assert.equal(shortenCwd('/tmp/project', '/Users/alice'), '/tmp/project');
+  });
+
+  test('shortens Windows profile paths (#3825)', { skip: process.platform !== 'win32' }, () => {
+    assert.equal(shortenCwd('C:\\Users\\alice\\Videos', 'C:\\Users\\alice'), '~/Videos');
+    assert.equal(
+      shortenCwd('C:\\Users\\alice\\Videos\\Clips', 'C:\\Users\\alice'),
+      '~/Videos\\Clips',
+    );
+    assert.equal(shortenCwd('C:\\Users\\alice', 'C:\\Users\\alice'), '~');
+  });
+
+  test('shortens Windows profile paths with case-only differences (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(shortenCwd('c:\\users\\alice\\videos', 'C:\\Users\\alice'), '~/videos');
+  });
+
+  test('keeps Windows paths outside the profile directory absolute (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(
+      shortenCwd('C:\\Users\\alice-shared', 'C:\\Users\\alice'),
+      'C:\\Users\\alice-shared',
+    );
+    assert.equal(shortenCwd('D:\\data\\project', 'C:\\Users\\alice'), 'D:\\data\\project');
+  });
+});

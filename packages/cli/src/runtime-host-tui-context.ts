@@ -37,6 +37,7 @@ import {
 } from '@maka/storage/process-lifetime-owner';
 import {
   readRuntimeHostAgentGraphEpochs,
+  readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
   isRuntimeHostReconnectingConnection,
@@ -84,6 +85,18 @@ export interface RuntimeHostTuiContext {
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
+  /**
+   * The Host now resolves connection catalogs differently — it refreshed its
+   * models.dev catalog. Re-read and re-project rather than patching what is
+   * held: which models are offerable and what is true about them are both the
+   * Host's answers.
+   */
+  readonly subscribeModelCatalogChanges: (
+    listener: (refresh: {
+      readonly modelChoices: readonly ModelChoice[];
+      readonly connectionIdentities: readonly ConnectionIdentity[];
+    }) => void,
+  ) => () => void;
   /**
    * Mode a Session created right now would start in, for display only. The
    * driver never receives it: an omitted create field is what lets the Host
@@ -207,6 +220,19 @@ export async function createRuntimeHostTuiContext(
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,
+      subscribeModelCatalogChanges: (listener) =>
+        connection.subscribeConnectionCatalogChanges(() => {
+          void readRuntimeHostConnectionCatalog(connection)
+            .then((refreshed) =>
+              listener({
+                modelChoices: projectRuntimeHostModelChoices(refreshed),
+                connectionIdentities: projectRuntimeHostConnectionIdentities(refreshed),
+              }),
+            )
+            // A catalog that will not read leaves the choices the TUI already
+            // has. The Host announces again the next time it changes.
+            .catch(() => undefined);
+        }),
       prospectivePermissionMode,
       turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) =>

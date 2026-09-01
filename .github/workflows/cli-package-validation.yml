@@ -80,6 +80,13 @@ permissions:
 
 concurrency:
   group: cli-package-validation-${{ github.workflow }}-${{ github.ref }}
+  # Four build targets and four install environments fan out to about fourteen
+  # jobs per run, which makes this the largest holder of runner slots in the
+  # repository. Without this, a run a newer push had already invalidated was not
+  # cancelled — it ran to completion while the replacement queued behind it in
+  # this same group. Release callers arrive through `workflow_call`, where
+  # `github.event_name` is the caller's, so publication runs never cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   peer-native:

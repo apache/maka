@@ -389,7 +389,7 @@ export const PinnedAndRecentSections: Story = {
 };
 
 // Real path: group-by-project — collapsible project rows, sessions nested 8px
-// under the project so titles share one x, worktree mark + count badge.
+// under the project so titles share one x, worktree mark + project actions.
 export const ProjectGroups: Story = {
   render: () => {
     const maka = makeProject({

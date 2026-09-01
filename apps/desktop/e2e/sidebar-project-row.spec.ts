@@ -181,6 +181,7 @@ test('project and task rows show contextual hover details', async ({
     `[data-project-id="project:${LONG_SIDEBAR_PROJECT_ID}"]`,
   );
   const projectNavigation = projectRow.locator(':scope > div > .astryx-side-nav-item');
+  await expect(projectNavigation.locator('.astryx-badge')).toHaveCount(0);
   await expect(projectNavigation).toHaveAccessibleDescription(/3 个任务.*目录可用/);
   await projectNavigation.hover();
 
@@ -193,7 +194,9 @@ test('project and task rows show contextual hover details', async ({
   await expect(projectCard.locator('.maka-sidebar-hover-card-meta')).toContainText('目录可用');
 
   const ungroupedRow = sidebar.locator('[data-project-id="__ungrouped__"]');
-  await ungroupedRow.locator(':scope > div > .astryx-side-nav-item').focus();
+  const ungroupedNavigation = ungroupedRow.locator(':scope > div > .astryx-side-nav-item');
+  await expect(ungroupedNavigation.locator('.astryx-badge')).toHaveCount(0);
+  await ungroupedNavigation.focus();
   await expect(
     page.getByRole('dialog', { name: '未归属项目 分组详情', exact: true }),
   ).toBeVisible();

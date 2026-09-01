@@ -64,6 +64,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -557,7 +561,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -570,7 +574,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -622,7 +630,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -645,7 +656,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -660,7 +671,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -718,7 +729,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {

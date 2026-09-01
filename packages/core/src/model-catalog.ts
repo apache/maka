@@ -167,6 +167,12 @@ export function buildModelCatalogEntries(input: BuildModelCatalogInput): ModelCa
  * unencodable. Providers that do discover models substitute their fallback
  * list instead of prepending it, so they add nothing here.
  */
+// What a model row may carry on the wire. The producer reads them here and the
+// decoder enforces them: an over-long string caught only on arrival is one the
+// catalog already built.
+export const CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH = 512;
+export const CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH = 2_048;
+
 export const MAX_PREPENDED_FALLBACK_MODELS: number = Object.keys(PROVIDER_REGISTRY).reduce(
   (largest, providerType) => {
     if (providerSupportsModelDiscovery(providerType as ProviderType)) return largest;
@@ -461,7 +467,9 @@ function makeEntry(
   return {
     id: normalizedModel.id,
     ...displayNameForModel(input.providerType, normalizedModel),
-    ...(description !== undefined ? { description } : {}),
+    ...(description !== undefined
+      ? { description: withinWireLimit(description, CONNECTION_MODEL_DESCRIPTION_MAX_LENGTH) }
+      : {}),
     canUseAsChatDefault,
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     supportsVision: capabilities.vision === true,
@@ -494,7 +502,9 @@ function displayNameForModel(
   model: ModelInfo,
 ): { displayName?: string } {
   const displayName = model.displayName?.trim();
-  if (displayName && displayName !== model.id) return { displayName };
+  if (displayName && displayName !== model.id) {
+    return { displayName: withinWireLimit(displayName, CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH) };
+  }
   return displayNameForKnownModel(providerType, model.id);
 }
 
@@ -503,7 +513,20 @@ function displayNameForKnownModel(
   id: string,
 ): { displayName?: string } {
   const displayName = lookupModelMetadata(providerType, id).displayName;
-  return displayName ? { displayName } : {};
+  return displayName
+    ? { displayName: withinWireLimit(displayName, CONNECTION_MODEL_DISPLAY_NAME_MAX_LENGTH) }
+    : {};
+}
+
+/**
+ * Entries are what the connection catalog puts on the wire, and its decoder
+ * refuses an over-long string by failing the whole catalog read. Every text a
+ * model row or metadata table can carry passes through here, so this is where
+ * a source that grew past the bound gets cut rather than where it takes the
+ * catalog down.
+ */
+function withinWireLimit(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : value.slice(0, maxLength);
 }
 
 /**
@@ -515,10 +538,9 @@ function displayNameForKnownModel(
  * never set `capabilities.imageGeneration` for any of them, so the capability
  * check below could not fire on bundled data.
  *
- * An EMPTY list is not evidence. `modalities.output` is typed to text, image,
- * and audio, so a video model's real output has no representation and
- * serializes as `[]` — the same shape a future generator bug would produce.
- * Only a non-empty list says something, and what it says is what it lists.
+ * An EMPTY list is not evidence. A provider that declared no output modality
+ * and a generator bug that dropped them produce the same shape. Only a
+ * non-empty list says something, and what it says is what it lists.
  */
 function declaresNoTextOutput(model: ModelInfo): boolean {
   const output = model.modalities?.output;
