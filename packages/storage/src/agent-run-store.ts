@@ -2258,6 +2258,8 @@ function deepFreezeRootTurnMessageContent(content: MessageContent): void {
     Object.freeze(attachment);
   }
   if (content.attachments) Object.freeze(content.attachments);
+  for (const reference of content.directoryReferences ?? []) Object.freeze(reference);
+  if (content.directoryReferences) Object.freeze(content.directoryReferences);
   for (const quote of content.quotes ?? []) Object.freeze(quote);
   if (content.quotes) Object.freeze(content.quotes);
   Object.freeze(content);

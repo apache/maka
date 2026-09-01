@@ -20,6 +20,7 @@
 import type {
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
+  ClientCapabilityAdmissionEvidence,
   ClientCapabilityOffer,
   ClientCapabilityServiceCallFrame,
   ClientCapabilityServiceOffer,
@@ -34,7 +35,7 @@ export interface ClientCapabilityProvider {
     options: {
       readonly signal: AbortSignal;
       /** Await immediately before crossing the provider's irreversible admission cut. */
-      accept(): Promise<void>;
+      accept(evidence: ClientCapabilityAdmissionEvidence): Promise<void>;
       /** Publish bounded live progress after admission. */
       progress?(current: number, total: number): void;
     },
@@ -44,7 +45,7 @@ export interface ClientCapabilityProvider {
     options: {
       readonly signal: AbortSignal;
       /** Await immediately before crossing the provider's irreversible admission cut. */
-      accept(): Promise<void>;
+      accept(evidence: ClientCapabilityAdmissionEvidence): Promise<void>;
     },
   ): Promise<Record<string, unknown>>;
   /** Release provider-owned resources after its final registration is retired. */

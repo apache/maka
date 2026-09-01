@@ -40,6 +40,7 @@ import { NETWORK_PROXY_OPERATION_SPECS } from './network-proxy.js';
 import { OAUTH_OPERATION_SPECS } from './oauth.js';
 import { PLAN_OPERATION_SPECS } from './plan.js';
 import { PEER_MESH_OPERATION_SPECS } from './peer-mesh.js';
+import { PLUGIN_PLATFORM_OPERATION_SPECS } from './plugin-platform.js';
 import { PROJECT_CATALOG_OPERATION_SPECS } from './project-catalog.js';
 import {
   composeOperationSpecMaps,
@@ -54,12 +55,12 @@ import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
+import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
 import { SESSION_COLLABORATION_OPERATION_SPECS } from './session-collaboration.js';
 import { SESSION_REVISION_OPERATION_SPECS } from './session-revision.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from './session-retirement.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from './session-effects.js';
 import { SKILL_CATALOG_OPERATION_SPECS } from './skill-catalog.js';
-import { TASK_LEDGER_OPERATION_SPECS } from './task-ledger.js';
 import { TURN_OPERATION_SPECS } from './turn.js';
 import { USAGE_PRICING_OPERATION_SPECS } from './usage-pricing.js';
 import { WEB_SEARCH_OPERATION_SPECS } from './web-search.js';
@@ -162,6 +163,7 @@ export * from './memory.js';
 export * from './network-proxy.js';
 export * from './oauth.js';
 export * from './plan.js';
+export * from './plugin-platform.js';
 export * from './project-catalog.js';
 export * from './runtime-policy.js';
 export * from './runtime-resource.js';
@@ -172,6 +174,7 @@ export * from './session-revision.js';
 export * from './session-retirement.js';
 export * from './session-transcript.js';
 export * from './session-turns.js';
+export * from './session-todo.js';
 export * from './session-effects.js';
 export * from './skill-catalog.js';
 export * from './usage-pricing.js';
@@ -199,7 +202,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   PLAN_OPERATION_SPECS,
   PROJECT_CATALOG_OPERATION_SPECS,
   MESSAGE_OPERATION_SPECS,
-  TASK_LEDGER_OPERATION_SPECS,
+  SESSION_TODO_OPERATION_SPECS,
   INTERACTION_OPERATION_SPECS,
   SESSION_CONTINUITY_OPERATION_SPECS,
   SESSION_TRANSCRIPT_OPERATION_SPECS,
@@ -218,6 +221,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   NETWORK_PROXY_OPERATION_SPECS,
   CONFIGURATION_OPERATION_SPECS,
   WORKHUB_COORDINATION_OPERATION_SPECS,
+  PLUGIN_PLATFORM_OPERATION_SPECS,
 );
 
 export type OperationSpecMap = typeof HOST_OPERATION_SPECS;
@@ -312,6 +316,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.read_marker.set',
   'session.recap.generate',
   'session.remove',
+  'session.remove.preview',
   'session.revision.abandon',
   'session.revision.create',
   'session.transcript.page',
@@ -325,7 +330,7 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'skill.catalog.query',
   'subscription.close',
   'subscription.open',
-  'task.ledger.query',
+  'session.todo.query',
   'turn.interrupt',
   'turn.message.execution.query',
   'turn.message.query',

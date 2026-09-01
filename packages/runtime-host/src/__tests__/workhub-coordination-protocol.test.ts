@@ -67,6 +67,38 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       assistantText: 'Submitted to Payment',
     },
   );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-correction',
+      userText: 'No, use login instead',
+      candidateSetId: `sha256:${'e'.repeat(64)}`,
+      confirmation: { kind: 'user_correction' },
+      proposal: {
+        disposition: 'replace',
+        replacesActionId: 'action-payments',
+        target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+      },
+    }).proposal,
+    {
+      disposition: 'replace',
+      replacesActionId: 'action-payments',
+      target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+    },
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-unconfirmed-correction',
+        userText: 'Use login instead',
+        candidateSetId: `sha256:${'f'.repeat(64)}`,
+        proposal: {
+          disposition: 'replace',
+          replacesActionId: 'action-payments',
+          target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+        },
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.answer'].mode, 'command');
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.record'].mode, 'command');
   assert.equal(REMOTE_OWNER_OPERATION_GRANTS.includes('workhub.coordination.answer'), true);
@@ -247,5 +279,19 @@ test('WorkHub Coordination action results preserve the admitted disposition', ()
         permissionMode: 'bypass',
       }),
     (error) => error instanceof RuntimeHostProtocolError,
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActResult({
+      disposition: 'replace',
+      replacementDisposition: 'delegate_existing',
+      targetSessionId: 'login',
+      targetTurnId: 'turn-login',
+    }),
+    {
+      disposition: 'replace',
+      replacementDisposition: 'delegate_existing',
+      targetSessionId: 'login',
+      targetTurnId: 'turn-login',
+    },
   );
 });

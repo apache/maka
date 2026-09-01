@@ -390,17 +390,22 @@ export type ModelStreamEvent =
   | { kind: 'text'; text: string }
   | { kind: 'text-metadata'; providerOptions: ProviderOptions }
   | {
+      kind: 'thinking-start';
+      reasoningPartId?: string;
+      providerOptions?: ProviderOptions;
+    }
+  | {
       kind: 'thinking';
       text: string;
       providerOptions?: ProviderOptions;
-      /** Bounded item identity used only while grouping one streamed reasoning item. */
-      reasoningItemId?: string;
+      /** Bounded SDK-local identity used only while grouping one streamed reasoning part. */
+      reasoningPartId?: string;
       /** Final provider summary, compared before only its part boundaries are persisted. */
       reasoningSummaryText?: string;
       /** Maka-authored replay hint; absent provider metadata stays fail-closed. */
       providerOptionsOrigin?: 'maka_transport';
     }
-  | { kind: 'thinking-signature'; signature: string }
+  | { kind: 'thinking-signature'; signature: string; reasoningPartId?: string }
   /** Provider-side tool execution has begun, but no replayable call exists yet. */
   | { kind: 'provider-tool-input' }
   | { kind: 'tool-call'; toolCall: ToolCallPart }

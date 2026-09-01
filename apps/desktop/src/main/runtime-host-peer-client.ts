@@ -17,10 +17,19 @@
  * under the License.
  */
 
-import { access } from 'node:fs/promises';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { access, open, readFile, rename, rm } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import {
+  decodeRuntimeHostWebRtcStunPolicy,
+  resolveRuntimeHostWebRtcStunUrls,
+  type RuntimeHostWebRtcStunPolicy,
+} from '@maka/runtime-host/client';
+import { syncDirectory } from '@maka/storage/stable-storage';
 
 const NATIVE_FILE = 'maka_runtime_host_peer.node';
+const CONNECTIVITY_POLICY_FILE = 'runtime-host-peer-connectivity.json';
+const CONNECTIVITY_POLICY_MAX_BYTES = 16 * 1024;
 
 export async function configureDesktopRuntimeHostPeerClient(input: {
   readonly isPackaged: boolean;
@@ -33,16 +42,23 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
   readonly nativePath: string;
   readonly keyPath: string;
   readonly automaticRelayDiscovery: true;
+  readonly webRtcStunUrls: readonly string[];
+  readonly webRtcStunPolicy: RuntimeHostWebRtcStunPolicy;
 } | undefined> {
   const environment = input.environment ?? process.env;
   const explicitNativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH?.trim();
   const explicitKeyPath = environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH?.trim();
+  const webRtcStunPolicy = await readDesktopRuntimeHostWebRtcStunPolicy(input.clientDataRoot)
+    .catch(() => ({ kind: 'disabled' }) as const);
+  const webRtcStunUrls = resolveRuntimeHostWebRtcStunUrls(webRtcStunPolicy);
   if (explicitNativePath || explicitKeyPath) {
     return explicitNativePath && explicitKeyPath
       ? {
           nativePath: explicitNativePath,
           keyPath: explicitKeyPath,
           automaticRelayDiscovery: true,
+          webRtcStunUrls,
+          webRtcStunPolicy,
         }
       : undefined;
   }
@@ -67,5 +83,69 @@ export async function configureDesktopRuntimeHostPeerClient(input: {
   environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH = nativePath;
   const keyPath = join(input.clientDataRoot, 'runtime-host-client.peer.key');
   environment.MAKA_RUNTIME_HOST_PEER_KEY_PATH = keyPath;
-  return { nativePath, keyPath, automaticRelayDiscovery: true };
+  return {
+    nativePath,
+    keyPath,
+    automaticRelayDiscovery: true,
+    webRtcStunUrls,
+    webRtcStunPolicy,
+  };
+}
+
+export async function readDesktopRuntimeHostWebRtcStunPolicy(
+  clientDataRoot: string,
+): Promise<RuntimeHostWebRtcStunPolicy> {
+  const path = join(clientDataRoot, CONNECTIVITY_POLICY_FILE);
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'default' };
+    throw error;
+  }
+  if (Buffer.byteLength(text, 'utf8') > CONNECTIVITY_POLICY_MAX_BYTES) {
+    throw new RangeError('Desktop peer connectivity policy exceeds its size limit');
+  }
+  const document: unknown = JSON.parse(text);
+  if (
+    document === null ||
+    typeof document !== 'object' ||
+    Array.isArray(document) ||
+    Object.keys(document).length !== 2 ||
+    !('schemaVersion' in document) ||
+    document.schemaVersion !== 1 ||
+    !('webRtcStunPolicy' in document)
+  ) {
+    throw new TypeError('Desktop peer connectivity policy is invalid');
+  }
+  return decodeRuntimeHostWebRtcStunPolicy(document.webRtcStunPolicy);
+}
+
+export async function writeDesktopRuntimeHostWebRtcStunPolicy(
+  clientDataRoot: string,
+  value: unknown,
+): Promise<RuntimeHostWebRtcStunPolicy> {
+  const webRtcStunPolicy = decodeRuntimeHostWebRtcStunPolicy(value);
+  const path = join(clientDataRoot, CONNECTIVITY_POLICY_FILE);
+  const temporaryPath = join(
+    dirname(path),
+    `.runtime-host-peer-connectivity-${randomUUID()}.tmp`,
+  );
+  const handle = await open(temporaryPath, 'wx', 0o600);
+  try {
+    try {
+      await handle.writeFile(
+        `${JSON.stringify({ schemaVersion: 1, webRtcStunPolicy }, null, 2)}\n`,
+        'utf8',
+      );
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporaryPath, path);
+    await syncDirectory(dirname(path));
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+  return webRtcStunPolicy;
 }

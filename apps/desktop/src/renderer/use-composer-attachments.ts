@@ -19,7 +19,11 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { attachmentKindFromMimeType, guessMimeFromName } from '@maka/core/attachments';
-import type { AttachmentRef } from '@maka/core/events';
+import {
+  DIRECTORY_REFERENCE_MAX_COUNT,
+  type AttachmentRef,
+  type DirectoryReference,
+} from '@maka/core/events';
 import { useUiLocale } from '@maka/ui';
 import {
   pendingAttachmentSourceKey,
@@ -52,10 +56,19 @@ export interface ComposerAttachmentService {
     | { ok: true; base64: string; mimeType: string }
     | { ok: false; reason: string }
   >;
+  pickDirectory?(): Promise<
+    | { ok: true; reference: DirectoryReference }
+    | { ok: false; reason: 'cancelled' }
+  >;
 }
 
 type ToastApi = {
   error(title: string, description?: string): void;
+};
+
+type ComposerPendingState = {
+  attachments: PendingByKey<PendingAttachment>;
+  directories: Record<string, readonly DirectoryReference[]>;
 };
 
 class ComposerAttachmentLifecycle {
@@ -139,6 +152,7 @@ function releasePreviewUrl(url: string | undefined): void {
 
 export function useComposerAttachments(options: {
   draftKey: string;
+  directoryHostId?: string;
   toastApi: ToastApi;
   service: ComposerAttachmentService;
   imageNotice?:
@@ -151,7 +165,12 @@ export function useComposerAttachments(options: {
 }) {
   const uiLocale = useUiLocale();
   const copy = getDesktopConversationCopy(uiLocale).actions;
-  const [pendingByKey, setPendingByKey] = useState<PendingByKey<PendingAttachment>>({});
+  const [pendingState, setPendingState] = useState<ComposerPendingState>({
+    attachments: {},
+    directories: {},
+  });
+  const pendingByKey = pendingState.attachments;
+  const directoriesByKey = pendingState.directories;
   // Preview URLs by stagingKey, kept beside — not inside — the staged items
   // so a late-arriving preview never replaces an item object out from under
   // an in-flight send. Entries only exist for staged items (see the cleanup
@@ -160,21 +179,36 @@ export function useComposerAttachments(options: {
   // Live mirror of every staged item's key, for async preview arrivals to
   // check before writing: state snapshots inside a .then are stale by design.
   const lifecycleRef = useRef(new ComposerAttachmentLifecycle());
-  // The live staging key, for the one import that resolves long after it was
-  // started: the native file dialog. See pickAttachments.
+  function updateAttachments(
+    update: (current: PendingByKey<PendingAttachment>) => PendingByKey<PendingAttachment>,
+  ): void {
+    setPendingState((current) => ({ ...current, attachments: update(current.attachments) }));
+  }
+  function updateDirectories(
+    update: (
+      current: Record<string, readonly DirectoryReference[]>,
+    ) => Record<string, readonly DirectoryReference[]>,
+  ): void {
+    setPendingState((current) => ({ ...current, directories: update(current.directories) }));
+  }
   const liveOptionsRef = useRef({
     draftKey: options.draftKey,
     imageNotice: options.imageNotice,
     copy,
+    directoryOwner: options,
   });
+  liveOptionsRef.current.directoryOwner = options;
   useEffect(() => {
     liveOptionsRef.current = {
+      ...liveOptionsRef.current,
       draftKey: options.draftKey,
       imageNotice: options.imageNotice,
       copy,
     };
   }, [copy, options.draftKey, options.imageNotice]);
   const stagedAttachments = selectPending(pendingByKey, options.draftKey);
+  const directoryDraftKey = `${options.draftKey}:${options.directoryHostId ?? 'unresolved'}`;
+  const pendingDirectories = directoriesByKey[directoryDraftKey] ?? [];
   const pendingAttachments = useMemo(
     () =>
       stagedAttachments.map((item) => {
@@ -267,7 +301,7 @@ export function useComposerAttachments(options: {
       // have since left, where the files would be invisible but still sendable.
       const ownerKey = liveOptionsRef.current.draftKey;
       const staged = result.files.map(approvalToPending);
-      setPendingByKey((map) => appendPending(map, ownerKey, staged));
+      updateAttachments((map) => appendPending(map, ownerKey, staged));
       for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
       notifyStagedImages(ownerKey, staged);
       void loadPreviewsSequentially(staged);
@@ -279,11 +313,44 @@ export function useComposerAttachments(options: {
     }
   }
 
+  async function pickDirectory(): Promise<void> {
+    const owner = liveOptionsRef.current.directoryOwner;
+    if (!owner.directoryHostId || !owner.service.pickDirectory) return;
+    const ownerKey = `${owner.draftKey}:${owner.directoryHostId}`;
+    try {
+      const result = await owner.service.pickDirectory();
+      if (!result.ok) return;
+      const current = liveOptionsRef.current.directoryOwner;
+      if (
+        current.draftKey !== owner.draftKey
+        || current.directoryHostId !== owner.directoryHostId
+      ) return;
+      if (result.reference.hostId !== owner.directoryHostId) {
+        throw new Error('Directory references require the local Host.');
+      }
+      updateDirectories((all) => {
+        const previous = all[ownerKey] ?? [];
+        if (
+          previous.length >= DIRECTORY_REFERENCE_MAX_COUNT
+          || previous.some((entry) =>
+            entry.path === result.reference.path && entry.hostId === result.reference.hostId
+          )
+        ) return all;
+        return { ...all, [ownerKey]: [...previous, result.reference] };
+      });
+    } catch (error) {
+      owner.toastApi.error(
+        copy.attachmentFailedTitle,
+        localizedShellErrorMessage(error, copy.tryAgain, uiLocale),
+      );
+    }
+  }
+
   async function attachFilePaths(files: File[]): Promise<void> {
     if (files.length === 0) return;
     const ownerKey = options.draftKey;
     const staged = files.map(fileToPending);
-    setPendingByKey((map) => appendPending(map, ownerKey, staged));
+    updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
     notifyStagedImages(ownerKey, staged);
     void loadPreviewsSequentially(staged);
@@ -292,32 +359,77 @@ export function useComposerAttachments(options: {
   function restoreAttachments(ownerKey: string, attachments: readonly AttachmentRef[]): void {
     if (attachments.length === 0) return;
     const staged = attachments.map(retainedToPending);
-    setPendingByKey((map) => appendPending(map, ownerKey, staged));
+    updateAttachments((map) => appendPending(map, ownerKey, staged));
     for (const item of staged) lifecycleRef.current.stagedKeys.add(item.stagingKey);
   }
 
   function removeAttachment(index: number): void {
     const ownerKey = options.draftKey;
-    setPendingByKey((map) => removePending(map, ownerKey, index));
+    updateAttachments((map) => removePending(map, ownerKey, index));
+  }
+
+  function removeDirectory(index: number): void {
+    updateDirectories((all) => {
+      const previous = all[directoryDraftKey] ?? [];
+      if (index < 0 || index >= previous.length) return all;
+      return {
+        ...all,
+        [directoryDraftKey]: previous.filter((_, entryIndex) => entryIndex !== index),
+      };
+    });
+  }
+
+  function clearSubmittedContext(submitted?: readonly PendingAttachment[]): void {
+    setPendingState((current) => {
+      const attachments = submitted
+        ? removePendingItems(
+            current.attachments,
+            options.draftKey,
+            submitted,
+            pendingAttachmentSourceKey,
+          )
+        : current.attachments;
+      const previous = current.directories[directoryDraftKey] ?? [];
+      const next = previous.filter((reference) => !pendingDirectories.includes(reference));
+      return {
+        attachments,
+        directories: next.length === previous.length
+          ? current.directories
+          : { ...current.directories, [directoryDraftKey]: next },
+      };
+    });
   }
 
   function clearSubmittedAttachments(submitted: readonly PendingAttachment[]): void {
-    const ownerKey = options.draftKey;
-    setPendingByKey((map) =>
-      removePendingItems(map, ownerKey, submitted, pendingAttachmentSourceKey),
+    updateAttachments((current) =>
+      removePendingItems(current, options.draftKey, submitted, pendingAttachmentSourceKey),
     );
   }
 
   function clearAllAttachments(): void {
-    setPendingByKey({});
+    updateAttachments(() => ({}));
   }
 
   return {
     pendingAttachments,
+    pendingDirectories,
+    submittableAttachments: pendingAttachments.length ? pendingAttachments : undefined,
+    hasPendingContext: pendingAttachments.length > 0 || pendingDirectories.length > 0,
+    directoryOptions: pendingDirectories.length > 0
+      ? { directoryReferences: pendingDirectories }
+      : {},
+    directoryComposerProps: {
+      pendingDirectories,
+      onRemoveDirectory: removeDirectory,
+      onPickDirectory: pendingDirectories.length < DIRECTORY_REFERENCE_MAX_COUNT
+        ? pickDirectory
+        : undefined,
+    },
     pickAttachments,
     attachFilePaths,
     restoreAttachments,
     removeAttachment,
+    clearSubmittedContext,
     clearSubmittedAttachments,
     clearAllAttachments,
     imageNoticeLifecycle: lifecycleRef.current,

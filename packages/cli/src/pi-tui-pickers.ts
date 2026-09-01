@@ -44,7 +44,12 @@ import {
   type UiLocale,
 } from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+import {
+  providerDefaultsOf,
+  providerMenuLabel,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import type {
   ModelChoice,
   OnboardingFailure,
@@ -699,12 +704,12 @@ export function modelChoiceConnectionLabels(choices: readonly ModelChoice[]): Ma
   const labels = new Map<string, string>();
   for (const connection of connections) {
     let label = connection.base;
-    if (used.has(label) && connection.connectionId) {
+    if (used.has(label)) {
       label = `${connection.base} · ${connection.connectionId}`;
     }
     let suffix = 2;
     while (used.has(label)) {
-      label = `${connection.base} · ${connection.connectionId ?? connection.connectionSlug} · ${suffix}`;
+      label = `${connection.base} · ${connection.connectionId} · ${suffix}`;
       suffix += 1;
     }
     used.add(label);
@@ -746,8 +751,13 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;
-  const providerLabel = PROVIDER_DEFAULTS[choice.providerType]?.label;
-  if (providerLabel && providerLabel.toLowerCase().includes(query)) return true;
+  // Both provider names, not just the one the row shows: the dense `menuLabel`
+  // drops the qualifier the full label carries ("Google Gemini" → "Google"), so
+  // searching only the displayed one loses `gemini`, and searching only the full
+  // one loses a qualifier that exists nowhere else ("OpenAI OAuth").
+  const provider = providerDefaultsOf(choice.providerType);
+  if (provider?.label.toLowerCase().includes(query)) return true;
+  if (provider?.menuLabel?.toLowerCase().includes(query)) return true;
   return false;
 }
 

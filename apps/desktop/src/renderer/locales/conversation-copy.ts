@@ -96,6 +96,7 @@ export interface DesktopConversationCopy {
     terminal: string;
     terminalNumbered(index: number): string;
     tasks: string;
+    todoLoadFailed: string;
     workBoard: string;
     browser: string;
     files: string;
@@ -459,6 +460,7 @@ const COPY = {
       terminal: '终端',
       terminalNumbered: (index) => `终端 ${index}`,
       tasks: '待办',
+      todoLoadFailed: '待办载入失败，请重试。',
       workBoard: '工作看板',
       browser: '浏览器',
       files: '生成文件',
@@ -688,6 +690,7 @@ const COPY = {
       terminal: 'Terminal',
       terminalNumbered: (index) => `Terminal ${index}`,
       tasks: 'To-do',
+      todoLoadFailed: 'Failed to load the to-do list. Try again.',
       workBoard: 'Work board',
       browser: 'Browser',
       files: 'Generated files',

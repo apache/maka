@@ -52,6 +52,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
   | 'createSession'
   | 'listSessions'
+  | 'previewSessionRemoval'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -219,11 +220,15 @@ export function registerRuntimeHostSessionCatalogIpc(
     const ids = await actionIds(sessionId, { revisionFamily: true });
     // A task restored under the caller's decision is left alone, and nothing
     // downstream of the deletion runs for it.
-    const disposition = await deps.client.removeSession(sessionId, {
+    const outcome = await deps.client.removeSession(sessionId, {
       requireArchived: requiresArchivedSession(options),
     });
-    if (disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
-    return disposition;
+    if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
+    return outcome;
+  });
+  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
+    // Read-only: how many subtasks the delete would archive, for the confirm.
+    return deps.client.previewSessionRemoval(sessionId);
   });
 }
 

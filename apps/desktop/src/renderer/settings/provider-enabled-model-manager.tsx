@@ -34,7 +34,7 @@ import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
  * `enabledModelIds` remains the only product state.
  */
 export function EnabledModelManager(props: {
-  modelChoices: ModelCatalogEntry[];
+  modelChoices: readonly ModelCatalogEntry[];
   enabledModelIds: string[];
   disabled: boolean;
   onChange(ids: string[]): void;

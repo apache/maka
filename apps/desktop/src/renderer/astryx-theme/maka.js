@@ -96,7 +96,7 @@ export const makaTheme = {
     "--color-syntax-tag": "light-dark(#89001a, #ffaeaa)",
     "--color-syntax-attribute": "light-dark(#584400, #eec12f)",
     "--color-syntax-property": "light-dark(#005348, #83dac9)",
-    "--color-syntax-punctuation": "light-dark(#a3a3a3, #525252)",
+    "--color-syntax-punctuation": "light-dark(#6e6e6e, #a0a0a0)",
     "--color-syntax-background": "light-dark(#fafafa, #0a0a0a)",
     "--color-background-surface": "var(--background)",
     "--color-background-body": "var(--surface-canvas)",

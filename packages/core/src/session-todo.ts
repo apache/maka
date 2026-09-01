@@ -18,6 +18,8 @@
  */
 
 import { serializedByteLength } from './serialized-byte-length.js';
+import { redactSecrets } from './display-redaction.js';
+import { sanitizeUnicodeText } from './text-sanitize.js';
 
 /**
  * SessionTodo is a current-state document, not an event ledger. Its bounds
@@ -88,6 +90,31 @@ export function normalizeSessionTodoItems(input: unknown): SessionTodoNormalizeR
 
 export function isSessionTodoStatus(value: unknown): value is SessionTodoStatus {
   return typeof value === 'string' && (SESSION_TODO_STATUSES as readonly string[]).includes(value);
+}
+
+/** Project stored Todo text into a shared display-safe surface value. */
+export function sessionTodoContentForDisplay(content: string): string {
+  let current = redactSecrets(
+    sanitizeUnicodeText(content, {
+      maxCodePoints: SESSION_TODO_CONTENT_MAX_CHARS,
+      truncatedSuffix: '',
+    }),
+  );
+  const tag = /<\/?session-todo\b[^>]*>/gi;
+  for (;;) {
+    const next = current.replace(tag, '');
+    if (next === current) return current.trim();
+    current = next;
+  }
+}
+
+export function projectSessionTodoItemsForDisplay(
+  items: readonly SessionTodoItem[],
+): SessionTodoItem[] {
+  return items.map((item) => ({
+    content: sessionTodoContentForDisplay(item.content),
+    status: item.status,
+  }));
 }
 
 function invalid(message: string): SessionTodoNormalizeResult {

@@ -66,7 +66,9 @@ import {
   deriveConnectionSlug,
   deriveInteractiveOAuthConnectionSlug,
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
+  providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -432,7 +434,7 @@ export class RuntimePolicyCoordinator {
         assertConnectionIsWritable(connection);
         const required = connectionCredentialLocator(
           connection.connectionId,
-          PROVIDER_DEFAULTS[connection.providerType].authKind,
+          PROVIDER_REGISTRY[connection.providerType].authKind,
         );
         if (locator.kind !== 'request_headers' && (!required || required.kind !== locator.kind)) {
           throw codecError(
@@ -494,7 +496,7 @@ export class RuntimePolicyCoordinator {
       // reaches it today (execution resolution refuses first), which is
       // exactly why it would have stayed open.
       assertConnectionIsWritable(connection);
-      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+      if (PROVIDER_REGISTRY[connection.providerType].authKind !== 'oauth_token') {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
@@ -551,10 +553,7 @@ export class RuntimePolicyCoordinator {
         const existing = findConnection(catalog, { connectionId: input.target.connectionId });
         if (!existing) return deepFreeze({ kind: 'connection_not_found' as const });
         if (!isInteractiveOAuthLoginProvider(existing.providerType)) {
-          return deepFreeze({
-            kind: 'provider_action_unavailable' as const,
-            availability: 'hidden' as const,
-          });
+          return deepFreeze({ kind: 'provider_action_unavailable' as const });
         }
         connectionBefore = structuredClone(existing);
         connectionAfter = reenabledInteractiveOAuthConnection(
@@ -565,22 +564,14 @@ export class RuntimePolicyCoordinator {
       }
       const connection = connectionBefore ?? connectionAfter;
       if (!isInteractiveOAuthLoginProvider(connection.providerType)) {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: 'hidden' as const,
-        });
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const contract = deriveProviderAuthContract({
         providerType: connection.providerType,
-        enabled: true,
         hasSecret: false,
-        lastTestStatus: connection.lastTest?.status,
       });
-      if (contract.actionAvailability.start_oauth !== 'available') {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: contract.actionAvailability.start_oauth,
-        });
+      if (!contract.actionAvailability.start_oauth) {
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const prepared = await this.prepareConnectionMaterial(root, connection, false);
       if (prepared.kind !== 'ready') return prepared;
@@ -765,16 +756,10 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'provider_retired' as const });
       }
 
-      const contract = deriveProviderAuthContract({
-        providerType: connection.providerType,
-        enabled: true,
-        hasSecret: true,
-        lastTestStatus: connection.lastTest?.status,
-      });
       const prepared = await this.prepareConnectionMaterial(
         root,
         connection,
-        contract.requiresSecret,
+        providerAuthRequiresSecret(connection.providerType),
       );
       if (prepared.kind !== 'ready') return prepared;
       return deepFreeze({
@@ -1159,7 +1144,7 @@ export class RuntimePolicyCoordinator {
       let requestHeadersSecret: string | null = null;
       const locator = connectionCredentialLocator(
         target.candidate.connectionId,
-        PROVIDER_DEFAULTS[providerType].authKind,
+        PROVIDER_REGISTRY[providerType].authKind,
       );
       if (locator) {
         credential = credentialStatus(vault, locator);
@@ -1500,13 +1485,10 @@ export class RuntimePolicyCoordinator {
 
     const contract = deriveProviderAuthContract({
       providerType: connection.providerType,
-      enabled: true,
       hasSecret: true,
-      lastTestStatus: connection.lastTest?.status,
     });
-    const availability = contract.actionAvailability[action];
-    if (availability !== 'available') {
-      return deepFreeze({ kind: 'provider_action_unavailable' as const, availability });
+    if (!contract.actionAvailability[action]) {
+      return deepFreeze({ kind: 'provider_action_unavailable' as const });
     }
     return this.prepareConnectionMaterial(root, connection, contract.requiresSecret);
   }
@@ -1519,7 +1501,7 @@ export class RuntimePolicyCoordinator {
     | PreparedConnectionMaterial
     | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   > {
-    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
     const locator = connectionCredentialLocator(connection.connectionId, authKind);
     const policy = await this.policy.read(root);
     const networkProxy = structuredClone(policy.policy.networkProxy);
@@ -1590,7 +1572,7 @@ export class RuntimePolicyCoordinator {
     if (locator.kind === 'request_headers') return true;
     const required = connectionCredentialLocator(
       connection.connectionId,
-      PROVIDER_DEFAULTS[connection.providerType].authKind,
+      PROVIDER_REGISTRY[connection.providerType].authKind,
     );
     if (!required || required.kind !== locator.kind) {
       throw codecError(
@@ -2281,7 +2263,7 @@ function newInteractiveOAuthConnection(
   slug: string,
   providerType: InteractiveOAuthLoginProvider,
 ): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   return {
     connectionId,
     revision: 1,
@@ -2289,7 +2271,7 @@ function newInteractiveOAuthConnection(
     name: defaults.label,
     providerType,
     enabled: true,
-    enabledModelIds: [...defaults.fallbackModels],
+    enabledModelIds: providerFallbackModelIds(defaults),
     models: [],
   };
 }

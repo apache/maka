@@ -84,6 +84,9 @@ import {
   type TurnStateMessage,
   type UserMessage,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationReplacementAbortedMessage,
+  type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import type {
   MarkMessagesHandedOffInput,
@@ -184,6 +187,8 @@ export interface CreateStableSessionRequest {
 export interface WorkHubMessageAssignmentRequest {
   readonly assignment: WorkHubDelegationAssignedMessage;
   readonly admission: PendingMessageAdmission;
+  /** Present exactly when this assignment atomically supersedes an earlier link. */
+  readonly supersession?: WorkHubDelegationSupersededMessage;
   /** Present exactly when the assignment creates its target Session. */
   readonly create?: CreateStableSessionRequest;
 }
@@ -416,6 +421,15 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
     request: WorkHubMessageAssignmentRequest,
   ): Promise<WorkHubMessageAssignmentResult>;
   readWorkHubAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
+  readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined>;
+  readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined>;
+  readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -634,6 +648,7 @@ class SqliteSessionStore implements SessionAuthorityStore {
       assignment: request.assignment,
       admission: request.admission,
       projection: projectSessionCatalogMessages([request.assignment]),
+      ...(request.supersession ? { supersession: request.supersession } : {}),
       ...(create
         ? {
             create: {
@@ -659,22 +674,64 @@ class SqliteSessionStore implements SessionAuthorityStore {
   async readWorkHubAssignment(
     actionId: string,
   ): Promise<WorkHubDelegationAssignedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `wha_${workHubIdentitySuffix(actionId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubReplacement(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementRequestedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whp_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_requested'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubReplacementAbort(
+    delegationId: string,
+  ): Promise<WorkHubDelegationReplacementAbortedMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whb_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' &&
+      message.kind === 'delegation_replacement_aborted'
+      ? message
+      : undefined;
+  }
+
+  async readWorkHubSupersession(
+    delegationId: string,
+  ): Promise<WorkHubDelegationSupersededMessage | undefined> {
+    const message = await this.readWorkHubCoordinationMessage(
+      `whx_${workHubIdentitySuffix(delegationId)}`,
+    );
+    return message?.type === 'workhub_coordination' && message.kind === 'delegation_superseded'
+      ? message
+      : undefined;
+  }
+
+  private async readWorkHubCoordinationMessage(
+    messageId: string,
+  ): Promise<StoredMessage | undefined> {
     await this.ensureReady();
-    const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
     const throughSequence = await this.metadata.readTranscriptHighWater(
       WORKHUB_COORDINATION_SESSION_ID,
     );
     if (throughSequence === null) return undefined;
     const messages = await this.metadata.readTranscriptMessages(WORKHUB_COORDINATION_SESSION_ID, {
-      messageIds: [`wha_${suffix}`],
+      messageIds: [messageId],
       throughSequence,
       maxMessages: 1,
       maxBytes: 768 * 1024,
     });
-    const message = messages[0];
-    return message?.type === 'workhub_coordination' && message.kind === 'delegation_assigned'
-      ? message
-      : undefined;
+    return messages[0];
   }
 
   async discardStableConversationCopy(
@@ -1197,6 +1254,10 @@ class SqliteSessionStore implements SessionAuthorityStore {
   private async ensureCatalogProjectionReadable(): Promise<void> {
     await this.ensureReady();
   }
+}
+
+function workHubIdentitySuffix(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex').slice(0, 48);
 }
 
 /**

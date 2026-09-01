@@ -23,6 +23,7 @@ import {
   LOCAL_RUNTIME_HOST_PROFILE,
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
+  type RuntimeHostWebRtcStunPolicy,
 } from '@maka/runtime-host/client';
 import { PeerMeshPostCommitError, type PeerMeshNode } from '@maka/runtime-host/peer-mesh';
 import {
@@ -88,6 +89,8 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
   ) => Pick<DesktopRuntimeHostClient, 'request'> | undefined;
   readonly profiles: Pick<DesktopRuntimeHostProfileService, 'resolveManagedService'>;
   readonly runRemote: SshTerminal['runPeerMeshManagement'];
+  readonly readConnectivityPolicy: () => Promise<RuntimeHostWebRtcStunPolicy>;
+  readonly writeConnectivityPolicy: (value: unknown) => Promise<RuntimeHostWebRtcStunPolicy>;
 }): { close(): void } {
   const activeOperations = new Map<string, ActivePeerMeshOperation>();
   const execute = async (
@@ -269,6 +272,11 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       operation.controller.abort(new Error('Peer Mesh operation was cancelled'));
     }
   });
+  const getConnectivityPolicyChannel = 'runtime-host-peer-mesh:get-connectivity-policy';
+  input.ipcMain.handle(getConnectivityPolicyChannel, () => input.readConnectivityPolicy());
+  const setConnectivityPolicyChannel = 'runtime-host-peer-mesh:set-connectivity-policy';
+  input.ipcMain.handle(setConnectivityPolicyChannel, (_event, value: unknown) =>
+    input.writeConnectivityPolicy(value));
   return {
     close: () => {
       for (const { abortOnClose, controller } of activeOperations.values()) {
@@ -277,6 +285,8 @@ export function createDesktopRuntimeHostPeerMeshManagement(input: {
       activeOperations.clear();
       input.ipcMain.removeHandler(channel);
       input.ipcMain.removeHandler(cancelChannel);
+      input.ipcMain.removeHandler(getConnectivityPolicyChannel);
+      input.ipcMain.removeHandler(setConnectivityPolicyChannel);
     },
   };
 }

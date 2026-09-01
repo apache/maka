@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   providerSupportsModelDiscovery,
@@ -72,7 +72,7 @@ export interface AddProviderDraft {
  * either would demand a guess about a catalog the app is about to fetch.
  */
 export function validateAddProviderDraft(draft: AddProviderDraft): AddProviderIssue | null {
-  const defaults = PROVIDER_DEFAULTS[draft.providerType];
+  const defaults = PROVIDER_REGISTRY[draft.providerType];
   const slugIssue = validateSlug(draft.slug);
   if (slugIssue) return { field: 'slug', reason: 'invalid', detail: slugIssue };
   if (draft.existingSlugs.includes(draft.slug)) return { field: 'slug', reason: 'duplicate' };

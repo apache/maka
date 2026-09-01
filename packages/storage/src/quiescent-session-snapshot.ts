@@ -58,6 +58,7 @@ export type SessionSnapshotWorkspaceConfirmationCategory = 'suspected_secret_pat
 export type SessionSnapshotWorkspaceRejectionCategory =
   | 'known_secret_file'
   | 'unsafe_path'
+  | 'unsupported_portable_path'
   | 'unsupported_entry';
 
 export type SessionSnapshotWorkspacePolicyDecision =
@@ -834,11 +835,12 @@ class OwnedPreparedSessionBundleHandle implements PreparedSessionBundleHandle {
   }
 }
 
-function decodeWorkspaceEntry(
-  entry: SessionSnapshotWorkspaceEntry,
-):
+function decodeWorkspaceEntry(entry: SessionSnapshotWorkspaceEntry):
   | { readonly kind: 'valid'; readonly segments: readonly string[]; readonly basename: string }
-  | { readonly kind: 'reject'; readonly category: 'unsafe_path' | 'unsupported_entry' } {
+  | {
+      readonly kind: 'reject';
+      readonly category: 'unsafe_path' | 'unsupported_portable_path' | 'unsupported_entry';
+    } {
   if (entry.kind !== 'file' && entry.kind !== 'directory') {
     return { kind: 'reject', category: 'unsupported_entry' };
   }
@@ -858,7 +860,7 @@ function decodeWorkspaceEntry(
   }
   const bundlePath = `workspace/${entry.relativePath}${entry.kind === 'directory' ? '/' : ''}`;
   if (!isSessionBundleUstarPathV1(bundlePath)) {
-    return { kind: 'reject', category: 'unsafe_path' };
+    return { kind: 'reject', category: 'unsupported_portable_path' };
   }
   return { kind: 'valid', segments, basename: segments.at(-1)! };
 }

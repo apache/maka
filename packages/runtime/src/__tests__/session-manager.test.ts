@@ -72,7 +72,11 @@ import type {
 } from '@maka/core/runtime-event-store';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
-import type { BackendSendInput, BackendStopMode } from '@maka/core/backend-types';
+import type {
+  BackendCompactHistoryInput,
+  BackendSendInput,
+  BackendStopMode,
+} from '@maka/core/backend-types';
 import { PlanConflictError, emptyPlanSessionState, type PlanStore } from '@maka/core/plan';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
@@ -3348,15 +3352,33 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
       newId: nextId(),
       now: nextNow(10_000),
     });
-    const session = await manager.createSession(makeInput({ permissionMode: 'bypass' }));
+    const session = await manager.createSession(
+      makeInput({ permissionMode: 'bypass', llmConnectionId: 'connection-compact' }),
+    );
 
     await drain(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }));
+    const sourceRun = (await runStore.listSessionRuns(session.id)).find(
+      (run) => run.turnId === 'turn-1',
+    );
+    assert.ok(sourceRun);
     runStore.operations = [];
     const events = await collectSessionEvents(
       manager.compactSession(session.id, { turnId: 'turn-compact' }),
     );
 
-    assert.deepStrictEqual(compactCalls, [{ turnId: 'turn-compact', runtimeContextCount: 3 }]);
+    assert.deepStrictEqual(compactCalls, [
+      {
+        turnId: 'turn-compact',
+        runtimeContextCount: 3,
+        sourceRoutes: [
+          {
+            runId: sourceRun.runId,
+            connectionId: sourceRun.llmConnectionId,
+            modelId: sourceRun.modelId,
+          },
+        ],
+      },
+    ]);
     assert.deepStrictEqual(
       events.map((event) => event.type),
       ['token_usage', 'complete'],
@@ -4623,6 +4645,9 @@ describe('SessionManager permission mode updates', () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
+    backends.register('ai-sdk', () => {
+      throw new Error('continuation planning must not build a backend');
+    });
     const manager = new SessionManager({
       store,
       runStore,
@@ -4765,6 +4790,9 @@ describe('SessionManager permission mode updates', () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
+    backends.register('ai-sdk', () => {
+      throw new Error('continuation planning must not build a backend');
+    });
     const manager = new SessionManager({
       store,
       runStore,
@@ -5129,9 +5157,15 @@ describe('SessionManager permission mode updates', () => {
     const backends = new BackendRegistry();
     const lifecycleEvents: Array<{ type: string }> = [];
     let backend: FinalTextTestBackend | undefined;
-    backends.register('ai-sdk', (ctx) => {
-      backend = new FinalTextTestBackend(ctx);
-      return backend;
+    const providerStateIdentity = `sha256:${'c'.repeat(64)}` as const;
+    backends.register('ai-sdk', {
+      prepare: async () => ({
+        providerStateIdentity,
+        build: (ctx) => {
+          backend = new FinalTextTestBackend(ctx);
+          return backend;
+        },
+      }),
     });
     const manager = new SessionManager({
       store,
@@ -5139,14 +5173,21 @@ describe('SessionManager permission mode updates', () => {
       runtimeEventStore: runStore,
       toolBoundaryProtocol: 't1_after_preflight_v1',
       backends,
-      inspectContinuationSafety: inspectStableContinuationSafety,
+      childTools: [testTool('Read')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames: ['Read'],
+      }),
       onContinuationLifecycleEvent: (event) => {
         lifecycleEvents.push(event);
       },
       newId: nextId(),
       now: nextNow(6_550),
     });
-    const session = await manager.createSession(makeInput());
+    const session = await manager.createSession(
+      makeInput({ llmConnectionId: 'connection-continuation' }),
+    );
     const header = await store.readHeader(session.id);
     const sourceRunId = 'source-run';
     const sourceTurnId = 'source-turn';
@@ -5159,6 +5200,8 @@ describe('SessionManager permission mode updates', () => {
       status: 'failed',
       failureClass: 'runtime_interrupted',
       backendKind: header.backend,
+      llmConnectionId: header.llmConnectionId,
+      providerStateIdentity,
       llmConnectionSlug: header.llmConnectionSlug,
       modelId: header.model,
       cwd: header.cwd,
@@ -5185,12 +5228,64 @@ describe('SessionManager permission mode updates', () => {
         content: { kind: 'text', text: 'continue safely' },
       },
       {
-        id: 'source-terminal',
+        id: 'source-thinking',
         sessionId: session.id,
         invocationId: sourceInvocationId,
         runId: sourceRunId,
         turnId: sourceTurnId,
         ts: 2,
+        partial: false,
+        author: 'agent',
+        role: 'model',
+        content: {
+          kind: 'thinking',
+          text: 'same-route provider reasoning',
+          signature: 'same-route-signature',
+        },
+        refs: { stepId: 'source-step' },
+      },
+      {
+        id: 'source-tool-call',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 3,
+        partial: false,
+        author: 'agent',
+        role: 'model',
+        content: {
+          kind: 'function_call',
+          id: 'source-read',
+          name: 'Read',
+          args: { path: 'package.json' },
+        },
+        refs: { stepId: 'source-step' },
+      },
+      {
+        id: 'source-tool-result',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 4,
+        partial: false,
+        author: 'tool',
+        role: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'source-read',
+          name: 'Read',
+          result: 'package contents',
+        },
+      },
+      {
+        id: 'source-terminal',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 5,
         partial: false,
         author: 'system',
         role: 'system',
@@ -5208,7 +5303,7 @@ describe('SessionManager permission mode updates', () => {
       sourceWorkspaceIdentity: 'workspace-1',
       currentWorkspaceIdentity: 'workspace-1',
       backgroundOperationsSettled: true,
-      availableToolNames: [],
+      availableToolNames: ['Read'],
     });
     assert.strictEqual(plan.disposition, 'continue');
     if (!plan.continuation) throw new Error('expected continuation');
@@ -5230,6 +5325,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(continuationRun.parentTurnId, sourceTurnId);
     assert.strictEqual(continuationRun.cwd, movedCwd);
     assert.strictEqual(continuationRun.status, 'completed');
+    assert.strictEqual(continuationRun.providerStateIdentity, providerStateIdentity);
     assert.partialDeepStrictEqual(continuationRun, {
       orchestrationMode: 'swarm',
       orchestrationSource: 'turn_override',
@@ -5237,6 +5333,22 @@ describe('SessionManager permission mode updates', () => {
       toolMode: 'code_mode',
     });
     assert.strictEqual(backend?.sendInputs[0]?.toolMode, 'code_mode');
+    assert.deepStrictEqual(
+      backend?.sendInputs[0]?.runtimeContextRunHeaders?.map((runHeader) => ({
+        runId: runHeader.runId,
+        llmConnectionId: runHeader.llmConnectionId,
+        modelId: runHeader.modelId,
+        providerStateIdentity: runHeader.providerStateIdentity,
+      })),
+      [
+        {
+          runId: sourceRunId,
+          llmConnectionId: header.llmConnectionId,
+          modelId: header.model,
+          providerStateIdentity,
+        },
+      ],
+    );
     const continuationEvents = await runStore.readRuntimeEvents(
       session.id,
       plan.continuation.runId,
@@ -5245,14 +5357,7 @@ describe('SessionManager permission mode updates', () => {
       protocol: 'continuation_start_v2',
       claimId: plan.continuation.claimId,
       boundaryDigest: plan.continuation.boundary?.manifestDigest,
-      replayManifestDigest: plan.continuation.boundary?.manifestDigest,
-      providerProjectionVersion: 1,
-      providerReplayDigest: plan.continuation.providerReplayDigest,
-    });
-    assert.deepStrictEqual(
-      (continuationEvents[0]?.actions?.continuationStart as Record<string, unknown> | undefined)
-        ?.immediateSource,
-      {
+      immediateSource: {
         sessionId: session.id,
         invocationId: sourceInvocationId,
         runId: sourceRunId,
@@ -5260,7 +5365,10 @@ describe('SessionManager permission mode updates', () => {
         highWater: sourceEvents.length,
         prefixDigest: plan.continuation.boundary?.segments.at(-1)?.prefixDigest,
       },
-    );
+      replayManifestDigest: plan.continuation.boundary?.manifestDigest,
+      providerProjectionVersion: 2,
+      providerReplayDigest: plan.continuation.providerReplayDigest,
+    });
     assert.deepStrictEqual(continuationEvents[0]?.actions?.runtimeProtocol, {
       toolBoundary: 't1_after_preflight_v1',
     });
@@ -5289,6 +5397,272 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(
       followUpContext.some((event) => event.runId === plan.continuation?.runId),
       true,
+    );
+    const followUpRun = (await runStore.listSessionRuns(session.id)).find(
+      (runHeader) => runHeader.turnId === 'turn-after-continuation',
+    );
+    assert.strictEqual(followUpRun?.providerStateIdentity, providerStateIdentity);
+  });
+
+  test('authenticates the exact target-aware continuation projection that reaches the provider', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    let providerRequest: unknown;
+    const model = new MockLanguageModelV4({
+      doStream: async (request) => {
+        providerRequest = request;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-1' },
+              { type: 'text-delta', id: 'text-1', delta: 'continued' },
+              { type: 'text-end', id: 'text-1' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: {
+                  inputTokens: { total: 1, noCache: 1, cacheRead: 0, cacheWrite: 0 },
+                  outputTokens: { total: 1, text: 1, reasoning: 0 },
+                },
+              },
+            ] as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    backends.register('ai-sdk', (ctx) =>
+      createTestAiSdkBackend({
+        sessionId: ctx.sessionId,
+        header: ctx.header,
+        appendMessage: ctx.appendMessage ?? (async () => {}),
+        connection: {
+          slug: ctx.header.llmConnectionSlug,
+          providerType: 'anthropic',
+          defaultModel: ctx.header.model,
+        },
+        apiKey: 'sk-test',
+        modelId: ctx.header.model,
+        modelFactory: () => model,
+        tools: [
+          {
+            name: 'Read',
+            description: 'Read a file',
+            parameters: z.object({ path: z.string() }),
+            impl: async () => ({ ok: true }),
+          },
+        ],
+        ...(ctx.loadTurnRuntimeEvents ? { loadTurnRuntimeEvents: ctx.loadTurnRuntimeEvents } : {}),
+        newId: (() => {
+          let id = 0;
+          return () => `cross-route-backend-${++id}`;
+        })(),
+        now: nextNow(1),
+      }),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      toolBoundaryProtocol: 't1_after_preflight_v1',
+      backends,
+      childTools: [testTool('Read')],
+      inspectContinuationSafety: async () => ({
+        workspaceIdentity: 'workspace-1',
+        backgroundOperationsSettled: true,
+        availableToolNames: ['Read'],
+      }),
+      newId: nextId(),
+      now: nextNow(6_575),
+    });
+    const session = await manager.createSession(
+      makeInput({
+        llmConnectionId: 'connection-a',
+        llmConnectionSlug: 'anthropic-a',
+        model: 'claude-a',
+        permissionMode: 'bypass',
+      }),
+    );
+    const sourceRunId = 'source-run-cross-route';
+    const sourceInvocationId = 'source-invocation-cross-route';
+    const sourceTurnId = 'source-turn-cross-route';
+    await runStore.createRun({
+      runId: sourceRunId,
+      invocationId: sourceInvocationId,
+      sessionId: session.id,
+      turnId: sourceTurnId,
+      status: 'failed',
+      failureClass: 'runtime_interrupted',
+      backendKind: 'ai-sdk',
+      llmConnectionId: 'connection-a',
+      llmConnectionSlug: 'anthropic-a',
+      modelId: 'claude-a',
+      cwd: '/tmp/cwd',
+      workspaceIdentity: 'workspace-1',
+      permissionMode: 'bypass',
+      orchestrationMode: 'default',
+      orchestrationSource: 'session',
+      toolMode: 'code_mode',
+      createdAt: 1,
+      updatedAt: 5,
+      completedAt: 5,
+    });
+    const sourceEvents: RuntimeEvent[] = [
+      {
+        id: 'cross-route-user',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 1,
+        partial: false,
+        author: 'user',
+        role: 'user',
+        content: { kind: 'text', text: 'continue across routes' },
+      },
+      {
+        id: 'cross-route-thinking',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 2,
+        partial: false,
+        author: 'agent',
+        role: 'model',
+        content: {
+          kind: 'thinking',
+          text: 'source-only reasoning',
+          signature: 'source-only-signature',
+        },
+        refs: { stepId: 'cross-route-step' },
+      },
+      {
+        id: 'cross-route-tool-call',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 3,
+        partial: false,
+        author: 'agent',
+        role: 'model',
+        content: {
+          kind: 'function_call',
+          id: 'cross-route-read',
+          name: 'Read',
+          args: { path: 'package.json' },
+        },
+        refs: { stepId: 'cross-route-step' },
+      },
+      {
+        id: 'cross-route-tool-result',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 4,
+        partial: false,
+        author: 'tool',
+        role: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'cross-route-read',
+          name: 'Read',
+          result: 'package contents',
+        },
+      },
+      {
+        id: 'cross-route-terminal',
+        sessionId: session.id,
+        invocationId: sourceInvocationId,
+        runId: sourceRunId,
+        turnId: sourceTurnId,
+        ts: 5,
+        partial: false,
+        author: 'system',
+        role: 'system',
+        status: 'failed',
+        actions: { endInvocation: true, stateDelta: { failureClass: 'runtime_interrupted' } },
+      },
+    ];
+    for (const event of sourceEvents) {
+      await runStore.appendRuntimeEvent(session.id, sourceRunId, event);
+    }
+    const planInput = {
+      sourceRunId,
+      currentCwd: '/tmp/cwd',
+      sourceWorkspaceIdentity: 'workspace-1',
+      currentWorkspaceIdentity: 'workspace-1',
+      backgroundOperationsSettled: true as const,
+      availableToolNames: ['Read'],
+    };
+    const stalePlan = await manager.planSafeBoundaryContinuation(session.id, planInput);
+    assert.strictEqual(stalePlan.disposition, 'continue');
+    if (!stalePlan.continuation) throw new Error('expected stale continuation');
+    const staleContinuation = stalePlan.continuation;
+    await store.updateHeader(session.id, {
+      llmConnectionId: 'connection-b',
+      llmConnectionSlug: 'anthropic-b',
+      model: 'claude-b',
+    });
+    await assert.rejects(
+      () => collectSessionEvents(manager.resumeSafeBoundaryContinuation(staleContinuation)),
+      /replay changed after planning/,
+    );
+    assert.strictEqual(providerRequest, undefined);
+
+    const sameProjectionStalePlan = await manager.planSafeBoundaryContinuation(
+      session.id,
+      planInput,
+    );
+    assert.strictEqual(sameProjectionStalePlan.disposition, 'continue');
+    if (!sameProjectionStalePlan.continuation) {
+      throw new Error('expected same-projection stale continuation');
+    }
+    await store.updateHeader(session.id, {
+      llmConnectionId: 'connection-c',
+      llmConnectionSlug: 'anthropic-c',
+      model: 'claude-c',
+    });
+    await assert.rejects(
+      () =>
+        collectSessionEvents(
+          manager.resumeSafeBoundaryContinuation(sameProjectionStalePlan.continuation!),
+        ),
+      /replay changed after planning/,
+    );
+    assert.strictEqual(providerRequest, undefined);
+
+    const plan = await manager.planSafeBoundaryContinuation(session.id, planInput);
+    assert.strictEqual(plan.disposition, 'continue');
+    if (!plan.continuation) throw new Error('expected continuation');
+
+    const sessionEvents = await collectSessionEvents(
+      manager.resumeSafeBoundaryContinuation(plan.continuation),
+    );
+
+    assert.ok(providerRequest, JSON.stringify(sessionEvents));
+    const promptJson = JSON.stringify(providerRequest);
+    assert.doesNotMatch(promptJson, /source-only reasoning/);
+    assert.doesNotMatch(promptJson, /source-only-signature/);
+    assert.match(promptJson, /continue across routes/, promptJson);
+    assert.match(promptJson, /cross-route-read/);
+    assert.match(promptJson, /package contents/);
+    assert.notEqual(
+      plan.continuation.providerReplayDigest,
+      sameProjectionStalePlan.continuation.providerReplayDigest,
+    );
+    const continuationEvents = await runStore.readRuntimeEvents(
+      session.id,
+      plan.continuation.runId,
+    );
+    assert.strictEqual(
+      continuationEvents[0]?.actions?.continuationStart?.providerReplayDigest,
+      plan.continuation.providerReplayDigest,
     );
   });
 
@@ -12000,15 +12374,24 @@ class CountingFinalTextBackend extends FinalTextTestBackend {
 class CompactingTestBackend extends TestBackend {
   constructor(
     ctx: BackendFactoryContext,
-    private readonly compactCalls: Array<{ turnId: string; runtimeContextCount: number }>,
+    private readonly compactCalls: Array<{
+      turnId: string;
+      runtimeContextCount: number;
+      sourceRoutes?: Array<{ runId: string; connectionId?: string; modelId: string }>;
+    }>,
   ) {
     super(ctx);
   }
 
-  async compactHistory(input: { turnId: string; runtimeContext: readonly RuntimeEvent[] }) {
+  async compactHistory(input: BackendCompactHistoryInput) {
     this.compactCalls.push({
       turnId: input.turnId,
       runtimeContextCount: input.runtimeContext.length,
+      sourceRoutes: (input.runtimeContextRunHeaders ?? []).map((run) => ({
+        runId: run.runId,
+        ...(run.llmConnectionId ? { connectionId: run.llmConnectionId } : {}),
+        modelId: run.modelId,
+      })),
     });
     return compactHistoryResult();
   }

@@ -410,7 +410,7 @@ async function withE2eWindow(
     railRenderSessions?: boolean;
     newTaskProject?: boolean;
   },
-  use: (page: Page, context: { userDataDir: string }) => Promise<void>,
+  use: (page: Page, context: { userDataDir: string; app: ElectronApplication }) => Promise<void>,
 ): Promise<void> {
   const userDataDir = await mkdtemp(path.join(tmpdir(), 'maka-e2e-'));
   // Lives inside the throwaway userData dir so the existing teardown removes
@@ -477,7 +477,7 @@ async function withE2eWindow(
       const rendererDetail = rendererLogs.length > 0 ? `\nRenderer console:\n${rendererLogs.join('\n')}` : '';
       throw new Error(`${detail}${mainDetail}${rendererDetail}`, { cause: error });
     }
-    await use(page, { userDataDir });
+    await use(page, { userDataDir, app });
   } finally {
     try {
       if (app) await closeElectronApplication(app, 5_000);
@@ -501,8 +501,26 @@ export const test = base.extend<{
   promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
+  directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
 }>({
+  directoryReferenceWindow: async ({}, use) => {
+    await withE2eWindow(
+      { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh', showWindow: true },
+      async (page, { userDataDir, app }) => {
+        const folder = path.join(userDataDir, 'referenced-source');
+        await mkdir(path.join(folder, 'nested'), { recursive: true });
+        await writeFile(path.join(folder, 'README.md'), 'DO_NOT_READ_FILE_CONTENTS');
+        await writeFile(path.join(folder, 'nested', 'deep.txt'), 'DO_NOT_DESCEND');
+        // Replace only the OS chooser. IPC, Host admission, message delivery,
+        // event persistence and rendering still run through the real stack.
+        await app.evaluate(({ dialog }, selectedPath) => {
+          dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [selectedPath] });
+        }, folder);
+        await use({ page, folder });
+      },
+    );
+  },
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);

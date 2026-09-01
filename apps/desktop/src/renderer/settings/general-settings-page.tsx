@@ -33,8 +33,11 @@ import type {
   NetworkProxySettings,
   UpdateAppSettingsResult,
 } from '@maka/core/settings';
-import type { ThinkingLevel } from '@maka/core/model-thinking';
-import type { IdentifiedLlmConnection } from '@maka/core/llm-connections';
+import { THINKING_LEVELS, type ThinkingLevel } from '@maka/core/model-thinking';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+} from '@maka/core/llm-connections';
 import type { TestProxyInput } from "@maka/core/settings/network-settings";
 import { buildChatModelChoices } from "@maka/core/chat-model-choice";
 import {
@@ -74,7 +77,7 @@ import { SettingsRowSkeleton } from './settings-skeleton.js';
 
 export function GeneralSettingsPage(props: {
   settings: AppSettings;
-  connections: readonly IdentifiedLlmConnection[];
+  connections: readonly ProjectedLlmConnection[];
   defaultSlug: string | null;
   connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
   runtimeHostAvailabilityStatus: 'loading' | 'ready' | 'unavailable' | 'error';
@@ -479,10 +482,9 @@ function isRejectedShellPreference(error: unknown): boolean {
  */
 /** Sentinel for "no preference" — Selector needs a value, absence is not one. */
 const FOLLOW_MODEL_DEFAULT = "__follow_model__";
-const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function GeneralDefaultsCard(props: {
-  connections: readonly IdentifiedLlmConnection[];
+  connections: readonly ProjectedLlmConnection[];
   defaultSlug: string | null;
   connectionsBridge: Pick<RuntimeHostSettingsConnectionsBridge, 'setDefaultModel'> | undefined;
   connectionsAvailable: boolean;

@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_WORKFLOW_SCHEMA_VERSION = 11;
+export const SQLITE_WORKFLOW_SCHEMA_VERSION = 12;
 
 const RELEASED_WORKFLOW_PROJECTION_TABLES = [
   {
@@ -44,15 +44,7 @@ export function migrateSqliteWorkflowDatabase(db: DatabaseSync): void {
   db.exec(`
     DROP INDEX IF EXISTS workflow_plan_reminders_order;
     DROP TABLE IF EXISTS workflow_plan_reminders;
-
-    CREATE TABLE IF NOT EXISTS workflow_task_ledger_events (
-      session_id TEXT NOT NULL,
-      sequence INTEGER NOT NULL CHECK (sequence >= 0),
-      event_id TEXT NOT NULL,
-      record_json TEXT NOT NULL,
-      PRIMARY KEY (session_id, sequence),
-      UNIQUE (session_id, event_id)
-    );
+    DROP TABLE IF EXISTS workflow_task_ledger_events;
 
     CREATE TABLE IF NOT EXISTS workflow_session_todo_documents (
       session_id TEXT PRIMARY KEY,

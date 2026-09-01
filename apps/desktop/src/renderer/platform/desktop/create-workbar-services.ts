@@ -31,7 +31,7 @@ export type DesktopWorkbarBridge = Pick<
   | 'inspector'
   | 'sessions'
   | 'shellRuns'
-  | 'tasks'
+  | 'todo'
   | 'transcripts'
 >;
 
@@ -63,9 +63,9 @@ export function createDesktopWorkbarServices(
       subscribePtyData: (handler) => bridge.shellRuns.subscribePtyData(handler),
       subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
     },
-    tasks: {
-      list: (sessionId) => bridge.tasks.list(sessionId),
-      subscribeChanges: (handler) => bridge.tasks.subscribeChanges(handler),
+    todo: {
+      read: (sessionId) => bridge.todo.read(sessionId),
+      subscribeChanges: (handler) => bridge.todo.subscribeChanges(handler),
     },
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
@@ -160,6 +160,8 @@ export function createDesktopWorkbarServices(
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
+      respondToClientCapability: (sessionId, response) =>
+        bridge.sessions.respondToClientCapability(sessionId, response),
       respondToUserQuestion: (sessionId, response) =>
         bridge.sessions.respondToUserQuestion(sessionId, response),
       subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>

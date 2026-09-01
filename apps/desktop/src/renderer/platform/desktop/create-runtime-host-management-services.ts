@@ -33,6 +33,8 @@ export function createDesktopRuntimeHostManagementServices(
 ): RuntimeHostManagementServices {
   return {
     peerMesh: {
+      getConnectivityPolicy: () => bridge.runtimeHostPeerMesh.getConnectivityPolicy(),
+      setConnectivityPolicy: (policy) => bridge.runtimeHostPeerMesh.setConnectivityPolicy(policy),
       execute: async (target, action, input) => {
         const outcome = await bridge.runtimeHostPeerMesh.execute(target, action, input);
         if (outcome.kind === 'outcome_unknown') {
@@ -42,12 +44,13 @@ export function createDesktopRuntimeHostManagementServices(
       },
       cancel: (operationId) => bridge.runtimeHostPeerMesh.cancel(operationId),
       getDirectPeer: (profileId) => bridge.runtimeHostManagement.getDirectPeer(profileId),
-      configureDirectPeer: (profileId, enabled, relays, automaticDiscovery) =>
+      configureDirectPeer: (profileId, enabled, relays, automaticDiscovery, webRtcStunPolicy) =>
         bridge.runtimeHostManagement.configureDirectPeer(
           profileId,
           enabled,
           relays,
           automaticDiscovery,
+          webRtcStunPolicy,
         ),
       copyText: (value) => navigator.clipboard.writeText(value),
       createOperationId: () => crypto.randomUUID(),

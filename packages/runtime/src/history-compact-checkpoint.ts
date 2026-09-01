@@ -120,7 +120,7 @@ export interface TextHistoryCompactCheckpoint extends HistoryCompactCheckpointBa
 
 export interface OpenAiCodexRemoteCompactState {
   kind: 'openai_codex_remote_v2';
-  connectionSlug: string;
+  connectionId: string;
   modelId: string;
   itemId: string;
   encryptedContent: string;
@@ -402,13 +402,15 @@ export function isTextHistoryCompactCheckpoint(
 
 export function canReplayHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string; slug: string },
+  connection: { providerType: string },
+  connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (!isProviderHistoryCompactCheckpoint(checkpoint)) return true;
   return (
     connection.providerType === 'openai-codex' &&
-    checkpoint.providerState.connectionSlug === connection.slug &&
+    connectionId !== undefined &&
+    checkpoint.providerState.connectionId === connectionId &&
     checkpoint.providerState.modelId === modelId
   );
 }
@@ -416,13 +418,14 @@ export function canReplayHistoryCompactCheckpointForModel(
 /** Whether this model's configured compactor can roll forward from this checkpoint value. */
 export function canContinueHistoryCompactCheckpointForModel(
   checkpoint: HistoryCompactCheckpoint,
-  connection: { providerType: string; slug: string },
+  connection: { providerType: string },
+  connectionId: string | undefined,
   modelId: string,
 ): boolean {
   if (isTextHistoryCompactCheckpoint(checkpoint)) {
     return connection.providerType !== 'openai-codex';
   }
-  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, modelId);
+  return canReplayHistoryCompactCheckpointForModel(checkpoint, connection, connectionId, modelId);
 }
 
 export function historyCompactCheckpointToRuntimeEvent(
@@ -802,7 +805,7 @@ function validHistoryCompactProviderState(value: unknown): value is HistoryCompa
   const state = value as Partial<HistoryCompactProviderState>;
   return (
     state.kind === 'openai_codex_remote_v2' &&
-    nonEmpty(state.connectionSlug) &&
+    nonEmpty(state.connectionId) &&
     nonEmpty(state.modelId) &&
     nonEmpty(state.itemId) &&
     nonEmpty(state.encryptedContent)

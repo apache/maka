@@ -46,11 +46,11 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
-import type { Task } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { buildSessionTodoTools } from '@maka/runtime/session-todo-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -74,7 +74,7 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -85,17 +85,14 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
+import { HostSessionTodoCoordinator } from '../server/session-todo-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -240,137 +237,50 @@ test('production Host settles dispatched Client Capabilities before publishing R
   });
 });
 
-test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
+test('dual UDS Clients query the same persisted SessionTodo snapshot across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
-    const initialRunId = randomUUID();
-    const initialTurnId = randomUUID();
-    // Exercise the Runtime-facing port before Host startup; Hosted tool composition is separate.
-    const toolPortProjection = await withOwnedTaskLedgerToolPort(
-      fixture,
-      async (coordinator, tools) => {
-        const context = taskLedgerToolContext(fixture, {
-          runId: initialRunId,
-          turnId: initialTurnId,
-          toolCallId: randomUUID(),
-        });
-        const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
-        const createInput = create.parameters.parse({
-          tasks: Array.from({ length: TASK_LEDGER_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
-            subject: `Authority acceptance task ${index + 1}`,
-          })),
-        });
-        await create.impl(createInput, context);
-
-        const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-        const updateInput = update.parameters.parse({ id: 'T1', status: 'in_progress' });
-        await update.impl(updateInput, {
-          ...context,
-          toolCallId: randomUUID(),
-        });
-        return coordinator.list(fixture.sessionId, {
-          includeTerminal: true,
-          includeArchived: false,
-          classifyResumeTrust: true,
-        });
-      },
-    );
-    assert.equal(toolPortProjection.length, TASK_LEDGER_PAGE_MAX_ITEMS + 1);
-    assert.deepEqual(toolPortProjection[0]?.owner, {
-      actor: 'main_agent',
-      runId: initialRunId,
-      turnId: initialTurnId,
+    const initial: SessionTodoItem[] = Array.from({ length: 129 }, (_, index) => ({
+      content: `Authority acceptance todo ${index + 1}`,
+      status: index === 0 ? 'in_progress' : 'pending',
+    }));
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: initial }), sessionTodoToolContext(fixture));
     });
 
     const host = await fixture.startHost();
     const desktop = await connectClient(fixture.root);
     const tui = await connectClient(fixture.root);
-    let staleContinuation:
-      | {
-          revision: TaskLedgerRevision;
-          cursor: string;
-          task: Task;
-        }
-      | undefined;
     try {
-      const desktopProjection = await collectTaskLedgerProjection(desktop, fixture.sessionId);
-      const tuiProjection = await collectTaskLedgerProjection(tui, fixture.sessionId);
-      assert.deepEqual(
-        desktopProjection.pages.map((page) => page.tasks.length),
-        [TASK_LEDGER_PAGE_MAX_ITEMS, 1],
-      );
+      const [desktopProjection, tuiProjection] = await Promise.all([
+        desktop.request('session.todo.query', { sessionId: fixture.sessionId }),
+        tui.request('session.todo.query', { sessionId: fixture.sessionId }),
+      ]);
+      assert.deepEqual(desktopProjection, { sessionId: fixture.sessionId, items: initial });
       assert.deepEqual(tuiProjection, desktopProjection);
-      assert.deepEqual(desktopProjection.tasks, toolPortProjection);
-
-      const byKey = await tui.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: 'T1',
-      });
-      assert.equal(byKey.kind, 'task');
-      if (byKey.kind !== 'task') throw new Error('Expected Task Ledger get result');
-      assert.equal(byKey.sessionId, fixture.sessionId);
-      assert.deepEqual(byKey.task, desktopProjection.tasks[0]);
-      assert.equal(byKey.task?.owner?.runId, initialRunId);
-      assert.equal(byKey.task?.owner?.turnId, initialTurnId);
-
-      const firstPage = desktopProjection.pages[0];
-      assert.ok(firstPage?.nextCursor);
-      staleContinuation = {
-        revision: firstPage.revision,
-        cursor: firstPage.nextCursor,
-        task: desktopProjection.tasks[1]!,
-      };
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
       await fixture.stopHost(host);
     }
 
-    assert.ok(staleContinuation);
-    const { revision: staleRevision, cursor: staleCursor, task: taskToChange } = staleContinuation;
-    const successorTurnId = randomUUID();
-    const changedSubject = `${taskToChange.subject} after authority reacquisition`;
-    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
-      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-      const input = update.parameters.parse({
-        id: taskToChange.key,
-        subject: changedSubject,
-      });
-      await update.impl(
-        input,
-        taskLedgerToolContext(fixture, {
-          runId: randomUUID(),
-          turnId: successorTurnId,
-          toolCallId: randomUUID(),
-        }),
-      );
+    const changed = [
+      { content: 'Changed after authority reacquisition', status: 'completed' },
+    ] as const;
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: changed }), sessionTodoToolContext(fixture));
     });
 
     const successorHost = await fixture.startHost();
     const successor = await connectClient(fixture.root);
     try {
-      const continued = await successor.request('task.ledger.query', {
-        kind: 'list_continue',
-        sessionId: fixture.sessionId,
-        revision: staleRevision,
-        cursor: staleCursor,
-      });
-      assert.equal(continued.kind, 'revision_changed');
-      if (continued.kind !== 'revision_changed') {
-        throw new Error('Expected stale Task Ledger continuation to report revision_changed');
-      }
-      assert.equal(continued.expected, staleRevision);
-      assert.notEqual(continued.actual, staleRevision);
-
-      const changed = await successor.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: taskToChange.key,
-      });
-      assert.equal(changed.kind, 'task');
-      if (changed.kind !== 'task') throw new Error('Expected changed Task Ledger task result');
-      assert.equal(changed.sessionId, fixture.sessionId);
-      assert.equal(changed.task?.subject, changedSubject);
-      assert.equal(changed.revision, continued.actual);
+      assert.deepEqual(
+        await successor.request('session.todo.query', { sessionId: fixture.sessionId }),
+        {
+          sessionId: fixture.sessionId,
+          items: changed,
+        },
+      );
     } finally {
       await successor.close();
       await fixture.stopHost(successorHost);
@@ -1213,105 +1123,49 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
   });
 });
 
-interface TaskCreateInput {
-  tasks: Array<{ subject: string; parent_id?: string }>;
-}
-
-interface TaskUpdateInput {
-  id: string;
-  status?: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed' | 'cancelled';
-  subject?: string;
-  blockedReason?: string;
-  failureReason?: string;
-  completionEvidence?: string;
-  explicitReopen?: boolean;
-}
-
-type TaskLedgerPage = Extract<TaskLedgerQueryResult, { kind: 'page' }>;
-type TaskLedgerTool<Input> = MakaTool<Input, string> & {
-  parameters: { parse(value: unknown): Input };
+type SessionTodoWriteTool = MakaTool<{ todos: SessionTodoItem[] }, string> & {
+  parameters: { parse(value: unknown): { todos: SessionTodoItem[] } };
 };
 
-async function withOwnedTaskLedgerToolPort<T>(
+async function withOwnedSessionTodoToolPort<T>(
   fixture: ExecutionFixture,
-  run: (coordinator: HostTaskLedgerCoordinator, tools: MakaTool[]) => Promise<T>,
+  run: (coordinator: HostSessionTodoCoordinator, tools: MakaTool[]) => Promise<T>,
 ): Promise<T> {
   const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
   assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
-  let writer: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>> | undefined;
+  if (!owner) throw new Error('Unable to acquire the interactive SessionTodo tool port');
+  let writer: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>> | undefined;
   try {
-    writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate(), {
-      probeSessionRemoval: async () => ({ kind: 'present' }),
-    });
-    return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
+    writer = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    const coordinator = new HostSessionTodoCoordinator(
+      writer,
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      () => {},
+      () => {},
+    );
+    return await run(coordinator, buildSessionTodoTools(coordinator));
   } finally {
     writer?.close();
     await owner.close();
   }
 }
 
-function requireTaskLedgerTool<Input>(
-  tools: readonly MakaTool[],
-  name: 'task_create' | 'task_update',
-): TaskLedgerTool<Input> {
-  const tool = tools.find((candidate) => candidate.name === name);
-  assert.ok(tool, `Expected ${name} Runtime tool`);
-  return tool as TaskLedgerTool<Input>;
+function requireSessionTodoWriteTool(tools: readonly MakaTool[]): SessionTodoWriteTool {
+  const tool = tools.find((candidate) => candidate.name === 'todo_write');
+  assert.ok(tool, 'Expected todo_write Runtime tool');
+  return tool as SessionTodoWriteTool;
 }
 
-function taskLedgerToolContext(
-  fixture: ExecutionFixture,
-  identity: Pick<MakaToolContext, 'runId' | 'turnId' | 'toolCallId'>,
-): MakaToolContext {
+function sessionTodoToolContext(fixture: ExecutionFixture): MakaToolContext {
   return {
     sessionId: fixture.sessionId,
     cwd: fixture.root,
-    ...identity,
+    runId: randomUUID(),
+    turnId: randomUUID(),
+    toolCallId: randomUUID(),
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
-  };
-}
-
-async function collectTaskLedgerProjection(
-  client: RuntimeHostConnection,
-  sessionId: string,
-): Promise<{
-  revision: TaskLedgerRevision;
-  pages: TaskLedgerPage[];
-  tasks: Task[];
-}> {
-  const pages: TaskLedgerPage[] = [];
-  let result = await client.request('task.ledger.query', {
-    kind: 'list_start',
-    sessionId,
-  });
-  assert.equal(result.kind, 'page');
-  if (result.kind !== 'page') throw new Error('Expected initial Task Ledger page');
-  const revision = result.revision;
-
-  while (true) {
-    assert.equal(result.sessionId, sessionId);
-    assert.equal(result.revision, revision);
-    pages.push(result);
-    if (result.nextCursor === null) break;
-    result = await client.request('task.ledger.query', {
-      kind: 'list_continue',
-      sessionId,
-      revision,
-      cursor: result.nextCursor,
-    });
-    assert.equal(result.kind, 'page');
-    if (result.kind !== 'page') {
-      throw new Error('Task Ledger changed while collecting a stable projection');
-    }
-  }
-
-  return {
-    revision,
-    pages,
-    tasks: pages.flatMap((page) => page.tasks),
   };
 }
 

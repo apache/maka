@@ -200,6 +200,14 @@ describe('Host Session retirement coordinator', () => {
       }
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
 
+      // The read-only preview reports the same deduped count the confirm warns
+      // off, before the delete executes.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 32 } });
+
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -207,7 +215,9 @@ describe('Host Session retirement coordinator', () => {
 
       assert.deepEqual(removed, {
         ok: true,
-        result: { kind: 'removed', sessionId: harness.revisionId },
+        // Each of the 32 subagent children is a distinct subtask family, so the
+        // executed count the renderer reports is 32.
+        result: { kind: 'removed', sessionId: harness.revisionId, archivedSubtaskCount: 32 },
       });
       for (const sessionId of harness.familyIds) {
         assert.deepEqual(await harness.store.probeSessionRemoval(sessionId), { kind: 'removed' });
@@ -396,6 +406,13 @@ describe('Host Session retirement coordinator', () => {
       }
 
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+      // Graph operators retire with the root rather than archive, so the delete
+      // preview promises nothing — the renderer must not warn about them.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 0 } });
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -1210,8 +1227,8 @@ async function withHarness(
           actions.purgedArtifacts.push(sessionId);
         },
       },
-      taskLedger: {
-        purgeConversationTaskLedger: async (sessionId) => {
+      sessionTodo: {
+        purgeSessionState: async (sessionId) => {
           actions.purgedTasks.push(sessionId);
         },
       },

@@ -24,6 +24,7 @@ import {
   ChatView,
   ChatSurfaceLayout,
   Composer,
+  ClientCapabilityPrompt,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
   useToast,
@@ -176,7 +177,10 @@ export function QuoteCompanionPanel(props: {
         )?.label
       : undefined) ?? activeModel?.model;
 
-  const activeInteraction = companion.activeSandboxBoundary ?? companion.activeQuestion;
+  const activeInteraction =
+    companion.activeSandboxBoundary ??
+    companion.activeClientCapability ??
+    companion.activeQuestion;
   const deriveTurnPresentation = useCallback<
     NonNullable<ComponentProps<typeof ChatView>['deriveTurnPresentation']>
   >(
@@ -215,12 +219,20 @@ export function QuoteCompanionPanel(props: {
             {companion.error && (
               <Banner status="error" role="alert" title={companion.error} />
             )}
-            {(companion.activeSandboxBoundary || companion.activeQuestion) && (
+            {(companion.activeSandboxBoundary ||
+              companion.activeClientCapability ||
+              companion.activeQuestion) && (
               <div className="maka-composer-interaction-slot">
                 {companion.activeSandboxBoundary && (
                   <SandboxBoundaryPrompt
                     request={companion.activeSandboxBoundary}
                     onRespond={companion.respondToSandboxBoundary}
+                  />
+                )}
+                {companion.activeClientCapability && (
+                  <ClientCapabilityPrompt
+                    request={companion.activeClientCapability}
+                    onRespond={companion.respondToClientCapability}
                   />
                 )}
                 {companion.activeQuestion && (

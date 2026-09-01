@@ -142,13 +142,18 @@ test('module pages and global overlays expose named actionable controls', async 
   await page.keyboard.press('Escape');
 });
 
-test('data-backed conversation supports keyboard access to tools, models, tasks, and Graph', async ({
+test('data-backed conversation exposes ordered todos and keyboard access to tools, models, and Graph', async ({
   accessibilityNarrativeWindow: page,
 }) => {
   const cdp = await page.context().newCDPSession(page);
   await expect(page.getByRole('region', { name: /对话：/ })).toBeVisible();
-  await expect(page.getByRole('region', { name: '任务待办' })).toBeVisible();
-  await expect(page.getByText('补齐桌面端无障碍覆盖', { exact: true })).toBeVisible();
+  const todoRegion = page.getByRole('region', { name: '任务待办' });
+  await expect(todoRegion).toBeVisible();
+  await expect(todoRegion.getByRole('listitem')).toHaveText([
+    '补齐桌面端无障碍覆盖',
+    '核对模型选择器的键盘路径',
+    '确认工具结果可以展开阅读',
+  ]);
   await assertAxHealth(cdp, 'conversation/data-backed');
 
   await expect(page.getByRole('main')).toHaveCount(1);
@@ -192,11 +197,6 @@ test('data-backed conversation supports keyboard access to tools, models, tasks,
     graphPanel.getByRole('button', { name: '展开 Agent Graph' }),
   ).toHaveAttribute('aria-expanded', 'false');
   await assertAxHealth(cdp, 'conversation/agent-graph-empty');
-
-  const recentTasks = page.getByRole('button', { name: /最近结束/ });
-  await tabTo(page, recentTasks, 'recent tasks', 80);
-  await page.keyboard.press('Enter');
-  await expect(page.getByText('确认工具结果可以展开阅读', { exact: true })).toBeVisible();
 });
 
 test('toast and error states expose healthy live regions', async ({ window: page }) => {

@@ -123,6 +123,71 @@ test("keeps synthetic E2E interactions visible through Host hydration and retire
   await observer.close();
 });
 
+test('answers a Client Capability approval through the existing Interaction authority', async () => {
+  const pending = {
+    schemaVersion: 1 as const,
+    interactionId: 'capability-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    request: {
+      kind: 'client_capability' as const,
+      toolUseId: 'tool-1',
+      target: {
+        providerId: 'provider-1',
+        contractId: 'contract-1',
+        serverId: 'desktop_browser',
+        toolName: 'browser_snapshot',
+        capability: 'browser' as const,
+        scope: { kind: 'browser_origin' as const, origin: 'https://example.com' },
+      },
+    },
+    status: 'pending' as const,
+    outcome: null,
+  };
+  const observer = observerWithSnapshot({
+    interactions: { pending: [pending] },
+  });
+  const answers: unknown[] = [];
+  const ipc = ipcHarness();
+  registerExecutionIpc(
+    {
+      client: executionClient({
+        answerInteraction: async (input) => {
+          answers.push(input);
+          return {
+            ...pending,
+            revision: 2,
+            status: 'answered' as const,
+            outcome: {
+              kind: 'client_capability_decision' as const,
+              decision: 'allow' as const,
+              committedAt: 2,
+            },
+          };
+        },
+      }),
+      observer,
+    },
+    ipc,
+  );
+
+  await ipc.invoke('sessions:listActiveInteractions', 'session-1');
+  await ipc.invoke('sessions:respondToClientCapability', 'session-1', {
+    requestId: 'capability-1',
+    decision: 'allow',
+  });
+  assert.deepEqual(answers, [
+    {
+      sessionId: 'session-1',
+      interactionId: 'capability-1',
+      answer: { kind: 'client_capability', decision: 'allow' },
+    },
+  ]);
+  await observer.close();
+});
+
 test("retries committed Branch and Revision copies with the renderer-owned identity", async () => {
   const committed = new Map<string, SessionCatalogProjection>();
   const lostResponses = new Set(["branch-copy-1", "revision-copy-1"]);

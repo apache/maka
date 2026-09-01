@@ -42,6 +42,7 @@ import {
   type DomainOperationHandlerMap,
 } from '../server/operation-dispatcher.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
+import { clientCapabilityCoordinatorTestAdmission } from './fixtures/client-capability.js';
 
 test('two OAuth creates bind distinct entities and present only on their initiating Clients', {
   timeout: 30_000,
@@ -77,6 +78,7 @@ test('two OAuth creates bind distinct entities and present only on their initiat
       composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation,
           onModelToolsChanged: () => undefined,
         });
@@ -236,6 +238,7 @@ async function assertProviderDisabledOverUds(
       composition: defineInteractiveRuntimeHostComposition(async (context) => {
         const activation = new RuntimePolicyActivationGate();
         const clientCapabilities = new HostClientCapabilityCoordinator({
+          ...clientCapabilityCoordinatorTestAdmission(),
           activation,
           onModelToolsChanged: () => undefined,
         });

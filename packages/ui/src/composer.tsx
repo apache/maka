@@ -64,6 +64,8 @@ import {
   type ComposerModelSwitchAvailability,
 } from './composer-helpers.js';
 import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
+import { DirectoryReferenceChip } from './directory-reference-chip.js';
+import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
@@ -223,7 +225,22 @@ export interface ComposerSendMetadata {
   followUpMode?: FollowUpMode;
 }
 
-type ComposerImportActionId = 'pick' | 'attach';
+type ComposerImportActionId = 'pick' | 'attach' | 'directory';
+
+export interface ComposerGoalProps {
+  /**
+   * Open the host's Goal dialog. The composer offers the entry and nothing
+   * else: a Goal names a condition and two budgets, which is a form, and the
+   * ＋ menu is a menu. Absent handler, no entry — the same rule the other
+   * ＋ entries follow.
+   */
+  onSetGoal?(): void | Promise<void>;
+  /**
+   * A Goal is already running here. Arming refuses a second one, so the
+   * entry says so up front instead of spending the user's click on an error.
+   */
+  goalActive?: boolean;
+}
 
 export const Composer = forwardRef<
   ComposerHandle,
@@ -292,6 +309,9 @@ export const Composer = forwardRef<
     ): boolean | void | Promise<boolean | void>;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
+    onPickDirectory?(): void | Promise<void>;
+    pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
+    onRemoveDirectory?(index: number): void;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
     pendingAttachments?: readonly {
       displayName: string;
@@ -436,18 +456,6 @@ export const Composer = forwardRef<
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
     /**
-     * Open the host's Goal dialog. The composer offers the entry and nothing
-     * else: a Goal names a condition and two budgets, which is a form, and the
-     * ＋ menu is a menu. Absent handler, no entry — the same rule the other
-     * ＋ entries follow.
-     */
-    onSetGoal?(): void | Promise<void>;
-    /**
-     * A Goal is already running here. Arming refuses a second one, so the
-     * entry says so up front instead of spending the user's click on an error.
-     */
-    goalActive?: boolean;
-    /**
      * Why a Goal cannot be set right now — a running Turn, typically. A Goal
      * takes hold on the Turn after it is armed, so arming during one reads as
      * having done nothing; the host names the reason and the entry shows it.
@@ -489,7 +497,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  }
+  } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
@@ -1415,7 +1423,9 @@ export const Composer = forwardRef<
    * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
-    (props.pendingQuotes?.length ?? 0) + (props.pendingAttachments?.length ?? 0);
+    (props.pendingQuotes?.length ?? 0) +
+    (props.pendingAttachments?.length ?? 0) +
+    (props.pendingDirectories?.length ?? 0);
   /** The last staged image opened from a chip (Lightbox media shape). Kept
    *  mounted after close — see the Lightbox render — so only the open flag
    *  drives visibility. */
@@ -1548,7 +1558,7 @@ export const Composer = forwardRef<
    * that wires only the mode controls would open the menu on a rule.
    */
   const hasPlusMenuActions = Boolean(
-    props.onPickAttachments || props.mentionSkills || props.onSetGoal,
+    props.onPickAttachments || props.onPickDirectory || props.mentionSkills || props.onSetGoal,
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
@@ -1661,6 +1671,13 @@ export const Composer = forwardRef<
               }}
             >
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.stagedContext}>
+                {props.pendingDirectories?.map((reference, index) => (
+                  <DirectoryReferenceChip
+                    key={`${reference.hostId}:${reference.path}`}
+                    reference={reference}
+                    onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
+                  />
+                ))}
                 {props.pendingQuotes?.map((quote, index) => (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
@@ -1829,6 +1846,16 @@ export const Composer = forwardRef<
                         isDisabled={attachmentImportBlocked || importActionBusy}
                         onClick={() => {
                           void runImportAction('pick', props.onPickAttachments);
+                        }}
+                      />
+                    ) : null}
+                    {props.onPickDirectory ? (
+                      <DropdownMenuItem
+                        label={copy.referenceFolder}
+                        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
+                        isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                        onClick={() => {
+                          void runImportAction('directory', props.onPickDirectory);
                         }}
                       />
                     ) : null}

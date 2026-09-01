@@ -32,17 +32,12 @@ import type {
   RequestHeaderUpdate,
   SavedRequestHeaders,
 } from '@maka/core/runtime-policy';
-import type { ProviderAuthActionAvailability } from '@maka/core/provider-auth';
 import type { ProviderDefaults } from '@maka/core/llm-connections';
 
 declare const operationTicketBrand: unique symbol;
 
 export type ProviderAuthKind = ProviderDefaults['authKind'];
 export type ConnectionEffectChangedDomain = 'connection' | 'credential' | 'network_proxy';
-export type UnavailableProviderActionAvailability = Exclude<
-  ProviderAuthActionAvailability,
-  'available'
->;
 
 export interface RuntimePolicyCredentialMaterial extends CredentialVersionBasis {
   readonly secret: string;
@@ -177,10 +172,7 @@ export type BeginInteractiveOAuthLoginResult =
   | { readonly kind: 'connection_disabled' }
   | { readonly kind: 'catalog_full' }
   | { readonly kind: 'attempt_conflict' }
-  | {
-      readonly kind: 'provider_action_unavailable';
-      readonly availability: UnavailableProviderActionAvailability;
-    }
+  | { readonly kind: 'provider_action_unavailable' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';
@@ -212,10 +204,7 @@ export type InteractiveOAuthLoginCompletionResult =
 export type ConnectionEffectPreparationFailure =
   | { readonly kind: 'connection_not_found' }
   | { readonly kind: 'connection_disabled' }
-  | {
-      readonly kind: 'provider_action_unavailable';
-      readonly availability: UnavailableProviderActionAvailability;
-    }
+  | { readonly kind: 'provider_action_unavailable' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus };
 
 export type BeginModelFetchResult =

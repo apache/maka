@@ -85,7 +85,6 @@ export type {
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
   ResolveWebFetchExecutionResult,
-  UnavailableProviderActionAvailability,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');

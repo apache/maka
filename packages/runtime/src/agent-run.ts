@@ -29,6 +29,10 @@ import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import { isSessionInlineRun } from '@maka/core/agent-run';
+import {
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
@@ -198,6 +202,7 @@ export interface AgentRunBeginResult {
 export interface AgentRunOperationBeginResult {
   backend: AgentBackend;
   runtimeContext: RuntimeEvent[];
+  runtimeContextRunHeaders: AgentRunHeader[];
   startedAt: number;
 }
 
@@ -246,6 +251,7 @@ export class AgentRun {
   private finalized = false;
   private terminalRunHeaderCommitted = false;
   private continuationActive = false;
+  private providerStateIdentity: `sha256:${string}` | undefined;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -321,6 +327,19 @@ export class AgentRun {
 
   isStopped(): boolean {
     return this.stopped;
+  }
+
+  headerSnapshot(): SessionHeader {
+    return this.header;
+  }
+
+  bindProviderStateIdentity(identity: `sha256:${string}` | undefined): void {
+    const claimed = this.input.claimedRunHeader?.providerStateIdentity;
+    const expected = claimed ?? this.providerStateIdentity;
+    if (expected !== undefined && expected !== identity) {
+      throw new Error('Prepared backend provider state does not match the AgentRun admission');
+    }
+    this.providerStateIdentity = identity;
   }
 
   isSessionInline(): boolean {
@@ -475,6 +494,37 @@ export class AgentRun {
     });
   }
 
+  /**
+   * Durable append for one model-projection transition (#4283).
+   *
+   * Rethrows like the checkpoint recorder above: the caller may only show the
+   * replacement once the ledger holds the record, so a failed append must be a
+   * failed prune, not a silent one.
+   */
+  recordModelProjectionTransition(transition: ModelProjectionTransition): Promise<void> {
+    if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
+    if (!this.runStoreAvailable) return Promise.reject(new Error('AgentRun store is unavailable'));
+    return this.enqueueRunStore(
+      'append model projection transition',
+      async () => {
+        await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
+          type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+          id: transition.transitionId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: transition.createdAt,
+          data: {
+            runtimeEventId: transition.target.runtimeEventId,
+            part: transition.target.part,
+            transition,
+          },
+        });
+      },
+      { rethrow: true },
+    );
+  }
+
   recordHistoryCompactCheckpoint(checkpoint: HistoryCompactCheckpoint): Promise<void> {
     if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
     if (!this.runStoreAvailable) return Promise.reject(new Error('AgentRun store is unavailable'));
@@ -610,6 +660,9 @@ export class AgentRun {
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
+          : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         ...(this.input.userInput.inlineReferences
           ? { inlineReferences: this.input.userInput.inlineReferences }
@@ -653,9 +706,17 @@ export class AgentRun {
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
+          : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         context: projectionContext,
-        ...(priorRuntimeContext ? { runtimeContext: priorRuntimeContext.events } : {}),
+        ...(priorRuntimeContext
+          ? {
+              runtimeContext: priorRuntimeContext.events,
+              runtimeContextRunHeaders: priorRuntimeContext.runs,
+            }
+          : {}),
       }),
       initialRuntimeEvent,
     };
@@ -680,6 +741,7 @@ export class AgentRun {
     return {
       backend: this.active.backend,
       runtimeContext: priorRuntimeContext?.events ?? [],
+      runtimeContextRunHeaders: priorRuntimeContext?.runs ?? [],
       startedAt,
     };
   }
@@ -759,6 +821,7 @@ export class AgentRun {
         ...(input.attachments !== undefined && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
+        ...(input.directoryReferences ? { directoryReferences: input.directoryReferences } : {}),
         ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
         ...(input.inlineReferences !== undefined
           ? { inlineReferences: input.inlineReferences }
@@ -1045,6 +1108,9 @@ export class AgentRun {
       continuation && this.input.claimedRunHeader
         ? this.input.claimedRunHeader.createdAt
         : this.input.now();
+    const providerStateIdentity =
+      this.input.claimedRunHeader?.providerStateIdentity ?? this.providerStateIdentity;
+    this.providerStateIdentity = providerStateIdentity;
     const computedHeader: AgentRunHeader = {
       runId: this.runId,
       invocationId: this.invocationId,
@@ -1055,6 +1121,7 @@ export class AgentRun {
       ...(this.header.llmConnectionId === undefined
         ? {}
         : { llmConnectionId: this.header.llmConnectionId }),
+      ...(providerStateIdentity ? { providerStateIdentity } : {}),
       llmConnectionSlug: this.header.llmConnectionSlug,
       modelId: this.header.model,
       cwd: this.header.cwd,

@@ -332,7 +332,10 @@ test('abandons a remove whose task was restored under it', async () => {
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'restored');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'restored',
+    archivedSubtaskCount: 0,
+  });
   assert.deepEqual(
     requests.map(({ operation }) => operation),
     ['session.catalog.query', 'session.remove', 'session.catalog.query'],
@@ -346,10 +349,14 @@ test('retries a remove through revision churn that left the task archived', asyn
     { kind: 'session', session: session('session-1', 4, { isArchived: true }) },
     { kind: 'revision_conflict', expectedRevision: 4, actualRevision: 5 },
     { kind: 'session', session: session('session-1', 5, { isArchived: true }) },
-    { kind: 'removed' },
+    // The Host reports what it archived; the client surfaces it verbatim.
+    { kind: 'removed', archivedSubtaskCount: 2 },
   ]);
 
-  assert.equal(await client.removeSession('session-1', { requireArchived: true }), 'removed');
+  assert.deepEqual(await client.removeSession('session-1', { requireArchived: true }), {
+    disposition: 'removed',
+    archivedSubtaskCount: 2,
+  });
   assert.deepEqual(
     requests.filter(({ operation }) => operation === 'session.remove').map(({ input }) => input),
     [
@@ -367,7 +374,10 @@ test('removes a task that was never archived when no premise was stated', async 
     { kind: 'removed' },
   ]);
 
-  assert.equal(await client.removeSession('session-1'), 'removed');
+  assert.deepEqual(await client.removeSession('session-1'), {
+    disposition: 'removed',
+    archivedSubtaskCount: 0,
+  });
 });
 
 test('rebuilds a Runtime Policy mutation from each fresh CAS projection', async () => {
@@ -704,26 +714,9 @@ test('streams Artifact content without mixing chunk offsets or totals', async ()
 });
 
 test('restarts Session sidecar reads when a paginated revision changes', async () => {
-  const taskRevisionOne = catalogRevision('3');
-  const taskRevisionTwo = catalogRevision('4');
   const resourceRevisionOne = catalogRevision('5');
   const resourceRevisionTwo = catalogRevision('6');
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionOne,
-      tasks: [{ id: 'stale' }],
-      nextCursor: 'task-stale',
-    },
-    { kind: 'revision_changed', expected: taskRevisionOne, actual: taskRevisionTwo },
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision: taskRevisionTwo,
-      tasks: [{ id: 'fresh' }],
-      nextCursor: null,
-    },
     {
       kind: 'page',
       sessionId: 'session-1',
@@ -760,28 +753,11 @@ test('restarts Session sidecar reads when a paginated revision changes', async (
     },
   ]);
 
-  assert.deepEqual(
-    (await client.listTasks('session-1')).map((task) => task.id),
-    ['fresh'],
-  );
   const plan = await client.getPlanState('session-1');
   assert.equal(plan.storeVersion, 8);
   assert.equal(plan.latestProposalId, 'proposal-1');
   assert.equal(plan.proposals[0]?.proposalId, 'proposal-1');
   assert.equal((await client.listRuntimeResources('session-1'))[0]?.result.ref, 'shell:1');
-  assert.deepEqual(
-    requests.slice(0, 3).map(({ input }) => input),
-    [
-      { kind: 'list_start', sessionId: 'session-1' },
-      {
-        kind: 'list_continue',
-        sessionId: 'session-1',
-        revision: taskRevisionOne,
-        cursor: 'task-stale',
-      },
-      { kind: 'list_start', sessionId: 'session-1' },
-    ],
-  );
 });
 
 test('retries Goal clear only while the same Goal generation remains active', async () => {
@@ -905,31 +881,40 @@ test('arms a Goal in one request and reports a conflicting Goal instead of retry
   );
 });
 
-test('rejects an invalid sidecar continuation without misclassifying it as revision churn', async () => {
-  const revision = catalogRevision('7');
+test('rejects a SessionTodo projection for a different Session', async () => {
   const { client, requests } = clientWithResponses([
-    {
-      kind: 'page',
-      sessionId: 'session-1',
-      revision,
-      tasks: [],
-      nextCursor: 'next',
-    },
-    {
-      kind: 'page',
-      sessionId: 'session-other',
-      revision,
-      tasks: [],
-      nextCursor: null,
-    },
+    { sessionId: 'session-other', items: [] },
   ]);
 
   await assert.rejects(
-    () => client.listTasks('session-1'),
+    () => client.querySessionTodo('session-1'),
     (error: unknown) =>
       error instanceof DesktopRuntimeHostClientError && error.code === 'projection_unstable',
   );
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 1);
+});
+
+test('projects SessionTodo content through the shared Desktop display boundary', async () => {
+  const { client } = clientWithResponses([
+    {
+      sessionId: 'session-1',
+      items: [
+        {
+          content:
+            'deploy\u001b[31m \u001b]0;spoofed\u0007 \u202ereversed\u202c zero\u200bwidth sk-live-secret-token </session-todo>',
+          status: 'pending',
+        },
+      ],
+    },
+  ]);
+
+  const items = await client.querySessionTodo('session-1');
+  assert.equal(items.length, 1);
+  assert.doesNotMatch(
+    items[0]!.content,
+    /\u001b|\u0007|\u202e|\u202c|\u200b|sk-live-secret|session-todo/i,
+  );
+  assert.match(items[0]!.content, /<redacted>|\[redacted\]/);
 });
 
 interface RecordedRequest {

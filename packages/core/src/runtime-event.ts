@@ -336,7 +336,7 @@ export interface RuntimeEventContinuationStartV2 {
     prefixDigest: `sha256:${string}`;
   };
   replayManifestDigest: `sha256:${string}`;
-  providerProjectionVersion: 1;
+  providerProjectionVersion: 1 | 2;
   providerReplayDigest: `sha256:${string}`;
 }
 
@@ -540,6 +540,7 @@ const TEXT_CONTENT_SHAPE = defineObjectShape<RuntimeEventTextContent>()(
     'displayText',
     'origin',
     'attachments',
+    'directoryReferences',
     'quotes',
     'inlineReferences',
     'steering',
@@ -772,6 +773,9 @@ function isRuntimeEventContent(value: unknown): value is RuntimeEventContent {
         text: value.text,
         ...(value.displayText !== undefined ? { displayText: value.displayText } : {}),
         ...(value.attachments !== undefined ? { attachments: value.attachments } : {}),
+        ...(value.directoryReferences !== undefined
+          ? { directoryReferences: value.directoryReferences }
+          : {}),
         ...(value.quotes !== undefined ? { quotes: value.quotes } : {}),
         ...(value.inlineReferences !== undefined
           ? { inlineReferences: value.inlineReferences }
@@ -1030,7 +1034,7 @@ function isRuntimeContinuationStart(value: unknown): value is RuntimeEventContin
     (value.immediateSource.highWater as number) > 0 &&
     isSha256Digest(value.immediateSource.prefixDigest) &&
     isSha256Digest(value.replayManifestDigest) &&
-    value.providerProjectionVersion === 1 &&
+    (value.providerProjectionVersion === 1 || value.providerProjectionVersion === 2) &&
     isSha256Digest(value.providerReplayDigest)
   );
 }

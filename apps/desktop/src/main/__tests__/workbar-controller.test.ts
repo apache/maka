@@ -147,6 +147,32 @@ describe('useWorkbarController', () => {
     assert.deepEqual(controller().host.projectAliases, ['project-absorbed']);
   });
 
+  it('routes Client Capability decisions to the active Session', async () => {
+    const { root } = installReactRenderer();
+    const responses: Array<{ sessionId: string; requestId: string; decision: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      sideChat: {
+        ...defaults.sideChat,
+        respondToClientCapability: async (sessionId, response) => {
+          responses.push({ sessionId, ...response });
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () =>
+      controller().commands.respondToClientCapability({
+        requestId: 'capability-1',
+        decision: 'allow',
+      }),
+    );
+
+    assert.deepEqual(responses, [
+      { sessionId: 'a', requestId: 'capability-1', decision: 'allow' },
+    ]);
+  });
+
   it('keeps the initial Session active after StrictMode replays mount effects', async () => {
     const { root } = installReactRenderer();
     const starts: string[] = [];

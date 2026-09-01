@@ -482,6 +482,80 @@ test('message query reports only durable cancellation proof', async () => {
   });
 });
 
+test('exact pending cancellation removes only the linked Message', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'linked-message', 'wrong delegation', 'next_turn');
+  await submit(fixture, 'unrelated-message', 'keep this queued', 'next_turn');
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    { kind: 'cancelled' },
+  );
+  assert.deepEqual(
+    fixture.coordinator.projection(ROOT.sessionId).followup.map((entry) => entry.messageId),
+    ['unrelated-message'],
+  );
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    { kind: 'cancelled' },
+  );
+});
+
+test('a consumed steering Message cannot claim ownership of its pre-existing root Turn', async () => {
+  const fixture = createFixture();
+  fixture.events.push(steeringEvent('linked-message', 'wrong delegation'));
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    {
+      kind: 'shared_turn',
+      turnId: ROOT.turnId,
+      runId: ROOT.runId,
+    },
+  );
+});
+
+test('a root source Message owns only the root Turn it created', async () => {
+  const fixture = createFixture();
+  fixture.receipts.set(
+    'linked-message',
+    sourceReceipt('linked-message', 'wrong delegation', 'current_turn', 'turn_started'),
+  );
+
+  assert.deepEqual(
+    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    {
+      kind: 'owned_root',
+      turnId: 'durable-turn',
+      runId: 'durable-run',
+    },
+  );
+});
+
+test('a recovered multi-source successor remains shared by every source Message', async () => {
+  const fixture = createFixture();
+  const first = sourceReceipt('linked-message', 'wrong delegation', 'current_turn', 'steering');
+  const second = sourceReceipt('other-message', 'other delegation', 'current_turn', 'steering');
+  const sourceMessages = [first.sourceMessage, second.sourceMessage];
+  fixture.receipts.set('linked-message', {
+    ...first,
+    admission: { ...first.admission, userMessageId: null, sourceMessages },
+  });
+  fixture.receipts.set('other-message', {
+    ...second,
+    admission: { ...second.admission, userMessageId: null, sourceMessages },
+  });
+
+  for (const messageId of ['linked-message', 'other-message']) {
+    assert.deepEqual(await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, messageId), {
+      kind: 'shared_turn',
+      turnId: 'durable-turn',
+      runId: 'durable-run',
+    });
+  }
+});
+
 test('message execution query reports the Turn that durably owns each Message', async () => {
   const fixture = createFixture();
   const pendingContent = { text: 'not handed off yet' };

@@ -49,7 +49,11 @@ import type {
   UsageRange,
   UsageStats,
 } from '@maka/core/settings';
-import type { IdentifiedLlmConnection, ProviderType } from '@maka/core/llm-connections';
+import type {
+  IdentifiedLlmConnection,
+  ProjectedLlmConnection,
+  ProviderType,
+} from '@maka/core/llm-connections';
 import type {
   DesktopRuntimeHostProfileChangedEvent,
   DesktopRuntimeHostProfileSnapshot,
@@ -1064,7 +1068,7 @@ function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
   usageStats: UsageStats | null;
-  connections: IdentifiedLlmConnection[];
+  connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   defaultSlug: string | null;
   runtimeHost: DesktopRuntimeHostRef | undefined;

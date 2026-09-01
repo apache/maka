@@ -18,8 +18,10 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
-  classifyConnectionModelInventory,
+  PROVIDER_REGISTRY,
+  providerDefaultsOf,
+  providerFallbackModelIds,
+  connectionModelsEnumerateAccount,
   connectionEnabledModelIds,
   type ConnectionTestErrorClass,
   type ConnectionTestResult,
@@ -75,8 +77,7 @@ function resolveConnectionTestModel(
   const discoveredIds =
     connection.models?.map(({ id }) => id.trim()).filter((id) => id.length > 0) ?? [];
   const enabled = connectionEnabledModelIds(connection);
-  const listed =
-    classifyConnectionModelInventory(connection) === 'live' ? new Set(discoveredIds) : undefined;
+  const listed = connectionModelsEnumerateAccount(connection) ? new Set(discoveredIds) : undefined;
   const preferred = listed
     ? [...enabled.filter((id) => listed.has(id)), ...enabled.filter((id) => !listed.has(id))]
     : enabled;
@@ -150,7 +151,7 @@ async function testConnectionStrict(
   t0: number,
   timeoutMs = CONNECTION_TEST_TIMEOUT_MS,
 ): Promise<ConnectionTestResult> {
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType → can't pick an auth path or fallback model. Return a
   // clear failure rather than crashing. Mirrors `isRealConnection`.
   if (!defaults) {
@@ -158,14 +159,18 @@ async function testConnectionStrict(
   }
   const auth = defaults.authKind;
   const secret = auth === 'none' ? '' : apiKey;
-  const testModel = resolveConnectionTestModel(connection, model, defaults.fallbackModels);
+  const testModel = resolveConnectionTestModel(
+    connection,
+    model,
+    providerFallbackModelIds(defaults),
+  );
 
   if (!testModel) {
     return { ok: false, errorMessage: 'No model to test' };
   }
   if (connection.providerType === 'opencode-free' && !model?.trim()) {
     const candidates = [
-      ...new Set([...connectionEnabledModelIds(connection), ...defaults.fallbackModels]),
+      ...new Set([...connectionEnabledModelIds(connection), ...providerFallbackModelIds(defaults)]),
     ];
     let lastFailure: ConnectionTestResult | undefined;
     for (let index = 0; index < candidates.length; index += 1) {
@@ -209,7 +214,7 @@ async function testConnectionModel(
   // A stored connection can still be opened long after its provider stopped
   // being offered, and the caller renders this result — so a retired provider
   // has to fail the test, not crash it.
-  if (PROVIDER_DEFAULTS[connection.providerType]?.runtimeAdapter.kind === 'unavailable') {
+  if (providerDefaultsOf(connection.providerType)?.runtimeAdapter.kind === 'unavailable') {
     return retiredProviderTestResult(connection.providerType);
   }
   const { adapter, baseUrl, wire } = resolveModelRuntime(connection, testModel);

@@ -43,6 +43,10 @@ test('deleting a parent task archives its linked subagent task', async ({
     name: `删除 "${PARENT_REMOVAL_PARENT_NAME}"`,
   });
   await expect(confirm).toBeVisible();
+  // The confirm warns that the linked subtask is kept and archived rather than
+  // destroyed, so the archived row that appears next is not a surprise. It names
+  // no count — the Host owns the exact number and reports it in the toast.
+  await expect(confirm.getByText(/子任务.*归档/)).toBeVisible();
   await confirm.getByRole('button', { name: '删除', exact: true }).click();
 
   await expect(parentRow).toHaveCount(0);
