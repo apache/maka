@@ -32,10 +32,10 @@ import {
 } from '@maka/ui';
 import type {
   CollaborationAccessQueryResult,
-  CollaborationInvitationPrepareResult,
   SessionCollaborationGrant,
   SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
+import type { DesktopSessionCollaborationPrepareResult } from '../preload/bridge-contract.js';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
 import { turnRequestStateLabel } from './session-turn-request-composer.js';
 
@@ -54,6 +54,11 @@ type CollaborationAuthorityState =
   | 'remote_access_off'
   | 'unavailable';
 
+type PreparedInvitation = Extract<
+  DesktopSessionCollaborationPrepareResult,
+  { readonly kind: 'prepared' }
+>['invitation'];
+
 export function SessionCollaborationDialog(props: Props) {
   return <ShareSessionDialog {...props} />;
 }
@@ -63,7 +68,7 @@ function ShareSessionDialog(props: Props) {
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
   const [access, setAccess] = useState<CollaborationAccessQueryResult>();
-  const [invitation, setInvitation] = useState<CollaborationInvitationPrepareResult>();
+  const [invitation, setInvitation] = useState<PreparedInvitation>();
   const [turnRequests, setTurnRequests] = useState<readonly SessionTurnAccessRequest[]>();
   const [authorityState, setAuthorityState] = useState<CollaborationAuthorityState>('loading');
   const [working, setWorking] = useState(false);
@@ -269,6 +274,21 @@ function ShareSessionDialog(props: Props) {
                     onChange={() => undefined}
                   />
                   <Text type="supporting" color="secondary">{copy.invitationHelp}</Text>
+                  {invitation.connectivity.kind === 'peer' ? (
+                    invitation.connectivity.coordinationRelayCount > 0 ? (
+                      <Banner
+                        status="success"
+                        title={copy.coordinationReady}
+                        description={copy.coordinationReadyBody}
+                      />
+                    ) : (
+                      <Banner
+                        status="warning"
+                        title={copy.coordinationUnavailable}
+                        description={copy.coordinationUnavailableBody}
+                      />
+                    )
+                  ) : null}
                   <Button variant="secondary" label={copy.copy} onClick={() => void copyInvitation()} />
                 </FormLayout>
               ) : (

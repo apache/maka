@@ -37,6 +37,12 @@ const ZH = {
     createInvitation: '创建邀请',
     invitationCode: '一次性邀请码',
     invitationHelp: '邀请码包含连接地址和访客凭据，不包含所有者凭据。',
+    coordinationReady: '已包含跨网络协调路径',
+    coordinationReadyBody:
+      'Runtime Host 已取得 Relay reservation；这能提高不同网络中的设备成功建立连接的机会。',
+    coordinationUnavailable: '尚未取得 Relay reservation',
+    coordinationUnavailableBody:
+      '这枚邀请码当前只包含直接路径，不同网络中的设备可能无法连接。可稍后撤销并重新创建。',
     copy: '复制邀请码',
     copied: '邀请码已复制',
     close: '完成',
@@ -109,6 +115,12 @@ const EN = {
     createInvitation: 'Create invitation',
     invitationCode: 'One-time invitation code',
     invitationHelp: 'The code contains the connection address and Guest credential, never the Owner credential.',
+    coordinationReady: 'Cross-network coordination is included',
+    coordinationReadyBody:
+      'The Runtime Host has obtained a Relay reservation, improving the chance that devices on different networks can connect.',
+    coordinationUnavailable: 'No Relay reservation yet',
+    coordinationUnavailableBody:
+      'This invitation currently contains direct routes only, so devices on different networks may not connect. Revoke and recreate it later.',
     copy: 'Copy invitation',
     copied: 'Invitation copied',
     close: 'Done',
