@@ -17,7 +17,6 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
 import { Service, type Context } from './plugin-kernel.js';
 import {
   MakaPluginRuntimeError,
@@ -51,7 +50,6 @@ export interface PluginToolInspection extends MakaContributionIdentity {
 
 export interface ResolvedPluginTools {
   readonly tools: readonly MakaTool[];
-  readonly revision: string;
 }
 
 export interface PluginToolServiceOptions {
@@ -110,22 +108,8 @@ export class PluginToolService extends Service {
       }
     }
     const entries = [...visible.values()].sort(compareRegistration);
-    const revision = createHash('sha256')
-      .update(
-        JSON.stringify(
-          entries.map(({ entryId, extensionId, generation, scopeId, definition }) => ({
-            entryId,
-            extensionId,
-            generation,
-            scopeId,
-            toolName: definition.name,
-          })),
-        ),
-      )
-      .digest('hex');
     return Object.freeze({
       tools: Object.freeze([...coreTools, ...entries.map(({ exposed }) => exposed)]),
-      revision,
     });
   }
 

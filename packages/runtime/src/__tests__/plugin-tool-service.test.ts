@@ -39,7 +39,6 @@ test('Profile tools are inherited and exact Session tools shadow them', async ()
   const beta = tools.resolve('beta', []);
   assert.equal(await invoke(alpha.tools[0]!), 'session');
   assert.equal(await invoke(beta.tools[0]!), 'profile');
-  assert.notEqual(alpha.revision, beta.revision);
   assert.deepEqual(changed, ['profile', 'session:alpha']);
 
   await loader.remove('session-entry');

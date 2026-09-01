@@ -109,7 +109,6 @@ export interface InteractiveRunComposerInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
-  readonly toolSourceRevisions?: readonly RunCompositionSourceRevision[];
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -185,7 +184,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       return Promise.resolve(
         Object.freeze({
           text: runProfile.systemPrompt,
-          sourceRevisions: Object.freeze([...(input.toolSourceRevisions ?? [])]),
+          sourceRevisions: Object.freeze([]),
         }),
       );
     }
@@ -241,7 +240,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               memoryRevision: promptState.memoryRevision,
               skillCatalogRevision: inventory.revision,
             }),
-            ...(input.toolSourceRevisions ?? []),
           ]),
         });
       })
@@ -276,7 +274,6 @@ export interface InteractiveRunComposerFactoryInput
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
   readonly resolvePluginTools?: (sessionId: string) => Promise<{
     readonly tools: readonly MakaTool[];
-    readonly revision: string;
   }>;
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
@@ -413,13 +410,6 @@ export function createInteractiveRunComposerFactory(
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),
-        ...(pluginTools
-          ? {
-              toolSourceRevisions: Object.freeze([
-                Object.freeze({ id: 'plugin.tools', revision: pluginTools.revision }),
-              ]),
-            }
-          : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
         ...(input.goalTools ? { goalTools: input.goalTools } : {}),
         ...(parentAgentTools ? { parentAgentTools } : {}),

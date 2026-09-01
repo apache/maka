@@ -56,23 +56,6 @@ test('Deep Research keeps standard inspection tools and its durable workspace to
   }
 });
 
-test('Plugin Tool revision is captured by the immutable Run prompt sources', async () => {
-  const composer = createFixtureComposer({
-    toolProfile: 'headless-coding-v1',
-    toolSourceRevisions: [{ id: 'plugin.tools', revision: 'catalog-revision' }],
-  });
-
-  const resolved = await composer.resolveSystemPrompt({
-    sessionId: 'session-one',
-    turnId: 'turn-one',
-    cwd: '/workspace',
-  });
-
-  assert.deepEqual(resolved.sourceRevisions, [
-    { id: 'plugin.tools', revision: 'catalog-revision' },
-  ]);
-});
-
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
 ) {
