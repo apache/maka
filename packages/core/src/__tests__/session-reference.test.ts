@@ -97,3 +97,16 @@ test('bounds a snapshot from the newest content and preserves truncation provena
   assert.equal(sessionSnapshotToQuote(snapshot).sourceCapturedAt, 456);
   assert.equal(sessionSnapshotToQuote(snapshot).sourceTruncated, true);
 });
+
+test('accounts for the role prefix when truncating a single item', () => {
+  const snapshot = createSessionSnapshot([user('last', 'latest message')], {
+    sessionId: 'session-source',
+    sessionName: 'Short budget',
+    maxChars: 10,
+  });
+
+  assert.equal(snapshot.items[0]?.text, 'late');
+  assert.equal(snapshot.text, 'User: late');
+  assert.ok(snapshot.text.length <= 10);
+  assert.doesNotMatch(snapshot.text, /User: User/);
+});
