@@ -56,6 +56,31 @@ test('Deep Research keeps standard inspection tools and its durable workspace to
   }
 });
 
+test('the composer resolves scoped Tool additions without rebuilding the backend', () => {
+  let additions: readonly MakaTool[] = [];
+  const dynamic = tool('dynamic_tool');
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+
+  assert.equal(
+    composer.tools.some(({ name }) => name === dynamic.name),
+    false,
+  );
+  additions = [dynamic];
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === dynamic.name),
+    true,
+  );
+});
+
+function tool(name: string): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: {},
+    impl: async () => name,
+  };
+}
+
 function createFixtureComposer(
   overrides: Partial<Parameters<typeof createInteractiveRunComposer>[0]> = {},
 ) {

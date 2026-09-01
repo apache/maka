@@ -43,6 +43,7 @@ import {
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
+import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   type BackendFactoryContext,
   type BackendPreparationContext,
@@ -326,9 +327,12 @@ async function buildHostAiSdkBackend(
     });
   };
   const recordRunComposition = input.context.recordRunComposition;
+  const resolveModelTools = (): readonly MakaTool[] =>
+    modelComposition.resolveTools?.() ?? modelComposition.tools;
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
         const resolved = await resolveRunPrompt(context);
+        const tools = resolveModelTools();
         await recordRunComposition(
           context.runId,
           createRunCompositionSnapshot({
@@ -336,10 +340,10 @@ async function buildHostAiSdkBackend(
             composerRevision: modelComposition.composerRevision,
             sourceRevisions: resolved.sourceRevisions,
             baseSystemPromptHash: stableHash(resolved.text ?? ''),
-            toolCatalogHash: toolCatalogHash(modelComposition.tools),
+            toolCatalogHash: toolCatalogHash(tools),
             toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
             baseProviderOptionsHash: stableHash(providerOptions),
-            toolNames: modelComposition.tools.map(({ name }) => name),
+            toolNames: tools.map(({ name }) => name),
             contextWindow: contextWindow ?? null,
           }),
         );
@@ -385,7 +389,8 @@ async function buildHostAiSdkBackend(
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...modelComposition.tools],
+        tools: [...resolveModelTools()],
+        resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
           ? { planTraceContext: modelComposition.planTraceContext }

@@ -278,18 +278,7 @@ export async function createExecutionRuntimeHostComposition(
   let manager: SessionManager | undefined;
   try {
     const pluginRoot = new Context();
-    const pluginTools = new PluginToolService(pluginRoot, {
-      onChanged: (rootId) => {
-        if (!manager) return;
-        const invalidation =
-          rootId === 'profile'
-            ? manager.refreshIdleBackends()
-            : rootId.startsWith('session:')
-              ? manager.refreshSessionBackend(rootId.slice('session:'.length))
-              : Promise.resolve();
-        void invalidation.catch(() => context.requestDrain());
-      },
-    });
+    const pluginTools = new PluginToolService(pluginRoot);
     pluginPlatform = new HostPluginPlatform(context.owner.controlDirectory, {
       composition: new MakaCompositionLoader({ root: pluginRoot }),
       tools: pluginTools,
@@ -708,7 +697,7 @@ export async function createExecutionRuntimeHostComposition(
         hostTools,
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-        resolvePluginTools: (sessionId) => Promise.resolve(pluginTools.resolve(sessionId, [])),
+        resolvePluginTools: (sessionId) => pluginTools.resolve(sessionId, []),
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,

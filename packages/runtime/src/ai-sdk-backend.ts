@@ -709,6 +709,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   // ── Process-singleton deps ─────────────────────────────────────────────
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
+  /** Trusted scoped catalog reader, sampled before every logical model step. */
+  resolveTools?: () => readonly MakaTool[];
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -1058,7 +1060,7 @@ export class AiSdkBackend implements AgentBackend {
   private readonly providerRetrySleep: (delayMs: number, signal: AbortSignal) => Promise<void>;
   private readonly modelAdapter: ModelAdapter;
   private readonly resolvedProviderOptions: Record<string, unknown>;
-  private readonly toolAvailabilityRuntime: ToolAvailabilityRuntime;
+  private readonly memoryTools: readonly MakaTool[];
   private readonly applyPatchProfile: ApplyPatchProfile | null;
 
   /** Bounds outstanding Code Mode cells on this backend. */
@@ -1143,7 +1145,7 @@ export class AiSdkBackend implements AgentBackend {
     ) {
       throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
     }
-    const memoryTools = input.memoryExtraction
+    this.memoryTools = input.memoryExtraction
       ? buildMemoryExtractionTriggerTools({
           capabilities: input.memoryExtraction,
           snapshot: (trigger, context) => this.memorySourceSnapshot(trigger, context),
@@ -1161,14 +1163,32 @@ export class AiSdkBackend implements AgentBackend {
       : [];
     const runtime = resolveModelRuntime(input.connection, input.modelId);
     this.applyPatchProfile = runtime.applyPatchProfile;
-    const modelTools = routeApplyPatchTools(input.tools, this.applyPatchProfile);
-    this.toolAvailabilityRuntime = new ToolAvailabilityRuntime(
-      // The archive decoder is a runtime protocol tool, not a host binding:
-      // this session's placeholders name it, so this session advertises it.
-      bindToolResultArchiveDecoder([...modelTools, ...memoryTools], input.toolResultArchive),
-      input.toolAvailability,
-      buildInvalidMakaTool(),
-    );
+  }
+
+  private snapshotToolAvailability(): {
+    readonly hostTools: readonly MakaTool[];
+    readonly runtime: ToolAvailabilityRuntime;
+  } {
+    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    if (
+      hostTools.some(
+        (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
+      )
+    ) {
+      throw new Error('Long-term Memory trigger tool names are reserved by Runtime');
+    }
+    const modelTools = routeApplyPatchTools(hostTools, this.applyPatchProfile);
+    return {
+      hostTools,
+      runtime: new ToolAvailabilityRuntime(
+        bindToolResultArchiveDecoder(
+          [...modelTools, ...this.memoryTools],
+          this.input.toolResultArchive,
+        ),
+        this.input.toolAvailability,
+        buildInvalidMakaTool(),
+      ),
+    };
   }
 
   private memorySourceSnapshot(
@@ -1650,15 +1670,34 @@ export class AiSdkBackend implements AgentBackend {
       throw new Error(`Invalid tool mode: ${String(requestedToolMode)}`);
     }
     const toolMode = requestedToolMode;
-    if (toolMode === 'code_mode' && this.input.tools.some((tool) => tool.name === 'exec')) {
-      throw new Error('Tool name "exec" is reserved for Code Mode.');
-    }
-    const plan = projectToolModePlan(
-      this.toolAvailabilityRuntime.prepare(scope.activeTools, requiredOrchestrationTools),
-      toolMode,
-      codeModeExecTool,
-    );
-    const providerTools = plan.providerTools;
+    const snapshotStepTools = () => {
+      const snapshot = this.snapshotToolAvailability();
+      if (toolMode === 'code_mode' && snapshot.hostTools.some((tool) => tool.name === 'exec')) {
+        throw new Error('Tool name "exec" is reserved for Code Mode.');
+      }
+      const stepPlan = projectToolModePlan(
+        snapshot.runtime.prepare(scope.activeTools, requiredOrchestrationTools),
+        toolMode,
+        codeModeExecTool,
+      );
+      const stepModelTools: ModelToolSet = {};
+      for (const tool of stepPlan.providerTools) {
+        stepModelTools[tool.name] = tool.providerTool
+          ? { kind: 'provider', providerTool: tool.providerTool }
+          : {
+              kind: 'function',
+              description: tool.description,
+              inputSchema: tool.parameters,
+            };
+      }
+      toolRuntime.setGating(stepPlan.gating);
+      return {
+        plan: stepPlan,
+        providerTools: stepPlan.providerTools,
+        modelTools: stepModelTools,
+      };
+    };
+    let { plan, providerTools, modelTools } = snapshotStepTools();
     let activeToolResultPruneDiagnosticPatch: ActiveToolResultPruneDiagnosticPatch = {};
     let midTurnCompactDiagnosticPatch: Partial<ContextBudgetDiagnostic> | undefined;
     // Tool names the repair path matches a mis-cased call against — follows the
@@ -1671,21 +1710,6 @@ export class AiSdkBackend implements AgentBackend {
         : [...names];
     };
     const currentRepairToolNames = () => boundaryAwareToolNames(plan.currentRepairToolNames());
-    if (plan.gating) {
-      toolRuntime.setGating(plan.gating);
-    }
-
-    const modelTools: ModelToolSet = {};
-    for (const t of providerTools) {
-      modelTools[t.name] = t.providerTool
-        ? { kind: 'provider', providerTool: t.providerTool }
-        : {
-            kind: 'function',
-            description: t.description,
-            inputSchema: t.parameters,
-          };
-    }
-
     // Resolve the stable Provider envelope before automatic Compaction freezes
     // its source. The same value is reused by the primary request; Memory does
     // not resolve or mutate Agent configuration after the checkpoint commits.
@@ -1955,23 +1979,6 @@ export class AiSdkBackend implements AgentBackend {
           );
         };
         const midTurnSystemPromptChars = systemPrompt?.length ?? 0;
-        const midTurnCapacityHook = this.compaction.buildMidTurnCapacityCompactProjection(
-          turnId,
-          midTurnState,
-          queue,
-          providerTools,
-          () => currentRepairToolNames(),
-          midTurnSystemPromptChars,
-          onMidTurnDiagnosticPatch,
-          scope,
-          this.automaticMemoryCompactionSupported()
-            ? () => this.automaticMemoryCompactionDecision()
-            : undefined,
-          this.automaticMemoryCompactionSupported()
-            ? (dispatch) => this.dispatchAutomaticMemoryCompaction(scope, dispatch)
-            : undefined,
-          turnAbortController.signal,
-        );
         // When mid-turn capacity compaction is active, the prune must also cover
         // the newest completed step; see collectPrunableCompletedStepToolCallIds.
         const activeToolResultPruneIncludesNewestStep = midTurnState !== undefined;
@@ -1985,15 +1992,32 @@ export class AiSdkBackend implements AgentBackend {
             );
           },
         );
-        const shapedProjection = composeRequestProjection(
-          plan.projectActiveTools,
-          midTurnCapacityHook,
-          activeToolResultPruneHook,
-        );
-        // The verdict owner wraps the WHOLE shaping pipeline: hooks shape, one
-        // owner measures the final payload and decides pass/terminate.
-        const requestProjection =
-          midTurnState && midTurnCapacityHook && shapedProjection
+        const buildRequestProjection = () => {
+          const midTurnCapacityHook = this.compaction.buildMidTurnCapacityCompactProjection(
+            turnId,
+            midTurnState,
+            queue,
+            providerTools,
+            () => currentRepairToolNames(),
+            midTurnSystemPromptChars,
+            onMidTurnDiagnosticPatch,
+            scope,
+            this.automaticMemoryCompactionSupported()
+              ? () => this.automaticMemoryCompactionDecision()
+              : undefined,
+            this.automaticMemoryCompactionSupported()
+              ? (dispatch) => this.dispatchAutomaticMemoryCompaction(scope, dispatch)
+              : undefined,
+            turnAbortController.signal,
+          );
+          const shapedProjection = composeRequestProjection(
+            plan.projectActiveTools,
+            midTurnCapacityHook,
+            activeToolResultPruneHook,
+          );
+          // The verdict owner wraps the WHOLE shaping pipeline: hooks shape,
+          // one owner measures the final payload and decides pass/terminate.
+          return midTurnState && midTurnCapacityHook && shapedProjection
             ? this.compaction.buildMidTurnFinalRequestVerdict({
                 shaped: shapedProjection,
                 reentry: composeRequestProjection(
@@ -2010,6 +2034,7 @@ export class AiSdkBackend implements AgentBackend {
                 abortController: turnAbortController,
               })
             : shapedProjection;
+        };
 
         const completedProviderSteps: RequestProjectionContext['completedSteps'][number][] = [];
         let requestMessages: ModelMessage[] = messages;
@@ -2019,6 +2044,8 @@ export class AiSdkBackend implements AgentBackend {
         let finishReason: ModelFinishReason = 'stop';
         let terminalProviderError: unknown;
         agentLoop: for (;;) {
+          ({ plan, providerTools, modelTools } = snapshotStepTools());
+          const requestProjection = buildRequestProjection();
           await this.drainSteeringInto(scope, input, queue);
           if (this.input.loadTurnRuntimeEvents) {
             requestMessages = await loadDurableTurnProjection();

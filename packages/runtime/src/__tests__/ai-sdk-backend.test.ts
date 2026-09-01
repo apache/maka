@@ -3952,6 +3952,84 @@ describe('AiSdkBackend model history', () => {
     assert.equal(artifactReads, 1);
   });
 
+  test('samples the scoped Tool catalog again before the next provider step', async () => {
+    const durable = durableTurnHarness('turn-dynamic-tools', 'register another tool');
+    const dynamicTool = testTool('dynamic_tool', z.object({}));
+    let surface: readonly MakaTool[];
+    const registerTool: MakaTool = {
+      name: 'register_tool',
+      description: 'register a dynamic tool',
+      parameters: z.object({}),
+      impl: async () => {
+        surface = [registerTool, dynamicTool];
+        return { registered: dynamicTool.name };
+      },
+    };
+    surface = [registerTool];
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: (calls === 1
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: 'register-call',
+                    toolName: registerTool.name,
+                    input: '{}',
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: emptyUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ]) as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [...surface],
+      resolveTools: () => surface,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(backend.send(durable.input()), durable);
+
+    const namesForRequest = (index: number): string[] => {
+      const tools = model.doStreamCalls[index]?.tools ?? [];
+      return Array.isArray(tools)
+        ? tools.flatMap((tool) =>
+            tool && typeof tool === 'object' && 'name' in tool ? [String(tool.name)] : [],
+          )
+        : Object.keys(tools);
+    };
+    assert.equal(namesForRequest(0).includes(dynamicTool.name), false);
+    assert.equal(namesForRequest(1).includes(dynamicTool.name), true);
+  });
+
   test('reloads durable multi-tool settlement before terminal continuation', async () => {
     const anchor = runtimeTextEvent({
       id: 'runtime-user',
@@ -9696,11 +9774,15 @@ describe('AiSdkBackend RunTrace', () => {
   test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
     const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
+    const stableTool = testTool('stable_tool', z.object({}));
+    const retryOnlyTool = testTool('retry_only_tool', z.object({}));
+    let surface: readonly MakaTool[] = [stableTool];
     let calls = 0;
     const model = new MockLanguageModelV4({
       doStream: async () => {
         calls += 1;
         if (calls === 1) {
+          surface = [stableTool, retryOnlyTool];
           throw new APICallError({
             message: 'retry me',
             url: 'https://provider.invalid/v1/messages',
@@ -9736,7 +9818,8 @@ describe('AiSdkBackend RunTrace', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [...surface],
+      resolveTools: () => surface,
       newId: idGenerator(),
       now: monotonicClock(),
       persistPreparedRequestArtifact: async (capture) => {
@@ -9752,6 +9835,16 @@ describe('AiSdkBackend RunTrace', () => {
     await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(calls, 2);
+    assert.equal(
+      model.doStreamCalls.every((call) =>
+        Array.isArray(call.tools)
+          ? call.tools.every(
+              (tool) => !('name' in tool) || String(tool.name) !== retryOnlyTool.name,
+            )
+          : !(retryOnlyTool.name in (call.tools ?? {})),
+      ),
+      true,
+    );
     assert.equal(captures.length, 1);
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),

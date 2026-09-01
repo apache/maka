@@ -73,7 +73,7 @@ export class PluginToolService extends Service {
     this.onChanged = options.onChanged;
   }
 
-  register(definition: MakaTool): void {
+  register(definition: MakaTool): () => Promise<void> {
     const identity = pluginIdentity(this.ctx);
     if (identity.scopeId === 'desktop-ui') {
       throw new MakaPluginRuntimeError(
@@ -82,8 +82,10 @@ export class PluginToolService extends Service {
       );
     }
     validateTool(definition);
-    registerPluginContribution(this.ctx, `tools.register(${JSON.stringify(definition.name)})`, () =>
-      this.publish(identity, definition),
+    return registerPluginContribution(
+      this.ctx,
+      `tools.register(${JSON.stringify(definition.name)})`,
+      () => this.publish(identity, definition),
     );
   }
 
@@ -178,7 +180,14 @@ export class PluginToolService extends Service {
       drainWaiters: new Set(),
     };
     layer.set(definition.name, entry);
-    this.onChanged?.(rootId);
+    try {
+      this.notifyChanged(rootId);
+    } catch (error) {
+      if (existing) layer.set(definition.name, existing);
+      else layer.delete(definition.name);
+      if (layer.size === 0) this.layers.delete(rootId);
+      throw error;
+    }
 
     return async () => {
       entry.retired = true;
@@ -187,12 +196,17 @@ export class PluginToolService extends Service {
         if (existing && !existing.retired) currentLayer.set(definition.name, existing);
         else currentLayer.delete(definition.name);
         if (currentLayer.size === 0) this.layers.delete(rootId);
-        this.onChanged?.(rootId);
+        this.notifyChanged(rootId);
       }
       if (entry.activeCalls > 0) {
         await new Promise<void>((resolve) => entry.drainWaiters.add(resolve));
       }
     };
+  }
+
+  private notifyChanged(rootId: MakaPluginRootId): void {
+    this.ctx.emit('tools/change');
+    this.onChanged?.(rootId);
   }
 }
 

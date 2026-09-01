@@ -27,7 +27,11 @@ import type { MakaTool } from '../tool-runtime.js';
 
 test('Profile tools are inherited and exact Session tools shadow them', async () => {
   const changed: string[] = [];
+  let eventCount = 0;
   const root = new Context();
+  root.on('tools/change', () => {
+    eventCount += 1;
+  });
   const tools = new PluginToolService(root, { onChanged: (rootId) => changed.push(rootId) });
   const loader = new MakaCompositionLoader({ root });
   await loader.install(toolPackage('profile-package', tool('answer', 'profile')));
@@ -43,6 +47,7 @@ test('Profile tools are inherited and exact Session tools shadow them', async ()
 
   await loader.remove('session-entry');
   assert.equal(await invoke(tools.resolve('alpha', []).tools[0]!), 'profile');
+  assert.equal(eventCount, 3);
   await loader.close();
 });
 
@@ -63,6 +68,45 @@ test('Tool publication is atomic with Entry activation', async () => {
     /activation failed/u,
   );
   assert.deepEqual(tools.inspect(), []);
+  assert.deepEqual(tools.resolve('alpha', []).tools, []);
+  await loader.close();
+});
+
+test('a failing tools/change listener rolls registration back atomically', async () => {
+  const root = new Context();
+  root.on('tools/change', () => {
+    throw new Error('change rejected');
+  });
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(toolPackage('rejected-package', tool('rejected', 'never-visible')));
+
+  await assert.rejects(
+    () => loader.create('profile', { id: 'rejected-entry', packageId: 'rejected-package' }),
+    /change rejected/u,
+  );
+  assert.deepEqual(tools.inspect(), []);
+  await loader.close();
+});
+
+test('ctx.tools.register returns a live disposer', async () => {
+  let dispose!: () => Promise<void>;
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install({
+    packageId: 'dynamic-package',
+    host: (ctx) => {
+      dispose = ctx.tools.register(tool('dynamic', 'visible'));
+    },
+  });
+  await loader.create('profile', { id: 'dynamic-entry', packageId: 'dynamic-package' });
+
+  assert.deepEqual(
+    tools.resolve('alpha', []).tools.map(({ name }) => name),
+    ['dynamic'],
+  );
+  await dispose();
   assert.deepEqual(tools.resolve('alpha', []).tools, []);
   await loader.close();
 });
