@@ -673,12 +673,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </HStack>
         <AddModelDialog
           isOpen={addModelOpen}
-          /* The catalog, not just the selection: `models` is usually a proper
-             superset of what the user enabled. Checking only the selection lets
-             a listed-but-unchecked id through, and the dialog then requires a
-             hand-typed context window that overrides the one Maka already
-             knows. */
-          existingModelIds={[...enabledModelIds, ...(connection.models ?? []).map(({ id }) => id)]}
+          /* The catalog, not just the selection: the resolved entries are
+             usually a proper superset of what the user enabled. Checking only
+             the selection lets a listed-but-unchecked id through, and the dialog
+             then requires a hand-typed context window that overrides the one
+             Maka already knows. The entries rather than the stored rows, so a
+             provider that ships its inventory instead of storing it still
+             answers "already known" for every model it offers. */
+          existingModelIds={modelChoices.map(({ id }) => id)}
           /* A write started after the dialog opened would make the store drop
              this submission silently, taking the typed id with it. */
           isSubmitDisabled={allActionsBusy}

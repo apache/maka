@@ -674,8 +674,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         // took — and hides that their chosen model is currently down. Name both
         // facts instead.
         const testedId = result.modelTested;
+        // The resolved entries, not the draft rows: a provider with no
+        // model-list endpoint stores bare ids, so naming the tested model from
+        // `models` printed a raw id next to the picker's resolved name.
         const modelLabel = (id: string): string =>
-          models.find((model) => model.id === id)?.displayName ?? id;
+          modelChoices.find((entry) => entry.id === id)?.displayName?.trim() || id;
         // Inline the `testedId !== undefined` check so it narrows `testedId` to
         // string for `modelLabel(testedId)` below.
         if (

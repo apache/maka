@@ -20,7 +20,7 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { LlmConnection } from '@maka/core/llm-connections';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { StoredMessage } from '@maka/core/session';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import { createAppShellSessionSettingsActions } from '../../renderer/app-shell-session-settings-actions.js';
@@ -63,7 +63,7 @@ function pendingClaimOver(state: Record<string, boolean>): SessionPendingClaim {
 
 function createHarness(options: {
   confirm?: () => Promise<boolean>;
-  connections?: LlmConnection[];
+  connections?: ProjectedLlmConnection[];
   messages?: StoredMessage[];
   permissionModeResult?: 'ask' | 'bypass';
 } = {}) {
@@ -111,7 +111,7 @@ function createHarness(options: {
   const actions = createAppShellSessionSettingsActions({
     uiLocale: 'zh',
     activeIdRef,
-    connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E' }] as LlmConnection[]),
+    connections: options.connections ?? ([{ slug: 'e2e', name: 'E2E', catalogEntries: [] }] as unknown as ProjectedLlmConnection[]),
     messages: options.messages ?? [],
     permissionModePending: pendingClaimOver(permissionModePending),
     sessionModelPending: pendingClaimOver(sessionModelPending),
@@ -278,9 +278,9 @@ describe('AppShell session settings actions', () => {
   it('includes connection names when a switch rebinds the connection', async () => {
     const harness = createHarness({
       connections: [
-        { slug: 'e2e', name: 'Primary' },
-        { slug: 'relay', name: 'Relay' },
-      ] as LlmConnection[],
+        { slug: 'e2e', name: 'Primary', catalogEntries: [] },
+        { slug: 'relay', name: 'Relay', catalogEntries: [] },
+      ] as unknown as ProjectedLlmConnection[],
     });
 
     const modelChange = harness.actions.setSessionModel({

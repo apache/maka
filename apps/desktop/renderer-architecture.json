@@ -739,7 +739,7 @@
           "@maka/core/ui-locale": 1
         },
         "importSpecifiers": 11,
-        "nonTriviaTokens": 1267
+        "nonTriviaTokens": 1264
       },
       "src/renderer/app-shell-session-start-actions.ts": {
         "importDeclarations": 7,
