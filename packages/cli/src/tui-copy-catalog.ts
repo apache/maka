@@ -18,6 +18,34 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  copy: {
+    en: {
+      copiedLast:
+        'Sent the last reply to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
+      copiedAll:
+        'Sent the conversation to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
+      tooLarge:
+        'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; a larger payload is silently dropped by the terminal.',
+      nothingToCopy: 'Nothing to copy yet.',
+      roleUser: 'You:',
+      roleAssistant: 'Maka:',
+      roleGoalContinuation: 'Goal continuation (autonomous):',
+      roleLegacyAutomation: 'Legacy automation (history only):',
+    },
+    zh: {
+      copiedLast:
+        '已将最后一条回复发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
+      copiedAll:
+        '已将整段对话发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
+      tooLarge:
+        '内容过大，无法复制 · {bytes} 字节超过 {limit} 字节上限；更大的内容会被终端静默丢弃。',
+      nothingToCopy: '暂无可复制的内容。',
+      roleUser: '你：',
+      roleAssistant: 'Maka：',
+      roleGoalContinuation: '目标续跑（自主）：',
+      roleLegacyAutomation: '旧版自动化（仅历史）：',
+    },
+  },
   'mcp-status': {
     en: {
       title: 'MCP SERVERS',
@@ -405,6 +433,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: 'Compact session context',
         context: 'Show latest request context usage',
+        copy: 'Copy the last reply (or /copy all) to the clipboard',
         exit: 'Exit Maka',
         goal: 'Show autonomous goal status',
         graph: 'Show, enable, disable, or run one Graph turn',
@@ -455,6 +484,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: '压缩会话上下文',
         context: '查看最近一次请求的上下文用量',
+        copy: '复制最后一条回复（或 /copy all）到剪贴板',
         exit: '退出 Maka',
         goal: '查看自主目标状态',
         graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',

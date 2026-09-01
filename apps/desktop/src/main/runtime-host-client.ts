@@ -496,6 +496,18 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  verifyConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
+  saveConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.save">,
+  ): Promise<OperationOutput<"connection.onboarding.save">> {
+    return this.request("connection.onboarding.save", input);
+  }
+
   startOAuthLogin(
     attemptId: string,
     target: OperationInput<"oauth.login.start">["target"],

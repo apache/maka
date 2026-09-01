@@ -86,6 +86,20 @@ export type ConnectionAuth =
   | { kind: 'oauth_token'; oauthToken: string; expiresAt?: number }
   | { kind: 'none' };
 
+/**
+ * The modalities a model may declare on either side. Every validator that
+ * admits a modality reads this one set: a decoder, an overlay normalizer, and
+ * a live-fetch reader each holding their own copy is how one of them stayed a
+ * catalog behind the others.
+ */
+export type ModelModality = 'text' | 'image' | 'audio' | 'pdf' | 'video';
+
+const MODEL_MODALITIES: readonly ModelModality[] = ['text', 'image', 'audio', 'pdf', 'video'];
+
+export function isModelModality(value: unknown): value is ModelModality {
+  return MODEL_MODALITIES.includes(value as ModelModality);
+}
+
 export interface ModelInfo {
   id: string;
   displayName?: string;
@@ -116,8 +130,8 @@ export interface ModelInfo {
   };
   /** Multimodal input/output support from provider catalog metadata. */
   modalities?: {
-    input: Array<'text' | 'image' | 'audio' | 'pdf'>;
-    output: Array<'text' | 'image' | 'audio'>;
+    input: ModelModality[];
+    output: ModelModality[];
   };
   /**
    * Read-time provenance for values overlaid from model-facts.json. This is

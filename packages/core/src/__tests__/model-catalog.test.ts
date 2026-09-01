@@ -112,19 +112,28 @@ test('a declared output modality without text rules a model out of chat', () => 
     modelSource: 'fetched' as const,
   };
   assert.deepEqual(verdict(audioOnly), { ok: false });
-});
 
-test('an empty output modality list is not evidence against chat', () => {
-  // `modalities.output` is typed to text, image, and audio, so a video model's
-  // real output has no representation and serializes as `[]` — the same shape
-  // a generator bug would produce. Blocking on it would be guessing.
-  const video = {
+  // Video-only says exactly what the other two say. It could not be read at
+  // all until `modalities.output` could carry the value.
+  const videoOnly = {
     providerType: 'google' as const,
     defaultModel: 'gemini-omni-flash-preview',
     models: [{ id: 'gemini-omni-flash-preview' }],
     modelSource: 'fetched' as const,
   };
-  assert.deepEqual(verdict(video), { ok: true });
+  assert.deepEqual(verdict(videoOnly), { ok: false });
+});
+
+test('an empty output modality list is not evidence against chat', () => {
+  // A provider that declared no output modality and a generator bug that
+  // dropped them produce the same shape. Blocking on it would be guessing.
+  const undeclared = {
+    providerType: 'openai-compatible' as const,
+    defaultModel: 'relay-quiet',
+    models: [{ id: 'relay-quiet', modalities: { input: ['text' as const], output: [] } }],
+    modelSource: 'fetched' as const,
+  };
+  assert.deepEqual(verdict(undeclared), { ok: true });
 });
 
 test('an explicit chat capability outranks the declared output modality', () => {

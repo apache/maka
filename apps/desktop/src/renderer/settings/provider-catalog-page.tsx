@@ -39,8 +39,12 @@ import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
-import { type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import {
+  getProviderSettingsCopy,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
 
 type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 
@@ -225,10 +229,14 @@ export function ProviderCatalogPage(props: {
  */
 export function ProviderSetupPage(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   target: SetupTarget;
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
+  onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
+  onOnboardingOutcomeUnknown?(): Promise<void>;
+  hasSaveUncertainty?: boolean;
   onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
   labelledBy?: string;
 }) {
@@ -244,10 +252,14 @@ export function ProviderSetupPage(props: {
       <AddProviderForm
         key={props.target.providerType}
         bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
         providerType={props.target.providerType}
         existingSlugs={props.existingSlugs}
         onCancel={props.onCancel}
         onCreated={props.onCreated}
+        onOnboarded={props.onOnboarded}
+        onOnboardingOutcomeUnknown={props.onOnboardingOutcomeUnknown}
+        hasSaveUncertainty={props.hasSaveUncertainty}
       />
     </div>
   );

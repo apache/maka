@@ -18,6 +18,7 @@
  */
 
 import { providerDefaultsOf, type ProviderType } from './provider-registry.js';
+import { isModelModality } from './llm-connections.js';
 import type { ModelFactField, ModelInfo } from './llm-connections.js';
 import {
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
@@ -193,8 +194,8 @@ function normalizeModalities(value: unknown): NonNullable<ModelFactOverride['mod
   if (!isRecord(value)) throw new Error('Invalid modalities');
   if (value.input === undefined && value.output === undefined)
     throw new Error('Invalid modalities');
-  const input = normalizeModalityDirection(value.input, isModality);
-  const output = normalizeModalityDirection(value.output, isOutputModality);
+  const input = normalizeModalityDirection(value.input, isModelModality);
+  const output = normalizeModalityDirection(value.output, isModelModality);
   return {
     ...(input === undefined ? {} : { input }),
     ...(output === undefined ? {} : { output }),
@@ -212,12 +213,6 @@ function normalizeModalityDirection<T extends string>(
   return [...new Set(entries)];
 }
 
-function isModality(value: unknown): value is 'text' | 'image' | 'audio' | 'pdf' {
-  return value === 'text' || value === 'image' || value === 'audio' || value === 'pdf';
-}
-function isOutputModality(value: unknown): value is 'text' | 'image' | 'audio' {
-  return value === 'text' || value === 'image' || value === 'audio';
-}
 function isPositiveBoundedInteger(value: unknown): value is number {
   return (
     typeof value === 'number' &&

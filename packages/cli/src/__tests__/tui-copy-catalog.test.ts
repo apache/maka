@@ -27,6 +27,7 @@ const MESSAGE_VALUES = {
   count: 2,
   detail: 'HTTP 401',
   hasDetail: true,
+  bytes: 40_000,
   serverId: 'filesystem',
   names: 'Alpha',
   failures: '/skill:nope (not found)',

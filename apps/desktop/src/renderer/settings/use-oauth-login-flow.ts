@@ -26,7 +26,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { createOneShotActionGuard, teardownPendingAuthorization } from './oauth-login-flow-guard';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { getProviderSettingsCopy } from '../features/connection-settings';
 import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Shared browser-assisted OAuth login-flow controller (device-code polling).

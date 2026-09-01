@@ -66,7 +66,7 @@ import { useOptimisticSettingsDraft } from "./use-optimistic-settings-draft";
 import { getSettingsPreferencesCopy } from "../locales/settings-preferences-copy.js";
 import { settingsTestResultMessage } from "../locales/settings-test-result-copy.js";
 import { getShellCopy } from "../locales/shell-copy.js";
-import type { RuntimeHostSettingsConnectionsBridge } from './runtime-host-settings-bridge.js';
+import type { RuntimeHostSettingsConnectionsBridge } from '../features/connection-settings';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
   useOptionalRuntimeHostSettingsTarget,

@@ -28,7 +28,6 @@ export interface ModelMetadata {
   displayName?: string;
   description?: string;
   lifecycle?: 'active' | 'beta' | 'alpha' | 'deprecated' | 'retired';
-  docsUrl?: string;
   contextWindow?: number;
   inputLimit?: number;
   maxOutputTokens?: number;
@@ -242,8 +241,6 @@ const SILICONFLOW_MODEL_OVERRIDES: Record<string, ModelMetadata> = Object.fromEn
     .map(([id]) => [id, { capabilities: { chat: true } }]),
 );
 
-const VOLCENGINE_CODING_PLAN_DOCS = 'https://www.volcengine.com/docs/82379/1925114';
-const VOLCENGINE_AGENT_PLAN_DOCS = 'https://www.volcengine.com/docs/82379/2366394';
 const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': planModel('Ark Code Latest', false),
   'doubao-seed-2.0-code': planModel('Doubao Seed 2.0 Code', true),
@@ -351,7 +348,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
     'doubao-seed-2-0-pro-260215': {
       displayName: 'Doubao Seed 2.0 Pro',
       lifecycle: 'active',
-      docsUrl: 'https://www.volcengine.com/docs/82379',
       capabilities: { reasoning: true, functionCalling: true },
       thinkingOptions: {
         efforts: ['minimal', 'low', 'medium', 'high'],
@@ -413,7 +409,6 @@ const STATIC_MODEL_METADATA: Partial<Record<ProviderType, Record<string, ModelMe
       displayName: 'DeepSeek-V4-Flash-Vision-Exp',
       description:
         'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
-      docsUrl: 'https://api-docs.deepseek.com/guides/vision/',
       contextWindow: 1_000_000,
       maxOutputTokens: 384_000,
       structuredOutput: true,
@@ -443,7 +438,6 @@ function planModel(
   return {
     displayName,
     lifecycle: 'active',
-    docsUrl: VOLCENGINE_CODING_PLAN_DOCS,
     ...(contextWindow === undefined ? {} : { contextWindow }),
     ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
     capabilities: { ...REASONING_FUNCTION_CALLING, vision },
@@ -462,7 +456,6 @@ function agentPlanModel(
   return {
     displayName,
     lifecycle: options.lifecycle ?? 'active',
-    docsUrl: VOLCENGINE_AGENT_PLAN_DOCS,
     contextWindow,
     maxOutputTokens,
     capabilities: {
@@ -483,7 +476,6 @@ function displayMetadataOnly(
         displayName: metadata.displayName,
         ...(metadata.description !== undefined ? { description: metadata.description } : {}),
         lifecycle: metadata.lifecycle,
-        docsUrl: metadata.docsUrl,
         ...(metadata.knowledgeCutoff !== undefined
           ? { knowledgeCutoff: metadata.knowledgeCutoff }
           : {}),

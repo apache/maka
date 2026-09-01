@@ -21,20 +21,20 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
   ConnectionTestResult,
   IdentifiedLlmConnection,
   LlmConnection,
-  ModelDiscoveryResult,
   ProviderType,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
+import type { ApiKeyOnboardingBridge } from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
@@ -247,16 +247,24 @@ const oauthConnections = [
   }),
 ];
 
+interface StoryConnectionsBridge extends ConnectionsBridge {
+  addFixtureConnection(connection: ProjectedLlmConnection): void;
+}
+
 function createBridge(input: {
   connections?: ProjectedLlmConnection[];
   defaultSlug?: string | null;
   failLoad?: boolean;
   loading?: boolean;
-}): ConnectionsBridge {
+}): StoryConnectionsBridge {
   let connections = [...(input.connections ?? [])];
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
+    addFixtureConnection(connection) {
+      connections = [...connections, connection];
+      defaultSlug ??= connection.slug;
+    },
     async getSnapshot() {
       if (input.loading) return new Promise<never>(() => undefined);
       if (input.failLoad) throw new Error('模型连接服务暂时不可用');
@@ -318,14 +326,13 @@ function createBridge(input: {
       }
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
-    async fetchModels(identity): Promise<ModelDiscoveryResult> {
+    async fetchModels(identity) {
       return {
         models: [
           { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
           { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
         ],
         source: 'fetched',
-        fetchedAt: NOW,
       };
     },
     async hasSecret() {
@@ -341,6 +348,112 @@ function createBridge(input: {
       return () => undefined;
     },
   };
+}
+
+function createApiKeyOnboardingFixture(options: {
+  save?: 'saved' | 'outcome_unknown' | 'auth_failed';
+  failRefreshAfterSave?: boolean;
+  emptyCatalog?: boolean;
+} = {}) {
+  const bridge = createBridge({
+    connections: options.emptyCatalog
+      ? []
+      : [
+          ...configuredConnections,
+          makeConnection({
+            slug: 'deepseek',
+            name: 'DeepSeek',
+            providerType: 'deepseek',
+            defaultModel: 'deepseek-chat',
+          }),
+        ],
+    defaultSlug: options.emptyCatalog ? undefined : 'zai-live',
+  });
+  let failNextSnapshot = false;
+  const projectedBridge: ConnectionsBridge = {
+    ...bridge,
+    async getSnapshot() {
+      if (failNextSnapshot) {
+        failNextSnapshot = false;
+        throw new Error('模型连接服务暂时不可用');
+      }
+      return bridge.getSnapshot();
+    },
+  };
+  let uncertainAttemptId: number | undefined;
+  let nextAttemptId = 1;
+  const uncertaintyListeners = new Set<() => void>();
+  const settleUncertainty = (attemptId: number) => {
+    if (uncertainAttemptId !== attemptId) return;
+    uncertainAttemptId = undefined;
+    for (const listener of [...uncertaintyListeners]) listener();
+  };
+  const apiKeyOnboardingBridge: ApiKeyOnboardingBridge = {
+    saveUncertainty: {
+      getSnapshot: () => uncertainAttemptId !== undefined,
+      subscribe: (listener) => {
+        uncertaintyListeners.add(listener);
+        return () => uncertaintyListeners.delete(listener);
+      },
+      restart: () => {
+        if (uncertainAttemptId === undefined) return;
+        uncertainAttemptId = undefined;
+        for (const listener of [...uncertaintyListeners]) listener();
+      },
+    },
+    async verify() {
+      return {
+        kind: 'verified',
+        models: [
+          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+        ],
+      };
+    },
+    async save() {
+      const attemptId = nextAttemptId++;
+      const wasUncertain = uncertainAttemptId !== undefined;
+      uncertainAttemptId = attemptId;
+      if (!wasUncertain) {
+        for (const listener of [...uncertaintyListeners]) listener();
+      }
+      if (options.save === 'outcome_unknown') return { kind: 'outcome_unknown' };
+      if (options.save === 'auth_failed') {
+        settleUncertainty(attemptId);
+        return {
+          kind: 'result',
+          result: { kind: 'failed', errorClass: 'auth' },
+        };
+      }
+      const connection = makeConnection({
+        slug: 'deepseek-2',
+        name: 'DeepSeek',
+        providerType: 'deepseek',
+        defaultModel: '',
+        models: [
+          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+        ],
+        modelSource: 'fetched',
+      });
+      bridge.addFixtureConnection(connection);
+      failNextSnapshot = options.failRefreshAfterSave === true;
+      settleUncertainty(attemptId);
+      return {
+        kind: 'result',
+        result: {
+          kind: 'saved',
+          connection: {
+            connectionId: connection.connectionId,
+            revision: 1,
+            slug: connection.slug,
+            providerType: connection.providerType,
+          },
+        },
+      };
+    },
+  };
+  return { bridge: projectedBridge, apiKeyOnboardingBridge };
 }
 
 function createOAuthSuccessLifecycleFixture() {
@@ -451,6 +564,7 @@ function browserSubscriptionFixture(state: {
 
 function ProviderStoryFrame(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   autoOpen?: AutoOpenTarget;
   onOAuthComplete?: () => void;
 }) {
@@ -513,7 +627,10 @@ function ProviderStoryFrame(props: {
             content={(
               <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
-                  <ProvidersPanel bridge={props.bridge} />
+                  <ProvidersPanel
+                    bridge={props.bridge}
+                    apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
+                  />
                 </SettingsPage>
               </LayoutContent>
             )}
@@ -590,14 +707,29 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
 
 function ProviderStory(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   autoOpen?: AutoOpenTarget;
   onOAuthComplete?: () => void;
 }): ReactNode {
   return (
     <RuntimeHostSettingsTarget host={{ profileId: 'local', hostId: 'storybook-local-host' }}>
-      <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} onOAuthComplete={props.onOAuthComplete} />
+      <ProviderStoryFrame
+        bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
+        autoOpen={props.autoOpen}
+        onOAuthComplete={props.onOAuthComplete}
+      />
     </RuntimeHostSettingsTarget>
   );
+}
+
+async function findApiKeyInput(canvasElement: HTMLElement): Promise<HTMLInputElement> {
+  let input: HTMLInputElement | null = null;
+  await waitFor(() => {
+    input = canvasElement.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+  }, { timeout: 5_000 });
+  return input!;
 }
 
 // Real path: same page with several healthy connections and one of them set as default.
@@ -771,4 +903,181 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint
+// API-key path is Host-owned before any write happens.
+export const ApiKeyOnboardingInput: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+};
+
+export const ApiKeyOnboardingModels: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await expect(canvas.findByText('选择此连接使用的模型')).resolves.toBeTruthy();
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingBackInvalidatesVerification: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const key = await findApiKeyInput(canvasElement);
+    await userEvent.type(key, 'sk-first');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '返回修改' }));
+    await userEvent.clear(await findApiKeyInput(canvasElement));
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-second');
+    await expect(canvas.queryByText('选择此连接使用的模型')).toBeNull();
+    await expect(canvas.findByRole('button', { name: '验证并选择模型' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingAdoptsExactConnection: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByRole('region', { name: 'DeepSeek · deepseek-2' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingRefreshWarning: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ failRefreshAfterSave: true });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByText('连接已添加，但暂时无法刷新连接列表。')).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingOutcomeUnknown: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ save: 'outcome_unknown' });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByText('保存结果暂时无法确认')).resolves.toBeTruthy();
+    await userEvent.click(await canvas.findByRole('button', { name: '重新加载连接列表' }));
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeDisabled();
+    await expect(canvas.findByRole('button', { name: '仍要添加另一个连接' })).resolves.toBeTruthy();
+    const row = canvasElement.querySelector<HTMLElement>('[data-connection-slug="deepseek"]');
+    await expect(row).not.toBeNull();
+    await userEvent.click(within(row!).getByRole('button'));
+    await userEvent.click(await canvas.findByRole('button', { name: '返回模型连接' }));
+    await expect(canvas.findByText('保存结果暂时无法确认')).resolves.toBeTruthy();
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeDisabled();
+  },
+};
+
+export const ApiKeyOnboardingOutcomeUnknownEmptyCatalog: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({
+      save: 'outcome_unknown',
+      emptyCatalog: true,
+    });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '重新加载连接列表' }));
+    const addButtons = await canvas.findAllByRole('button', { name: '添加连接' });
+    for (const button of addButtons) await expect(button).toBeDisabled();
+  },
+};
+
+export const ApiKeyOnboardingSaveAuthFailure: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ save: 'auth_failed' });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    const key = await findApiKeyInput(canvasElement);
+    await waitFor(() => {
+      expect(canvas.queryAllByText('密钥验证失败，请检查后重试。')).toHaveLength(1);
+    });
+    await expect(key).toHaveValue('sk-storybook');
+  },
 };

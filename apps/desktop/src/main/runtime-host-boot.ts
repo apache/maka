@@ -30,7 +30,7 @@ import {
 } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
@@ -77,7 +77,7 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
-import { readFileCapped } from "./attachment-ingest.js";
+import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
@@ -1757,13 +1757,10 @@ function registerPersistentClientIpc(): void {
     if (result.canceled || !result.filePaths[0])
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
-    const chosen = await Promise.all(
-      result.filePaths.map(async (path) => ({
-        path,
-        name: basename(path),
-        size: (await stat(path)).size,
-      })),
-    );
+    // Route by content, not the extension: each picked path is staged under the
+    // kind its sniffed MIME implies, so a real image named `report.pdf` previews
+    // and triggers the vision notice, and a disguised file does neither.
+    const chosen = await resolvePickedAttachments(result.filePaths, (path) => stat(path));
     return {
       ok: true,
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
