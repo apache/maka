@@ -489,7 +489,11 @@ test('exact pending cancellation removes only the linked Message', async () => {
   await submit(fixture, 'unrelated-message', 'keep this queued', 'next_turn');
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'first-claim',
+    ),
     { kind: 'cancelled_pending' },
   );
   assert.deepEqual(
@@ -497,7 +501,11 @@ test('exact pending cancellation removes only the linked Message', async () => {
     ['unrelated-message'],
   );
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'second-claim',
+    ),
     { kind: 'cancelled' },
   );
 });
@@ -538,7 +546,11 @@ test('a consumed steering Message cannot claim ownership of its pre-existing roo
   fixture.events.push(steeringEvent('linked-message', 'wrong delegation'));
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
     {
       kind: 'shared_turn',
       turnId: ROOT.turnId,
@@ -555,7 +567,11 @@ test('a root source Message owns only the root Turn it created', async () => {
   );
 
   assert.deepEqual(
-    await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, 'linked-message'),
+    await fixture.coordinator.cancelMessageIfPending(
+      ROOT.sessionId,
+      'linked-message',
+      'stop-claim',
+    ),
     {
       kind: 'owned_root',
       turnId: 'durable-turn',
@@ -579,11 +595,14 @@ test('a recovered multi-source successor remains shared by every source Message'
   });
 
   for (const messageId of ['linked-message', 'other-message']) {
-    assert.deepEqual(await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, messageId), {
-      kind: 'shared_turn',
-      turnId: 'durable-turn',
-      runId: 'durable-run',
-    });
+    assert.deepEqual(
+      await fixture.coordinator.cancelMessageIfPending(ROOT.sessionId, messageId, 'stop-claim'),
+      {
+        kind: 'shared_turn',
+        turnId: 'durable-turn',
+        runId: 'durable-run',
+      },
+    );
   }
 });
 

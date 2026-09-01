@@ -21,6 +21,9 @@ import { createHash } from 'node:crypto';
 import type {
   SessionHeader,
   SessionStatus,
+  WorkHubActionClaim,
+  WorkHubActionClaimOutcome,
+  WorkHubActionOperation,
   WorkHubDelegationAssignedMessage,
   WorkHubDelegationCreateSpec,
   WorkHubDelegationDisposition,
@@ -73,6 +76,18 @@ export type WorkHubActionGateSession = Pick<
 
 export interface WorkHubActionGateEffects {
   listSessions(): Promise<readonly WorkHubActionGateSession[]>;
+  /**
+   * Durably binds this action identity to one exact operation before any
+   * effect. Every other WorkHub record is keyed by the delegation or the
+   * assignment it describes, so this is the only owner that can reject an
+   * action id reused across delegations or across dispositions.
+   */
+  claimAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
+  /**
+   * Durable lifetime proof for a delegation target that is no longer readable.
+   * `removed` is a tombstone; `absent` is an identity that never existed here.
+   */
+  probeTargetRemoval(sessionId: string): Promise<'present' | 'removed' | 'absent'>;
   readAssignment(actionId: string): Promise<WorkHubDelegationAssignedMessage | undefined>;
   listActiveAssignments(): Promise<readonly WorkHubDelegationAssignedMessage[]>;
   readReplacement(
@@ -114,8 +129,20 @@ export interface WorkHubActionGateEffects {
   ): Promise<'not_retired' | 'retired' | 'recovering'>;
   retireDelegation(
     assignment: WorkHubDelegationAssignedMessage,
-    cancellationClaimId: string,
+    retirement: WorkHubDelegationRetirementClaim,
   ): Promise<WorkHubRetirementResult>;
+}
+
+/**
+ * Cancellation claim identity and retirement cause are separate concerns.
+ *
+ * Both a direct stop and a route correction retire a delegation and both need a
+ * crash-safe pending-cancellation claim, but only a confirmed direct stop may
+ * record direct-stop provenance on the target Turn.
+ */
+export interface WorkHubDelegationRetirementClaim {
+  readonly cancellationClaimId: string;
+  readonly cause: 'direct_stop' | 'replacement';
 }
 
 export interface WorkHubRetirementResult {
@@ -261,8 +288,9 @@ export class WorkHubCoordinationActionGate {
     const action = { requestFingerprint, result };
     this.#actions.set(input.actionId, action);
     // Successful actions remain a Host-lifetime fast path. Rejections release
-    // the slot so a pre-assignment admission can retry; once assigned, SQLite
-    // independently owns the durable action identity.
+    // the slot so a pre-assignment admission can retry; the durable action
+    // claim, not this map, is what owns the identity across that retry and
+    // across restarts.
     void result.catch(() => {
       if (this.#actions.get(input.actionId) === action) {
         this.#actions.delete(input.actionId);
@@ -307,11 +335,13 @@ export class WorkHubCoordinationActionGate {
     }
     if (proposal.disposition === 'answer_here') {
       const turnId = coordinationTurnId(input.actionId, 'answer');
+      await this.#claimAction(input.actionId, 'answer_here', fingerprint, turnId);
       await this.#effects.answer({ turnId, text: input.userText }, context);
       return { disposition: 'answer_here', coordinationTurnId: turnId };
     }
     if (proposal.disposition === 'clarify') {
       const turnId = coordinationTurnId(input.actionId, 'clarify');
+      await this.#claimAction(input.actionId, 'clarify', fingerprint, turnId);
       await this.#effects.clarify({
         turnId,
         userText: input.userText,
@@ -333,6 +363,8 @@ export class WorkHubCoordinationActionGate {
           'WorkHub can stop only the named durable delegation it owns',
         );
       }
+      const stopFingerprint = stopActionFingerprint(input, source);
+      await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
       const existing = await this.#effects.readStopRequest(source.delegationId);
       if (existing) {
         if (!workHubStopTargetsSession(requestIntent, existing.targetSessionName)) {
@@ -341,8 +373,15 @@ export class WorkHubCoordinationActionGate {
             'WorkHub can stop only the named durable delegation it owns',
           );
         }
-        const fingerprint = stopActionFingerprint(input, source);
-        assertStopReplay(existing, input, source, fingerprint);
+        if (existing.actionId !== input.actionId) {
+          // `not_owned` deliberately leaves the delegation active, so the user
+          // can and will try again with a fresh request. That later attempt has
+          // its own identity and must converge on the immutable non-destructive
+          // outcome instead of colliding with the first attempt's stop claim.
+          const resolved = await this.#effects.readStopResolution(source.delegationId);
+          if (resolved?.outcome === 'not_owned') return stopResult(resolved);
+        }
+        assertStopReplay(existing, input, source, stopFingerprint);
         return this.#stop(existing, source);
       }
       const [sessions, activeAssignments] = await Promise.all([
@@ -381,7 +420,6 @@ export class WorkHubCoordinationActionGate {
           'WorkHub can stop only the named durable delegation it owns',
         );
       }
-      const fingerprint = stopActionFingerprint(input, source);
       if (await this.#effects.readSupersession(source.delegationId)) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
@@ -396,7 +434,7 @@ export class WorkHubCoordinationActionGate {
       }
       const requested = await this.#effects.prepareStop({
         actionId: input.actionId,
-        actionFingerprint: fingerprint,
+        actionFingerprint: stopFingerprint,
         stopsActionId: source.actionId,
         stopsDelegationId: source.delegationId,
         targetSessionId: source.targetSessionId,
@@ -468,6 +506,12 @@ export class WorkHubCoordinationActionGate {
         return this.#replace(prepared, context);
       }
       const replacement = await this.#replacementAssignment(input, replaced);
+      await this.#claimAction(
+        replacement.actionId,
+        'replace',
+        replacement.actionFingerprint,
+        replacement.replacesDelegationId,
+      );
       const intent = await this.#effects.prepareReplacement(replacement);
       return this.#replace(intent, context);
     }
@@ -502,19 +546,61 @@ export class WorkHubCoordinationActionGate {
   ): Promise<WorkHubCoordinationActResult> {
     const resolved = await this.#effects.readStopResolution(source.delegationId);
     if (resolved) return stopResultFromRecord(resolved, request);
-    const retirement = await this.#effects.retireDelegation(source, request.actionId);
-    if (retirement.outcome === 'recovering') {
+    const retirement = await this.#effects.retireDelegation(source, {
+      cancellationClaimId: request.actionId,
+      cause: 'direct_stop',
+    });
+    const outcome =
+      retirement.outcome === 'recovering'
+        ? await this.#removedTargetOutcome(source)
+        : retirement.outcome;
+    if (!outcome) {
       throw new WorkHubActionEffectFailure(
         'operation_unavailable',
         'WorkHub is still resolving the delegated Message owner',
       );
     }
+    const targetTurnId = retirement.outcome === outcome ? retirement.targetTurnId : undefined;
     const resolution = await this.#effects.resolveStop({
       request,
-      outcome: retirement.outcome,
-      ...(retirement.targetTurnId ? { targetTurnId: retirement.targetTurnId } : {}),
+      outcome,
+      ...(targetTurnId ? { targetTurnId } : {}),
     });
     return stopResultFromRecord(resolution, request);
+  }
+
+  /**
+   * A removed target Session takes its Message-ownership proof with it, so a
+   * committed stop claim would otherwise recover forever. The removal tombstone
+   * outlives that Session and proves the delegated work ended; a target that is
+   * merely unreadable, or an identity that never existed here, stays unresolved
+   * rather than being reported as stopped.
+   */
+  async #removedTargetOutcome(
+    source: WorkHubDelegationAssignedMessage,
+  ): Promise<'already_terminal' | undefined> {
+    const lifetime = await this.#effects.probeTargetRemoval(source.targetSessionId);
+    return lifetime === 'removed' ? 'already_terminal' : undefined;
+  }
+
+  async #claimAction(
+    actionId: string,
+    operation: WorkHubActionOperation,
+    actionFingerprint: `sha256:${string}`,
+    subject: string,
+  ): Promise<void> {
+    const outcome = await this.#effects.claimAction({
+      actionId,
+      operation,
+      actionFingerprint,
+      subject,
+    });
+    if (outcome === 'conflict') {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub action identity already owns a different operation',
+      );
+    }
   }
 
   async #replacementAssignment(
@@ -649,7 +735,10 @@ export class WorkHubCoordinationActionGate {
       await this.#replacementTarget(replacement);
     }
     if (retirement === 'not_retired') {
-      const result = await this.#effects.retireDelegation(source, replacement.actionId);
+      const result = await this.#effects.retireDelegation(source, {
+        cancellationClaimId: replacement.actionId,
+        cause: 'replacement',
+      });
       if (result.outcome === 'recovering') {
         throw new WorkHubActionEffectFailure(
           'operation_unavailable',
@@ -751,6 +840,12 @@ export class WorkHubCoordinationActionGate {
     assignment: WorkHubDelegationAssignmentInput,
     context: ConnectionContext,
   ): Promise<WorkHubCoordinationActResult> {
+    await this.#claimAction(
+      assignment.actionId,
+      assignment.replacesDelegationId ? 'replace' : assignment.disposition,
+      assignment.actionFingerprint,
+      assignment.replacesDelegationId ?? assignment.targetSessionId,
+    );
     const admitted = await this.#effects.assign(assignment, context);
     if (assignment.replacesDelegationId) {
       return {
@@ -990,6 +1085,17 @@ function assertStopReplay(
   }
 }
 
+function stopResult(
+  resolution: WorkHubDelegationStopResolvedMessage,
+): WorkHubCoordinationActResult {
+  return {
+    disposition: 'stop_work',
+    outcome: resolution.outcome,
+    targetSessionId: resolution.targetSessionId,
+    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
+  };
+}
+
 function stopResultFromRecord(
   resolution: WorkHubDelegationStopResolvedMessage,
   request: WorkHubDelegationStopRequestedMessage,
@@ -1006,12 +1112,7 @@ function stopResultFromRecord(
       'WorkHub stop has a different durable resolution',
     );
   }
-  return {
-    disposition: 'stop_work',
-    outcome: resolution.outcome,
-    targetSessionId: resolution.targetSessionId,
-    ...(resolution.targetTurnId ? { targetTurnId: resolution.targetTurnId } : {}),
-  };
+  return stopResult(resolution);
 }
 
 function assignmentInputFromRecord(

@@ -1365,11 +1365,11 @@ export async function createExecutionRuntimeHostComposition(
             ? 'not_retired'
             : 'retired';
         },
-        retireDelegation: async (assignment, cancellationClaimId) => {
+        retireDelegation: async (assignment, retirement) => {
           const disposition = await messages.cancelMessageIfPending(
             assignment.targetSessionId,
             assignment.targetMessageId,
-            cancellationClaimId,
+            retirement.cancellationClaimId,
           );
           if (disposition.kind === 'recovering') {
             return { outcome: 'recovering' as const };
@@ -1384,15 +1384,14 @@ export async function createExecutionRuntimeHostComposition(
             return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
           }
           if (disposition.kind === 'owned_root') {
-            return stopOwnedWorkHubRoot(
-              coordinator,
-              {
-                sessionId: assignment.targetSessionId,
-                turnId: disposition.turnId,
-                runId: disposition.runId,
-              },
-              cancellationClaimId,
-            );
+            const identity = {
+              sessionId: assignment.targetSessionId,
+              turnId: disposition.turnId,
+              runId: disposition.runId,
+            };
+            return retirement.cause === 'direct_stop'
+              ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
+              : stopReplacedWorkHubRoot(coordinator, identity);
           }
           disposition satisfies never;
           throw new Error('Unhandled WorkHub Message retirement disposition');
@@ -1996,6 +1995,11 @@ export async function createExecutionRuntimeHostComposition(
   }
 }
 
+/**
+ * Confirmed direct stop. The action-derived abort source is written onto the
+ * exact root Turn so a retry after a crash can tell WorkHub's own delivery
+ * apart from an earlier or concurrent manual Stop.
+ */
 export async function stopOwnedWorkHubRoot(
   coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
   identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
@@ -2004,12 +2008,7 @@ export async function stopOwnedWorkHubRoot(
   readonly outcome: 'stop_delivered' | 'already_terminal';
   readonly targetTurnId: string;
 }> {
-  const rootState = coordinator.readRootState(identity.sessionId);
-  if (
-    rootState.kind === 'active' &&
-    rootState.turnId === identity.turnId &&
-    rootState.runId === identity.runId
-  ) {
+  if (isActiveWorkHubRoot(coordinator, identity)) {
     await coordinator.stopRoot(identity, {
       source: 'workhub_direct_stop',
       workHubActionId: actionId,
@@ -2020,6 +2019,39 @@ export async function stopOwnedWorkHubRoot(
     terminal.abortSource === workHubDirectStopAbortSource(actionId)
     ? { outcome: 'stop_delivered', targetTurnId: identity.turnId }
     : { outcome: 'already_terminal', targetTurnId: identity.turnId };
+}
+
+/**
+ * Route correction retiring the root it is replacing. It carries its own
+ * cancellation claim, but it is not a direct stop: recording direct-stop
+ * provenance here would let replay mistake a correction for one, so the
+ * retirement keeps the neutral Stop source ordinary supersession has always
+ * used.
+ */
+export async function stopReplacedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly targetTurnId: string;
+}> {
+  if (!isActiveWorkHubRoot(coordinator, identity)) {
+    return { outcome: 'already_terminal', targetTurnId: identity.turnId };
+  }
+  await coordinator.stopRoot(identity);
+  return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+}
+
+function isActiveWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): boolean {
+  const rootState = coordinator.readRootState(identity.sessionId);
+  return (
+    rootState.kind === 'active' &&
+    rootState.turnId === identity.turnId &&
+    rootState.runId === identity.runId
+  );
 }
 
 function sessionExecutionConnectionRef(

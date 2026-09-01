@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 37;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 38;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1247,6 +1247,25 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     `
     ALTER TABLE cancelled_message_admissions
       ADD COLUMN cancellation_claim_id TEXT;
+  `,
+  ],
+  [
+    38,
+    `
+    -- The one global owner of a WorkHub action identity. It deliberately has no
+    -- Session foreign key: the claim must outlive removal of the target Session
+    -- so a committed destructive claim still converges after that removal.
+    CREATE TABLE IF NOT EXISTS workhub_action_claims (
+      action_id TEXT PRIMARY KEY,
+      operation TEXT NOT NULL CHECK (
+        operation IN (
+          'answer_here', 'clarify', 'delegate_existing', 'create_new', 'replace', 'stop'
+        )
+      ),
+      action_fingerprint TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      claimed_at INTEGER NOT NULL CHECK (claimed_at >= 0)
+    );
   `,
   ],
 ]);

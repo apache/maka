@@ -26,6 +26,7 @@
 import {
   createWorkHubRoutePolicy,
   type WorkHubRouteEvidence,
+  type WorkHubStopClarificationReason,
 } from './workhub-route-policy.js';
 import type {
   WorkHubCoordinationActInput,
@@ -177,7 +178,7 @@ export type WorkHubSubmission = (
       requestId: string;
       text: string;
       options: Array<Pick<WorkHubSessionSummary, 'target' | 'projectName' | 'sessionName'>>;
-      reason?: 'ambiguous_command' | 'stop_target_required';
+      reason?: 'ambiguous_command' | WorkHubStopClarificationReason;
       correction?: WorkHubCorrectionContext;
     }
   | {
@@ -473,9 +474,17 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
-      const stoppable = ordinary.filter((session) =>
-        activeActionIdsBySessionId.get(session.target.sessionId)?.length === 1);
-      const stopDecision = submissionPolicy.resolveStop({ text: input.text, sessions: stoppable });
+      const stopDecision = submissionPolicy.resolveStop({
+        text: input.text,
+        sessions: ordinary.map((session) => ({
+          target: session.target,
+          projectName: session.projectName,
+          sessionName: session.sessionName,
+          updatedAt: session.updatedAt,
+          activeDelegations:
+            activeActionIdsBySessionId.get(session.target.sessionId)?.length ?? 0,
+        })),
+      });
       if (stopDecision.kind !== 'not_requested') {
         if (stopDecision.kind === 'clarification') {
           return {
@@ -484,7 +493,7 @@ export function createWorkHubController(deps: {
             requestId: input.requestId,
             text: input.text,
             options: [],
-            reason: 'stop_target_required',
+            reason: stopDecision.reason,
           };
         }
         const target = stopDecision.target;

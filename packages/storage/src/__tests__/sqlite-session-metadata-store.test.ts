@@ -1504,6 +1504,51 @@ describe('SqliteSessionMetadataStore', () => {
     }
   });
 
+  test('a WorkHub action identity owns one operation across store restarts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-action-claim-'));
+    const path = join(root, 'state.sqlite');
+    const stopClaim = {
+      actionId: 'stop-action',
+      operation: 'stop' as const,
+      actionFingerprint: `sha256:${'a'.repeat(64)}` as const,
+      subject: 'whd_payments',
+    };
+    let store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'claimed');
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+    } finally {
+      store.close();
+    }
+
+    store = createSqliteSessionMetadataStore(path);
+    try {
+      assert.deepEqual(await store.readWorkHubActionClaim('stop-action'), stopClaim);
+      assert.equal(await store.claimWorkHubAction(stopClaim), 'same_claim');
+      // A second delegation, a second disposition, and a changed payload are
+      // each a different operation for the same identity.
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, subject: 'whd_login' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({ ...stopClaim, operation: 'delegate_existing' }),
+        'conflict',
+      );
+      assert.equal(
+        await store.claimWorkHubAction({
+          ...stopClaim,
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+        }),
+        'conflict',
+      );
+      assert.equal(await store.readWorkHubActionClaim('unclaimed-action'), undefined);
+    } finally {
+      store.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('cancellation tombstones retain the durable claim that created them', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-message-cancellation-claim-'));
     const path = join(root, 'state.sqlite');

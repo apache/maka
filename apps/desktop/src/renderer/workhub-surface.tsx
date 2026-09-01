@@ -625,14 +625,36 @@ export function WorkHubCoordinationTurnView(props: {
   );
 }
 
+/**
+ * A stop clarification has to say what WorkHub could not decide. Every reason
+ * here is a distinct dead end for the user — an unnamed target, a name that
+ * fits several Sessions, a named Session with nothing to stop, and one holding
+ * more work than a single stop may retire.
+ */
+function workHubClarificationPrompt(
+  reason: Extract<WorkHubSubmission, { kind: 'clarification' }>['reason'],
+  copy: ReturnType<typeof workHubCopy>,
+): string | undefined {
+  if (reason === 'ambiguous_command') return copy.confirmCommand;
+  if (reason === 'stop_target_required') return copy.stopTargetRequired;
+  if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
+  if (reason === 'stop_target_not_active') return copy.stopTargetNotActive;
+  if (reason === 'stop_target_not_unique') return copy.stopTargetNotUnique;
+  return undefined;
+}
+
 export function workHubCoordinationSummary(
   result: Exclude<WorkHubSubmission, { kind: 'discussion' }>,
   projection: WorkHubProjection,
   copy: ReturnType<typeof workHubCopy>,
 ): string {
   if (result.kind === 'clarification') {
-    if (result.reason === 'ambiguous_command') return copy.confirmCommand;
-    if (result.reason === 'stop_target_required') return copy.stopTargetRequired;
+    const prompt = workHubClarificationPrompt(result.reason, copy);
+    if (prompt) {
+      return result.options.length > 0
+        ? `${prompt} ${result.options.map(({ sessionName }) => sessionName).join('、')}`
+        : prompt;
+    }
     return `${copy.chooseWork} ${result.options.map(({ sessionName }) => sessionName).join('、')}`;
   }
   if (result.kind === 'waiting') {
@@ -676,11 +698,7 @@ function WorkHubTurnView(props: {
             </p>
           ) : turn.outcome?.kind === 'clarification' ? (
             <>
-              <p>{turn.outcome.reason === 'ambiguous_command'
-                ? copy.confirmCommand
-                : turn.outcome.reason === 'stop_target_required'
-                  ? copy.stopTargetRequired
-                  : copy.chooseWork}</p>
+              <p>{workHubClarificationPrompt(turn.outcome.reason, copy) ?? copy.chooseWork}</p>
               {turn.outcome.options.length > 0 ? (
                 <div className="workhub-clarification" aria-label={copy.clarification}>
                   {turn.outcome.options.map((option) => (
@@ -820,6 +838,9 @@ function workHubCopy(locale: UiLocale) {
       chooseWork: '这条输入可能与多项工作有关，请选择目标：',
       confirmCommand: workHubAmbiguousCommandPrompt(locale),
       stopTargetRequired: '请明确说出要停止的工作名称，例如“停止 支付任务”。',
+      stopTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 停止对应委托。',
+      stopTargetNotActive: '这项工作当前没有由 WorkHub 委托的进行中请求，无需停止。',
+      stopTargetNotUnique: '这项工作有多个进行中的委托；请打开该 Session 停止具体的那一个。',
       discussionStayed: '这条内容暂时保留在 WorkHub，没有创建或改动 Session。',
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
@@ -878,6 +899,11 @@ function workHubCopy(locale: UiLocale) {
     chooseWork: 'This input may relate to more than one task. Choose a target:',
     confirmCommand: workHubAmbiguousCommandPrompt(locale),
     stopTargetRequired: 'Name the work explicitly, for example “Stop Payments”.',
+    stopTargetAmbiguous:
+      'That name matches more than one work item. Open the exact Session to stop its delegation.',
+    stopTargetNotActive: 'This work has no WorkHub-delegated request running, so there is nothing to stop.',
+    stopTargetNotUnique:
+      'This work has more than one delegation running. Open its Session to stop the exact one.',
     discussionStayed: 'This stayed in WorkHub without creating or changing a Session.',
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',

@@ -92,6 +92,8 @@ type CoordinationStores = Pick<
   | 'appendMessages'
   | 'createStableSession'
   | 'listHeaders'
+  | 'claimWorkHubAction'
+  | 'probeSessionRemoval'
   | 'probeStableSessionCreate'
   | 'readHeaderSnapshot'
   | 'readMessagesSnapshot'
@@ -156,6 +158,15 @@ export class HostWorkHubCoordinationCoordinator {
     this.#requestDrain = options.requestDrain;
     this.#actionGate = new WorkHubCoordinationActionGate({
       listSessions: () => this.#stores.listHeaders(),
+      // The global action owner is committed under the same Coordination
+      // admission that serializes every durable Coordination fact, so a
+      // concurrent action cannot slip between the claim and the fact it owns.
+      claimAction: (claim) =>
+        this.#admission.run(WORKHUB_COORDINATION_SESSION_ID, () =>
+          this.#stores.claimWorkHubAction(claim),
+        ),
+      probeTargetRemoval: async (sessionId) =>
+        (await this.#stores.probeSessionRemoval(sessionId)).kind,
       readAssignment: (actionId) => this.#stores.readWorkHubAssignment(actionId),
       listActiveAssignments: () => this.#listActiveAssignments(),
       readReplacement: (delegationId) => this.#stores.readWorkHubReplacement(delegationId),

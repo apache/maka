@@ -870,6 +870,207 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
+  test('converges a committed stop after the target Session is removed and the Host restarts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stop-removed-'));
+    let store = createSessionStore(root);
+    const stopInput = {
+      actionId: 'stop-action',
+      userText: 'Stop Payments',
+      proposal: { disposition: 'stop_work' as const, stopsActionId: 'source-action' },
+      confirmation: { kind: 'user_stop' as const },
+    };
+    let targetId: string;
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      targetId = target.id;
+      // The exact crash seam: the pending cancellation succeeds and the durable
+      // resolution never lands.
+      const crashing = new Proxy(store, {
+        get(authority, property, receiver) {
+          if (property === 'appendMessages') {
+            return async (sessionId: string, messages: readonly { kind?: unknown }[]) => {
+              if (messages.some((message) => message.kind === 'delegation_stop_resolved')) {
+                throw new Error('simulated process exit before the stop resolution');
+              }
+              return authority.appendMessages(sessionId, messages as never);
+            };
+          }
+          const value = Reflect.get(authority, property, receiver) as unknown;
+          return typeof value === 'function' ? value.bind(authority) : value;
+        },
+      }) as SessionAuthorityStore;
+      const workhub = coordinator(
+        root,
+        crashing,
+        () => undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
+          retireDelegation: async () => ({ outcome: 'cancelled_pending' }),
+        },
+      );
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.act'](
+            {
+              actionId: 'source-action',
+              userText: 'Fix payment retry',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: {
+                disposition: 'delegate_existing',
+                candidateRef: candidates.result.candidates.find(
+                  ({ sessionId }) => sessionId === target.id,
+                )!.candidateRef,
+              },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+      const crashed = await workhub.handlers['workhub.coordination.act'](stopInput, CONTEXT);
+      assert.equal(crashed.ok, false);
+      const assignment = await store.readWorkHubAssignment('source-action');
+      assert.ok(assignment);
+      assert.ok(await store.readWorkHubStopRequest(assignment.delegationId));
+      assert.equal(await store.readWorkHubStopResolution(assignment.delegationId), undefined);
+
+      await store.remove(target.id);
+    } finally {
+      await store.close?.();
+    }
+
+    store = createSessionStore(root);
+    try {
+      let retireCalls = 0;
+      const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        // The removed Session took every Message-ownership proof with it.
+        retireDelegation: async () => {
+          retireCalls += 1;
+          return { outcome: 'recovering' };
+        },
+      });
+      const resolved = await restarted.handlers['workhub.coordination.act'](stopInput, CONTEXT);
+      assert.deepEqual(resolved, {
+        ok: true,
+        result: {
+          disposition: 'stop_work',
+          outcome: 'already_terminal',
+          targetSessionId: targetId,
+        },
+      });
+      assert.equal(retireCalls, 1);
+      assert.deepEqual(
+        await restarted.handlers['workhub.coordination.act'](stopInput, CONTEXT),
+        resolved,
+      );
+      assert.equal(retireCalls, 1);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps one durable action identity bound to one delegation across restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-action-claim-'));
+    let store = createSessionStore(root);
+    const stopLogin = {
+      actionId: 'reused-stop',
+      userText: 'Stop Login',
+      proposal: { disposition: 'stop_work' as const, stopsActionId: 'login-action' },
+      confirmation: { kind: 'user_stop' as const },
+    };
+    let loginDelegationId: string | undefined;
+    try {
+      const targets: Array<{ id: string; name: string }> = [];
+      for (const name of ['Payments', 'Login']) {
+        targets.push(
+          await store.create({
+            cwd: root,
+            name,
+            llmConnectionSlug: 'test-connection',
+            model: 'test-model',
+            permissionMode: 'ask',
+          }),
+        );
+      }
+      const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        assign: (input) => persistTestAssignment(store, input, `${input.actionId}-turn`),
+        retireDelegation: async () => ({ outcome: 'recovering' }),
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      for (const [actionId, name, userText] of [
+        ['source-action', 'Payments', 'Fix payment retry'],
+        ['login-action', 'Login', 'Fix the login redirect'],
+      ] as const) {
+        const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+        assert.equal(candidates.ok, true);
+        if (!candidates.ok) return;
+        const target = targets.find((session) => session.name === name)!;
+        assert.equal(
+          (
+            await workhub.handlers['workhub.coordination.act'](
+              {
+                actionId,
+                userText,
+                candidateSetId: candidates.result.candidateSetId,
+                proposal: {
+                  disposition: 'delegate_existing',
+                  candidateRef: candidates.result.candidates.find(
+                    ({ sessionId }) => sessionId === target.id,
+                  )!.candidateRef,
+                },
+              },
+              CONTEXT,
+            )
+          ).ok,
+          true,
+        );
+      }
+      loginDelegationId = (await store.readWorkHubAssignment('login-action'))?.delegationId;
+      const recovering = await workhub.handlers['workhub.coordination.act'](
+        {
+          actionId: 'reused-stop',
+          userText: 'Stop Payments',
+          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      );
+      assert.equal(recovering.ok, false);
+      if (!recovering.ok) assert.equal(recovering.error.code, 'operation_unavailable');
+    } finally {
+      await store.close?.();
+    }
+
+    store = createSessionStore(root);
+    try {
+      const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        retireDelegation: async () => assert.fail('a reused action identity must not retire work'),
+      });
+      const crossed = await restarted.handlers['workhub.coordination.act'](stopLogin, CONTEXT);
+      assert.equal(crossed.ok, false);
+      if (!crossed.ok) assert.equal(crossed.error.code, 'operation_conflict');
+      assert.ok(loginDelegationId);
+      assert.equal(await store.readWorkHubStopRequest(loginDelegationId), undefined);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('refuses to merge a Turn identity shared across answer and record', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-turn-identity-'));
     const store = createSessionStore(root);

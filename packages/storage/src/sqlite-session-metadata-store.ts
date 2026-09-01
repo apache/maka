@@ -92,6 +92,9 @@ import {
   type SessionHeaderPatch,
   type StoredMessage,
   type SubagentSessionParent,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
+  type WorkHubActionOperation,
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationSupersededMessage,
   WORKHUB_COORDINATION_SESSION_ID,
@@ -1971,6 +1974,75 @@ export class SqliteSessionMetadataStore {
         .get(sessionId, messageId);
       return row !== undefined;
     });
+  }
+
+  /**
+   * Binds one WorkHub action identity to one exact operation, for good.
+   *
+   * Every other durable WorkHub record is keyed by what it is about, so none of
+   * them can see an action id that moved to a second delegation or a second
+   * disposition. This row is the global owner that rejects both, and it is
+   * written before the action's effect so a rejected or recovering attempt can
+   * never leak its identity into a different operation.
+   */
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    this.assertOpen();
+    assertSafeSessionId(claim.actionId);
+    assertSafeSessionId(claim.subject);
+    if (!/^sha256:[a-f0-9]{64}$/u.test(claim.actionFingerprint)) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action fingerprint');
+    }
+    return this.transaction(() => {
+      const existing = this.readWorkHubActionClaimSync(claim.actionId);
+      if (existing) {
+        return existing.operation === claim.operation &&
+          existing.actionFingerprint === claim.actionFingerprint &&
+          existing.subject === claim.subject
+          ? 'same_claim'
+          : 'conflict';
+      }
+      this.db
+        .prepare(
+          `
+          INSERT INTO workhub_action_claims(
+            action_id, operation, action_fingerprint, subject, claimed_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `,
+        )
+        .run(claim.actionId, claim.operation, claim.actionFingerprint, claim.subject, this.now());
+      return 'claimed';
+    });
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    this.assertOpen();
+    assertSafeSessionId(actionId);
+    return this.readTransaction(() => this.readWorkHubActionClaimSync(actionId));
+  }
+
+  private readWorkHubActionClaimSync(actionId: string): WorkHubActionClaim | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT operation, action_fingerprint, subject FROM workhub_action_claims WHERE action_id = ?',
+      )
+      .get(actionId) as
+      | { operation?: unknown; action_fingerprint?: unknown; subject?: unknown }
+      | undefined;
+    if (!row) return undefined;
+    if (
+      !isWorkHubActionOperation(row.operation) ||
+      typeof row.action_fingerprint !== 'string' ||
+      !/^sha256:[a-f0-9]{64}$/u.test(row.action_fingerprint) ||
+      typeof row.subject !== 'string'
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub action claim row');
+    }
+    return {
+      actionId,
+      operation: row.operation,
+      actionFingerprint: row.action_fingerprint as `sha256:${string}`,
+      subject: row.subject,
+    };
   }
 
   async claimMessageAdmissionCancellation(
@@ -6978,6 +7050,17 @@ function readStoredMessageRecordJson(
     recordJson = data.toString('utf8');
   }
   return recordJson;
+}
+
+function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperation {
+  return (
+    value === 'answer_here' ||
+    value === 'clarify' ||
+    value === 'delegate_existing' ||
+    value === 'create_new' ||
+    value === 'replace' ||
+    value === 'stop'
+  );
 }
 
 function sameWorkHubAssignmentRequest(

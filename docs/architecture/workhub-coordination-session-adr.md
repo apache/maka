@@ -194,6 +194,21 @@ admission holds the Coordination Session together with every active target
 Session lane while re-reading the active links and current display names. A
 concurrent assignment or rename must therefore settle before the uniqueness
 proof, wait until after the stop claim, or cause admission to fail closed.
+Only a confirmed direct stop records that provenance: a route correction
+retiring the same owning root carries its own cancellation claim but keeps the
+neutral Stop source, so replay cannot read a correction as a delivered stop.
+
+Every durable WorkHub record is keyed by what it is about — an assignment by its
+action, a stop or replacement by its delegation — so no single record can see an
+action identity that moved to a second delegation or a second disposition. A
+separate durable action claim, taken under the same Coordination admission
+before any effect, is that global owner. Exact replay converges on it; any other
+reuse of the identity fails closed before an effect, including after a rejected
+or still-recovering attempt and across Host restarts. The claim carries no
+Session foreign key, because a committed destructive claim has to outlive the
+removal of its target: when the target Session is gone, its removal tombstone —
+not the vanished Message proof, and never a merely unreadable target — is what
+lets the stop reach a terminal resolution.
 
 ## Consequences, costs, and reevaluation
 

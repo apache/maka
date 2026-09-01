@@ -373,6 +373,9 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readWorkHubStopRequest(delegationId)),
       readWorkHubStopResolution: (delegationId) =>
         run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
+      readWorkHubActionClaim: (actionId) =>
+        run(() => sessionStore.readWorkHubActionClaim(actionId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>

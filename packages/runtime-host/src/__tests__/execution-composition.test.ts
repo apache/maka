@@ -60,6 +60,7 @@ import {
   createExecutionRuntimeHostComposition,
   runtimeHostFilesystemWorkerRuntime,
   stopOwnedWorkHubRoot,
+  stopReplacedWorkHubRoot,
 } from '../server/execution-composition.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
@@ -183,6 +184,49 @@ test('WorkHub does not claim an unrelated manual Stop as its delivery', async ()
     outcome: 'already_terminal',
     targetTurnId: 'target-turn',
   });
+});
+
+test('a replacement retirement never records direct-stop provenance', async () => {
+  const stops: Array<Record<string, unknown> | undefined> = [];
+  const outcome = await stopReplacedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'target-turn',
+        runId: 'target-run',
+      }),
+      read: async () => assert.fail('replacement retirement must not re-read stop provenance'),
+      stopRoot: async (
+        _identity: { sessionId: string; turnId: string; runId: string },
+        input?: Record<string, unknown>,
+      ) => {
+        stops.push(input);
+      },
+    } as unknown as Parameters<typeof stopReplacedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+  );
+
+  assert.deepEqual(stops, [undefined]);
+  assert.deepEqual(outcome, { outcome: 'stop_delivered', targetTurnId: 'target-turn' });
+});
+
+test('a replacement leaves a root it no longer owns alone', async () => {
+  const outcome = await stopReplacedWorkHubRoot(
+    {
+      readRootState: () => ({
+        kind: 'active',
+        sessionId: 'target-session',
+        turnId: 'other-turn',
+        runId: 'other-run',
+      }),
+      read: async () => assert.fail('replacement retirement must not re-read stop provenance'),
+      stopRoot: async () => assert.fail('a root owned by another Turn must not be stopped'),
+    } as unknown as Parameters<typeof stopReplacedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+  );
+
+  assert.deepEqual(outcome, { outcome: 'already_terminal', targetTurnId: 'target-turn' });
 });
 
 test('production composition owns the long-term memory database lifecycle', async () => {

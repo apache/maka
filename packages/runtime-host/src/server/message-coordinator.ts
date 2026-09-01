@@ -493,15 +493,20 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
    * Cancels exactly one durable pending Message, or returns the Turn that has
    * already consumed it. This is the target Session's ordinary Message
    * authority; WorkHub never edits the queue or admission tables directly.
+   *
+   * The claim identity is required: the cancellation tombstone it writes is the
+   * only proof that distinguishes this caller's own cancellation from one that
+   * had already happened, which is what makes a crash between cancelling and
+   * recording the outcome recoverable.
    */
   cancelMessageIfPending(
     sessionId: string,
     messageId: string,
-    cancellationClaimId?: string,
+    cancellationClaimId: string,
   ): Promise<HostMessageCancellationDisposition> {
     return this.#sessionAdmission.run(sessionId, async () => {
       const disposition = await this.#resolveMessageExecution(sessionId, messageId);
-      if (disposition.kind === 'cancelled' && cancellationClaimId) {
+      if (disposition.kind === 'cancelled') {
         const outcome = await this.#admissions.claimMessageAdmissionCancellation(
           sessionId,
           messageId,
@@ -528,16 +533,11 @@ export class HostMessageCoordinator implements RuntimeMessageAuthority {
         return { kind: 'recovering' };
       }
 
-      const claimOutcome = cancellationClaimId
-        ? await this.#admissions.claimMessageAdmissionCancellation(
-            sessionId,
-            messageId,
-            cancellationClaimId,
-          )
-        : undefined;
-      if (!cancellationClaimId) {
-        await this.#admissions.cancelMessageAdmissions(sessionId, [messageId]);
-      }
+      const claimOutcome = await this.#admissions.claimMessageAdmissionCancellation(
+        sessionId,
+        messageId,
+        cancellationClaimId,
+      );
       if (state && steeringIndex >= 0) {
         const [entry] = state.steering.splice(steeringIndex, 1);
         if (entry) this.#releaseEntry(entry);

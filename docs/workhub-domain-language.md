@@ -117,9 +117,15 @@ the exact owning root accepted the Stop operation; the UI says that WorkHub aske
 it to stop rather than inventing an execution result. `not_owned` means the
 Message was consumed by a shared or user-owned Turn; WorkHub does not stop that
 Turn, preserves the active link, and navigates the user to the owning Session.
+A stop cue that names no existing WorkHub Session is ordinary work — `Stop using
+the deprecated API` is a task, not a destructive command — and routes normally. A
+named Session that is not uniquely stoppable, and an unsafe or anaphoric target,
+each fail closed with the reason they failed rather than an unanswerable prompt.
 An unresolved direct-stop claim and a replacement claim are mutually exclusive;
 the first durable destructive claim wins. A `not_owned` resolution releases that
-exclusion so a later explicit route correction can proceed.
+exclusion so a later explicit route correction can proceed, and because it leaves
+the delegation active, a later attempt under a fresh request identity converges on
+that same immutable `not_owned` outcome instead of colliding with the first claim.
 The pending-Message cancellation tombstone binds the durable stop action that
 created it, so a crash after cancellation but before resolution still replays
 `cancelled_pending` rather than degrading to `already_terminal`. Owning-root Stop
@@ -129,7 +135,10 @@ concurrent manual Stop remains `already_terminal`. Stop admission holds the
 Coordination Session and every currently active target Session lane
 while it rechecks current names and active links; a concurrent rename or new
 delegation therefore cannot invalidate the named-one-target proof before the
-request record commits.
+request record commits. Removing the target Session destroys the Message proof a
+committed claim still needs; the removal tombstone outlives that Session and
+resolves the claim as `already_terminal`, while a target that is merely
+unreadable, or one that never existed here, stays unresolved.
 
 **R2.4**: The deterministic context-continuity routing baseline. It remains useful
 as an experiment baseline or target resolver behind WorkHub's coordination layer;

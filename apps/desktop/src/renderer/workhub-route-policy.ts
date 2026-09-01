@@ -59,15 +59,35 @@ export type WorkHubRouteDecision =
   | { kind: 'discussion' }
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
+/** An existing WorkHub identity together with how much active work it owns. */
+export interface WorkHubStoppableSession extends WorkHubRoutableSession {
+  activeDelegations: number;
+}
+
+export type WorkHubStopClarificationReason =
+  /** The stop names no safe target of its own — a pronoun or a bare noun. */
+  | 'stop_target_required'
+  /** The stop names more than one existing Session. */
+  | 'stop_target_ambiguous'
+  /** The named Session exists but owns no WorkHub-delegated active work. */
+  | 'stop_target_not_active'
+  /** The named Session owns more than one active delegation. */
+  | 'stop_target_not_unique';
+
+/**
+ * A stop clarification never offers route options. Choosing one re-sends the
+ * original text as work, and stop-shaped text is exactly what must not be
+ * delivered to a Session that way, so the reason carries the whole answer.
+ */
 export type WorkHubStopRouteDecision =
   | { kind: 'not_requested' }
-  | { kind: 'clarification' }
+  | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
   | { kind: 'target'; target: WorkHubRouteTarget };
 
 export interface WorkHubRoutePolicy {
   resolveStop(input: {
     text: string;
-    sessions: WorkHubRoutableSession[];
+    sessions: WorkHubStoppableSession[];
   }): WorkHubStopRouteDecision;
   resolve(input: {
     text: string;
@@ -120,15 +140,29 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
   let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
+    // Direct stop is a narrow claim over WorkHub's own active delegations, not
+    // a filter over every sentence that begins with "stop". Text that names no
+    // WorkHub identity — "Stop using the deprecated API" — is ordinary work and
+    // falls through to routing; an unsafe or anaphoric target still fails
+    // closed, and a named identity that is not uniquely stoppable says why.
     resolveStop({ text, sessions }) {
       const intent = readWorkHubRequestIntent(text);
       if (!intent.stop.cue) return { kind: 'not_requested' };
-      if (!intent.stop.imperative) return { kind: 'clarification' };
-      const matching = sessions.filter((session) =>
+      if (!intent.stop.imperative) {
+        return { kind: 'clarification', reason: 'stop_target_required' };
+      }
+      const named = sessions.filter((session) =>
         workHubStopTargetsSession(intent, session.sessionName));
-      return matching.length === 1
-        ? { kind: 'target', target: matching[0]!.target }
-        : { kind: 'clarification' };
+      if (named.length === 0) return { kind: 'not_requested' };
+      if (named.length > 1) return { kind: 'clarification', reason: 'stop_target_ambiguous' };
+      const target = named[0]!;
+      if (target.activeDelegations === 1) return { kind: 'target', target: target.target };
+      return {
+        kind: 'clarification',
+        reason: target.activeDelegations === 0
+          ? 'stop_target_not_active'
+          : 'stop_target_not_unique',
+      };
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);

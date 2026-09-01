@@ -1072,6 +1072,33 @@ export interface WorkHubDelegationStopResolvedMessage {
   targetTurnId?: string;
 }
 
+/**
+ * The exact durable operation one WorkHub action identity is allowed to own.
+ *
+ * Per-record identity is keyed by the thing each record is about — an
+ * assignment by its action, a stop or replacement by its delegation — so no
+ * single record can reject an action id that crossed to another delegation or
+ * another disposition. This vocabulary names the one global owner that can.
+ */
+export type WorkHubActionOperation =
+  | 'answer_here'
+  | 'clarify'
+  | 'delegate_existing'
+  | 'create_new'
+  | 'replace'
+  | 'stop';
+
+/** Durable global binding from one action identity to one exact operation. */
+export interface WorkHubActionClaim {
+  readonly actionId: string;
+  readonly operation: WorkHubActionOperation;
+  readonly actionFingerprint: `sha256:${string}`;
+  /** The durable identity this action owns: a delegation or a Coordination Turn. */
+  readonly subject: string;
+}
+
+export type WorkHubActionClaimOutcome = 'claimed' | 'same_claim' | 'conflict';
+
 export type WorkHubCoordinationMessage =
   | WorkHubDelegationAssignedMessage
   | WorkHubDelegationReplacementRequestedMessage

@@ -86,6 +86,8 @@ import {
   type WorkHubDelegationAssignedMessage,
   type WorkHubDelegationReplacementAbortedMessage,
   type WorkHubDelegationReplacementRequestedMessage,
+  type WorkHubActionClaim,
+  type WorkHubActionClaimOutcome,
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
   type WorkHubDelegationSupersededMessage,
@@ -438,6 +440,13 @@ export interface SessionAuthorityStore extends SessionStore, MessageAdmissionSto
   readWorkHubStopResolution(
     delegationId: string,
   ): Promise<WorkHubDelegationStopResolvedMessage | undefined>;
+  /**
+   * Durably binds one action identity to one exact WorkHub operation before its
+   * effect. Survives removal of the target Session so a committed destructive
+   * claim can still converge afterwards.
+   */
+  claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
+  readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
   discardStableConversationCopy(sessionId: string, requestFingerprint: string): Promise<boolean>;
   listCatalogPage(
     filter: SessionListFilter | undefined,
@@ -745,6 +754,16 @@ class SqliteSessionStore implements SessionAuthorityStore {
     return message?.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
       ? message
       : undefined;
+  }
+
+  async claimWorkHubAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+    await this.ensureReady();
+    return this.metadata.claimWorkHubAction(claim);
+  }
+
+  async readWorkHubActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined> {
+    await this.ensureReady();
+    return this.metadata.readWorkHubActionClaim(actionId);
   }
 
   private async readWorkHubCoordinationMessage(
