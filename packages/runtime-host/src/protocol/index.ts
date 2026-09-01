@@ -100,7 +100,12 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 94 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 95 as const;
+// 95: Catalog entries carry `describedByMetadata`, so a client asks the
+// Host-resolved entry — not its own bundled table — whether a model needs a
+// hand-written capability declaration. The field is required, so a newer Host's
+// entry fails an older client's strict decoder, and an older Host's entry
+// (lacking it) fails a newer client's.
 // 94: A failed Turn snapshot no longer carries contextBudgetExhaustedDetail; the
 // retired outcome reads as context_overflow at the ledger boundary, and an older
 // Host still sending the field fails a newer client's closed snapshot decode.

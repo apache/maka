@@ -3479,7 +3479,6 @@
           "./use-oauth-login-flow": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 1,
-          "@maka/core/model-metadata": 1,
           "@maka/core/model-thinking": 1,
           "@maka/ui": 2,
           "react": 1
