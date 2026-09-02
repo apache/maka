@@ -17,27 +17,26 @@
  * under the License.
  */
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Badge, Link, List, ListItem } from '@astryxdesign/core';
-import { Kbd } from '@astryxdesign/core/Kbd';
-import { Sparkles } from '@maka/ui/icons';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
-  Banner,
-  Button,
-  PageHeader,
-  useMountedRef,
-  useToast,
-  useUiLocale,
-} from '@maka/ui';
+  Heading,
+  HStack,
+  Link,
+  List,
+  ListItem,
+  Text,
+  Token,
+  VStack,
+} from '@astryxdesign/core';
+import { Kbd } from '@astryxdesign/core/Kbd';
+import { Banner, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
-import { SettingsActions, SettingsPage, SettingsSection } from './settings-section.js';
-import { SettingRow } from './settings-rows.js';
+import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
-import { aboutUpdateStatusDetail } from './about-update-status.js';
+import { aboutChannelFacts, aboutUpdateStatusDetail } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
@@ -50,7 +49,6 @@ const ISSUE_TRACKER_URL = 'https://github.com/apache/maka/issues';
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
-  const sharedCopy = getSettingsSharedCopy(locale);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
@@ -60,8 +58,6 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const checkUpdateGuard = useActionGuard<'check'>();
   const aboutPageMountedRef = useMountedRef();
   const toast = useToast();
-  const diagnosticsHelpId = useId();
-  const updateHelpId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -73,16 +69,17 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         }
       })
       .catch((error) => {
-        if (cancelled) return;
-        const message = settingsActionErrorMessage(error, locale);
-        setInfoError(message);
-        toast.error(
-          copy.loadFailed,
-          message,
-          undefined,
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-    });
+        if (!cancelled) {
+          const message = settingsActionErrorMessage(error, locale);
+          setInfoError(message);
+          toast.error(
+            copy.loadFailed,
+            message,
+            undefined,
+            defaultRuntimeHostDiagnosticTarget(error),
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -140,126 +137,153 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     }
   }
 
-  let aboutContent: ReactNode;
+  let identity: ReactNode;
   if (!info && !infoError) {
-    aboutContent = (
-      <SettingsSkeletonStack
-        label={copy.loading}
-        lines={[
-          { width: '38%', size: 'lg' },
-          { width: '70%' },
-          { width: '52%' },
-        ]}
-      />
+    identity = (
+      <SettingsSection variant="bare">
+        <SettingsSkeletonStack
+          label={copy.loading}
+          lines={[
+            { width: '38%', size: 'lg' },
+            { width: '70%' },
+            { width: '52%' },
+          ]}
+        />
+      </SettingsSection>
     );
   } else if (!info) {
-    aboutContent = (
-      <Banner
-        status="info"
-        role="alert"
-        title={copy.unavailable}
-        description={infoError} />
+    identity = (
+      <SettingsSection variant="bare">
+        <Banner status="info" role="alert" title={copy.unavailable} description={infoError} />
+      </SettingsSection>
     );
   } else {
-    aboutContent = (
-      <>
-        <PageHeader
-          as_wrapper="div"
-          className="settingsAboutHero"
-          as="h2"
-          icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
-          iconClassName="settingsAboutLogo"
-          headingRowClassName="settingsAboutHeading"
-          title="Maka"
-          badge={
-            <>
-              <Badge variant="neutral" label={`v${info.appVersion}`} />
-              <Badge
-                variant="blue"
-                label={info.buildMode === 'dev'
-                  ? info.buildCommit
-                    ? `${copy.devBuild} · ${info.buildCommit}`
-                    : copy.devBuild
-                  : copy.packagedBuild}
+    const channel = aboutChannelFacts(info, copy);
+    const isDevBuild = info.buildMode === 'dev';
+    identity = (
+      /* The whole identity of this install, in one unlabeled lead group: what
+         it is, which channel it follows, what that means, and whether it is up
+         to date. Unlabeled because the page title already says 关于.
+
+         There used to be a 版本信息 readout under this (channel / version /
+         build / runtime / workspace) and a titled 软件更新 group around the
+         status line. Both were restatements: the first three rows repeat these
+         two lines verbatim, and runtime + workspace are already in the
+         diagnostic report and on the 数据 page. */
+      <SettingsSection variant="bare">
+        <VStack gap={4}>
+          <VStack gap={2}>
+            <HStack gap={2} vAlign="center">
+              <Heading level={2}>Maka</Heading>
+              {/* Release installs carry no token: they are the default state,
+                  and Astryx keeps colour for what departs from it. */}
+              {channel.token ? (
+                <Token size="sm" label={channel.token.label} color={channel.token.color} />
+              ) : null}
+            </HStack>
+            <Text type="supporting" color="secondary">
+              {info.buildCommit
+                ? `v${info.appVersion} · ${copy.buildLabel} ${info.buildCommit}`
+                : `v${info.appVersion}`}
+            </Text>
+            <Text type="body">{channel.summary}</Text>
+          </VStack>
+          {/* A dev checkout follows no feed, so it gets no status line at all:
+              its channel sentence above already says it does not update, and
+              the updater's own dev copy said the same thing a second time in
+              the next paragraph. The row exists only where it can act.
+
+              The status line says what the button would tell you, so it carries
+              no label of its own. It wraps rather than crushes: at the 480px
+              window floor the sentence needs the full width. */}
+          {isDevBuild ? null : (
+            <HStack gap={3} justify="between" wrap="wrap">
+              <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy)}</Text>
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={checkingUpdate}
+                onClick={() => void checkForUpdates()}
+                label={checkingUpdate || updateStatus?.state === 'checking'
+                  ? copy.checkingForUpdates
+                  : copy.checkForUpdates}
               />
-            </>
-          }
-          subtitle={copy.subtitle}
-          subtitleClassName="settingsAboutTagline"
+            </HStack>
+          )}
+        </VStack>
+      </SettingsSection>
+    );
+  }
+
+  return (
+    <SettingsPage>
+      {identity}
+      {/* Support lives OUTSIDE the info conditional on purpose: copying
+          diagnostics must not depend on `app.info` succeeding — that is the
+          very moment a user needs it. The keyboard sheet used to be reachable
+          only from the titlebar's `…` drawer and two shortcuts, which made
+          the panel listing the shortcuts openable only by shortcut; this is
+          the entry a mouse can find. */}
+      <SettingsSection title={copy.supportTitle}>
+        <SettingsRow
+          label={copy.copyDiagnostics}
+          description={copy.copyHelp}
+          end={(
+            /* The verb on the face ("复制") is not a name; the row's label is.
+               `Item` puts the row label in a sibling element, so each control
+               carries its own aria-label instead of borrowing one. */
+            <HStack gap={2} vAlign="center">
+              <Button
+                variant="ghost"
+                size="sm"
+                isDisabled={copyingDiagnostics}
+                onClick={() => void copyDiagnostics()}
+                aria-label={copy.copyDiagnostics}
+                label={copyingDiagnostics ? copy.copying : copy.copyAction}
+              />
+              <Kbd keys="mod+shift+d" />
+            </HStack>
+          )}
         />
-        {/* Detail audit: the five privacy commitments rendered inside an info
-            Banner — five lines of bold status-blue body copy, the exact blue
-            flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
-            statements, so they read as a quiet marker list in a labeled group. */}
-        <SettingsSection variant="bare" title={copy.privacyTitle}>
+        <SettingsRow
+          label={copy.reportIssueLabel}
+          description={copy.reportIssueHelp}
+          end={(
+            <Link
+              href={ISSUE_TRACKER_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label={copy.reportIssueLabel}
+            >
+              {copy.reportIssueOpen}
+            </Link>
+          )}
+        />
+        {props.onOpenKeyboardHelp ? (
+          <SettingsRow
+            label={copy.keyboardShortcuts}
+            description={copy.keyboardShortcutsHelp}
+            end={(
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={props.onOpenKeyboardHelp}
+                aria-label={copy.keyboardShortcuts}
+                label={copy.keyboardShortcutsOpen}
+              />
+            )}
+          />
+        ) : null}
+      </SettingsSection>
+      {info ? (
+        <SettingsSection title={copy.privacyTitle} variant="bare">
           <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
             {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
                 and a privacy commitment must wrap, not ellipsize. */}
             {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
           </List>
         </SettingsSection>
-        {/* The keyboard sheet's home. It used to be reachable only from the
-            titlebar's `…` drawer and from two shortcuts — which made the panel
-            that lists the shortcuts openable only by shortcut. It is reference
-            material about the app, so it belongs on 关于, and this is the entry
-            a mouse can find. */}
-        {props.onOpenKeyboardHelp && (
-          <SettingsSection title={sharedCopy.groups.reference}>
-            <SettingRow
-              title={copy.keyboardShortcuts}
-              detail={copy.keyboardShortcutsHelp}
-              action={(
-                <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
-              )}
-            />
-          </SettingsSection>
-        )}
-        <SettingsSection title={copy.updatesTitle}>
-          <SettingRow
-            title={copy.checkForUpdates}
-            detail={aboutUpdateStatusDetail(updateStatus, copy, {
-              isDevBuild: info.buildMode === 'dev',
-            })}
-            action={(
-              <Button
-                variant="secondary"
-                size="sm"
-                isDisabled={checkingUpdate || info.buildMode === 'dev'}
-                aria-describedby={updateHelpId}
-                onClick={() => void checkForUpdates()}
-                label={checkingUpdate || updateStatus?.state === 'checking'
-                  ? copy.checkingForUpdates
-                  : copy.checkForUpdates}
-              />
-            )}
-          />
-          <p id={updateHelpId}>
-            {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
-          </p>
-        </SettingsSection>
-      </>
-    );
-  }
-
-  return (
-    <SettingsPage>
-      {aboutContent}
-      <SettingsSection title={sharedCopy.groups.buildInfo}>
-        <SettingsActions>
-          <Button
-            variant="primary"
-            isDisabled={copyingDiagnostics}
-            aria-describedby={diagnosticsHelpId}
-            onClick={() => void copyDiagnostics()}
-            label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
-          />
-          <Kbd keys="mod+shift+d" />
-          <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
-            {copy.reportIssueLabel}
-          </Link>
-          <p id={diagnosticsHelpId}>{copy.copyHelp}</p>
-        </SettingsActions>
-      </SettingsSection>
+      ) : null}
     </SettingsPage>
   );
 }

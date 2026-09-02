@@ -82,12 +82,6 @@
 .maka-quote-chip-remove:hover { color: var(--foreground); background: var(--state-hover-bg); }
 .maka-quote-chip-remove:focus-visible { color: var(--foreground); background: var(--state-hover-bg); outline: var(--focus-ring-width) solid var(--focus-ring); outline-offset: 1px; }
 
-.maka-page-header-title,
-.maka-page-header-eyebrow,
-.maka-page-header-subtitle { margin: 0; }
-.maka-page-header-content { min-width: 0; }
-.maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-
 
 /* One shape. The tone and emphasis modifiers that used to sit here — a filled
    plate, four tinted borders, four value inks, a dimmed zero — were reachable
