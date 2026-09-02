@@ -27,6 +27,7 @@ export {
   PEER_REACHABILITY_MAX_ROUTES_PER_CLASS,
   PEER_REACHABILITY_REFRESH_LEAD_MS,
   peerReachabilityLeaseSigningBytes,
+  samePeerReachabilityRoutes,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityIdentity,
   type PeerReachabilityLeaseV1,

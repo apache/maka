@@ -42,6 +42,7 @@ const MAX_STATE_BYTES = 64 * 1_024;
 export interface PeerReachabilityPublisher {
   current(): SignedPeerReachabilityLeaseV1;
   refresh(): Promise<SignedPeerReachabilityLeaseV1>;
+  subscribe(listener: (lease: SignedPeerReachabilityLeaseV1) => void): () => void;
   close(): Promise<void>;
 }
 
@@ -74,6 +75,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
   #failure: Error | undefined;
   #closed = false;
   #closeTask: Promise<void> | undefined;
+  readonly #listeners = new Set<(lease: SignedPeerReachabilityLeaseV1) => void>();
 
   constructor(
     private readonly path: string,
@@ -96,6 +98,12 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     this.#assertOpen();
     if (!this.#current) throw new Error('Peer reachability publisher is not initialized');
     return this.#current;
+  }
+
+  subscribe(listener: (lease: SignedPeerReachabilityLeaseV1) => void): () => void {
+    this.#assertOpen();
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   refresh(): Promise<SignedPeerReachabilityLeaseV1> {
@@ -147,11 +155,13 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
       } catch (error) {
         if (error instanceof PeerReachabilityPostCommitError) {
           this.#adopt(signed, now, monotonicNow);
+          this.#notify(signed);
           this.#failure = error;
           throw error;
         }
         throw new PeerReachabilityPersistenceError(error);
       }
+      this.#notify(signed);
       return signed;
     });
     this.#tail = task.then(
@@ -169,6 +179,17 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
   async #close(): Promise<void> {
     this.#closed = true;
     await this.#tail;
+    this.#listeners.clear();
+  }
+
+  #notify(lease: SignedPeerReachabilityLeaseV1): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(lease);
+      } catch {
+        // Reachability publication remains authoritative even if an observer fails.
+      }
+    }
   }
 
   #assertOpen(): void {

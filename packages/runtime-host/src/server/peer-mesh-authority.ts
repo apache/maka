@@ -169,7 +169,7 @@ export function projectPeerMeshStatus(status: PeerMeshStatus): PeerMeshProjectio
     meshId: status.roster.roster.meshId,
     ...(status.roster.roster.displayName ? { displayName: status.roster.roster.displayName } : {}),
     role: status.role,
-    authorityPeerId: status.authority.peerId,
+    authorityPeerId: status.authorityPeerId,
     revision: status.roster.roster.revision,
     closed: status.roster.roster.closed,
     members: Object.freeze(status.memberRoutes.map((member) => Object.freeze({ ...member }))),
