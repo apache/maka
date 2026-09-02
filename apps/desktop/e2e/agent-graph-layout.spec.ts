@@ -69,6 +69,15 @@ test('production AgentGraphPanel keeps its heading visible without covering scro
   const collapse = page.getByRole('button', { name: '收起 Agent Graph', exact: true });
   await collapse.click();
   await expect(panel).toHaveAttribute('data-collapsed', 'true');
+  // The data attribute is committed before a newly loaded stylesheet has
+  // necessarily completed its first style recalculation. Wait for the
+  // collapsed contract rather than sampling that transient pre-CSS value.
+  await expect
+    .poll(async () => panel.locator('.maka-agent-graph-heading').evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { paddingBottom: style.paddingBottom, borderBottomWidth: style.borderBottomWidth };
+    }))
+    .toEqual({ paddingBottom: '0px', borderBottomWidth: '0px' });
   const collapsedHeading = await panel.locator('.maka-agent-graph-heading').evaluate((element) => {
     const style = getComputedStyle(element);
     return { paddingBottom: style.paddingBottom, borderBottomWidth: style.borderBottomWidth };
