@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 36;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 37;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1242,6 +1242,12 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     SELECT 1;
   `,
   ],
+  [
+    37,
+    `
+    ALTER TABLE message_admissions ADD COLUMN origin_json TEXT;
+  `,
+  ],
 ]);
 
 if (MIGRATIONS.size !== SQLITE_SESSION_METADATA_SCHEMA_VERSION) {
@@ -1292,6 +1298,10 @@ export function migrateSqliteSessionMetadataDatabase(
         `SQLite session metadata schema ${current} is newer than supported version ${SQLITE_SESSION_METADATA_SCHEMA_VERSION}`,
       );
     }
+    // A development build of the mailbox branch used version 33 for the
+    // origin column before main assigned that version to the subagent lock
+    // migration. Replaying the latter is idempotent and converges both shapes.
+    if (current === 33) db.exec(MIGRATIONS.get(33)!);
     for (
       let version = current + 1;
       version <= SQLITE_SESSION_METADATA_SCHEMA_VERSION;
@@ -1299,13 +1309,22 @@ export function migrateSqliteSessionMetadataDatabase(
     ) {
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite session metadata migration ${version}`);
-      // Versions 32 and 35 each add one column, and the post-merge convergence
-      // path can replay them onto a database that already carries the current
-      // table shape. SQLite has no `ADD COLUMN IF NOT EXISTS`, so the guards
-      // live here.
+      // Earlier development builds also assigned version 32 to different
+      // message-admission columns. Ensure main's column exists before later
+      // migrations regardless of which v32 shape is on disk.
+      if (version >= 33 && !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
+        db.exec(MIGRATIONS.get(32)!);
+      }
+      // The Session mailbox development branch used version 35 for origin
+      // before main assigned it to Skill receipts. Converge that deployed
+      // shape before advancing through the newer main migrations.
+      if (version >= 36 && !hasColumn(db, 'message_admissions', 'skill_invocation_json')) {
+        db.exec(MIGRATIONS.get(35)!);
+      }
       const columnAlreadyPresent =
         (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
-        (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json'));
+        (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json')) ||
+        (version === 37 && hasColumn(db, 'message_admissions', 'origin_json'));
       if (!columnAlreadyPresent) {
         db.exec(sql);
       }

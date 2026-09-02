@@ -120,6 +120,14 @@ test('shares one decoder across all TurnOrigin variants', () => {
     { kind: 'scheduled_task', scheduledTaskId: 'task-1' },
     { kind: 'goal', goalId: 'goal-1' },
     { kind: 'agent_graph', graphId: 'graph-1', wakeId: 'wake-1', attemptId: 'attempt-1' },
+    {
+      kind: 'session_mailbox',
+      messageId: 'mail-1',
+      fromSessionId: 'source',
+      fromSessionName: 'Source',
+      toSessionId: 'target',
+      mailboxKind: 'request',
+    },
   ] as const;
   for (const origin of origins) assert.deepEqual(decodeTurnOrigin(origin), origin);
   assert.deepEqual(decodeTurnOrigin({ kind: 'automation', automationId: 'automation-1' }), {

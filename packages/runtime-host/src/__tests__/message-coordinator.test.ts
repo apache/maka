@@ -425,6 +425,109 @@ test('idle submit starts exactly one root Turn and retry identity is connection-
   assert.equal(fixture.liveResidencies(), 0);
 });
 
+test('trusted submit receipts bind mailbox provenance across reconciliation', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const input = {
+    originHostEpoch: 'epoch-1',
+    sessionId: ROOT.sessionId,
+    messageId: 'mailbox-message',
+    content: { text: 'trusted mailbox payload' },
+    placement: 'next_turn',
+  } as const;
+  const origin = {
+    kind: 'session_mailbox',
+    messageId: 'mailbox-message',
+    fromSessionId: 'source',
+    fromSessionName: 'Source',
+    toSessionId: ROOT.sessionId,
+    mailboxKind: 'request',
+  } as const;
+
+  const submitted = await fixture.coordinator.submitTrusted(input, operationContext(), origin);
+  assert.equal(submitted.ok, true);
+  assert.deepEqual(await fixture.coordinator.reconcileTrustedSubmit(input, origin), submitted);
+  const conflict = await fixture.coordinator.reconcileTrustedSubmit(input, {
+    ...origin,
+    fromSessionId: 'forged',
+  });
+  assert.equal(conflict?.ok, false);
+  const publicRetry = await fixture.coordinator.handlers['turn.message.submit'](
+    input,
+    operationContext(),
+  );
+  assert.equal(publicRetry.ok, false);
+
+  owner.release();
+  const batch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(batch.sources[0]?.origin, origin);
+  const nextRoot = { sessionId: ROOT.sessionId, turnId: 'mailbox-turn', runId: 'mailbox-run' };
+  fixture.coordinator.commitNextRoot(batch, nextRoot);
+  fixture.coordinator.abandonRootReservation(nextRoot);
+});
+
+test('trusted follow-ups retain per-source provenance across successor handoffs', async () => {
+  const fixture = createFixture();
+  fixture.coordinator.reserveRootTurn(ROOT);
+  const owner = fixture.coordinator.bindRun(ROOT);
+  const trusted = (messageId: string) => {
+    const origin = {
+      kind: 'session_mailbox' as const,
+      messageId,
+      fromSessionId: 'source',
+      fromSessionName: 'Source',
+      toSessionId: ROOT.sessionId,
+      mailboxKind: 'request' as const,
+    };
+    return fixture.coordinator.submitTrusted(
+      {
+        originHostEpoch: 'epoch-1',
+        sessionId: ROOT.sessionId,
+        messageId,
+        content: { text: `trusted mailbox payload ${messageId}` },
+        placement: 'next_turn',
+      },
+      operationContext(),
+      origin,
+    );
+  };
+
+  assert.equal((await trusted('mailbox-message-1')).ok, true);
+  assert.equal((await trusted('mailbox-message-2')).ok, true);
+  owner.release();
+
+  const firstBatch = fixture.coordinator.beginTerminalTransition(ROOT);
+  assert.deepEqual(
+    firstBatch.sources.map((source) => source.messageId),
+    ['mailbox-message-1'],
+  );
+  assert.deepEqual(
+    firstBatch.sources.map((source) =>
+      source.origin?.kind === 'session_mailbox' ? source.origin.messageId : undefined,
+    ),
+    ['mailbox-message-1'],
+  );
+  const secondRoot = { sessionId: ROOT.sessionId, turnId: 'turn-2', runId: 'run-2' };
+  fixture.coordinator.commitNextRoot(firstBatch, secondRoot);
+  const secondOwner = fixture.coordinator.bindRun(secondRoot);
+  secondOwner.release();
+  const secondBatch = fixture.coordinator.beginTerminalTransition(secondRoot);
+  assert.deepEqual(
+    secondBatch.sources.map((source) => source.messageId),
+    ['mailbox-message-2'],
+  );
+  assert.deepEqual(
+    secondBatch.sources.map((source) =>
+      source.origin?.kind === 'session_mailbox' ? source.origin.messageId : undefined,
+    ),
+    ['mailbox-message-2'],
+  );
+  const thirdRoot = { sessionId: ROOT.sessionId, turnId: 'turn-3', runId: 'run-3' };
+  fixture.coordinator.commitNextRoot(secondBatch, thirdRoot);
+  fixture.coordinator.abandonRootReservation(thirdRoot);
+});
+
 test('a retry that changes exact-Turn intent is a conflict, not the earlier success', async () => {
   const fixture = createFixture();
   fixture.setRootState({ kind: 'idle' });

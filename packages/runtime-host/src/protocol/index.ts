@@ -81,6 +81,7 @@ export * from './project-catalog.js';
 export * from './project-catalog-change.js';
 export * from './execution-inspect.js';
 export * from './external-session.js';
+export * from './session-mailbox.js';
 export * from './message.js';
 export * from './operations.js';
 export * from './runtime-resource.js';
@@ -100,7 +101,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 94 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 95 as const;
+// 95: Session mailbox target discovery and durable cross-Session delivery.
+// Epoch-94 peers do not know these closed operation keys or trusted provenance.
 // 94: A failed Turn snapshot no longer carries contextBudgetExhaustedDetail; the
 // retired outcome reads as context_overflow at the ledger boundary, and an older
 // Host still sending the field fails a newer client's closed snapshot decode.

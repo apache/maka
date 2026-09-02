@@ -31,6 +31,8 @@ import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
   GoalControlAction,
   GoalProjection,
+  SessionMailboxSendResult,
+  SessionMailboxTarget,
   TurnMessageQueryResult,
   TurnMessageSubmitResult,
 } from '@maka/runtime-host/protocol';
@@ -142,6 +144,8 @@ export interface MakaUserCommand {
 
 export interface MakaSessionDriver {
   listSessions(): Promise<SessionSummary[]>;
+  listMailboxTargets?(): Promise<readonly SessionMailboxTarget[]>;
+  sendMailboxMessage?(targetSessionId: string, text: string): Promise<SessionMailboxSendResult>;
   getSessionResumeAvailability?(session: SessionSummary): Promise<SessionResumeAvailability>;
   preparePrompt(
     prompt: string,

@@ -468,6 +468,34 @@ type ShellCopy = {
     sideChatUnavailableDescription: string;
     sideChatContextPendingTitle: string;
     sideChatContextPendingDescription: string;
+    mailboxFailedTitle: string;
+    mailboxFailedFallback: string;
+    mailboxUsageTitle: string;
+    mailboxUsageDescription: string;
+    mailboxPickerTitle: string;
+    mailboxPickerPlaceholder: string;
+    mailboxPickerSearchLabel: string;
+    mailboxPickerResultsLabel: string;
+    mailboxPickerEmpty: string;
+    mailboxPickerNoMatch: string;
+    mailboxPickerHint: string;
+    mailboxPickerStatus: Record<'idle' | 'running' | 'waiting_for_user', string>;
+    mailboxComposerTitle(targetName: string): string;
+    mailboxComposerDescription: string;
+    mailboxComposerCancel: string;
+    mailboxSendingTitle(targetName: string): string;
+    mailboxSendingDescription: string;
+    mailboxDeliveredReceiptTitle(targetName: string): string;
+    mailboxDeliveredReceiptDescription: string;
+    mailboxQueuedReceiptTitle(targetName: string): string;
+    mailboxQueuedReceiptDescription: string;
+    mailboxFailedReceiptTitle(targetName: string): string;
+    mailboxFailedReceiptDescription: string;
+    mailboxReceiptDismiss: string;
+    renameUsageTitle: string;
+    renameUsageDescription: string;
+    renameSuccessTitle: string;
+    renameSuccessDescription(name: string): string;
     resumeStartedTitle: string;
     resumeStartedDescription: string;
     resumeFailedTitle: string;
@@ -1208,6 +1236,8 @@ const SHELL_COPY_BY_LOCALE = {
       slashCommands: {
         compact: { name: '压缩上下文', description: '压缩旧历史并保留当前任务' },
         graph: { name: '使用 Graph', description: '查看、切换或单次运行 Graph' },
+        rename: { name: '重命名当前任务', description: '/rename <新名称>' },
+        send: { name: '发送到其他任务', description: '先选择接收任务，再输入消息' },
         side: { name: '打开侧聊', description: '在右侧开始一个具体话题' },
         swarm: { name: '使用 Swarm', description: '查看、切换或单次运行 Swarm' },
       },
@@ -1216,6 +1246,38 @@ const SHELL_COPY_BY_LOCALE = {
       sideChatContextPendingTitle: '先处理待发送的上下文',
       sideChatContextPendingDescription:
         '当前 Composer 还有附件、引用或文件 mention。请先发送或移除它们，再使用 /side。',
+      mailboxFailedTitle: '发送失败',
+      mailboxFailedFallback: '无法向目标任务发送消息。',
+      mailboxUsageTitle: '命令格式不完整',
+      mailboxUsageDescription: '请输入 /send；选择接收任务后再填写消息。',
+      mailboxPickerTitle: '发送到哪个任务？',
+      mailboxPickerPlaceholder: '搜索任务名称…',
+      mailboxPickerSearchLabel: '搜索可接收消息的任务',
+      mailboxPickerResultsLabel: '可达任务',
+      mailboxPickerEmpty: '当前项目中没有其他可接收消息的任务。',
+      mailboxPickerNoMatch: '没有匹配的任务。',
+      mailboxPickerHint: '使用自定义任务名称；未重命名时显示系统生成的名称',
+      mailboxPickerStatus: {
+        idle: '空闲 · 立即送达',
+        running: '运行中 · 排入下一轮',
+        waiting_for_user: '等待输入 · 排入下一轮',
+      },
+      mailboxComposerTitle: (targetName: string) => `发送给“${targetName}”`,
+      mailboxComposerDescription: '在原输入框填写消息，按 Enter 发送；按 Esc 取消。',
+      mailboxComposerCancel: '取消',
+      mailboxSendingTitle: (targetName: string) => `正在发送给“${targetName}”…`,
+      mailboxSendingDescription: '正在等待 Runtime Host 确认。',
+      mailboxDeliveredReceiptTitle: (targetName: string) => `已送达“${targetName}”`,
+      mailboxDeliveredReceiptDescription: '目标任务空闲，消息已立即进入处理。',
+      mailboxQueuedReceiptTitle: (targetName: string) => `已排队给“${targetName}”`,
+      mailboxQueuedReceiptDescription: '目标任务正在运行，消息将在下一轮处理。',
+      mailboxFailedReceiptTitle: (targetName: string) => `发送给“${targetName}”失败`,
+      mailboxFailedReceiptDescription: '消息仍保留在输入框中；按 Enter 重试，或按 Esc 取消。',
+      mailboxReceiptDismiss: '知道了',
+      renameUsageTitle: '命令格式不完整',
+      renameUsageDescription: '请输入 /rename <新名称>。也可以点击窗口顶部的任务名称重命名。',
+      renameSuccessTitle: '任务已重命名',
+      renameSuccessDescription: (name: string) => `新名称：${name}`,
       resumeStartedTitle: '已开始继续这一轮',
       resumeStartedDescription: '正在从最后一个完整执行边界继续',
       resumeFailedTitle: '继续失败',
@@ -1767,6 +1829,8 @@ const SHELL_COPY_BY_LOCALE = {
       slashCommands: {
         compact: { name: 'Compact context', description: 'Compact older history while preserving the current task' },
         graph: { name: 'Use Graph', description: 'Inspect, switch, or run Graph once' },
+        rename: { name: 'Rename current task', description: '/rename <new name>' },
+        send: { name: 'Send to another task', description: 'Choose the receiving task, then write the message' },
         side: { name: 'Open side chat', description: 'Start a specific topic in the side panel' },
         swarm: { name: 'Use Swarm', description: 'Inspect, switch, or run Swarm once' },
       },
@@ -1776,6 +1840,38 @@ const SHELL_COPY_BY_LOCALE = {
       sideChatContextPendingTitle: 'Resolve pending context first',
       sideChatContextPendingDescription:
         'The Composer still has attachments, quotes, or file mentions. Send or remove them before using /side.',
+      mailboxFailedTitle: 'Could not send message',
+      mailboxFailedFallback: 'The message could not be sent to the target task.',
+      mailboxUsageTitle: 'Incomplete command',
+      mailboxUsageDescription: 'Enter /send; choose the receiving task, then write the message.',
+      mailboxPickerTitle: 'Send to which task?',
+      mailboxPickerPlaceholder: 'Search task names…',
+      mailboxPickerSearchLabel: 'Search tasks that can receive this message',
+      mailboxPickerResultsLabel: 'Reachable tasks',
+      mailboxPickerEmpty: 'There are no other reachable tasks in this project.',
+      mailboxPickerNoMatch: 'No matching task.',
+      mailboxPickerHint: 'Shows custom task names, or the system-generated name when unchanged',
+      mailboxPickerStatus: {
+        idle: 'Idle · deliver now',
+        running: 'Running · queue next',
+        waiting_for_user: 'Waiting · queue next',
+      },
+      mailboxComposerTitle: (targetName: string) => `Send to “${targetName}”`,
+      mailboxComposerDescription: 'Write in the composer and press Enter to send; press Esc to cancel.',
+      mailboxComposerCancel: 'Cancel',
+      mailboxSendingTitle: (targetName: string) => `Sending to “${targetName}”…`,
+      mailboxSendingDescription: 'Waiting for confirmation from the Runtime Host.',
+      mailboxDeliveredReceiptTitle: (targetName: string) => `Delivered to “${targetName}”`,
+      mailboxDeliveredReceiptDescription: 'The target was idle, so the message started immediately.',
+      mailboxQueuedReceiptTitle: (targetName: string) => `Queued for “${targetName}”`,
+      mailboxQueuedReceiptDescription: 'The target is running and will process it on the next turn.',
+      mailboxFailedReceiptTitle: (targetName: string) => `Could not send to “${targetName}”`,
+      mailboxFailedReceiptDescription: 'The message remains in the composer; press Enter to retry or Esc to cancel.',
+      mailboxReceiptDismiss: 'Dismiss',
+      renameUsageTitle: 'Incomplete command',
+      renameUsageDescription: 'Enter /rename <new name>. You can also click the task name in the title bar.',
+      renameSuccessTitle: 'Task renamed',
+      renameSuccessDescription: (name: string) => `New name: ${name}`,
       resumeStartedTitle: 'Continuing this turn',
       resumeStartedDescription: 'Continuing from the last complete execution boundary',
       resumeFailedTitle: 'Could not continue',

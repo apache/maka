@@ -31,12 +31,23 @@ export type TurnOrigin =
       wakeId: string;
       /** Durable identity of one delivery attempt for the wake. */
       attemptId: string;
+    }
+  | {
+      /** Runtime Host-authored provenance for one cross-Session mailbox message. */
+      kind: 'session_mailbox';
+      messageId: string;
+      fromSessionId: string;
+      fromSessionName: string;
+      toSessionId: string;
+      mailboxKind: 'request' | 'reply' | 'notification';
+      correlationId?: string;
     };
 
 type ScheduledTaskOrigin = Extract<TurnOrigin, { kind: 'scheduled_task' }>;
 type LegacyAutomationOrigin = Extract<TurnOrigin, { kind: 'legacy_automation' }>;
 type GoalOrigin = Extract<TurnOrigin, { kind: 'goal' }>;
 type AgentGraphOrigin = Extract<TurnOrigin, { kind: 'agent_graph' }>;
+type SessionMailboxOrigin = Extract<TurnOrigin, { kind: 'session_mailbox' }>;
 
 const SCHEDULED_TASK_ORIGIN_SHAPE = defineObjectShape<ScheduledTaskOrigin>()(
   ['kind', 'scheduledTaskId'],
@@ -50,6 +61,10 @@ const GOAL_ORIGIN_SHAPE = defineObjectShape<GoalOrigin>()(['kind', 'goalId'], []
 const AGENT_GRAPH_ORIGIN_SHAPE = defineObjectShape<AgentGraphOrigin>()(
   ['kind', 'graphId', 'wakeId', 'attemptId'],
   [],
+);
+const SESSION_MAILBOX_ORIGIN_SHAPE = defineObjectShape<SessionMailboxOrigin>()(
+  ['kind', 'messageId', 'fromSessionId', 'fromSessionName', 'toSessionId', 'mailboxKind'],
+  ['correlationId'],
 );
 
 /** Decode a persisted or runtime turn origin, normalizing released Automation rows. */
@@ -88,6 +103,28 @@ export function decodeTurnOrigin(value: unknown): TurnOrigin | undefined {
       graphId: value.graphId,
       wakeId: value.wakeId,
       attemptId: value.attemptId,
+    };
+  }
+  if (
+    hasExactShape(value, SESSION_MAILBOX_ORIGIN_SHAPE) &&
+    value.kind === 'session_mailbox' &&
+    typeof value.messageId === 'string' &&
+    typeof value.fromSessionId === 'string' &&
+    typeof value.fromSessionName === 'string' &&
+    typeof value.toSessionId === 'string' &&
+    (value.mailboxKind === 'request' ||
+      value.mailboxKind === 'reply' ||
+      value.mailboxKind === 'notification') &&
+    (value.correlationId === undefined || typeof value.correlationId === 'string')
+  ) {
+    return {
+      kind: 'session_mailbox',
+      messageId: value.messageId,
+      fromSessionId: value.fromSessionId,
+      fromSessionName: value.fromSessionName,
+      toSessionId: value.toSessionId,
+      mailboxKind: value.mailboxKind,
+      ...(value.correlationId !== undefined ? { correlationId: value.correlationId } : {}),
     };
   }
   return undefined;

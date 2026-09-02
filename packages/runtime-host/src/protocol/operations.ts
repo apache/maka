@@ -53,6 +53,7 @@ import { RUNTIME_RESOURCE_OPERATION_SPECS } from './runtime-resource.js';
 import { SCHEDULED_TASK_OPERATION_SPECS } from './scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from './session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from './session-continuity.js';
+import { SESSION_MAILBOX_OPERATION_SPECS } from './session-mailbox.js';
 import { SESSION_TRANSCRIPT_OPERATION_SPECS } from './session-transcript.js';
 import { SESSION_TURNS_OPERATION_SPECS } from './session-turns.js';
 import { SESSION_TODO_OPERATION_SPECS } from './session-todo.js';
@@ -171,6 +172,7 @@ export * from './runtime-policy.js';
 export * from './runtime-resource.js';
 export * from './scheduled-task.js';
 export * from './session-catalog.js';
+export * from './session-mailbox.js';
 export * from './session-collaboration.js';
 export * from './session-revision.js';
 export * from './session-retirement.js';
@@ -210,6 +212,7 @@ export const HOST_OPERATION_SPECS = composeOperationSpecMaps(
   SESSION_TRANSCRIPT_OPERATION_SPECS,
   SESSION_TURNS_OPERATION_SPECS,
   SESSION_CATALOG_OPERATION_SPECS,
+  SESSION_MAILBOX_OPERATION_SPECS,
   SESSION_EFFECT_OPERATION_SPECS,
   SESSION_REVISION_OPERATION_SPECS,
   SESSION_RETIREMENT_OPERATION_SPECS,
@@ -314,6 +317,8 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'session.create',
   'session.execution_boundary.query',
   'session.lifecycle.set',
+  'session.mailbox.send',
+  'session.mailbox.targets',
   'session.shared.query',
   'session.metadata.update',
   'session.read_marker.set',

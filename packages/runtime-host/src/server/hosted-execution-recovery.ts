@@ -239,6 +239,8 @@ export function requireHostedExecutionMessageContent(admission: RootTurnAdmissio
 
 export function hostedExecutionMessageOrigin(execution: RootExecutionDescriptor) {
   switch (execution.kind) {
+    case 'external_message':
+      return execution.origin;
     case 'scheduled_task':
       return {
         kind: 'scheduled_task' as const,
@@ -349,6 +351,7 @@ async function verifyQueueSourceMessages(
       owners.length !== 1 ||
       owners[0]?.type !== 'user' ||
       owners[0].turnId !== admission.turnId ||
+      !isDeepStrictEqual(owners[0].origin, source.origin) ||
       !messageContentsEqual(normalizeMessageContent(owners[0]), source.content)
     ) {
       throw new Error(

@@ -70,7 +70,7 @@ import {
   reconcileInteractions,
 } from '@maka/ui';
 import type { ConnectionEvent } from '@maka/core/connections';
-import { GitBranch, MessageCircleQuestion, Minimize2, Network } from '@maka/ui/icons';
+import { GitBranch, MessageCircleQuestion, Minimize2, Network, Pencil } from '@maka/ui/icons';
 import { Button } from '@astryxdesign/core/Button';
 import { useKeyboardHelp } from './keyboard-help';
 import { useCommandPalette } from './command-palette';
@@ -110,6 +110,7 @@ import * as SessionCollaboration from './features/session-collaboration';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
+import { useAppShellMailbox } from './use-app-shell-mailbox';
 import {
   hasActiveTurnAtSubmit,
   mergeWorkspaceReferences,
@@ -795,6 +796,16 @@ function AppShellContent({
     revisionDraftRef.current = draft;
     setRevisionDraft(draft);
   }, []);
+  const mailbox = useAppShellMailbox({
+    activeSessionId: activeId,
+    uiLocale,
+    revisionActive: revisionDraft !== null,
+    hasPendingComposerContext: pendingAttachments.length > 0 || pendingQuotes.length > 0,
+    composerRef,
+    setMessages,
+    toastInfo: toastApi.info,
+    showSessionError,
+  });
   useEffect(() => {
     const draft = revisionDraftRef.current;
     if (!draft) return;
@@ -1377,6 +1388,7 @@ function AppShellContent({
           onRetry: () => reloadActiveExecutionBoundary(activeId),
         }
       : undefined;
+  const openMailboxTargetPicker = mailbox.openTargetPicker;
   const desktopSlashCommands = useMemo<readonly ComposerSlashCommandOption[]>(
     () => {
       const streaming = turnActive || activeStreamingLive;
@@ -1393,6 +1405,17 @@ function AppShellContent({
           ...shellCopy.slashCommands.compact,
           keywords: ['compact', 'context', '压缩', '上下文'],
           Icon: Minimize2,
+        },
+        rename: {
+          ...shellCopy.slashCommands.rename,
+          keywords: ['rename', 'name', 'title', '重命名', '名称'],
+          Icon: Pencil,
+        },
+        send: {
+          ...shellCopy.slashCommands.send,
+          keywords: ['send', 'session', 'message', '发送', '任务', '会话'],
+          Icon: MessageCircleQuestion,
+          onChoose: () => { void openMailboxTargetPicker(); },
         },
         side: {
           ...shellCopy.slashCommands.side,
@@ -1412,7 +1435,7 @@ function AppShellContent({
       };
       return availableCommands.map(({ id }) => ({ id, ...presentation[id] }));
     },
-    [activeId, activeStreamingLive, shellCopy.slashCommands, turnActive],
+    [activeId, activeStreamingLive, openMailboxTargetPicker, shellCopy.slashCommands, turnActive],
   );
   const refreshProjectSkillsRef = useRef<() => Promise<void>>(async () => {});
   const {
@@ -1632,7 +1655,12 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
+  const hasModalOpen =
+    helpOpen ||
+    paletteOpen ||
+    searchModalOpen ||
+    mailbox.modalOpen ||
+    sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -1896,6 +1924,11 @@ function AppShellContent({
     text: string,
     metadata?: ComposerSendMetadata,
   ): Promise<boolean | void> {
+    const mailboxResult = await mailbox.sendPending(
+      text,
+      (metadata?.workspaceFileReferences?.length ?? 0) > 0,
+    );
+    if (mailboxResult !== undefined) return mailboxResult;
     setNewTaskSendPending(true);
     try {
       return await sendWithAttachments(text, metadata);
@@ -2035,6 +2068,41 @@ function AppShellContent({
         }
         return false;
       }
+    }
+    if (slashCommand?.kind === 'rename') {
+      const sessionId = activeIdRef.current;
+      if (!sessionId) return false;
+      try {
+        await window.maka.sessions.rename(sessionId, slashCommand.name, {
+          revisionFamily: true,
+        });
+        await refreshSessions();
+        toastApi.success(
+          shellCopy.renameSuccessTitle,
+          shellCopy.renameSuccessDescription(slashCommand.name),
+        );
+        return true;
+      } catch (error) {
+        showSessionError(
+          sessionId,
+          getShellCopy(uiLocale).sessionRowActions.renameFailedTitle,
+          localizedShellErrorMessage(error, shellCopy.tryAgainLater, uiLocale),
+        );
+        return false;
+      }
+    }
+    if (slashCommand?.kind === 'rename_invalid') {
+      toastApi.info(shellCopy.renameUsageTitle, shellCopy.renameUsageDescription);
+      return false;
+    }
+    if (slashCommand?.kind === 'send') {
+      return mailbox.openTargetPicker(
+        (metadata?.workspaceFileReferences?.length ?? 0) > 0,
+      );
+    }
+    if (slashCommand?.kind === 'send_invalid') {
+      toastApi.info(shellCopy.mailboxUsageTitle, shellCopy.mailboxUsageDescription);
+      return false;
     }
     if (slashCommand?.kind === 'side') {
       if (!activeIdRef.current) {
@@ -2978,6 +3046,7 @@ function AppShellContent({
                         }
                       : undefined
                   }
+                  sendTargetNotice={mailbox.sendTargetNotice}
                   slashCommands={desktopSlashCommands}
                   pendingAttachments={pendingAttachments}
                   onRemoveAttachment={removeAttachment}
@@ -3263,6 +3332,7 @@ function AppShellContent({
       <Goals.GoalHost />
       <TaskEntryHost model={taskEntry.host} />
       <RuntimeHostSshTerminalDialog />
+      {mailbox.picker}
       <SessionCollaborationDialog
         target={sharedSessionDialog.target}
         onOpenRemoteAccessSettings={() => openSettingsSection('projects')}

@@ -43,6 +43,7 @@ import {
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
 import { isToolMode, type ToolMode } from './tool-mode.js';
 import { decodeRunCompositionSnapshot, type RunCompositionSnapshot } from './run-composition.js';
+import type { TurnOrigin } from './turn-origin.js';
 
 export const AGENT_RUN_STATUSES = [
   'created',
@@ -79,6 +80,8 @@ export type RootExecutionDescriptor =
       kind: 'external_message';
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
+      /** Host-authored source for non-user messages admitted through the message authority. */
+      origin?: TurnOrigin;
     }
   | {
       /** Tool-free conversational execution admitted only by WorkHub authority. */

@@ -21,6 +21,7 @@
     "./test-connection": "./dist/test-connection.js",
     "./model-fetcher": "./dist/model-fetcher.js",
     "./session-manager": "./dist/session-manager.js",
+    "./session-mailbox-tools": "./dist/session-mailbox-tools.js",
     "./session-todo-tools": "./dist/session-todo-tools.js",
     "./test-only/fake-backend": "./dist/test-only/fake-backend.js",
     "./test-only/observation-text-reader": "./dist/__tests__/observation-text-reader.js",

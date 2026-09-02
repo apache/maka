@@ -45,6 +45,7 @@ import {
 } from '@maka/runtime/session-manager';
 import { buildToolsForAgentDefinition } from '@maka/runtime/agent-catalog';
 import { buildHistoryTools } from '@maka/runtime/history-tools';
+import { buildSessionMailboxTools } from '@maka/runtime/session-mailbox-tools';
 import { createLocalContinuationSafetyInspector } from '@maka/runtime/continuation-safety';
 import { createConfiguredSubagentCatalog } from '@maka/runtime/configured-subagent-catalog';
 import { buildHostCapabilitiesFromBinding } from '@maka/runtime/skills';
@@ -141,6 +142,7 @@ import {
 } from './host-composition.js';
 import { HostInteractionCoordinator } from './interaction-coordinator.js';
 import { HostInteractiveTurnCoordinator } from './interactive-turn-coordinator.js';
+import { HostSessionMailboxCoordinator } from './session-mailbox-coordinator.js';
 import { SessionTurnAccessRequestCoordinator } from './session-turn-access-request-coordinator.js';
 import { ensureBootstrapRuntimePolicy } from './bootstrap-runtime-policy.js';
 import { hostedExecutionRunProfile } from './hosted-execution-tool-profile.js';
@@ -328,6 +330,7 @@ export async function createExecutionRuntimeHostComposition(
     let runtimeResources: HostRuntimeResourceCoordinator | undefined;
     let continuity: SessionContinuityCoordinator | undefined;
     let manager: SessionManager | undefined;
+    let sessionMailbox: HostSessionMailboxCoordinator | undefined;
     let graphCoordinator: AgentGraphCoordinator | undefined;
     let graphSupervisorWake: AgentGraphSupervisorWakeCoordinator | undefined;
     const graphWakeActivities = new SessionActivityRegistry();
@@ -432,7 +435,11 @@ export async function createExecutionRuntimeHostComposition(
       createHostWebFetchToolFromService(webFetchService),
       ...runtimePolicy.modelTools,
     ];
-    const hostTools = [...childHostTools, ...historyTools];
+    const sessionMailboxTools = buildSessionMailboxTools({
+      list: (sourceSessionId) => requireSessionMailbox(sessionMailbox).listTargets(sourceSessionId),
+      send: (input) => requireSessionMailbox(sessionMailbox).sendFromSession(input),
+    });
+    const hostTools = [...childHostTools, ...historyTools, ...sessionMailboxTools];
     const childAgentTools = createHostChildAgentToolComposition({
       builtinTools,
       hostTools: childHostTools,
@@ -553,6 +560,12 @@ export async function createExecutionRuntimeHostComposition(
         requireCanonicalProjection(canonicalProjection).fitsCandidate(sessionId, candidate),
       onProjectionChanged: (sessionId) =>
         requireContinuity(continuity).enqueueCanonicalRefresh(sessionId),
+    });
+    sessionMailbox = new HostSessionMailboxCoordinator({
+      hostEpoch: context.hostEpoch,
+      messages,
+      listSessions: () => requireSessionManager(manager).listSessions(),
+      sessionStore: stores.sessionStore,
     });
     const rootAdmissionOwner = new RootAdmissionOwner(stores.agentRunStore);
     const canonicalProjectionReader = new CanonicalSessionProjectionReader({
@@ -1772,6 +1785,7 @@ export async function createExecutionRuntimeHostComposition(
         handlers: [
           executionInspect.handlers,
           messages.handlers,
+          requireSessionMailbox(sessionMailbox).handlers,
           interactions.handlers,
           sessionEffectCoordinator.handlers,
           continuityCoordinator.handlers,
@@ -1795,7 +1809,9 @@ export async function createExecutionRuntimeHostComposition(
             await messages.recoverPendingAfterHostRestart(
               recoverySessions.map((session) => session.id),
             );
+            await requireSessionMailbox(sessionMailbox).recover();
             await turnAccessRequests?.recover();
+            await requireSessionMailbox(sessionMailbox).recover();
             rootRecoveryCompleted = true;
           },
         },
@@ -2105,6 +2121,13 @@ function requireDailyReview(
 function requireSessionManager(manager: SessionManager | undefined): SessionManager {
   if (!manager) throw new Error('Runtime Host SessionManager is not composed');
   return manager;
+}
+
+function requireSessionMailbox(
+  coordinator: HostSessionMailboxCoordinator | undefined,
+): HostSessionMailboxCoordinator {
+  if (!coordinator) throw new Error('Runtime Host Session mailbox coordinator is not composed');
+  return coordinator;
 }
 
 function requireGraphCoordinator(

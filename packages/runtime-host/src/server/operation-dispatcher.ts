@@ -61,6 +61,7 @@ import { SCHEDULED_TASK_OPERATION_SPECS } from '../protocol/scheduled-task.js';
 import { SESSION_CATALOG_OPERATION_SPECS } from '../protocol/session-catalog.js';
 import { SESSION_CONTINUITY_OPERATION_SPECS } from '../protocol/session-continuity.js';
 import { SESSION_EFFECT_OPERATION_SPECS } from '../protocol/session-effects.js';
+import { SESSION_MAILBOX_OPERATION_SPECS } from '../protocol/session-mailbox.js';
 import { SESSION_RETIREMENT_OPERATION_SPECS } from '../protocol/session-retirement.js';
 import { SESSION_REVISION_OPERATION_SPECS } from '../protocol/session-revision.js';
 import { SESSION_TODO_OPERATION_SPECS } from '../protocol/session-todo.js';
@@ -134,6 +135,7 @@ export type SessionContinuityOperationKey =
 export type SessionRevisionOperationKey = keyof typeof SESSION_REVISION_OPERATION_SPECS;
 export type SessionRetirementOperationKey = keyof typeof SESSION_RETIREMENT_OPERATION_SPECS;
 export type SessionEffectOperationKey = keyof typeof SESSION_EFFECT_OPERATION_SPECS;
+export type SessionMailboxOperationKey = keyof typeof SESSION_MAILBOX_OPERATION_SPECS;
 export type SessionTodoOperationKey = keyof typeof SESSION_TODO_OPERATION_SPECS;
 export type SessionCatalogOperationKey =
   | keyof typeof SESSION_CATALOG_OPERATION_SPECS
@@ -196,6 +198,10 @@ export type SessionRetirementOperationHandlerMap = Pick<
   SessionRetirementOperationKey
 >;
 export type SessionEffectOperationHandlerMap = Pick<OperationHandlerMap, SessionEffectOperationKey>;
+export type SessionMailboxOperationHandlerMap = Pick<
+  OperationHandlerMap,
+  SessionMailboxOperationKey
+>;
 export type SessionTodoOperationHandlerMap = Pick<OperationHandlerMap, SessionTodoOperationKey>;
 export type ArtifactOperationHandlerMap = Pick<OperationHandlerMap, ArtifactOperationKey>;
 export type SkillCatalogOperationHandlerMap = Pick<OperationHandlerMap, SkillCatalogOperationKey>;

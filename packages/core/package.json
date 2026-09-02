@@ -118,6 +118,8 @@
     "./usage-stats/bucket-key": "./dist/usage-stats/bucket-key.js",
     "./usage-record-schema": "./dist/usage-record-schema.js",
     "./session-send-projection": "./dist/session-send-projection.js",
+    "./session-mailbox": "./dist/session-mailbox.js",
+    "./turn-origin": "./dist/turn-origin.js",
     "./session-name": "./dist/session-name.js",
     "./thread-search": "./dist/thread-search.js",
     "./agent-graph-timeline": "./dist/agent-graph-timeline.js",

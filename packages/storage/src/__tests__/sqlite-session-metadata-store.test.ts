@@ -58,6 +58,54 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  for (const version32Shape of ['mailbox-origin', 'submitted-intent'] as const) {
+    test(`converges the ${version32Shape} version-32 schema after the merge`, async () => {
+      const root = await mkdtemp(join(tmpdir(), `maka-session-v32-${version32Shape}-`));
+      const path = join(root, 'state.sqlite');
+      try {
+        const setup = createSqliteSessionMetadataStore(path);
+        setup.close();
+
+        const version32 = new DatabaseSync(path);
+        try {
+          version32.exec(
+            version32Shape === 'mailbox-origin'
+              ? 'ALTER TABLE message_admissions DROP COLUMN submitted_intent_json'
+              : 'ALTER TABLE message_admissions DROP COLUMN origin_json',
+          );
+          version32
+            .prepare(
+              `UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata'`,
+            )
+            .run();
+        } finally {
+          version32.close();
+        }
+
+        const converged = createSqliteSessionMetadataStore(path);
+        try {
+          assert.equal(converged.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        } finally {
+          converged.close();
+        }
+
+        const schema = new DatabaseSync(path, { readOnly: true });
+        try {
+          const columns = schema
+            .prepare('PRAGMA table_info(message_admissions)')
+            .all()
+            .map((row) => (row as { name: string }).name);
+          assert.equal(columns.includes('origin_json'), true);
+          assert.equal(columns.includes('submitted_intent_json'), true);
+        } finally {
+          schema.close();
+        }
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+
   for (const version30Shape of ['admissions-only', 'coordination-only', 'complete'] as const) {
     test(`converges the ${version30Shape} version-30 schema after the merge`, async () => {
       const root = await mkdtemp(join(tmpdir(), `maka-session-v30-${version30Shape}-`));
@@ -125,59 +173,61 @@ describe('SqliteSessionMetadataStore', () => {
     });
   }
 
-  test('migrates a legacy subagent Session to a frozen model route', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v32-'));
-    const path = join(root, 'state.sqlite');
-    const child = fullHeader({
-      id: 'legacy-child',
-      parentSessionId: undefined,
-      branchOfTurnId: undefined,
-      revisionRootSessionId: undefined,
-      revisionParentSessionId: undefined,
-      revisionOfTurnId: undefined,
-      revisionIndex: undefined,
-      revisionState: undefined,
-      connectionLocked: false,
-      subagentParent: {
-        kind: 'subagent',
-        parentSessionId: 'parent-session',
-        spawnedBy: {
-          parentRunId: 'parent-run',
-          parentTurnId: 'parent-turn',
-          toolCallId: 'tool-call',
+  for (const legacyVersion of [32, 33] as const) {
+    test(`migrates a version-${legacyVersion} legacy subagent Session to a frozen model route`, async () => {
+      const root = await mkdtemp(join(tmpdir(), `maka-session-metadata-v${legacyVersion}-`));
+      const path = join(root, 'state.sqlite');
+      const child = fullHeader({
+        id: 'legacy-child',
+        parentSessionId: undefined,
+        branchOfTurnId: undefined,
+        revisionRootSessionId: undefined,
+        revisionParentSessionId: undefined,
+        revisionOfTurnId: undefined,
+        revisionIndex: undefined,
+        revisionState: undefined,
+        connectionLocked: false,
+        subagentParent: {
+          kind: 'subagent',
+          parentSessionId: 'parent-session',
+          spawnedBy: {
+            parentRunId: 'parent-run',
+            parentTurnId: 'parent-turn',
+            toolCallId: 'tool-call',
+          },
+          lifecycle: 'foreground',
         },
-        lifecycle: 'foreground',
-      },
-    });
-    const ordinary = fullHeader({ id: 'legacy-ordinary', connectionLocked: false });
-    const setup = createSqliteSessionMetadataStore(path);
-    try {
-      await setup.create(child);
-      await setup.create(ordinary);
-    } finally {
-      setup.close();
-    }
-    // A subagent spawned before the route froze at creation, and abandoned
-    // before its first Message, is the one shape nothing else can lock.
-    const legacy = new DatabaseSync(path);
-    try {
-      legacy.exec(`
-        UPDATE session_metadata_schema SET version = 32 WHERE scope = 'session_metadata';
-      `);
-    } finally {
-      legacy.close();
-    }
+      });
+      const ordinary = fullHeader({ id: 'legacy-ordinary', connectionLocked: false });
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(child);
+        await setup.create(ordinary);
+      } finally {
+        setup.close();
+      }
+      // A subagent spawned before the route froze at creation, and abandoned
+      // before its first Message, is the one shape nothing else can lock.
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          UPDATE session_metadata_schema SET version = ${legacyVersion} WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
 
-    const migrated = createSqliteSessionMetadataStore(path);
-    try {
-      assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
-      assert.equal((await migrated.read('legacy-child')).header.connectionLocked, true);
-      assert.equal((await migrated.read('legacy-ordinary')).header.connectionLocked, false);
-    } finally {
-      migrated.close();
-    }
-    await rm(root, { recursive: true, force: true });
-  });
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        assert.equal((await migrated.read('legacy-child')).header.connectionLocked, true);
+        assert.equal((await migrated.read('legacy-ordinary')).header.connectionLocked, false);
+      } finally {
+        migrated.close();
+      }
+      await rm(root, { recursive: true, force: true });
+    });
+  }
 
   test('migrates v27 metadata to the current schema without backfilling external origin', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-metadata-v27-'));
@@ -379,6 +429,14 @@ describe('SqliteSessionMetadataStore', () => {
         turnId: 'turn-1',
         runId: 'run-1',
         messageId: 'message-1',
+        origin: {
+          kind: 'session_mailbox',
+          messageId: 'message-1',
+          fromSessionId: 'source-session',
+          fromSessionName: 'Source session',
+          toSessionId: 'session-1',
+          mailboxKind: 'request',
+        },
         content: { text: 'submitted', displayText: 'submitted' },
         submittedContentDigest: messageContentDigest({ text: 'submitted' }),
         submittedPlacement: 'current_turn',
@@ -431,6 +489,7 @@ describe('SqliteSessionMetadataStore', () => {
           turnId: message.turnId,
           text: message.type === 'user' ? message.text : undefined,
           steeringEventId: message.type === 'user' ? message.steeringEventId : undefined,
+          origin: message.type === 'user' ? message.origin : undefined,
         })),
         [
           {
@@ -439,6 +498,7 @@ describe('SqliteSessionMetadataStore', () => {
             turnId: 'turn-1',
             text: 'submitted',
             steeringEventId: 'message-1',
+            origin: admission.origin,
           },
         ],
       );
@@ -493,6 +553,63 @@ describe('SqliteSessionMetadataStore', () => {
             ?.skillInvocation,
           { loaded: [], failed: [], receipts: [] },
         );
+      } finally {
+        migrated.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('converges the mailbox version-35 admission schema with Skill receipts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-message-admission-mailbox-v35-'));
+    const path = join(root, 'state.sqlite');
+    const origin = {
+      kind: 'session_mailbox',
+      messageId: 'message-1',
+      fromSessionId: 'source-session',
+      fromSessionName: 'Source session',
+      toSessionId: 'session-mailbox-v35',
+      mailboxKind: 'request',
+    } as const;
+    try {
+      const setup = createSqliteSessionMetadataStore(path);
+      try {
+        await setup.create(fullHeader({ id: 'session-mailbox-v35' }));
+        await setup.commitMessageAdmission({
+          sessionId: 'session-mailbox-v35',
+          turnId: 'turn-1',
+          runId: 'run-1',
+          messageId: 'message-1',
+          origin,
+          content: { text: 'queued by the mailbox build' },
+          submittedContentDigest: messageContentDigest({ text: 'queued by the mailbox build' }),
+          submittedPlacement: 'next_turn',
+          placement: 'next_turn',
+          disposition: 'followup',
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+          admittedAt: 10,
+        });
+      } finally {
+        setup.close();
+      }
+
+      const legacy = new DatabaseSync(path);
+      try {
+        legacy.exec(`
+          ALTER TABLE message_admissions DROP COLUMN skill_invocation_json;
+          UPDATE session_metadata_schema SET version = 35 WHERE scope = 'session_metadata';
+        `);
+      } finally {
+        legacy.close();
+      }
+
+      const migrated = createSqliteSessionMetadataStore(path);
+      try {
+        assert.equal(migrated.schemaVersion(), SQLITE_SESSION_METADATA_SCHEMA_VERSION);
+        const admission = await migrated.readMessageAdmission('session-mailbox-v35', 'message-1');
+        assert.deepEqual(admission?.origin, origin);
+        assert.deepEqual(admission?.skillInvocation, { loaded: [], failed: [], receipts: [] });
       } finally {
         migrated.close();
       }

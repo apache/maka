@@ -1064,6 +1064,9 @@ export interface SystemNoteMessage {
     | 'context_compacted'
     | 'context_compaction_failed_open'
     | 'step_limit'
+    | 'session_mailbox_outbox'
+    | 'session_mailbox_failed'
+    | 'session_mailbox_sent'
     | 'error'
     | 'abort';
   /** Shape depends on `kind`. */
@@ -1268,6 +1271,9 @@ const SYSTEM_NOTE_KINDS = new Set([
   'context_compacted',
   'context_compaction_failed_open',
   'step_limit',
+  'session_mailbox_outbox',
+  'session_mailbox_failed',
+  'session_mailbox_sent',
   'error',
   'abort',
 ]);

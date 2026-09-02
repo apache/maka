@@ -82,6 +82,8 @@ import {
   isTurnOrchestrationSource,
   type TurnOrchestration,
 } from '@maka/core/orchestration';
+import { decodeTurnOrigin } from '@maka/core/turn-origin';
+import type { TurnOrigin } from '@maka/core/turn-origin';
 import {
   scanToolLedger,
   validateGenericToolLedgerAppend,
@@ -99,6 +101,8 @@ const ROOT_TURN_ADMISSION_MAX_AGGREGATED_ATTACHMENTS =
 export interface RootTurnSourceMessage {
   messageId: string;
   content: MessageContent;
+  /** Trusted Host-authored provenance; never accepted from message protocol input. */
+  origin?: TurnOrigin;
   submittedContentDigest?: `sha256:${string}`;
   /** The original placement before queue promotion; absent legacy records use `placement`. */
   submittedPlacement?: 'current_turn' | 'next_turn';
@@ -1755,6 +1759,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         'content',
         'placement',
         'disposition',
+        ...(Object.hasOwn(item, 'origin') ? ['origin'] : []),
         ...(Object.hasOwn(item, 'submittedContentDigest') ? ['submittedContentDigest'] : []),
         ...(Object.hasOwn(item, 'submittedPlacement') ? ['submittedPlacement'] : []),
         ...(Object.hasOwn(item, 'submittedIntent') ? ['submittedIntent'] : []),
@@ -1766,6 +1771,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
     const {
       messageId,
       content,
+      origin: rawOrigin,
       submittedContentDigest,
       submittedPlacement,
       submittedIntent,
@@ -1773,6 +1779,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
       placement,
       disposition,
     } = item;
+    const origin = rawOrigin === undefined ? undefined : decodeTurnOrigin(rawOrigin);
     if (
       typeof messageId !== 'string' ||
       !isSafeId(messageId) ||
@@ -1782,6 +1789,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         disposition !== 'turn_started') ||
       (disposition === 'steering' && placement !== 'current_turn') ||
       (disposition === 'followup' && placement !== 'next_turn') ||
+      (rawOrigin !== undefined && origin === undefined) ||
       (submittedPlacement !== undefined &&
         submittedPlacement !== 'current_turn' &&
         submittedPlacement !== 'next_turn') ||
@@ -1800,6 +1808,7 @@ function normalizeRootTurnSourceMessages(value: unknown): readonly RootTurnSourc
         `root turn source message content at index ${index}`,
         MAX_ATTACHMENT_COUNT,
       ),
+      ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
       ...(submittedContentDigest !== undefined ? { submittedContentDigest } : {}),
       ...(submittedPlacement !== undefined ? { submittedPlacement } : {}),
       ...(submittedIntent !== undefined
@@ -1835,6 +1844,7 @@ function rootTurnAdmissionPayloadsEqual(
         source.messageId === other.messageId &&
         source.placement === other.placement &&
         source.disposition === other.disposition &&
+        isDeepStrictEqual(source.origin, other.origin) &&
         source.submittedContentDigest === other.submittedContentDigest &&
         (source.submittedPlacement ?? source.placement) ===
           (other.submittedPlacement ?? other.placement) &&
@@ -2048,7 +2058,7 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     throw new Error('Invalid root execution descriptor');
   }
   if (value.kind === 'external_message') {
-    const allowedKeys = ['kind', 'inputDigest', 'maxSteps'];
+    const allowedKeys = ['kind', 'inputDigest', 'maxSteps', 'origin'];
     if (!Object.keys(value).every((key) => allowedKeys.includes(key))) {
       throw new Error('Invalid root execution descriptor');
     }
@@ -2063,10 +2073,15 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     ) {
       throw new Error('Invalid root execution descriptor');
     }
+    const origin = value.origin === undefined ? undefined : decodeTurnOrigin(value.origin);
+    if (value.origin !== undefined && origin === undefined) {
+      throw new Error('Invalid root execution descriptor');
+    }
     return Object.freeze({
       kind: 'external_message',
       ...(value.inputDigest !== undefined ? { inputDigest: value.inputDigest } : {}),
       ...(value.maxSteps !== undefined ? { maxSteps: value.maxSteps } : {}),
+      ...(origin !== undefined ? { origin: Object.freeze(origin) } : {}),
     });
   }
   if (value.kind === 'workhub_coordination') {

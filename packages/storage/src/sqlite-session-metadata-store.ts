@@ -273,6 +273,7 @@ interface MessageAdmissionRow {
   readonly turn_id?: unknown;
   readonly run_id?: unknown;
   readonly message_id?: unknown;
+  readonly origin_json?: unknown;
   readonly content_json?: unknown;
   readonly submitted_content_digest?: unknown;
   readonly submitted_placement?: unknown;
@@ -292,6 +293,7 @@ function decodeMessageAdmissionRow(
     typeof row.turn_id !== 'string' ||
     typeof row.run_id !== 'string' ||
     typeof row.message_id !== 'string' ||
+    (row.origin_json !== null && typeof row.origin_json !== 'string') ||
     typeof row.content_json !== 'string' ||
     typeof row.skill_invocation_json !== 'string' ||
     typeof row.submitted_content_digest !== 'string' ||
@@ -310,6 +312,9 @@ function decodeMessageAdmissionRow(
     turnId: row.turn_id,
     runId: row.run_id,
     messageId: row.message_id,
+    ...(typeof row.origin_json === 'string'
+      ? { origin: JSON.parse(row.origin_json) as PendingMessageAdmission['origin'] }
+      : {}),
     content: JSON.parse(row.content_json) as PendingMessageAdmission['content'],
     submittedContentDigest:
       row.submitted_content_digest as PendingMessageAdmission['submittedContentDigest'],
@@ -1632,7 +1637,7 @@ export class SqliteSessionMetadataStore {
     const row = this.db
       .prepare(
         `
-        SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+        SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
           submitted_placement, placement, disposition, queue_order, admitted_at,
           submitted_intent_json, skill_invocation_json
         FROM message_admissions
@@ -1668,10 +1673,10 @@ export class SqliteSessionMetadataStore {
       .prepare(
         `
           INSERT INTO message_admissions(
-            session_id, turn_id, run_id, message_id, content_json, submitted_content_digest,
+            session_id, turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
             submitted_intent_json, skill_invocation_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -1679,6 +1684,7 @@ export class SqliteSessionMetadataStore {
         stored.turnId,
         stored.runId,
         stored.messageId,
+        stored.origin ? JSON.stringify(stored.origin) : null,
         JSON.stringify(stored.content),
         stored.submittedContentDigest,
         stored.submittedPlacement,
@@ -1929,7 +1935,7 @@ export class SqliteSessionMetadataStore {
       const row = this.db
         .prepare(
           `
-          SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+          SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
             submitted_intent_json, skill_invocation_json
           FROM message_admissions
@@ -1962,7 +1968,7 @@ export class SqliteSessionMetadataStore {
       const rows = this.db
         .prepare(
           `
-          SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+          SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
             submitted_intent_json, skill_invocation_json
           FROM message_admissions
@@ -2043,9 +2049,9 @@ export class SqliteSessionMetadataStore {
         const admissionRow = this.db
           .prepare(
             `
-            SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+            SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
               submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json, skill_invocation_json
+              submitted_intent_json, skill_invocation_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -2124,6 +2130,7 @@ export class SqliteSessionMetadataStore {
             ts: steeringProof?.eventTs ?? source.admittedAt,
             ...source.content,
             steeringEventId: steeringProof?.eventId ?? messageId,
+            ...(admission?.origin ? { origin: admission.origin } : {}),
           });
           const json = JSON.stringify(message);
           (historicalMessageIdSet.has(messageId)
@@ -2143,7 +2150,8 @@ export class SqliteSessionMetadataStore {
             message.type !== 'user' ||
             message.id !== messageId ||
             (expectedSource !== undefined &&
-              !messageContentsEqual(normalizeMessageContent(message), expectedSource.content))
+              !messageContentsEqual(normalizeMessageContent(message), expectedSource.content)) ||
+            (admission !== undefined && !isDeepStrictEqual(message.origin, admission.origin))
           ) {
             throw new SessionMetadataConflictError(
               'Message admission transcript identity conflict',
@@ -2295,7 +2303,7 @@ export class SqliteSessionMetadataStore {
       const currentRow = this.db
         .prepare(
           `
-          SELECT turn_id, run_id, message_id, content_json, submitted_content_digest,
+          SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
             submitted_intent_json, skill_invocation_json
           FROM message_admissions
@@ -2308,6 +2316,7 @@ export class SqliteSessionMetadataStore {
       if (
         current.turnId !== stored.turnId ||
         current.runId !== stored.runId ||
+        !isDeepStrictEqual(current.origin, stored.origin) ||
         current.submittedPlacement !== stored.submittedPlacement ||
         current.admittedAt !== stored.admittedAt
       ) {

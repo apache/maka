@@ -1973,6 +1973,37 @@ const makaBridge = {
       const scope = await activeRuntimeHostRef();
       return createDesktopSessionOnScope(scope, input);
     },
+    async listMailboxTargets(sourceSessionId: string) {
+      const source = await runtimeHostSessionRef(sourceSessionId);
+      const result = await ipcRenderer.invoke(
+        'sessions:mailboxTargets',
+        source.scope,
+        source.sessionId,
+      ) as OperationOutput<'session.mailbox.targets'>;
+      return result.targets.map((target) => ({
+        ...target,
+        sessionId: desktopSessionKey({
+          hostId: source.scope.hostId,
+          sessionId: target.sessionId,
+        }),
+      }));
+    },
+    async sendMailboxMessage(sourceSessionId: string, targetSessionId: string, text: string) {
+      const [source, target] = await Promise.all([
+        runtimeHostSessionRef(sourceSessionId),
+        runtimeHostSessionRef(targetSessionId),
+      ]);
+      if (source.scope.hostId !== target.scope.hostId) {
+        throw new Error('Session messages require both tasks to use the same Runtime Host');
+      }
+      return ipcRenderer.invoke(
+        'sessions:mailboxSend',
+        source.scope,
+        source.sessionId,
+        target.sessionId,
+        text,
+      );
+    },
     async send(sessionId, command) {
       const session = await runtimeHostSessionRef(sessionId);
       if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {

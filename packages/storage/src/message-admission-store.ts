@@ -23,6 +23,7 @@ import {
   normalizeMessageContent,
   type MessageContent,
 } from '@maka/core/events';
+import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
@@ -40,6 +41,7 @@ export interface PendingMessageAdmission {
   readonly turnId: string;
   readonly runId: string;
   readonly messageId: string;
+  readonly origin?: TurnOrigin;
   readonly content: MessageContent;
   readonly submittedContentDigest: `sha256:${string}`;
   readonly submittedPlacement: 'current_turn' | 'next_turn';
@@ -127,8 +129,13 @@ export function normalizePendingMessageAdmission(
   if (!Number.isSafeInteger(admission.admittedAt) || admission.admittedAt < 0) {
     throw new Error('Invalid message admission timestamp');
   }
+  const origin = admission.origin === undefined ? undefined : decodeTurnOrigin(admission.origin);
+  if (admission.origin !== undefined && origin === undefined) {
+    throw new Error('Invalid pending Message origin');
+  }
   const normalized = Object.freeze({
     ...admission,
+    ...(origin ? { origin: Object.freeze(origin) } : {}),
     content: normalizeMessageContent(admission.content),
     ...(admission.submittedIntent
       ? { submittedIntent: normalizeSubmittedTurnIntent(admission.submittedIntent) }
@@ -182,6 +189,7 @@ export function samePendingMessageAdmission(
     a.turnId === b.turnId &&
     a.runId === b.runId &&
     a.messageId === b.messageId &&
+    isDeepStrictEqual(a.origin, b.origin) &&
     a.submittedContentDigest === b.submittedContentDigest &&
     a.submittedPlacement === b.submittedPlacement &&
     a.placement === b.placement &&
