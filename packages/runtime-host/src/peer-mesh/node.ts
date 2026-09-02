@@ -533,7 +533,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   join(invitationValue: PeerMeshInvitationV1, signal?: AbortSignal): Promise<PeerMeshStatus> {
     return this.#admitMesh(async () => {
       const invitation = validatePeerMeshInvitation(invitationValue);
-      const authorityReachability = this.#validateReachability(
+      const authorityReachability = this.#authenticateReachability(
         invitation.reachability,
         invitation.reachability.lease.peerId,
         true,
@@ -649,7 +649,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     signal: AbortSignal,
   ): Promise<PeerMeshStatus> {
     signal.throwIfAborted();
-    const authorityReachability = this.#validateReachability(
+    const authorityReachability = this.#authenticateReachability(
       invitation.reachability,
       invitation.reachability.lease.peerId,
       true,
@@ -749,6 +749,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         result: undefined,
       };
     });
+    this.#recordReachabilityReceipts([
+      ...reachability,
+      authorityReachability,
+      localReachability,
+    ]);
     signal.throwIfAborted();
     await this.#refreshLocalEvidence();
     signal.throwIfAborted();
@@ -807,7 +812,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #resumePendingJoin(pending: PendingPeerMeshJoin, signal: AbortSignal): Promise<void> {
-    const authorityReachability = this.#validateReachability(
+    const authorityReachability = this.#authenticateReachability(
       pending.invitation.reachability,
       pending.invitation.reachability.lease.peerId,
       true,
@@ -1407,7 +1412,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       if (!roster.roster.members.includes(signed.lease.peerId)) {
         throw new Error('Peer Mesh reachability is outside the active roster');
       }
-      return this.#validateReachability(signed, signed.lease.peerId, allowExpired);
+      return this.#authenticateReachability(signed, signed.lease.peerId, allowExpired);
     });
     if (new Set(reachability.map(({ lease }) => lease.peerId)).size !== reachability.length) {
       throw new Error('Duplicate Peer Mesh reachability leases');
@@ -1415,7 +1420,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return Object.freeze(reachability);
   }
 
-  #validateReachability(
+  #authenticateReachability(
     value: SignedPeerReachabilityLeaseV1,
     expectedPeerId: string,
     allowExpired = false,
@@ -1426,7 +1431,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     if (allowExpired && signed.lease.expiresAt + REACHABILITY_HISTORY_MS <= this.#now()) {
       throw new Error('Peer Mesh reachability is outside the recovery horizon');
     }
-    this.#recordReachabilityReceipt(signed);
     return signed;
   }
 
@@ -1482,24 +1486,49 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   #recordReachabilityReceipt(signed: SignedPeerReachabilityLeaseV1): void {
-    const previous = this.#reachabilityReceipts.get(signed.lease.peerId);
-    if (previous && previous.revision > signed.lease.revision) return;
-    if (
-      previous &&
-      previous.revision === signed.lease.revision &&
-      previous.signature !== signed.signature
-    ) {
-      return;
+    this.#recordReachabilityReceipts([signed]);
+  }
+
+  #recordReachabilityReceipts(values: readonly SignedPeerReachabilityLeaseV1[]): void {
+    const retained = this.#retainedReachabilityReceiptPeerIds();
+    for (const peerId of this.#reachabilityReceipts.keys()) {
+      if (!retained.has(peerId)) this.#reachabilityReceipts.delete(peerId);
     }
-    this.#reachabilityReceipts.set(
-      signed.lease.peerId,
-      peerReachabilityLeaseReceipt({
-        signed,
-        wallNow: this.#now(),
-        monotonicNow: this.#monotonicNow(),
-        ...(previous ? { previous } : {}),
-      }),
-    );
+    for (const signed of values) {
+      if (!retained.has(signed.lease.peerId)) continue;
+      const previous = this.#reachabilityReceipts.get(signed.lease.peerId);
+      if (previous && previous.revision > signed.lease.revision) continue;
+      if (
+        previous &&
+        previous.revision === signed.lease.revision &&
+        previous.signature !== signed.signature
+      ) {
+        continue;
+      }
+      this.#reachabilityReceipts.set(
+        signed.lease.peerId,
+        peerReachabilityLeaseReceipt({
+          signed,
+          wallNow: this.#now(),
+          monotonicNow: this.#monotonicNow(),
+          ...(previous ? { previous } : {}),
+        }),
+      );
+    }
+  }
+
+  #retainedReachabilityReceiptPeerIds(): ReadonlySet<string> {
+    const stored = this.#store.read();
+    const localPeerId = this.#peer.identity().peerId;
+    const retained = new Set<string>([localPeerId]);
+    for (const state of stored.meshes) {
+      if (!isActiveMembership(state, localPeerId)) continue;
+      for (const peerId of state.roster.roster.members) retained.add(peerId);
+    }
+    for (const pending of stored.pendingJoins) {
+      retained.add(pending.invitation.reachability.lease.peerId);
+    }
+    return retained;
   }
 
   #isReachabilityCurrent(signed: SignedPeerReachabilityLeaseV1): boolean {
@@ -1521,7 +1550,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const reachability = this.#validateReachabilityPage(reachabilityValues, roster, true);
     const advertisements = this.#validateAdvertisementPage(advertisementValues, roster);
     const localPeerId = this.#peer.identity().peerId;
-    await this.#store.mutate((current) => {
+    const accepted = await this.#store.mutate((current) => {
       const state = findMesh(current.meshes, meshId);
       if (!state || state.roster.authorityPublicKey !== roster.authorityPublicKey) {
         throw new Error('Peer Mesh synchronization has the wrong authority');
@@ -1542,9 +1571,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             ? current.advertisements
             : mergeAdvertisements(current.advertisements, advertisements),
         },
-        result: undefined,
+        result: isActiveMembership(next, localPeerId),
       };
     });
+    if (accepted) this.#recordReachabilityReceipts(reachability);
     await this.#refreshLocalEvidence();
     await this.#reconcileTransit();
   }
@@ -1721,7 +1751,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         response = await this.#redeem(
           request,
           stream.peerId,
-          this.#validateReachability(request.reachability, stream.peerId),
+          this.#authenticateReachability(request.reachability, stream.peerId),
           this.#validateAdvertisementForPeer(request.advertisement, request.meshId, stream.peerId),
         );
       } else if (request.kind === 'sync') {
@@ -1903,6 +1933,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       };
     });
     if (response.kind === 'invitation-redeemed') {
+      this.#recordReachabilityReceipt(remoteReachability);
       const stored = this.#store.read();
       const state = findMesh(stored.meshes, request.meshId);
       if (state) {
@@ -1983,7 +2014,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #sync(request: SyncPeerMeshRequest, remotePeerId: string): Promise<SyncPeerMeshResponse> {
-    const remoteReachability = this.#validateReachability(request.reachability, remotePeerId);
+    const remoteReachability = this.#authenticateReachability(
+      request.reachability,
+      remotePeerId,
+    );
     const remoteAdvertisement = this.#validateAdvertisementForPeer(
       request.advertisement,
       request.meshId,
@@ -2055,7 +2089,15 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       };
     });
     if (response.kind === 'sync-result') {
-      this.#recentlyReached.add(remotePeerId);
+      const localPeerId = this.#peer.identity().peerId;
+      if (
+        !response.roster.roster.closed &&
+        response.roster.roster.members.includes(localPeerId) &&
+        response.roster.roster.members.includes(remotePeerId)
+      ) {
+        this.#recordReachabilityReceipt(remoteReachability);
+        this.#recentlyReached.add(remotePeerId);
+      }
       await this.#reconcileTransit();
     }
     return response;
