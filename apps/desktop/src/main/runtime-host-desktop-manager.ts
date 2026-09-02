@@ -79,7 +79,11 @@ export interface RuntimeHostDesktopManager {
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void>;
-  finalizeGuestAccess(mountId: string, signal?: AbortSignal): Promise<void>;
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void>;
   unmountGuest(mountId: string): Promise<void>;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
@@ -208,6 +212,8 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
+  connectionPhaseObserver?: (phase: RuntimeHostConnectionPhase) => void;
+  skipPeerRouteRefreshOnce?: boolean;
   lastCandidate?: {
     readonly hostId: string;
     readonly hostEpoch: string;
@@ -355,11 +361,21 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return this.#mutateTarget(profileId, () => this.#finalizeAccessCredential(profileId));
   }
 
-  finalizeGuestAccess(mountId: string, signal?: AbortSignal): Promise<void> {
-    return this.#mutateTarget(mountId, () => this.#finalizeAccessCredential(mountId, signal));
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void> {
+    return this.#mutateTarget(mountId, () =>
+      this.#finalizeAccessCredential(mountId, signal, onAccessActivated),
+    );
   }
 
-  async #finalizeAccessCredential(profileId: string, externalSignal?: AbortSignal): Promise<void> {
+  async #finalizeAccessCredential(
+    profileId: string,
+    externalSignal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
@@ -390,7 +406,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             () => candidate.client.finalizeAccessCredential(remainingMs),
             signal,
           );
+          notifyAccessActivated(onAccessActivated);
           if (finalized.reconnectRequired) {
+            if (
+              target.target.profile.kind === 'remote' &&
+              target.target.profile.transport.kind === 'libp2p-direct'
+            ) {
+              target.skipPeerRouteRefreshOnce = true;
+            }
             await candidate.close();
             await this.#waitForReadyCandidate(lifecycle, candidate, signal);
           }
@@ -565,6 +588,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     });
     try {
       target.lifecycle = await this.#startLifecycle(target, false, signal);
+      // Import progress describes the initial connection only. Later
+      // reconnects have their own durable target state and must not restart the
+      // one-shot join UI from route discovery.
+      target.connectionPhaseObserver = undefined;
       if (this.#closed) {
         await target.lifecycle.close();
         throw new Error('Desktop Runtime Host manager is closed');
@@ -863,6 +890,8 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     let takeoverHostEpoch: string | undefined;
     let localRecoveryAttempted = false;
     const inheritedExit = target.input.onExit;
+    let refreshPeerRoutes = target.skipPeerRouteRefreshOnce !== true;
+    target.skipPeerRouteRefreshOnce = false;
     const tryRecoverLocalHost = async (): Promise<boolean> => {
       if (target.input.profileTarget || localRecoveryAttempted || !this.recoverLocalHost) {
         return false;
@@ -889,13 +918,15 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
             onConnectionPhase: (phase) => {
-              target.input.onConnectionPhase?.(phase);
+              target.connectionPhaseObserver?.(phase);
             },
+            ...(refreshPeerRoutes ? {} : { refreshPeerRoutes: false }),
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
           },
           target.observations,
         );
+        refreshPeerRoutes = true;
       } catch (error) {
         signal.throwIfAborted();
         if (await tryRecoverLocalHost()) continue;
@@ -1066,6 +1097,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       input,
       target,
       observations,
+      ...(input.onConnectionPhase
+        ? { connectionPhaseObserver: input.onConnectionPhase }
+        : {}),
       state: {
         epoch,
         target,
@@ -1230,6 +1264,14 @@ function pairingFinalizeTimedOut(error: unknown): boolean {
     error.operation === 'access.credential.finalize' &&
     error.reason === 'timeout'
   );
+}
+
+function notifyAccessActivated(observer: (() => void) | undefined): void {
+  try {
+    observer?.();
+  } catch {
+    // Presentation progress cannot control credential finalization.
+  }
 }
 
 function withRuntimeHostTarget(

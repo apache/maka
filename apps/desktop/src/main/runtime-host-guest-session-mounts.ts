@@ -135,7 +135,11 @@ export function createDesktopGuestSessionMountService(input: {
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
-  readonly finalizeAccess: (mountId: string, signal: AbortSignal) => Promise<void>;
+  readonly finalizeAccess: (
+    mountId: string,
+    signal: AbortSignal,
+    onAccessActivated?: () => void,
+  ) => Promise<void>;
   readonly unmount: (mountId: string) => Promise<void>;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   readonly onError?: (error: Error, mount: GuestSessionMount) => void;
@@ -225,7 +229,13 @@ export function createDesktopGuestSessionMountService(input: {
     if (activation.kind === 'import') {
       reportImportProgress(activation.onProgress, 'finalizing_access');
     }
-    const finalization = input.finalizeAccess(mount.mountId, activation.controller.signal);
+    const finalization = input.finalizeAccess(
+      mount.mountId,
+      activation.controller.signal,
+      activation.kind === 'import'
+        ? () => reportImportProgress(activation.onProgress, 'loading_session')
+        : undefined,
+    );
     activation.finalization = finalization;
     try {
       await finalization;
@@ -576,10 +586,9 @@ function collaborationProgressForConnectionPhase(
     case 'connecting':
       return 'connecting';
     case 'authenticating':
-      return 'authenticating';
     case 'handshaking':
     case 'waiting_for_ready':
-      return 'loading_session';
+      return 'authenticating';
   }
 }
 

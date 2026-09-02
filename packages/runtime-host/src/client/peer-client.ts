@@ -37,6 +37,7 @@ export interface RuntimeHostPeerConnectInput {
   readonly coordinationRelays?: readonly string[];
   readonly transitRelayPeerIds?: readonly string[];
   readonly directDeadlineMs: number;
+  readonly refreshRoutes?: boolean;
 }
 
 export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
@@ -242,8 +243,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal?: AbortSignal,
     onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
-    notifyPhase(onPhase, 'discovering');
-    await this.#prepareRoutes(input, signal);
+    if (input.refreshRoutes !== false) {
+      notifyPhase(onPhase, 'discovering');
+      await this.#prepareRoutes(input, signal);
+    }
     notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
   }

@@ -61,6 +61,42 @@ test('retains a successful Guest mount and rehydrates the same authority after r
   await second!.close();
 });
 
+test('presents Guest import as one connection followed by access activation', async () => {
+  const progress: string[] = [];
+  const mounts = service(memoryStore(), {
+    mount: async (_target, _signal, onConnectionPhase) => {
+      onConnectionPhase?.('discovering');
+      onConnectionPhase?.('connecting');
+      onConnectionPhase?.('authenticating');
+      onConnectionPhase?.('handshaking');
+      onConnectionPhase?.('waiting_for_ready');
+    },
+    finalizeAccess: async (_mountId, _signal, onAccessActivated) => {
+      onAccessActivated?.();
+    },
+  });
+
+  const result = await mounts.importInvitation(
+    invitation('guest-progress'),
+    false,
+    'import-progress',
+    (phase) => progress.push(phase),
+  );
+
+  assert.equal(result.kind, 'connected');
+  const visibleProgress = progress.filter((phase, index) => phase !== progress[index - 1]);
+  assert.deepEqual(visibleProgress, [
+    'validating_invitation',
+    'discovering_host',
+    'preparing_route',
+    'connecting',
+    'authenticating',
+    'finalizing_access',
+    'loading_session',
+  ]);
+  await mounts.close();
+});
+
 test('persists authenticated route rotation for reconnect and restart', async () => {
   const store = memoryStore();
   let observePeerEndpoint!: (endpoint: HostPeerEndpoint) => void;

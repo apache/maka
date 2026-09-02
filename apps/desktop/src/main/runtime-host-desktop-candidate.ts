@@ -205,6 +205,7 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly peerClient?: RuntimeHostPeerClient;
+  readonly refreshPeerRoutes?: boolean;
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
   readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly profileTarget?: {
@@ -440,6 +441,9 @@ async function startProfileDesktopRuntimeHostCandidate(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
+    ...(input.refreshPeerRoutes === undefined
+      ? {}
+      : { refreshPeerRoutes: input.refreshPeerRoutes }),
     ...(input.onConnectionPhase === undefined
       ? {}
       : { onConnectionPhase: input.onConnectionPhase }),

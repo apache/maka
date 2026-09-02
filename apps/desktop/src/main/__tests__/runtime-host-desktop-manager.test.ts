@@ -710,6 +710,50 @@ test('reconnects after a pairing candidate becomes bound to this Client', async 
   await manager.close();
 });
 
+test('activates Guest access on a fresh stream without replaying route progress', async () => {
+  const local = candidateHarness({ hostId: 'host-a' });
+  const remoteHostId = 'a'.repeat(64);
+  const pending = candidateHarness({
+    hostId: remoteHostId,
+    finalizeReconnectRequired: true,
+  });
+  const active = candidateHarness({ hostId: remoteHostId });
+  const queue = [local.candidate, pending.candidate, active.candidate];
+  const phases: string[] = [];
+  const routeRefreshes: Array<boolean | undefined> = [];
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) => {
+        if (input.profileTarget) {
+          routeRefreshes.push(input.refreshPeerRoutes);
+          input.onConnectionPhase?.('discovering');
+          input.onConnectionPhase?.('connecting');
+        }
+        return ready(queue.shift()!);
+      },
+      reconnectBackoff: { minMs: 0, maxMs: 0 },
+    },
+  );
+  await manager.mountGuest(
+    peerGuestTarget('shared-session'),
+    undefined,
+    (phase) => phases.push(phase),
+  );
+  let activations = 0;
+
+  await manager.finalizeGuestAccess('shared-session', undefined, () => {
+    activations += 1;
+  });
+
+  assert.deepEqual(phases, ['discovering', 'connecting']);
+  assert.deepEqual(routeRefreshes, [undefined, false]);
+  assert.equal(activations, 1);
+  assert.equal(pending.closeCalls, 1);
+  assert.equal(manager.current('shared-session')?.candidate, active.candidate);
+  await manager.close();
+});
+
 for (const dispatch of ['not_dispatched', 'dispatched'] as const) {
   test(`replays ${dispatch} pairing finalization after connection loss`, async () => {
     const local = candidateHarness({ hostId: 'host-a' });
@@ -1633,5 +1677,26 @@ function remoteTarget(
       ...(access ? { access } : {}),
     },
     credential: `credential-${target}`,
+  };
+}
+
+function peerGuestTarget(
+  id: string,
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
+  return {
+    profile: {
+      id,
+      name: id,
+      kind: 'remote',
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: '12D3KooWpeer',
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: [],
+      },
+      rootId: 'a'.repeat(64),
+      access: 'session_guest',
+    },
+    credential: 'credential-peer',
   };
 }
