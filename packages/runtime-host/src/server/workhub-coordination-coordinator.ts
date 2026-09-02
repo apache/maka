@@ -303,14 +303,6 @@ export class HostWorkHubCoordinationCoordinator {
             'WorkHub active delegation set changed during stop admission',
           );
         }
-        if (
-          activeAssignments.some((assignment) => !visibleSessionIds.has(assignment.targetSessionId))
-        ) {
-          throw new WorkHubActionGateFailure(
-            'action_conflict',
-            'WorkHub active delegation target is unavailable',
-          );
-        }
         // Held lanes make this the last moment the one-target proof can change.
         // It is proved from opaque delegation identity, so a concurrent rename
         // is harmless while a concurrent delegation to the same Session is not.

@@ -324,14 +324,10 @@ describe('WorkHub Coordination Action Gate', () => {
    * A stop proposal as the Action Policy produces it: opaque identities plus
    * the active-delegation state it resolved against, never a display name.
    */
-  const stopProposal = (
-    stopsActionId: string,
-    targetSessionId: string,
-    activeActionIds: readonly string[] = [stopsActionId],
-  ) => ({
+  const stopProposal = (stopsActionId: string, targetSessionId: string) => ({
     disposition: 'stop_work' as const,
     stopsActionId,
-    expects: { targetSessionId, activeActionIds },
+    expects: { targetSessionId },
   });
 
   test('stops exactly one named durable delegation and replays its observed outcome', async () => {
@@ -372,6 +368,61 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.retirements.length, 1);
   });
 
+  test('a deleted delegation target does not disable stop for every other Session', async () => {
+    const effects = fakeEffects([
+      session('payments', { name: 'Payments' }),
+      session('login', { name: 'Login' }),
+    ]);
+    for (const [actionId, targetSessionId, name] of [
+      ['pay-action', 'payments', 'Payments'],
+      ['login-action', 'login', 'Login'],
+    ] as const) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'pay-action' ? '4' : '5').repeat(64)}`,
+            targetSessionId,
+            targetSessionName: name,
+            disposition: 'delegate_existing',
+            userText: `Work in ${name}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+
+    // Nothing retires a delegation when its Session is deleted, so this one
+    // stays active forever. It must not be able to veto an unrelated stop.
+    effects.sessions = effects.sessions.filter(({ id }) => id !== 'payments');
+
+    const stopped = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-login',
+        userText: 'Stop Login',
+        proposal: stopProposal('login-action', 'login'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+    assert.equal(stopped.disposition, 'stop_work');
+
+    // The dangling delegation itself still fails closed: its own target is gone.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-payments',
+          userText: 'Stop Payments',
+          proposal: stopProposal('pay-action', 'payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+  });
+
   test('rejects a stop that does not identify one active durable delegation', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     for (const actionId of ['source-action', 'other-action']) {
@@ -391,25 +442,20 @@ describe('WorkHub Coordination Action Gate', () => {
       );
     }
 
-    // A proposal that understates the Session's active work is stale, and one
-    // that states it honestly still fails: stop admits a sole delegation only.
-    for (const proposal of [
-      stopProposal('source-action', 'payments'),
-      stopProposal('source-action', 'payments', ['source-action', 'other-action']),
-    ]) {
-      await assert.rejects(
-        new WorkHubCoordinationActionGate(effects).act(
-          {
-            actionId: 'stop-ambiguous-payments',
-            userText: 'Stop Payments',
-            proposal,
-            confirmation: { kind: 'user_stop' },
-          },
-          CONTEXT,
-        ),
-        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
-      );
-    }
+    // Stop admits a sole active delegation, and the Host proves that from
+    // durable state — the proposal cannot assert its way past it.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-ambiguous-payments',
+          userText: 'Stop Payments',
+          proposal: stopProposal('source-action', 'payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
     assert.equal(effects.stopRequests.size, 0);
     assert.equal(effects.retirements.length, 0);
   });
@@ -453,26 +499,20 @@ describe('WorkHub Coordination Action Gate', () => {
         userText,
       );
     }
-    // A precondition that disagrees with durable state fails closed, whether it
-    // names the wrong Session or an active delegation set that never held.
-    for (const proposal of [
-      stopProposal('source-action', 'login'),
-      stopProposal('source-action', 'payments', ['other-action']),
-      stopProposal('source-action', 'payments', []),
-    ]) {
-      await assert.rejects(
-        new WorkHubCoordinationActionGate(effects).act(
-          {
-            actionId: `stop-${proposal.expects.targetSessionId}-${proposal.expects.activeActionIds.join('+')}`,
-            userText: 'Stop Payments',
-            proposal,
-            confirmation: { kind: 'user_stop' },
-          },
-          CONTEXT,
-        ),
-        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
-      );
-    }
+    // A precondition that disagrees with durable state fails closed: this
+    // delegation does not belong to the Session the proposal resolved.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-wrong-session',
+          userText: 'Stop Payments',
+          proposal: stopProposal('source-action', 'login'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
     assert.equal(effects.retirements.length, 0);
   });
 

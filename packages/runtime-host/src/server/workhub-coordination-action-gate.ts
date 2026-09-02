@@ -382,38 +382,21 @@ export class WorkHubCoordinationActionGate {
         this.#effects.listActiveAssignments(),
       ]);
       const sessionNameById = new Map(sessions.map((session) => [session.id, session.name]));
-      if (
-        activeAssignments.some((assignment) => !sessionNameById.has(assignment.targetSessionId))
-      ) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub active delegation target is unavailable',
-        );
-      }
+      // Only this delegation's target has to be visible. A delegation whose
+      // Session the user deleted stays in the active set forever — nothing
+      // retires it — so proving visibility over the whole set would let one
+      // deleted Session block every stop in the system from then on.
       const currentTargetName = sessionNameById.get(source.targetSessionId);
       if (!currentTargetName) {
         throw new WorkHubActionGateFailure('action_conflict', 'WorkHub stop target is unavailable');
       }
       // Authority is the opaque delegation identity, never the display name the
-      // Resolver recalled it by. The Gate proves that identity is still the one
-      // active delegation of the Session the policy resolved, and that the
-      // policy's view of that Session has not changed underneath the proposal.
-      if (
-        !sameActiveDelegationSet(
-          activeAssignments,
-          source.targetSessionId,
-          proposal.expects.activeActionIds,
-        )
-      ) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub stop target active delegations changed during admission',
-        );
-      }
-      if (
-        proposal.expects.activeActionIds.length !== 1 ||
-        proposal.expects.activeActionIds[0] !== source.actionId
-      ) {
+      // Resolver recalled it by. This is the advisory read; the coordinator
+      // reproves it from durable state under the admission lease.
+      const targetActive = activeAssignments.filter(
+        (assignment) => assignment.targetSessionId === source.targetSessionId,
+      );
+      if (targetActive.length !== 1 || targetActive[0]?.actionId !== source.actionId) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub stop target does not identify one active durable delegation',
@@ -1050,24 +1033,6 @@ function replacementActionFingerprint(
         : {}),
     },
   });
-}
-
-/**
- * Whether one Session's current active WorkHub delegations are exactly the set
- * the Action Policy resolved against. Comparison is by opaque action identity
- * and order-insensitive, so a rename cannot invalidate a proposal and a
- * concurrent delegation to the same Session always does.
- */
-function sameActiveDelegationSet(
-  activeAssignments: readonly WorkHubDelegationAssignedMessage[],
-  targetSessionId: string,
-  expectedActionIds: readonly string[],
-): boolean {
-  const current = activeAssignments
-    .filter((assignment) => assignment.targetSessionId === targetSessionId)
-    .map((assignment) => assignment.actionId);
-  const expected = new Set(expectedActionIds);
-  return current.length === expected.size && current.every((actionId) => expected.has(actionId));
 }
 
 function stopActionFingerprint(
