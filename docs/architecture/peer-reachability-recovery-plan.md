@@ -309,6 +309,7 @@ charter. Their evidence is adjudicated into this ledger:
 | R7-S1 | simplification | partially confirmed | The publisher file no longer repeats an unsigned outer PeerId already authenticated by the signed lease. The local lease remains in the Mesh evidence table because that table is the uniform bounded anti-entropy cache, not a competing authority; excluding self would add special cases to vectors, pages, persistence, and status projection. |
 | R7-S2 | simplification | confirmed | The cross-layer `waitForRoutes` option was removed. Application attempts intrinsically accept live route updates until their deadline; Mesh control either uses explicit candidates, reuses an already eligible direct connection, or fails immediately. |
 | R8-S1 | simplification | confirmed | The Mesh receipt cache no longer mirrors the publisher's local receipt or retains an unconsumed pending-authority receipt. Its sole authority class is now active remote roster members. |
+| R8-C1 | correctness | confirmed | Peer-keyed recovery state now has collection-level bounds. Authenticated route receipts are globally horizon-pruned and LRU-bounded with active observers preferred, while completed Mesh sweeps are retained only for currently visible remote roster members. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
