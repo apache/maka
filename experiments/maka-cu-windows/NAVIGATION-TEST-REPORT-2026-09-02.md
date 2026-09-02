@@ -176,6 +176,21 @@ SHA256 为 `334C3ECEB4A7566C62667BFF3A0BB1569DC4B164ECF11E0F059606E0AD52CA4B`；
 C# 与 Rust 均为 lifecycle 34/34、protocol 3/3，合计 74/74 checks；该文件替代前一轮
 C5a 取消竞态的中间结果作为最终基础回归证据。
 
+## 发布产物与冷启动测量
+
+使用 `publish.ps1` 生成 self-contained `win-x64` 单文件后，发布版 C# helper/fixture
+再次通过完整 lifecycle（0 failures）。C# helper 发布文件为 188,298,703 bytes，Rust
+release helper 为 466,944 bytes；Rust 产物的 clean-machine 运行时依赖尚未在另一台
+机器确认，不能仅凭文件大小作最终选型结论。三次冷启动到 `initialize` 响应的本机样本为：
+
+| helper | handshake samples |
+|---|---|
+| C# published single-file | 133.67 ms / 119.81 ms / 157.04 ms |
+| Rust release | 83.39 ms / 85.98 ms / 71.88 ms |
+
+这些是开发机交互桌面测量，不包含首帧截图和真实应用动作延迟；下一轮跨电脑测试仍需
+记录进程工作集、首帧、原生依赖和无 SDK/.NET 环境结果。
+
 ## complete 模式三轮矩阵
 
 `browser-results-navigation-complete-v1.json` 使用最终 C# / Rust release 构建，
