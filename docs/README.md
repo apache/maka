@@ -25,6 +25,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - Root and package READMEs describe stable product entry points, public seams, and local ownership.
 - `docs/` contains current cross-cutting architecture, security, product, and validation contracts.
+- `docs/blogs/` contains long-form explanations of Maka's design ideas; code and current contracts remain authoritative.
 - GitHub issues and pull requests contain implementation plans, migration progress, and time-sensitive TODOs.
 - `docs/archive/` preserves completed plans and superseded material for historical context. Archived documents are not current implementation guidance.
 
@@ -38,6 +39,10 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Computer Use package](../packages/computer-use/README.md)
 - [UI package architecture](../packages/ui/README.md)
 - [Security policy](../SECURITY.md)
+
+## Blogs
+
+- [Log Is the Runtime: How Maka Uses an Append-Only Log to Manage Agent State and Context](./blogs/log-is-the-runtime.md) ([中文](./blogs/log-is-the-runtime.zh-CN.md))
 
 ## Current contracts
 
