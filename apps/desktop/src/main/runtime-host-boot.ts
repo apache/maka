@@ -1942,8 +1942,13 @@ async function closeRuntimeHostDesktop(): Promise<void> {
   const runtimeHostPeerShutdown = runtimeHostManagerShutdown
     .catch(() => undefined)
     .then(async () => {
-      await runtimeHostPeerMeshComponent?.close();
-      await runtimeHostPeerEndpointOwner?.close();
+      const errors: unknown[] = [];
+      await runtimeHostPeerMeshComponent?.close().catch((error: unknown) => errors.push(error));
+      await runtimeHostPeerEndpointOwner?.close().catch((error: unknown) => errors.push(error));
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, 'Unable to close Desktop peer resources');
+      }
     });
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),

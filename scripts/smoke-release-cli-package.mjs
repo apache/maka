@@ -264,22 +264,15 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     } catch (error) {
       if (!String(error).includes('peer_identity_mismatch')) throw error;
     }
-    const meshAuthorityDataRoot = join(root, 'mesh-authority');
-    meshAuthorityEndpoint = await reachability.openRuntimeHostPeerEndpointOwner({
-      nativePath,
-      keyPath: hostKeyPath,
-      expectedPeerId: peerId,
-      dataRoot: meshAuthorityDataRoot,
-      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
-    });
-    meshAuthorityComponent = await mesh.openRuntimeHostPeerMeshComponent({
-      dataRoot: meshAuthorityDataRoot,
-      endpoint: meshAuthorityEndpoint,
-      endpointKind: 'host',
-    });
     host = await server.startExecutionRuntimeHostService({
       rootPath: hostRoot,
-      peer: { borrowedEndpoint: meshAuthorityEndpoint },
+      peer: {
+        nativePath,
+        keyPath: hostKeyPath,
+        expectedPeerId: peerId,
+        meshDataRoot: join(root, 'peer-host-state'),
+        listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+      },
     });
     const listener = host.peerListeners[0];
     if (
@@ -298,6 +291,18 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
       canPublishClientCapabilities: false,
       canUseHostPaths: false,
       preset: 'terminal-client',
+    });
+    const meshAuthorityDataRoot = join(root, 'mesh-authority');
+    meshAuthorityEndpoint = await reachability.openRuntimeHostPeerEndpointOwner({
+      nativePath,
+      keyPath: join(root, 'mesh-authority.key'),
+      dataRoot: meshAuthorityDataRoot,
+      listenAddresses: ['/ip4/127.0.0.1/udp/0/quic-v1'],
+    });
+    meshAuthorityComponent = await mesh.openRuntimeHostPeerMeshComponent({
+      dataRoot: meshAuthorityDataRoot,
+      endpoint: meshAuthorityEndpoint,
+      endpointKind: 'host',
     });
     const meshMemberKeyPath = join(root, 'mesh-member.key');
     const meshMemberDataRoot = join(root, 'mesh-member');
@@ -328,8 +333,8 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
         transport: {
           kind: 'libp2p-direct',
           peerId,
-          routeHints: ['/ip4/127.0.0.1/udp/1/quic-v1'],
-          coordinationRelays: [],
+          routeHints: listener.listenAddresses,
+          coordinationRelays: listener.reachability.lease.coordinationRoutes,
         },
       },
       credential: issued.credential,

@@ -57,11 +57,9 @@ export interface ExecutionRuntimeHostServiceOptions {
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
   >;
-  readonly peer?:
-    | (RuntimeHostPeerListenerConfiguration & {
-        readonly meshDataRoot?: string;
-      })
-    | { readonly borrowedEndpoint: RuntimeHostPeerEndpointOwner };
+  readonly peer?: RuntimeHostPeerListenerConfiguration & {
+    readonly meshDataRoot?: string;
+  };
 }
 
 export interface ExecutionRuntimeHostServiceDependencies
@@ -102,11 +100,10 @@ export async function startExecutionRuntimeHostService(
   if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
   const { owner } = ownership;
   let peerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
-  let peerEndpoint: RuntimeHostPeerEndpointOwner | undefined;
   let peerMesh: RuntimeHostPeerMeshComponent | undefined;
   let host: RuntimeHostKernel | undefined;
   try {
-    if (options.peer && !('borrowedEndpoint' in options.peer)) {
+    if (options.peer) {
       peerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
         ...options.peer,
         dataRoot: options.peer.meshDataRoot ?? `${options.peer.keyPath}.state`,
@@ -131,17 +128,13 @@ export async function startExecutionRuntimeHostService(
           );
         }
     }
-    peerEndpoint =
-      options.peer && 'borrowedEndpoint' in options.peer
-        ? options.peer.borrowedEndpoint
-        : peerEndpointOwner;
     let peerTermination: { readonly error: unknown } | undefined;
-    if (peerEndpoint) {
+    if (peerEndpointOwner) {
       const terminate = (error: unknown) => {
         peerTermination ??= { error };
         void host?.close().catch(() => undefined);
       };
-      void peerEndpoint.closed.then(
+      void peerEndpointOwner.closed.then(
         () => terminate(new Error('Runtime Host peer endpoint stopped unexpectedly')),
         terminate,
       );
@@ -160,18 +153,18 @@ export async function startExecutionRuntimeHostService(
       composition,
       accessAuthority,
       ...(peerMesh ? { peerMesh: peerMesh.mesh } : {}),
-      ...(options.websocket || peerEndpoint
+      ...(options.websocket || peerEndpointOwner
         ? {
             listenerSetFactory: (input) =>
               startRuntimeHostAuthenticatedListenerSet(input, {
                 ...(options.websocket
                   ? { websocket: { ...options.websocket, accessAuthority } }
                   : {}),
-                ...(peerEndpoint
+                ...(peerEndpointOwner
                   ? {
                       peer: {
-                        client: peerEndpoint.client,
-                        reachability: peerEndpoint.reachability,
+                        client: peerEndpointOwner.client,
+                        reachability: peerEndpointOwner.reachability,
                         accessAuthority,
                       },
                     }
