@@ -166,6 +166,9 @@ jobs:
       - name: Package the Windows installer and ZIP
         run: npm run package:windows-x64
 
+      - name: Check archive reproducibility with different input timestamps
+        run: npm run test:windows-archives
+
       - name: Report Rust build cache
         run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
 

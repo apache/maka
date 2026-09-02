@@ -84,6 +84,7 @@
     "package:macos-autoupdate-next": "node scripts/package-macos-autoupdate-next.mjs",
     "verify:macos-autoupdate": "node scripts/verify-macos-autoupdate.mjs",
     "package:windows-x64": "node scripts/package-windows-x64.mjs",
+    "test:windows-archives": "node --test scripts/windows-archive-repro.test.mjs",
     "verify:windows-x64": "node scripts/verify-windows-x64.mjs",
     "verify:windows-installer": "node scripts/verify-windows-installer-lifecycle.mjs",
     "package:windows-autoupdate-next": "node scripts/package-windows-autoupdate-next.mjs",
