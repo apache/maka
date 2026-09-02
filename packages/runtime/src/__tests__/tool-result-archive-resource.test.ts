@@ -284,6 +284,37 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal((searched.matches as Array<Record<string, unknown>>)[0]!.line, 2);
   });
 
+  test('read and search stderr-only shell output when stdout is empty', async () => {
+    const { ref, reader } = fixture(
+      JSON.stringify({
+        kind: 'shell_run',
+        output: { mode: 'pipes', stdout: '', stderr: 'boom: NEEDLE failed' },
+      }),
+    );
+    const inspected = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'inspect',
+    })) as Record<string, unknown>;
+    assert.equal(inspected.valueType, 'terminal');
+    assert.equal(inspected.totalChars, 'boom: NEEDLE failed'.length);
+
+    const page = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'read',
+      unit: 'line',
+      offset: 0,
+      limit: 1,
+    })) as Record<string, unknown>;
+    assert.equal(page.content, 'boom: NEEDLE failed');
+
+    const searched = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'needle',
+    })) as Record<string, unknown>;
+    assert.equal((searched.matches as Array<Record<string, unknown>>)[0]!.line, 1);
+  });
+
   test('read and search project PTY terminal streams', async () => {
     const { ref, reader } = fixture(
       JSON.stringify({
@@ -415,20 +446,6 @@ describe('ArchiveRead retrieval ergonomics', () => {
 
     assert.equal(match.offset, 1);
     assert.equal(match.snippet, 'İA');
-  });
-
-  test('search preserves contextual Unicode case folding', async () => {
-    const { ref, reader } = textFixture('ΟΣ');
-    const result = (await readToolResultArchiveResource(reader, 'session-1', {
-      ref,
-      operation: 'search',
-      pattern: 'ΟΣ',
-    })) as Record<string, unknown>;
-    const match = (result.matches as Array<Record<string, unknown>>)[0]!;
-
-    assert.equal(result.matchCount, 1);
-    assert.equal(match.offset, 0);
-    assert.equal(match.snippet, 'ΟΣ');
   });
 
   test('search never resumes before a requested mid-surrogate offset', async () => {

@@ -199,8 +199,10 @@ function resolveArchiveText(parsed: unknown, serializedResult: string): string {
   const stdout = output && typeof output.stdout === 'string' ? output.stdout : undefined;
   const stderr = output && typeof output.stderr === 'string' ? output.stderr : undefined;
   if (stdout !== undefined || stderr !== undefined) {
-    if (stdout && stderr) return `${stdout}\n${stderr}`;
-    return stdout ?? stderr ?? '';
+    const parts = [stdout, stderr].filter(
+      (s): s is string => typeof s === 'string' && s.length > 0,
+    );
+    return parts.join('\n');
   }
   return serializedResult;
 }
