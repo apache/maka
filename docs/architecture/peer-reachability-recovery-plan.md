@@ -132,8 +132,10 @@ The publisher atomically persists the exact next signed lease before exposing it
 Skipped revisions are valid; publishing different facts at one revision is not. A
 receiver validates signature, expected peer, bounds, signed lifetime, and revision.
 Runtime freshness uses a local monotonic receipt deadline capped by the signed lifetime
-so modest clock skew cannot turn an old lease into current truth. Restarted processes
-conservatively revalidate persisted records against wall time.
+so wall-clock rollback cannot turn an old lease into current truth. A publisher restart
+authenticates its own persisted record without treating the local wall clock as remote
+freshness authority, then immediately publishes a higher revision when its timestamps
+are no longer usable under the current clock.
 
 ### MeshMemberAdvertisement
 
@@ -289,9 +291,12 @@ charter. Their evidence is adjudicated into this ledger:
 | R2-S3 | simplification | confirmed | Mesh presence reads the native Swarm connectivity snapshot instead of maintaining a partial, stale `recentlyReached` cache. |
 | R2-S4 | simplification | confirmed | Both reachability and advertisement anti-entropy use the same Mesh-scoped `{ peerId, revision }` vector. |
 | R2-S5 | simplification | rejected | The one-shot post-finalization refresh suppression remains: it prevents guest credential finalization from becoming a second network acquisition, as required by the frozen collaboration invariant. |
-| R2-S6 | simplification | confirmed | Replica state stores the authority's signed reachability lease directly; stable authority identity comes only from the signed roster, so the single-field target wrapper was removed. |
+| R2-S6 | simplification | superseded | The target wrapper was removed first; R3-S2 then removed the remaining duplicate authority lease from replica state entirely. |
 | R2-CI1 | CI | confirmed | Lower-stack Desktop fixtures retain the flat transport shape until PR4 introduces signed profile reachability, preserving each PR's review boundary. |
 | R2-CI2 | CI | confirmed | The Peer Mesh protocol imports the reachability wire decoder directly from its model module, keeping filesystem-backed publisher code out of the Linux preload bundle. |
+| R3-C1 | correctness | confirmed | Publisher renewal now uses a monotonic receipt deadline, immediately replaces a lease whose issue time is ahead of the local wall clock, and authenticates persisted local state without applying receiver freshness policy. A rollback therefore neither strands renewal nor prevents restart. |
+| R3-S1 | simplification | confirmed | Peer listeners no longer expose an unused `ownsClient` branch; the endpoint owner remains the only client lifetime authority. |
+| R3-S2 | simplification | confirmed | Replica state no longer duplicates authority reachability. Invitation and redemption evidence merge into the bounded common lease table, while the signed roster remains the sole authority-identity source. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
