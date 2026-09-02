@@ -460,8 +460,15 @@ export function projectSandboxBoundaryNegotiation(
       return invalid(`sandbox boundary durable request ${request.requestId} is unresolved`);
     }
     if (!eventDecision) {
-      durableSettlementsWithoutDecision.push(request);
+      // A host-restart closure is a lifecycle cleanup, not a user decision.
+      // It closes the old request id, but must not turn a request the user
+      // never saw into a permanent denial or participate in the ordering
+      // guard as if it were an approval/denial transition.
       settledRequests.add(request.requestId);
+      if (isSandboxBoundaryRestartClosure(request)) {
+        continue;
+      }
+      durableSettlementsWithoutDecision.push(request);
       if (request.status === 'denied') {
         denied = true;
       } else if (request.status === 'approved') {

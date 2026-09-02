@@ -835,6 +835,48 @@ describe('projectSandboxBoundaryNegotiation', () => {
       'invalid',
     );
   });
+
+  test('does not treat a host-restart closure as a user denial', () => {
+    const restartClosed = {
+      ...durableRequest('boundary-1', 'denied'),
+      outcomeReason: 'host_restarted',
+    };
+    assert.deepEqual(
+      projectSandboxBoundaryNegotiation(
+        [request('request-1', 'boundary-1', 'tool-1')],
+        [restartClosed],
+      ),
+      {
+        kind: 'valid',
+        state: {
+          denied: false,
+          invalidRounds: 0,
+          unresolvedRounds: 0,
+          finalizationRequested: false,
+        },
+      },
+    );
+
+    assert.deepEqual(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          decision('decision-1', 'boundary-1', 'tool-1', 'approved'),
+          request('request-2', 'boundary-2', 'tool-2'),
+        ],
+        [{ ...restartClosed, requestId: 'boundary-2' }],
+      ),
+      {
+        kind: 'valid',
+        state: {
+          denied: false,
+          invalidRounds: 0,
+          unresolvedRounds: 0,
+          finalizationRequested: false,
+        },
+      },
+    );
+  });
 });
 
 describe('ExecutionBoundary', () => {
