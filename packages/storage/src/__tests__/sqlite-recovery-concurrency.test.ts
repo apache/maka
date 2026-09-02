@@ -341,6 +341,7 @@ describe('SQLite recovery authority multi-process races', () => {
         db.exec(`
           DROP TABLE runtime_managed_mutation_reservations;
           DROP INDEX runtime_events_by_session_kind;
+          DROP TABLE runtime_legacy_invocation_openings;
           DROP TABLE runtime_session_event_ordinals;
           PRAGMA user_version = 10;
           UPDATE operational_schema_migrations SET version = 10 WHERE scope = 'runtime';

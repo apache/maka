@@ -43,6 +43,7 @@ import {
 } from '@maka/core/workspace-version-authority';
 import {
   decodeRuntimeEvent,
+  decodeRuntimeInvocationOpened,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
   runtimeEventInvocationOpening,
@@ -533,10 +534,15 @@ export class SqliteRuntimeStore
   }
 
   /**
-   * Enumerate a Session's invocations straight from the event spine: the
-   * opening fact names each one, and its highest-sequence event says whether it
-   * ended. There is no derived table behind this, so dropping every index and
-   * rebuilding gives the same answer.
+   * Enumerate a Session's invocations: the opening fact names each one, and its
+   * highest-sequence event says whether it ended.
+   *
+   * Invocations that predate the opening fact could not be given one without
+   * rewriting an immutable sequence, so the migration parked their openings in
+   * `runtime_legacy_invocation_openings`. Both shelves are merged here and the
+   * result says nothing about which one a record came from: an opening is an
+   * opening, and a consumer that branched on its storage would be encoding the
+   * migration window into its own logic.
    */
   async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
@@ -546,37 +552,73 @@ export class SqliteRuntimeStore
           SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
           FROM runtime_events
           WHERE session_id = ? AND event_kind = 'invocation_opened'
-          ORDER BY committed_at ASC, event_seq ASC, event_id ASC
         `)
         .all(sessionId) as unknown as RuntimeEventStorageRow[];
-      const lastEvent = this.db.prepare(`
-        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-        FROM runtime_events
-        WHERE invocation_id = ?
-        ORDER BY event_seq DESC
-        LIMIT 1
-      `);
-      return openings.map((row) => {
+      const records = openings.map((row) => {
         const event = decodeRuntimeEventStorageRow(row);
         const opening = runtimeEventInvocationOpening(event);
         if (!opening) {
           throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
         }
-        const lastRow = lastEvent.get(event.invocationId) as unknown as
-          | RuntimeEventStorageRow
-          | undefined;
-        const last = lastRow ? decodeRuntimeEventStorageRow(lastRow) : undefined;
-        return {
+        return this.completeInvocationRecordSync({
           sessionId: event.sessionId,
           invocationId: event.invocationId,
           runId: event.runId,
           turnId: event.turnId,
           openedAt: event.ts,
           opening,
-          ...(last && isTerminalRuntimeEvent(last) ? { terminalEvent: last } : {}),
-        } satisfies RuntimeInvocationRecord;
+        });
       });
+      const opened = new Set(records.map((record) => record.invocationId));
+      const legacy = this.db
+        .prepare(`
+          SELECT invocation_id, run_id, turn_id, opened_at, opening_json
+          FROM runtime_legacy_invocation_openings
+          WHERE session_id = ?
+        `)
+        .all(sessionId) as unknown as Array<{
+        invocation_id: string;
+        run_id: string;
+        turn_id: string;
+        opened_at: number;
+        opening_json: string;
+      }>;
+      for (const row of legacy) {
+        if (opened.has(row.invocation_id)) continue;
+        records.push(
+          this.completeInvocationRecordSync({
+            sessionId,
+            invocationId: row.invocation_id,
+            runId: row.run_id,
+            turnId: row.turn_id,
+            openedAt: row.opened_at,
+            opening: decodeRuntimeInvocationOpened(JSON.parse(row.opening_json)),
+          }),
+        );
+      }
+      return records.sort(
+        (a, b) => a.openedAt - b.openedAt || a.invocationId.localeCompare(b.invocationId),
+      );
     });
+  }
+
+  private completeInvocationRecordSync(
+    record: Omit<RuntimeInvocationRecord, 'terminalEvent'>,
+  ): RuntimeInvocationRecord {
+    const lastRow = this.db
+      .prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+        FROM runtime_events
+        WHERE invocation_id = ?
+        ORDER BY event_seq DESC
+        LIMIT 1
+      `)
+      .get(record.invocationId) as unknown as RuntimeEventStorageRow | undefined;
+    const last = lastRow ? decodeRuntimeEventStorageRow(lastRow) : undefined;
+    return {
+      ...record,
+      ...(last && isTerminalRuntimeEvent(last) ? { terminalEvent: last } : {}),
+    };
   }
 
   async scanRuntimeEvents(

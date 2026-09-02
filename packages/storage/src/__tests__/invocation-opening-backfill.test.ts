@@ -24,9 +24,11 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { decodeRuntimeEvent } from '@maka/core/runtime-event';
 import { createSqliteAgentRunStore } from '../agent-run-store.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
+import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import {
   migrateSqliteRuntimeDatabase,
   SQLITE_RUNTIME_SCHEMA_VERSION,
@@ -116,8 +118,90 @@ describe('invocation opening fact backfill', () => {
           withEvents.map((row) => row.event_id),
           ['existing-1'],
         );
+
+        // Its opening is not lost, though: it goes on the legacy shelf, keyed by
+        // the invocation id its own events already carry.
+        const legacyRows = db
+          .prepare(`
+            SELECT invocation_id, session_id, run_id, turn_id, opened_at, opening_json
+            FROM runtime_legacy_invocation_openings
+            ORDER BY invocation_id
+          `)
+          .all() as Array<{
+          invocation_id: string;
+          session_id: string;
+          run_id: string;
+          turn_id: string;
+          opened_at: number;
+          opening_json: string;
+        }>;
+        assert.deepEqual(
+          legacyRows.map((row) => row.invocation_id),
+          ['run-with-events'],
+          'only a run whose sequence is already immutable takes the legacy shelf',
+        );
+        assert.equal(legacyRows[0]!.run_id, 'run-with-events');
+        assert.equal(legacyRows[0]!.turn_id, 'turn-with-events');
+        assert.equal(legacyRows[0]!.opened_at, 1);
+        assert.equal(
+          (JSON.parse(legacyRows[0]!.opening_json) as { kind: string }).kind,
+          'invocation_opened',
+        );
       } finally {
         db.close();
+      }
+    });
+  });
+
+  test('enumerates event openings and migrated ones as one inventory', async () => {
+    await withHeaderOnlyRuns(async (databasePath) => {
+      const db = new DatabaseSync(databasePath);
+      try {
+        const { json } = encodeCanonicalRuntimeEvent({
+          id: 'existing-1',
+          invocationId: 'run-with-events',
+          runId: 'run-with-events',
+          sessionId: 'session-1',
+          turnId: 'turn-with-events',
+          ts: 1,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          modelVisibility: 'visible',
+          content: { kind: 'text', text: 'already immutable' },
+        });
+        db.prepare(`
+          INSERT INTO runtime_events (
+            event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+            event_kind, payload_json, committed_at
+          ) VALUES ('existing-1', 'session-1', 'run-with-events', 'run-with-events',
+                    'turn-with-events', 1, 'text', ?, 1)
+        `).run(json);
+        rewindRuntimeSchemaToPreviousVersion(db);
+        migrateSqliteRuntimeDatabase(db);
+      } finally {
+        db.close();
+      }
+
+      const store = createSqliteRuntimeStore(databasePath);
+      try {
+        const invocations = await store.listSessionInvocations('session-1');
+        assert.deepEqual(
+          invocations.map((invocation) => invocation.invocationId),
+          ['run-legacy-route', 'run-scheduled', 'run-with-events'],
+          'a migrated opening is enumerated beside the ones the events carry',
+        );
+        for (const invocation of invocations) {
+          assert.equal(invocation.opening.kind, 'invocation_opened');
+          assert.equal(invocation.sessionId, 'session-1');
+        }
+        const migrated = invocations.find(
+          (invocation) => invocation.invocationId === 'run-with-events',
+        );
+        assert.equal(migrated?.turnId, 'turn-with-events');
+        assert.equal(migrated?.terminalEvent, undefined);
+      } finally {
+        store.close();
       }
     });
   });
@@ -126,6 +210,8 @@ describe('invocation opening fact backfill', () => {
 /** Undo the v16 step so the migration under test runs against real header rows. */
 function rewindRuntimeSchemaToPreviousVersion(db: DatabaseSync): void {
   db.exec('DROP INDEX IF EXISTS runtime_events_by_session_kind');
+  db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');
+  db.exec('DROP TABLE IF EXISTS runtime_legacy_invocation_openings');
   db.exec("DELETE FROM runtime_events WHERE event_kind = 'invocation_opened'");
   db.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
 }

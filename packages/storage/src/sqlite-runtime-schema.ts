@@ -497,6 +497,18 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     `
     CREATE INDEX runtime_events_by_session_kind
       ON runtime_events(session_id, event_kind, invocation_id);
+
+    CREATE TABLE runtime_legacy_invocation_openings (
+      invocation_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      run_id TEXT NOT NULL,
+      turn_id TEXT NOT NULL,
+      opened_at INTEGER NOT NULL,
+      opening_json TEXT NOT NULL
+    ) WITHOUT ROWID;
+
+    CREATE INDEX runtime_legacy_invocation_openings_by_session
+      ON runtime_legacy_invocation_openings(session_id, opened_at, invocation_id);
     `,
   ],
 ]);
@@ -512,14 +524,16 @@ const DATA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map
 ]);
 
 /**
- * Give every Run header that never wrote a RuntimeEvent the opening fact it
- * would have written today.
+ * Give every Run header its opening fact, so that after this migration the
+ * opening lives in the runtime database rather than on the header.
  *
- * Only header-only runs are backfilled. A run that already has events owns an
- * immutable sequence whose position 1, digests and coverage other facts point
- * at; inserting into it would rewrite history that other records have already
- * signed. Those runs keep the Run header as their opening evidence until the
- * consumers move.
+ * A run that never wrote a RuntimeEvent gets the real thing: the opening fact
+ * as event one of its own invocation. A run that already has events cannot,
+ * because it owns an immutable sequence whose position 1, digests and coverage
+ * other facts already point at; inserting into it would rewrite signed history.
+ * Its opening is recorded in `runtime_legacy_invocation_openings` instead,
+ * which only this migration ever writes. Readers merge the two, so nothing
+ * downstream has to know which shelf a given opening came off.
  *
  * A header this cannot project fails closed: it is skipped, and its transcript
  * and tool evidence stay exactly as readable as before.
@@ -528,15 +542,24 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
   if (!hasTable(db, 'core_agent_runs')) return;
   const rows = db
     .prepare(`
-      SELECT r.session_id, r.run_id, r.record_json
+      SELECT
+        r.session_id,
+        r.run_id,
+        r.record_json,
+        (
+          SELECT e.invocation_id FROM runtime_events e
+          WHERE e.session_id = r.session_id AND e.run_id = r.run_id
+          ORDER BY e.event_seq ASC LIMIT 1
+        ) AS existing_invocation_id
       FROM core_agent_runs r
-      WHERE NOT EXISTS (
-        SELECT 1 FROM runtime_events e
-        WHERE e.session_id = r.session_id AND e.run_id = r.run_id
-      )
       ORDER BY r.created_at ASC, r.run_id ASC
     `)
-    .all() as Array<{ session_id: string; run_id: string; record_json: string }>;
+    .all() as Array<{
+    session_id: string;
+    run_id: string;
+    record_json: string;
+    existing_invocation_id: string | null;
+  }>;
   const insertEvent = db.prepare(`
     INSERT INTO runtime_events (
       event_id, session_id, invocation_id, run_id, turn_id, event_seq,
@@ -548,12 +571,38 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     SELECT ?, COALESCE(MAX(ordinal), 0) + 1, ?
     FROM runtime_session_event_ordinals WHERE session_id = ?
   `);
+  const insertLegacyOpening = db.prepare(`
+    INSERT OR IGNORE INTO runtime_legacy_invocation_openings (
+      invocation_id, session_id, run_id, turn_id, opened_at, opening_json
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
   for (const row of rows) {
-    let encoded: { event: RuntimeEvent; json: string };
+    let header: AgentRunHeader;
+    let opening: string;
     try {
-      const header = decodePersistedAgentRunHeader(
+      header = decodePersistedAgentRunHeader(
         JSON.parse(row.record_json) as PersistedValue<AgentRunHeader>,
       );
+      opening = JSON.stringify(runtimeInvocationOpeningFromRunHeader(header));
+    } catch {
+      continue;
+    }
+    if (row.existing_invocation_id !== null) {
+      // The invocation id its own events already carry is the one every reader
+      // joins on, so the legacy row is keyed by that rather than by the header's
+      // copy, which older builds minted independently.
+      insertLegacyOpening.run(
+        row.existing_invocation_id,
+        header.sessionId,
+        header.runId,
+        header.turnId,
+        header.createdAt,
+        opening,
+      );
+      continue;
+    }
+    let encoded: { event: RuntimeEvent; json: string };
+    try {
       encoded = encodeCanonicalRuntimeEvent({
         id: `invocation_opened:${header.runId}`,
         invocationId: header.invocationId ?? header.runId,
