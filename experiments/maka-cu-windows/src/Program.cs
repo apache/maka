@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // SPDX-License-Identifier: Apache-2.0
 //
 // Feasibility spike v0 — supervised C#/.NET Windows helper for maka-cu
@@ -26,7 +45,12 @@ using System.Windows.Automation;
 const string PROTOCOL = "maka.cu.windows/0";
 const int MAX_TREE_NODES = 2000;
 const int MAX_TREE_DEPTH = 32;
-const int MAX_TREE_MILLIS = 2000;
+// Cross-process UIA providers can spend several seconds materializing one
+// window (LibreOffice's cold descendant/pattern pass is close to five seconds
+// on the validation host). Keep this bounded, but leave headroom for a cold
+// real desktop application without classifying it as truncated solely by
+// provider latency. Action and request deadlines remain independent.
+const int MAX_TREE_MILLIS = 10000;
 const int MAX_TREE_RENDER_DEPTH = 12;  // bounded deep skeleton; controls are retained
 const int MAX_COMPAT_TEXT = 1024;
 const int SHUTDOWN_GRACE_MS = 1000;
@@ -173,7 +197,7 @@ static JsonObject InitializeResult() => new()
     ["executor"] = new JsonObject
     {
         ["name"] = "maka-cu-windows",
-        ["language"] = "csharp-dotnet8",
+        ["language"] = "csharp-dotnet10",
         ["spikeStage"] = "v0",
     },
     ["capabilities"] = new JsonObject
@@ -228,7 +252,7 @@ static JsonObject InitializeResult() => new()
     ["generation"] = RuntimeIdentity.HelperGeneration,
     ["signature"] = "none",
     ["distributionReady"] = false,
-    ["runtime"] = "net8.0-windows",
+    ["runtime"] = "net10.0-windows",
 };
 
 static string ErrorRpc(JsonNode? id, int code, string message) =>
@@ -384,7 +408,25 @@ static (JsonObject?, string?) Observe(JsonNode prms, ConcurrentDictionary<string
     var nodes = new JsonArray();
     var count = 1;
     var truncated = false;
-    nodes.Add(BuildNode(target, rootToken));
+    // The target itself is an identity container, not an action candidate.
+    // Some desktop providers make repeated live-property and RuntimeId calls
+    // on the root very expensive (LibreOffice can spend the full tree budget
+    // here).  Identity was already established above, so keep a lightweight
+    // root node and reserve live pattern probing for descendants.
+    nodes.Add(new JsonObject
+    {
+        ["token"] = rootToken,
+        ["observationSource"] = "target-metadata",
+        ["controlType"] = ControlType.Window.ProgrammaticName,
+        ["name"] = "",
+        ["automationId"] = "",
+        ["className"] = "",
+        ["isEnabled"] = true,
+        ["isOffscreen"] = false,
+        ["bounds"] = new JsonArray(0, 0, 0, 0),
+        ["patterns"] = new JsonArray(),
+        ["actions"] = new JsonArray(),
+    });
     // Actionable discovery runs first so a large render skeleton cannot
     // consume the shared node/time budget before controls are probed.
     // Budget checks between nodes cannot interrupt a stuck COM call.
@@ -581,7 +623,74 @@ static int FindActionable(AutomationElement root, JsonArray nodes, SnapshotEntry
         // Probe the container itself; never silently act on an ancestor.
         ControlType.Group, ControlType.Custom, ControlType.Document,
     };
+
+    // Some desktop providers (notably LibreOffice) make a children-scoped
+    // query for every wrapper prohibitively slow.  The default production
+    // path asks UIA for descendants once and filters actionable types locally;
+    // this preserves the same pattern/identity checks without paying for a
+    // provider condition evaluation at every level.  Explicit debug limits
+    // keep the level-by-level path so depth and shared-budget boundary tests
+    // remain deterministic.
+    if (limits == new TreeLimits(MAX_TREE_NODES, MAX_TREE_MILLIS, MAX_TREE_RENDER_DEPTH, MAX_TREE_DEPTH))
+        return FindActionableDescendants(root, nodes, snap, count, actionable, limits, sw, truncatedReasons, ref truncated);
+
     return FindActionableChildren(root, nodes, snap, count, depth, actionable, limits, sw, truncatedReasons, ref truncated);
+}
+
+static int FindActionableDescendants(AutomationElement root, JsonArray nodes, SnapshotEntry snap, int count,
+    HashSet<ControlType> actionable, TreeLimits limits, Stopwatch sw, HashSet<string> truncatedReasons,
+    ref bool truncated)
+{
+    if (BudgetExhausted(Math.Max(count, snap.VisitedNodes), sw, limits, truncatedReasons, ref truncated))
+        return count;
+
+    AutomationElementCollection descendants;
+    try
+    {
+        var request = new CacheRequest { TreeScope = TreeScope.Element };
+        request.Add(AutomationElement.ControlTypeProperty);
+        using (request.Activate())
+        {
+            descendants = root.FindAll(TreeScope.Descendants, Condition.TrueCondition);
+        }
+    }
+    catch (ElementNotAvailableException)
+    {
+        MarkTruncated(ref truncated, truncatedReasons, "element_unavailable");
+        return count;
+    }
+    catch (System.Runtime.InteropServices.COMException)
+    {
+        MarkTruncated(ref truncated, truncatedReasons, "provider_error");
+        return count;
+    }
+
+    foreach (AutomationElement child in descendants)
+    {
+        if (BudgetExhausted(Math.Max(count, snap.VisitedNodes), sw, limits, truncatedReasons, ref truncated))
+            return count;
+        snap.RecordVisit(1);
+        try
+        {
+            if (!actionable.Contains(child.Cached.ControlType))
+                continue;
+            var token = snap.AddElement(child);
+            var node = BuildNode(child, token);
+            node["rawDepth"] = null;
+            node["parentRuntimeId"] = null;
+            nodes.Add(node);
+            count++;
+        }
+        catch (ElementNotAvailableException)
+        {
+            MarkTruncated(ref truncated, truncatedReasons, "element_unavailable");
+        }
+        catch (System.Runtime.InteropServices.COMException)
+        {
+            MarkTruncated(ref truncated, truncatedReasons, "provider_error");
+        }
+    }
+    return count;
 }
 
 static int FindActionableChildren(AutomationElement parent, JsonArray nodes, SnapshotEntry snap,
@@ -788,7 +897,14 @@ static JsonArray ProbePatterns(AutomationElement el)
     try
     {
         var t = GetControlType(el);
-        if (t == ControlType.Edit || t == ControlType.ComboBox)
+        // Native text editors are not required to expose ControlType.Edit.
+        // Windows Notepad exposes its document surface as ControlType.Document
+        // while still implementing ValuePattern.  Probe that semantic type as
+        // well; restricting ValuePattern to Edit/ComboBox silently removes a
+        // real writable target from the snapshot and makes the action layer
+        // report a false capability gap.  SetValueVerified still performs the
+        // read-only/password/identity checks before any mutation.
+        if (t == ControlType.Edit || t == ControlType.ComboBox || t == ControlType.Document)
         {
             if (TryGetPattern(el, ValuePattern.Pattern, out _, out _)) patterns.Add("Value");
             if (TryGetPattern(el, InvokePattern.Pattern, out _, out _)) patterns.Add("Invoke");
@@ -805,12 +921,31 @@ static JsonArray ProbePatterns(AutomationElement el)
         {
             if (TryGetPattern(el, SelectionItemPattern.Pattern, out _, out _)) patterns.Add("SelectionItem");
         }
-        if (TryGetPattern(el, ScrollPattern.Pattern, out _, out _)) patterns.Add("Scroll");
-        if (TryGetPattern(el, ScrollItemPattern.Pattern, out _, out _)) patterns.Add("ScrollItem");
+        // Scroll pattern queries can be expensive on desktop providers.  A
+        // top-level Window is not a useful scroll target, and probing it can
+        // consume the whole observation budget before the actual document is
+        // reached (reproducible with LibreOffice SALFRAME).  Keep the
+        // semantic coverage for controls that can legitimately scroll.
+        if (CanScroll(t))
+        {
+            if (TryGetPattern(el, ScrollPattern.Pattern, out _, out _)) patterns.Add("Scroll");
+            if (TryGetPattern(el, ScrollItemPattern.Pattern, out _, out _)) patterns.Add("ScrollItem");
+        }
     }
     catch (ElementNotAvailableException) { /* treat as no patterns */ }
     return patterns;
 }
+
+static bool CanScroll(ControlType type) => type == ControlType.Document
+    || type == ControlType.Pane
+    || type == ControlType.Group
+    || type == ControlType.Custom
+    || type == ControlType.List
+    || type == ControlType.Tree
+    || type == ControlType.DataGrid
+    || type == ControlType.ListItem
+    || type == ControlType.TabItem
+    || type == ControlType.ScrollBar;
 
 static ControlType GetControlType(AutomationElement el)
 {
