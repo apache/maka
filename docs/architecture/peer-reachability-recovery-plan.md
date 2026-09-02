@@ -297,6 +297,8 @@ charter. Their evidence is adjudicated into this ledger:
 | R3-C1 | correctness | confirmed | Publisher renewal now uses a monotonic receipt deadline, immediately replaces a lease whose issue time is ahead of the local wall clock, and authenticates persisted local state without applying receiver freshness policy. A rollback therefore neither strands renewal nor prevents restart. |
 | R3-S1 | simplification | confirmed | Peer listeners no longer expose an unused `ownsClient` branch; the endpoint owner remains the only client lifetime authority. |
 | R3-S2 | simplification | confirmed | Replica state no longer duplicates authority reachability. Invitation and redemption evidence merge into the bounded common lease table, while the signed roster remains the sole authority-identity source. |
+| R4-CI1 | CI | confirmed | The installed CLI smoke exposed an untyped borrowed-client path that the service mistook for native endpoint configuration. Borrowing is now explicit as `borrowedEndpoint`; the service observes but never closes it, while configured endpoints remain service-owned. The installed development tarball smoke passes. |
+| R4-S1 | simplification | confirmed | The legacy combined Mesh owner duplicated endpoint and Mesh-component composition solely for release smoke. It was removed; callers now compose and close those two independently owned lifetimes in dependency order. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
