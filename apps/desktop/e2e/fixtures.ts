@@ -34,6 +34,8 @@ import {
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
+import { PROMPT_RAIL_SESSION_ID } from '../src/main/e2e-fixture/seed-helpers';
+import { desktopSessionKey } from '../src/shared/runtime-host-identity';
 
 const DESKTOP_ROOT = process.cwd();
 const execFileAsync = promisify(execFile);
@@ -487,7 +489,56 @@ async function withE2eWindow(
   }
 }
 
-export const test = base.extend<{
+interface PromptRailWorker {
+  app: ElectronApplication;
+  page: Page;
+  pristine: boolean;
+  sessionId: string;
+  throughSequence: number;
+  storage: {
+    local: Record<string, string>;
+    session: Record<string, string>;
+  };
+  viewport: { width: number; height: number };
+}
+
+async function setPromptRailWindowVisible(
+  worker: PromptRailWorker,
+  visible: boolean,
+): Promise<void> {
+  await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
+    if (shouldShow) window.show();
+    else window.hide();
+  }, visible);
+}
+
+async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
+  if (worker.pristine) {
+    worker.pristine = false;
+    return;
+  }
+  await worker.page.evaluate(async ({ sessionId, throughSequence }) => {
+    const transcript = await window.maka.transcripts.open(sessionId, () => undefined);
+    try {
+      await transcript.loadAround(throughSequence);
+    } finally {
+      await transcript.close();
+    }
+  }, { sessionId: worker.sessionId, throughSequence: worker.throughSequence });
+  await worker.page.evaluate(({ local, session }) => {
+    localStorage.clear();
+    sessionStorage.clear();
+    for (const [key, value] of Object.entries(local)) localStorage.setItem(key, value);
+    for (const [key, value] of Object.entries(session)) sessionStorage.setItem(key, value);
+  }, worker.storage);
+  await worker.page.setViewportSize(worker.viewport);
+  await worker.page.reload();
+  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
+}
+
+type E2eTestFixtures = {
   window: Page;
   onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
@@ -503,7 +554,30 @@ export const test = base.extend<{
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
-}>({
+};
+
+type E2eWorkerFixtures = {
+  isolatedDisplay: void;
+  promptRailWorker: PromptRailWorker;
+};
+
+export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
+  isolatedDisplay: [async ({}, use, workerInfo) => {
+    const base = process.env.MAKA_E2E_X_DISPLAY_BASE;
+    if (base === undefined) {
+      await use();
+      return;
+    }
+    if (!/^\d+$/.test(base)) throw new Error(`Invalid E2E X display base: ${base}`);
+    const previous = process.env.DISPLAY;
+    process.env.DISPLAY = `:${Number(base) + workerInfo.parallelIndex}`;
+    try {
+      await use();
+    } finally {
+      if (previous === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = previous;
+    }
+  }, { scope: 'worker', auto: true }],
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh', showWindow: true },
@@ -609,9 +683,10 @@ export const test = base.extend<{
       use,
     );
   },
-  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
-  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
-  promptRailWindow: async ({}, use) => {
+  // This scenario is read-only at the Host boundary. Keep its real Electron +
+  // Host composition warm for the worker, while the test-scoped wrapper below
+  // restores Host and renderer state between tests.
+  promptRailWorker: [async ({}, use) => {
     await withE2eWindow({
       seed: false,
       // A rendered turn, deliberately not the rail: Playwright treats a
@@ -621,7 +696,40 @@ export const test = base.extend<{
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
-    }, use);
+    }, async (page, { app }) => {
+      const hostId = await page.evaluate(async () =>
+        (await window.maka.runtimeHostProfiles.getSnapshot()).entries
+          .find(({ isDefault }) => isDefault)?.hostId);
+      if (!hostId) throw new Error('the prompt-rail fixture has no ready default Host');
+      const sessionId = desktopSessionKey({ hostId, sessionId: PROMPT_RAIL_SESSION_ID });
+      const throughSequence = await page.evaluate(async (selectedSessionId) =>
+        (await window.maka.sessions.listTurnLandmarks(selectedSessionId)).throughSequence,
+      sessionId);
+      if (throughSequence === null) throw new Error('the prompt-rail fixture has no transcript');
+      const storage = await page.evaluate(() => {
+        const snapshot = (source: Storage) => Object.fromEntries(
+          Array.from({ length: source.length }, (_, index) => {
+            const key = source.key(index);
+            if (key === null) throw new Error('browser storage changed while being read');
+            return [key, source.getItem(key) ?? ''];
+          }),
+        );
+        return { local: snapshot(localStorage), session: snapshot(sessionStorage) };
+      });
+      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+      await use({ app, page, pristine: true, sessionId, throughSequence, storage, viewport });
+    });
+  }, { scope: 'worker' }],
+  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
+  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
+  promptRailWindow: async ({ promptRailWorker }, use) => {
+    await setPromptRailWindowVisible(promptRailWorker, true);
+    try {
+      await resetPromptRailWindow(promptRailWorker);
+      await use(promptRailWorker.page);
+    } finally {
+      await setPromptRailWindowVisible(promptRailWorker, false);
+    }
   },
   // A transcript larger than the bounded Desktop range. Clicking an unloaded
   // prompt exercises the real load-around path and its partial-history UI.

@@ -334,7 +334,37 @@ jobs:
 
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
-        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+        run: |
+          set -euo pipefail
+          display_base=90
+          worker_count=4
+          xvfb_pids=()
+          cleanup() {
+            kill "${xvfb_pids[@]}" 2>/dev/null || true
+            wait "${xvfb_pids[@]}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            Xvfb ":$display" -screen 0 1280x1024x24 -nolisten tcp \
+              >"$RUNNER_TEMP/xvfb-$display.log" 2>&1 &
+            xvfb_pids+=("$!")
+          done
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            for _ in {1..50}; do
+              [[ -S "/tmp/.X11-unix/X$display" ]] && break
+              kill -0 "${xvfb_pids[$index]}" 2>/dev/null || break
+              sleep 0.1
+            done
+            if [[ ! -S "/tmp/.X11-unix/X$display" ]]; then
+              cat "$RUNNER_TEMP/xvfb-$display.log"
+              exit 1
+            fi
+          done
+          MAKA_E2E_X_DISPLAY_BASE="$display_base" \
+            npm exec -w @maka/desktop -- playwright test \
+              --config e2e/playwright.config.ts --workers="$worker_count"
 
       - name: Browser WebContentsView semantic smoke
         if: steps.plan.outputs.e2e == 'true'
