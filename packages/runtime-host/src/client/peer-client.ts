@@ -73,7 +73,7 @@ export interface RuntimeHostPeerRouteResolver {
   subscribeRoutes(peerId: string, listener: () => void): () => void;
 }
 
-export class RuntimeHostPeerReachabilityUnavailableError extends RuntimeHostPermanentReconnectError {
+export class RuntimeHostPeerReachabilityUnavailableError extends Error {
   readonly code = 'peer_reachability_needs_repair';
 
   constructor(peerId: string) {

@@ -1018,6 +1018,63 @@ test('keeps Local explicitly usable without routing default work away from an un
   await manager.close();
 });
 
+test('keeps an initially unavailable Direct target live and wakes it on new routes', async () => {
+  const local = candidateHarness();
+  const remote = candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' });
+  let starts = 0;
+  let routeListener: (() => void) | undefined;
+  let reportBackoff!: () => void;
+  const waitingForBackoff = new Promise<void>((resolve) => {
+    reportBackoff = resolve;
+  });
+  const manager = await startRuntimeHostDesktopManager(
+    {
+      peerClient: {
+        subscribeRoutes: (peerId: string, listener: () => void) => {
+          assert.equal(peerId, '12D3KooWpeer');
+          routeListener = listener;
+          return () => undefined;
+        },
+      },
+    } as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts <= 3) return { kind: 'failed', reason: 'host_unresponsive' };
+        return ready(remote.candidate);
+      },
+      reconnectBackoff: {
+        minMs: 30_000,
+        maxMs: 30_000,
+        wait: (_delayMs, signal) =>
+          new Promise<void>((_resolve, reject) => {
+            reportBackoff();
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          }),
+      },
+    },
+  );
+
+  await manager.enable(peerTarget('office'));
+  await waitingForBackoff;
+  assert.equal(
+    manager.entries().find((state) => state.target.profile.id === 'office')?.readiness,
+    'reconnecting',
+  );
+  assert.equal(manager.current('office')?.readiness, 'reconnecting');
+  assert.equal(manager.current('office')?.candidate, undefined);
+  assert.ok(routeListener);
+
+  routeListener();
+  await manager.waitUntilReady('office');
+  assert.equal(manager.current('office')?.candidate, remote.candidate);
+  assert.equal(starts, 4);
+  await manager.close();
+});
+
 test('keeps reconnecting through transient startup failures until the Desktop adapter is restored', async () => {
   const first = candidateHarness();
   const replacement = candidateHarness();
@@ -1683,6 +1740,13 @@ function remoteTarget(
 function peerGuestTarget(
   id: string,
 ): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
+  return peerTarget(id, 'session_guest');
+}
+
+function peerTarget(
+  id: string,
+  access?: 'session_guest',
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
       id,
@@ -1693,7 +1757,7 @@ function peerGuestTarget(
         reachability: testPeerReachability('12D3KooWpeer'),
       },
       rootId: 'a'.repeat(64),
-      access: 'session_guest',
+      ...(access ? { access } : {}),
     },
     credential: 'credential-peer',
   };

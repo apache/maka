@@ -853,17 +853,24 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     initialSignal?: AbortSignal,
   ): Promise<RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>> {
     let starting = true;
+    let initialAttempt = true;
+    const retryInitialFailure =
+      target.target.profile.kind === 'remote' &&
+      target.target.profile.transport.kind === 'libp2p-direct';
     try {
       return await startRuntimeHostReconnectLifecycle({
-        connect: (signal) =>
-          this.connect(
+        connect: (signal) => {
+          const first = initialAttempt;
+          initialAttempt = false;
+          return this.connect(
             target,
-            starting && initialSignal
-              ? AbortSignal.any([signal, initialSignal])
-              : signal,
-            starting ? target.input.profileTarget?.sshInteraction : 'batch',
-            starting ? target.input.onConnectionPhase : undefined,
-          ),
+            signal,
+            first ? target.input.profileTarget?.sshInteraction : 'batch',
+            first ? target.input.onConnectionPhase : undefined,
+          );
+        },
+        retryInitialFailure,
+        ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
         },

@@ -77,6 +77,8 @@ export async function startRuntimeHostReconnectLifecycle<
 >(input: {
   readonly initial?: T;
   readonly connect: (signal: AbortSignal) => Promise<T>;
+  readonly retryInitialFailure?: boolean;
+  readonly initialSignal?: AbortSignal;
   readonly onReconnectError?: (error: Error) => void;
   readonly onFatalError?: (error: Error) => void;
   readonly backoff?: RuntimeHostReconnectBackoff;
@@ -99,6 +101,8 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   readonly closed: Promise<void>;
   readonly #initial: T | undefined;
   readonly #connect: (signal: AbortSignal) => Promise<T>;
+  readonly #retryInitialFailure: boolean;
+  readonly #initialSignal: AbortSignal | undefined;
   readonly #onReconnectError: ((error: Error) => void) | undefined;
   readonly #onFatalError: ((error: Error) => void) | undefined;
   readonly #minMs: number;
@@ -128,12 +132,16 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   constructor(input: {
     readonly initial?: T;
     readonly connect: (signal: AbortSignal) => Promise<T>;
+    readonly retryInitialFailure?: boolean;
+    readonly initialSignal?: AbortSignal;
     readonly onReconnectError?: (error: Error) => void;
     readonly onFatalError?: (error: Error) => void;
     readonly backoff?: RuntimeHostReconnectBackoff;
   }) {
     this.#connect = input.connect;
     this.#initial = input.initial;
+    this.#retryInitialFailure = input.retryInitialFailure ?? false;
+    this.#initialSignal = input.initialSignal;
     this.#onReconnectError = input.onReconnectError;
     this.#onFatalError = input.onFatalError;
     this.#minMs = requireDelay(input.backoff?.minMs ?? DEFAULT_BACKOFF_MIN_MS, 'minMs');
@@ -165,9 +173,30 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
 
   async start(): Promise<void> {
     try {
-      this.#install(this.#initial ?? (await this.#connect(this.#abort.signal)));
+      if (this.#initial) {
+        this.#install(this.#initial);
+        return;
+      }
+      this.#initialSignal?.throwIfAborted();
+      const signal = this.#initialSignal
+        ? AbortSignal.any([this.#abort.signal, this.#initialSignal])
+        : this.#abort.signal;
+      this.#install(await this.#connect(signal));
     } catch (error) {
-      this.#failPermanently(asError(error));
+      const failure = asError(error);
+      if (
+        this.#retryInitialFailure &&
+        !this.#closed &&
+        !this.#abort.signal.aborted &&
+        !this.#initialSignal?.aborted &&
+        !(failure instanceof RuntimeHostPermanentReconnectError)
+      ) {
+        this.#failureCount += 1;
+        notifyError(this.#onReconnectError, failure);
+        this.#scheduleReconnect();
+        return;
+      }
+      this.#failPermanently(failure);
       throw error;
     }
   }
