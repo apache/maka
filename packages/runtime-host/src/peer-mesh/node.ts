@@ -1322,7 +1322,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #refreshLocalEvidenceOnce(): Promise<LocalPeerMeshEvidence | undefined> {
     const reachability = await this.#reachability.refresh();
-    this.#recordReachabilityReceipt(reachability);
     const identity = this.#peer.identity();
     const now = this.#now();
     return this.#store.mutate(async (current) => {
@@ -1516,13 +1515,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   #retainedReachabilityReceiptPeerIds(): ReadonlySet<string> {
     const stored = this.#store.read();
     const localPeerId = this.#peer.identity().peerId;
-    const retained = new Set<string>([localPeerId]);
+    const retained = new Set<string>();
     for (const state of stored.meshes) {
       if (!isActiveMembership(state, localPeerId)) continue;
-      for (const peerId of state.roster.roster.members) retained.add(peerId);
-    }
-    for (const pending of stored.pendingJoins) {
-      retained.add(pending.invitation.reachability.lease.peerId);
+      for (const peerId of state.roster.roster.members) {
+        if (peerId !== localPeerId) retained.add(peerId);
+      }
     }
     return retained;
   }
