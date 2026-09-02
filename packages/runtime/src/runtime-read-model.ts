@@ -115,18 +115,7 @@ export class RuntimeReadModel {
     const durableEventOrdinalById = new Map(
       durableEventOrdinals.map(({ event, ordinal }) => [event.id, ordinal]),
     );
-    const eventsByRun = new Map<string, RuntimeEvent[]>();
-    for (const { event } of durableEventOrdinals) {
-      const runEvents = eventsByRun.get(event.runId) ?? [];
-      runEvents.push(event);
-      eventsByRun.set(event.runId, runEvents);
-    }
-    const ordered: Array<{
-      event: RuntimeEvent;
-      runIndex: number;
-      eventIndex: number;
-      ordinal?: number;
-    }> = [];
+    const ordered: OrderedRuntimeEvent[] = [];
     const terminalFacts: RuntimeEventTerminalFact[] = [];
     for (let runIndex = 0; runIndex < inlineRuns.length; runIndex += 1) {
       const run = inlineRuns[runIndex]!;
@@ -171,9 +160,7 @@ export class RuntimeReadModel {
 
       let runEvents: RuntimeEvent[];
       try {
-        runEvents =
-          eventsByRun.get(run.runId) ??
-          (await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId));
+        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
       } catch (error) {
         throw new RuntimeReadModelError('RuntimeEvent ledger read failed', [
           readModelDiagnostic('unsupported_event', 'RuntimeEventStore.readRuntimeEvents failed', {
@@ -253,38 +240,7 @@ export class RuntimeReadModel {
       appendOrderedEvents(ordered, runEvents, runIndex, durableEventOrdinalById);
     }
 
-    const fallbackEventsByRun = new Map<number, typeof ordered>();
-    for (const item of ordered) {
-      if (item.ordinal !== undefined) continue;
-      const runEvents = fallbackEventsByRun.get(item.runIndex) ?? [];
-      runEvents.push(item);
-      fallbackEventsByRun.set(item.runIndex, runEvents);
-    }
-    ordered.sort(
-      (a, b) =>
-        a.event.ts - b.event.ts ||
-        a.runIndex - b.runIndex ||
-        a.eventIndex - b.eventIndex ||
-        a.event.id.localeCompare(b.event.id),
-    );
-
-    const nextFallbackEventByRun = new Map<number, number>();
-    for (let index = 0; index < ordered.length; index += 1) {
-      const item = ordered[index]!;
-      if (item.ordinal !== undefined) continue;
-      const next = nextFallbackEventByRun.get(item.runIndex) ?? 0;
-      ordered[index] = fallbackEventsByRun.get(item.runIndex)![next]!;
-      nextFallbackEventByRun.set(item.runIndex, next + 1);
-    }
-
-    const durableEvents = ordered
-      .filter((item) => item.ordinal !== undefined)
-      .sort((a, b) => a.ordinal! - b.ordinal! || a.event.id.localeCompare(b.event.id));
-    let nextDurableEvent = 0;
-    for (let index = 0; index < ordered.length; index += 1) {
-      if (ordered[index]!.ordinal === undefined) continue;
-      ordered[index] = durableEvents[nextDurableEvent++]!;
-    }
+    ordered.sort(compareOrderedRuntimeEvents);
 
     return this.buildView({
       runs: inlineRuns,
@@ -315,10 +271,8 @@ export class RuntimeReadModel {
   private async readSessionRuntimeEventOrdinals(
     sessionId: string,
   ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>> {
-    const reader = this.deps.runtimeEventStore.readSessionRuntimeEventEntries;
-    if (!reader) return [];
     try {
-      return await reader.call(this.deps.runtimeEventStore, sessionId);
+      return await this.deps.runtimeEventStore.readSessionRuntimeEventEntries(sessionId);
     } catch (error) {
       throw new RuntimeReadModelError('RuntimeEvent session order read failed', [
         readModelDiagnostic(
@@ -559,22 +513,57 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface OrderedRuntimeEvent {
+  event: RuntimeEvent;
+  runIndex: number;
+  eventIndex: number;
+  ordinal?: number;
+  ordinalPhase?: -1 | 0 | 1;
+}
+
 function appendOrderedEvents(
-  ordered: Array<{
-    event: RuntimeEvent;
-    runIndex: number;
-    eventIndex: number;
-    ordinal?: number;
-  }>,
+  ordered: OrderedRuntimeEvent[],
   events: readonly RuntimeEvent[],
   runIndex: number,
   ordinals?: ReadonlyMap<string, number>,
 ): void {
-  const hasCompleteDurableOrder =
-    ordinals !== undefined && events.every((event) => ordinals.has(event.id));
+  const nextOrdinals: Array<number | undefined> = new Array(events.length);
+  let nextOrdinal: number | undefined;
+  for (let eventIndex = events.length - 1; eventIndex >= 0; eventIndex -= 1) {
+    nextOrdinal = ordinals?.get(events[eventIndex]!.id) ?? nextOrdinal;
+    nextOrdinals[eventIndex] = nextOrdinal;
+  }
+  let previousOrdinal: number | undefined;
   for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
     const event = events[eventIndex]!;
-    const ordinal = hasCompleteDurableOrder ? ordinals.get(event.id) : undefined;
-    ordered.push({ event, runIndex, eventIndex, ...(ordinal !== undefined ? { ordinal } : {}) });
+    const durableOrdinal = ordinals?.get(event.id);
+    if (durableOrdinal !== undefined) previousOrdinal = durableOrdinal;
+    const ordinal = durableOrdinal ?? previousOrdinal ?? nextOrdinals[eventIndex];
+    const ordinalPhase = durableOrdinal !== undefined ? 0 : previousOrdinal !== undefined ? 1 : -1;
+    ordered.push({
+      event,
+      runIndex,
+      eventIndex,
+      ...(ordinal !== undefined ? { ordinal, ordinalPhase } : {}),
+    });
   }
+}
+
+function compareOrderedRuntimeEvents(a: OrderedRuntimeEvent, b: OrderedRuntimeEvent): number {
+  if (a.ordinal !== undefined || b.ordinal !== undefined) {
+    if (a.ordinal === undefined) return 1;
+    if (b.ordinal === undefined) return -1;
+    return (
+      a.ordinal - b.ordinal ||
+      a.ordinalPhase! - b.ordinalPhase! ||
+      a.eventIndex - b.eventIndex ||
+      a.event.id.localeCompare(b.event.id)
+    );
+  }
+  return (
+    a.event.ts - b.event.ts ||
+    a.runIndex - b.runIndex ||
+    a.eventIndex - b.eventIndex ||
+    a.event.id.localeCompare(b.event.id)
+  );
 }

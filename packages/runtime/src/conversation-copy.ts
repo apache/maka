@@ -600,12 +600,25 @@ export async function cloneConversationRuntimeLedger(
   }
 
   if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
+    const importedSourceEventIds = new Set<string>();
+    const orderedBatches = input.plan.inlineRuntimeEvents.flatMap((event) => {
+      const cloned = clonedEventBySourceId.get(event.id);
+      const runId = runIds.get(event.runId);
+      if (!cloned || !runId) return [];
+      importedSourceEventIds.add(event.id);
+      return [{ runId, events: [cloned] }];
+    });
+    for (const { plan, runId } of preparedPlans) {
+      const remaining = plan.events.filter((event) => !importedSourceEventIds.has(event.id));
+      if (remaining.length === 0) continue;
+      orderedBatches.push({
+        runId,
+        events: remaining.map((event) => clonedEventBySourceId.get(event.id)!),
+      });
+    }
     await input.runtimeEventStore.importConversationCopyRuntimeEvents(
       input.referenceMap.targetSessionId,
-      preparedPlans.map(({ runId, clonedRuntimeEvents }) => ({
-        runId,
-        events: clonedRuntimeEvents,
-      })),
+      orderedBatches,
     );
   } else {
     for (const { runId, clonedRuntimeEvents } of preparedPlans) {

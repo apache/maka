@@ -462,19 +462,17 @@ export class SqliteRuntimeStore
     batches: readonly ConversationCopyRuntimeEventBatch[],
   ): Promise<void> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
-    const runIds = new Set<string>();
     const canonicalBatches = batches.map(({ runId, events }) => {
       assertRuntimeStorageSafeId(runId, 'Invalid run id');
-      if (runIds.has(runId)) {
-        throw new Error(`Conversation copy contains duplicate run ${runId}`);
-      }
-      runIds.add(runId);
       return {
         runId,
         events: events.map(canonicalizeRuntimeEventForStorage),
       };
     });
     const canonicalEvents = canonicalBatches.flatMap(({ events }) => events);
+    if (new Set(canonicalEvents.map(({ id }) => id)).size !== canonicalEvents.length) {
+      throw new Error('Conversation copy contains duplicate RuntimeEvents');
+    }
     for (const { runId, events } of canonicalBatches) {
       for (const event of events) {
         assertNoReservedWorkspaceAuthorityAppend(event);
@@ -493,7 +491,12 @@ export class SqliteRuntimeStore
       );
     }
     this.transaction(() => {
+      const eventsByRun = new Map<string, RuntimeEvent[]>();
       for (const { runId, events } of canonicalBatches) {
+        eventsByRun.set(runId, [...(eventsByRun.get(runId) ?? []), ...events]);
+      }
+      const newRunIds = new Set<string>();
+      for (const [runId, events] of eventsByRun) {
         const existing = (
           this.db
             .prepare(`
@@ -507,9 +510,11 @@ export class SqliteRuntimeStore
         if (existing.length > 0 && !isDeepStrictEqual(existing, events)) {
           throw new Error(`Conversation copy RuntimeEvent identity conflict for run ${runId}`);
         }
-        if (existing.length === 0) {
-          for (const event of events) this.insertRuntimeEvent(event, event.ts, true);
-        }
+        if (existing.length === 0) newRunIds.add(runId);
+      }
+      for (const { runId, events } of canonicalBatches) {
+        if (!newRunIds.has(runId)) continue;
+        for (const event of events) this.insertRuntimeEvent(event, event.ts, true);
       }
       if (canonicalEvents.some(isToolLedgerBearingEvent)) {
         this.rebuildToolProjectionsFromRuntimeEventsSync(sessionId);
