@@ -19,7 +19,6 @@
 
 import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
-import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   ChatView,
   ChatSurfaceLayout,
@@ -73,7 +72,6 @@ export function QuoteCompanionPanel(props: {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
@@ -111,9 +109,6 @@ export function QuoteCompanionPanel(props: {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
   useEffect(() => {
-    props.onPreparingStateChange?.(props.panelId, companion.preparing);
-  }, [companion.preparing, props.onPreparingStateChange, props.panelId]);
-  useEffect(() => {
     props.onActivityStateChange?.(
       props.panelId,
       companion.streaming || companion.processing,
@@ -125,15 +120,14 @@ export function QuoteCompanionPanel(props: {
     props.panelId,
   ]);
   useEffect(() => {
-    if (!props.active || companion.preparing) return;
+    if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [companion.preparing, props.active]);
+  }, [props.active]);
   useEffect(() => {
     const prompt = props.initialPrompt?.trim();
     if (
       !props.active ||
-      companion.preparing ||
       !companion.modelReady ||
       !prompt ||
       initialPromptStartedRef.current
@@ -157,7 +151,6 @@ export function QuoteCompanionPanel(props: {
         composerRef.current?.focus();
       });
   }, [
-    companion.preparing,
     companion.send,
     props.active,
     props.initialPrompt,
@@ -209,10 +202,7 @@ export function QuoteCompanionPanel(props: {
   );
 
   return (
-    <div
-      className="maka-quote-companion"
-      data-preparing={companion.preparing || undefined}
-    >
+    <div className="maka-quote-companion">
       <ChatSurfaceLayout
         scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
@@ -278,7 +268,7 @@ export function QuoteCompanionPanel(props: {
               streaming={companion.streaming}
               processing={companion.processing}
               draftKey={draftKey}
-              disabled={!companion.modelReady || companion.preparing}
+              disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
               pendingAttachments={pendingAttachments}
@@ -326,15 +316,7 @@ export function QuoteCompanionPanel(props: {
               void companion.regenerate(turnId);
             }
           }}
-          emptyOverride={
-            companion.preparing ? (
-              <div className="maka-quote-companion-preparing maka-turn-processing">
-                <Spinner size="sm" shade="subtle" label={copy.preparing} />
-              </div>
-            ) : (
-              <div className="maka-quote-companion-empty" aria-hidden="true" />
-            )
-          }
+          emptyOverride={<div className="maka-quote-companion-empty" aria-hidden="true" />}
           onNew={() => {}}
         />
       </ChatSurfaceLayout>

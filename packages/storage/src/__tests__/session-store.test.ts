@@ -36,7 +36,9 @@ import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
   createSessionStore,
   isSessionNotFoundError,
+  normalizeSessionHeader,
 } from '../session-store.js';
+import type { SessionHeader } from '@maka/core/session';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 

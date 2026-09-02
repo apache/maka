@@ -26,7 +26,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import type { SessionEvent } from '@maka/core/events';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { PermissionMode } from '@maka/core/permission';
-import type { SessionChangedEvent, SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionChangedEvent,
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import {
   createFakeWorkbarServices,
   useQuoteCompanion,
@@ -53,37 +57,6 @@ const SOURCE_SESSION = session('source-session');
 type SideChatStopTarget = Parameters<WorkbarServices['sideChat']['stop']>[1];
 type QueueUpdate = Extract<SessionEvent, { type: 'queue_update' }>;
 type QueueEntry = NonNullable<QueueUpdate['steeringEntries']>[number];
-
-test('declining Full access through the side-chat hook does not persist the permission mode', async () => {
-  let confirmations = 0;
-  let writes = 0;
-  let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
-
-  const { container } = await renderProbe(
-    {
-      setPermissionMode: async (sessionId, mode) => {
-        writes += 1;
-        return session(sessionId, { permissionMode: mode });
-      },
-    },
-    {
-      confirmBypass: async () => {
-        confirmations += 1;
-        return false;
-      },
-      onSetPermissionMode: (setter) => {
-        setPermissionMode = setter;
-      },
-    },
-  );
-
-  assert.ok(container.firstElementChild);
-  const result = await act(async () => setPermissionMode('bypass'));
-
-  assert.equal(result, false);
-  assert.equal(confirmations, 1);
-  assert.equal(writes, 0);
-});
 
 function completeEvent(id: string, turnId: string, ts: number): SessionEvent {
   return { type: 'complete', id, turnId, ts, stopReason: 'end_turn' };
@@ -161,7 +134,7 @@ async function renderProbe(
     onSend?: (send: (text: string) => Promise<boolean>) => void;
     onSteer?: (steer: (text: string) => Promise<boolean>) => void;
     onStop?: (stop: () => Promise<void>) => void;
-    onSetPermissionMode?: (setPermissionMode: (mode: PermissionMode) => Promise<boolean>) => void;
+    onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
     confirmBypass?: () => Promise<boolean>;
     pendingQuotes?: readonly StagedCompanionQuote[];
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
@@ -185,6 +158,7 @@ async function renderProbe(
         onSend: options.onSend ?? (() => undefined),
         onSteer: options.onSteer,
         onStop: options.onStop,
+        onSetPermissionMode: options.onSetPermissionMode,
         pendingQuotes: options.pendingQuotes,
         onQuotesConsumed: options.onQuotesConsumed,
         sourceSession: options.sourceSession,
@@ -203,8 +177,9 @@ async function renderProbe(
   });
   await waitUntil(
     () =>
-      options.ready?.(container) ??
-      container.firstElementChild?.getAttribute('data-companion-id') === 'side-conversation',
+      // The fork is created lazily on the first send, so mounting no longer
+      // produces a companion. Default readiness is just "the probe mounted".
+      options.ready?.(container) ?? container.firstElementChild != null,
   );
   return { container, root, services };
 }
@@ -221,6 +196,7 @@ async function renderOwnershipProbe(
   let send!: (text: string) => Promise<boolean>;
   let steer!: (text: string) => Promise<boolean>;
   let stop!: () => Promise<void>;
+  let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
   let eventHandler: ((event: SessionEvent) => void) | undefined;
   const subscribeEvents = sideChat.subscribeEvents;
   const rendered = await renderProbe(
@@ -240,6 +216,7 @@ async function renderOwnershipProbe(
       onSend: (value) => (send = value),
       onSteer: (value) => (steer = value),
       onStop: (value) => (stop = value),
+      onSetPermissionMode: (value) => (setPermissionMode = value),
       ...options,
     },
   );
@@ -248,6 +225,7 @@ async function renderOwnershipProbe(
     send: (text: string) => send(text),
     steer: (text: string) => steer(text),
     stop: () => stop(),
+    setPermissionMode: (mode: PermissionMode) => setPermissionMode(mode),
     emit(event: SessionEvent) {
       assert.ok(eventHandler);
       eventHandler(event);
@@ -330,93 +308,76 @@ afterEach(async () => {
   Object.assign(globalThis, originalGlobals);
 });
 
-test('retries a busy Side Conversation at the newest settled boundary and clears its banner', async () => {
-  let listCount = 0;
-  let sessionChange: ((event: SessionChangedEvent) => void) | undefined;
-  let releaseRetry: (() => void) | undefined;
-  const branchInputs: Array<{ sourceTurnId: string; copyId: string }> = [];
-  const { container } = await renderProbe(
-    {
-      listTurns: async () => {
-        listCount += 1;
-        return listCount === 1
-          ? [settledTurn('turn-before-busy')]
-          : [settledTurn('turn-before-busy'), settledTurn('turn-after-busy')];
-      },
-      branchFromTurn: async (_sessionId, input) => {
-        branchInputs.push({ sourceTurnId: input.sourceTurnId, copyId: input.copyId });
-        if (branchInputs.length === 1) {
-          return { ok: false as const, reason: 'session_busy' as const };
-        }
-        await new Promise<void>((resolve) => {
-          releaseRetry = resolve;
-        });
-        return { ok: true as const, session: session('side-conversation') };
-      },
-      subscribeSessionChanges: (handler) => {
-        sessionChange = handler;
-        return () => {
-          if (sessionChange === handler) sessionChange = undefined;
-        };
-      },
+test('first send while the source is still on its first turn forks with an empty context', async () => {
+  const branchInputs: (string | undefined)[] = [];
+  const rendered = await renderOwnershipProbe({
+    // The panel opens while the main session is still running its first turn:
+    // no completed turn exists to branch from yet.
+    listTurns: async () => [runningTurn('first-turn')],
+    branchFromTurn: async (_sessionId, input) => {
+      branchInputs.push(input.sourceTurnId);
+      return { ok: true as const, session: session('side-conversation') };
     },
-    { ready: () => branchInputs.length === 1 && sessionChange !== undefined },
-  );
-  assert.match(container.textContent, /main conversation or a linked task is still running/i);
-  const probe = container.firstElementChild;
+    send: async () => ({ ok: true as const, turnId: 'empty-first-turn' }),
+  });
+  const probe = rendered.container.firstElementChild;
   assert.ok(probe);
+  // No eager fork at mount — the composer is immediately usable and nothing is
+  // branched until the user sends.
+  assert.equal(branchInputs.length, 0);
+  assert.equal(probe.getAttribute('data-companion-id'), '');
 
   await act(async () => {
-    sessionChange?.({
-      reason: 'turn-status-change',
-      sessionId: 'source-session',
-      turnId: 'turn-after-busy',
-      ts: Date.now(),
-    });
+    assert.equal(await rendered.send('explain the running turn'), true);
     await Promise.resolve();
   });
-  await waitUntil(() => branchInputs.length === 2 && releaseRetry !== undefined);
-  assert.equal(probe.getAttribute('data-preparing'), 'false');
-  assert.match(container.textContent, /main conversation or a linked task is still running/i);
-
-  await act(async () => {
-    releaseRetry?.();
-    await Promise.resolve();
-  });
-  await waitUntil(
-    () => probe.getAttribute('data-companion-id') === 'side-conversation',
-    () =>
-      `branch inputs: ${JSON.stringify(branchInputs)}; companion: ${probe.getAttribute('data-companion-id')}; error: ${probe.getAttribute('data-error')}`,
-  );
-
-  assert.deepEqual(
-    branchInputs.map(({ sourceTurnId }) => sourceTurnId),
-    ['turn-before-busy', 'turn-after-busy'],
-  );
-  assert.notEqual(branchInputs[0]?.copyId, branchInputs[1]?.copyId);
+  await awaitCompanion(rendered.container);
+  // Forking mid-first-turn copies no source transcript: an empty context.
+  assert.deepEqual(branchInputs, [undefined]);
   assert.equal(probe.getAttribute('data-error'), '');
 });
 
-test('does not restart foreground setup when the source Session object refreshes', async () => {
+test('first send after a completed turn forks through the settled turn', async () => {
+  const branchInputs: (string | undefined)[] = [];
+  const rendered = await renderOwnershipProbe({
+    listTurns: async () => [settledTurn('done-turn')],
+    branchFromTurn: async (_sessionId, input) => {
+      branchInputs.push(input.sourceTurnId);
+      return { ok: true as const, session: session('side-conversation') };
+    },
+    send: async () => ({ ok: true as const, turnId: 'through-turn' }),
+  });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  assert.equal(branchInputs.length, 0);
+
+  await act(async () => {
+    assert.equal(await rendered.send('explain the finished turn'), true);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+  // A settled turn exists, so the fork carries the full context through it.
+  assert.deepEqual(branchInputs, ['done-turn']);
+  assert.equal(probe.getAttribute('data-error'), '');
+});
+
+test('does not fork on mount or when the source Session object refreshes', async () => {
   let branchCount = 0;
   const { container, root, services } = await renderProbe(
     {
       listTurns: async () => [settledTurn('settled-turn')],
       branchFromTurn: async () => {
         branchCount += 1;
-        if (branchCount === 1) {
-          return { ok: false as const, reason: 'session_busy' as const };
-        }
-        return await new Promise<never>(() => undefined);
+        return { ok: true as const, session: session('side-conversation') };
       },
     },
-    { sourceSession: session('source-session'), ready: () => branchCount === 1 },
+    { sourceSession: session('source-session') },
   );
   const probe = container.firstElementChild;
   assert.ok(probe);
-  await waitUntil(
-    () => branchCount === 1 && probe.getAttribute('data-preparing') === 'false',
-  );
+  // Lazy fork: mounting never branches, and the composer is immediately usable.
+  assert.equal(branchCount, 0);
+  assert.equal(probe.getAttribute('data-companion-id'), '');
 
   await act(async () => {
     root.render(
@@ -429,14 +390,13 @@ test('does not restart foreground setup when the source Session object refreshes
     );
     await Promise.resolve();
   });
-
-  assert.equal(branchCount, 1);
-  assert.equal(probe.getAttribute('data-preparing'), 'false');
+  // A refreshed source identity must not spuriously trigger a fork.
+  assert.equal(branchCount, 0);
 });
 
-test('waits for the source model to become available before forking', async () => {
+test('does not fork or send when the source model is unavailable', async () => {
   let branchCount = 0;
-  const { container, root, services } = await renderProbe(
+  const rendered = await renderOwnershipProbe(
     {
       listTurns: async () => [settledTurn('settled-turn')],
       branchFromTurn: async () => {
@@ -444,96 +404,56 @@ test('waits for the source model to become available before forking', async () =
         return { ok: true as const, session: session('side-conversation') };
       },
     },
-    {
-      sourceSession: session('source-session'),
-      modelChoices: [],
-      ready: (current) =>
-        current.firstElementChild?.getAttribute('data-preparing') === 'false',
-    },
+    { sourceSession: session('source-session'), modelChoices: [] },
   );
-  const probe = container.firstElementChild;
+  const probe = rendered.container.firstElementChild;
   assert.ok(probe);
   assert.equal(branchCount, 0);
+
+  await act(async () => {
+    assert.equal(await rendered.send('cannot send without a ready model'), false);
+    await Promise.resolve();
+  });
+  // The send is refused before any branch is attempted.
+  assert.equal(branchCount, 0);
   assert.equal(probe.getAttribute('data-companion-id'), '');
-
-  await rerenderProbeSource({ root, services }, session('source-session'));
-  await waitUntil(() => probe.getAttribute('data-companion-id') === 'side-conversation');
-
-  assert.equal(branchCount, 1);
 });
 
-test('replaces an empty companion whose exact model is no longer available', async () => {
-  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
-  let branchCount = 0;
-  const cleaned: string[] = [];
-  const { container, root, services } = await renderProbe(
-    {
-      branchFromTurn: async () => {
-        branchCount += 1;
-        return {
-          ok: true as const,
-          session: branchCount === 1 ? session('side-conversation-a') : forkB,
-        };
-      },
-      cleanupSessionCopy: async (sessionId) => {
-        cleaned.push(sessionId);
-      },
-    },
-    {
-      sourceSession: sourceA,
-      modelChoices: [choiceFor(sourceA)],
-      ready: (current) =>
-        current.firstElementChild?.getAttribute('data-companion-id') ===
-        'side-conversation-a',
-    },
-  );
-  const probe = container.firstElementChild;
-  assert.ok(probe);
-
-  await rerenderProbeSource({ root, services }, sourceB);
-  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
-
-  assert.equal(branchCount, 2);
-  assert.deepEqual(cleaned, ['side-conversation-a']);
-});
-
-test('does not commit a fork whose model becomes unavailable during setup', async () => {
+test('cleans up a first-send fork whose model no longer matches on commit', async () => {
   const source = session('source-session');
-  const pendingFork = deferred<SessionSummary>();
+  const mismatchedFork = session('side-conversation', REBOUND_MODEL);
   const cleaned: string[] = [];
   let branchCount = 0;
-  const { container, root, services } = await renderProbe(
+  const rendered = await renderOwnershipProbe(
     {
+      listTurns: async () => [settledTurn('settled-turn')],
       branchFromTurn: async () => {
         branchCount += 1;
-        return { ok: true as const, session: await pendingFork.promise };
+        return { ok: true as const, session: mismatchedFork };
       },
       cleanupSessionCopy: async (sessionId) => {
         cleaned.push(sessionId);
       },
     },
-    {
-      sourceSession: source,
-      modelChoices: [choiceFor(source)],
-      ready: () => branchCount === 1,
-    },
+    { sourceSession: source, modelChoices: [choiceFor(source)] },
   );
-  const probe = container.firstElementChild;
+  const probe = rendered.container.firstElementChild;
   assert.ok(probe);
 
   await act(async () => {
-    root.render(probeTree(services, source, []));
-    pendingFork.resolve(session('side-conversation-a'));
-    await pendingFork.promise;
+    assert.equal(await rendered.send('the fork model drifted'), false);
+    await Promise.resolve();
   });
-  await waitUntil(() => probe.getAttribute('data-preparing') === 'false');
-
+  await waitUntil(() => cleaned.length === 1);
+  // The fork committed but its model is no longer authorized, so it is torn
+  // down instead of being adopted.
+  assert.equal(branchCount, 1);
+  assert.deepEqual(cleaned, ['side-conversation']);
   assert.equal(probe.getAttribute('data-companion-id'), '');
-  assert.deepEqual(cleaned, ['side-conversation-a']);
 });
 
-test('does not replace a fork while its send waits for observation readiness', async () => {
-  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
+test('retains a fork whose in-flight send is waiting for observation when the model rebinds', async () => {
+  const { sourceA, sourceB } = exactModelRebindScenario();
   let branchCount = 0;
   let seedA: (() => void) | undefined;
   const cleaned: string[] = [];
@@ -543,10 +463,7 @@ test('does not replace a fork while its send waits for observation readiness', a
     {
       branchFromTurn: async () => {
         branchCount += 1;
-        return {
-          ok: true as const,
-          session: branchCount === 1 ? session('side-conversation') : forkB,
-        };
+        return { ok: true as const, session: session('side-conversation') };
       },
       subscribeEvents: (sessionId, _handler, onSeeded) => {
         if (sessionId === 'side-conversation') seedA = onSeeded;
@@ -572,101 +489,31 @@ test('does not replace a fork while its send waits for observation readiness', a
   await act(async () => {
     firstSend = currentSend('waiting send');
     await Promise.resolve();
+  });
+  // Let the lazy fork commit and establish its subscription (which then blocks
+  // the send on observation readiness) before the source model rebinds.
+  await waitUntil(() => seedA !== undefined);
+  await act(async () => {
     rendered.root.render(ownershipProbeTree(rendered.services, sourceB, (send) => {
       currentSend = send;
     }));
     await Promise.resolve();
   });
+  // An in-flight send holds the submit lock, so the model rebind must not
+  // implicitly discard or replace the fork it is still waiting on.
   assert.deepEqual(cleaned, [], 'the send lock must retain its fork');
 
   await act(async () => {
     seedA?.();
     assert.equal(await firstSend, false);
   });
+  const probe = rendered.container.firstElementChild;
+  assert.ok(probe);
+  // The one fork was reused for the send and never cleaned up behind it.
   assert.deepEqual(sendTargets, ['side-conversation']);
-  const probe = rendered.container.firstElementChild;
-  assert.ok(probe);
-  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
-  assert.deepEqual(cleaned, ['side-conversation']);
-  assert.equal(branchCount, 2);
-
-  await act(async () => {
-    assert.equal(await currentSend('retry after rebind'), false);
-  });
-  assert.deepEqual(sendTargets, ['side-conversation', 'side-conversation-b']);
-});
-
-test('replaces an empty stale fork after its pending admission is retracted', async () => {
-  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
-  const pendingSend = deferred<{
-    ok: true;
-    steered: true;
-    turnId: string;
-    messageId: string;
-  }>();
-  let admissionId: string | undefined;
-  let branchCount = 0;
-  const cleaned: string[] = [];
-  let currentSend!: (text: string) => Promise<boolean>;
-  const rendered = await renderOwnershipProbe(
-    {
-      branchFromTurn: async () => {
-        branchCount += 1;
-        return {
-          ok: true as const,
-          session: branchCount === 1 ? session('side-conversation') : forkB,
-        };
-      },
-      cleanupSessionCopy: async (sessionId) => {
-        cleaned.push(sessionId);
-      },
-      send: async (_sessionId, command) => {
-        admissionId = command.turnId;
-        return pendingSend.promise;
-      },
-    },
-    {
-      sourceSession: sourceA,
-      modelChoices: [choiceFor(sourceA)],
-    },
-  );
-  currentSend = rendered.send;
-
-  let sendResult!: Promise<boolean>;
-  await act(async () => {
-    sendResult = currentSend('pending send');
-    await Promise.resolve();
-  });
-  await waitUntil(() => admissionId !== undefined);
-  await rerenderOwnershipSource(rendered, sourceB, (send) => { currentSend = send; });
-  assert.deepEqual(cleaned, [], 'pending admission must retain its fork');
-
-  await act(async () => {
-    rendered.emit({
-      type: 'message_admission',
-      id: 'retracted-after-rebind',
-      turnId: 'old-turn',
-      ts: 1,
-      messageId: admissionId as string,
-      outcome: 'retracted',
-    });
-    await Promise.resolve();
-  });
-  const probe = rendered.container.firstElementChild;
-  assert.ok(probe);
-  await waitUntil(() => probe.getAttribute('data-companion-id') === forkB.id);
-  assert.deepEqual(cleaned, ['side-conversation']);
-  assert.equal(branchCount, 2);
-
-  await act(async () => {
-    pendingSend.resolve({
-      ok: true,
-      steered: true,
-      turnId: 'old-turn',
-      messageId: admissionId as string,
-    });
-    assert.equal(await sendResult, false);
-  });
+  assert.deepEqual(cleaned, []);
+  assert.equal(branchCount, 1);
+  assert.equal(probe.getAttribute('data-companion-id'), 'side-conversation');
 });
 
 test('retains an admitted fork interrupted before send settles when its model changes', async () => {
@@ -768,6 +615,7 @@ test('keeps Side Conversation events owned by the Host-admitted turn across an a
     sendResult = send('new prompt');
     await Promise.resolve();
   });
+  await awaitProcessing(container);
 
   await act(async () => {
     emit(completeEvent('late-old-terminal', 'old-turn', 1));
@@ -824,6 +672,7 @@ test('binds a busy-raced Side Conversation send through its Host-admitted messag
     sendResult = send('steer the active turn');
     await Promise.resolve();
   });
+  await waitUntil(() => admissionId !== undefined);
   await act(async () => {
     emit(completeEvent('late-old-terminal', 'old-turn', 1));
     emit(
@@ -953,6 +802,7 @@ test('replays queued Side Conversation text after Host assigns the ticket to a s
     sendResult = send('continue in the successor turn');
     await Promise.resolve();
   });
+  await waitUntil(() => admissionId !== undefined);
   await act(async () => {
     emit(
       messageAdmittedEvent(
@@ -1069,6 +919,7 @@ test('clears a stopped Side Conversation admission when its live retraction is l
     sendResult = send('stop this queued send');
     await Promise.resolve();
   });
+  await waitUntil(() => admissionId !== undefined);
   let stopResult!: Promise<void>;
   await act(async () => {
     stopResult = stop();
@@ -1198,6 +1049,7 @@ test('releases a queued Side Conversation admission from the Host queue retract'
     sendResult = send('retract this queued send');
     await Promise.resolve();
   });
+  await awaitProcessing(container);
   assert.equal(container.firstElementChild?.getAttribute('data-processing'), 'true');
 
   await act(async () => {
@@ -1237,7 +1089,6 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
     },
     send: async () => pendingSend.promise,
   });
-  assert.equal(subscriptionCount, 1);
 
   let sendResult!: Promise<boolean>;
   await act(async () => {
@@ -1245,6 +1096,8 @@ test('keeps the same Side Conversation admission across a recoverable subscripti
     await Promise.resolve();
   });
   await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'true');
+  // The lazy fork subscribes exactly once, when the first send commits it.
+  assert.equal(subscriptionCount, 1);
   await act(async () => {
     emit(recoverableErrorEvent('recoverable-subscription-error', 'old-turn', 1));
     await Promise.resolve();
@@ -1481,11 +1334,15 @@ test('fails a send when observation seed rejects and resubscribes for retry', as
       return { ok: true as const, turnId: 'retry-turn' };
     },
   });
-  assert.ok(rejectSeed);
 
   let failedResult!: Promise<boolean>;
   await act(async () => {
     failedResult = send('observer failure');
+    await Promise.resolve();
+  });
+  // The fork subscribes during the first send; fail that observation seed.
+  await waitUntil(() => rejectSeed !== undefined);
+  await act(async () => {
     rejectSeed?.(new Error('observer failed'));
     assert.equal(await failedResult, false);
   });
@@ -1534,6 +1391,197 @@ test('releases a send waiting for observation when the Side Conversation is disp
   mountedRoot = undefined;
 });
 
+test('applies a permission mode picked before the first send once the fork is created', async () => {
+  const permissionCalls: Array<{ sessionId: string; mode: PermissionMode }> = [];
+  const probe = await renderOwnershipProbe({
+    send: async () => ({ ok: true as const, turnId: 'turn-1' }),
+    setPermissionMode: async (sessionId, mode) => {
+      permissionCalls.push({ sessionId, mode });
+      return { ...session('side-conversation'), permissionMode: mode };
+    },
+  });
+
+  // No fork exists yet: the choice is staged and drives the read-only chip.
+  await act(async () => {
+    assert.equal(await probe.setPermissionMode('bypass'), true);
+    await Promise.resolve();
+  });
+  const el = probe.container.firstElementChild;
+  assert.equal(el?.getAttribute('data-permission-mode'), 'bypass');
+  assert.equal(el?.getAttribute('data-companion-id'), '');
+  assert.deepEqual(permissionCalls, []);
+
+  // The first send creates the fork and applies the staged mode to it.
+  await act(async () => {
+    assert.equal(await probe.send('first message'), true);
+    await Promise.resolve();
+  });
+  await waitUntil(() => permissionCalls.length === 1);
+  assert.deepEqual(permissionCalls, [{ sessionId: 'side-conversation', mode: 'bypass' }]);
+});
+
+test('replaces a stale empty fork on the next send after the source model rebinds', async () => {
+  const { sourceA, sourceB, forkB } = exactModelRebindScenario();
+  let rejectSeed: ((error: unknown) => void) | undefined;
+  let branchCount = 0;
+  const cleaned: string[] = [];
+  let currentSend!: (text: string) => Promise<boolean>;
+  const rendered = await renderOwnershipProbe(
+    {
+      subscribeEvents: (sessionId, _handler, onSeeded, onSeedError) => {
+        // The first fork's observation seed fails; the replacement seeds fine.
+        if (sessionId === 'side-conversation') rejectSeed ??= onSeedError;
+        else onSeeded?.();
+        return () => undefined;
+      },
+      branchFromTurn: async () => {
+        branchCount += 1;
+        return {
+          ok: true as const,
+          session: branchCount === 1 ? session('side-conversation') : forkB,
+        };
+      },
+      cleanupSessionCopy: async (sessionId) => {
+        cleaned.push(sessionId);
+      },
+      send: async () => ({ ok: true as const, turnId: 'turn-1' }),
+    },
+    { sourceSession: sourceA, modelChoices: [choiceFor(sourceA)] },
+  );
+  currentSend = rendered.send;
+
+  // The first send commits an (empty) fork, then its observation seed fails, so
+  // the fork is retained with no content.
+  let failed!: Promise<boolean>;
+  await act(async () => {
+    failed = currentSend('first message');
+    await Promise.resolve();
+  });
+  await waitUntil(() => rejectSeed !== undefined);
+  await act(async () => {
+    rejectSeed?.(new Error('seed failed'));
+    assert.equal(await failed, false);
+  });
+  const el = rendered.container.firstElementChild;
+  assert.equal(el?.getAttribute('data-companion-id'), 'side-conversation');
+  assert.equal(el?.getAttribute('data-model-ready'), 'true');
+
+  // The source model rebinds; the empty fork's inherited model is now stale but
+  // the composer stays usable, and the next send must replace the fork rather
+  // than being wedged by the retained stale one.
+  await rerenderOwnershipSource(rendered, sourceB, (send) => {
+    currentSend = send;
+  });
+  assert.equal(el?.getAttribute('data-model-ready'), 'true');
+
+  await act(async () => {
+    assert.equal(await currentSend('retry after rebind'), true);
+    await Promise.resolve();
+  });
+  await waitUntil(
+    () => rendered.container.firstElementChild?.getAttribute('data-companion-id') === forkB.id,
+  );
+  assert.equal(branchCount, 2);
+  assert.deepEqual(cleaned, ['side-conversation']);
+});
+
+test('fails closed when the staged permission write fails on the first send', async () => {
+  let sendCalls = 0;
+  const probe = await renderOwnershipProbe({
+    send: async () => {
+      sendCalls += 1;
+      return { ok: true as const, turnId: 'turn-1' };
+    },
+    setPermissionMode: async () => {
+      throw new Error('permission write failed');
+    },
+  });
+
+  // Stage a stricter mode before the fork exists (source default is 'ask').
+  await act(async () => {
+    assert.equal(await probe.setPermissionMode('explore'), true);
+    await Promise.resolve();
+  });
+
+  // The first send creates the fork; applying the staged mode fails, so the
+  // send aborts WITHOUT dispatching the turn and keeps the staged choice.
+  await act(async () => {
+    assert.equal(await probe.send('do not run under the inherited mode'), false);
+    await Promise.resolve();
+  });
+  assert.equal(sendCalls, 0);
+  assert.equal(
+    probe.container.firstElementChild?.getAttribute('data-permission-mode'),
+    'explore',
+  );
+});
+
+test('replays the empty copy point across an ambiguous retry even after the source settles', async () => {
+  const sourceTurnIds: (string | undefined)[] = [];
+  let listCount = 0;
+  let branchCount = 0;
+  const probe = await renderOwnershipProbe({
+    listTurns: async () => {
+      listCount += 1;
+      return listCount === 1 ? [runningTurn('t1')] : [settledTurn('t1')];
+    },
+    branchFromTurn: async (_sessionId, input) => {
+      sourceTurnIds.push(input.sourceTurnId);
+      branchCount += 1;
+      if (branchCount === 1) throw new Error('ambiguous outcome lost');
+      return { ok: true as const, session: session('side-conversation') };
+    },
+    send: async () => ({ ok: true as const, turnId: 'turn-1' }),
+  });
+
+  // First send: only a running turn exists, so the fork is empty — but the
+  // branch's outcome is lost (throws), leaving the retry lease open.
+  await act(async () => {
+    assert.equal(await probe.send('first attempt'), false);
+    await Promise.resolve();
+  });
+  // Second send: the source has since settled a turn, but the retry must REPLAY
+  // the empty copy point (same copyId) instead of switching to through_turn,
+  // or the Host fingerprint would reject the reused identity.
+  await act(async () => {
+    await probe.send('retry');
+    await Promise.resolve();
+  });
+  await waitUntil(() => branchCount === 2);
+  assert.deepEqual(sourceTurnIds, [undefined, undefined]);
+});
+
+test('declining Full access through the side-chat hook does not persist the permission mode', async () => {
+  let confirmations = 0;
+  let writes = 0;
+  let setPermissionMode!: (mode: PermissionMode) => Promise<boolean>;
+
+  const { container } = await renderProbe(
+    {
+      setPermissionMode: async (sessionId, mode) => {
+        writes += 1;
+        return session(sessionId, { permissionMode: mode });
+      },
+    },
+    {
+      confirmBypass: async () => {
+        confirmations += 1;
+        return false;
+      },
+      onSetPermissionMode: (setter) => {
+        setPermissionMode = setter;
+      },
+    },
+  );
+
+  assert.ok(container.firstElementChild);
+  const result = await act(async () => setPermissionMode('bypass'));
+
+  assert.equal(result, false);
+  assert.equal(confirmations, 1);
+  assert.equal(writes, 0);
+});
+
 function QuoteCompanionProbe(props: {
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
@@ -1554,7 +1602,6 @@ function QuoteCompanionProbe(props: {
   return createElement('div', {
     'data-error': companion.error ?? '',
     'data-companion-id': companion.companionSession?.id ?? '',
-    'data-preparing': String(companion.preparing),
   }, companion.error);
 }
 
@@ -1562,6 +1609,7 @@ function QuoteCompanionOwnershipProbe(props: {
   onSend: (send: (text: string) => Promise<boolean>) => void;
   onSteer?: (steer: (text: string) => Promise<boolean>) => void;
   onStop?: (stop: () => Promise<void>) => void;
+  onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
   pendingQuotes?: readonly StagedCompanionQuote[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   sourceSession?: SessionSummary;
@@ -1580,6 +1628,7 @@ function QuoteCompanionOwnershipProbe(props: {
   props.onSend(companion.send);
   props.onSteer?.(companion.steer);
   props.onStop?.(companion.stop);
+  props.onSetPermissionMode?.(companion.setPermissionMode);
   return createElement('div', {
     'data-companion-id': companion.companionSession?.id ?? '',
     'data-error': companion.error ?? '',
@@ -1587,6 +1636,8 @@ function QuoteCompanionOwnershipProbe(props: {
     'data-live-text': companion.liveTurn?.steps.find((step) => step.text)?.text?.text ?? '',
     'data-streaming': String(companion.streaming),
     'data-processing': String(companion.processing),
+    'data-model-ready': String(companion.modelReady),
+    'data-permission-mode': companion.permissionMode ?? '',
   });
 }
 
@@ -1631,6 +1682,10 @@ function settledTurn(turnId: string): TurnRecord {
   return { turnId, status: 'completed', partialOutputRetained: false };
 }
 
+function runningTurn(turnId: string): TurnRecord {
+  return { turnId, status: 'running', partialOutputRetained: false };
+}
+
 async function waitUntil(predicate: () => boolean, diagnostics?: () => string): Promise<void> {
   for (let attempt = 0; attempt < 50; attempt += 1) {
     if (predicate()) return;
@@ -1641,4 +1696,17 @@ async function waitUntil(predicate: () => boolean, diagnostics?: () => string): 
   assert.fail(
     `Timed out waiting for the Side Conversation state${diagnostics ? ` (${diagnostics()})` : ''}`,
   );
+}
+
+// The fork is created lazily during the first send. Emitting fork events (or
+// stopping) before that fork commits would race a not-yet-established
+// subscription, so tests await the committed companion first.
+async function awaitCompanion(container: Element, id = 'side-conversation'): Promise<void> {
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-companion-id') === id);
+}
+
+// A live-turn admission is armed only once the send reaches its optimistic
+// dispatch, which is a stricter barrier than the fork merely committing.
+async function awaitProcessing(container: Element): Promise<void> {
+  await waitUntil(() => container.firstElementChild?.getAttribute('data-processing') === 'true');
 }

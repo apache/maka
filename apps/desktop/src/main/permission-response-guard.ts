@@ -53,7 +53,13 @@ interface WorkspaceFileReferencePosition {
   start: number;
 }
 
-export type RuntimeHostBranchFromTurnInput = BranchFromTurnInput & { copyId: string };
+/** Branch input after normalization. Absent `sourceTurnId` forks empty. */
+export type NormalizedBranchFromTurnInput = {
+  sourceTurnId?: string;
+  name?: string;
+  sideConversation?: boolean;
+};
+export type RuntimeHostBranchFromTurnInput = NormalizedBranchFromTurnInput & { copyId: string };
 export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId: string };
 
 interface NormalizedSendSessionCommand {
@@ -145,7 +151,7 @@ export function normalizeRegenerateTurnInput(input: unknown): RegenerateTurnInpu
   };
 }
 
-export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInput {
+export function normalizeBranchFromTurnInput(input: unknown): NormalizedBranchFromTurnInput {
   const value = requireObject(input, 'Invalid branch turn input');
   const name =
     value.name === undefined
@@ -154,8 +160,18 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
   if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
     throw new Error('Invalid branch sideConversation');
   }
+  // Absent sourceTurnId forks with an empty context (a side conversation opened
+  // before the source has any settled turn).
+  const sourceTurnId =
+    value.sourceTurnId === undefined
+      ? undefined
+      : normalizeRequiredString(
+          value.sourceTurnId,
+          'Invalid branch sourceTurnId',
+          MAX_TURN_ID_LENGTH,
+        );
   return {
-    sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };
