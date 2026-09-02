@@ -213,7 +213,6 @@ describe('ASF header classification', () => {
       'experiments/windows-sandbox/launcher/src/main.rs',
       'packages/eval/harbor/egress-proxy/Dockerfile',
       'packages/eval/harbor/egress-proxy/network-policy',
-      '.husky/commit-msg',
       '.husky/pre-commit',
       '.github/workflows/ci.yml',
       'README.md',

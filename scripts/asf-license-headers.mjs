@@ -129,7 +129,6 @@ const coveredExtensions = new Map([
 
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
-  ['commit-msg', 'hash'],
   ['Dockerfile', 'hash'],
   ['pre-commit', 'hash'],
   // A POSIX shell script that the Eval egress sidecar invokes by name.

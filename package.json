@@ -108,8 +108,6 @@
     "@astryxdesign/cli": "0.4.5",
     "@astryxdesign/core": "0.5.2",
     "@biomejs/biome": "2.5.9",
-    "@commitlint/cli": "^21.2.2",
-    "@commitlint/config-conventional": "^21.2.2",
     "@types/node": "^26.2.0",
     "esbuild": "^0.28.1",
     "husky": "^9.1.7",
