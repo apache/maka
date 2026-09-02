@@ -51,7 +51,10 @@ const describedResolver = (
   resolve({ reference, sessions }): WorkHubSessionResolution {
     const candidates = sessions
       .filter((session) => descriptions.get(session.ref) === reference.text)
-      .map((session) => ({ ref: session.ref, evidence: 'exact_session_name' as const }));
+      .map((session) => ({
+        ref: session.ref,
+        evidence: { kind: 'named' as const, remainder: '' },
+      }));
     const [first, ...rest] = candidates;
     if (!first) return { kind: 'none' };
     if (rest.length > 0) return { kind: 'ambiguous', candidates };
@@ -73,7 +76,6 @@ test('stop resolves through the shared port rather than a stop-specific grammar'
     kind: 'target',
     target: { sessionId: 'payments' },
     stopsActionId: 'action-1',
-    activeActionIds: ['action-1'],
   });
   assert.deepEqual(
     baseline.resolveStop({ text: 'Stop the payment timeout work', sessions }),
@@ -89,7 +91,6 @@ test('stop resolves through the shared port rather than a stop-specific grammar'
     kind: 'target',
     target: { sessionId: 'payments' },
     stopsActionId: 'action-1',
-    activeActionIds: ['action-1'],
   });
 });
 
@@ -138,7 +139,9 @@ test('a resolver cannot widen stop beyond the visible candidate set it was given
   const resolver: WorkHubSessionResolver = {
     resolve: () => ({
       kind: 'ranked',
-      candidates: [{ ref: 'never-offered', evidence: 'exact_session_name' }],
+      candidates: [
+        { ref: 'never-offered', evidence: { kind: 'named', remainder: '' } },
+      ],
     }),
   };
   assert.deepEqual(

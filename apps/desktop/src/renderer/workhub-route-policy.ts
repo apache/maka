@@ -20,8 +20,9 @@
 import {
   createExactNameSessionResolver,
   readWorkHubRequestIntent,
-  workHubCorrectionTargetsSession,
+  workHubCorrectionAdmitsReference,
   type WorkHubRequestIntent,
+  type WorkHubResolverSession,
   type WorkHubSessionResolver,
 } from './application/contracts/workhub-request-intent.js';
 
@@ -89,8 +90,6 @@ export type WorkHubStopRouteDecision =
       target: WorkHubRouteTarget;
       /** The one active delegation the policy resolved, by opaque identity. */
       stopsActionId: string;
-      /** The active delegation state the Action Gate must revalidate. */
-      activeActionIds: readonly string[];
     };
 
 export interface WorkHubRoutePolicy {
@@ -176,23 +175,25 @@ function createWorkHubRoutePolicyVisit(
       );
       const resolution = sessionResolver.resolve({
         reference: { text: reference },
-        sessions: sessions.map((session) => ({
-          ref: session.target.sessionId,
-          sessionName: session.sessionName,
-          projectName: session.projectName,
-          updatedAt: session.updatedAt,
-        })),
+        sessions: sessions.map(resolverSession),
       });
       if (resolution.kind === 'none') return { kind: 'not_requested' };
-      if (resolution.kind === 'ambiguous') {
-        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
-      }
+      // Stop's own tail rule. The Resolver reports what the reference said
+      // after the name; a destructive command may add punctuation and nothing
+      // else, so `Stop Payments and Login` names no stoppable target here even
+      // though `Payments` matched.
+      const admissible = resolution.candidates.filter(
+        ({ evidence }) =>
+          evidence.kind === 'elided_name_punctuation' ||
+          /^[.!?。！？]*$/u.test(evidence.remainder),
+      );
+      if (admissible.length === 0) return { kind: 'not_requested' };
       // Stop admits one candidate only. A ranked resolver may return several;
       // this action never picks a winner from a ranking it cannot justify.
-      if (resolution.candidates.length > 1) {
+      if (resolution.kind === 'ambiguous' || admissible.length > 1) {
         return { kind: 'clarification', reason: 'stop_target_ambiguous' };
       }
-      const resolved = sessionByRef.get(resolution.candidates[0].ref);
+      const resolved = sessionByRef.get(admissible[0]!.ref);
       if (!resolved) return { kind: 'not_requested' };
       const [stopsActionId, ...furtherActive] = resolved.activeActionIds;
       if (!stopsActionId) {
@@ -201,12 +202,7 @@ function createWorkHubRoutePolicyVisit(
       if (furtherActive.length > 0) {
         return { kind: 'clarification', reason: 'stop_target_not_unique' };
       }
-      return {
-        kind: 'target',
-        target: resolved.target,
-        stopsActionId,
-        activeActionIds: resolved.activeActionIds,
-      };
+      return { kind: 'target', target: resolved.target, stopsActionId };
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);
@@ -240,8 +236,20 @@ function createWorkHubRoutePolicyVisit(
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
+        // Correction recalls its target through the same shared port as stop,
+        // then applies its own tail rule: a correction may name the Session and
+        // go on to say what to do with it.
+        const correctionResolution = sessionResolver.resolve({
+          reference: { text: correctionText },
+          sessions: alternatives.map(resolverSession),
+        });
+        const affirmed = new Set(
+          (correctionResolution.kind === 'none' ? [] : correctionResolution.candidates)
+            .filter(({ evidence }) => workHubCorrectionAdmitsReference(correctionText, evidence))
+            .map(({ ref }) => ref),
+        );
         const affirmedCorrections = alternatives.filter((session) =>
-          workHubCorrectionTargetsSession(intent, session.sessionName));
+          affirmed.has(session.target.sessionId));
         if (affirmedCorrections.length === 1) {
           return {
             kind: 'target',
@@ -373,6 +381,16 @@ function createWorkHubRoutePolicyVisit(
       previousFocus = currentFocus;
       currentFocus = target;
     },
+  };
+}
+
+/** Presents one routable Session to the Resolver as a bounded opaque candidate. */
+function resolverSession(session: WorkHubRoutableSession): WorkHubResolverSession {
+  return {
+    ref: session.target.sessionId,
+    sessionName: session.sessionName,
+    projectName: session.projectName,
+    updatedAt: session.updatedAt,
   };
 }
 

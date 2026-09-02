@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { workHubSessionReferenceNamesSession } from './workhub-creation-intent.js';
+import {
+  matchWorkHubSessionName,
+  type WorkHubSessionNameMatch,
+} from './workhub-creation-intent.js';
 
 /**
  * The shared Session Resolver port.
@@ -59,8 +62,16 @@ export interface WorkHubResolverSession {
   readonly updatedAt: number;
 }
 
-/** Why a candidate was recalled. Evidence explains a ranking; it authorizes nothing. */
-export type WorkHubSessionResolutionEvidence = 'exact_session_name';
+/**
+ * Why a candidate was recalled. Evidence explains a recall and authorizes
+ * nothing, but it must be rich enough for an action's policy to apply its own
+ * rules — so exact naming reports the reference text left over after the name,
+ * which stop and correction are each entitled to judge differently.
+ */
+export type WorkHubSessionResolutionEvidence = Exclude<
+  WorkHubSessionNameMatch,
+  { readonly kind: 'none' }
+>;
 
 export interface WorkHubSessionCandidate {
   readonly ref: string;
@@ -93,15 +104,12 @@ export type WorkHubSessionResolution =
 export function createExactNameSessionResolver(): WorkHubSessionResolver {
   return {
     resolve({ reference, sessions }) {
-      const named = sessions.filter((session) =>
-        workHubSessionReferenceNamesSession(reference.text, session.sessionName),
-      );
-      const candidates = named.map(
-        (session): WorkHubSessionCandidate => ({
-          ref: session.ref,
-          evidence: 'exact_session_name',
-        }),
-      );
+      const candidates: WorkHubSessionCandidate[] = [];
+      for (const session of sessions) {
+        const match = matchWorkHubSessionName(reference.text, session.sessionName);
+        if (match.kind === 'none') continue;
+        candidates.push({ ref: session.ref, evidence: match });
+      }
       const [first, ...rest] = candidates;
       if (!first) return { kind: 'none' };
       // Exact naming has no score to separate equals by, so more than one match

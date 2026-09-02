@@ -41,11 +41,11 @@ const resolveText = (text: string, sessions: readonly WorkHubResolverSession[]) 
 test('the exact-name resolver recalls one visible Session by opaque reference', () => {
   assert.deepEqual(
     resolveText('Stop Payments', [session('s1', 'Payments'), session('s2', 'Login')]),
-    { kind: 'ranked', candidates: [{ ref: 's1', evidence: 'exact_session_name' }] },
+    { kind: 'ranked', candidates: [{ ref: 's1', evidence: { kind: 'named', remainder: '' } }] },
   );
   assert.deepEqual(resolveText('停止支付任务', [session('s1', '支付任务')]), {
     kind: 'ranked',
-    candidates: [{ ref: 's1', evidence: 'exact_session_name' }],
+    candidates: [{ ref: 's1', evidence: { kind: 'named', remainder: '' } }],
   });
 });
 
@@ -62,8 +62,8 @@ test('equal exact matches are ambiguity rather than an unjustified ranking', () 
     {
       kind: 'ambiguous',
       candidates: [
-        { ref: 's1', evidence: 'exact_session_name' },
-        { ref: 's2', evidence: 'exact_session_name' },
+        { ref: 's1', evidence: { kind: 'named', remainder: '' } },
+        { ref: 's2', evidence: { kind: 'named', remainder: '' } },
       ],
     },
   );

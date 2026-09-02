@@ -23,18 +23,23 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
-  workHubSessionReferenceNamesSession,
+  matchWorkHubSessionName,
   type WorkHubRequestIntent,
 } from '../workhub-creation-intent.js';
 
 const intentFor = readWorkHubRequestIntent;
-/** The stop Action Policy's own sufficiency rule, kept out of the matcher. */
-const workHubStopTargetsSession = (intent: WorkHubRequestIntent, sessionName: string): boolean =>
-  Boolean(
-    intent.stop.imperative &&
-      intent.stop.target &&
-      workHubSessionReferenceNamesSession(intent.stop.target, sessionName),
+/**
+ * The stop Action Policy, reproduced here over the shared matcher: a stop
+ * reference may carry punctuation after the name and nothing else.
+ */
+const workHubStopTargetsSession = (intent: WorkHubRequestIntent, sessionName: string): boolean => {
+  if (!intent.stop.imperative || !intent.stop.target) return false;
+  const match = matchWorkHubSessionName(intent.stop.target, sessionName);
+  return (
+    match.kind === 'elided_name_punctuation' ||
+    (match.kind === 'named' && /^[.!?。！？]*$/u.test(match.remainder))
   );
+};
 const affirmativeWorkHubExistingCorrectionTarget = (value: string) =>
   intentFor(value).correction.existingTarget;
 const affirmativeWorkHubNamedCreationTitle = (value: string) => {
