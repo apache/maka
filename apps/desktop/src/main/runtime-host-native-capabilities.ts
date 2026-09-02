@@ -26,7 +26,7 @@ import {
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
 import {
-  decodeClientCapabilityToolInputSchema,
+  decodeClientCapabilityToolDescriptor,
   type ClientCapabilityCallFrame,
   type ClientCapabilityCallResult,
   type ClientCapabilityContentBlock,
@@ -455,19 +455,18 @@ function prepareCapabilityGroups(
   return groups.flatMap((group) => {
     const tools = group.tools.flatMap((tool): PreparedDesktopCapabilityTool[] => {
       const declaredSchema = declaredToolInputSchema(tool);
-      let inputSchema: Record<string, unknown>;
+      let descriptor: ClientCapabilityToolDescriptor;
       try {
-        inputSchema = Object.freeze(
-          decodeClientCapabilityToolInputSchema(declaredSchema),
+        descriptor = Object.freeze(
+          decodeClientCapabilityToolDescriptor(
+            capabilityToolDescriptor(group.offerId, tool, declaredSchema),
+          ),
         );
       } catch (error) {
         if (!group.omitUnsupportedTools) throw error;
         return [];
       }
-      return [{
-        tool,
-        descriptor: capabilityToolDescriptor(group.offerId, tool, inputSchema),
-      }];
+      return [{ tool, descriptor }];
     });
     if (group.omitUnsupportedTools && tools.length === 0) return [];
     return [{ ...group, tools }];

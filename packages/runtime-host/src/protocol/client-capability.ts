@@ -640,7 +640,7 @@ function decodeClientCapabilityOffer(value: unknown): ClientCapabilityOffer {
       : {
           description: requireString(record.description, 'description', 1_024),
         }),
-    tools: record.tools.map(decodeToolDescriptor),
+    tools: record.tools.map(decodeClientCapabilityToolDescriptor),
   };
 }
 
@@ -665,7 +665,9 @@ function decodeClientCapabilityHostPathAccess(value: unknown): ClientCapabilityH
   throw invalidProtocolFrame('Invalid Client Capability Host path access');
 }
 
-function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
+export function decodeClientCapabilityToolDescriptor(
+  value: unknown,
+): ClientCapabilityToolDescriptor {
   const record = requireRecord(value, 'Client Capability tool');
   assertOptionalExactKeys(
     record,
@@ -696,7 +698,7 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
   };
 }
 
-export function decodeClientCapabilityToolInputSchema(value: unknown): Record<string, unknown> {
+function decodeClientCapabilityToolInputSchema(value: unknown): Record<string, unknown> {
   const inputSchema = decodeJsonRecord(value, 'inputSchema');
   if (jsonByteLength(inputSchema) > 32 * 1024) {
     throw invalidProtocolFrame('Client Capability tool schema is too large');
