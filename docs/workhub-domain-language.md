@@ -67,6 +67,26 @@ bounded, valid ordinary Session; `create_new` creates an ordinary Session before
 delegating and is visibly announced as new work; and `clarify` continues in the
 Coordination Session without guessing or creating.
 
+**Action Intent**: A bounded interpretation of what the user is trying to do,
+such as discuss, delegate, inspect, continue, stop, or resume. It carries trusted
+user-input evidence but no selected Session and no execution authority.
+
+**Session Resolver**: The shared, replaceable capability that recalls and ranks
+visible existing ordinary Sessions for a user reference. It may return ranked
+candidates, no candidate, or ambiguity. It never returns `create_new`, chooses a
+final coordination outcome, or grants execution authority. Exact-name matching is
+only a temporary deterministic implementation; future ranked implementations use
+the same contract.
+
+**Action Policy**: Deterministic, action-specific rules that combine Action Intent,
+Session resolution, and current product constraints to propose an existing-target
+action, explicit creation, clarification, local discussion, or safe rejection.
+Creation is a policy decision rather than a retrieval result.
+
+**Action Proposal**: A closed typed request produced by an Action Policy. It uses
+opaque stable target identities and expected-state preconditions, but remains
+advisory until the Action Gate revalidates and admits it.
+
 **delegation**: A bounded reference from a Coordination Turn to one target ordinary
 Session and Turn, including only its identity, disposition, and coordination-owned
 link status (`active`, `superseded`, `aborted`, or `stopped`). A link is `aborted` only when a
@@ -105,10 +125,15 @@ the Coordination transcript records an auditable replacement-aborted terminal
 fact and removes the retired source from active linkage.
 Correction never replaces either Session's transcript authority.
 
-**Direct stop**: A user's explicit, named imperative to retire one active durable
-delegation, such as `Stop Payments` or `停止支付任务`. Pronouns, pause/wait language,
-questions, advice, negation, malformed literals, and model-supplied Session, Turn,
-Run, or Message identities grant no Stop authority. WorkHub first records
+**Direct stop**: A user's explicit imperative to retire one active durable
+delegation. The initial deterministic implementation accepts exact display-name
+references behind the shared Session Resolver contract; exact-name syntax is not
+the long-term product boundary. Pronouns, pause/wait language, questions, advice,
+negation, unresolved or ambiguous targets, and model-supplied Session, Turn, Run,
+or Message identities grant no Stop authority. A future ranked resolver may recall
+a Session from other permitted evidence, but the Action Policy must still require a
+sufficiently resolved active WorkHub delegation and the Action Gate must revalidate
+its stable identity. WorkHub first records
 `delegation_stop_requested`, resolves the named source action to its durable
 delegation, and lets the target Session's Message authority observe one of four
 outcomes: `cancelled_pending`, `stop_delivered`, `already_terminal`, or `not_owned`.
@@ -133,8 +158,8 @@ likewise writes the direct-stop action identity into the exact root Turn's
 durable abort source. A retry recognizes only that matching proof; an earlier or
 concurrent manual Stop remains `already_terminal`. Stop admission holds the
 Coordination Session and every currently active target Session lane
-while it rechecks current names and active links; a concurrent rename or new
-delegation therefore cannot invalidate the named-one-target proof before the
+while it rechecks current target identities and active links; a concurrent rename
+or new delegation therefore cannot invalidate the one-target proof before the
 request record commits. Removing the target Session destroys the Message proof a
 committed claim still needs; the removal tombstone outlives that Session and
 resolves the claim as `already_terminal`, while a target that is merely
