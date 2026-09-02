@@ -22,6 +22,8 @@ import test from 'node:test';
 import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
 import { type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime';
+import { buildMcpTools, type McpToolProvider } from '@maka/runtime/mcp-tools';
+import type { McpToolBinding } from '@maka/core/mcp';
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,
@@ -131,6 +133,85 @@ test('publishes the real Computer Use schema through the Client Capability proto
     | Record<string, { items?: unknown }>
     | undefined;
   assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
+});
+
+test('offers and dispatches MCP tools whose parameters are JSON Schema, not Zod', async () => {
+  let receivedArgs: unknown;
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'filesystem',
+            name: 'read_file',
+            description: 'Read a file',
+            inputSchema: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+            },
+          },
+          binding: 'binding-1' as McpToolBinding,
+        },
+      ],
+    }),
+    callTool: async (_binding, args) => {
+      receivedArgs = args;
+      return { content: [{ type: 'text', text: JSON.stringify(args) }] };
+    },
+  };
+  // Real production projection: parameters become jsonSchema(...), not Zod.
+  const mcpTools = buildMcpTools(mcpProvider);
+  const mcpTool = mcpTools[0];
+  assert.ok(mcpTool, 'expected buildMcpTools to project one tool');
+
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp',
+        label: 'MCP',
+        description: 'MCP tools',
+        tools: mcpTools,
+      },
+    ],
+  });
+
+  // Offer path: the JSON Schema is advertised verbatim and survives protocol encoding.
+  const offer = provider.offers().find((entry) => entry.offerId === 'desktop_mcp');
+  assert.ok(offer, 'expected a desktop_mcp offer');
+  const inputSchema = offer.tools[0]?.inputSchema;
+  assert.equal(inputSchema?.type, 'object');
+  assert.deepEqual(
+    Object.keys((inputSchema?.properties as object | undefined) ?? {}),
+    ['value'],
+  );
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+
+  // Call path: args flow through to callTool without a Zod parser, and the MCP
+  // result is projected back over the protocol.
+  const result = await call(
+    provider,
+    capabilityFrame({
+      offerId: 'desktop_mcp',
+      serverId: 'desktop_mcp',
+      toolName: mcpTool.name,
+      arguments: { value: 'hi' },
+    }),
+  );
+  assert.deepEqual(receivedArgs, { value: 'hi' });
+  assert.deepEqual(result, {
+    content: [{ type: 'text', text: JSON.stringify({ value: 'hi' }) }],
+  });
 });
 
 test('publishes every production Desktop-owned tool schema through the protocol', () => {

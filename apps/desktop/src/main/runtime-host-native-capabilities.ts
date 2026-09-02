@@ -337,8 +337,7 @@ async function invokeNativeTool(
   }
   const signal = AbortSignal.any([options.signal, invocation.signal]);
   signal.throwIfAborted();
-  const parameters = requireZodSchema(binding.tool);
-  const args = await parameters.parseAsync(frame.arguments);
+  const args = await parseToolArguments(binding.tool, frame.arguments);
   signal.throwIfAborted();
   const sessionId =
     frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
@@ -448,13 +447,17 @@ function capabilityOffer(
 }
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
-  const schema = toJSONSchema(requireZodSchema(tool), {
-    io: "input",
-    target: "draft-07",
-    unrepresentable: "any",
-    cycles: "ref",
-    reused: "inline",
-  });
+  const parameters = tool.parameters;
+  const schema: Record<string, unknown> =
+    parameters instanceof z.ZodType
+      ? (toJSONSchema(parameters, {
+          io: "input",
+          target: "draft-07",
+          unrepresentable: "any",
+          cycles: "ref",
+          reused: "inline",
+        }) as Record<string, unknown>)
+      : cloneNativeToolJsonSchema(tool);
   delete schema.$schema;
   if (schema.type !== "object") {
     throw new Error(
@@ -464,13 +467,75 @@ function toolInputSchema(tool: MakaTool): Record<string, unknown> {
   return Object.freeze(schema);
 }
 
-function requireZodSchema(tool: MakaTool): z.ZodType {
-  if (!(tool.parameters instanceof z.ZodType)) {
+function cloneNativeToolJsonSchema(tool: MakaTool): Record<string, unknown> {
+  const json = aiSchemaJson(tool.parameters);
+  if (!json) {
     throw new Error(
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  return tool.parameters;
+  // Shallow clone so deleting $schema / freezing the offer never mutates the
+  // MCP descriptor's shared inputSchema object.
+  return { ...json };
+}
+
+/**
+ * Read the JSON Schema from an AI SDK `Schema` (e.g. an MCP tool built through
+ * `jsonSchema()`), when it is synchronously available. Desktop offers are built
+ * eagerly and frozen, so an async (thenable) schema cannot be resolved here.
+ */
+function aiSchemaJson(
+  parameters: unknown,
+): Record<string, unknown> | undefined {
+  if (!parameters || typeof parameters !== "object") return undefined;
+  const json = (parameters as { jsonSchema?: unknown }).jsonSchema;
+  if (
+    json &&
+    typeof json === "object" &&
+    typeof (json as { then?: unknown }).then !== "function"
+  ) {
+    return json as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+type NativeToolValidation =
+  | { readonly success: true; readonly value: unknown }
+  | { readonly success: false; readonly error: unknown };
+
+/**
+ * Coerce/validate incoming call arguments against a tool's declared parameters,
+ * mirroring the runtime's `validateDeclaredToolArgs` precedence. Zod schemas
+ * parse (applying defaults/transforms); AI SDK schemas validate when they carry
+ * a `validate` member; JSON-schema-only tools (MCP) pass their arguments
+ * through unchanged.
+ */
+async function parseToolArguments(
+  tool: MakaTool,
+  rawArgs: unknown,
+): Promise<unknown> {
+  const parameters = tool.parameters;
+  if (parameters instanceof z.ZodType) {
+    return parameters.parseAsync(rawArgs);
+  }
+  if (parameters && typeof parameters === "object") {
+    const validate = (
+      parameters as {
+        validate?: (
+          value: unknown,
+        ) => NativeToolValidation | PromiseLike<NativeToolValidation>;
+      }
+    ).validate;
+    if (typeof validate === "function") {
+      const result = await validate(rawArgs);
+      if (result.success) return result.value;
+      throw result.error;
+    }
+    if (aiSchemaJson(parameters)) return rawArgs;
+  }
+  throw new Error(
+    `Desktop native capability tool has an invalid schema: ${tool.name}`,
+  );
 }
 
 function indexBindings(
