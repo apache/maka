@@ -482,7 +482,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const endpoint = this.#requireEndpoint();
     let settled = false;
     let preparing = Boolean(
-      kind === 'application' && input.refreshRoutes !== false && this.#routeResolver?.prepareRoutes,
+      kind === 'application' && input.refreshRoutes !== false && this.#routeResolver,
     );
     const snapshot = () => this.#connectionResolution(input, kind, preparing);
     let resolution = snapshot();
