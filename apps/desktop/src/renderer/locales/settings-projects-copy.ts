@@ -75,9 +75,6 @@ export type SettingsProjectsCopy = {
     setupSshDescription: string;
     setupWslDescription: string;
     setupName: string;
-    setupTarget: string;
-    sshComputer: string;
-    wslEnvironment: string;
     wslDistribution: string;
     setupSshPort: string;
     setupDirectoryRootsDescription: string;
@@ -369,9 +366,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupSshDescription: '在可通过 SSH 登录的电脑上安装并连接 Runtime Host',
       setupWslDescription: '在本机 WSL 环境中安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
-      setupTarget: '运行位置',
-      sshComputer: 'SSH 计算机',
-      wslEnvironment: 'WSL 环境',
       wslDistribution: 'WSL 发行版',
       setupSshPort: 'SSH 端口（可选）',
       setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
@@ -688,9 +682,6 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       setupSshDescription: 'Install and connect Runtime Host on a computer available over SSH',
       setupWslDescription: 'Install and connect Runtime Host in a local WSL environment',
       setupName: 'Display name (optional)',
-      setupTarget: 'Run on',
-      sshComputer: 'SSH computer',
-      wslEnvironment: 'WSL environment',
       wslDistribution: 'WSL distribution',
       setupSshPort: 'SSH port (optional)',
       setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',

@@ -3789,7 +3789,7 @@
         "hookCalls": {
           "useEffect": 2,
           "useRef": 2,
-          "useState": 8,
+          "useState": 7,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
@@ -3800,7 +3800,6 @@
           "../../shared/runtime-host-project-directory-policy.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "./runtime-host-project-directory-editor.js": 1,
-          "@astryxdesign/core": 1,
           "@astryxdesign/core/Dialog": 1,
           "@astryxdesign/core/Layout": 1,
           "@astryxdesign/core/Text": 1,
@@ -3828,7 +3827,6 @@
         "hookCalls": {
           "useEffect": 1,
           "useMountedRef": 1,
-          "useRuntimeHostManagementServices": 1,
           "useState": 10,
           "useToast": 1,
           "useUiLocale": 1
