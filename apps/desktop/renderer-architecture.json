@@ -121,6 +121,7 @@
     "src/renderer/session-read-state.ts",
     "src/renderer/session-status-presentation.ts",
     "src/renderer/session-trace-refresh.ts",
+    "src/renderer/session-turn-request-composer.tsx",
     "src/renderer/session-workspace-actions.ts",
     "src/renderer/session-workspace-errors.ts",
     "src/renderer/settings/about-settings-page.tsx",
@@ -761,7 +762,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 650
+        "nonTriviaTokens": 654
       },
       "src/renderer/app-shell-turn-view-model.ts": {
         "importDeclarations": 7,
@@ -785,10 +786,10 @@
           "react": 1
         },
         "importSpecifiers": 18,
-        "nonTriviaTokens": 1410
+        "nonTriviaTokens": 1425
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 103,
+        "importDeclarations": 105,
         "bridgePaths": {
           "window.maka.app.installUpdate": 1,
           "window.maka.app.retryUpdateDownload": 1,
@@ -820,6 +821,7 @@
           "window.maka.transcripts": 2,
           "window.maka.workHub.act": 1,
           "window.maka.workHub.candidates": 1,
+          "window.maka.workHub.delegations": 1,
           "window.maka.workHub.record": 1,
           "window.maka.workHub.resolveCoordinationSession": 1
         },
@@ -921,6 +923,7 @@
           "./live-content-seed": 1,
           "./live-turn-reconciler": 1,
           "./locales/conversation-copy": 1,
+          "./locales/session-collaboration-copy": 1,
           "./locales/shell-copy": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
@@ -930,6 +933,7 @@
           "./plan-mode-panel": 1,
           "./scroll-motion-policy": 1,
           "./session-collaboration-dialog": 1,
+          "./session-turn-request-composer.js": 1,
           "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
@@ -979,8 +983,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 184,
-        "nonTriviaTokens": 15692
+        "importSpecifiers": 186,
+        "nonTriviaTokens": 15745
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -2382,8 +2386,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "./features/session-collaboration": 1,
           "./locales/session-collaboration-copy.js": 1,
+          "./session-turn-request-composer.js": 1,
           "@astryxdesign/core": 1,
           "@astryxdesign/core/Dialog": 1,
           "@astryxdesign/core/Layout": 1,
@@ -2496,6 +2500,33 @@
         "actionFactories": [],
         "dependencyPaths": {
           "@maka/core/events": 1
+        }
+      },
+      "src/renderer/session-turn-request-composer.tsx": {
+        "bridgePaths": {
+          "window.maka.sessionCollaboration.acknowledgeTurnRequest": 1,
+          "window.maka.sessionCollaboration.getTurnRequests": 2,
+          "window.maka.sessionCollaboration.requestTurn": 1
+        },
+        "environmentCapabilities": {
+          "window.clearTimeout": 1,
+          "window.setTimeout": 1
+        },
+        "hookCalls": {
+          "useEffect": 1,
+          "useRef": 2,
+          "useState": 6,
+          "useToast": 1,
+          "useUiLocale": 1
+        },
+        "lifecycleMethods": {},
+        "unresolvedDependencies": 0,
+        "actionFactories": [],
+        "dependencyPaths": {
+          "./locales/session-collaboration-copy.js": 1,
+          "@maka/runtime-host/protocol": 1,
+          "@maka/ui": 1,
+          "react": 1
         }
       },
       "src/renderer/session-workspace-actions.ts": {

@@ -1915,6 +1915,30 @@ const makaBridge = {
       );
       return ipcRenderer.invoke('workhub:record', scope, input) as Promise<{ turnId: string }>;
     },
+    async delegations(
+      coordinationSessionId: string,
+      targetSessionId?: string,
+    ): Promise<OperationOutput<'workhub.coordination.delegations'>> {
+      const scope = await resolveDesktopWorkHubCoordinationCreateScope(
+        coordinationSessionId,
+        runtimeHostSessionRef,
+      );
+      const hostTargetSessionId =
+        targetSessionId === undefined
+          ? undefined
+          : (await runtimeHostSessionRef(targetSessionId)).sessionId;
+      const result = await ipcRenderer.invoke(
+        'workhub:delegations',
+        scope,
+        hostTargetSessionId,
+      ) as OperationOutput<'workhub.coordination.delegations'>;
+      return {
+        delegations: result.delegations.map((delegation) => ({
+          ...delegation,
+          targetSessionId: recordRuntimeHostSessionScope(scope, delegation.targetSessionId),
+        })),
+      };
+    },
     async candidates(
       coordinationSessionId: string,
     ): Promise<OperationOutput<'workhub.coordination.candidates'>> {

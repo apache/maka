@@ -155,7 +155,11 @@ A stop reference that recalls no existing WorkHub Session is ordinary work — `
 using the deprecated API` is a task, not a destructive command — and routes
 normally. An ambiguous recall, a resolved Session that is not uniquely stoppable,
 and an unsafe or anaphoric reference each fail closed with the reason they failed
-rather than an unanswerable prompt.
+rather than an unanswerable prompt. Whether a resolved Session is uniquely
+stoppable is asked of the Host once a reference resolves, never answered from a
+client's delegation projection: that projection is empty until the Coordination
+stream fills it, so a fresh window or a reconnect would otherwise state
+confidently that running work does not exist.
 An unresolved direct-stop claim and a replacement claim are mutually exclusive;
 the first durable destructive claim wins. A `not_owned` resolution releases that
 exclusion so a later explicit route correction can proceed, and because it leaves

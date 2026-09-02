@@ -1048,6 +1048,14 @@ export interface MakaBridge {
     candidates(
       coordinationSessionId: string,
     ): Promise<OperationOutput<'workhub.coordination.candidates'>>;
+    /**
+     * Read the Host's active delegation links, optionally for one Session.
+     * A renderer projection of these links can be stale or not yet built.
+     */
+    delegations(
+      coordinationSessionId: string,
+      targetSessionId?: string,
+    ): Promise<OperationOutput<'workhub.coordination.delegations'>>;
     /** Submit a typed proposal; trusted creation context is added outside the renderer. */
     act(
       coordinationSessionId: string,

@@ -34,6 +34,7 @@ import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
+  WorkHubCoordinationDelegationsResult,
   OperationOutcome,
   OperationError,
 } from '@maka/runtime-host/protocol';
@@ -61,6 +62,7 @@ export function createDesktopWorkHubCoordinationPort(deps: {
     assistantText: string;
   }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
+  delegations(targetSessionId: string): Promise<WorkHubCoordinationDelegationsResult>;
   act(
     input: Omit<WorkHubCoordinationActInput, 'create'>,
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
@@ -68,6 +70,7 @@ export function createDesktopWorkHubCoordinationPort(deps: {
   return {
     record: deps.record,
     candidates: deps.candidates,
+    delegations: deps.delegations,
     async act(input) {
       const outcome = await deps.act(input);
       if (!outcome.ok) {

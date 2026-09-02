@@ -165,6 +165,7 @@ test('durable delegation renders terminal link state instead of stale execution 
   const terminalLinks = [
     ['superseded', 'Superseded link', '已被更正'],
     ['aborted', 'Aborted replacement', '更正已中止'],
+    ['stopped', 'Stopped link', '已停止关联'],
   ] as const;
   for (const [linkState, english, chinese] of terminalLinks) {
     const turn: WorkHubCoordinationTurn = {
@@ -419,8 +420,10 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
+      delegations: async () => ({ delegations: [] }),
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
+        delegations: async () => ({ delegations: [] }),
         candidates: [],
       }),
       act: async (input) => {
@@ -592,8 +595,10 @@ test('real Session projection creates new guide topics and preserves origin ambi
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
+      delegations: async () => ({ delegations: [] }),
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
+        delegations: async () => ({ delegations: [] }),
         candidates: sessions.map((entry) => ({
           candidateRef: `candidate-${entry.id}`,
           sessionId: entry.id,

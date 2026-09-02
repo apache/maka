@@ -456,7 +456,6 @@ describe('WorkHub Coordination Action Gate', () => {
       CONTEXT,
     );
     assert.equal(stopped.disposition, 'stop_work');
-
   });
 
   test('a competitor the Host cannot resolve yet fails the stop closed', async () => {

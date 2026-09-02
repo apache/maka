@@ -33,6 +33,7 @@ type RuntimeHostWorkHubClient = Pick<
   | 'actWorkHubCoordination'
   | 'answerWorkHubCoordination'
   | 'listWorkHubCoordinationCandidates'
+  | 'listWorkHubCoordinationDelegations'
   | 'recordWorkHubCoordination'
   | 'resolveWorkHubCoordinationSession'
 >;
@@ -60,6 +61,11 @@ export function registerRuntimeHostWorkHubIpc(
     client.recordWorkHubCoordination(input),
   );
   ipcMain.handle('workhub:candidates', () => client.listWorkHubCoordinationCandidates());
+  ipcMain.handle('workhub:delegations', (_event, _scope, targetSessionId?: string) =>
+    client.listWorkHubCoordinationDelegations(
+      targetSessionId === undefined ? {} : { targetSessionId },
+    ),
+  );
   ipcMain.handle('workhub:act', async (_event, rawInput: RendererWorkHubActionInput) => {
     try {
       const proposal = rawInput?.proposal;

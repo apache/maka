@@ -184,9 +184,12 @@ waiting after the destructive retirement boundary, Coordination appends a
 retired source from active linkage and makes later retries return the same terminal
 outcome instead of displaying a stopped, unsuperseded link.
 
-Direct stop resolves its target through the shared Session Resolver and proposes
-only what that resolution produced: the opaque delegation identity and the Session
-it belongs to. Display names are retrieval evidence on the proposal side and never
+Direct stop resolves its target through the shared Session Resolver, then asks the
+Host which of that Session's delegations still hold stoppable work before it
+answers the user or proposes anything. WorkHub projections are rebuildable and may
+be empty when a window opens, so a destructive answer is never given from one. The
+proposal then carries only what resolution produced: the opaque delegation identity
+and the Session it belongs to. Display names are retrieval evidence on the proposal side and never
 appear in admission, and the proposal asserts no proof of its own — the Host makes
 those from durable state. The Action Gate revalidates immediately before any
 effect: the assignment still exists, it still belongs to the proposed Session, and

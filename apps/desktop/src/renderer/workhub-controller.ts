@@ -32,6 +32,7 @@ import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
+  WorkHubCoordinationDelegationsResult,
 } from '@maka/runtime-host/protocol';
 
 export interface WorkHubSessionTarget {
@@ -127,13 +128,6 @@ export interface WorkHubActiveDelegation {
   readonly targetSessionId: string;
   readonly sequence: number;
 }
-
-/** Target-owned execution states that leave a delegation with nothing to stop. */
-const SETTLED_DELEGATION_STATES: ReadonlySet<WorkHubDelegationExecutionState> = new Set([
-  'completed',
-  'failed',
-  'aborted',
-]);
 
 const WORKHUB_TIMELINE_TEXT_LIMIT = 600;
 
@@ -251,6 +245,11 @@ export interface WorkHubCoordinationPort {
     assistantText: string;
   }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
+  /**
+   * The Host's active delegation links for one Session, each with its own
+   * answer to whether it still holds work a stop could reach.
+   */
+  delegations(targetSessionId: string): Promise<WorkHubCoordinationDelegationsResult>;
   act(input: Omit<WorkHubCoordinationActInput, 'create'>): Promise<WorkHubCoordinationActResult>;
 }
 
@@ -280,18 +279,6 @@ export function createWorkHubController(deps: {
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
   const activeActionIdsBySessionId = new Map<string, string[]>();
-  /**
-   * A delegation link ends only by supersession or a resolved stop, so work
-   * that simply finished stays linked. It is no longer a stop target, though:
-   * counting it would make a Session delegated to twice look permanently
-   * ambiguous once the first delegation completed. Execution state is a
-   * read-only target-owned projection, so an unreadable one is never settled.
-   */
-  const settledActionIds = new Set<string>();
-  const stoppableActionIds = (sessionId: string): readonly string[] =>
-    (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
-      (actionId) => !settledActionIds.has(actionId),
-    );
   const removeActiveAction = (sessionId: string, actionId: string) => {
     const remaining = (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
       (candidate) => candidate !== actionId,
@@ -397,13 +384,9 @@ export function createWorkHubController(deps: {
         handler(turns.map((turn) => {
           if (!turn.assignment) return turn;
           const next = feedbackByDelegationId.get(turn.assignment.delegationId);
-          if (!next) return turn;
-          if (SETTLED_DELEGATION_STATES.has(next.state)) {
-            settledActionIds.add(turn.assignment.actionId);
-          } else {
-            settledActionIds.delete(turn.assignment.actionId);
-          }
-          return { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } };
+          return next
+            ? { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } }
+            : turn;
         }));
       };
 
@@ -497,15 +480,17 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
-      const stopDecision = submissionPolicy.resolveStop({
+      const stopDecision = await submissionPolicy.resolveStop({
         text: input.text,
-        sessions: ordinary.map((session) => ({
-          target: session.target,
-          projectName: session.projectName,
-          sessionName: session.sessionName,
-          updatedAt: session.updatedAt,
-          activeActionIds: stoppableActionIds(session.target.sessionId),
-        })),
+        sessions: ordinary,
+        readStoppableDelegations: async (sessionId) => {
+          const { delegations } = await coordination.delegations(sessionId);
+          return delegations
+            .filter(
+              (delegation) => delegation.targetSessionId === sessionId && delegation.stoppable,
+            )
+            .map((delegation) => delegation.actionId);
+        },
       });
       if (stopDecision.kind !== 'not_requested') {
         if (stopDecision.kind === 'clarification') {

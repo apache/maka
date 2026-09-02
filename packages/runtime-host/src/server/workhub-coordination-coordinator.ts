@@ -42,6 +42,8 @@ import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage
 import type {
   OperationOutcome,
   WorkHubCoordinationActInput,
+  WorkHubCoordinationDelegation,
+  WorkHubCoordinationDelegationsInput,
   WorkHubCoordinationAnswerInput,
   WorkHubCoordinationRecordInput,
 } from '../protocol/index.js';
@@ -132,6 +134,7 @@ export class HostWorkHubCoordinationCoordinator {
     'workhub.coordination.answer': (input, context) => this.#answer(input, context),
     'workhub.coordination.record': (input) => this.#record(input),
     'workhub.coordination.candidates': () => this.#candidates(),
+    'workhub.coordination.delegations': (input) => this.#delegations(input),
     'workhub.coordination.act': (input, context) => this.#act(input, context),
   };
 
@@ -455,6 +458,34 @@ export class HostWorkHubCoordinationCoordinator {
         }
       },
     );
+  }
+
+  /**
+   * The active delegation links, with the Host's own answer to whether each
+   * still holds work a stop could reach. A client projection of these links
+   * can be stale or not yet built, so a policy that would otherwise answer the
+   * user from its mirror asks here and gets the same judgement admission uses.
+   */
+  async #delegations(
+    input: WorkHubCoordinationDelegationsInput,
+  ): Promise<OperationOutcome<'workhub.coordination.delegations'>> {
+    try {
+      const active = await this.#listActiveAssignments();
+      const scoped = input.targetSessionId
+        ? active.filter((assignment) => assignment.targetSessionId === input.targetSessionId)
+        : active;
+      const delegations: WorkHubCoordinationDelegation[] = [];
+      for (const assignment of scoped) {
+        delegations.push({
+          actionId: assignment.actionId,
+          targetSessionId: assignment.targetSessionId,
+          stoppable: (await this.#readDelegationRetirement(assignment)) !== 'retired',
+        });
+      }
+      return { ok: true, result: { delegations } };
+    } catch {
+      return { ok: false, error: { code: 'internal_failure', message: 'WorkHub delegations' } };
+    }
   }
 
   async #candidates(): Promise<OperationOutcome<'workhub.coordination.candidates'>> {

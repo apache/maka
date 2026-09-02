@@ -61,11 +61,6 @@ export type WorkHubRouteDecision =
   | { kind: 'discussion' }
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
-/** An existing WorkHub identity together with the active work it owns. */
-export interface WorkHubStoppableSession extends WorkHubRoutableSession {
-  /** Opaque action identities of this Session's active WorkHub delegations. */
-  activeActionIds: readonly string[];
-}
 
 export type WorkHubStopClarificationReason =
   /** The stop names no safe target of its own — a pronoun or a bare noun. */
@@ -95,8 +90,15 @@ export type WorkHubStopRouteDecision =
 export interface WorkHubRoutePolicy {
   resolveStop(input: {
     text: string;
-    sessions: WorkHubStoppableSession[];
-  }): WorkHubStopRouteDecision;
+    sessions: WorkHubRoutableSession[];
+    /**
+     * The Host's stoppable delegations for one resolved Session, by opaque
+     * action identity. It is read only once a reference has resolved, so an
+     * ordinary message never pays for it, and the answer the user sees comes
+     * from the same authority admission uses rather than a client mirror.
+     */
+    readStoppableDelegations: (sessionId: string) => Promise<readonly string[]>;
+  }): Promise<WorkHubStopRouteDecision>;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -163,7 +165,7 @@ function createWorkHubRoutePolicyVisit(
     // ordinary work and falls through to routing; an unsafe or anaphoric
     // reference still fails closed, and a resolved Session that is not uniquely
     // stoppable says why.
-    resolveStop({ text, sessions }) {
+    async resolveStop({ text, sessions, readStoppableDelegations }) {
       const intent = readWorkHubRequestIntent(text);
       if (!intent.stop.cue) return { kind: 'not_requested' };
       const reference = intent.stop.imperative ? intent.stop.target : undefined;
@@ -195,7 +197,9 @@ function createWorkHubRoutePolicyVisit(
       }
       const resolved = sessionByRef.get(admissible[0]!.ref);
       if (!resolved) return { kind: 'not_requested' };
-      const [stopsActionId, ...furtherActive] = resolved.activeActionIds;
+      const [stopsActionId, ...furtherActive] = await readStoppableDelegations(
+        resolved.target.sessionId,
+      );
       if (!stopsActionId) {
         return { kind: 'clarification', reason: 'stop_target_not_active' };
       }
