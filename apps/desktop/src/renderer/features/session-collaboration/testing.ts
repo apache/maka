@@ -23,3 +23,6 @@ export {
   turnRequestPreview,
   unseenTurnRequests,
 } from './model/turn-request-inbox.js';
+export type { SessionCollaborationServices } from './ports.js';
+export { SessionCollaborationServicesProvider } from './services-context.js';
+export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog.js';

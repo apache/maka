@@ -19,16 +19,19 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { act, createElement } from 'react';
+import { act, createElement, type ComponentProps } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { AstryxLocaleProvider, LocaleProvider, ToastProvider } from '@maka/ui';
-import { SessionCollaborationServicesProvider } from '../../renderer/features/session-collaboration/services-context.js';
-import type { SessionCollaborationServices } from '../../renderer/features/session-collaboration/ports.js';
 import {
   SessionCollaborationJoinDialog,
-  type SessionCollaborationJoinCopy,
-} from '../../renderer/features/session-collaboration/ui/session-collaboration-join-dialog.js';
+  SessionCollaborationServicesProvider,
+  type SessionCollaborationServices,
+} from '../../renderer/features/session-collaboration/testing.js';
+
+type SessionCollaborationJoinCopy = ComponentProps<
+  typeof SessionCollaborationJoinDialog
+>['copy'];
 
 const originalGlobals = {
   document: globalThis.document,
