@@ -71,6 +71,7 @@ export interface RuntimeHostDesktopManager {
   unobserveSession(observerId: string): Promise<void>;
   enable(
     profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void>;
   mountGuest(
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
@@ -493,13 +494,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async enable(
     profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void> {
     if (!profileTarget) throw new Error('A non-local Runtime Host profile is required');
     if (isSessionGuestProfile(profileTarget.profile)) {
       throw new Error('Session Guest targets must be mounted instead of enabled as profiles');
     }
     return this.#mutateTarget(profileTarget.profile.id, () =>
-      this.#enable(profileTarget, false),
+      this.#enable(profileTarget, false, undefined, undefined, onHostStatus),
     );
   }
 

@@ -545,7 +545,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   catalog: runtimeHostProfileCatalog,
   credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target, sshInteraction) => {
+  enable: async (target, sshInteraction, onPeerEndpoint) => {
     if (target.profile.kind === 'local') {
       throw new Error('A resolved non-local Runtime Host profile is required');
     }
@@ -553,13 +553,20 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       throw new Error('A remote Runtime Host profile requires an access credential');
     }
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    await runtimeHostManager.enable({
-      profile: target.profile,
-      ...(target.credential ? { credential: target.credential } : {}),
-      ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
-        ? { sshInteraction }
-        : {}),
-    });
+    await runtimeHostManager.enable(
+      {
+        profile: target.profile,
+        ...(target.credential ? { credential: target.credential } : {}),
+        ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
+          ? { sshInteraction }
+          : {}),
+      },
+      onPeerEndpoint
+        ? (status) => {
+            if (status.peerEndpoint) onPeerEndpoint(status.peerEndpoint);
+          }
+        : undefined,
+    );
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");

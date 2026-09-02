@@ -225,6 +225,11 @@ export interface RuntimeHostProfileCatalog {
     readonly rebound: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
+  /** Update mutable profile metadata while this exact profile lifetime remains current. */
+  updateRemoteProfileIfCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+    update: (profile: RemoteRuntimeHostProfile) => RemoteRuntimeHostProfile,
+  ): Promise<boolean>;
   /** Serialize one sidecar mutation with catalog updates while this profile lifetime remains current. */
   mutateRemoteProfileIfCurrent(
     target: RuntimeHostRemoteProfileIncarnation,
@@ -1005,6 +1010,42 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         throw error;
       }
       return { rebound: true, document: next };
+    });
+  }
+
+  updateRemoteProfileIfCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+    update: (profile: RemoteRuntimeHostProfile) => RemoteRuntimeHostProfile,
+  ): Promise<boolean> {
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
+    return this.#exclusive(async () => {
+      const current = await this.#readSnapshot();
+      const profile = current.profiles.find(
+        (candidate): candidate is RemoteRuntimeHostProfile =>
+          candidate.id === expectedProfile.id && candidate.kind === 'remote',
+      );
+      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+      const credential = await this.credentials.get(profile);
+      if (credential?.profileIncarnationId !== expectedIncarnationId) return false;
+      const value = update(profile);
+      if (value === profile) return true;
+      const updated = decodeRemoteRuntimeHostProfile(value);
+      if (
+        updated.id !== profile.id ||
+        !sameRemoteRuntimeHostProfileTarget(updated, profile) ||
+        runtimeHostProfileAccess(updated) !== runtimeHostProfileAccess(profile)
+      ) {
+        throw new Error('A Runtime Host profile metadata update must retain its connection');
+      }
+      const next = decodeRuntimeHostProfileDocument({
+        schemaVersion: PROFILE_SCHEMA_VERSION,
+        profiles: current.profiles.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      });
+      await writeProfileDocument(this.path, next);
+      return true;
     });
   }
 

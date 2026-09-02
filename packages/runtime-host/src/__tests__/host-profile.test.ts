@@ -632,6 +632,15 @@ describe('Runtime Host profiles', () => {
       false,
     );
     assert.equal(staleMutationRan, false);
+    let staleUpdateRan = false;
+    assert.equal(
+      await catalog.updateRemoteProfileIfCurrent(firstIncarnation, (current) => {
+        staleUpdateRan = true;
+        return current;
+      }),
+      false,
+    );
+    assert.equal(staleUpdateRan, false);
   });
 
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {
