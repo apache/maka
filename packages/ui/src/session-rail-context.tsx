@@ -133,6 +133,30 @@ export interface SessionRailSelectionCommands {
   /** Drops the picks. The open row stays open, and stays painted. */
   clear(): void;
   /**
+   * Narrows the set to its intersection with `sessionIds`, anchor included.
+   *
+   * For the menu, and only for the menu: a sweep may act only on rows the user
+   * could see and act on at the moment they pressed. A row does not have to
+   * leave the rail to stop being one — collapsing its project keeps it mounted
+   * and merely `inert`, and a session that becomes a shared projection loses
+   * its actions in place — so `pruneSessionSelection` against the catalog, which
+   * still lists both, cannot answer this.
+   *
+   * The invariant it buys: THE MENU MEANS THE SET IT NAMES. At the instant a
+   * menu opens, the set becomes exactly the rows the user can see and act on,
+   * and a pick that was folded away or turned into a shared projection leaves
+   * it then — permanently, whether the menu is used or dismissed. Reopening the
+   * project does not bring it back, because the set no longer holds it.
+   *
+   * Not narrowed when the project actually collapses, and not derived during
+   * render, for the same reason: collapse is uncontrolled state inside Astryx's
+   * `SideNavItem`, which the rail can only read back off the DOM. The menu's
+   * entrance is the one moment that holds both the set and the DOM, and it is
+   * also the single entrance to `archiveSelected` and `flagSelected` — so it is
+   * where the two are reconciled.
+   */
+  retain(sessionIds: readonly string[]): void;
+  /**
    * The rail's only sweep. There is no delete here: it cannot be undone, and it
    * belongs to Settings › 已归档任务, which can only reach a task that was
    * archived first.

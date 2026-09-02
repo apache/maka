@@ -27,7 +27,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { act } from 'react';
+import { act, useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import type { SessionSummary } from '@maka/core/session';
@@ -122,6 +122,8 @@ type PickCall = Parameters<SessionRailSelectionCommands['pick']>[0];
 interface Harness {
   opened: string[];
   picks: PickCall[];
+  /** The id lists the menu narrowed the set to, in the order it asked. */
+  retains: string[][];
   flags: boolean[];
   clears: number;
   archives: number;
@@ -131,6 +133,8 @@ interface Harness {
   openRowMenu(sessionId: string): Promise<void>;
   clickMenuItem(index: number): Promise<void>;
   menuLabels(): string[];
+  /** What the row says to assistive tech and nowhere else. */
+  rowDescription(sessionId: string): string;
   hasRowMenu(sessionId: string): boolean;
   collapseProject(projectId: string): Promise<void>;
   pressEscape(focusedSessionId?: string): Promise<boolean>;
@@ -142,6 +146,7 @@ async function mount(
   options: {
     selectedIds?: readonly string[];
     sessions?: SessionSummary[];
+    activeId?: string;
     groupVariant?: SessionRailData['groupVariant'];
     groups?: SessionRailData['groups'];
   } = {},
@@ -160,26 +165,51 @@ async function mount(
   const sessions = options.sessions ?? ['a', 'b', 'c', 'd'].map((id) => summary(id));
   const opened: string[] = [];
   const picks: PickCall[] = [];
+  const retains: string[][] = [];
   const flags: boolean[] = [];
   let clears = 0;
   let archives = 0;
-  const selection: SessionRailSelection = {
-    selectedIds: new Set(options.selectedIds ?? []),
-    commands: {
-      pick: (request) => picks.push(request),
-      clear: () => {
-        clears += 1;
-      },
-      archiveSelected: () => {
-        archives += 1;
-      },
-      flagSelected: (flagged) => {
-        flags.push(flagged);
-      },
+  // `pick` only records, because what the app's reducer makes of a click is
+  // that reducer's own test. `retain` also applies, because the menu's wording
+  // and its sweep are read from the set it narrows — a stub that recorded and
+  // left the set alone would let an assertion about the menu pass over rows
+  // the narrowing was supposed to have removed.
+  let narrow: Dispatch<SetStateAction<ReadonlySet<string>>> | undefined;
+  const commands: SessionRailSelectionCommands = {
+    pick: (request) => picks.push(request),
+    clear: () => {
+      clears += 1;
+    },
+    retain: (sessionIds) => {
+      retains.push([...sessionIds]);
+      const keep = new Set(sessionIds);
+      narrow?.((current) => new Set([...current].filter((sessionId) => keep.has(sessionId))));
+    },
+    archiveSelected: () => {
+      archives += 1;
+    },
+    flagSelected: (flagged) => {
+      flags.push(flagged);
     },
   };
+
+  function Rail() {
+    const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+      () => new Set(options.selectedIds ?? []),
+    );
+    narrow = setSelectedIds;
+    const selection = useMemo<SessionRailSelection>(() => ({ selectedIds, commands }), [
+      selectedIds,
+    ]);
+    return (
+      <SessionRailProvider data={data} selection={selection}>
+        <SessionHistoryList />
+      </SessionRailProvider>
+    );
+  }
   const data: SessionRailData = {
     sessions,
+    activeId: options.activeId,
     groupVariant: options.groupVariant ?? 'conversation',
     groups: options.groups ?? [{ id: 'recent', label: 'Recent', sessions: [...sessions] }],
     onSelectSession: (sessionId) => opened.push(sessionId),
@@ -192,9 +222,7 @@ async function mount(
   await act(() =>
     root.render(
       <LocaleProvider locale="en">
-        <SessionRailProvider data={data} selection={selection}>
-          <SessionHistoryList />
-        </SessionRailProvider>
+        <Rail />
       </LocaleProvider>,
     ),
   );
@@ -222,6 +250,7 @@ async function mount(
   return {
     opened,
     picks,
+    retains,
     flags,
     get clears() {
       return clears;
@@ -271,6 +300,11 @@ async function mount(
       });
     },
     menuLabels: () => menuItems().map((item) => (item.textContent ?? '').trim()),
+    rowDescription: (sessionId) =>
+      (
+        document.querySelector(`[data-session-id="${sessionId}"] .maka-visually-hidden`)
+          ?.textContent ?? ''
+      ).trim(),
     hasRowMenu: (sessionId) =>
       document.querySelector(`[data-session-id="${sessionId}"] .maka-session-row-action`) !== null,
     collapseProject: async (projectId) => {
@@ -385,6 +419,30 @@ test('a picked row says so on its ground', async () => {
     assert.deepEqual(picked, ['b', 'c']);
   } finally {
     await harness.dispose();
+  }
+});
+
+/**
+ * The ground says "picked" and `isSelected` says "open", and they are the same
+ * ground — so the open row has to spell out which of the two it is doing. Alone
+ * in the set it is only open, and "selected" would be a second word for the
+ * highlight a screen reader already reads. Inside a run it is one of several,
+ * and a reader that never hears so cannot tell what the ⋯ is about to sweep.
+ */
+test('the open row says it is picked once the set is more than itself', async () => {
+  const alone = await mount({ selectedIds: ['b'], activeId: 'b' });
+  try {
+    assert.equal(alone.rowDescription('b').includes('Selected'), false);
+  } finally {
+    await alone.dispose();
+  }
+
+  const inARun = await mount({ selectedIds: ['b', 'c'], activeId: 'b' });
+  try {
+    assert.equal(inARun.rowDescription('b').includes('Selected'), true);
+    assert.equal(inARun.rowDescription('c').includes('Selected'), true);
+  } finally {
+    await inARun.dispose();
   }
 });
 
@@ -602,6 +660,47 @@ test('a Shift range does not reach into a collapsed project', async () => {
     // just not on screen, and a set the user cannot see is a set they cannot
     // check before the menu acts on it.
     assert.deepEqual(harness.picks[0]?.orderedSessionIds, ['a1', 'a2', 'c1']);
+  } finally {
+    await harness.dispose();
+  }
+});
+
+/**
+ * The other half of the same rule, at the other end of the gesture. A menu is
+ * the one entrance to the sweeps, so opening one fixes the set at the rows on
+ * screen: a pick that has been folded away leaves it there and does not come
+ * back. Narrowing here rather than at the collapse itself is not a softer rule
+ * — it is the only place the rail holds both the set and the DOM that knows
+ * which rows are showing.
+ */
+test('a menu sweeps only the picked rows still on screen', async () => {
+  const project = (id: string) => ({
+    id,
+    name: id,
+    path: `/${id}`,
+    createdAt: 1,
+    updatedAt: 1,
+    available: true,
+    locations: [],
+  });
+  const sessions = ['a1', 'a2', 'b1', 'b2'].map((id) => summary(id));
+  const harness = await mount({
+    sessions,
+    selectedIds: ['a1', 'b1'],
+    groupVariant: 'project',
+    groups: [
+      { id: 'pA', label: 'A', project: project('pA'), sessions: sessions.slice(0, 2) },
+      { id: 'pB', label: 'B', project: project('pB'), sessions: sessions.slice(2) },
+    ],
+  });
+  try {
+    await harness.collapseProject('pB');
+    await harness.openRowMenu('a1');
+    // b1 is still mounted, but it is not among the rows the menu was handed —
+    // so it leaves the set here, and stays out of it.
+    assert.deepEqual(harness.retains.at(-1), ['a1', 'a2']);
+    // And the menu says so: one row, with the single-row wording.
+    assert.deepEqual(harness.menuLabels(), ['Pin', 'Rename', 'Archive']);
   } finally {
     await harness.dispose();
   }

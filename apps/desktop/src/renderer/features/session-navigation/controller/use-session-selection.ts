@@ -73,6 +73,19 @@ export function useSessionSelection(input: {
   const clear = useCallback(() => setSelection(EMPTY_SESSION_SELECTION), []);
 
   /**
+   * The same reconciliation the catalog gets, against a narrower list: the rows
+   * the rail can see and act on right now. The menu asks for it as it opens,
+   * because a collapsed project keeps its rows mounted and a shared projection
+   * keeps its row listed — neither is gone from the catalog, and neither may be
+   * swept. `useCallback` because every row carries these commands as a prop
+   * (#4109), and `pruneSessionSelection` returns its input untouched when
+   * nothing was dropped, so the common case is not a state change at all.
+   */
+  const retain = useCallback<SessionRailSelectionCommands['retain']>((sessionIds) => {
+    setSelection((current) => pruneSessionSelection(current, sessionIds));
+  }, []);
+
+  /**
    * One sweep at a time, over the ids the user could see when they pressed.
    *
    * Frozen at the click for the reason the archived-task purge freezes its own
@@ -114,8 +127,8 @@ export function useSessionSelection(input: {
   );
 
   const selectionCommands = useMemo<SessionRailSelectionCommands>(
-    () => ({ pick, clear, archiveSelected, flagSelected }),
-    [archiveSelected, clear, flagSelected, pick],
+    () => ({ pick, clear, retain, archiveSelected, flagSelected }),
+    [archiveSelected, clear, flagSelected, pick, retain],
   );
 
   return useMemo<SessionRailSelection>(

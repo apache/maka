@@ -214,12 +214,29 @@ export function SessionHistoryList() {
 
   /**
    * A menu is about a set, so opening one on a row outside the set replaces it
-   * — the way a file list answers a right-click on an unselected file. A row
-   * already in the set leaves it alone: a run built by dragging must survive the
-   * gesture that asks what to do with it.
+   * — the way a file list answers a right-click on an unselected file.
+   *
+   * A row already in the set keeps the set: a run built by dragging must
+   * survive the gesture that asks what to do with it. But the set is narrowed
+   * to what is pickable at this instant, because the menu is the only entrance
+   * to a sweep and a sweep may act only on rows the user can see and act on. A
+   * pick does not have to leave the rail to stop being visible — its project
+   * collapses, or its session becomes a shared projection with no actions — and
+   * a set holding one of those would let a menu opened here archive a row that
+   * is not on screen.
+   *
+   * So the menu means the set it names: opening one FIXES the set at what is on
+   * screen, and a pick that was folded away is out of it for good, dismissed
+   * menu included. Folding does not narrow the set on its own — collapse lives
+   * as uncontrolled state inside `SideNavItem` and is only readable from the
+   * DOM, and this is the one moment that holds the set and the DOM together.
    */
   function adoptForMenu(sessionId: string) {
-    if (!commands || selection?.selectedIds.has(sessionId)) return;
+    if (!commands) return;
+    if (selection?.selectedIds.has(sessionId)) {
+      commands.retain(orderedSessionIds());
+      return;
+    }
     commands.pick({ sessionId, pick: 'replace', orderedSessionIds: [] });
   }
 
@@ -263,9 +280,9 @@ export function SessionHistoryList() {
     event.preventDefault();
     adoptForMenu(sessionId);
     // Opening the menu re-enters `handleListClickCapture` with a synthetic
-    // click. React has not committed the adoption yet, so `adoptForMenu`'s
-    // early return does not see it and the pick is dispatched twice — harmless
-    // only because `replace` is idempotent. Anything else here needs a guard.
+    // click, so the adoption is dispatched twice — harmless only because both
+    // of its branches are idempotent: `replace` sets the same one row, and
+    // `retain` intersects with the same list. Anything else here needs a guard.
     trigger?.click();
   }
 
@@ -670,7 +687,13 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     // Being picked is a fact about the row that the ground alone carries. It is
     // NOT `aria-current`: that names the one current page, and a set of picked
     // rows is not a set of current pages.
-    props.picked && !props.active ? copy.pickedAriaLabel : undefined,
+    //
+    // The open row is exempt only while it is the whole set — the state a plain
+    // click leaves, where "selected" would say nothing `isSelected` has not.
+    // Inside a real run it is one of several, and `bulkCount` is how the row
+    // already knows: nonzero on picked rows alone, and above 1 only when the
+    // menu would offer a sweep.
+    props.picked && (!props.active || props.bulkCount > 1) ? copy.pickedAriaLabel : undefined,
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
     props.session.lastMessageAt
