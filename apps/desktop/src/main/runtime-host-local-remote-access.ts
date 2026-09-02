@@ -154,8 +154,6 @@ type LocalServiceLifecycle =
 
 interface LocalPeerDescriptor {
   readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
 }
 
 type DesktopRuntimeHostLocalOperator = ReturnType<
@@ -946,15 +944,7 @@ function requireEnabledPeer(value: unknown): LocalPeerDescriptor {
   if (typeof value.peerId !== 'string' || value.peerId.length === 0 || value.peerId.length > 160) {
     throw new Error('Runtime Host returned an invalid peer identity');
   }
-  const peer = {
-    peerId: value.peerId,
-    routeHints: requireAddresses(value.routeHints),
-    coordinationRelays: requireAddresses(value.coordinationRelays),
-  };
-  if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
-    throw new Error('Runtime Host Direct peer has no reachable route');
-  }
-  return peer;
+  return { peerId: value.peerId };
 }
 
 function onSnapshot(sharedAccess: boolean): Extract<

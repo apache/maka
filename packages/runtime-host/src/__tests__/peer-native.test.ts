@@ -27,6 +27,7 @@ import {
   createRuntimeHostPeerClient,
   RuntimeHostPeerReachabilityUnavailableError,
 } from '../client/peer-client.js';
+import { PEER_REACHABILITY_MAX_CLOCK_SKEW_MS } from '../peer-reachability/index.js';
 import {
   ensureRuntimeHostPeerIdentity,
   normalizePeerError,
@@ -275,6 +276,24 @@ module.exports = {
     });
     assert.deepEqual(native.default.stats.cancellations, [1, 1]);
 
+    const rolledBackIssuedAt = Date.now() + PEER_REACHABILITY_MAX_CLOCK_SKEW_MS + 1;
+    client.observeAuthenticatedReachability({
+      expectedPeerId: 'ready',
+      value: signedReachability('ready', ['/memory/before-clock-reset'], [], rolledBackIssuedAt),
+      allowHistorical: true,
+    });
+    await client.connect({
+      ...peerConnectInput('ready'),
+      routeHints: [],
+      refreshRoutes: false,
+    });
+    const historicalRequest = native.default.stats.requests.at(-1) as {
+      readonly peerId: string;
+      readonly routeHints: readonly string[];
+    };
+    assert.equal(historicalRequest.peerId, 'ready');
+    assert.equal(historicalRequest.routeHints.includes('/memory/before-clock-reset'), true);
+
     await assert.rejects(
       client.connect({
         ...peerConnectInput('exhausted'),
@@ -443,15 +462,15 @@ function signedReachability(
   peerId: string,
   directRoutes: readonly string[],
   coordinationRoutes: readonly string[],
+  issuedAt = Date.now(),
 ) {
-  const now = Date.now();
   return {
     lease: {
       version: 1 as const,
       peerId,
       revision: 1,
-      issuedAt: now,
-      expiresAt: now + 60_000,
+      issuedAt,
+      expiresAt: issuedAt + 60_000,
       directRoutes,
       coordinationRoutes,
     },

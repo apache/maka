@@ -164,12 +164,12 @@ test('shares the running Local Host endpoint instead of its persisted startup ro
   await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
   const configuredPeer = {
     peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    routeHints: [],
     coordinationRelays: [],
   };
   const livePeer = peerReachability(
     configuredPeer.peerId,
-    configuredPeer.routeHints,
+    ['/ip4/192.0.2.1/udp/41000/quic-v1'],
     ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
   );
   const service = createDesktopLocalRuntimeHostRemoteAccess({

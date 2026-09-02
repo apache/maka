@@ -18,8 +18,10 @@
  */
 
 import {
+  authenticateSignedPeerReachabilityLease,
   isPeerReachabilityLeaseCurrent,
   isPeerReachabilityLeaseRecoverable,
+  PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
   peerReachabilityLeaseReceipt,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityLeaseReceipt,
@@ -103,7 +105,7 @@ export interface RuntimeHostPeerClient {
   observeAuthenticatedReachability(input: {
     readonly expectedPeerId: string;
     readonly value: unknown;
-    readonly allowExpired?: boolean;
+    readonly allowHistorical?: boolean;
   }): SignedPeerReachabilityLeaseV1;
   connect(
     input: RuntimeHostPeerConnectInput,
@@ -311,16 +313,17 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   observeAuthenticatedReachability(input: {
     readonly expectedPeerId: string;
     readonly value: unknown;
-    readonly allowExpired?: boolean;
+    readonly allowHistorical?: boolean;
   }): SignedPeerReachabilityLeaseV1 {
     const now = Date.now();
-    const next = verifySignedPeerReachabilityLease({
+    const identity = {
       value: input.value,
       expectedPeerId: input.expectedPeerId,
-      now,
       verifyIdentity: this.verifyIdentity.bind(this),
-      ...(input.allowExpired === undefined ? {} : { allowExpired: input.allowExpired }),
-    });
+    };
+    const next = input.allowHistorical
+      ? authenticateSignedPeerReachabilityLease(identity)
+      : verifySignedPeerReachabilityLease({ ...identity, now });
     this.#pruneAuthenticatedReachability(now);
     let current = this.#authenticatedReachability.get(input.expectedPeerId);
     if (!isPeerReachabilityLeaseRecoverable(next.lease, now)) return current?.signed ?? next;
@@ -336,11 +339,15 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     }
     this.#rememberAuthenticatedReachability(input.expectedPeerId, {
       signed: next,
-      receipt: peerReachabilityLeaseReceipt({
-        signed: next,
-        wallNow: now,
-        monotonicNow: performance.now(),
-      }),
+      ...(next.lease.issuedAt <= now + PEER_REACHABILITY_MAX_CLOCK_SKEW_MS
+        ? {
+            receipt: peerReachabilityLeaseReceipt({
+              signed: next,
+              wallNow: now,
+              monotonicNow: performance.now(),
+            }),
+          }
+        : {}),
     });
     this.#notifyRouteChange(input.expectedPeerId);
     return next;
@@ -803,7 +810,7 @@ interface InboundConsumer {
 
 interface AuthenticatedReachability {
   readonly signed: SignedPeerReachabilityLeaseV1;
-  readonly receipt: PeerReachabilityLeaseReceipt;
+  readonly receipt?: PeerReachabilityLeaseReceipt;
 }
 
 interface RuntimeHostPeerConnectCandidates {

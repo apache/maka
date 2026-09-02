@@ -611,7 +611,7 @@ export async function connectPeerRuntimeHost(input: {
   const reachability = input.peerClient.observeAuthenticatedReachability({
     expectedPeerId: peerId,
     value: input.transport.reachability,
-    allowExpired: true,
+    allowHistorical: true,
   });
   const bootstrap = isPeerReachabilityLeaseRecoverable(reachability.lease, Date.now())
     ? reachability.lease
