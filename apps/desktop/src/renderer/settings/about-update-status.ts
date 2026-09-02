@@ -22,18 +22,14 @@ import type { SettingsPreferencesCopy } from '../locales/settings-preferences-co
 
 type AboutCopy = SettingsPreferencesCopy['about'];
 
-export type AboutChannelKey = 'dev' | 'nightly' | 'release';
-
 export interface AboutChannelFacts {
-  readonly key: AboutChannelKey;
-  /** The channel's own name, as the 版本信息 readout and the lead Token use it. */
-  readonly name: string;
   /** One sentence saying what following this channel means. */
   readonly summary: string;
   /**
    * The lead `Token`, or null. A release install is the default state and gets
    * no mark: Astryx reserves colour for what departs from it, so tokening every
-   * channel would make none of them stand out.
+   * channel would make none of them stand out — which is also why the release
+   * channel now has no name string anywhere in the product.
    */
   readonly token: { readonly label: string; readonly color: 'orange' | 'gray' } | null;
 }
@@ -52,17 +48,14 @@ export function aboutChannelFacts(
   info: Pick<DesktopAppInfo, 'buildMode' | 'updateChannel'>,
   copy: AboutCopy,
 ): AboutChannelFacts {
-  const key: AboutChannelKey = info.buildMode === 'dev' ? 'dev' : info.updateChannel;
-  const name = key === 'nightly'
-    ? copy.nightlyBuild
-    : key === 'dev'
-      ? copy.devBuild
-      : copy.packagedBuild;
+  const key = info.buildMode === 'dev' ? 'dev' : info.updateChannel;
   return {
-    key,
-    name,
     summary: copy.channelSummaries[key],
-    token: key === 'release' ? null : { label: name, color: key === 'nightly' ? 'orange' : 'gray' },
+    token: key === 'nightly'
+      ? { label: copy.nightlyBuild, color: 'orange' }
+      : key === 'dev'
+        ? { label: copy.devBuild, color: 'gray' }
+        : null,
   };
 }
 

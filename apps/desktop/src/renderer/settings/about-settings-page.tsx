@@ -19,14 +19,11 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import {
-  Code,
   Heading,
   HStack,
   Link,
   List,
   ListItem,
-  MetadataList,
-  MetadataListItem,
   Text,
   Token,
   VStack,
@@ -164,16 +161,18 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   } else {
     const channel = aboutChannelFacts(info, copy);
     const isDevBuild = info.buildMode === 'dev';
-    // The contract hands us `homePath` for exactly this collapse.
-    const workspaceDisplay = info.workspacePath.startsWith(info.homePath)
-      ? `~${info.workspacePath.slice(info.homePath.length)}`
-      : info.workspacePath;
     identity = (
-      <>
-        {/* The lead group: what this app is, which channel it follows, and what
-            that means. Unlabeled on purpose — the page title already says 关于,
-            so a heading here would only repeat it. */}
-        <SettingsSection variant="bare">
+      /* The whole identity of this install, in one unlabeled lead group: what
+         it is, which channel it follows, what that means, and whether it is up
+         to date. Unlabeled because the page title already says 关于.
+
+         There used to be a 版本信息 readout under this (channel / version /
+         build / runtime / workspace) and a titled 软件更新 group around the
+         status line. Both were restatements: the first three rows repeat these
+         two lines verbatim, and runtime + workspace are already in the
+         diagnostic report and on the 数据 page. */
+      <SettingsSection variant="bare">
+        <VStack gap={4}>
           <VStack gap={2}>
             <HStack gap={4} vAlign="center">
               <span className="settingsAboutLogo" aria-hidden="true">
@@ -196,50 +195,23 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             </Text>
             <Text type="body">{channel.summary}</Text>
           </VStack>
-        </SettingsSection>
-        <SettingsSection
-          title={copy.updatesTitle}
-          /* A dev build's own status line already explains why nothing updates,
-             so the background-check sentence must not contradict it. */
-          description={isDevBuild ? undefined : copy.updateHelp}
-        >
-          <SettingsRow
-            label={copy.updateStatusLabel}
-            description={aboutUpdateStatusDetail(updateStatus, copy, { isDevBuild })}
-            end={(
-              <Button
-                variant="secondary"
-                size="sm"
-                isDisabled={checkingUpdate || isDevBuild}
-                onClick={() => void checkForUpdates()}
-                label={checkingUpdate || updateStatus?.state === 'checking'
-                  ? copy.checkingForUpdates
-                  : copy.checkForUpdates}
-              />
-            )}
-          />
-        </SettingsSection>
-        {/* The archive readout, in Astryx's label → value primitive. No label
-            width: the component sizes the column, so adding a language does not
-            mean re-tuning a pixel count. */}
-        <SettingsSection title={copy.buildInfoTitle} variant="bare">
-          <MetadataList>
-            <MetadataListItem label={copy.channelLabel}>{channel.name}</MetadataListItem>
-            <MetadataListItem label={copy.versionLabel}>{info.appVersion}</MetadataListItem>
-            {info.buildCommit ? (
-              <MetadataListItem label={copy.buildLabel}>{info.buildCommit}</MetadataListItem>
-            ) : null}
-            <MetadataListItem label={copy.runtimeLabel}>
-              {copy.platformNames[info.platform] ?? info.platform} · {info.arch} · Electron {info.electronVersion}
-            </MetadataListItem>
-            {/* Astryx's `Code`, not a raw <code> leaning on the renderer's
-                global monospace rule — a path is read character by character. */}
-            <MetadataListItem label={copy.workspaceLabel}>
-              <Code>{workspaceDisplay}</Code>
-            </MetadataListItem>
-          </MetadataList>
-        </SettingsSection>
-      </>
+          {/* The status line says what the button would tell you, so it carries
+              no label of its own. It wraps rather than crushes: at the 480px
+              window floor the sentence needs the full width. */}
+          <HStack gap={3} justify="between" align="start" wrap="wrap">
+            <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy, { isDevBuild })}</Text>
+            <Button
+              variant="secondary"
+              size="sm"
+              isDisabled={checkingUpdate || isDevBuild}
+              onClick={() => void checkForUpdates()}
+              label={checkingUpdate || updateStatus?.state === 'checking'
+                ? copy.checkingForUpdates
+                : copy.checkForUpdates}
+            />
+          </HStack>
+        </VStack>
+      </SettingsSection>
     );
   }
 
@@ -294,7 +266,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         ) : null}
       </SettingsSection>
       {info ? (
-        <SettingsSection title={copy.privacyTitle} description={copy.privacyLede} variant="bare">
+        <SettingsSection title={copy.privacyTitle} variant="bare">
           <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
             {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
                 and a privacy commitment must wrap, not ellipsize. */}

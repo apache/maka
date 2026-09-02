@@ -29,24 +29,20 @@ const copy = getSettingsPreferencesCopy('zh').about;
 
 test('a packaged nightly is tokened Nightly, never 正式版', () => {
   const facts = aboutChannelFacts({ buildMode: 'packaged', updateChannel: 'nightly' }, copy);
-  assert.equal(facts.key, 'nightly');
-  assert.equal(facts.name, 'Nightly');
   assert.deepEqual(facts.token, { label: 'Nightly', color: 'orange' });
   assert.match(facts.summary, /会覆盖正式版安装/);
 });
 
 test('a packaged release wears no token — it is the default state', () => {
   const facts = aboutChannelFacts({ buildMode: 'packaged', updateChannel: 'release' }, copy);
-  assert.equal(facts.key, 'release');
-  assert.equal(facts.name, '正式版');
   assert.equal(facts.token, null);
+  assert.equal(facts.summary, '正式发布版，自动接收稳定更新。');
 });
 
 test('buildMode decides before updateChannel, whose dev value is a placeholder', () => {
   const facts = aboutChannelFacts({ buildMode: 'dev', updateChannel: 'nightly' }, copy);
-  assert.equal(facts.key, 'dev');
-  assert.equal(facts.name, '本地开发版');
   assert.deepEqual(facts.token, { label: '本地开发版', color: 'gray' });
+  assert.equal(facts.summary, '本地开发构建，不检查更新。');
 });
 
 test('a dev build reports why it never updates, whatever the updater says', () => {

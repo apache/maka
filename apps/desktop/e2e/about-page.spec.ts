@@ -19,27 +19,19 @@
 
 import { ensureSidebarExpanded, expect, test } from './fixtures';
 
-test('About renders channel facts, support, and privacy sections', async ({ window: page }) => {
+test('About renders channel facts, update status, support, and privacy', async ({ window: page }) => {
   await ensureSidebarExpanded(page);
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('button', { name: '关于', exact: true }).click();
 
   // The channel token must agree with the version string: the fixture app is a
   // dev checkout, so it reads 本地开发版, never 正式版.
-  await expect(page.getByText('本地开发版', { exact: true }).first()).toBeVisible();
-  await expect(page.getByText('正式版', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('本地开发版', { exact: true })).toBeVisible();
+  await expect(page.getByText('正式版')).toHaveCount(0);
   await expect(page.getByText('本地开发构建，不检查更新。')).toBeVisible();
 
-  // The archive readout: channel, runtime, and workspace path. The fixture's
-  // workspace is a throwaway temp dir, so assert the code-wrapped path itself
-  // rather than a `~` prefix.
-  await expect(page.getByRole('heading', { name: '版本信息' })).toBeVisible();
-  await expect(page.getByText(/Electron \d+\.\d+\.\d+/)).toBeVisible();
-  await expect(page.locator('dd code')).toBeVisible();
-
-  // Dev builds do not poll GitHub releases; the check stays disabled and the
-  // copy says why instead of pretending "已是最新版本".
-  await expect(page.getByRole('heading', { name: '软件更新' })).toBeVisible();
+  // Dev builds do not poll GitHub releases; the status line in the lead says
+  // why instead of pretending "已是最新版本", and the check stays disabled.
   await expect(page.getByText('本地开发版不检查 GitHub 发布更新。请使用正式安装包。')).toBeVisible();
   await expect(page.getByRole('button', { name: '检查更新' })).toBeDisabled();
 
