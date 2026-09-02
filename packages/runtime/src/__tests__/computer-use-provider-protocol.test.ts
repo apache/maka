@@ -199,7 +199,7 @@ describe('Anthropic-compatible Computer Use product loops', () => {
       auth: 'x-api-key',
       expectedAuth: 'test-key',
       expectedThinking: undefined,
-      expectedWireOutputLimit: 128_000,
+      expectedWireOutputLimit: 512_000,
       apiProtocol: undefined,
     },
     {

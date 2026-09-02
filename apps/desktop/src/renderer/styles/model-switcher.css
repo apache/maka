@@ -54,10 +54,10 @@
   gap: var(--space-1-5);
   margin: var(--space-1);
   padding: var(--space-1-5) var(--space-2);
-  border: var(--border-width-hairline) solid var(--warning-wash-border);
+  border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-control);
-  background: var(--warning-wash);
-  color: var(--foreground-secondary);
+  background: var(--color-warning-muted);
+  color: var(--foreground);
   font: var(--maka-text-supporting);
   white-space: normal;
 }

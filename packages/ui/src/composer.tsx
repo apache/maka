@@ -227,6 +227,21 @@ export interface ComposerSendMetadata {
 
 type ComposerImportActionId = 'pick' | 'attach' | 'directory';
 
+export interface ComposerGoalProps {
+  /**
+   * Open the host's Goal dialog. The composer offers the entry and nothing
+   * else: a Goal names a condition and two budgets, which is a form, and the
+   * ＋ menu is a menu. Absent handler, no entry — the same rule the other
+   * ＋ entries follow.
+   */
+  onSetGoal?(): void | Promise<void>;
+  /**
+   * A Goal is already running here. Arming refuses a second one, so the
+   * entry says so up front instead of spending the user's click on an error.
+   */
+  goalActive?: boolean;
+}
+
 export const Composer = forwardRef<
   ComposerHandle,
   {
@@ -325,6 +340,8 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    activeModelConnectionId?: string;
+    activeModelConnectionSlug?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
@@ -408,7 +425,6 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     permissionMode?: PermissionMode;
-    permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
@@ -440,18 +456,6 @@ export const Composer = forwardRef<
     orchestrationMode?: OrchestrationMode;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
-    /**
-     * Open the host's Goal dialog. The composer offers the entry and nothing
-     * else: a Goal names a condition and two budgets, which is a form, and the
-     * ＋ menu is a menu. Absent handler, no entry — the same rule the other
-     * ＋ entries follow.
-     */
-    onSetGoal?(): void | Promise<void>;
-    /**
-     * A Goal is already running here. Arming refuses a second one, so the
-     * entry says so up front instead of spending the user's click on an error.
-     */
-    goalActive?: boolean;
     /**
      * Why a Goal cannot be set right now — a running Turn, typically. A Goal
      * takes hold on the Turn after it is armed, so arming during one reads as
@@ -494,7 +498,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  }
+  } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
@@ -2005,7 +2009,6 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || props.permissionModePending === true
                     || Boolean(props.permissionModeDisabledReason)
                   }
                   disabledReason={props.permissionModeDisabledReason}
@@ -2021,6 +2024,8 @@ export const Composer = forwardRef<
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
+                    activeModelConnectionId={props.activeModelConnectionId}
+                    activeModelConnectionSlug={props.activeModelConnectionSlug}
                     activeModel={props.activeModel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
@@ -2065,7 +2070,6 @@ export const Composer = forwardRef<
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={modelSwitchAvailability.pending}
                   />
                 ) : (
                   <ThinkingLevelSelector

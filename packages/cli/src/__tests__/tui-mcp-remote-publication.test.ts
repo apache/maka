@@ -860,6 +860,7 @@ function connectionHarness(
       return { registrationId: 'registration-a', revision: harness.unregisters };
     },
     subscribeConfigurationChanges: () => () => undefined,
+    subscribeConnectionCatalogChanges: () => () => undefined,
     subscribeProjectCatalogChanges: () => () => undefined,
     subscribeSessionCatalogChanges: () => () => undefined,
     subscribeScheduledTaskChanges: () => () => undefined,

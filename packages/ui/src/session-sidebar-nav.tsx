@@ -21,6 +21,7 @@ import { AlertCircle, Blocks, Download, Network, Settings, SquarePen, Timer } fr
 import { useSessionRailChrome } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getShellControlsCopy } from './shell-controls-copy.js';
+import { PlatformShortcutText } from './platform-shortcut-text.js';
 import { Icon } from '@astryxdesign/core/Icon';
 import { IconButton } from '@astryxdesign/core/IconButton';
 import { SideNavItem, SideNavSection } from '@astryxdesign/core/SideNav';
@@ -55,7 +56,11 @@ export function SessionSidebarNav() {
         icon={SquarePen}
         size="md"
         onClick={props.onNew}
-        endContent={<kbd className="maka-nav-kbd" aria-hidden="true">⌘ N</kbd>}
+        endContent={(
+          <kbd className="maka-nav-kbd" aria-hidden="true">
+            <PlatformShortcutText apple="⌘ N" other="Ctrl N" />
+          </kbd>
+        )}
       />
       {props.workHubEntry ? (
         <SideNavItem

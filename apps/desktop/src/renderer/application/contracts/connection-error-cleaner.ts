@@ -17,20 +17,21 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
 
-export interface SessionCollaborationDialogTarget {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
+export { parseNoRealConnectionError };
+
+export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
+const NO_REAL_CONNECTION_REASON_RE = /NO_REAL_CONNECTION:([a-z_]+): /;
+
+export function cleanErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return cleanEventMessage(raw);
 }
 
-export function useSessionCollaborationDialog() {
-  const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
-
-  return {
-    target,
-    open: setTarget,
-    close: () => setTarget(undefined),
-  };
+function cleanEventMessage(message: string): string {
+  return message
+    .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z_$][\w$]*)?Error: /, '')
+    .replace(NO_REAL_CONNECTION_REASON_RE, '')
+    .replace(`${NO_REAL_CONNECTION_CODE}: `, '');
 }

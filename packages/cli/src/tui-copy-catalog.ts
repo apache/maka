@@ -18,6 +18,36 @@
  */
 
 export const TUI_COPY_RESOURCES = {
+  copy: {
+    en: {
+      copiedLast:
+        'Sent the last reply to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
+      copiedAll:
+        'Sent the conversation to the terminal via OSC 52 · {count, plural, one {# char} other {# chars}} — it reaches the clipboard only if your terminal (and tmux, if used) allows OSC 52 writes.',
+      tooLarge:
+        'Too large to copy over OSC 52 · {bytes} bytes exceeds the {limit}-byte limit; a larger payload is silently dropped by the terminal.',
+      nothingToCopy: 'Nothing to copy yet.',
+      usage: 'Usage: /copy [all]',
+      roleUser: 'You:',
+      roleAssistant: 'Maka:',
+      roleGoalContinuation: 'Goal continuation (autonomous):',
+      roleLegacyAutomation: 'Legacy automation (history only):',
+    },
+    zh: {
+      copiedLast:
+        '已将最后一条回复发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
+      copiedAll:
+        '已将整段对话发送到终端 · {count} 个字符——仅当终端（以及 tmux，如使用）允许写入剪贴板时才会真正复制。',
+      tooLarge:
+        '内容过大，无法复制 · {bytes} 字节超过 {limit} 字节上限；更大的内容会被终端静默丢弃。',
+      nothingToCopy: '暂无可复制的内容。',
+      usage: '用法：/copy [all]',
+      roleUser: '你：',
+      roleAssistant: 'Maka：',
+      roleGoalContinuation: '目标续跑（自主）：',
+      roleLegacyAutomation: '旧版自动化（仅历史）：',
+    },
+  },
   'mcp-status': {
     en: {
       title: 'MCP SERVERS',
@@ -59,6 +89,70 @@ export const TUI_COPY_RESOURCES = {
       configuredOnly: 'configured only',
       configPending: 'config pending',
       toolCount: '{count, plural, one {# tool} other {# tools}}',
+      editor: {
+        addTitle: 'Add MCP server',
+        transportTitle: 'Transport',
+        protocolTitle: 'Protocol preference',
+        confirmAddTitle: 'Add this MCP server?',
+        confirmImportTitle: 'Import MCP servers?',
+        confirmRemoveTitle: 'Remove {serverId}?',
+        confirmRemoveCredentialTitle: 'Remove the remote provider credential?',
+        confirmRemoveCredentialDetail:
+          'This stops publishing MCP tools to the selected Runtime Host.',
+        confirmHint: 'y Confirm · Esc cancel',
+        synchronizing: 'Configuration is synchronizing…',
+        outOfSync: 'Durable configuration and MCP Manager are out of sync.',
+        action: {
+          test: 'Testing MCP server…',
+          reconnect: 'Reconnecting MCP server…',
+          apply: 'Applying MCP configuration…',
+        },
+        inputLabels: {
+          server_id: 'Server ID',
+          command: 'Command',
+          args: 'Arguments',
+          url: 'Streamable HTTP URL',
+          cwd: 'Working directory',
+          env: 'Environment',
+          headers: 'Request headers',
+          edit: 'Edit server JSON',
+          import: 'Paste MCP JSON',
+          publication_credential: 'Provider credential',
+        },
+        hints: {
+          args: 'JSON string array, optional',
+          map: 'JSON string map, optional',
+          optional: 'optional',
+          submit: 'Enter submit · Esc back',
+          credential:
+            'Stored only in the local credential store; never written to profiles, arguments, or chat · Enter submit · Esc back',
+        },
+        results: {
+          exists: 'That server ID already exists.',
+          stale_config: 'MCP configuration changed; retry the action.',
+          stale_edit: 'This server changed; reopen it before editing.',
+          stale_import: 'An imported entry changed; preview the import again.',
+          missing: 'That server no longer exists.',
+          closed: 'The MCP controller is closed.',
+          'invalid-config': 'The server configuration is invalid.',
+          'credential-cleanup-failed':
+            'Stored credentials could not be removed; the configuration was not changed.',
+          'publication-credential-failed':
+            'The provider credential could not be stored or applied.',
+          'persist-failed': 'The configuration could not be saved.',
+          'manager-failed': 'The MCP connection action failed.',
+          turn_active: 'MCP cannot be changed while a turn or another control action is running.',
+          invalid: 'Check the value and try again.',
+          published: 'Configuration saved and tools refreshed.',
+          pending_host: 'Configuration saved; publication is waiting for Runtime Host.',
+          sync_failed: 'Configuration saved, but the MCP manager is out of sync.',
+          publication_failed: 'Configuration saved, but capability publication failed.',
+          test_ok: 'Connection test passed.',
+          test_failed: 'Connection test failed.',
+          test_publication_failed: 'Connection test passed, but capability publication failed.',
+          test_pending_host: 'Connection test passed; publication is waiting for Runtime Host.',
+        },
+      },
     },
     zh: {
       title: 'MCP 服务器',
@@ -97,6 +191,66 @@ export const TUI_COPY_RESOURCES = {
       configuredOnly: '仅已配置',
       configPending: '配置待同步',
       toolCount: '{count} 个工具',
+      editor: {
+        addTitle: '添加 MCP 服务器',
+        transportTitle: '传输方式',
+        protocolTitle: '协议偏好',
+        confirmAddTitle: '添加该 MCP 服务器？',
+        confirmImportTitle: '导入 MCP 服务器？',
+        confirmRemoveTitle: '删除 {serverId}？',
+        confirmRemoveCredentialTitle: '删除远程 Provider 凭据？',
+        confirmRemoveCredentialDetail: '这会停止向所选 Runtime Host 发布 MCP 工具。',
+        confirmHint: 'y 确认 · Esc 取消',
+        synchronizing: '配置同步中…',
+        outOfSync: '持久化配置与 MCP Manager 尚未同步。',
+        action: {
+          test: '正在测试 MCP 服务器…',
+          reconnect: '正在重连 MCP 服务器…',
+          apply: '正在应用 MCP 配置…',
+        },
+        inputLabels: {
+          server_id: '服务器 ID',
+          command: '命令',
+          args: '参数',
+          url: 'Streamable HTTP URL',
+          cwd: '工作目录',
+          env: '环境变量',
+          headers: '请求头',
+          edit: '编辑服务器 JSON',
+          import: '粘贴 MCP JSON',
+          publication_credential: 'Provider 凭据',
+        },
+        hints: {
+          args: 'JSON string array, 可留空',
+          map: 'JSON string map, 可留空',
+          optional: '可留空',
+          submit: 'Enter 提交 · Esc 返回',
+          credential: '仅保存到本机凭据存储；不会写入 profile、参数或对话 · Enter 提交 · Esc 返回',
+        },
+        results: {
+          exists: '该服务器 ID 已存在。',
+          stale_config: 'MCP 配置已变化，请重试。',
+          stale_edit: '该服务器已变化，请重新打开后编辑。',
+          stale_import: '导入项已变化，请重新预览。',
+          missing: '该服务器已不存在。',
+          closed: 'MCP 控制器已关闭。',
+          'invalid-config': '服务器配置无效。',
+          'credential-cleanup-failed': '无法删除旧凭据，配置未修改。',
+          'publication-credential-failed': '无法保存或应用 Provider 凭据。',
+          'persist-failed': '无法保存配置。',
+          'manager-failed': 'MCP 连接操作失败。',
+          turn_active: 'Turn 或其他控制操作运行期间不能修改 MCP。',
+          invalid: '请检查输入后重试。',
+          published: '配置已保存，工具已刷新。',
+          pending_host: '配置已保存，正等待 Runtime Host 发布。',
+          sync_failed: '配置已保存，但 MCP Manager 尚未同步。',
+          publication_failed: '配置已保存，但 capability 发布失败。',
+          test_ok: '连接测试通过。',
+          test_failed: '连接测试失败。',
+          test_publication_failed: '连接测试通过，但 capability 发布失败。',
+          test_pending_host: '连接测试通过，正等待 Runtime Host 发布。',
+        },
+      },
     },
   },
   pickers: {
@@ -281,6 +435,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: 'Compact session context',
         context: 'Show latest request context usage',
+        copy: 'Copy the last reply (or /copy all) to the clipboard',
         exit: 'Exit Maka',
         goal: 'Show autonomous goal status',
         graph: 'Show, enable, disable, or run one Graph turn',
@@ -331,6 +486,7 @@ export const TUI_COPY_RESOURCES = {
       commands: {
         compact: '压缩会话上下文',
         context: '查看最近一次请求的上下文用量',
+        copy: '复制最后一条回复（或 /copy all）到剪贴板',
         exit: '退出 Maka',
         goal: '查看自主目标状态',
         graph: '查看、启用、停用 Graph 模式，或执行一次 Graph 任务',
@@ -369,6 +525,120 @@ export const TUI_COPY_RESOURCES = {
           '  Ctrl+D — 输入为空时退出',
         ],
       },
+    },
+  },
+  rewind: {
+    en: {
+      pickerTitle: 'Rewind',
+      pending: 'Rewinding to before this turn…',
+      doneRefilled:
+        'Rewound to before this turn (branched into a new task; the original task is kept). The turn’s prompt was refilled into the input box — edit it and send again.',
+      doneKeptDraft:
+        'Rewound to before this turn (branched into a new task; the original task is kept). The input box already had unsent content and was left untouched; the turn’s prompt was saved to input history — press ↑ to recall it.',
+      noTargets: 'No turns to rewind to.',
+      busy: 'Cannot rewind: another action is in progress — wait for it to finish, or interrupt (Esc) and retry.',
+      pickerHint:
+        'Return to before the selected turn (discards it and later turns; the prompt refills the input box) · enter select / esc cancel',
+    },
+    zh: {
+      pickerTitle: '回退',
+      pending: '正在回退到该轮之前…',
+      doneRefilled:
+        '已回退到该轮之前（分支为新任务，原任务保留），该轮 prompt 已回填输入框，可修改后重新发送。',
+      doneKeptDraft:
+        '已回退到该轮之前（分支为新任务，原任务保留）。输入框已有未发送内容，未覆盖；该轮 prompt 已存入输入历史，可按 ↑ 找回。',
+      noTargets: '没有可回退的轮次。',
+      busy: '无法回退：当前有正在进行的操作 — 请等待其完成，或中断（Esc）后重试。',
+      pickerHint: '回到选定轮次之前（丢弃该轮及之后，prompt 回填输入框） · enter 选择 / esc 取消',
+    },
+  },
+  skills: {
+    en: {
+      pickerTitle: 'Invoke Skill',
+      usage: 'Usage: /skill, or type /skill:<name> inline in a message',
+      noneAvailable: 'No skills are available to invoke right now.',
+      loaded: 'Skills loaded: {names}',
+      loadFailed: 'Could not load skills {failures}; {outcome}',
+      outcomeNoRequest: 'no model request was made.',
+      outcomeMarkersNotSent: 'the failed invocation markers were not sent to the model.',
+      failedItem: '/skill:{request} ({reason})',
+      tooManyRequestsItem: 'more than the {limit}-request limit ({reason})',
+      listSeparator: ', ',
+      failureReasons: {
+        invalid_name: 'invalid name',
+        not_found: 'not found',
+        disabled: 'disabled',
+        host_incompatible: 'the current host is missing a tool it depends on',
+        resolution_failed: 'resolution failed',
+        too_many_requests: 'too many requests',
+      },
+    },
+    zh: {
+      pickerTitle: '调用技能',
+      usage: 'Usage: /skill，或直接在消息中输入 /skill:<name>',
+      noneAvailable: '当前没有可调用的技能。',
+      loaded: '已加载技能：{names}',
+      loadFailed: '未能加载技能 {failures}；{outcome}',
+      outcomeNoRequest: '未发起模型请求。',
+      outcomeMarkersNotSent: '失败的调用标记未发送给模型。',
+      failedItem: '/skill:{request}（{reason}）',
+      tooManyRequestsItem: '请求超过 {limit} 个上限（{reason}）',
+      listSeparator: '、',
+      failureReasons: {
+        invalid_name: '名称无效',
+        not_found: '未找到',
+        disabled: '已禁用',
+        host_incompatible: '当前主机缺少其依赖的工具',
+        resolution_failed: '解析失败',
+        too_many_requests: '调用请求过多',
+      },
+    },
+  },
+  'connection-identity': {
+    en: {
+      withRecovery: '{notice} {recovery}',
+      emptyChoiceRecovery:
+        'If /model has no choices, add or enable a connection first (run /setup for API-key connections).',
+      confirmAccount:
+        'This task comes from an older version and needs a one-time account confirmation. Run /model and choose an existing account and model.',
+      accountDeleted:
+        'The original account was deleted. Run /model and choose a new account and model to continue.',
+      identityMismatch:
+        'The saved account identity no longer matches its connection. Run /model and choose an account and model again.',
+      accountDisabled:
+        'The original account is disabled. Enable it, or run /model and choose a new account and model.',
+    },
+    zh: {
+      withRecovery: '{notice}{recovery}',
+      emptyChoiceRecovery:
+        '如果 /model 没有可选项，请先添加或启用连接（API Key 连接可运行 /setup）。',
+      confirmAccount: '此任务来自旧版本，需要确认一次账号。运行 /model 选择现有账号和模型。',
+      accountDeleted: '原账号已删除；运行 /model 选择新账号和模型后继续。',
+      identityMismatch: '任务保存的账号身份与当前连接不一致；运行 /model 重新选择账号和模型。',
+      accountDisabled: '原账号已停用；请启用该账号，或运行 /model 选择新账号和模型。',
+    },
+  },
+  'session-actions': {
+    en: {
+      foreignScanFailed: 'Could not read external conversations: {detail}',
+      newSessionFailed:
+        'Could not start a new session: a local command could not be stopped. Press Ctrl+C to stop it, then try again.',
+    },
+    zh: {
+      foreignScanFailed: '读取外部对话失败：{detail}',
+      newSessionFailed: '无法开始新会话：无法停止本地命令。请按 Ctrl+C 停止命令后重试。',
+    },
+  },
+  'pending-queue': {
+    en: {
+      steeringLabel: 'Steering:',
+      queuedLabel: 'Queued:',
+      requeueHint: 'Alt+↑ take queued messages back to re-edit',
+    },
+    zh: {
+      steeringLabel: '注入：',
+      queuedLabel: '已排队：',
+      requeueHint: 'Alt+↑ 取回队列以重新编辑',
     },
   },
   'session-status': {

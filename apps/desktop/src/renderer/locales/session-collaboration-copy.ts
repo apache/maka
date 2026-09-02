@@ -37,6 +37,12 @@ const ZH = {
     createInvitation: '创建邀请',
     invitationCode: '一次性邀请码',
     invitationHelp: '邀请码包含连接地址和访客凭据，不包含所有者凭据。',
+    coordinationReady: '已包含跨网络协调路径',
+    coordinationReadyBody:
+      'Runtime Host 已取得 Relay reservation；这能提高不同网络中的设备成功建立连接的机会。',
+    coordinationUnavailable: '尚未取得 Relay reservation',
+    coordinationUnavailableBody:
+      '这枚邀请码当前只包含直接路径，不同网络中的设备可能无法连接。可稍后撤销并重新创建。',
     copy: '复制邀请码',
     copied: '邀请码已复制',
     close: '完成',
@@ -51,6 +57,9 @@ const ZH = {
     joinTitle: '加入共享任务',
     joinDescription: '粘贴邀请码，建立独立的访客连接。',
     code: '邀请码',
+    pasteInvitation: '粘贴邀请码',
+    clipboardEmpty: '剪贴板中没有可粘贴的邀请码。',
+    clipboardUnavailable: '剪贴板中没有有效的邀请码；请手动粘贴。',
     join: '加入',
     validatingInvitation: '正在验证邀请码…',
     discoveringHost: '正在查找任务所在的 Runtime Host…',
@@ -84,10 +93,21 @@ const ZH = {
     turnRequestBlocked: '未能开始',
     turnRequestFailed: '准入失败',
     dismissTurnRequest: '关闭',
+    sharedTask: '共享任务',
+    newTurnRequestTitle: (count: number) => count === 1 ? '新的轮次请求' : `${count} 个新的轮次请求`,
+    newTurnRequestSummary: (count: number) => `${count} 个轮次请求正在等待审批`,
+    reviewTurnRequest: '查看并审批',
+    ownerTurnRequestTitle: '访客请求开始新轮次',
+    moreTurnRequests: (count: number) => `还有 ${count} 个请求等待审批`,
+    pendingTurnRequestCount: (count: number) => `${count} 个待审批轮次请求`,
 };
 
 type SessionCollaborationCopy = {
-  readonly [Key in keyof typeof ZH]: string;
+  readonly [Key in keyof typeof ZH]: (typeof ZH)[Key] extends (
+    ...args: infer Args
+  ) => string
+    ? (...args: Args) => string
+    : string;
 };
 
 const EN = {
@@ -109,6 +129,12 @@ const EN = {
     createInvitation: 'Create invitation',
     invitationCode: 'One-time invitation code',
     invitationHelp: 'The code contains the connection address and Guest credential, never the Owner credential.',
+    coordinationReady: 'Cross-network coordination is included',
+    coordinationReadyBody:
+      'The Runtime Host has obtained a Relay reservation, improving the chance that devices on different networks can connect.',
+    coordinationUnavailable: 'No Relay reservation yet',
+    coordinationUnavailableBody:
+      'This invitation currently contains direct routes only, so devices on different networks may not connect. Revoke and recreate it later.',
     copy: 'Copy invitation',
     copied: 'Invitation copied',
     close: 'Done',
@@ -123,6 +149,9 @@ const EN = {
     joinTitle: 'Join shared task',
     joinDescription: 'Paste an invitation to create an independent Guest connection.',
     code: 'Invitation code',
+    pasteInvitation: 'Paste invitation',
+    clipboardEmpty: 'There is no invitation to paste from the clipboard.',
+    clipboardUnavailable: 'The clipboard does not contain a valid invitation. Paste it manually.',
     join: 'Join',
     validatingInvitation: 'Validating the invitation…',
     discoveringHost: 'Finding the Runtime Host for this task…',
@@ -156,6 +185,13 @@ const EN = {
     turnRequestBlocked: 'Could not start',
     turnRequestFailed: 'Admission failed',
     dismissTurnRequest: 'Dismiss',
+    sharedTask: 'Shared task',
+    newTurnRequestTitle: (count: number) => count === 1 ? 'New Turn request' : `${count} new Turn requests`,
+    newTurnRequestSummary: (count: number) => `${count} Turn requests are waiting for approval`,
+    reviewTurnRequest: 'Review',
+    ownerTurnRequestTitle: 'A Guest requested a new Turn',
+    moreTurnRequests: (count: number) => `${count} more ${count === 1 ? 'request' : 'requests'} waiting`,
+    pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
 const COPY = { zh: ZH, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;

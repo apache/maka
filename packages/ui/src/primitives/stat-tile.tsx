@@ -51,6 +51,7 @@ const TONE_VALUE_CLASS: Record<StatTileTone, string> = {
   destructive: 'maka-stat-tile-value-destructive',
 };
 
+// One rung, four tones: every tinted edge here is its tone's `-muted` token.
 const TONE_BORDER_CLASS: Record<StatTileTone, string> = {
   neutral: '',
   info: 'maka-stat-tile-border-info',

@@ -464,7 +464,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
-    await this.#connection.request('turn.stop', turn);
+    await this.#connection.request('turn.stop', {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
   }
 
   async #stopGraph(sessionId: string): Promise<void> {

@@ -23,11 +23,10 @@ import { type UiCatalog, type UiLocale } from '@maka/core/ui-locale';
 
 import { type PermissionMode } from '@maka/core/permission';
 
-import { type ChatDefaultPermissionMode, type SettingsSection } from '@maka/core/settings';
+import { type SettingsSection } from '@maka/core/settings';
 
 import { type SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
 
-import { type ThinkingLevel } from '@maka/core/model-thinking';
 import { type GoalStatus } from '@maka/core/goal';
 
 export const STATIC_COMMAND_IDS = [
@@ -64,6 +63,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -348,23 +351,14 @@ type ShellCopy = {
     runtimeFailures: Record<'not_found' | 'blocked_path' | 'state_error' | 'write_failed', string>;
   };
   sessionSettingsActions: {
-    permissionLabels: Record<ChatDefaultPermissionMode, string>;
-    permissionDescriptions: Record<PermissionMode, string>;
     bypassConfirmTitle: string;
     bypassConfirmDescription: string;
     bypassConfirmLabel: string;
     bypassCancelLabel: string;
-    permissionSwitched(label: string): string;
     permissionFailedTitle: string;
     permissionFallback: string;
-    modelSwitchedTitle: string;
-    modelSwitchedDescription(from: string, to: string): string;
     modelFailedTitle: string;
     modelFallback: string;
-    modelRecoveryHint: string;
-    thinkingUpdatedTitle: string;
-    thinkingDefault: string;
-    thinkingLabels: Record<ThinkingLevel, string>;
     thinkingFailedTitle: string;
     thinkingFallback: string;
   };
@@ -401,13 +395,9 @@ type ShellCopy = {
     copyFailed: string;
     copyReport: string;
     title: string;
-    descriptionBeforeRetry: string;
+    description: string;
     retry: string;
-    descriptionBeforeReload: string;
     reload: string;
-    descriptionAfterReload: string;
-    errorDetails: string;
-    componentStack: string;
     clipboardFailure: string;
   };
   commandPalette: {
@@ -514,7 +504,6 @@ type ShellCopy = {
     boundaryUnreadableDetail: string;
     boundaryUnreadableRetry: string;
     boundaryUnreadableRetrying: string;
-    permissionModeChanging: string;
     permissionModeStreaming: string;
     permissionModeRunning: string;
     permissionModeWaiting: string;
@@ -557,7 +546,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -570,7 +559,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -622,7 +615,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -645,7 +641,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -660,7 +656,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -718,7 +714,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -1023,39 +1022,15 @@ const SHELL_COPY_BY_LOCALE = {
       },
     },
     sessionSettingsActions: {
-      permissionLabels: {
-        ask: '自动',
-        bypass: '完全权限',
-      },
-      permissionDescriptions: {
-        explore: '只读：只读取和搜索，写入文件和访问网络会先来问你。',
-        ask: '自动：在 Maka 的保护层内执行；需要超出当前权限范围时会先来问你。',
-        bypass: '本地工具直接访问你的文件和网络，不经 Maka 的保护层。',
-      },
       bypassConfirmTitle: '切换到完全权限？',
       bypassConfirmDescription:
         '本地工具将直接读写你的文件并访问网络，不经 Maka 的保护层。仅用于你完全信任、或已在外部隔离环境中运行的任务。',
       bypassConfirmLabel: '开启完全权限',
       bypassCancelLabel: '保持自动',
-      permissionSwitched: (label: string) => `已切到 ${label}`,
       permissionFailedTitle: '切换权限模式失败',
       permissionFallback: '权限模式暂时无法切换，请稍后重试。',
-      modelSwitchedTitle: '已切换当前任务模型',
-      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: '切换模型失败',
       modelFallback: '模型暂时无法切换，请稍后重试。',
-      modelRecoveryHint: '如果所选连接需要登录或 API Key，请到 设置 · 模型 补齐后重试。',
-      thinkingUpdatedTitle: '已更新思考级别',
-      thinkingDefault: '默认',
-      thinkingLabels: {
-        off: '关',
-        minimal: '最少',
-        low: '低',
-        medium: '中',
-        high: '高',
-        xhigh: '超高',
-        max: '最高',
-      },
       thinkingFailedTitle: '切换思考级别失败',
       thinkingFallback: '思考级别暂时无法切换，请稍后重试。',
     },
@@ -1099,14 +1074,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: '复制失败',
       copyReport: '复制诊断信息',
       title: 'Maka 渲染层崩溃了',
-      descriptionBeforeRetry: '已捕获一次未处理的 React 异常。下面是错误摘要；点',
+      description:
+        '已捕获一次未处理的 React 异常。可以重试以清除这次崩溃，或重新加载整个窗口。需要交接时先复制诊断信息。',
       retry: '重试',
-      descriptionBeforeReload: '清掉这次崩溃，',
       reload: '重新加载',
-      descriptionAfterReload: '会刷新整个窗口。需要交接时先复制诊断信息。',
-      errorDetails: '错误详情',
-      componentStack: '组件栈',
-      clipboardFailure: '剪贴板不可用或被系统拒绝；可以手动选择上面的错误摘要。',
+      clipboardFailure: '剪贴板不可用或被系统拒绝，请稍后重试。',
     },
     commandPalette: {
       label: '命令面板',
@@ -1281,7 +1253,6 @@ const SHELL_COPY_BY_LOCALE = {
       boundaryUnreadableDetail: '在读到之前，这里暂时不能输入。可以重试，或先切换到别的任务。',
       boundaryUnreadableRetry: '重试',
       boundaryUnreadableRetrying: '重试中…',
-      permissionModeChanging: '权限模式正在切换，完成后再继续操作。',
       permissionModeStreaming: '当前任务正在流式输出，等结束后再切换权限模式。',
       permissionModeRunning: '当前任务正在运行，等结束后再切换权限模式。',
       permissionModeWaiting: '当前有工具调用正在等待确认，处理后再切换权限模式。',
@@ -1571,39 +1542,15 @@ const SHELL_COPY_BY_LOCALE = {
       },
     },
     sessionSettingsActions: {
-      permissionLabels: {
-        ask: 'Auto',
-        bypass: 'Full access',
-      },
-      permissionDescriptions: {
-        explore: 'Read only: reads and searches only; writing files and network access ask you first.',
-        ask: "Auto: runs inside Maka's protection layer and asks before anything goes beyond the current permissions.",
-        bypass: "Local tools reach your files and your network directly, outside Maka's protection layer.",
-      },
       bypassConfirmTitle: 'Switch to full access?',
       bypassConfirmDescription:
         "Local tools will read and write your files and reach the network directly, outside Maka's protection layer. Use only for tasks you fully trust, or ones already isolated by their environment.",
       bypassConfirmLabel: 'Turn on full access',
       bypassCancelLabel: 'Keep Auto',
-      permissionSwitched: (label: string) => `Switched to ${label}`,
       permissionFailedTitle: 'Could not change permission mode',
       permissionFallback: 'The permission mode could not be changed. Try again later.',
-      modelSwitchedTitle: 'Task model changed',
-      modelSwitchedDescription: (from, to) => `${from} → ${to}`,
       modelFailedTitle: 'Could not change model',
       modelFallback: 'The model could not be changed. Try again later.',
-      modelRecoveryHint: 'If the selected connection needs sign-in or an API key, complete it in Settings · Models and try again.',
-      thinkingUpdatedTitle: 'Thinking level updated',
-      thinkingDefault: 'Default',
-      thinkingLabels: {
-        off: 'Off',
-        minimal: 'Minimal',
-        low: 'Low',
-        medium: 'Medium',
-        high: 'High',
-        xhigh: 'Extra high',
-        max: 'Maximum',
-      },
       thinkingFailedTitle: 'Could not change thinking level',
       thinkingFallback: 'The thinking level could not be changed. Try again later.',
     },
@@ -1647,14 +1594,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: 'Copy failed',
       copyReport: 'Copy diagnostics',
       title: 'The Maka renderer crashed',
-      descriptionBeforeRetry: 'An unhandled React error was caught. The summary is below. Choose',
+      description:
+        'An unhandled React error was caught. Try again to clear this crash, or reload to refresh the entire window. Copy the diagnostics before handing off the issue.',
       retry: 'Try again',
-      descriptionBeforeReload: 'to clear this crash, or',
       reload: 'Reload',
-      descriptionAfterReload: 'to refresh the entire window. Copy the diagnostics before handing off the issue.',
-      errorDetails: 'Error details',
-      componentStack: 'Component stack',
-      clipboardFailure: 'The clipboard is unavailable or was denied. You can select the error summary above manually.',
+      clipboardFailure: 'The clipboard is unavailable or was denied. Try again later.',
     },
     commandPalette: {
       label: 'Command palette',
@@ -1870,7 +1814,6 @@ const SHELL_COPY_BY_LOCALE = {
         'Until they can be read, you cannot type here. Try again, or switch to another task.',
       boundaryUnreadableRetry: 'Try again',
       boundaryUnreadableRetrying: 'Trying again…',
-      permissionModeChanging: 'The permission mode is changing. Wait for it to finish before continuing.',
       permissionModeStreaming:
         'This task is streaming. Wait for it to finish before changing the permission mode.',
       permissionModeRunning: 'This task is running. Wait for it to finish before changing the permission mode.',
@@ -1912,4 +1855,47 @@ export function getShellCopy(locale: UiLocale): ShellCopy {
 
 export function localizedShellErrorMessage(error: unknown, fallback: string, locale: UiLocale): string {
   return locale === 'zh' ? generalizedErrorMessageChinese(error, fallback) : generalizedErrorMessage(error, fallback);
+}
+
+export function sessionSettingFailureCopy(
+  locale: UiLocale,
+  setting: 'model' | 'thinking' | 'permission' | 'plan' | 'orchestration',
+  error: unknown,
+): { title: string; description: string } {
+  const copy = getShellCopy(locale);
+  const failure = setting === 'model'
+    ? { title: copy.sessionSettingsActions.modelFailedTitle, fallback: copy.sessionSettingsActions.modelFallback }
+    : setting === 'thinking'
+      ? { title: copy.sessionSettingsActions.thinkingFailedTitle, fallback: copy.sessionSettingsActions.thinkingFallback }
+      : setting === 'permission'
+        ? { title: copy.sessionSettingsActions.permissionFailedTitle, fallback: copy.sessionSettingsActions.permissionFallback }
+        : setting === 'plan'
+          ? { title: copy.app.planModeFailedTitle, fallback: copy.app.planModeFallback }
+          : { title: copy.app.orchestrationModeFailedTitle, fallback: copy.app.orchestrationModeFallback };
+  return {
+    title: failure.title,
+    description: localizedShellErrorMessage(error, failure.fallback, locale),
+  };
+}
+
+export function confirmBypassPermission(
+  toast: {
+    confirm(input: {
+      title: string;
+      description?: string;
+      confirmLabel?: string;
+      cancelLabel?: string;
+      destructive?: boolean;
+    }): Promise<boolean>;
+  },
+  locale: UiLocale,
+): Promise<boolean> {
+  const copy = getShellCopy(locale).sessionSettingsActions;
+  return toast.confirm({
+    title: copy.bypassConfirmTitle,
+    description: copy.bypassConfirmDescription,
+    confirmLabel: copy.bypassConfirmLabel,
+    cancelLabel: copy.bypassCancelLabel,
+    destructive: true,
+  });
 }

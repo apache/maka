@@ -63,6 +63,7 @@ import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import {
+  type SessionRailData,
   useSessionRailData,
   useSessionRailRowSelection,
   useSessionRailSelection,
@@ -286,6 +287,7 @@ function SessionListGroups(props: {
         stale={rail.staleSessionIds?.has(session.id) ?? false}
         worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
         meta={rail.sessionMeta?.(session)}
+        sessionBadge={rail.sessionBadge}
         onSelectSession={rail.onSelectSession}
         actions={(session as SessionSummary & { readonly shared?: true }).shared
           ? undefined
@@ -407,6 +409,7 @@ function ProjectNavRow(props: {
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
+  const hasMeta = (props.project !== undefined && !props.project.available) || hasActions;
   return (
     <div ref={containerRef} data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
@@ -415,13 +418,12 @@ function ProjectNavRow(props: {
         aria-describedby={hoverDescriptionId}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
-        endContent={
+        endContent={hasMeta ? (
           <ProjectItemMeta
             project={props.project}
-            sessionCount={props.sessions.length}
             reserveAction={hasActions}
           />
-        }
+        ) : undefined}
         trailingAction={
           props.project && props.projectActions ? (
             <ProjectItemActions
@@ -490,6 +492,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   stale: boolean;
   worktree: boolean;
   meta?: string;
+  sessionBadge?: SessionRailData['sessionBadge'];
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
@@ -604,6 +607,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           // the two on hover or keyboard focus. The span is rendered even with
           // no timestamp so the column exists on every row.
           <span className="maka-session-row-end">
+            {props.sessionBadge ? (
+              <span className="maka-session-row-attention-badge">
+                {props.sessionBadge(props.session)}
+              </span>
+            ) : null}
             {props.meta ? (
               <span className="maka-session-row-host-badge" title={props.meta}>
                 <Badge variant="neutral" label={props.meta} />
@@ -869,7 +877,6 @@ function preferredProjectPath(project: ProjectRecord | undefined): string | unde
 
 function ProjectItemMeta(props: {
   project?: ProjectRecord;
-  sessionCount: number;
   reserveAction: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
@@ -878,7 +885,6 @@ function ProjectItemMeta(props: {
       {props.project && !props.project.available && (
         <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
       )}
-      <Badge variant="neutral" label={props.sessionCount} />
       {props.reserveAction ? (
         <span className="maka-session-row-trailing" aria-hidden="true" />
       ) : null}

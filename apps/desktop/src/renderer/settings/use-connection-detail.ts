@@ -28,10 +28,11 @@ import {
   type ConnectionTestResult,
   type IdentifiedLlmConnection,
   type ModelInfo,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { modelRowsEqual, resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
@@ -45,7 +46,6 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
@@ -57,10 +57,11 @@ import type {
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
@@ -119,7 +120,7 @@ export function oauthLoginServiceFor(
 
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
-  connection: IdentifiedLlmConnection;
+  connection: ProjectedLlmConnection;
   isDefault: boolean;
   onChanged(): Promise<void>;
   onDeleted(): Promise<void>;
@@ -142,7 +143,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     connectionId: connection.connectionId,
     slug: connection.slug,
   } as const;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const [apiKey, setApiKey] = useState('');
   const [hasSecret, setHasSecret] = useState<CredentialPresenceStatus>(
     defaults.authKind === 'none' ? true : 'loading',
@@ -306,18 +307,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(connectionEnabledModelIds(connection));
   }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
 
-  // Picker entries come from the same catalog merge path as Chat and Daily
-  // Review, but use the local unsaved editor draft for model/default changes.
-  const modelChoices = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: connection.slug,
-      providerType: connection.providerType,
-      defaultModel: connection.defaultModel,
-      enabledModelIds,
-      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-      modelSource,
-      modelsFetchedAt: connection.modelsFetchedAt,
-    },
+  // Reads `connection.catalogEntries` while the editor still shows what was
+  // committed, and resolves locally only once the draft diverges — the one
+  // client-side resolution left on a saved connection. The rule itself lives
+  // beside the resolver it guards, in `@maka/core/model-catalog`.
+  const modelChoices = resolveDraftConnectionModelCatalog(connection, {
+    models,
+    modelSource,
+    enabledModelIds,
   });
 
   /**
@@ -677,8 +674,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         // took — and hides that their chosen model is currently down. Name both
         // facts instead.
         const testedId = result.modelTested;
+        // The resolved entries, not the draft rows: a provider with no
+        // model-list endpoint stores bare ids, so naming the tested model from
+        // `models` printed a raw id next to the picker's resolved name.
         const modelLabel = (id: string): string =>
-          models.find((model) => model.id === id)?.displayName ?? id;
+          modelChoices.find((entry) => entry.id === id)?.displayName?.trim() || id;
         // Inline the `testedId !== undefined` check so it narrows `testedId` to
         // string for `modelLabel(testedId)` below.
         if (
@@ -772,7 +772,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
-    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
+    const usesOAuth = PROVIDER_REGISTRY[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
       description: copy.deleteDescription(props.isDefault, usesOAuth),
@@ -902,27 +902,12 @@ function connectionDetailDraftMatchesSnapshot(
   },
   snapshot: ConnectionDetailSnapshot,
 ): boolean {
+  // Core's comparison, not a second one: the two answers drive the same
+  // editor, and the local copy compared a different field set — a refetch that
+  // changed only a display name read as "in sync" here and "diverged" there.
   return draft.baseUrl === snapshot.baseUrl &&
     draft.modelSource === snapshot.modelSource &&
-    modelListsEqual(draft.models, snapshot.models);
-}
-
-function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftModel = left[index];
-    const rightModel = right[index];
-    if (leftModel.id !== rightModel.id) return false;
-    if (leftModel.contextWindow !== rightModel.contextWindow) return false;
-    if (leftModel.maxOutputTokens !== rightModel.maxOutputTokens) return false;
-    if (leftModel.capabilities?.chat !== rightModel.capabilities?.chat) return false;
-    if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
-    if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
-    if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
-    if (leftModel.capabilities?.parallelToolCalls !== rightModel.capabilities?.parallelToolCalls) return false;
-    if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
-  }
-  return true;
+    modelRowsEqual(draft.models, snapshot.models);
 }
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {

@@ -66,13 +66,13 @@ on:
         value: ${{ jobs.build.outputs.release_candidate_run_attempt }}
       release_predecessor_version:
         description: Exact npm Nightly version qualified against this candidate
-        value: ${{ jobs.release-predecessor.outputs.version }}
+        value: ${{ jobs.build.outputs.release_predecessor_version }}
       release_predecessor_tarball_url:
         description: Exact npm Nightly tarball qualified against this candidate
-        value: ${{ jobs.release-predecessor.outputs.tarball_url }}
+        value: ${{ jobs.build.outputs.release_predecessor_tarball_url }}
       release_predecessor_integrity:
         description: npm SHA-512 integrity of the Nightly tarball qualified against this candidate
-        value: ${{ jobs.release-predecessor.outputs.integrity }}
+        value: ${{ jobs.build.outputs.release_predecessor_integrity }}
   workflow_dispatch:
 
 permissions:
@@ -80,28 +80,15 @@ permissions:
 
 concurrency:
   group: cli-package-validation-${{ github.workflow }}-${{ github.ref }}
+  # Four build targets and four install environments fan out to about fourteen
+  # jobs per run, which makes this the largest holder of runner slots in the
+  # repository. Without this, a run a newer push had already invalidated was not
+  # cancelled — it ran to completion while the replacement queued behind it in
+  # this same group. Release callers arrive through `workflow_call`, where
+  # `github.event_name` is the caller's, so publication runs never cancel.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  release-predecessor:
-    name: Resolve immutable release predecessor
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    outputs:
-      version: ${{ steps.predecessor.outputs.version }}
-      tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
-      integrity: ${{ steps.predecessor.outputs.integrity }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ inputs.source_commit || github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '24'
-      - name: Resolve the current npm Nightly as immutable evidence
-        id: predecessor
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
-
   peer-native:
     name: Build direct-peer addon (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
@@ -212,6 +199,9 @@ jobs:
     outputs:
       release_candidate_artifact_id: ${{ steps.release-candidate.outputs.artifact-id }}
       release_candidate_run_attempt: ${{ github.run_attempt }}
+      release_predecessor_version: ${{ steps.predecessor.outputs.version }}
+      release_predecessor_tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
+      release_predecessor_integrity: ${{ steps.predecessor.outputs.integrity }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -223,6 +213,12 @@ jobs:
           cache: npm
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+      # Resolving one npm version is seconds of work against a registry this
+      # job already reaches, so it rides the runner that waits on the addon
+      # builds instead of holding a second one for the whole wait.
+      - name: Resolve the current npm Nightly as immutable evidence
+        id: predecessor
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
       - name: Install cargo-deny
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
@@ -259,29 +255,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux x64 / Node 22.19
+          # The two supported Node versions share a machine and a tarball, so
+          # they are two runs of the same smoke rather than two runners.
+          - name: Linux x64 / Node 22.19 and 24
             runner: ubuntu-24.04
             node: '22.19.0'
-            platform: linux
-            arch: x64
-          - name: Linux x64 / Node 24
-            runner: ubuntu-24.04
-            node: '24'
+            second_node: '24'
             platform: linux
             arch: x64
           - name: Linux arm64 / Node 24
             runner: ubuntu-24.04-arm
             node: '24'
+            second_node: ''
             platform: linux
             arch: arm64
           - name: macOS arm64 / Node 24
             runner: macos-15
             node: '24'
+            second_node: ''
             platform: darwin
             arch: arm64
           - name: Windows x64 / Node 24
             runner: windows-2025
             node: '24'
+            second_node: ''
             platform: win32
             arch: x64
     steps:
@@ -307,38 +304,22 @@ jobs:
           path: packages/cli/release
       - name: Validate the installed tarball
         run: node scripts/smoke-release-cli-package.mjs
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: matrix.second_node != ''
+        with:
+          node-version: ${{ matrix.second_node }}
+      - name: Select the release npm toolchain for the second Node
+        if: matrix.second_node != ''
+        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+      - name: Validate the installed tarball on the second Node
+        if: matrix.second_node != ''
+        run: node scripts/smoke-release-cli-package.mjs
 
   state-root-qualification:
-    name: Qualify released State Root (${{ matrix.name }})
-    needs: [build, release-predecessor]
+    name: Qualify released State Roots
+    needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: cross epoch 74 to 76
-            source_url: https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.3.20260830.tgz
-            source_sha256: 66b1ce9307c9d5c06eaa7a6cbf533d4747d02caf71c1776c69c7dbfa12c3f414
-            target_kind: published
-            target_url: https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.4.20260830.tgz
-            target_sha256: b7d48adb466e16be7ffefbda3a0fcd833cc4108ea502b27778d0f4da680e1fc0
-            epoch_relation: different
-          - name: same epoch 76
-            source_url: https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.4.20260830.tgz
-            source_sha256: b7d48adb466e16be7ffefbda3a0fcd833cc4108ea502b27778d0f4da680e1fc0
-            target_kind: published
-            target_url: https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.5.20260830.tgz
-            target_sha256: e7a682157c6899fc7f1be86a2d7b0bd0696195a5771d8cc97bd1389a5b74989f
-            epoch_relation: same
-          - name: current Nightly predecessor to candidate
-            source_url: ${{ needs.release-predecessor.outputs.tarball_url }}
-            source_sha256: ''
-            source_integrity: ${{ needs.release-predecessor.outputs.integrity }}
-            target_kind: candidate
-            target_url: ''
-            target_sha256: ''
-            epoch_relation: any
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -355,80 +336,97 @@ jobs:
           sudo apt-get install --yes bubblewrap
           bwrap --version
       - name: Download the release candidate
-        if: matrix.target_kind == 'candidate'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
-      - name: Prepare exact source and target artifacts
+      # Three runs of one script against one sandbox, not three runners. Two of
+      # these transitions are between tarballs that were published and frozen,
+      # so nothing in a pull request can change their outcome except the
+      # qualifier itself, and the third reads the candidate this run built.
+      - name: Qualify the released State Root transitions
         env:
-          SOURCE_URL: ${{ matrix.source_url }}
-          SOURCE_SHA256: ${{ matrix.source_sha256 }}
-          SOURCE_INTEGRITY: ${{ matrix.source_integrity }}
-          TARGET_KIND: ${{ matrix.target_kind }}
-          TARGET_URL: ${{ matrix.target_url }}
-          TARGET_SHA256: ${{ matrix.target_sha256 }}
+          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
+          PREDECESSOR_TARBALL_URL: ${{ needs.build.outputs.release_predecessor_tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ needs.build.outputs.release_predecessor_integrity }}
         run: |
           set -euo pipefail
           evidence_root="$RUNNER_TEMP/released-state-root"
           mkdir -p "$evidence_root"
-          source_path="$evidence_root/source.tgz"
-          curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 "$SOURCE_URL" --output "$source_path"
-          source_sha256="$SOURCE_SHA256"
-          if [[ -n "$SOURCE_INTEGRITY" ]]; then
-            node - "$source_path" "$SOURCE_INTEGRITY" <<'NODE'
+
+          qualify() {
+            local slug="$1" source_url="$2" source_sha256="$3" source_integrity="$4"
+            local target_kind="$5" target_url="$6" target_sha256="$7" epoch_relation="$8"
+            local source_path target_path
+            echo "::group::Qualify $slug"
+            source_path="$evidence_root/$slug-source.tgz"
+            curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 "$source_url" --output "$source_path"
+            if [[ -n "$source_integrity" ]]; then
+              node - "$source_path" "$source_integrity" <<'NODE'
           const { createHash } = require('node:crypto');
           const { readFileSync } = require('node:fs');
           const bytes = readFileSync(process.argv[2]);
           const actual = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
           if (actual !== process.argv[3]) throw new Error('Source tarball integrity mismatch');
           NODE
-            source_sha256="$(sha256sum "$source_path" | cut -d ' ' -f 1)"
-          else
-            test -n "$source_sha256"
-          fi
-          if [[ "$TARGET_KIND" == 'published' ]]; then
-            target_path="$evidence_root/target.tgz"
-            curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 "$TARGET_URL" --output "$target_path"
-            target_sha256="$TARGET_SHA256"
-          else
-            target_path="$(find packages/cli/release -maxdepth 1 -name '*.tgz' -print -quit)"
-            test -n "$target_path"
-            target_path="$(realpath "$target_path")"
-            target_sha256="$(sha256sum "$target_path" | cut -d ' ' -f 1)"
-          fi
-          {
-            echo "SOURCE_PATH=$source_path"
-            echo "SOURCE_SHA256=$source_sha256"
-            echo "TARGET_PATH=$target_path"
-            echo "TARGET_SHA256=$target_sha256"
-          } >> "$GITHUB_ENV"
-      - name: Qualify the released State Root transition
-        env:
-          EXPECTED_EPOCH_RELATION: ${{ matrix.epoch_relation }}
-          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
-        run: |
-          set -o pipefail
-          npm run --silent release:cli:qualify-state-root -- \
-            --source "$SOURCE_PATH" \
-            --source-sha256 "$SOURCE_SHA256" \
-            --target "$TARGET_PATH" \
-            --target-sha256 "$TARGET_SHA256" \
-            --expect-epoch-relation "$EXPECTED_EPOCH_RELATION" \
-            | tee "$RUNNER_TEMP/released-state-root-report.json"
-      - name: Preserve the qualification report
+              source_sha256="$(sha256sum "$source_path" | cut -d ' ' -f 1)"
+            else
+              test -n "$source_sha256"
+            fi
+            if [[ "$target_kind" == 'published' ]]; then
+              target_path="$evidence_root/$slug-target.tgz"
+              curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 "$target_url" --output "$target_path"
+              test -n "$target_sha256"
+            else
+              target_path="$(find packages/cli/release -maxdepth 1 -name '*.tgz' -print -quit)"
+              test -n "$target_path"
+              target_path="$(realpath "$target_path")"
+              target_sha256="$(sha256sum "$target_path" | cut -d ' ' -f 1)"
+            fi
+            npm run --silent release:cli:qualify-state-root -- \
+              --source "$source_path" \
+              --source-sha256 "$source_sha256" \
+              --target "$target_path" \
+              --target-sha256 "$target_sha256" \
+              --expect-epoch-relation "$epoch_relation" \
+              | tee "$evidence_root/$slug-report.json"
+            echo "::endgroup::"
+          }
+
+          qualify cross-epoch-74-to-76 \
+            https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.3.20260830.tgz \
+            66b1ce9307c9d5c06eaa7a6cbf533d4747d02caf71c1776c69c7dbfa12c3f414 '' \
+            published https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.4.20260830.tgz \
+            b7d48adb466e16be7ffefbda3a0fcd833cc4108ea502b27778d0f4da680e1fc0 different
+
+          qualify same-epoch-76 \
+            https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.4.20260830.tgz \
+            b7d48adb466e16be7ffefbda3a0fcd833cc4108ea502b27778d0f4da680e1fc0 '' \
+            published https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.5.20260830.tgz \
+            e7a682157c6899fc7f1be86a2d7b0bd0696195a5771d8cc97bd1389a5b74989f same
+
+          qualify current-nightly-predecessor-to-candidate \
+            "$PREDECESSOR_TARBALL_URL" '' "$PREDECESSOR_INTEGRITY" \
+            candidate '' '' any
+      # The three transitions used to be three matrix jobs, so one failing left
+      # the others to upload their own reports. Folded into one step they share
+      # a `set -e`, and the reports are wanted most on the run that failed —
+      # `tee` has already written the failing transition's own output by then.
+      # `if-no-files-found` stays `error` so a broken path is still caught on a
+      # green run.
+      - name: Preserve the qualification reports
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: released-state-root-${{ strategy.job-index }}
-          path: ${{ runner.temp }}/released-state-root-report.json
+          name: released-state-root
+          path: ${{ runner.temp }}/released-state-root/*-report.json
           if-no-files-found: error
           retention-days: 7
       - name: Require the qualified Nightly predecessor to remain current
-        if: matrix.target_kind == 'candidate'
         env:
-          PREDECESSOR_VERSION: ${{ needs.release-predecessor.outputs.version }}
-          PREDECESSOR_TARBALL_URL: ${{ needs.release-predecessor.outputs.tarball_url }}
-          PREDECESSOR_INTEGRITY: ${{ needs.release-predecessor.outputs.integrity }}
+          PREDECESSOR_VERSION: ${{ needs.build.outputs.release_predecessor_version }}
+          PREDECESSOR_TARBALL_URL: ${{ needs.build.outputs.release_predecessor_tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ needs.build.outputs.release_predecessor_integrity }}
         run: |
           node scripts/release-cli-publication.mjs assert-nightly-predecessor \
             "$PREDECESSOR_VERSION" \

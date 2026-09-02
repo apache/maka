@@ -70,6 +70,13 @@ export function registerRuntimeHostCollaborationIpc(
             invitationCode: prepared.invitationCode,
             target,
           }),
+          connectivity:
+            target.transport.kind === 'libp2p-direct'
+              ? {
+                  kind: 'peer' as const,
+                  coordinationRelayCount: target.transport.coordinationRelays.length,
+                }
+              : { kind: 'configured' as const },
         },
       };
     },
@@ -85,7 +92,9 @@ export function registerRuntimeHostCollaborationIpc(
     ipcMain,
     'session-collaboration:turn-request:query',
     (_event, sessionId: unknown) =>
-      client.queryCollaborationTurnRequests(requiredId(sessionId, 'Session')),
+      client.queryCollaborationTurnRequests(
+        sessionId === undefined ? undefined : requiredId(sessionId, 'Session'),
+      ),
   );
   ipcMain.handle(
     'session-collaboration:turn-request:acknowledge',

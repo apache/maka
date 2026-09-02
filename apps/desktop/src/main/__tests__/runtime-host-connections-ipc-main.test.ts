@@ -19,13 +19,43 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { OPENCODE_FREE_DEFAULT_ENABLED_MODELS } from '@maka/core/llm-connections';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import { defaultEnabledModelIdsWhenOmitted } from '@maka/core/llm-connections';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
+} from '@maka/runtime-host/client';
 import {
   projectHostConnections,
   projectHostConnectionTest,
   registerRuntimeHostConnectionsIpc,
 } from '../runtime-host-connections-ipc-main.js';
+import { normalizeCreateConnectionInputForIpc } from '../connections-ipc-validation.js';
+
+const OPENCODE_FREE_ENABLED_MODEL_IDS: readonly string[] =
+  defaultEnabledModelIdsWhenOmitted('opencode-free') ?? [];
+
+// `providerType in PROVIDER_REGISTRY` traverses the prototype chain, so an
+// inherited member named a provider the build does not register. The renderer
+// reaches this boundary, and what it admits is persisted.
+test('refuses a prototype member posing as a provider type', () => {
+  for (const providerType of ['__proto__', 'toString', 'constructor', 'hasOwnProperty']) {
+    assert.throws(
+      () =>
+        normalizeCreateConnectionInputForIpc({
+          name: 'Injected',
+          slug: 'injected',
+          providerType,
+          enabled: true,
+        }),
+      /Invalid Connection input/,
+      providerType,
+    );
+  }
+});
 
 test('registers pure Connection reads for replacement-Host retry', () => {
   const reads = new Set<string>();
@@ -49,7 +79,190 @@ test('registers pure Connection reads for replacement-Host retry', () => {
     'connections:hasSecret',
   ]);
   assert.ok(effects.has('connections:create'));
+  assert.ok(effects.has('connections:onboardingVerify'));
+  assert.ok(effects.has('connections:onboardingSave'));
   assert.ok(effects.has('connections:test'));
+});
+
+test('forwards managed onboarding and emits only after a canonical save', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const calls: unknown[] = [];
+  let changed = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      verifyConnectionOnboarding: async (input: unknown) => {
+        calls.push(['verify', input]);
+        return { kind: 'verified', models: [{ id: 'gpt-5' }] };
+      },
+      saveConnectionOnboarding: async (input: unknown) => {
+        calls.push(['save', input]);
+        return {
+          kind: 'saved',
+          connection: {
+            connectionId: 'connection-openai-2',
+            revision: 1,
+            slug: 'openai-2',
+            providerType: 'openai',
+          },
+        };
+      },
+    } as never,
+    emitConnectionListChanged() {
+      changed += 1;
+    },
+  });
+
+  const base = {
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+  } as const;
+  assert.deepEqual(await handlers.get('connections:onboardingVerify')?.({}, base), {
+    kind: 'verified',
+    models: [{ id: 'gpt-5' }],
+  });
+  assert.deepEqual(
+    await handlers.get('connections:onboardingSave')?.({}, {
+      ...base,
+      enabledModelIds: ['gpt-5'],
+    }),
+    {
+      kind: 'result',
+      result: {
+        kind: 'saved',
+        connection: {
+          connectionId: 'connection-openai-2',
+          revision: 1,
+          slug: 'openai-2',
+          providerType: 'openai',
+        },
+      },
+    },
+  );
+  assert.equal(changed, 1);
+  assert.equal(calls.length, 2);
+});
+
+test('keeps a dispatched onboarding save interruption outcome unknown', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      saveConnectionOnboarding: async () => {
+        throw new RuntimeHostRequestInterruptedError(
+          'connection.onboarding.save',
+          'command',
+          'dispatched',
+          'connection_lost',
+        );
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  assert.deepEqual(
+    await handlers.get('connections:onboardingSave')?.({}, {
+      target: { kind: 'create', providerType: 'openai' },
+      apiKey: 'test-key',
+      baseUrl: null,
+      enabledModelIds: ['gpt-5'],
+    }),
+    { kind: 'outcome_unknown' },
+  );
+});
+
+test('keeps Host commit_outcome_unknown distinct from a safe non-save', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let attempt = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      saveConnectionOnboarding: async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new RuntimeHostOperationError(
+            'connection.onboarding.save',
+            'commit_outcome_unknown',
+            'unknown',
+          );
+        }
+        throw new RuntimeHostRequestInterruptedError(
+          'connection.onboarding.save',
+          'command',
+          'not_dispatched',
+          'connection_lost',
+        );
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+  const input = {
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+    enabledModelIds: ['gpt-5'],
+  };
+
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'outcome_unknown',
+  });
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'not_saved',
+  });
+});
+
+test('fails closed when a dispatched onboarding response cannot be decoded', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  let attempt = 0;
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      saveConnectionOnboarding: async () => {
+        attempt += 1;
+        if (attempt === 1) {
+          // RuntimeHostConnection surfaces a malformed command response as
+          // an ordinary protocol error after the frame was dispatched.
+          throw new Error('Invalid connection onboarding save result');
+        }
+        throw new RuntimeHostOperationError(
+          'connection.onboarding.save',
+          'invalid_request',
+          'The Host definitively rejected the save',
+        );
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+  const input = {
+    target: { kind: 'create', providerType: 'openai' },
+    apiKey: 'test-key',
+    baseUrl: null,
+    enabledModelIds: ['gpt-5'],
+  };
+
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'outcome_unknown',
+  });
+  assert.deepEqual(await handlers.get('connections:onboardingSave')?.({}, input), {
+    kind: 'not_saved',
+  });
 });
 
 test('retries connection delete after a stale revision instead of failing permanently', async () => {
@@ -75,6 +288,7 @@ test('retries connection delete after a stale revision instead of failing perman
             providerType: 'openai-compatible',
             baseUrl: 'https://openrouter.ai/api/v1',
             enabled: true,
+            catalogEntries: [],
             enabledModelIds: ['model-1'],
             models: [{ id: 'model-1' }],
           },
@@ -285,6 +499,7 @@ test('preserves the provider default inventory beside the recommended model', as
                   providerType: 'opencode-free',
                   enabled: true,
                   enabledModelIds: createdModels,
+                  catalogEntries: [],
                   models: [],
                 },
               ],
@@ -311,7 +526,7 @@ test('preserves the provider default inventory beside the recommended model', as
   });
 
   // Snapshot-derived set; assert the contract, not today's ids.
-  assert.deepEqual(createdModels, [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS]);
+  assert.deepEqual(createdModels, [...OPENCODE_FREE_ENABLED_MODEL_IDS]);
 });
 
 test('projects the Host default target without inventing a second Connection authority', () => {
@@ -328,6 +543,8 @@ test('projects the Host default target without inventing a second Connection aut
       defaultModel: 'model-1',
       enabledModelIds: ['model-1', 'model-2'],
       models: [{ id: 'model-1' }, { id: 'model-2' }],
+      // Carried through from the Host projection, not rebuilt here.
+      catalogEntries: [],
       createdAt: 0,
       updatedAt: 4,
     },
@@ -395,6 +612,7 @@ function catalog(): ConnectionCatalogSnapshot {
         baseUrl: 'https://openrouter.ai/api/v1',
         enabled: true,
         enabledModelIds: ['model-1', 'model-2'],
+        catalogEntries: [],
         models: [{ id: 'model-1' }, { id: 'model-2' }],
       },
     ],

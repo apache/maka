@@ -34,8 +34,6 @@ export interface AppShellSessionUiState {
   shellRunUpdatesBySession: ShellRunUpdatesBySession;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
 }
 
 // The pending plate keeps the Host revision beside its entries so edits can
@@ -50,9 +48,7 @@ type AppShellSessionUiStateMapKey = keyof AppShellSessionUiState;
 /** The maps that record nothing but "an action is in flight for this key". */
 type BooleanMapKey =
   | 'messageRetryPendingBySession'
-  | 'stopPendingBySession'
-  | 'pendingPermissionModeBySession'
-  | 'pendingSessionModelBySession';
+  | 'stopPendingBySession';
 
 export interface SessionPendingClaim {
   /** Marks `key` in flight. Returns false — a no-op — if it already was. */
@@ -69,8 +65,6 @@ const SESSION_UI_MAP_KEYS = [
   'shellRunUpdatesBySession',
   'interactionBySession',
   'messageQueueBySession',
-  'pendingPermissionModeBySession',
-  'pendingSessionModelBySession',
 ] as const satisfies readonly AppShellSessionUiStateMapKey[];
 
 type MissingSessionUiMapKey = Exclude<AppShellSessionUiStateMapKey, typeof SESSION_UI_MAP_KEYS[number]>;
@@ -79,8 +73,8 @@ void allSessionUiMapsAreListed;
 
 // An authoritative session-list refresh heals a session whose turn ended while
 // its SessionEvent stream wasn't being followed, and must drop only the live
-// projection. The independently-scoped maps (message load error / retry, pending
-// permission-mode / model toggles, the permission queue, stop-pending) each have
+// projection. The independently-scoped maps (message load error / retry, the
+// permission queue, stop-pending) each have
 // their own lifecycle and must survive a mere turn settle — a full
 // `clearAppShellSessionUiStateForSession` (session deletion) would wipe them too.
 // Event-stream health is scoped the same way but lives outside this state; see
@@ -178,7 +172,7 @@ export function createAppShellSessionUiStateController(
    * reports whether it won, `release` gives it back.
    *
    * Both read and write the same map, which is what makes this the only
-   * representation of "an action is in flight". Each of these four used to be a
+   * representation of "an action is in flight". Each of these maps used to be a
    * `Set` ref for the duplicate guard beside a map for the rendered flag,
    * synchronized by hand at every add and every `finally`, and cleared by two
    * separate teardown paths that stayed aligned only by ordering. Nothing
@@ -206,8 +200,6 @@ export function createAppShellSessionUiStateController(
     setMessageLoadErrorBySession: createMapSetter('messageLoadErrorBySession'),
     messageRetryPending: createPendingClaim('messageRetryPendingBySession'),
     stopPending: createPendingClaim('stopPendingBySession'),
-    permissionModePending: createPendingClaim('pendingPermissionModeBySession'),
-    sessionModelPending: createPendingClaim('pendingSessionModelBySession'),
     setLiveTurnBySession: createMapSetter('liveTurnBySession'),
     setShellRunUpdatesBySession: createMapSetter('shellRunUpdatesBySession'),
     setInteractionBySession: createMapSetter('interactionBySession'),

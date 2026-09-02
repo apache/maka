@@ -65,7 +65,7 @@
 /* Descendant, not child: Astryx's ListItem wraps startContent in its own
    span, so the plate is a grandchild of the row that carries data-state. */
 [data-state="denied"] .settingsOsPermissionIcon {
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
   color: var(--destructive);
 }
 

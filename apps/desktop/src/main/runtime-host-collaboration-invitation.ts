@@ -24,7 +24,7 @@ import {
 import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
 
 const SCHEMA_VERSION = 1;
-const CODE_MAX_BYTES = 32 * 1024;
+export const DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES = 32 * 1024;
 
 export interface DesktopCollaborationConnectionTarget {
   readonly name: string;
@@ -54,7 +54,10 @@ export function encodeDesktopCollaborationInvitation(
 export function decodeDesktopCollaborationInvitation(
   code: string,
 ): DesktopCollaborationInvitation {
-  if (!code || Buffer.byteLength(code, 'utf8') > CODE_MAX_BYTES) {
+  if (
+    !code ||
+    Buffer.byteLength(code, 'utf8') > DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES
+  ) {
     throw new Error('Invalid Desktop collaboration invitation');
   }
   let value: unknown;

@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { thinkingVariantsForModel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { isRetiredProvider } from '@maka/core/provider-registry';
@@ -484,10 +484,10 @@ describe('buildProviderOptions: thinking level', () => {
       connection: LlmConnection;
       modelId: string;
     }> = [];
-    for (const providerType of Object.keys(PROVIDER_DEFAULTS) as LlmConnection['providerType'][]) {
+    for (const providerType of Object.keys(PROVIDER_REGISTRY) as LlmConnection['providerType'][]) {
       if (isRetiredProvider(providerType)) continue;
       const connection = conn(providerType);
-      for (const modelId of PROVIDER_DEFAULTS[providerType].fallbackModels) {
+      for (const modelId of PROVIDER_REGISTRY[providerType].fallbackModels) {
         const familyModelId = modelId.includes('/')
           ? modelId.slice(modelId.lastIndexOf('/') + 1)
           : modelId;
@@ -503,7 +503,7 @@ describe('buildProviderOptions: thinking level', () => {
       }
     }
 
-    assert.equal(activeClaudeModels.length, 13);
+    assert.equal(activeClaudeModels.length, 16);
     assert.ok(
       activeClaudeModels.some(
         ({ connection, modelId }) =>
@@ -684,14 +684,15 @@ describe('buildProviderOptions: thinking level', () => {
   });
 
   test('Tencent Token Plan sends its documented reasoning effort under the stable provider namespace', () => {
-    assert.deepEqual(
-      [...thinkingVariantsForModel('tencent-token-plan', 'hy3')],
-      ['low', 'medium', 'high'],
-    );
+    assert.deepEqual([...thinkingVariantsForModel('tencent-token-plan', 'hy3')], ['off', 'high']);
     assert.deepEqual(buildProviderOptions(conn('tencent-token-plan'), 'hy3', 'high'), {
       tencentTokenPlan: { reasoningEffort: 'high' },
     });
-    assert.deepEqual(buildProviderOptions(conn('tencent-token-plan'), 'hy3', 'off'), {});
+    // The plan documents an explicit no-reasoning value, so off names it rather
+    // than dropping the knob and leaving the provider to pick.
+    assert.deepEqual(buildProviderOptions(conn('tencent-token-plan'), 'hy3', 'off'), {
+      tencentTokenPlan: { reasoningEffort: 'none' },
+    });
   });
 
   test('Vercel Gateway sends reasoning effort under its stable namespace and exact model id', () => {

@@ -19,12 +19,17 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { encodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
+import type { ResolvedRuntimeHostProfile } from '@maka/runtime-host/client';
+import {
+  encodeCollaborationInvitationCode,
+  type HostPeerEndpoint,
+} from '@maka/runtime-host/protocol';
 import { encodeDesktopCollaborationInvitation } from '../runtime-host-collaboration-invitation.js';
 import {
   createDesktopGuestSessionMountService,
   type GuestSessionMount,
   type GuestSessionMountStore,
+  registerDesktopGuestSessionMountIpc,
 } from '../runtime-host-guest-session-mounts.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from '../runtime-host-desktop-manager.js';
 
@@ -54,6 +59,49 @@ test('retains a successful Guest mount and rehydrates the same authority after r
   assert.equal(await rehydrated, `${result.mountId}:guest-one`);
   assert.deepEqual(activated, [`${result.mountId}:guest-one`]);
   await second!.close();
+});
+
+test('persists authenticated route rotation for reconnect and restart', async () => {
+  const store = memoryStore();
+  let observePeerEndpoint!: (endpoint: HostPeerEndpoint) => void;
+  const first = service(store, {
+    mount: async (target, _signal, _onConnectionPhase, onPeerEndpoint) => {
+      assert.deepEqual(
+        target.profile.kind === 'remote' ? target.profile.transport : undefined,
+        {
+          kind: 'libp2p-direct',
+          peerId: '12D3KooWpeer',
+          routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRelays: ['/memory/stale-relay'],
+        },
+      );
+      assert.ok(onPeerEndpoint);
+      observePeerEndpoint = onPeerEndpoint;
+    },
+  });
+
+  const imported = await first.importInvitation(peerInvitation('guest-routes'), false, 'routes');
+  assert.equal(imported.kind, 'connected');
+  observePeerEndpoint({
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    coordinationRelays: ['/memory/fresh-relay'],
+  });
+  await first.close();
+
+  let restarted!: ReturnType<typeof service>;
+  const restartedTarget = new Promise<ResolvedRuntimeHostProfile>((resolve) => {
+    restarted = service(store, { mount: async (target) => resolve(target) });
+    void restarted.start();
+  });
+  const target = await restartedTarget;
+  assert.deepEqual(target.profile.kind === 'remote' ? target.profile.transport : undefined, {
+    kind: 'libp2p-direct',
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    coordinationRelays: ['/memory/fresh-relay'],
+  });
+  await restarted.close();
 });
 
 test('removes failed activation desire instead of creating recoverable profile state', async () => {
@@ -273,6 +321,52 @@ test('cancels an in-flight import and removes its durable mount desire', async (
   await mounts.close();
 });
 
+test('reads an invitation from the clipboard only on explicit IPC invocation', async () => {
+  type IpcHandler = Parameters<Pick<Electron.IpcMain, 'handle'>['handle']>[1];
+  const handlers = new Map<string, IpcHandler>();
+  let clipboardReads = 0;
+  const clipboardInvitation = invitation('guest-clipboard');
+  let clipboardText = `  ${clipboardInvitation}  `;
+  const mounts = service(memoryStore());
+  const dispose = registerDesktopGuestSessionMountIpc(
+    {
+      handle(channel, handler) {
+        handlers.set(channel, handler);
+      },
+      removeHandler(channel) {
+        handlers.delete(channel);
+      },
+    },
+    mounts,
+    () => {
+      clipboardReads += 1;
+      return clipboardText;
+    },
+  );
+
+  assert.equal(clipboardReads, 0);
+  const handler = handlers.get('session-collaboration:invitation:read-clipboard');
+  assert.ok(handler);
+  assert.equal(await handler({} as never), clipboardInvitation);
+  assert.equal(clipboardReads, 1);
+
+  clipboardText = 'an unrelated clipboard secret';
+  assert.throws(() => handler({} as never), /Invalid Desktop collaboration invitation/);
+
+  clipboardText = '   ';
+  assert.equal(await handler({} as never), '');
+
+  clipboardText = 'x'.repeat(32 * 1024 + 1);
+  assert.throws(
+    () => handler({} as never),
+    /Clipboard content is too large to be a shared Session invitation/,
+  );
+
+  dispose();
+  assert.equal(handlers.size, 0);
+  await mounts.close();
+});
+
 function service(
   store: GuestSessionMountStore,
   overrides: {
@@ -310,6 +404,25 @@ function invitation(credential: string): string {
     target: {
       name: 'Shared Host',
       transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
+    },
+  });
+}
+
+function peerInvitation(credential: string): string {
+  return encodeDesktopCollaborationInvitation({
+    invitationCode: encodeCollaborationInvitationCode({
+      schemaVersion: 1,
+      rootId: ROOT_ID,
+      credential,
+    }),
+    target: {
+      name: 'Shared Host',
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: '12D3KooWpeer',
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: ['/memory/stale-relay'],
+      },
     },
   });
 }

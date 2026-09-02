@@ -226,9 +226,8 @@
   font: var(--maka-text-supporting);
   margin: 0;
   padding: var(--space-1-5) var(--space-2);
-  border-left: 2px solid oklch(from var(--info) l c h / 0.46);
   color: var(--muted-foreground);
-  background: oklch(from var(--info) l c h / 0.06);
+  background: var(--color-accent-muted);
 }
 
 .maka-artifact-preview-diff {
@@ -265,9 +264,8 @@
   font: var(--maka-text-supporting);
   padding: var(--space-1) var(--space-1-5);
   border-radius: var(--radius-control);
-  background: oklch(from var(--info) l c h / 0.10);
-  color: var(--info-text);
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.20);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
 }
 
 .maka-artifact-preview-image {
@@ -304,8 +302,8 @@
   /* Detail audit round 4: solid — dashed was the app's last stray border
      language (the markdown dangerous-link underline is the one deliberate
      dashed exception). */
-  border: var(--border-width-hairline) solid oklch(from var(--info) l c h / 0.32);
-  background: oklch(from var(--info) l c h / 0.06);
+  border: var(--border-width-hairline) solid var(--border);
+  background: var(--color-accent-muted);
   color: var(--foreground-secondary);
 }
 
@@ -371,27 +369,6 @@
 
 .maka-artifact-preview-spinner {
   flex: 0 0 auto;
-}
-
-.maka-artifact-preview-fail {
-  font: var(--maka-text-body);
-  display: grid;
-  gap: var(--space-1-5);
-  padding: var(--space-2-5) var(--space-3);
-  border-radius: var(--radius-surface);
-  border: var(--border-width-hairline) solid var(--border);
-}
-
-.maka-artifact-preview-fail[data-tone="destructive"] {
-  background: oklch(from var(--destructive) l c h / 0.08);
-  border-color: oklch(from var(--destructive) l c h / 0.22);
-  color: var(--destructive-text);
-}
-
-.maka-artifact-preview-fail[data-tone="info"] {
-  background: oklch(from var(--info) l c h / 0.08);
-  border-color: oklch(from var(--info) l c h / 0.22);
-  color: var(--info-text);
 }
 
 /* Narrow windows place the single workbar below the conversation. */

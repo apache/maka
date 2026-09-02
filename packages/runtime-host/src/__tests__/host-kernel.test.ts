@@ -1064,6 +1064,45 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
+  test('safe retirement refuses a second client that connected after discovery', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+      const replacement = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(replacement.kind, 'connected');
+      if (replacement.kind !== 'connected') return;
+      const lateClient = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(lateClient.kind, 'connected');
+      if (lateClient.kind !== 'connected') return;
+
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'active_tasks' },
+      );
+      assert.equal(host.state, 'ready');
+
+      await lateClient.connection.close();
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'prepared', pid: process.pid },
+      );
+      await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
+    });
+  });
+
   test('an explicit generation takeover drains only the exact unobserved ephemeral Host', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {

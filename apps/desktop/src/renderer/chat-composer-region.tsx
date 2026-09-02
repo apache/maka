@@ -23,10 +23,11 @@ import {
   Button,
   ClientCapabilityPrompt,
   Composer,
+  ComposerGoalProjectionConsumer,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
 } from '@maka/ui';
-import type { ComposerHandle, ComposerInteraction } from '@maka/ui';
+import type { ComposerHandle } from '@maka/ui';
 import { useComposerMentionsContext } from './composer-mentions.js';
 import {
   readNewTaskReloadDraft,
@@ -60,6 +61,11 @@ interface BoundaryUnreadableNotice {
   onRetry(): void;
 }
 
+type ComposerInteraction =
+  | ComponentProps<typeof SandboxBoundaryPrompt>['request']
+  | ComponentProps<typeof ClientCapabilityPrompt>['request']
+  | ComponentProps<typeof UserQuestionPrompt>['request'];
+
 /**
  * The composer region of the chat surface (issue #1043): the composer
  * interaction slot (permission / user-question prompts) plus the always-mounted
@@ -81,6 +87,8 @@ interface ChatComposerRegionProps
     | 'hidden'
     | 'draftKey'
     | 'stopPending'
+    | 'goalActive'
+    | 'onSetGoal'
     | 'allowAttachmentImportWhileStreaming'
     // Read from ComposerMentionsProvider, so a catalog reload repaints the
     // popups without re-rendering the shell that would otherwise pass them.
@@ -241,26 +249,32 @@ export function ChatComposerRegion({
           />
         )}
       </div>
-      <Composer
-        ref={composerRef}
-        {...composerRest}
-        // AppShell carries staged attachments into both queued and steering
-        // follow-ups. Other Composer hosts remain gated by default because a
-        // text-only running-turn submission would leave attachments behind.
-        allowAttachmentImportWhileStreaming
-        mentionSkills={mentions?.mentionSkills}
-        mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
-        mentionSkillsLoading={mentions?.mentionSkillsLoading}
-        onSearchMentionFiles={mentions?.searchMentionFiles}
-        {...directoryComposerProps}
-        onPickDirectory={
-          directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
-        }
-        hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
-        draftKey={activeId ?? newTaskDraftKey}
-        draftPersistence={newTaskDraftPersistence}
-        stopPending={activeId ? stopPendingBySession[activeId] === true : false}
-      />
+      <ComposerGoalProjectionConsumer>
+        {(goalProjection) => (
+          <Composer
+            ref={composerRef}
+            {...composerRest}
+            // AppShell carries staged attachments into both queued and steering
+            // follow-ups. Other Composer hosts remain gated by default because a
+            // text-only running-turn submission would leave attachments behind.
+            allowAttachmentImportWhileStreaming
+            mentionSkills={mentions?.mentionSkills}
+            mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}
+            mentionSkillsLoading={mentions?.mentionSkillsLoading}
+            onSearchMentionFiles={mentions?.searchMentionFiles}
+            {...directoryComposerProps}
+            onPickDirectory={
+              directoryPickerEnabled ? directoryComposerProps.onPickDirectory : undefined
+            }
+            hidden={!active || onboardingComposerHidden || Boolean(activeInteraction)}
+            draftKey={activeId ?? newTaskDraftKey}
+            draftPersistence={newTaskDraftPersistence}
+            stopPending={activeId ? stopPendingBySession[activeId] === true : false}
+            goalActive={goalProjection.goalActive}
+            onSetGoal={goalProjection.onSetGoal}
+          />
+        )}
+      </ComposerGoalProjectionConsumer>
     </>
   );
 }

@@ -65,11 +65,10 @@
  * stay in step and an upgrade that restructures the header keeps working.
  *
  * Bound on the header, NOT on the section root. SideNavSection wraps the whole
- * list body — every row, badge, and timestamp — in the same element as its title
+ * list body — every row and timestamp — in the same element as its title
  * (session-history-list.tsx), and custom properties inherit, so a rebind on the
- * root reaches all of it: measured live, the project session-count Badge went
- * 12px → 14px. The header is SideNavSection's first child and holds exactly the
- * title and subtitle.
+ * root would also resize the task content. The header is SideNavSection's first
+ * child and holds exactly the title and subtitle.
  *
  * Both halves of the tier move together. Size alone would leave the supporting
  * leading multiplier on a larger font and land the line box at 23.33px, off the
@@ -356,6 +355,11 @@
   display: inline-flex;
   min-width: 0;
   max-width: 88px;
+}
+
+.maka-session-row-attention-badge {
+  display: inline-flex;
+  flex: none;
 }
 
 .maka-session-row-host-badge > span {

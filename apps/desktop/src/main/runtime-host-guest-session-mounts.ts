@@ -25,7 +25,10 @@ import {
   type RuntimeHostConnectionPhase,
   type RuntimeHostRemoteTransport,
 } from '@maka/runtime-host/client';
-import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
+import {
+  decodeCollaborationInvitationCode,
+  type HostPeerEndpoint,
+} from '@maka/runtime-host/protocol';
 import type { CredentialStore } from '@maka/storage/credential-store';
 import type {
   SessionCollaborationCancelResult,
@@ -33,7 +36,10 @@ import type {
   SessionCollaborationImportResult,
   SessionCollaborationMountSummary,
 } from '../shared/session-collaboration.js';
-import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
+import {
+  decodeDesktopCollaborationInvitation,
+  DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES,
+} from './runtime-host-collaboration-invitation.js';
 import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
 
 const STORE_SCHEMA_VERSION = 1;
@@ -127,6 +133,7 @@ export function createDesktopGuestSessionMountService(input: {
     target: ResolvedRuntimeHostProfile,
     signal: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly finalizeAccess: (mountId: string, signal: AbortSignal) => Promise<void>;
   readonly unmount: (mountId: string) => Promise<void>;
@@ -162,6 +169,38 @@ export function createDesktopGuestSessionMountService(input: {
     mounts = next;
   };
 
+  const recordPeerEndpoint = (mount: GuestSessionMount, endpoint: HostPeerEndpoint): void => {
+    if (
+      closed ||
+      mount.transport.kind !== 'libp2p-direct' ||
+      endpoint.peerId !== mount.transport.peerId ||
+      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
+    ) return;
+    void mutate(async () => {
+      if (removingMounts.has(mount.mountId)) return;
+      const current = await load();
+      const retained = current.get(mount.mountId);
+      if (
+        retained?.transport.kind !== 'libp2p-direct' ||
+        retained.transport.peerId !== endpoint.peerId ||
+        (
+          sameStrings(retained.transport.routeHints, endpoint.routeHints) &&
+          sameStrings(retained.transport.coordinationRelays, endpoint.coordinationRelays)
+        )
+      ) return;
+      const updated = decodeMount({
+        ...retained,
+        transport: {
+          kind: 'libp2p-direct',
+          peerId: endpoint.peerId,
+          routeHints: endpoint.routeHints,
+          coordinationRelays: endpoint.coordinationRelays,
+        },
+      });
+      await persist(new Map(current).set(mount.mountId, updated));
+    }).catch((error: unknown) => onError(asError(error), mount));
+  };
+
   const activate = async (
     activation: LiveGuestActivation,
     mount: GuestSessionMount,
@@ -174,7 +213,10 @@ export function createDesktopGuestSessionMountService(input: {
           collaborationProgressForConnectionPhase(phase),
         );
       }
-    });
+    }, (endpoint) => recordPeerEndpoint(mount, endpoint));
+    // waitForReady observes host.status before mount resolves. Commit that
+    // authenticated route snapshot before declaring the durable mount ready.
+    await mutationTail;
     activation.controller.signal.throwIfAborted();
     if (removingMounts.has(mount.mountId)) {
       throw new Error('Shared Session mount was removed while connecting');
@@ -419,12 +461,14 @@ export function createDesktopGuestSessionMountService(input: {
 export function registerDesktopGuestSessionMountIpc(
   ipcMain: Pick<Electron.IpcMain, 'handle' | 'removeHandler'>,
   service: DesktopGuestSessionMountService,
+  readClipboardText: () => string,
 ): () => void {
   const channels = [
     'session-collaboration:import',
     'session-collaboration:import:cancel',
     'session-collaboration:mount:list',
     'session-collaboration:mount:remove',
+    'session-collaboration:invitation:read-clipboard',
   ] as const;
   ipcMain.handle(
     channels[0],
@@ -441,6 +485,15 @@ export function registerDesktopGuestSessionMountIpc(
     service.cancelImport(requireOperationId(operationIdValue)));
   ipcMain.handle(channels[2], () => service.list());
   ipcMain.handle(channels[3], (_event, mountId: string) => service.remove(mountId));
+  ipcMain.handle(channels[4], () => {
+    const value = readClipboardText().trim();
+    if (Buffer.byteLength(value, 'utf8') > DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES) {
+      throw new Error('Clipboard content is too large to be a shared Session invitation');
+    }
+    if (!value) return value;
+    decodeDesktopCollaborationInvitation(value);
+    return value;
+  });
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
   };
@@ -508,6 +561,10 @@ function decodeMount(value: unknown): GuestSessionMount {
 function isPeerPathUnavailable(error: unknown): boolean {
   if (!isRecord(error) || typeof error.code !== 'string') return false;
   return error.code === 'direct_path_unavailable' || error.code === 'transit_unavailable';
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function collaborationProgressForConnectionPhase(

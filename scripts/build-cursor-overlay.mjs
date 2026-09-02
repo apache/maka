@@ -25,7 +25,7 @@
 import * as esbuild from 'esbuild';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { mkdir, copyFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(here, '..', 'apps', 'desktop');
@@ -44,6 +44,7 @@ const jsToTs = {
 /** Build the overlay renderer bundle + preload + html into dist/overlay. */
 export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
   await mkdir(outDir, { recursive: true });
+  await buildBrowserDialogDesignTokens();
   await esbuild.build({
     entryPoints: [join(srcOverlay, 'cursor-overlay.ts')],
     bundle: true,
@@ -67,6 +68,34 @@ export async function buildCursorOverlay({ logLevel = 'info' } = {}) {
   await buildPermissionOverlay({ logLevel });
   await buildComputerUsePip({ logLevel });
   return outDir;
+}
+
+/**
+ * Browser-backed recovery dialogs run outside the React renderer, but they
+ * still consume the same generated Astryx scale and Maka palette authority.
+ * Keep only maka-tokens.css's token/palette prefix: its later base/component
+ * recipes target the main document and must not leak into a standalone card.
+ */
+async function buildBrowserDialogDesignTokens() {
+  const renderer = join(desktop, 'src', 'renderer');
+  const [astryxTheme, makaTokens] = await Promise.all([
+    readFile(join(renderer, 'astryx-theme', 'maka.css'), 'utf8'),
+    readFile(join(renderer, 'maka-tokens.css'), 'utf8'),
+  ]);
+  const astryxComponentsMarker = '\n  .astryx-heading.level-1 {';
+  const astryxTokenEnd = astryxTheme.indexOf(astryxComponentsMarker);
+  const baseStylesMarker =
+    '/* =============================================================================\n   BASE STYLES';
+  const tokenEnd = makaTokens.indexOf(baseStylesMarker);
+  if (astryxTokenEnd < 0 || tokenEnd < 0) {
+    throw new Error('Unable to locate the dialog design-token boundaries');
+  }
+  const astryxTokens = `${astryxTheme.slice(0, astryxTokenEnd)}\n}\n}\n`;
+  await writeFile(
+    join(outDir, 'browser-dialog-design-tokens.css'),
+    `${astryxTokens}\n${makaTokens.slice(0, tokenEnd)}`,
+    'utf8',
+  );
 }
 
 /**

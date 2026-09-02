@@ -32,7 +32,10 @@ import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
 } from '../preload/bridge-contract.js';
-import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
+import type {
+  RuntimeHostDesktopManager,
+  RuntimeHostLocalReplacement,
+} from './runtime-host-desktop-manager.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type {
   createDesktopRuntimeHostLocalOperator,
@@ -121,7 +124,7 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
   resolveConflictingHostReplacement(
     registration: HostRegistration,
     signal: AbortSignal,
-  ): Promise<{ replace(): Promise<void> } | undefined>;
+  ): Promise<RuntimeHostLocalReplacement | undefined>;
   repairManagedStartup(input?: {
     readonly allowManualUpdate?: boolean;
     readonly allowInterruptActiveTasks?: boolean;
@@ -339,11 +342,14 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       };
       const completed = await finishSetup(setup, 'request');
       if (completed.kind === 'active_tasks') return completed;
+      const manager = requireManager(input.manager);
+      await manager.waitUntilReady('local');
+      const livePeer = await readLivePeer(localClient(input.manager), completed.peer);
       return enabledResult(
         encodeRuntimeHostOwnerConnectionCode({
           name: hostName(),
           rootId: completed.managed.rootId,
-          transport: { kind: 'libp2p-direct', ...completed.peer },
+          transport: { kind: 'libp2p-direct', ...livePeer },
           credential: completed.credential,
         }),
       );
@@ -515,9 +521,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
+      const livePeer = await readLivePeer(localClient(input.manager), peer);
       return {
         name: hostName(),
-        transport: { kind: 'libp2p-direct' as const, ...peer },
+        transport: { kind: 'libp2p-direct' as const, ...livePeer },
       };
     });
 
@@ -721,7 +728,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       }
       const target = authority.target;
       return {
-        replace: () =>
+        replace: (activeWorkPolicy) =>
           serialize(async () => {
             signal.throwIfAborted();
             const setupPackage = await input.resolveSetupPackage(signal);
@@ -733,13 +740,16 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                   hostEpoch: registration.hostEpoch,
                   pid: registration.pid,
                 },
-                allowInterruptActiveTasks: true,
+                ...(activeWorkPolicy === 'interrupt_active_work'
+                  ? { allowInterruptActiveTasks: true }
+                  : {}),
                 signal,
               },
               () => undefined,
             );
             if (frame.kind === 'error') {
-              if (frame.error.code === 'target_mismatch') return;
+              if (frame.error.code === 'active_tasks') return 'active_tasks';
+              if (frame.error.code === 'target_mismatch') return 'replaced';
               throw conflictReplacementError(registration.pid, frame.error.message);
             }
             if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -749,11 +759,15 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
               );
             }
             if (frame.update.kind === 'active_tasks') {
+              return 'active_tasks';
+            }
+            if (frame.update.kind === 'already_current') {
               throw conflictReplacementError(
                 registration.pid,
-                'the managed service refused to interrupt active work',
+                'the managed service did not replace the observed Host',
               );
             }
+            return 'replaced';
           }),
       };
     },
@@ -968,6 +982,7 @@ async function issueConnectionCode(
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
+  const livePeer = await readLivePeer(client, peer);
   const prepared = await client.request('access.credential.prepare', {
     principalKind: 'remote_owner',
     principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
@@ -984,8 +999,27 @@ async function issueConnectionCode(
   return encodeRuntimeHostOwnerConnectionCode({
     name: hostName(),
     rootId,
-    transport: { kind: 'libp2p-direct', ...peer },
+    transport: { kind: 'libp2p-direct', ...livePeer },
     credential,
+  });
+}
+
+async function readLivePeer(
+  client: DesktopRuntimeHostClient,
+  configured: LocalPeerDescriptor,
+): Promise<LocalPeerDescriptor> {
+  const endpoint = (await client.status()).peerEndpoint;
+  if (!endpoint) {
+    throw new Error('Runtime Host Direct peer is not available');
+  }
+  if (endpoint.peerId !== configured.peerId) {
+    throw new Error('Runtime Host Direct peer identity changed');
+  }
+  return requireEnabledPeer({
+    state: 'enabled',
+    peerId: endpoint.peerId,
+    routeHints: endpoint.routeHints,
+    coordinationRelays: endpoint.coordinationRelays,
   });
 }
 

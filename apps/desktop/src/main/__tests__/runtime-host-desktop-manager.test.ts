@@ -562,6 +562,36 @@ test('keeps Local and remote Hosts active and routes work by owning Host', async
   await manager.close();
 });
 
+test('does not poll a remote service PID when the Host cannot be replaced', async () => {
+  const local = candidateHarness({ hostId: 'host-local' });
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async (input) =>
+        input.profileTarget ? conflict : ready(local.candidate),
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          assert.equal(action, 'cancel_only');
+          return 'cancel';
+        },
+      },
+      waitForHostRetirement: async () => assert.fail('remote PID must not be polled locally'),
+    },
+  );
+
+  await assert.rejects(
+    manager.enable(remoteTarget('legacy-service')),
+    RuntimeHostUpgradeCancelledError,
+  );
+  await manager.close();
+});
+
 test('keeps independent shared-session credentials active for the same Host', async () => {
   const candidates = [
     candidateHarness({ hostId: 'host-local' }).candidate,
@@ -1125,64 +1155,35 @@ test('restarts an idle generation-aware Host without prompting', async () => {
   await owner.close();
 });
 
-test('prompts before restarting a generation-aware Host with active work', async () => {
-  const replacement = candidateHarness();
-  const conflict = upgradeRequired(true, 1);
-  let prompts = 0;
-  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async (input) =>
-      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
-    upgradePrompts: {
-      restartable: async () => {
-        prompts += 1;
-        return 'restart';
+test('prompts before restarting a generation-aware Host with observed activity', async () => {
+  const conflicts = [
+    ['operation', upgradeRequired(true, 1)],
+    ['residency', upgradeRequired(true, 0, [{ label: 'goal', count: 1 }])],
+    ['connection', upgradeRequired(true, 0, [], 1)],
+  ] as const;
+
+  for (const [activity, conflict] of conflicts) {
+    const replacement = candidateHarness();
+    let prompts = 0;
+    const owner = await startRuntimeHostDesktopManager(
+      {} as DesktopRuntimeHostCandidateStartInput,
+      {
+        startCandidate: async (input) =>
+          input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
+        upgradePrompts: {
+          restartable: async () => {
+            prompts += 1;
+            return 'restart';
+          },
+          nonRestartable: async () =>
+            assert.fail('restartable conflict used non-restartable prompt'),
+        },
       },
-      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
-    },
-  });
+    );
 
-  assert.equal(prompts, 1);
-  await owner.close();
-});
-
-test('prompts before restarting a generation-aware Host with a residency', async () => {
-  const replacement = candidateHarness();
-  const conflict = upgradeRequired(true, 0, [{ label: 'goal', count: 1 }]);
-  let prompts = 0;
-  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async (input) =>
-      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
-    upgradePrompts: {
-      restartable: async () => {
-        prompts += 1;
-        return 'restart';
-      },
-      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
-    },
-  });
-
-  assert.equal(prompts, 1);
-  await owner.close();
-});
-
-test('prompts before restarting a generation-aware Host with connections', async () => {
-  const replacement = candidateHarness();
-  const conflict = upgradeRequired(true, 0, [], 1);
-  let prompts = 0;
-  const owner = await startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
-    startCandidate: async (input) =>
-      input.takeoverHostEpoch ? ready(replacement.candidate) : conflict,
-    upgradePrompts: {
-      restartable: async () => {
-        prompts += 1;
-        return 'restart';
-      },
-      nonRestartable: async () => assert.fail('restartable conflict used non-restartable prompt'),
-    },
-  });
-
-  assert.equal(prompts, 1);
-  await owner.close();
+    assert.equal(prompts, 1, activity);
+    await owner.close();
+  }
 });
 
 test('prompts when a restartable Host has no activity snapshot', async () => {
@@ -1206,7 +1207,11 @@ test('prompts when a restartable Host has no activity snapshot', async () => {
 });
 
 test('waits passively for a Host that cannot be taken over', async () => {
-  const conflict = upgradeRequired(false);
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
   let starts = 0;
   let finishRetirement!: () => void;
   const retirement = new Promise<void>((resolve) => {
@@ -1220,7 +1225,10 @@ test('waits passively for a Host that cannot be taken over', async () => {
     },
     upgradePrompts: {
       restartable: async () => assert.fail('wait-only conflict used restart prompt'),
-      nonRestartable: async () => 'wait',
+      nonRestartable: async (_conflict, action) => {
+        assert.equal(action, 'wait');
+        return 'wait';
+      },
     },
     waitForHostRetirement: async (registration) => {
       assert.equal(registration.hostEpoch, conflict.registration.hostEpoch);
@@ -1235,15 +1243,17 @@ test('waits passively for a Host that cannot be taken over', async () => {
   await owner.close();
 });
 
-test('replaces a non-restartable Local Host through the supplied authority and retries', async () => {
-  const observed = upgradeRequired(false);
+test('silently replaces an idle non-restartable Local Host and retries', async () => {
+  const observed = upgradeRequired(true);
   const conflict = {
     ...observed,
+    restartable: false as const,
     registration: { ...observed.registration, lifecycleMode: 'service' as const },
   };
   const replacement = candidateHarness();
   let starts = 0;
   let replaced: typeof observed.registration | undefined;
+  const policies: string[] = [];
   const owner = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
@@ -1253,21 +1263,130 @@ test('replaces a non-restartable Local Host through the supplied authority and r
       },
       upgradePrompts: {
         restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
-        nonRestartable: async (_conflict, actions) => {
-          assert.deepEqual(actions, { canReplace: true, canWait: false });
-          return 'replace';
-        },
+        nonRestartable: async () => assert.fail('idle replaceable Host must not prompt'),
       },
       resolveLocalHostReplacement: async (registration) => ({
-        replace: async () => {
+        replace: async (policy) => {
+          policies.push(policy);
           replaced = registration;
+          return 'replaced';
         },
       }),
     },
   );
   assert.equal(starts, 2);
   assert.equal(replaced?.hostEpoch, conflict.registration.hostEpoch);
+  assert.deepEqual(policies, ['refuse_active_work']);
   await owner.close();
+});
+
+test('prompts if a non-restartable Local Host omits its activity snapshot', async () => {
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const replacement = candidateHarness();
+  const policies: string[] = [];
+  let starts = 0;
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          prompts += 1;
+          assert.equal(action, 'replace_may_interrupt_work');
+          return 'replace';
+        },
+      },
+      resolveLocalHostReplacement: async () => ({
+        replace: async (policy) => {
+          policies.push(policy);
+          return 'replaced';
+        },
+      }),
+    },
+  );
+
+  assert.equal(prompts, 1);
+  assert.equal(starts, 2);
+  assert.deepEqual(policies, ['interrupt_active_work']);
+  await owner.close();
+});
+
+test('prompts if an observed-idle Host becomes active before replacement', async () => {
+  const observed = upgradeRequired(true);
+  const conflict = {
+    ...observed,
+    restartable: false as const,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const replacement = candidateHarness();
+  const policies: string[] = [];
+  let starts = 0;
+  let prompts = 0;
+  const owner = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        return starts === 1 ? conflict : ready(replacement.candidate);
+      },
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async (_conflict, action) => {
+          prompts += 1;
+          assert.equal(action, 'replace_may_interrupt_work');
+          return 'replace';
+        },
+      },
+      resolveLocalHostReplacement: async () => ({
+        replace: async (policy) => {
+          policies.push(policy);
+          return policy === 'refuse_active_work' ? 'active_tasks' : 'replaced';
+        },
+      }),
+    },
+  );
+
+  assert.equal(prompts, 1);
+  assert.equal(starts, 2);
+  assert.deepEqual(policies, ['refuse_active_work', 'interrupt_active_work']);
+  await owner.close();
+});
+
+test('does not authorize active-work interruption when replacement is cancelled', async () => {
+  const observed = upgradeRequired(false);
+  const conflict = {
+    ...observed,
+    registration: { ...observed.registration, lifecycleMode: 'service' as const },
+  };
+  const policies: string[] = [];
+
+  await assert.rejects(
+    startRuntimeHostDesktopManager({} as DesktopRuntimeHostCandidateStartInput, {
+      startCandidate: async () => conflict,
+      upgradePrompts: {
+        restartable: async () => assert.fail('non-restartable conflict used restart prompt'),
+        nonRestartable: async () => 'cancel',
+      },
+      resolveLocalHostReplacement: async () => ({
+        replace: async (policy) => {
+          policies.push(policy);
+          return 'active_tasks';
+        },
+      }),
+      onFatalError: () => undefined,
+    }),
+    RuntimeHostUpgradeCancelledError,
+  );
+  assert.deepEqual(policies, []);
 });
 
 test('lets the user cancel startup when an incompatible Host owns the root', async () => {
@@ -1278,9 +1397,9 @@ test('lets the user cancel startup when an incompatible Host owns the root', asy
       startCandidate: async () => conflict,
       upgradePrompts: {
         restartable: async () => assert.fail('incompatible Host used restart prompt'),
-        nonRestartable: async (actual, actions) => {
+        nonRestartable: async (actual, action) => {
           presented = actual;
-          assert.deepEqual(actions, { canReplace: false, canWait: true });
+          assert.equal(action, 'wait');
           return 'cancel';
         },
       },

@@ -22,36 +22,10 @@ import type {
   DesktopRuntimeHostRef,
   MakaBridge,
 } from '../../preload/bridge-contract.js';
-import type { ConnectionsBridge } from './provider-panel-shared.js';
 import type {
   OAuthAccountFlowBridge,
   OAuthAuthorizationFlowBridge,
 } from './use-oauth-login-flow.js';
-
-export type RuntimeHostSettingsConnectionsBridge = ConnectionsBridge & {
-  setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
-};
-
-export function runtimeHostConnectionsBridge(
-  host: DesktopRuntimeHostRef,
-): RuntimeHostSettingsConnectionsBridge {
-  return {
-    getSnapshot: () => window.maka.connections.getSnapshot(undefined, host),
-    setDefault: (connection) => window.maka.connections.setDefault(connection, host),
-    setDefaultModel: (input) => window.maka.connections.setDefaultModel(input, host),
-    create: (input) => window.maka.connections.create(input, host),
-    update: (connection, patch) => window.maka.connections.update(connection, patch, host),
-    delete: (connection) => window.maka.connections.delete(connection, host),
-    test: (connection, options) => window.maka.connections.test(connection, options, host),
-    fetchModels: (connection) => window.maka.connections.fetchModels(connection, host),
-    hasSecret: (connection) => window.maka.connections.hasSecret(connection, host),
-    getRequestHeaders: (connection) => window.maka.connections.getRequestHeaders(connection, host),
-    setRequestHeaders: (connection, headers) =>
-      window.maka.connections.setRequestHeaders(connection, headers, host),
-    subscribeEvents: (handler) =>
-      window.maka.connections.subscribeEvents(handler, host),
-  };
-}
 
 type RuntimeHostOAuthBridge = MakaBridge['openAiCodex'] | MakaBridge['xaiOAuth'];
 

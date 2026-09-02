@@ -28,13 +28,14 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import { type PermissionMode } from '@maka/core/permission';
 import { type OrchestrationMode } from '@maka/core/orchestration';
 import { type SessionEvent, type ShellRunUpdate } from '@maka/core/events';
 import { type SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import { type SessionSummary, type StoredMessage } from '@maka/core/session';
 import { type ThinkingLevel } from '@maka/core/model-thinking';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import { type UserQuestionResponse } from '@maka/core/user-question';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type {
@@ -393,12 +394,19 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/new');
     terminal.input('\r');
     await waitFor(() => attempted === 1);
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('host_draining'));
+    // The driver's raw error text is not product copy; the TUI reports the
+    // failure with its own localized notice (#2672).
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('a local command could not be stopped'),
+    );
 
     // Identity untouched…
     assert.equal(driver.getSessionId(), 'session-1');
     // …and the transcript was not wiped by the aborted /new.
-    assert.match(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
+    const screen = plainTerminalOutput(terminal.screenOutput());
+    assert.match(screen, /a local command could not be stopped/u);
+    assert.match(screen, /Press Ctrl\+C to stop it/u);
+    assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /host_draining/);
     assert.ok(transcriptBefore.length > 0);
 
     exitMaka(terminal);
@@ -921,7 +929,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai-1',
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'bypass',
       terminal,
       onboarding: fakeOnboardingSurface({
@@ -1517,11 +1524,13 @@ describe('Maka Pi TUI runner', () => {
     resolveFirstSave(
       savedOnboardingResult([
         {
+          connectionId: 'connection-openai',
           connectionSlug: 'openai',
           connectionName: 'OpenAI',
           providerType: 'openai',
           model: 'gpt-5.5-new',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
       ]),
     );
@@ -3617,8 +3626,18 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'gpt-5',
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'ask',
+      modelChoices: [
+        {
+          connectionId: 'connection-openai',
+          connectionSlug: 'openai',
+          connectionName: 'OpenAI',
+          providerType: 'openai',
+          model: 'gpt-5',
+          isDefaultConnection: true,
+          thinkingLevels: ['minimal', 'low', 'medium', 'high'],
+        },
+      ],
       terminal,
     });
 
@@ -3652,7 +3671,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5',
       models: ['gpt-5', 'gpt-5-mini'],
       connectionSlug: 'openai',
-      providerType: 'openai',
       permissionMode: 'ask',
       locale: 'zh',
       terminal,
@@ -3663,19 +3681,51 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('选择模型'));
     assert.match(plainTerminalOutput(terminal.screenOutput()), /↑↓ 选择 · Enter 确认 · Esc 关闭/u);
     terminal.input('\x1b');
+    exitMaka(terminal);
+    await run;
 
-    terminal.input('/thinking');
-    terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('选择思考级别'));
-    assert.match(plainTerminalOutput(terminal.screenOutput()), /↑↓ 选择 · Enter 确认 · Esc 关闭/u);
+    // The thinking picker needs levels, and levels reach the TUI only on a
+    // model choice the Host resolved — a second runner supplies one.
+    const thinkingTerminal = new FakeTerminal();
+    const thinkingRun = runMakaPiTui({
+      title: 'Maka',
+      driver: new SlashCommandDriver(),
+      cwd: '/repo',
+      model: 'gpt-5',
+      connectionSlug: 'openai',
+      permissionMode: 'ask',
+      locale: 'zh',
+      modelChoices: [
+        {
+          connectionId: 'connection-openai',
+          connectionSlug: 'openai',
+          connectionName: 'OpenAI',
+          providerType: 'openai',
+          model: 'gpt-5',
+          isDefaultConnection: true,
+          thinkingLevels: ['minimal', 'low', 'medium', 'high'],
+        },
+      ],
+      terminal: thinkingTerminal,
+    });
+
+    thinkingTerminal.input('/thinking');
+    thinkingTerminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(thinkingTerminal.screenOutput()).includes('选择思考级别'),
+    );
+    assert.match(
+      plainTerminalOutput(thinkingTerminal.screenOutput()),
+      /↑↓ 选择 · Enter 确认 · Esc 关闭/u,
+    );
     assert.doesNotMatch(
-      plainTerminalOutput(terminal.screenOutput()),
+      plainTerminalOutput(thinkingTerminal.screenOutput()),
       /enter select \/ esc close/iu,
     );
 
-    terminal.input('\x1b');
-    exitMaka(terminal);
-    await run;
+    thinkingTerminal.input('\x1b');
+    exitMaka(thinkingTerminal);
+    await thinkingRun;
   });
 
   test('resumes a read-only session as Read only, and never marks Auto as current', async () => {
@@ -3739,7 +3789,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai',
       connectionSlug: 'openai',
-      providerType: 'openai',
       locale: 'en',
       modelChoices: [
         {
@@ -3750,6 +3799,7 @@ describe('Maka Pi TUI runner', () => {
           model: 'gpt-5.5',
           displayName: 'GPT 5.5 Preview',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
         {
           connectionId: 'connection-zai',
@@ -3759,6 +3809,7 @@ describe('Maka Pi TUI runner', () => {
           model: 'glm-5.2',
           displayName: 'GLM 5.2',
           isDefaultConnection: false,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -3815,30 +3866,35 @@ describe('Maka Pi TUI runner', () => {
       // up in the status line — a dropped choice truly leaves the visible list.
       model: 'legacy-curated-out',
       connectionSlug: 'ghost',
-      providerType: 'openai',
       modelChoices: [
         {
+          connectionId: 'connection-alpha',
           connectionSlug: 'alpha',
           connectionName: 'Aurora',
           providerType: 'openai',
           model: 'gpt-5.5',
           displayName: 'GPT 5.5 Preview',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
         {
+          connectionId: 'connection-beta',
           connectionSlug: 'beta',
           connectionName: 'Boreal',
           providerType: 'zai',
           model: 'glm-max',
           displayName: 'GLM Max',
           isDefaultConnection: false,
+          thinkingLevels: [],
         },
         {
+          connectionId: 'connection-gamma',
           connectionSlug: 'gamma',
           connectionName: 'Crest',
           providerType: 'google',
           model: 'text-unicorn',
           isDefaultConnection: false,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -3864,7 +3920,7 @@ describe('Maka Pi TUI runner', () => {
     // label) and keeps only its matching choice. The fixture's three distinct
     // providers (openai / zai / google) let `zai` exercise the providerType
     // line alone (its label `Z.AI` is not a substring) and `gemini` exercise
-    // the PROVIDER_DEFAULTS label line alone (its type `google` is not), so
+    // the PROVIDER_REGISTRY label line alone (its type `google` is not), so
     // deleting either line would fail its assertion. Ctrl+U (deleteToLineStart)
     // clears the search field in one event so the next criterion starts from
     // the full list again.
@@ -3910,7 +3966,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'gpt-5.5',
       connectionId: 'connection-openai',
       connectionSlug: 'openai',
-      providerType: 'openai',
       modelChoices: [
         {
           connectionId: 'connection-openai',
@@ -3919,6 +3974,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           model: 'gpt-5.5',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
         {
           connectionId: 'connection-openai',
@@ -3927,6 +3983,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           model: 'gpt-5.6',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -3968,7 +4025,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'shared-model',
       connectionId: 'connection-primary',
       connectionSlug: 'primary',
-      providerType: 'openai',
       modelChoices: [
         {
           connectionId: 'connection-primary',
@@ -3977,6 +4033,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           model: 'shared-model',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
         {
           connectionId: 'connection-relay',
@@ -3985,6 +4042,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           model: 'shared-model',
           isDefaultConnection: false,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -4031,6 +4089,16 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           enabled: true,
           enabledModelIds: ['shared-model'],
+          // The Host resolves the catalog before projecting it, and the picker
+          // offers what those entries say. A bare `[]` describes a snapshot no
+          // Host produces for an enabled model.
+          catalogEntries: resolveConnectionModelCatalog({
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: '',
+            enabledModelIds: ['shared-model'],
+            models: [{ id: 'shared-model' }],
+          }),
           models: [{ id: 'shared-model' }],
         },
         {
@@ -4041,6 +4109,16 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           enabled: true,
           enabledModelIds: ['shared-model'],
+          // The Host resolves the catalog before projecting it, and the picker
+          // offers what those entries say. A bare `[]` describes a snapshot no
+          // Host produces for an enabled model.
+          catalogEntries: resolveConnectionModelCatalog({
+            slug: 'openai',
+            providerType: 'openai',
+            defaultModel: '',
+            enabledModelIds: ['shared-model'],
+            models: [{ id: 'shared-model' }],
+          }),
           models: [{ id: 'shared-model' }],
         },
       ],
@@ -4052,7 +4130,6 @@ describe('Maka Pi TUI runner', () => {
       cwd: '/repo',
       model: 'shared-model',
       connectionSlug: 'openai',
-      providerType: 'openai',
       modelChoices,
       permissionMode: 'ask',
       terminal,
@@ -4090,18 +4167,22 @@ describe('Maka Pi TUI runner', () => {
       [
         ...modelChoiceConnectionLabels([
           {
+            connectionId: 'connection-a',
             connectionSlug: 'openai',
             connectionName: 'openai-2',
             providerType: 'openai',
             model: 'model-a',
             isDefaultConnection: true,
+            thinkingLevels: [],
           },
           {
+            connectionId: 'connection-b',
             connectionSlug: 'openai-2',
             connectionName: '   ',
             providerType: 'openai',
             model: 'model-b',
             isDefaultConnection: false,
+            thinkingLevels: [],
           },
         ]),
       ],
@@ -4121,6 +4202,7 @@ describe('Maka Pi TUI runner', () => {
         providerType: 'openai',
         model: 'model-a',
         isDefaultConnection: true,
+        thinkingLevels: [],
       },
       {
         connectionId: 'connection-b',
@@ -4129,6 +4211,7 @@ describe('Maka Pi TUI runner', () => {
         providerType: 'openai',
         model: 'model-b',
         isDefaultConnection: false,
+        thinkingLevels: [],
       },
       {
         connectionId: 'connection-c',
@@ -4137,6 +4220,7 @@ describe('Maka Pi TUI runner', () => {
         providerType: 'openai',
         model: 'model-c',
         isDefaultConnection: false,
+        thinkingLevels: [],
       },
     ]);
 
@@ -4424,7 +4508,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     // The scan failure is surfaced, not swallowed into an empty list.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).includes('读取外部对话失败：corrupt index'),
+      plainTerminalOutput(terminal.output()).includes(
+        'Could not read external conversations: corrupt index',
+      ),
     );
 
     exitMaka(terminal);
@@ -4868,7 +4954,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
     await waitFor(() => hydrationAttempts === 1);
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('refilled: turn-2'));
@@ -5091,7 +5179,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/rewind');
     terminal.input('\r');
 
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('second question'));
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
 
@@ -5099,7 +5189,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => driver.rewound.length === 1);
     assert.deepEqual(driver.rewound, ['turn-2']);
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewound to before this turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first answer'));
     // The rewound turn's prompt is refilled into the editor for an edit-and-resend.
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-2'));
@@ -5139,15 +5231,21 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     // The branch switch is still in flight, but the selection must already be
     // visibly accepted — control-busy otherwise renders nothing (#3383).
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
     assert.deepEqual(driver.rewound, []);
 
     driver.gate.resolve();
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('已回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewound to before this turn'),
+    );
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('refilled: turn-1'));
     // The in-progress notice is wiped together with the transcript it announced.
     await waitFor(
-      () => plainTerminalOutput(terminal.screenOutput()).includes('正在回退到该轮之前') === false,
+      () =>
+        plainTerminalOutput(terminal.screenOutput()).includes('Rewinding to before this turn') ===
+        false,
     );
 
     exitMaka(terminal);
@@ -5176,7 +5274,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
 
     // Typed while the branch switch is in flight: this is newer user work and
     // must win over the prompt refill (#3383). Enter stays swallowed by
@@ -5190,7 +5290,7 @@ describe('Maka Pi TUI runner', () => {
     // The notice wraps across screen lines at 80 columns, so match against a
     // whitespace-collapsed copy instead of the raw output.
     const collapsedOutput = () => plainTerminalOutput(terminal.output()).replace(/\s+/g, '');
-    await waitFor(() => collapsedOutput().includes('未覆盖'));
+    await waitFor(() => collapsedOutput().includes('untouched'));
     await waitFor(() => editorInputText(terminal) === 'my draft');
     assert.equal(plainTerminalOutput(terminal.output()).includes('refilled: turn-1'), false);
     // The ↑ recovery promise must hold even though nothing was submitted in
@@ -5228,7 +5328,9 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.output()).includes('first question'));
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('正在回退到该轮之前'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Rewinding to before this turn'),
+    );
 
     // A bracketed paste starts while the branch switch is in flight and its end
     // marker has not arrived: getText() still reports empty, but the buffered
@@ -5239,7 +5341,7 @@ describe('Maka Pi TUI runner', () => {
     // The completion notice wraps across screen lines at 80 columns, so match a
     // whitespace-collapsed copy.
     await waitFor(() =>
-      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('未覆盖'),
+      plainTerminalOutput(terminal.output()).replace(/\s+/g, '').includes('untouched'),
     );
 
     // Only now does the paste complete — after the refill decision was made.
@@ -5280,7 +5382,7 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => terminal.progressStates.at(-1) === true);
 
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('无法回退'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('Cannot rewind'));
     assert.deepEqual(driver.rewound, []);
 
     driver.turnGate.resolve();
@@ -5362,7 +5464,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
 
     await waitFor(() => hydrationAttempts === 1);
@@ -5527,7 +5631,9 @@ describe('Maka Pi TUI runner', () => {
 
     terminal.input('/rewind');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
     terminal.input('\r');
     await waitFor(() => hydrationAttempts === 1);
     assert.ok(listener);
@@ -5665,18 +5771,28 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b');
     terminal.input('z');
     await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.output()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+      false,
+    );
     terminal.input('\x7f');
     await waitFor(() => editorInputText(terminal) === '');
 
     // A consecutive Escape pair completes the gesture and opens the picker.
     terminal.input('\x1b');
     terminal.input('\x1b');
-    await waitFor(() => plainTerminalOutput(terminal.output()).includes('回到选定轮次'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Return to before the selected turn'),
+    );
 
     // Cancel the picker so Ctrl-C reaches the runner rather than the overlay.
     terminal.input('\x1b');
-    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'));
+    await waitFor(
+      () =>
+        !plainTerminalOutput(terminal.screenOutput()).includes(
+          'Return to before the selected turn',
+        ),
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -5717,7 +5833,10 @@ describe('Maka Pi TUI runner', () => {
     // the typed char paints.
     terminal.input('z');
     await waitFor(() => editorInputText(terminal)?.endsWith('z') === true);
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('Return to before the selected turn'),
+      false,
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -5759,7 +5878,10 @@ describe('Maka Pi TUI runner', () => {
     // the typed char paints.
     terminal.input('z');
     await waitFor(() => editorInputText(terminal) === 'z');
-    assert.equal(plainTerminalOutput(terminal.screenOutput()).includes('回到选定轮次'), false);
+    assert.equal(
+      plainTerminalOutput(terminal.screenOutput()).includes('Return to before the selected turn'),
+      false,
+    );
 
     exitMaka(terminal);
     await Promise.race([
@@ -6026,7 +6148,7 @@ describe('Maka Pi TUI runner', () => {
 
       // The transcript render trails the send by a tick — wait for it.
       await waitFor(() => plainTerminalOutput(terminal.output()).includes('/skill:alpha 帮我整理'));
-      await waitFor(() => plainTerminalOutput(terminal.output()).includes('已加载技能：Alpha'));
+      await waitFor(() => plainTerminalOutput(terminal.output()).includes('Skills loaded: Alpha'));
 
       exitMaka(terminal);
       await Promise.race([
@@ -6064,8 +6186,49 @@ describe('Maka Pi TUI runner', () => {
     await waitFor(() => driver.prompts.length === 1);
     await waitFor(() => {
       const output = plainTerminalOutput(terminal.output());
-      return output.includes('已加载技能：Alpha') && output.includes('/skill:typo（未找到）');
+      return output.includes('Skills loaded: Alpha') && output.includes('/skill:typo (not found)');
     });
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('localizes runner notices in Chinese mode', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new HostSkillDriver({
+      loaded: [],
+      failed: [{ request: 'nope', reason: 'not_found' }],
+      receipts: [],
+    });
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+      locale: 'zh',
+      listSkills: async () => [],
+    });
+
+    terminal.input('/skill');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('当前没有可调用的技能。'));
+
+    terminal.input('/skill:nope hi');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output())
+        .replace(/\s+/g, '')
+        .includes('未能加载技能/skill:nope（未找到）；未发起模型请求。'),
+    );
+    assert.equal(driver.prompts.length, 0);
 
     exitMaka(terminal);
     await Promise.race([
@@ -6097,10 +6260,12 @@ describe('Maka Pi TUI runner', () => {
 
       terminal.input('/skill:nope hi');
       terminal.input('\r');
+      // The notice wraps across screen lines at 80 columns, so match against a
+      // whitespace-collapsed copy instead of the raw output.
       await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes(
-          '未能加载技能 /skill:nope（未找到）；未发起模型请求。',
-        ),
+        plainTerminalOutput(terminal.output())
+          .replace(/\s+/g, ' ')
+          .includes('Could not load skills /skill:nope (not found); no model request was made.'),
       );
       assert.equal(driver.prompts.length, 0);
 
@@ -6140,10 +6305,14 @@ describe('Maka Pi TUI runner', () => {
 
       terminal.input(prompt);
       terminal.input('\r');
+      // The notice wraps across screen lines at 80 columns, so match against a
+      // whitespace-collapsed copy instead of the raw output.
       await waitFor(() =>
-        plainTerminalOutput(terminal.output()).includes(
-          '请求超过 50 个上限（调用请求过多）；未发起模型请求。',
-        ),
+        plainTerminalOutput(terminal.output())
+          .replace(/\s+/g, ' ')
+          .includes(
+            'more than the 50-request limit (too many requests); no model request was made.',
+          ),
       );
       assert.equal(driver.prompts.length, 0);
 
@@ -7719,6 +7888,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openrouter',
           model: legacy.model,
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -7768,6 +7938,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'openai',
           model: 'shared-model',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -7810,6 +7981,7 @@ describe('Maka Pi TUI runner', () => {
       providerType: 'openai',
       model: 'gpt-5.5',
       isDefaultConnection: true,
+      thinkingLevels: [],
     };
     const saveCalls: OnboardingSaveInput[] = [];
     const run = runMakaPiTui({
@@ -7820,7 +7992,6 @@ describe('Maka Pi TUI runner', () => {
       model: 'claude-sonnet-4-5',
       connectionId: 'connection-a',
       connectionSlug: 'existing-account',
-      providerType: 'anthropic',
       connectionIdentities: [
         { connectionId: 'connection-a', connectionSlug: 'existing-account', enabled: true },
       ],
@@ -7832,6 +8003,7 @@ describe('Maka Pi TUI runner', () => {
           providerType: 'anthropic',
           model: 'claude-sonnet-4-5',
           isDefaultConnection: true,
+          thinkingLevels: [],
         },
       ],
       permissionMode: 'ask',
@@ -8013,6 +8185,122 @@ describe('Maka Pi TUI runner', () => {
 
     assert.equal(exits[0]?.code, 1);
     assert.match(exits[0]?.error?.message ?? '', /Could not resume session remote-session/);
+  });
+
+  test('/copy writes the last reply to the clipboard via OSC 52', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new CopyReplyDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('hi');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('COPY-ME-REPLY'));
+    // /copy refuses mid-turn, so wait for the turn to settle before copying.
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    terminal.input('/copy');
+    terminal.input('\r');
+
+    // The base64 payload is the stable part of the OSC 52 sequence to assert on.
+    const payload = Buffer.from('COPY-ME-REPLY', 'utf8').toString('base64');
+    await waitFor(() => terminal.output().includes(`;c;${payload}`));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Sent the last reply to the terminal'),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('/copy all writes the whole conversation with role labels via OSC 52', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new CopyReplyDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('hi');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('COPY-ME-REPLY'));
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+
+    terminal.input('/copy all');
+    terminal.input('\r');
+
+    // Exercises copiedAll + the roleUser/roleAssistant labels end to end: the
+    // serialized transcript is the user turn and the reply under their labels.
+    const payload = Buffer.from('You:\nhi\n\nMaka:\nCOPY-ME-REPLY', 'utf8').toString('base64');
+    await waitFor(() => terminal.output().includes(`;c;${payload}`));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Sent the conversation to the terminal'),
+    );
+
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('/copy is refused mid-turn instead of copying the half-written reply', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SteeringTurnDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      locale: 'en',
+      driver,
+      cwd: '/repo',
+      model: 'm',
+      connectionSlug: 'c',
+      permissionMode: 'bypass',
+      terminal,
+    });
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+
+    terminal.input('/copy');
+    terminal.input('\r');
+    await waitFor(() =>
+      plainTerminalOutput(terminal.output()).includes('Cannot run /copy while a turn is running'),
+    );
+    // It was refused, not steered into the running turn, and wrote no clipboard.
+    assert.deepEqual(driver.steered, []);
+    assert.equal(terminal.output().includes('\x1b]52;'), false);
+
+    terminal.input('\x1b');
+    terminal.input('\x1b');
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    terminal.input('\x03');
+    terminal.input('/exit');
+    terminal.input('\r');
+    await run;
   });
 });
 
@@ -8778,6 +9066,26 @@ class StreamingPastViewportDriver extends ToolOutputDriver {
       id: 'event-complete',
       turnId: 'turn-1',
       ts: 3,
+      stopReason: 'end_turn',
+    };
+  }
+}
+
+class CopyReplyDriver extends ToolOutputDriver {
+  override async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'text_delta',
+      id: 'event-text-1',
+      turnId: 'turn-1',
+      ts: 1,
+      messageId: 'message-1',
+      text: 'COPY-ME-REPLY',
+    };
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
       stopReason: 'end_turn',
     };
   }

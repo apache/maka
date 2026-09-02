@@ -18,7 +18,7 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   effectiveBaseUrl,
   type ModelInfo,
   type ProviderRuntimeAdapter,
@@ -92,7 +92,7 @@ export function resolveModelRuntime(
     );
   }
   const override = lookupModelProviderOverride(connection.providerType, modelId);
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType with no per-model override → can't resolve an adapter.
   // Throw a clear error rather than crashing on `.runtimeAdapter`. Mirrors
   // `isRealConnection` in @maka/core/connection-readiness.ts.

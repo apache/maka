@@ -27,6 +27,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   isCanonicalRuntimeHostWebSocketPath,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostStatusResult,
   requireClientInstanceId,
   requireHostRootId,
 } from '../protocol/index.js';
@@ -71,6 +72,7 @@ const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PEER_ID_MAX_BYTES = 160;
 const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 const PEER_ROUTE_MAX = 16;
+const DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS = 5_000;
 const PROFILE_CREDENTIAL_RECORD_PREFIX = 'maka-runtime-host-profile-credential-v1:';
 const PROFILE_INCARNATION_ID_MAX_BYTES = 128;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
@@ -382,6 +384,7 @@ export async function connectRuntimeHostProfile(
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -438,6 +441,7 @@ export async function connectRemoteRuntimeHostProfile(
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -466,6 +470,7 @@ export async function connectRemoteRuntimeHostProfile(
       ...(input.onConnectionPhase === undefined
         ? {}
         : { onConnectionPhase: input.onConnectionPhase }),
+      ...(input.onHostStatus === undefined ? {} : { onHostStatus: input.onHostStatus }),
     });
   } else {
     notifyConnectionPhase(input.onConnectionPhase, 'connecting');
@@ -511,6 +516,7 @@ export async function connectRemoteRuntimeHostProfile(
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      ...(input.onHostStatus === undefined ? {} : { onHostStatus: input.onHostStatus }),
     });
     try {
       input.signal?.throwIfAborted();
@@ -586,8 +592,10 @@ export async function connectPeerRuntimeHost(input: {
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
+  const handshakeTimeoutMs = input.handshakeTimeoutMs ?? DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS;
   const stream = await input.peerClient.connect(
     {
       peerId: input.transport.peerId,
@@ -608,7 +616,7 @@ export async function connectPeerRuntimeHost(input: {
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
       stream,
-      input.handshakeTimeoutMs,
+      handshakeTimeoutMs,
     );
     if (!authentication.accepted) {
       throw new RuntimeHostProfileConnectionError(
@@ -628,9 +636,14 @@ export async function connectPeerRuntimeHost(input: {
         max: RUNTIME_HOST_PROTOCOL_VERSION,
       },
       clientInstanceId: input.clientInstanceId,
-      ...(input.handshakeTimeoutMs === undefined
-        ? {}
-        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      handshakeTimeoutMs,
+      onHostStatus: (status) => {
+        const endpoint = status.peerEndpoint;
+        if (endpoint?.peerId === input.transport.peerId) {
+          input.peerClient.observeAuthenticatedRoutes(endpoint);
+        }
+        input.onHostStatus?.(status);
+      },
       ...(stream.path ? { peerPath: stream.path } : {}),
     });
     input.signal?.throwIfAborted();
@@ -699,6 +712,9 @@ export function remoteRuntimeHostUnavailableError(
       break;
     case 'unreachable':
       message = `${subject} could not reach its endpoint`;
+      break;
+    case 'handshake_timed_out':
+      message = `${subject} timed out while establishing its protocol session`;
       break;
     default:
       message = `${subject} is unavailable (${reason})`;

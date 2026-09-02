@@ -62,12 +62,9 @@
 }
 
 /* Sidebar and canvas share one floor colour; the content plate is the only
-   step. Drop the theme sidenav hairline (generated maka.css) so the plate edge
-   is the single seam. Width 0: a transparent 1px border still reserved layout. */
+   step, and the plate edge is the single seam. */
 .maka-shell-astryx .astryx-app-shell-sidenav {
   background: var(--agents-layout-bg);
-  border-inline-end-color: transparent;
-  border-inline-end-width: 0;
 }
 
 
@@ -585,6 +582,54 @@ dialog:modal {
 .sessionTurnRequestSurface {
   border-top: var(--border-width-hairline) solid var(--border);
   background: var(--background);
+}
+
+.sessionTurnRequestApproval {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  max-width: 36rem;
+  margin-inline: auto;
+  padding: var(--space-2) var(--space-3) 0;
+  box-sizing: border-box;
+  background: var(--background);
+}
+
+.sessionTurnRequestApprovalBanner {
+  min-width: 0;
+}
+
+.sessionTurnRequestApprovalIntent {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.sessionTurnRequestApprovalDetails {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: min(16rem, 50vh);
+  overflow: auto;
+  white-space: pre-wrap;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  user-select: text;
+}
+
+.sessionTurnRequestApprovalActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sessionTurnRequestApprovalMore {
+  color: var(--foreground-secondary);
+  font: var(--typography-caption);
+  text-align: end;
 }
 
 .sessionTurnRequestComposer {

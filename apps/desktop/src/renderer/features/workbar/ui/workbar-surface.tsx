@@ -717,6 +717,7 @@ export function WorkbarSurface(props: {
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  confirmBypass: () => Promise<boolean>;
 }) {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
@@ -879,6 +880,7 @@ export function WorkbarSurface(props: {
                 initialPrompt={quote.initialPrompt}
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
+                confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}

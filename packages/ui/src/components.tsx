@@ -47,6 +47,7 @@ export { ChatSurfaceLayout } from './chat-surface-layout.js';
 export type { ChatSurfaceLayoutProps } from './chat-surface-layout.js';
 export {
   ChatView,
+  type ChatViewGoalIndicatorProps,
   type LiveContentActivationSnapshot,
   type TransientUserMessageProjection,
 } from './chat-view.js';
@@ -69,11 +70,22 @@ export type {
 export { ScheduledTasksPage, DailyReviewPage, SkillsPage } from './module-pages.js';
 export { Composer } from './composer.js';
 export type {
+  ComposerGoalProps,
   ComposerProps,
   ComposerHandle,
   ComposerSendMetadata,
   ComposerSlashCommandOption,
 } from './composer.js';
+export {
+  ChatViewGoalProjectionConsumer,
+  ChatViewGoalProjectionProvider,
+  ComposerGoalProjectionConsumer,
+  ComposerGoalProjectionProvider,
+  useChatViewGoalProjection,
+  useComposerGoalProjection,
+  type ChatViewGoalProjection,
+  type ComposerGoalProjection,
+} from './goal-projection-context.js';
 export {
   getPermissionModeMeta,
   PERMISSION_MODE_ORDER,

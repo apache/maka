@@ -13,9 +13,11 @@ apps/desktop/src/renderer/composer-mentions.tsx
 apps/desktop/src/renderer/composition/desktop-feature-services.tsx
 apps/desktop/src/renderer/custom-pet-companion.tsx
 apps/desktop/src/renderer/error-boundary.tsx
+apps/desktop/src/renderer/features/connection-settings/services-context.tsx
 apps/desktop/src/renderer/features/goals/services-context.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-dialog.tsx
 apps/desktop/src/renderer/features/goals/ui/goal-host.tsx
+apps/desktop/src/renderer/features/goals/ui/goal-provider.tsx
 apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
@@ -23,9 +25,13 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
+apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
@@ -135,6 +141,7 @@ apps/desktop/src/renderer/styles/prompt-rail.css
 apps/desktop/src/renderer/styles/prompt-suggestions.css
 apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
+apps/desktop/src/renderer/styles/session-todo-panel.css
 apps/desktop/src/renderer/styles/settings.css
 apps/desktop/src/renderer/styles/settings/about.css
 apps/desktop/src/renderer/styles/settings/bot.css
@@ -156,7 +163,6 @@ apps/desktop/src/renderer/styles/settings/web-search.css
 apps/desktop/src/renderer/styles/settings/wechat.css
 apps/desktop/src/renderer/styles/shell-layout.css
 apps/desktop/src/renderer/styles/sidebar.css
-apps/desktop/src/renderer/styles/task-ledger.css
 apps/desktop/src/renderer/styles/theme-glass.css
 apps/desktop/src/renderer/styles/work-board.css
 apps/desktop/src/renderer/styles/workbar/artifacts.css
@@ -199,6 +205,7 @@ packages/ui/src/model-picker.tsx
 packages/ui/src/module-hub-selector.tsx
 packages/ui/src/module-pages.tsx
 packages/ui/src/permission-mode-menu.tsx
+packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
 packages/ui/src/primitives/page-header.tsx

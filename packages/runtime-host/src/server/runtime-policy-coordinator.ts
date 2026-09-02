@@ -27,6 +27,7 @@ import type {
   MutateRuntimePolicyInput,
   RuntimePolicySnapshot,
 } from '@maka/core/runtime-policy';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   authenticateRuntimePolicyStoresWriter,
@@ -96,6 +97,7 @@ export class HostRuntimePolicyCoordinator {
   readonly handlers: RuntimePolicyOperationHandlerMap = {
     'runtime.policy.query': () => this.#queryPolicy(),
     'runtime.policy.mutate': (input) => this.#mutatePolicy(input),
+    'runtime.policy.network-proxy.update': (input) => this.#updateNetworkProxy(input),
     'connection.catalog.query': (input) => this.#queryCatalog(input),
     'connection.catalog.create': (input) => this.#createConnection(input),
     'connection.catalog.update': (input) => this.#updateConnection(input),
@@ -141,6 +143,33 @@ export class HostRuntimePolicyCoordinator {
         );
       }
       return projectPolicyMutation(await this.#stores.runtimePolicy.mutate(input));
+    });
+  }
+
+  async #updateNetworkProxy(
+    input: Parameters<RuntimePolicyOperationHandlerMap['runtime.policy.network-proxy.update']>[0],
+  ): Promise<OperationOutcome<'runtime.policy.network-proxy.update'>> {
+    return this.#storeMutation(async () => {
+      try {
+        await this.validateMutation({
+          expectedRevision: input.expectedPolicyRevision,
+          operation: { kind: 'set_network_proxy', value: input.networkProxy },
+        });
+      } catch (error) {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          'Network proxy update failed Host validation',
+          { cause: error },
+        );
+      }
+      const result = await this.#stores.operations.updateNetworkProxy(input);
+      return result.kind === 'committed'
+        ? {
+            kind: 'committed' as const,
+            revision: result.snapshot.revision,
+            credentialStatus: result.credentialStatus,
+          }
+        : result;
     });
   }
 
@@ -240,7 +269,11 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.set'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.set(input);
-      if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
+      if (
+        result.kind === 'connection_not_found' ||
+        result.kind === 'connection_stale' ||
+        result.kind === 'credential_stale'
+      ) {
         return result;
       }
       const status = result.snapshot.entries.find((entry) =>
@@ -258,6 +291,9 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.delete'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.delete(input);
+      if (result.kind === 'connection_stale') {
+        throw invariantFailure('Credential deletion returned an impossible connection conflict');
+      }
       if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
         return result;
       }
@@ -445,17 +481,36 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       enabledModelIds,
       models,
       relayModelProfiles,
-      // This marker is durable invalidation metadata, not part of the
-      // client-visible catalog protocol.
+      // When the Host last ran discovery, and the marker that invalidates a
+      // test when model facts change: both are the Host's own bookkeeping,
+      // not part of the client-visible catalog protocol.
+      modelsFetchedAt: _modelsFetchedAt,
       lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
       ...header
     } = connection;
+    // The Host resolves the catalog because it owns the model metadata the
+    // resolution merges in. A client that merged its own bundled copy would
+    // describe a model by the version it happens to ship, so two clients on
+    // one Host could disagree about the same model.
+    const catalogEntries = resolveConnectionModelCatalog({
+      slug: connection.slug,
+      providerType: connection.providerType,
+      defaultModel:
+        snapshot.defaultTarget?.connectionId === connection.connectionId
+          ? snapshot.defaultTarget.modelId
+          : '',
+      enabledModelIds: [...enabledModelIds],
+      models: [...models],
+      ...(connection.modelSource === undefined ? {} : { modelSource: connection.modelSource }),
+      ...(relayModelProfiles === undefined ? {} : { relayModelProfiles }),
+    });
     items.push({
       kind: 'connection',
       connectionIndex,
       ...header,
       enabledModelIdCount: enabledModelIds.length,
       modelCount: models.length,
+      catalogEntryCount: catalogEntries.length,
     });
     for (const [itemIndex, modelId] of enabledModelIds.entries()) {
       const relayProfile = relayModelProfiles?.[modelId];
@@ -468,7 +523,14 @@ function projectCatalogItems(snapshot: ConnectionCatalogSnapshot): ConnectionCat
       });
     }
     for (const [itemIndex, model] of models.entries()) {
-      items.push({ kind: 'model', connectionIndex, itemIndex, model });
+      // The override's effect travels; which fields it touched does not. That
+      // provenance answers one Host-side question — whether a context window
+      // was set by hand — and this page is not where it gets asked.
+      const { factOverriddenFields: _factOverriddenFields, ...projected } = model;
+      items.push({ kind: 'model', connectionIndex, itemIndex, model: projected });
+    }
+    for (const [itemIndex, entry] of catalogEntries.entries()) {
+      items.push({ kind: 'catalog_entry', connectionIndex, itemIndex, entry });
     }
   }
   return items;

@@ -26,7 +26,13 @@ import type {
 import type { ThinkingLevel } from './model-thinking.js';
 import type { ProviderType } from './provider-registry.js';
 import type { RelayModelProfile } from './model-thinking.js';
-import type { ChatDefaultPermissionMode, ProxyProtocol, ShellSettings } from './settings.js';
+import {
+  networkProxyCredentialTarget,
+  type ChatDefaultPermissionMode,
+  type NetworkProxyCredentialTarget,
+  type ProxyProtocol,
+  type ShellSettings,
+} from './settings.js';
 import type { SubagentSettings } from './subagent-settings.js';
 import type { JsonObject } from './request-customization.js';
 import {
@@ -36,6 +42,8 @@ import {
 } from './web-search.js';
 
 export { WEB_SEARCH_PROVIDERS };
+export { networkProxyCredentialTarget };
+export type { NetworkProxyCredentialTarget };
 export type { ConnectionTestErrorClass, ModelDiscoverySource } from './llm-connections.js';
 export {
   decodeRuntimePolicyEntityId,
@@ -43,18 +51,22 @@ export {
 } from './runtime-policy/domain-codec.js';
 export {
   decodeCanonicalRuntimePolicy,
+  normalizeNetworkProxyCredentialTarget,
   decodeRuntimePolicyV2,
+  normalizeNetworkProxyUpdate,
   normalizeRuntimePolicyMutation,
 } from './runtime-policy/policy-codec.js';
 export {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
+  CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
   CONNECTION_MODEL_ID_MAX_LENGTH,
   CONNECTION_NAME_MAX_LENGTH,
   decodeCanonicalConnectionBaseUrl,
   decodeCanonicalConnectionCatalogEntry,
   decodeConnectionModelId,
+  decodeConnectionCredentialTarget,
   decodeRelayModelProfilesTable,
   decodeConnectionModel,
   decodeConnectionName,
@@ -68,11 +80,14 @@ export {
   normalizeConnectionCatalogEntryUpdate,
   normalizeConnectionCatalogEntryUpdateForProvider,
   normalizeConnectionModelDiscoveryResult,
+  canonicalConnectionEffectiveBaseUrl,
+  connectionCredentialTarget,
   normalizeCreateCatalogConnectionInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeSetDefaultConnectionTargetInput,
   normalizeUpdateCatalogConnectionInput,
 } from './runtime-policy/connection-catalog-codec.js';
+export { decodeModelCatalogEntry } from './runtime-policy/model-catalog-entry-codec.js';
 export {
   decodeCredentialLocator,
   decodeCredentialStatus,
@@ -184,6 +199,44 @@ export type MutateRuntimePolicyResult =
   | { readonly kind: 'committed'; readonly snapshot: RuntimePolicySnapshot }
   | RevisionConflict;
 
+export type NetworkProxyCredentialUpdate =
+  | { readonly kind: 'keep' }
+  | {
+      readonly kind: 'replace';
+      readonly secret: string;
+      readonly expectedTarget?: NetworkProxyCredentialTarget;
+    }
+  | { readonly kind: 'delete' };
+
+/**
+ * One optimistic basis for the Host-owned proxy policy and credential pair.
+ * The Runtime Host validates both generations before publishing either side.
+ */
+export interface UpdateNetworkProxyInput {
+  readonly expectedPolicyRevision: Revision;
+  readonly expectedCredential: CredentialVersionBasis | null;
+  readonly networkProxy: RuntimePolicy['networkProxy'];
+  readonly credential: NetworkProxyCredentialUpdate;
+}
+
+export type UpdateNetworkProxyResult =
+  | {
+      readonly kind: 'committed';
+      readonly snapshot: RuntimePolicySnapshot;
+      readonly credentialStatus: CredentialStatus;
+    }
+  | RevisionConflict
+  | {
+      readonly kind: 'proxy_target_mismatch';
+      readonly expected: NetworkProxyCredentialTarget;
+      readonly actual: NetworkProxyCredentialTarget;
+    }
+  | {
+      readonly kind: 'credential_stale';
+      readonly expected: CredentialVersionBasis | null;
+      readonly actual: CredentialVersionBasis | null;
+    };
+
 export function createDefaultRuntimePolicy(): RuntimePolicy {
   return {
     networkProxy: {
@@ -280,6 +333,12 @@ export interface ConnectionCatalogEntryUpdate {
 export interface ConnectionVersionBasis {
   readonly connectionId: EntityId;
   readonly revision: Revision;
+}
+
+export interface ConnectionCredentialTarget extends ConnectionVersionBasis {
+  readonly slug: string;
+  readonly providerType: ProviderType;
+  readonly effectiveBaseUrl: string;
 }
 
 export interface ConnectionTarget {
@@ -388,6 +447,7 @@ export interface CredentialVaultSnapshot {
 export interface SetCredentialInput {
   readonly locator: CredentialLocator;
   readonly expected: (CredentialIdentity & { readonly revision: Revision }) | null;
+  readonly expectedConnection?: ConnectionCredentialTarget;
   readonly secret: string;
 }
 
@@ -398,6 +458,11 @@ export interface DeleteCredentialInput {
 export type CredentialMutationResult =
   | { readonly kind: 'committed'; readonly snapshot: CredentialVaultSnapshot }
   | { readonly kind: 'connection_not_found' }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expected: ConnectionVersionBasis;
+      readonly actual: ConnectionVersionBasis | null;
+    }
   | {
       readonly kind: 'credential_stale';
       readonly expected: CredentialVersionBasis | null;

@@ -32,7 +32,7 @@ import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/sessi
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
-} from '@maka/core/deep-research';
+} from '@maka/core/session-start-mode';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,

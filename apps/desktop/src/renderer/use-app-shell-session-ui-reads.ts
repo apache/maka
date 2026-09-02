@@ -37,8 +37,6 @@ const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messa
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
 const selectMessageQueue = (state: AppShellSessionUiState) => state.messageQueueBySession;
-const selectPendingPermissionMode = (state: AppShellSessionUiState) => state.pendingPermissionModeBySession;
-const selectPendingSessionModel = (state: AppShellSessionUiState) => state.pendingSessionModelBySession;
 const selectPulseSet = (state: AppShellSessionUiState) => selectStreamingSessionIds(state.liveTurnBySession);
 
 /**
@@ -77,8 +75,6 @@ export function useAppShellSessionUiReads(
   stopPendingBySession: Record<string, boolean>;
   interactionBySession: InteractionQueues;
   messageQueueBySession: Record<string, MessageQueueUiState>;
-  pendingPermissionModeBySession: Record<string, boolean>;
-  pendingSessionModelBySession: Record<string, boolean>;
   streamingSessionIds: Set<string>;
   activeLiveTurnSnapshot: LiveTurnSnapshot;
 } {
@@ -88,8 +84,6 @@ export function useAppShellSessionUiReads(
     stopPendingBySession: useExternalStoreSelector(controller, selectStopPending),
     interactionBySession: useExternalStoreSelector(controller, selectInteraction),
     messageQueueBySession: useExternalStoreSelector(controller, selectMessageQueue),
-    pendingPermissionModeBySession: useExternalStoreSelector(controller, selectPendingPermissionMode),
-    pendingSessionModelBySession: useExternalStoreSelector(controller, selectPendingSessionModel),
     streamingSessionIds: useExternalStoreSelector(controller, selectPulseSet, undefined, sessionIdSetsEqual),
     activeLiveTurnSnapshot: useExternalStoreSelector(
       controller,

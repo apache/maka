@@ -126,9 +126,9 @@ export const makaTheme = {
     "--color-success": "light-dark(#007004, #9fe59b)",
     "--color-error": "light-dark(#a50c25, #ffc6c1)",
     "--color-warning": "light-dark(#745b00, #fdcf4f)",
-    "--color-success-muted": "light-dark(#c5e5c0, #84c9803D)",
-    "--color-error-muted": "light-dark(#facecb, #ff9e973D)",
-    "--color-warning-muted": "light-dark(#f8da9d, #deb4333D)",
+    "--color-success-muted": "oklch(from var(--success) l c h / 0.24)",
+    "--color-error-muted": "oklch(from var(--destructive) l c h / 0.24)",
+    "--color-warning-muted": "oklch(from var(--warning) l c h / 0.24)",
     "--color-border": "var(--border)",
     "--color-border-emphasized": "light-dark(#d4d4d4, #525252)",
     "--color-skeleton": "light-dark(#ebebeb, #525252)",
@@ -175,11 +175,11 @@ export const makaTheme = {
     "--color-icon-gray": "light-dark(#525252, #a3a3a3)",
     "--color-text-gray": "light-dark(#262626, #e5e5e5)",
     "--radius-none": "0px",
-    "--radius-inner": "0.375rem",
-    "--radius-element": "0.625rem",
-    "--radius-container": "0.75rem",
+    "--radius-inner": "var(--radius-control)",
+    "--radius-element": "var(--radius-surface)",
+    "--radius-container": "var(--radius-modal)",
     "--radius-page": "1.75rem",
-    "--radius-full": "9999px",
+    "--radius-full": "var(--radius-pill)",
     "--shadow-low": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 25%)), 0 4px 8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 40%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 8%))",
     "--shadow-med": "0 2px 4px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 35%)), 0 4px 12px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 12%))",
     "--shadow-high": "0 4px 6px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 50%)), 0 12px 24px light-dark(oklch(0 0 0 / 15%), oklch(0 0 0 / 70%)), inset 0 0 0 1px light-dark(transparent, oklch(1 0 0 / 15%))",
@@ -420,13 +420,6 @@ export const makaTheme = {
     "section": {
       "base": {
         "padding": "var(--spacing-3)"
-      }
-    },
-    "app-shell-sidenav": {
-      "variant:elevated": {
-        "borderInlineEndWidth": "1px",
-        "borderInlineEndStyle": "solid",
-        "borderInlineEndColor": "var(--color-border)"
       }
     }
   },

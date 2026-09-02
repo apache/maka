@@ -31,6 +31,7 @@ import type {
   AppIconChoice,
   AppIconTarget,
   AppSettings,
+  RuntimeHostAppSettings,
   ChatDefaultsSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
@@ -213,7 +214,7 @@ export interface OnboardingSnapshot {
   state: OnboardingState;
   milestones: OnboardingMilestone[];
   sessions: DesktopSessionSummary[];
-  connections: import('@maka/core/llm-connections').IdentifiedLlmConnection[];
+  connections: import('@maka/core/llm-connections').ProjectedLlmConnection[];
   defaultSlug: string | null;
   chatModelChoices: import('@maka/core/chat-model-choice').ChatModelChoice[];
   sessionSendOutcomes: Record<string, import('@maka/core/session-send-projection').SessionSendProjection>;
@@ -345,7 +346,14 @@ export type DesktopSessionCollaborationCancelResult = SessionCollaborationCancel
 export type DesktopSessionCollaborationPrepareResult =
   | {
       readonly kind: 'prepared';
-      readonly invitation: CollaborationInvitationPrepareResult;
+      readonly invitation: CollaborationInvitationPrepareResult & {
+        readonly connectivity:
+          | {
+              readonly kind: 'peer';
+              readonly coordinationRelayCount: number;
+            }
+          | { readonly kind: 'configured' };
+      };
     }
   | { readonly kind: 'insecure_confirmation_required' };
 
@@ -353,6 +361,14 @@ export interface DesktopRuntimeHostRef {
   readonly profileId: string;
   readonly hostId: string;
 }
+
+export type DesktopConnectionOnboardingSaveOutcome =
+  | {
+      readonly kind: 'result';
+      readonly result: OperationOutput<'connection.onboarding.save'>;
+    }
+  | { readonly kind: 'not_saved' }
+  | { readonly kind: 'outcome_unknown' };
 
 /** Desktop-local OAuth intent. Runtime Host remains the identity allocator. */
 export type DesktopOAuthLoginTarget =
@@ -741,6 +757,8 @@ export interface MakaBridge {
       readonly operationId: string;
     }, onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void): Promise<DesktopSessionCollaborationImportResult>;
     cancelImport(operationId: string): Promise<DesktopSessionCollaborationCancelResult>;
+    /** Reads only after the user invokes the invitation paste action. */
+    readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     removeMount(mountId: string): Promise<void>;
     requestTurn(
@@ -748,6 +766,8 @@ export interface MakaBridge {
       input: { readonly turnId: string; readonly text: string },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
+    /** Pending Owner decisions across every connected Owner Runtime Host. */
+    getPendingTurnRequests(): Promise<readonly SessionTurnAccessRequest[]>;
     acknowledgeTurnRequest(
       sessionId: string,
       requestId: string,
@@ -1230,7 +1250,12 @@ export interface MakaBridge {
       executionId: string;
     }>;
     abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState>;
-    setModel(sessionId: string, input: { llmConnectionId: string; llmConnectionSlug: string; model: string }): Promise<DesktopSessionSummary>;
+    setModelConfiguration(sessionId: string, input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionSummary>;
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary>;
     /**
      * `requireArchived` holds the caller's premise through the deletion: a task
@@ -1360,10 +1385,18 @@ export interface MakaBridge {
     setDefault(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string | null, host?: DesktopRuntimeHostRef): Promise<void>;
     setDefaultModel(input: { slug: string; model: string } | null, host?: DesktopRuntimeHostRef): Promise<void>;
     create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection>;
+    verifyOnboarding(
+      input: OperationInput<'connection.onboarding.verify'>,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<OperationOutput<'connection.onboarding.verify'>>;
+    saveOnboarding(
+      input: OperationInput<'connection.onboarding.save'>,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<DesktopConnectionOnboardingSaveOutcome>;
     update(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection>;
     delete(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<void>;
     test(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity | string, opts?: { model?: string }, host?: DesktopRuntimeHostRef): Promise<ConnectionTestResult>;
-    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult>;
+    fetchModels(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>>;
     hasSecret(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean>;
     getRequestHeaders(connection: import('../shared/desktop-connection-snapshot').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').SavedRequestHeaders>;
     setRequestHeaders(
@@ -1393,9 +1426,9 @@ export interface MakaBridge {
   };
   settings: {
     getClient(): Promise<AppSettings>;
-    get(host?: DesktopRuntimeHostRef): Promise<AppSettings>;
+    get(host?: DesktopRuntimeHostRef): Promise<RuntimeHostAppSettings>;
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult>;
-    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult>;
+    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>>;
     subscribeClientChanged(handler: () => void): () => void;
     subscribeExternalChanged(handler: () => void, host?: DesktopRuntimeHostRef): () => void;
     testNetworkProxy(input?: TestProxyInput, host?: DesktopRuntimeHostRef): Promise<SettingsTestResult>;

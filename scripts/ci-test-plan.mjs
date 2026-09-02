@@ -35,6 +35,11 @@ const FULL_SUITE_FILES = new Set([
 ]);
 
 const RELEASE_CONTRACT_FILES = new Set([
+  // Branch protection. `product-release.test.mjs` parses it and asserts the
+  // required contexts and the release-environment admission rules, and that
+  // suite runs behind `check:release` — so this selection is what proves a
+  // change to the merge gate still satisfies its own policy test.
+  '.asf.yaml',
   'apps/desktop/src/main/app-update-test-context.ts',
   'apps/desktop/build/entitlements.mac.inherit.plist',
   'apps/desktop/build/entitlements.mac.plist',
@@ -49,12 +54,14 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
   '.github/workflows/release-windows-check.yml',
+  '.github/workflows/windows-recovery.yml',
   'scripts/package-macos-arm64.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
+  'scripts/prepare-windows-upgrade-baseline.test.mjs',
   'scripts/generate-third-party-notices.test.mjs',
   'scripts/product-release.test.mjs',
   'scripts/qualify-released-cli-state-root.test.mjs',
@@ -75,6 +82,22 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
   'scripts/windows-package-source-closure.test.mjs',
+]);
+
+// What decides whether a build can read durable state an earlier release wrote.
+// `operations.ts` is here because it owns the operation vocabulary: the rename
+// that stranded workspaces holding an older credential (#4420) changed that file
+// and none of the decoders, so a trigger listing only decoders would not have
+// run on the very change it exists to catch.
+const DURABLE_STATE_DECODER_FILES = new Set([
+  'packages/runtime-host/src/protocol/operations.ts',
+  'packages/runtime-host/src/server/access-authority.ts',
+  'packages/runtime-host/src/server/access-credential-store.ts',
+  'packages/storage/src/operational-state-store.ts',
+  'packages/storage/src/root-authority.ts',
+  'packages/storage/src/state-root-composition.ts',
+  'scripts/qualify-released-cli-state-root.mjs',
+  'scripts/released-cli-state-root-fixture.mjs',
 ]);
 
 const TYPECHECK_ONLY_FILES = new Set([
@@ -100,6 +123,7 @@ const CLI_PACKAGE_FILES = new Set([
 
 const ASF_SOURCE_FILES = new Set([
   '.github/workflows/asf-source-candidate.yml',
+  '.github/workflows/model-metadata-upkeep.yml',
   'DISCLAIMER-WIP',
   'LICENSE',
   'NOTICE',
@@ -113,6 +137,7 @@ const ASF_SOURCE_FILES = new Set([
   'scripts/asf-source-release.mjs',
   'scripts/asf-source-release.test.mjs',
   'scripts/asf-source-workflow-policy.test.mjs',
+  'scripts/model-metadata-upkeep-workflow-policy.test.mjs',
   'scripts/model-metadata/models-dev-api.snapshot.json',
   'scripts/source-legal-inventory.test.mjs',
   'scripts/sync-model-metadata.mjs',
@@ -140,6 +165,10 @@ const CLI_PACKAGE_WORKSPACES = [
 
 function isCliPackagePath(path) {
   if (CLI_PACKAGE_FILES.has(path) || path.startsWith('patches/')) return true;
+  // `release:cli:pack` builds the direct-peer addon into the tarball and runs
+  // `cargo deny` against that policy, so this crate ships and CLI packaging is
+  // the JavaScript gate that proves it still does.
+  if (path === 'deny.toml' || path.startsWith('native/runtime-host-peer/')) return true;
   if (isDocumentation(path)) return false;
   if (path.startsWith('scripts/release-cli-')) return true;
   if (path.startsWith('tsconfig') && path.endsWith('.json')) return true;
@@ -239,6 +268,27 @@ function isAstryxSurfaceInventoryPath(path) {
     return !isPackageTestPath(path);
   }
   return isUiProductSourcePath(path);
+}
+
+/**
+ * The two app-icon drift tests read exactly this surface: the committed
+ * artwork, the generator that must still reproduce it, the `APP_ICONS` catalog
+ * they check it against, the packaged-resource list that has to keep naming
+ * every file, and the packaging config, which the drift test opens by path to
+ * prove the bundle icon is still `DEFAULT_APP_ICON`. Regenerating the artwork
+ * costs about a minute, which every unrelated code change used to pay.
+ */
+const APP_ICON_FILES = new Set([
+  'apps/desktop/electron-builder.config.mjs',
+  'packages/core/src/settings.ts',
+  'scripts/generate-app-icons.py',
+  'scripts/generate-app-icons.test.mjs',
+  'scripts/verify-packaged-app.mjs',
+  'scripts/verify-packaged-app-icons.test.mjs',
+]);
+
+function isAppIconPath(path) {
+  return APP_ICON_FILES.has(path) || path.startsWith('apps/desktop/assets/app-icons/');
 }
 
 function isE2eProductPath(path) {
@@ -347,6 +397,7 @@ export function planTests(changedFiles, options = {}) {
   if (full) {
     const workspaces = [...graph.dirs];
     return {
+      appIcons: true,
       asfSource: true,
       astryxSurface: true,
       cliPackage: true,
@@ -359,6 +410,7 @@ export function planTests(changedFiles, options = {}) {
       // Stress multipliers and native child-process lock probes run only when
       // their owning storage seam changes; making --full imply stress turned
       // every unrelated merge into a 10K-chunk pressure run.
+      stateRootCompat: true,
       storageStress: false,
       storybook: true,
       workspaces,
@@ -401,6 +453,30 @@ export function planTests(changedFiles, options = {}) {
       code = true;
       continue;
     }
+    // Rust. Each of these crates has an admission lane that owns `cargo fmt`
+    // and `cargo test` for it, and `native/runtime-host-peer` additionally
+    // reaches CLI packaging through `isCliPackagePath` above. Nothing under
+    // either is read by lint, typecheck, Storybook, or a real window, so
+    // falling through to the guard below made this directory the largest
+    // single source of full-suite runs.
+    //
+    // Named one crate at a time rather than by the `native/` prefix: what
+    // earns the exemption is having a lane, not being written in Rust. A new
+    // native root has neither until someone adds one, and until then the
+    // guard below is the only thing that would test it at all.
+    //
+    // `deny.toml` is the lint policy both crates share and travels with them.
+    if (
+      path.startsWith('native/gitoxide-helper/') ||
+      path.startsWith('native/runtime-host-peer/') ||
+      path === 'deny.toml'
+    ) {
+      continue;
+    }
+    // Branch protection selects no workspace, but it is not unknown either:
+    // `RELEASE_CONTRACT_FILES` above routes it to `product-release.test.mjs`,
+    // the suite that parses it and asserts the required contexts.
+    if (path === '.asf.yaml') continue;
     if (path.startsWith('.github/')) continue;
     code = true;
     unknownCode = true;
@@ -415,6 +491,7 @@ export function planTests(changedFiles, options = {}) {
 
   const cliPackage = files.some((path) => isCliPackagePath(path));
   return {
+    appIcons: files.some((path) => isAppIconPath(path)),
     asfSource: files.some((path) => isAsfSourcePath(path)),
     astryxSurface: files.some((path) => isAstryxSurfaceInventoryPath(path)),
     cliPackage,
@@ -430,6 +507,14 @@ export function planTests(changedFiles, options = {}) {
     // the cli workspace runs in the dependency closure, not only for direct
     // cli/runtime edits (e.g. a storage-only change still selects cli via runtime).
     runtimeSandbox: workspaces.includes('packages/cli'),
+    // The released forward roll: a build under test reads durable state a
+    // published predecessor wrote. Selected by the decoders and the operation
+    // vocabulary they decode against, plus the SQLite schemas.
+    stateRootCompat: files.some(
+      (path) =>
+        DURABLE_STATE_DECODER_FILES.has(path) ||
+        /^packages\/storage\/src\/sqlite-[^/]*schema[^/]*\.ts$/u.test(path),
+    ),
     storageStress,
     // Storybook build + smoke: catalog/harness only. Not every desktop/ui/core
     // PR — product ship gates are typecheck, unit, and Electron e2e. See
@@ -442,7 +527,8 @@ export function planTests(changedFiles, options = {}) {
 
 export function requiresHeavyValidation(plan) {
   return Boolean(
-    plan.asfSource ||
+    plan.appIcons ||
+      plan.asfSource ||
       plan.astryxSurface ||
       plan.cliPackage ||
       plan.code ||
@@ -450,6 +536,7 @@ export function requiresHeavyValidation(plan) {
       plan.releaseContract ||
       plan.runtimeHost ||
       plan.runtimeSandbox ||
+      plan.stateRootCompat ||
       plan.storybook ||
       plan.standardWorkspaces.length > 0,
   );
@@ -457,6 +544,7 @@ export function requiresHeavyValidation(plan) {
 
 export function formatGitHubOutputs(plan) {
   return [
+    `app_icons=${plan.appIcons}`,
     `asf_source=${plan.asfSource}`,
     `astryx_surface=${plan.astryxSurface}`,
     `cli_package=${plan.cliPackage}`,
@@ -466,6 +554,7 @@ export function formatGitHubOutputs(plan) {
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,
+    `state_root_compat=${plan.stateRootCompat}`,
     `storage_stress=${plan.storageStress}`,
     `storybook=${plan.storybook}`,
     `standard_workspaces=${plan.standardWorkspaces.join(',')}`,

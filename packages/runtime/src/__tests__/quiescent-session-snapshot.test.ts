@@ -99,6 +99,31 @@ test('does not invoke snapshot work when Host eligibility rejects the Session', 
   assert.equal(invoked, false);
 });
 
+test('preserves an operation AbortError for coordinator cancellation normalization', async () => {
+  const authority = createRuntimeSessionSnapshotQuiescenceAuthority(
+    {
+      async runSessionQuiescentMutation(_sessionIds, operation) {
+        return await operation();
+      },
+    },
+    {
+      assertSnapshotEligible() {},
+    },
+  );
+  const controller = new AbortController();
+
+  await assert.rejects(
+    authority.runQuiescent(
+      { makaSessionId: 'session-1', cancellation: { signal: controller.signal } },
+      async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      },
+    ),
+    (error) => error instanceof Error && error.name === 'AbortError',
+  );
+});
+
 test('actual Runtime Kernel serializes an admitted mutation before snapshot work', async () => {
   const kernel = new RuntimeKernel({} as never);
   let releaseMutation!: () => void;
