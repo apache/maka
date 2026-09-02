@@ -37,11 +37,17 @@ let observeSettled = false;
 let stageTimer;
 rl.on('line', (line) => {
   let msg;
-  try { msg = JSON.parse(line); } catch { return; }
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
   if (msg.id === 1 && msg.result) {
     initialized = true;
     console.log('HOST_STAGE initialized');
-    helper.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'observe', params: { hwnd } }) + '\n');
+    helper.stdin.write(
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'observe', params: { hwnd } }) + '\n',
+    );
     observeSent = true;
     console.log('HOST_STAGE observe_sent');
     // Give the actual blocked provider call a bounded interval. Startup has
@@ -55,7 +61,9 @@ rl.on('line', (line) => {
     console.log('HOST_STAGE observe_settled');
   }
 });
-helper.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n');
+helper.stdin.write(
+  JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n',
+);
 setTimeout(() => {
   // A blocked provider must still be unresolved when its parent disappears.
   if (!initialized || !observeSent) process.exit(3);

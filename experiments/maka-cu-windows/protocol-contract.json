@@ -32,15 +32,33 @@
     },
     "list_windows": {
       "params": "object",
-      "result": {"windows": "array"},
+      "result": { "windows": "array" },
       "windowFields": ["hwnd", "pid", "title", "isOffscreen"]
     },
     "observe": {
       "paramsRequired": ["hwnd"],
       "paramsOptional": ["maxNodes"],
-      "resultRequired": ["snapshotId", "protocol", "hwnd", "pid", "windowGeneration", "target", "elements", "tree"],
+      "resultRequired": [
+        "snapshotId",
+        "protocol",
+        "hwnd",
+        "pid",
+        "windowGeneration",
+        "target",
+        "elements",
+        "tree"
+      ],
       "targetRequired": ["hwnd", "pid", "processStartTimeUtc", "windowGeneration"],
-      "nodeFields": ["token", "name", "automationId", "controlType", "patterns", "actions", "isEnabled", "value"],
+      "nodeFields": [
+        "token",
+        "name",
+        "automationId",
+        "controlType",
+        "patterns",
+        "actions",
+        "isEnabled",
+        "value"
+      ],
       "optionalNodeFields": ["scrollState"],
       "invariants": [
         "observe requires an explicitly supplied HWND",
@@ -51,19 +69,47 @@
     },
     "act": {
       "paramsRequired": ["snapshotId", "elementToken", "op"],
-      "acceptedOps": ["set_value", "click_element", "select", "toggle", "scroll", "compat_type_text", "compat_press_enter"],
+      "acceptedOps": [
+        "set_value",
+        "click_element",
+        "select",
+        "toggle",
+        "scroll",
+        "compat_type_text",
+        "compat_press_enter"
+      ],
       "unsupportedOps": ["press_enter"],
       "setValueRequired": ["value"],
       "scrollOptional": ["direction", "amount"],
-      "pressEnter": {"status": "unsupported", "reason": "no_safe_uia_equivalent", "implicitKeyboardFallback": false},
+      "pressEnter": {
+        "status": "unsupported",
+        "reason": "no_safe_uia_equivalent",
+        "implicitKeyboardFallback": false
+      },
       "compatibility": {
         "default": "refused",
         "authorizeMethod": "authorize_compat",
         "authorizationTtlMs": 5000,
         "ops": ["compat_type_text", "compat_press_enter"],
-        "typeText": {"payload": "value", "maxChars": 1024, "rejectControlCharacters": true, "transport": "one SendInput Unicode batch"},
-        "pressEnter": {"payload": "none", "transport": "one SendInput VK_RETURN keydown/up"},
-        "requiredBinding": ["snapshotId", "elementToken", "hwnd", "pid", "processStartTimeUtc", "windowGeneration", "helperGeneration", "runtimeId", "op", "boundedPayload"],
+        "typeText": {
+          "payload": "value",
+          "maxChars": 1024,
+          "rejectControlCharacters": true,
+          "transport": "one SendInput Unicode batch"
+        },
+        "pressEnter": { "payload": "none", "transport": "one SendInput VK_RETURN keydown/up" },
+        "requiredBinding": [
+          "snapshotId",
+          "elementToken",
+          "hwnd",
+          "pid",
+          "processStartTimeUtc",
+          "windowGeneration",
+          "helperGeneration",
+          "runtimeId",
+          "op",
+          "boundedPayload"
+        ],
         "readbackFailure": "unknown"
       },
       "actionSemantics": {
@@ -77,7 +123,13 @@
         "maxMillis": 1000,
         "intervalMillis": 50,
         "maxAttempts": 21,
-        "refuseBeforeMutation": ["no_amount", "unavailable ScrollPattern", "unscrollable axis", "invalid percent", "already at requested boundary"],
+        "refuseBeforeMutation": [
+          "no_amount",
+          "unavailable ScrollPattern",
+          "unscrollable axis",
+          "invalid percent",
+          "already at requested boundary"
+        ],
         "verified": "finite percentage in [0,100] changes in requested direction within budget on the same verified target",
         "unknown": "timeout, cancellation, wrong direction, invalid percent, lost axis, read or identity failure, or provider error after dispatch",
         "mutationRetry": false,
@@ -146,7 +198,10 @@
     "shutdown": {
       "params": "object",
       "resultRequired": ["ok"],
-      "invariants": ["returns within shutdownGrace", "does not wait indefinitely for blocked provider"]
+      "invariants": [
+        "returns within shutdownGrace",
+        "does not wait indefinitely for blocked provider"
+      ]
     },
     "debug_sleep": {
       "comparisonOnly": true,
@@ -159,8 +214,37 @@
     "-32700": ["parse_error"],
     "-32600": ["invalid_request"],
     "-32601": ["method_not_found"],
-    "-32602": ["missing_hwnd", "invalid_hwnd", "missing_snapshot", "missing_element_token", "missing_action", "unsupported_action", "value_too_long", "missing_window_generation", "invalid_debugPostDispatchDelayMs", "invalid_scroll_direction", "invalid_scroll_amount", "compat_authorization_missing", "compat_unsupported", "compat_payload_invalid"],
-    "-32001": ["snapshot_spent_or_unknown", "element_token_unknown_in_snapshot", "stale_target_revalidate_failed", "cancelled", "windows_only", "uia_unavailable", "target_window_gone", "compat_authorization_unknown", "compat_authorization_mismatch", "compat_authorization_expired", "compat_authorization_registry_full", "compat_focus_refused", "compat_readback_unavailable"],
+    "-32602": [
+      "missing_hwnd",
+      "invalid_hwnd",
+      "missing_snapshot",
+      "missing_element_token",
+      "missing_action",
+      "unsupported_action",
+      "value_too_long",
+      "missing_window_generation",
+      "invalid_debugPostDispatchDelayMs",
+      "invalid_scroll_direction",
+      "invalid_scroll_amount",
+      "compat_authorization_missing",
+      "compat_unsupported",
+      "compat_payload_invalid"
+    ],
+    "-32001": [
+      "snapshot_spent_or_unknown",
+      "element_token_unknown_in_snapshot",
+      "stale_target_revalidate_failed",
+      "cancelled",
+      "windows_only",
+      "uia_unavailable",
+      "target_window_gone",
+      "compat_authorization_unknown",
+      "compat_authorization_mismatch",
+      "compat_authorization_expired",
+      "compat_authorization_registry_full",
+      "compat_focus_refused",
+      "compat_readback_unavailable"
+    ],
     "-32002": ["response_too_large"],
     "-32003": ["worker_queue_full"],
     "-32004": ["worker_unavailable"]
@@ -172,11 +256,23 @@
     "supervisor": "force-kills a provider-blocked helper after cancelGrace and starts a fresh generation"
   },
   "assertions": {
-    "sixChecks": ["handshake", "UIA observe/action", "target WGC capture/occlusion", "cancel settlement", "blocked-provider recovery", "lifecycle/restart"],
-    "additional": ["identity/window recreation", "parent death", "stdin EOF", "protocol malformed/unknown cancel/backpressure"]
+    "sixChecks": [
+      "handshake",
+      "UIA observe/action",
+      "target WGC capture/occlusion",
+      "cancel settlement",
+      "blocked-provider recovery",
+      "lifecycle/restart"
+    ],
+    "additional": [
+      "identity/window recreation",
+      "parent death",
+      "stdin EOF",
+      "protocol malformed/unknown cancel/backpressure"
+    ]
   },
   "comparisonDrivers": [
-    {"name": "lifecycle", "expectedChecks": 34, "summarySentinel": "failures=0"},
-    {"name": "protocol", "expectedChecks": 3, "summarySentinel": "protocol failures=0"}
+    { "name": "lifecycle", "expectedChecks": 34, "summarySentinel": "failures=0" },
+    { "name": "protocol", "expectedChecks": 3, "summarySentinel": "protocol failures=0" }
   ]
 }

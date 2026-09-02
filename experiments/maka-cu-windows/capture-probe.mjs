@@ -33,7 +33,11 @@ const ready = new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('fixture READY timeout')), 8000);
   fr.on('line', (line) => {
     const m = line.match(/^READY (\d+) (\d+)$/);
-    if (m) { clearTimeout(timer); target = { pid: Number(m[1]), hwnd: Number(m[2]) }; resolve(); }
+    if (m) {
+      clearTimeout(timer);
+      target = { pid: Number(m[1]), hwnd: Number(m[2]) };
+      resolve();
+    }
   });
 });
 
@@ -45,22 +49,44 @@ const pending = new Map();
 hr.on('line', (line) => {
   const msg = JSON.parse(line);
   const p = pending.get(msg.id);
-  if (p) { pending.delete(msg.id); p(msg); }
+  if (p) {
+    pending.delete(msg.id);
+    p(msg);
+  }
 });
-const call = (method, params = {}, timeout = 10000) => new Promise((resolve, reject) => {
-  const id = nextId++;
-  pending.set(id, resolve);
-  h.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-  setTimeout(() => { if (pending.delete(id)) reject(new Error(`${method} timeout`)); }, timeout);
-});
+const call = (method, params = {}, timeout = 10000) =>
+  new Promise((resolve, reject) => {
+    const id = nextId++;
+    pending.set(id, resolve);
+    h.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+    setTimeout(() => {
+      if (pending.delete(id)) reject(new Error(`${method} timeout`));
+    }, timeout);
+  });
 
 try {
   await ready;
   const hello = await call('initialize');
-  const capture = await call('capture', { hwnd: target.hwnd, windowGeneration: (await call('observe', { hwnd: target.hwnd })).result.target.windowGeneration }, 10000);
+  const capture = await call(
+    'capture',
+    {
+      hwnd: target.hwnd,
+      windowGeneration: (await call('observe', { hwnd: target.hwnd })).result.target
+        .windowGeneration,
+    },
+    10000,
+  );
   console.log(JSON.stringify({ target, hello: hello.result, capture }, null, 2));
 } finally {
-  try { h.stdin.end(); } catch {}
-  try { fx.stdin.write('shutdown\n'); fx.stdin.end(); } catch {}
-  setTimeout(() => { if (!h.killed) h.kill(); if (!fx.killed) fx.kill(); }, 300);
+  try {
+    h.stdin.end();
+  } catch {}
+  try {
+    fx.stdin.write('shutdown\n');
+    fx.stdin.end();
+  } catch {}
+  setTimeout(() => {
+    if (!h.killed) h.kill();
+    if (!fx.killed) fx.kill();
+  }, 300);
 }

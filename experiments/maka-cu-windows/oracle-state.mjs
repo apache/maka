@@ -80,12 +80,16 @@ export function applicationEvidence(state) {
   const enterOnA = (pageA.eventLog ?? []).filter((item) => item.event === 'enter');
   const lastEnterA = enterOnA.at(-1);
   const lastInputA = lastMatching(pageA.eventLog ?? [], (item) => item.event === 'input');
-  const lastCompatA = lastMatching(pageA.eventLog ?? [], (item) => item.event === 'compat-input' || item.event === 'enter');
+  const lastCompatA = lastMatching(
+    pageA.eventLog ?? [],
+    (item) => item.event === 'compat-input' || item.event === 'enter',
+  );
   const lastClickA = lastMatching(pageA.eventLog ?? [], (item) => item.event === 'click');
   const lastScrollA = lastMatching(pageA.eventLog ?? [], (item) => item.event === 'scroll');
   return {
     pageAReady: (pageA.events ?? []).includes('ready'),
-    pageBLoaded: (pageB.events ?? []).includes('pageB-load') || (state.events ?? []).includes('pageB-load'),
+    pageBLoaded:
+      (pageB.events ?? []).includes('pageB-load') || (state.events ?? []).includes('pageB-load'),
     pageBReady: (pageB.events ?? []).includes('ready'),
     enterOnPageA: enterOnA.length > 0,
     enterCountOnPageA: Number(lastEnterA?.enterCount ?? 0),
@@ -103,29 +107,44 @@ export function pageAHasValue(state, value) {
 }
 
 export function pageAHasCompatValue(state, value) {
-  return pageLog(state, 'A').some((item) => (item.event === 'compat-input' || item.event === 'enter') && item.compatValue === value);
+  return pageLog(state, 'A').some(
+    (item) =>
+      (item.event === 'compat-input' || item.event === 'enter') && item.compatValue === value,
+  );
 }
 
 export function pageAClicked(state, beforeClickCount = 0) {
-  const clicks = pageLog(state, 'A').filter(item => item.event === 'click');
-  const counts = clicks.map(item => item.clickCount);
-  return Number.isSafeInteger(beforeClickCount) && counts.length > 0
-    && counts.every(Number.isSafeInteger) && Math.max(...counts) === beforeClickCount + 1;
+  const clicks = pageLog(state, 'A').filter((item) => item.event === 'click');
+  const counts = clicks.map((item) => item.clickCount);
+  return (
+    Number.isSafeInteger(beforeClickCount) &&
+    counts.length > 0 &&
+    counts.every(Number.isSafeInteger) &&
+    Math.max(...counts) === beforeClickCount + 1
+  );
 }
 
 export function pageAScrolled(state, beforeScrollTop = 0) {
   const evidence = applicationEvidence(state);
-  return Number.isFinite(beforeScrollTop) && evidence.scrolledOnPageA
-    && Number.isFinite(evidence.scrollTopOnPageA) && evidence.scrollTopOnPageA > beforeScrollTop;
+  return (
+    Number.isFinite(beforeScrollTop) &&
+    evidence.scrolledOnPageA &&
+    Number.isFinite(evidence.scrollTopOnPageA) &&
+    evidence.scrollTopOnPageA > beforeScrollTop
+  );
 }
 
 export function navigationCompleted(state, expectedCompatValue) {
   const evidence = applicationEvidence(state);
-  const enters = pageLog(state, 'A').filter(item => item.event === 'enter');
-  return evidence.enterOnPageA
-    && enters.length === 1 && enters[0].enterCount === 1
-    && evidence.compatValueOnPageAEnter === expectedCompatValue
-    && evidence.pageBLoaded && evidence.pageBReady;
+  const enters = pageLog(state, 'A').filter((item) => item.event === 'enter');
+  return (
+    evidence.enterOnPageA &&
+    enters.length === 1 &&
+    enters[0].enterCount === 1 &&
+    evidence.compatValueOnPageAEnter === expectedCompatValue &&
+    evidence.pageBLoaded &&
+    evidence.pageBReady
+  );
 }
 
 // Local fixture evidence only, not a production browser URL/permission verifier.
@@ -133,10 +152,20 @@ export function boundNavigationCompleted(state, { run, value, sourceUrl, destina
   if (!navigationCompleted(state, value)) return false;
   const source = pageLog(state, 'A');
   const destination = pageLog(state, 'B');
-  const input = item => item.run === run && item.sourceId === 'compat-input' && item.url === sourceUrl && item.compatValue === value;
-  return source.some(item => item.event === 'compat-input' && input(item))
-    && source.some(item => item.event === 'enter' && input(item))
-    && ['pageB-load', 'ready'].every(kind => destination.some(item => item.event === kind && item.run === run && item.url === destinationUrl));
+  const input = (item) =>
+    item.run === run &&
+    item.sourceId === 'compat-input' &&
+    item.url === sourceUrl &&
+    item.compatValue === value;
+  return (
+    source.some((item) => item.event === 'compat-input' && input(item)) &&
+    source.some((item) => item.event === 'enter' && input(item)) &&
+    ['pageB-load', 'ready'].every((kind) =>
+      destination.some(
+        (item) => item.event === kind && item.run === run && item.url === destinationUrl,
+      ),
+    )
+  );
 }
 
 // Helper outcome stays as reported. Independent page completion is recorded
@@ -154,7 +183,9 @@ export function classifyDispatchedTask({ helperResponse, applicationCompleted })
   }
   const outcome = helperResponse?.result?.outcome;
   if (!outcome || !['verified', 'unknown', 'refused'].includes(outcome.status)) {
-    throw new Error(`invalid_or_missing_helper_outcome=${JSON.stringify(helperResponse?.error ?? outcome)}`);
+    throw new Error(
+      `invalid_or_missing_helper_outcome=${JSON.stringify(helperResponse?.error ?? outcome)}`,
+    );
   }
   let executionState = 'unknown';
   if (outcome.status === 'refused') executionState = 'blocked';
