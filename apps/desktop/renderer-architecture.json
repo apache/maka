@@ -323,9 +323,7 @@
           "window.maka.sessions.respondToUserQuestion": 1,
           "window.maka.sessions.submitMessage": 1
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -519,7 +517,6 @@
           "document.removeEventListener": 1,
           "document.visibilityState": 1,
           "requestAnimationFrame": 1,
-          "window": 3,
           "window.clearInterval": 1,
           "window.clearTimeout": 3,
           "window.setInterval": 1,
@@ -563,7 +560,7 @@
         "importDeclarations": 14,
         "bridgePaths": {},
         "environmentCapabilities": {
-          "window": 4,
+          "window": 2,
           "window.addEventListener": 1,
           "window.removeEventListener": 1
         },
@@ -874,7 +871,6 @@
         "environmentCapabilities": {
           "document.querySelector": 1,
           "requestAnimationFrame": 1,
-          "window": 1,
           "window.clearTimeout": 4,
           "window.requestAnimationFrame": 4,
           "window.setTimeout": 2
@@ -1608,7 +1604,6 @@
           "window.maka.diagnostics.copyReport": 1
         },
         "environmentCapabilities": {
-          "location": 3,
           "navigator": 1,
           "navigator.clipboard.writeText": 1,
           "navigator.userAgent": 2,
@@ -1722,7 +1717,7 @@
       "src/renderer/local-memory-digest.ts": {
         "bridgePaths": {},
         "environmentCapabilities": {
-          "window.crypto.subtle": 3,
+          "window.crypto.subtle": 2,
           "window.crypto.subtle.digest": 2
         },
         "hookCalls": {},
@@ -1866,9 +1861,7 @@
       },
       "src/renderer/locales/settings-data-copy.ts": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "history": 3
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -1978,9 +1971,7 @@
       },
       "src/renderer/locales/settings-test-result-copy.ts": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "location": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {},
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -2624,9 +2615,7 @@
           "window.maka.app.updateStatus": 1,
           "window.maka.diagnostics.copyReport": 1
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useActionGuard": 2,
           "useEffect": 2,
@@ -2684,9 +2673,7 @@
           "window.maka.app.removeIcon": 1,
           "window.maka.app.selectIcon": 1
         },
-        "environmentCapabilities": {
-          "window": 2
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 2,
           "useMountedRef": 1,
@@ -2775,9 +2762,7 @@
           "window.maka.settings.bots.subscribeStatusChanges": 1,
           "window.maka.settings.testBotChannel": 2
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 3,
           "useMountedRef": 1,
@@ -2990,9 +2975,7 @@
           "window.maka.config.import": 1
         },
         "environmentCapabilities": {
-          "history": 1,
-          "navigator.clipboard.writeText": 1,
-          "window": 2
+          "navigator.clipboard.writeText": 1
         },
         "hookCalls": {
           "useActionGuard": 1,
@@ -3022,9 +3005,7 @@
       },
       "src/renderer/settings/general-settings-page.tsx": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "window": 4
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useActionGuard": 2,
           "useEffect": 1,
@@ -3165,9 +3146,7 @@
       },
       "src/renderer/settings/memory-settings-page.tsx": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useMemoryDocumentController": 1,
           "useState": 2,
@@ -3319,8 +3298,7 @@
         "bridgePaths": {},
         "environmentCapabilities": {
           "clearTimeout": 3,
-          "setTimeout": 1,
-          "window": 1
+          "setTimeout": 1
         },
         "hookCalls": {
           "useEffect": 2,
@@ -3360,9 +3338,7 @@
           "window.maka.projects.subscribeChanges": 1,
           "window.maka.runtimeHostProfiles.subscribeChanges": 1
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 1,
           "useKeyedActionGuard": 1,
@@ -3860,9 +3836,7 @@
           "window.maka.runtimeHostProfiles.setEnabled": 1,
           "window.maka.runtimeHostProfiles.subscribeChanges": 1
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 1,
           "useMountedRef": 1,
@@ -4186,7 +4160,6 @@
           "window.maka.settings.usageStats": 1
         },
         "environmentCapabilities": {
-          "window": 2,
           "window.addEventListener": 1,
           "window.removeEventListener": 1
         },
@@ -4262,8 +4235,7 @@
       "src/renderer/settings/subagent-settings-page.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {
-          "document.querySelector": 2,
-          "window": 1
+          "document.querySelector": 2
         },
         "hookCalls": {
           "useRef": 2,
@@ -4352,9 +4324,7 @@
       },
       "src/renderer/settings/usage-settings-page.tsx": {
         "bridgePaths": {},
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useActionGuard": 1,
           "useOptimisticSettingsDraft": 1,
@@ -4533,9 +4503,7 @@
           "window.maka.webSearch.query": 1,
           "window.maka.webSearch.test": 1
         },
-        "environmentCapabilities": {
-          "window": 2
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useKeyedActionGuard": 1,
           "useMountedRef": 1,
@@ -5081,9 +5049,7 @@
         "bridgePaths": {
           "window.maka.search.thread": 1
         },
-        "environmentCapabilities": {
-          "window": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useState": 2
         },
@@ -5284,7 +5250,6 @@
         "bridgePaths": {},
         "environmentCapabilities": {
           "document": 1,
-          "localStorage": 1,
           "window": 1,
           "window.localStorage": 1
         },
