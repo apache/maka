@@ -33,6 +33,7 @@ import { EmptyState } from '@astryxdesign/core/EmptyState';
 import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   dismissAgentGraphPanel,
+  isAgentGraphLive,
   isAgentGraphPanelDismissible,
   reconcileAgentGraphPanelDismissals,
   shouldShowAgentGraphPanel,
@@ -49,13 +50,6 @@ const noopAgentGraphRefreshScheduler: AgentGraphRefreshScheduler = {
   isCurrent: () => false,
   dispose() {},
 };
-
-/** Snapshot statuses during which the panel must keep signaling liveness. */
-const GRAPH_LIVE_STATUSES: ReadonlySet<AgentGraphClientSnapshot['status']> = new Set([
-  'active',
-  'waiting',
-  'closing',
-]);
 
 type GraphPanelCopy = {
   title: string;
@@ -211,7 +205,7 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
-  const graphLive = snapshot !== undefined && GRAPH_LIVE_STATUSES.has(snapshot.status);
+  const graphLive = snapshot !== undefined && isAgentGraphLive(snapshot.status);
 
   useEffect(() => {
     setSnapshot(undefined);
@@ -358,7 +352,7 @@ export function AgentGraphPanel(props: {
     !loading &&
     snapshot !== undefined &&
     snapshot.graphId === selectedGraphId &&
-    ['active', 'waiting', 'closing'].includes(snapshot.status);
+    isAgentGraphLive(snapshot.status);
   const dismissAvailable =
     selectedEpoch?.current === true &&
     !loading &&
@@ -401,11 +395,7 @@ export function AgentGraphPanel(props: {
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
-              <AgentGraphLiveStatus
-                live={graphLive}
-                resetKey={snapshot.graphId}
-                label={copy.status(snapshot.status)}
-              >
+              <AgentGraphLiveStatus live={graphLive} startedAt={selectedEpoch?.createdAt}>
                 {copy.status(snapshot.status)} ·{' '}
                 {copy.progress(
                   progress.settled,

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
+import { useEffect, useState, type JSX, type ReactNode } from 'react';
 import { Spinner } from '@astryxdesign/core/Spinner';
 
 /** `mm:ss`, or `h:mm:ss` once an hour is on the clock. Locale-neutral digits. */
@@ -32,49 +32,38 @@ function formatElapsed(totalSeconds: number): string {
 
 /**
  * Live badge for a long-running graph view: a heartbeat spinner plus an
- * elapsed stopwatch wrapped around the row's own status content. The stopwatch
- * measures this view's observation of the live graph — the carried snapshot
- * has no start timestamp — and resets whenever `resetKey` changes or `live`
- * drops, so a stale clock never survives a selection change.
+ * elapsed stopwatch measured from the graph epoch's `createdAt`, wrapped
+ * around the row's own status content. Decorative throughout — the status
+ * text beside it carries the announcement, so nothing here is labelled.
  */
 export function AgentGraphLiveStatus(props: {
   readonly live: boolean;
-  readonly resetKey: string;
-  readonly label: string;
+  readonly startedAt?: number;
   readonly children?: ReactNode;
 }): JSX.Element {
-  const [elapsedSeconds, setElapsedSeconds] = useState<number>();
-  const liveSinceRef = useRef<{ resetKey: string; at: number } | undefined>(undefined);
-
+  const [now, setNow] = useState<number>();
   useEffect(() => {
     if (!props.live) {
-      liveSinceRef.current = undefined;
-      setElapsedSeconds(undefined);
+      setNow(undefined);
       return;
     }
-    if (liveSinceRef.current?.resetKey !== props.resetKey) {
-      liveSinceRef.current = { resetKey: props.resetKey, at: Date.now() };
-    }
-    const startedAt = liveSinceRef.current.at;
-    setElapsedSeconds(0);
-    const timer = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(timer);
-  }, [props.live, props.resetKey]);
+  }, [props.live]);
+
+  const elapsedSeconds =
+    props.startedAt === undefined || now === undefined
+      ? undefined
+      : Math.max(0, Math.floor((now - props.startedAt) / 1000));
 
   return (
     <>
       {props.live ? (
-        <Spinner
-          size="sm"
-          shade="subtle"
-          className="maka-agent-graph-heartbeat"
-          aria-label={props.label}
-        />
+        <Spinner size="sm" shade="subtle" className="maka-agent-graph-heartbeat" aria-hidden="true" />
       ) : null}
       {props.children}
-      {props.live && elapsedSeconds !== undefined ? (
+      {elapsedSeconds !== undefined ? (
         <span className="maka-agent-graph-elapsed" aria-hidden="true">
           {' · '}
           {formatElapsed(elapsedSeconds)}

@@ -64,15 +64,14 @@ function domRoot() {
 
 type LiveStatusInput = {
   readonly live: boolean;
-  readonly resetKey: string;
-  readonly label: string;
+  readonly startedAt?: number;
 };
 
 async function renderLiveStatus(input: LiveStatusInput, children = 'running · 3/7 settled') {
   const { container, root } = domRoot();
   await act(async () => {
     root.render(
-      <AgentGraphLiveStatus live={input.live} resetKey={input.resetKey} label={input.label}>
+      <AgentGraphLiveStatus live={input.live} startedAt={input.startedAt}>
         {children}
       </AgentGraphLiveStatus>,
     );
@@ -87,7 +86,7 @@ function rerenderLiveStatus(
 ) {
   return act(async () => {
     root.render(
-      <AgentGraphLiveStatus live={input.live} resetKey={input.resetKey} label={input.label}>
+      <AgentGraphLiveStatus live={input.live} startedAt={input.startedAt}>
         {children}
       </AgentGraphLiveStatus>,
     );
@@ -96,50 +95,61 @@ function rerenderLiveStatus(
 
 test('idle graphs render only their own status content', async () => {
   mock.timers.enable({ apis: ['Date', 'setInterval'] });
-  const { container } = await renderLiveStatus({ live: false, resetKey: 'g1', label: 'running' });
+  const { container } = await renderLiveStatus({ live: false, startedAt: Date.now() - 60_000 });
   assert.equal(container.querySelector('.maka-agent-graph-heartbeat'), null);
   assert.equal(container.querySelector('.maka-agent-graph-elapsed'), null);
   assert.match(container.textContent ?? '', /running · 3\/7 settled/u);
 });
 
-test('live graphs gain a labelled heartbeat and a ticking stopwatch', async () => {
+test('live graphs gain a decorative heartbeat and a stopwatch running from startedAt', async () => {
   mock.timers.enable({ apis: ['Date', 'setInterval'] });
-  const { container, root } = await renderLiveStatus({ live: true, resetKey: 'g1', label: 'running' });
+  const startedAt = Date.now() - 2_000;
+  const { container } = await renderLiveStatus({ live: true, startedAt });
   const heartbeat = container.querySelector('.maka-agent-graph-heartbeat');
   assert.ok(heartbeat);
-  assert.equal(heartbeat.getAttribute('aria-label'), 'running');
-  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:00/u);
+  assert.equal(heartbeat.getAttribute('aria-hidden'), 'true');
+  assert.match(
+    container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '',
+    /00:02/u,
+  );
 
   await act(async () => {
     mock.timers.tick(2500);
   });
-  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:02/u);
-  await rerenderLiveStatus(root, { live: true, resetKey: 'g1', label: 'running' });
-  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:02/u);
+  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:04/u);
 });
 
-test('the stopwatch resets when the selection moves to another graph', async () => {
+test('re-rendering the same live graph keeps the clock running from startedAt', async () => {
   mock.timers.enable({ apis: ['Date', 'setInterval'] });
-  const { container, root } = await renderLiveStatus({ live: true, resetKey: 'g1', label: 'running' });
+  const startedAt = Date.now();
+  const { container, root } = await renderLiveStatus({ live: true, startedAt });
   await act(async () => {
     mock.timers.tick(6500);
   });
   assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:06/u);
 
-  await rerenderLiveStatus(root, { live: true, resetKey: 'g2', label: 'waiting' });
-  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:00/u);
-  const heartbeat = container.querySelector('.maka-agent-graph-heartbeat');
-  assert.equal(heartbeat?.getAttribute('aria-label'), 'waiting');
+  await rerenderLiveStatus(root, { live: true, startedAt });
+  assert.match(container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '', /00:06/u);
 });
 
 test('going idle retires the heartbeat and the clock but keeps the status content', async () => {
   mock.timers.enable({ apis: ['Date', 'setInterval'] });
-  const { container, root } = await renderLiveStatus({ live: true, resetKey: 'g1', label: 'running' });
+  const { container, root } = await renderLiveStatus({ live: true, startedAt: Date.now() });
   await act(async () => {
     mock.timers.tick(1000);
   });
-  await rerenderLiveStatus(root, { live: false, resetKey: 'g1', label: 'completed' });
+  await rerenderLiveStatus(root, { live: false, startedAt: Date.now() });
   assert.equal(container.querySelector('.maka-agent-graph-heartbeat'), null);
   assert.equal(container.querySelector('.maka-agent-graph-elapsed'), null);
   assert.match(container.textContent ?? '', /running · 3\/7 settled/u);
+});
+
+test('a clock skew that puts the start in the future clamps to zero', async () => {
+  mock.timers.enable({ apis: ['Date', 'setInterval'] });
+  const startedAt = Date.now() + 30_000;
+  const { container } = await renderLiveStatus({ live: true, startedAt });
+  assert.match(
+    container.querySelector('.maka-agent-graph-elapsed')?.textContent ?? '',
+    /00:00/u,
+  );
 });
