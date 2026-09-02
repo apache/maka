@@ -18,7 +18,20 @@
  */
 
 import { useEffect, useId, useState, type ReactNode } from 'react';
-import { Badge, Link, List, ListItem } from '@astryxdesign/core';
+import {
+  Badge,
+  Divider,
+  Grid,
+  Heading,
+  HStack,
+  Link,
+  List,
+  ListItem,
+  MetadataList,
+  MetadataListItem,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
 import { Kbd } from '@astryxdesign/core/Kbd';
 import { Sparkles } from '@maka/ui/icons';
 import {
@@ -30,15 +43,12 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
-import { SettingsActions, SettingsPage, SettingsSection } from './settings-section.js';
-import { SettingRow } from './settings-rows.js';
+import { SettingsPage } from './settings-section.js';
 import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
-import { aboutUpdateStatusDetail } from './about-update-status.js';
-import { aboutChannelBadge } from './about-channel-badge.js';
+import { aboutChannelBadge, aboutUpdateStatusDetail } from './about-update-status.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
-import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
@@ -51,7 +61,6 @@ const ISSUE_TRACKER_URL = 'https://github.com/apache/maka/issues';
 export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const locale = useUiLocale();
   const copy = getSettingsPreferencesCopy(locale).about;
-  const sharedCopy = getSettingsSharedCopy(locale);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [infoError, setInfoError] = useState<string | null>(null);
   const [copyingDiagnostics, setCopyingDiagnostics] = useState(false);
@@ -63,6 +72,9 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   const toast = useToast();
   const diagnosticsHelpId = useId();
   const updateHelpId = useId();
+  const updatesHeadingId = useId();
+  const supportHeadingId = useId();
+  const privacyHeadingId = useId();
 
   useEffect(() => {
     let cancelled = false;
@@ -74,16 +86,17 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         }
       })
       .catch((error) => {
-        if (cancelled) return;
-        const message = settingsActionErrorMessage(error, locale);
-        setInfoError(message);
-        toast.error(
-          copy.loadFailed,
-          message,
-          undefined,
-          defaultRuntimeHostDiagnosticTarget(error),
-        );
-    });
+        if (!cancelled) {
+          const message = settingsActionErrorMessage(error, locale);
+          setInfoError(message);
+          toast.error(
+            copy.loadFailed,
+            message,
+            undefined,
+            defaultRuntimeHostDiagnosticTarget(error),
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -163,75 +176,86 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
     );
   } else {
     const channelBadge = aboutChannelBadge(info, copy);
+    const channelKey = info.buildMode === 'dev' ? 'dev' : info.updateChannel;
+    const isDevBuild = info.buildMode === 'dev';
+    // The contract hands us `homePath` for exactly this collapse.
+    const workspaceDisplay = info.workspacePath.startsWith(info.homePath)
+      ? `~${info.workspacePath.slice(info.homePath.length)}`
+      : info.workspacePath;
     aboutContent = (
       <>
-        <PageHeader
-          as_wrapper="div"
-          className="settingsAboutHero"
-          as="h2"
-          icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
-          iconClassName="settingsAboutLogo"
-          headingRowClassName="settingsAboutHeading"
-          title="Maka"
-          badge={
-            <>
-              <Badge variant="neutral" label={`v${info.appVersion}`} />
-              <Badge variant={channelBadge.variant} label={channelBadge.label} />
-            </>
-          }
-          subtitle={copy.subtitle}
-          subtitleClassName="settingsAboutTagline"
-        />
-        {/* Detail audit: the five privacy commitments rendered inside an info
-            Banner — five lines of bold status-blue body copy, the exact blue
-            flood DESIGN.md's Signal-Not-Texture rule forbids. They are ordinary
-            statements, so they read as a quiet marker list in a labeled group. */}
-        <SettingsSection variant="bare" title={copy.privacyTitle}>
-          <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
-            {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
-                and a privacy commitment must wrap, not ellipsize. */}
-            {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
-          </List>
-        </SettingsSection>
-        {/* The keyboard sheet's home. It used to be reachable only from the
-            titlebar's `…` drawer and from two shortcuts — which made the panel
-            that lists the shortcuts openable only by shortcut. It is reference
-            material about the app, so it belongs on 关于, and this is the entry
-            a mouse can find. */}
-        {props.onOpenKeyboardHelp && (
-          <SettingsSection title={sharedCopy.groups.reference}>
-            <SettingRow
-              title={copy.keyboardShortcuts}
-              detail={copy.keyboardShortcutsHelp}
-              action={(
-                <Button variant="ghost" size="sm" onClick={props.onOpenKeyboardHelp} label={copy.keyboardShortcutsOpen} />
-              )}
-            />
-          </SettingsSection>
-        )}
-        <SettingsSection title={copy.updatesTitle}>
-          <SettingRow
-            title={copy.checkForUpdates}
-            detail={aboutUpdateStatusDetail(updateStatus, copy, {
-              isDevBuild: info.buildMode === 'dev',
-            })}
-            action={(
-              <Button
-                variant="secondary"
-                size="sm"
-                isDisabled={checkingUpdate || info.buildMode === 'dev'}
-                aria-describedby={updateHelpId}
-                onClick={() => void checkForUpdates()}
-                label={checkingUpdate || updateStatus?.state === 'checking'
-                  ? copy.checkingForUpdates
-                  : copy.checkForUpdates}
-              />
-            )}
+        <VStack gap={5}>
+          <PageHeader
+            as_wrapper="div"
+            className="settingsAboutHero"
+            as="h2"
+            icon={<Sparkles size={30} /> /* 64% of the 48px plate, matching .providerLogo's fill */}
+            iconClassName="settingsAboutLogo"
+            headingRowClassName="settingsAboutHeading"
+            title="Maka"
+            badge={
+              <>
+                <Badge variant="neutral" label={`v${info.appVersion}`} />
+                <Badge variant={channelBadge.variant} label={channelBadge.label} />
+              </>
+            }
+            subtitle={copy.subtitle}
+            subtitleClassName="settingsAboutTagline"
           />
-          <p id={updateHelpId}>
-            {info.buildMode === 'dev' ? copy.updateDevBuildHelp : copy.updateHelp}
-          </p>
-        </SettingsSection>
+          {/* The archive readout: what channel this is, what it runs on, and
+              where the data lives. Astryx's label → value primitive, the same
+              construction the MCP detail panel uses — no hairlines of ours. */}
+          <MetadataList columns="single" label={{ position: 'start', width: 88 }}>
+            <MetadataListItem label={copy.channelLabel}>
+              <Text type="body">
+                {channelBadge.channelName} · {copy.channelSummaries[channelKey]}
+              </Text>
+            </MetadataListItem>
+            <MetadataListItem label={copy.runtimeLabel}>
+              <Text type="body">
+                {copy.platformNames[info.platform] ?? info.platform} · {info.arch} · Electron {info.electronVersion}
+              </Text>
+            </MetadataListItem>
+            <MetadataListItem label={copy.workspaceLabel}>
+              <Text type="body"><code>{workspaceDisplay}</code></Text>
+            </MetadataListItem>
+          </MetadataList>
+        </VStack>
+        <Divider />
+        <section aria-labelledby={updatesHeadingId}>
+          <Grid columns={{ minWidth: 320, max: 2, repeat: 'fit' }} gap={10}>
+            <VStack gap={1}>
+              <Heading level={3} id={updatesHeadingId}>{copy.updatesTitle}</Heading>
+              <Text type="supporting" size="sm" color="secondary">{copy.updatesLede}</Text>
+            </VStack>
+            <VStack gap={2}>
+              {/* A dev build's status detail IS the explanation (本地开发版不检查
+                  GitHub 发布更新…), so the background-check paragraph must not
+                  repeat it — the old page printed that sentence twice. */}
+              <Text type="body" id={isDevBuild ? updateHelpId : undefined}>
+                {aboutUpdateStatusDetail(updateStatus, copy, { isDevBuild })}
+              </Text>
+              {!isDevBuild && (
+                <Text type="supporting" size="sm" color="secondary" id={updateHelpId}>
+                  {copy.updateHelp}
+                </Text>
+              )}
+              <HStack gap={2}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  isDisabled={checkingUpdate || isDevBuild}
+                  aria-describedby={updateHelpId}
+                  onClick={() => void checkForUpdates()}
+                  label={checkingUpdate || updateStatus?.state === 'checking'
+                    ? copy.checkingForUpdates
+                    : copy.checkForUpdates}
+                />
+              </HStack>
+            </VStack>
+          </Grid>
+        </section>
+        <Divider />
       </>
     );
   }
@@ -239,22 +263,80 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
   return (
     <SettingsPage>
       {aboutContent}
-      <SettingsSection title={sharedCopy.groups.buildInfo}>
-        <SettingsActions>
-          <Button
-            variant="primary"
-            isDisabled={copyingDiagnostics}
-            aria-describedby={diagnosticsHelpId}
-            onClick={() => void copyDiagnostics()}
-            label={copyingDiagnostics ? copy.copying : copy.copyDiagnostics}
-          />
-          <Kbd keys="mod+shift+d" />
-          <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
-            {copy.reportIssueLabel}
-          </Link>
-          <p id={diagnosticsHelpId}>{copy.copyHelp}</p>
-        </SettingsActions>
-      </SettingsSection>
+      {/* Support lives OUTSIDE the info conditional on purpose: copying
+          diagnostics must not depend on `app.info` succeeding — that is the
+          very moment a user needs it. The keyboard sheet used to be reachable
+          only from the titlebar's `…` drawer and two shortcuts, which made
+          the panel listing the shortcuts openable only by shortcut; this is
+          the entry a mouse can find. */}
+      <section aria-labelledby={supportHeadingId}>
+        <Grid columns={{ minWidth: 320, max: 2, repeat: 'fit' }} gap={10}>
+          <VStack gap={1}>
+            <Heading level={3} id={supportHeadingId}>{copy.supportTitle}</Heading>
+            <Text type="supporting" size="sm" color="secondary">{copy.supportLede}</Text>
+          </VStack>
+          <VStack gap={5}>
+            <VStack gap={1} align="start">
+              <Text type="label">{copy.copyDiagnostics}</Text>
+              <Text type="supporting" size="sm" color="secondary" id={diagnosticsHelpId}>
+                {copy.copyHelp}
+              </Text>
+              <HStack gap={2}>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  isDisabled={copyingDiagnostics}
+                  aria-describedby={diagnosticsHelpId}
+                  onClick={() => void copyDiagnostics()}
+                  label={copyingDiagnostics ? copy.copying : copy.copyAction}
+                />
+                <Kbd keys="mod+shift+d" />
+              </HStack>
+            </VStack>
+            <VStack gap={1} align="start">
+              <Text type="label">{copy.reportIssueLabel}</Text>
+              <Text type="supporting" size="sm" color="secondary">{copy.reportIssueHelp}</Text>
+              <HStack gap={2}>
+                <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
+                  {copy.reportIssueOpen}
+                </Link>
+              </HStack>
+            </VStack>
+            {props.onOpenKeyboardHelp && (
+              <VStack gap={1} align="start">
+                <Text type="label">{copy.keyboardShortcuts}</Text>
+                <Text type="supporting" size="sm" color="secondary">{copy.keyboardShortcutsHelp}</Text>
+                <HStack gap={2}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={props.onOpenKeyboardHelp}
+                    label={copy.keyboardShortcutsOpen}
+                  />
+                </HStack>
+              </VStack>
+            )}
+          </VStack>
+        </Grid>
+      </section>
+      {info && (
+        <>
+          <Divider />
+          <section aria-labelledby={privacyHeadingId}>
+            <Grid columns={{ minWidth: 320, max: 2, repeat: 'fit' }} gap={10}>
+              <VStack gap={1}>
+                <Heading level={3} id={privacyHeadingId}>{copy.privacyTitle}</Heading>
+                <Text type="supporting" size="sm" color="secondary">{copy.privacyLede}</Text>
+              </VStack>
+              <List aria-label={copy.privacyLabel} density="compact" listStyle="disc">
+                {/* Fragment-wrapped: ListItem single-line-truncates STRING labels,
+                    and a privacy commitment must wrap, not ellipsize. */}
+                {copy.privacyPoints.map((point) => <ListItem key={point} label={<>{point}</>} />)}
+              </List>
+            </Grid>
+          </section>
+        </>
+      )}
     </SettingsPage>
   );
 }

@@ -19,7 +19,9 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { aboutChannelBadge } from '../../renderer/settings/about-channel-badge.js';
+import {
+  aboutChannelBadge,
+} from '../../renderer/settings/about-update-status.js';
 import { getSettingsPreferencesCopy } from '../../renderer/locales/settings-preferences-copy.js';
 
 const copy = getSettingsPreferencesCopy('zh').about;
@@ -29,7 +31,11 @@ test('a packaged nightly build is labelled Nightly, never 正式版', () => {
     { buildMode: 'packaged', buildCommit: null, updateChannel: 'nightly' },
     copy,
   );
-  assert.deepEqual(badge, { label: 'Nightly', variant: 'orange' });
+  assert.deepEqual(badge, {
+    label: 'Nightly',
+    variant: 'orange',
+    channelName: 'Nightly',
+  });
 });
 
 test('a packaged release build keeps the release pill', () => {
@@ -37,7 +43,11 @@ test('a packaged release build keeps the release pill', () => {
     { buildMode: 'packaged', buildCommit: null, updateChannel: 'release' },
     copy,
   );
-  assert.deepEqual(badge, { label: '正式版', variant: 'blue' });
+  assert.deepEqual(badge, {
+    label: '正式版',
+    variant: 'blue',
+    channelName: '正式版',
+  });
 });
 
 test('a dev checkout carries its commit on a neutral pill', () => {
@@ -45,11 +55,19 @@ test('a dev checkout carries its commit on a neutral pill', () => {
     { buildMode: 'dev', buildCommit: 'abc1234', updateChannel: 'release' },
     copy,
   );
-  assert.deepEqual(withCommit, { label: '本地开发版 · abc1234', variant: 'neutral' });
+  assert.deepEqual(withCommit, {
+    label: '本地开发版 · abc1234',
+    variant: 'neutral',
+    channelName: '本地开发版',
+  });
 
   const withoutCommit = aboutChannelBadge(
     { buildMode: 'dev', buildCommit: null, updateChannel: 'nightly' },
     copy,
   );
-  assert.deepEqual(withoutCommit, { label: '本地开发版', variant: 'neutral' });
+  assert.deepEqual(withoutCommit, {
+    label: '本地开发版',
+    variant: 'neutral',
+    channelName: '本地开发版',
+  });
 });
