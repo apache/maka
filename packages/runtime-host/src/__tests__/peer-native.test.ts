@@ -253,6 +253,26 @@ module.exports = {
       coordinationRelays: ['/memory/fresh-relay', '/memory/stale-relay'],
       transitRelayPeerIds: [],
     });
+    for (let index = 0; index < 160; index += 1) {
+      const peerId = `remembered-${index}`;
+      client.observeAuthenticatedReachability({
+        expectedPeerId: peerId,
+        value: signedReachability(peerId, [`/memory/${peerId}`], []),
+      });
+    }
+    await client.connect({
+      ...peerConnectInput('observed'),
+      routeHints: ['/memory/stale'],
+      coordinationRelays: ['/memory/stale-relay'],
+      refreshRoutes: false,
+    });
+    assert.deepEqual(native.default.stats.requests.at(-1), {
+      requestId: 9,
+      peerId: 'observed',
+      routeHints: ['/memory/stale'],
+      coordinationRelays: ['/memory/stale-relay'],
+      transitRelayPeerIds: [],
+    });
     assert.deepEqual(native.default.stats.cancellations, [1, 1]);
 
     await assert.rejects(

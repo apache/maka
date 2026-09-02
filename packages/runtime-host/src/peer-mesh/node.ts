@@ -1053,11 +1053,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   #setRecoverySweepCompleted(peerId: string, completed: boolean): void {
-    const changed = completed
+    const retain = completed && this.#pruneCompletedRecoverySweeps().has(peerId);
+    const changed = retain
       ? !this.#completedRecoverySweeps.has(peerId)
       : this.#completedRecoverySweeps.has(peerId);
     if (!changed) return;
-    if (completed) this.#completedRecoverySweeps.add(peerId);
+    if (retain) this.#completedRecoverySweeps.add(peerId);
     else this.#completedRecoverySweeps.delete(peerId);
     for (const listener of this.#routeResolutionListeners.get(peerId) ?? []) listener();
   }

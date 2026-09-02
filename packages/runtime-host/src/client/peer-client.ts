@@ -40,6 +40,9 @@ import {
 } from '../transport/peer-native.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 
+// One Desktop endpoint can retain 32 Host profiles and 128 guest mounts.
+const AUTHENTICATED_REACHABILITY_MAX_ENTRIES = 160;
+
 export interface RuntimeHostPeerConnectInput {
   readonly peerId: string;
   readonly routeHints: readonly string[];
@@ -318,11 +321,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       verifyIdentity: this.verifyIdentity.bind(this),
       ...(input.allowExpired === undefined ? {} : { allowExpired: input.allowExpired }),
     });
+    this.#pruneAuthenticatedReachability(now);
     let current = this.#authenticatedReachability.get(input.expectedPeerId);
-    if (current && !isPeerReachabilityLeaseRecoverable(current.signed.lease, now)) {
-      this.#authenticatedReachability.delete(input.expectedPeerId);
-      current = undefined;
-    }
     if (!isPeerReachabilityLeaseRecoverable(next.lease, now)) return current?.signed ?? next;
     if (current && current.signed.lease.revision >= next.lease.revision) {
       if (
@@ -331,9 +331,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       ) {
         throw new Error('Peer reachability revision contains conflicting signed facts');
       }
+      this.#rememberAuthenticatedReachability(input.expectedPeerId, current);
       return current.signed;
     }
-    this.#authenticatedReachability.set(input.expectedPeerId, {
+    this.#rememberAuthenticatedReachability(input.expectedPeerId, {
       signed: next,
       receipt: peerReachabilityLeaseReceipt({
         signed: next,
@@ -343,6 +344,35 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     });
     this.#notifyRouteChange(input.expectedPeerId);
     return next;
+  }
+
+  #pruneAuthenticatedReachability(now: number): void {
+    for (const [peerId, authenticated] of this.#authenticatedReachability) {
+      if (!isPeerReachabilityLeaseRecoverable(authenticated.signed.lease, now)) {
+        this.#authenticatedReachability.delete(peerId);
+        this.#notifyRouteChange(peerId);
+      }
+    }
+  }
+
+  #rememberAuthenticatedReachability(
+    peerId: string,
+    authenticated: AuthenticatedReachability,
+  ): void {
+    this.#authenticatedReachability.delete(peerId);
+    this.#authenticatedReachability.set(peerId, authenticated);
+    while (this.#authenticatedReachability.size > AUTHENTICATED_REACHABILITY_MAX_ENTRIES) {
+      let unobservedPeerId: string | undefined;
+      for (const candidatePeerId of this.#authenticatedReachability.keys()) {
+        if (this.#routeListeners.has(candidatePeerId)) continue;
+        unobservedPeerId = candidatePeerId;
+        break;
+      }
+      const evictedPeerId = unobservedPeerId ?? this.#authenticatedReachability.keys().next().value;
+      if (evictedPeerId === undefined) break;
+      this.#authenticatedReachability.delete(evictedPeerId);
+      this.#notifyRouteChange(evictedPeerId);
+    }
   }
 
   async connect(
@@ -742,6 +772,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     for (const unsubscribe of this.#routeResolverSubscriptions.values()) unsubscribe();
     this.#routeResolverSubscriptions.clear();
     this.#routeListeners.clear();
+    this.#authenticatedReachability.clear();
     const endpoint = this.#endpoint;
     this.#endpoint = undefined;
     if (!endpoint) return;
