@@ -28,7 +28,6 @@ import {
   type TurnLineageBadge,
   type TurnLineageTarget,
   type TurnPresentation,
-  type TurnPresentationDeriver,
   type TurnViewModel,
 } from '@maka/ui';
 import {
@@ -266,7 +265,7 @@ export function deriveAppShellTurnPresentation(
  */
 export function useAppShellTurnPresentation(
   context: AppShellTurnPresentationContext,
-): TurnPresentationDeriver {
+): (turns: readonly TurnViewModel[]) => TurnPresentation {
   const derivation = useRef<AppShellTurnPresentationDerivation>(undefined);
   derivation.current ??= createAppShellTurnPresentationDerivation();
   return (turns) => derivation.current!.derive(turns, context);

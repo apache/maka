@@ -787,8 +787,8 @@
           "@maka/ui": 1,
           "react": 1
         },
-        "importSpecifiers": 19,
-        "nonTriviaTokens": 1417
+        "importSpecifiers": 18,
+        "nonTriviaTokens": 1423
       },
       "src/renderer/app-shell.tsx": {
         "importDeclarations": 105,
