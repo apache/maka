@@ -332,9 +332,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
         rootId: host.rootId,
         transport: {
           kind: 'libp2p-direct',
-          peerId,
-          routeHints: listener.reachability.lease.directRoutes,
-          coordinationRelays: listener.reachability.lease.coordinationRoutes,
+          reachability: listener.reachability,
         },
       },
       credential: issued.credential,

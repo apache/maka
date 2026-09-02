@@ -64,8 +64,8 @@ export type RuntimeHostPeerRouteResolution =
 
 export interface RuntimeHostPeerRouteResolver {
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
-  prepareRoutes?(peerId: string, signal: AbortSignal): Promise<void>;
-  subscribeRoutes?(peerId: string, listener: () => void): () => void;
+  prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
+  subscribeRoutes(peerId: string, listener: () => void): () => void;
 }
 
 export class RuntimeHostPeerReachabilityUnavailableError extends RuntimeHostPermanentReconnectError {
@@ -359,7 +359,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     signal?: AbortSignal,
     onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
-    if (input.refreshRoutes !== false && this.#routeResolver?.prepareRoutes) {
+    if (input.refreshRoutes !== false && this.#routeResolver) {
       notifyPhase(onPhase, 'discovering');
     }
     notifyPhase(onPhase, 'connecting');
@@ -370,11 +370,12 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     input: RuntimeHostPeerConnectInput,
     signal: AbortSignal | undefined,
   ): Promise<void> {
-    if (!this.#routeResolver?.prepareRoutes) return;
+    const resolver = this.#routeResolver;
+    if (!resolver) return;
     const deadline = AbortSignal.timeout(Math.min(10_000, input.directDeadlineMs));
     const operationSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
-      await this.#routeResolver.prepareRoutes(input.peerId, operationSignal);
+      await resolver.prepareRoutes(input.peerId, operationSignal);
     } catch {
       // Route preparation enriches an invitation/profile with fresher Mesh
       // routes. It must not suppress explicit routes the caller already has.
@@ -623,10 +624,12 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   #subscribeResolver(peerId: string): void {
     if (this.#routeResolverSubscriptions.has(peerId)) return;
-    const unsubscribe = this.#routeResolver?.subscribeRoutes?.(peerId, () => {
+    const resolver = this.#routeResolver;
+    if (!resolver) return;
+    const unsubscribe = resolver.subscribeRoutes(peerId, () => {
       this.#notifyRouteChange(peerId);
     });
-    if (unsubscribe) this.#routeResolverSubscriptions.set(peerId, unsubscribe);
+    this.#routeResolverSubscriptions.set(peerId, unsubscribe);
   }
 
   #notifyRouteChange(peerId: string): void {

@@ -297,8 +297,12 @@ charter. Their evidence is adjudicated into this ledger:
 | R3-C1 | correctness | confirmed | Publisher renewal now uses a monotonic receipt deadline, immediately replaces a lease whose issue time is ahead of the local wall clock, and authenticates persisted local state without applying receiver freshness policy. A rollback therefore neither strands renewal nor prevents restart. |
 | R3-S1 | simplification | confirmed | Peer listeners no longer expose an unused `ownsClient` branch; the endpoint owner remains the only client lifetime authority. |
 | R3-S2 | simplification | confirmed | Replica state no longer duplicates authority reachability. Invitation and redemption evidence merge into the bounded common lease table, while the signed roster remains the sole authority-identity source. |
-| R4-CI1 | CI | confirmed | The installed CLI smoke exposed an untyped borrowed-client path that the service mistook for native endpoint configuration. Borrowing is now explicit as `borrowedEndpoint`; the service observes but never closes it, while configured endpoints remain service-owned. The installed development tarball smoke passes. |
+| R4-CI1 | CI | confirmed | The installed CLI smoke exposed an untyped client/configuration ambiguity. The service now accepts only endpoint configuration and always owns the resulting endpoint; the smoke uses that production composition and an independent Mesh fixture instead of injecting a borrowed endpoint. |
 | R4-S1 | simplification | confirmed | The legacy combined Mesh owner duplicated endpoint and Mesh-component composition solely for release smoke. It was removed; callers now compose and close those two independently owned lifetimes in dependency order. |
+| R5-C1 | correctness | confirmed | The top-stack installed CLI smoke now supplies the listener's signed reachability object instead of the removed flat Direct transport fields. |
+| R5-C2 | correctness | confirmed | Desktop shutdown settles Mesh cleanup before endpoint cleanup but never lets a Mesh failure skip the endpoint owner; it reports accumulated failures only after both lifetimes have been released. |
+| R5-S1 | simplification | confirmed | The test-only borrowed endpoint service mode was removed. Runtime Host service ownership is now invariant, while tests that need independent endpoints compose them outside the service. |
+| R5-S2 | simplification | confirmed | An attached route resolver is now one complete snapshot/refresh/subscription capability. The client still supports no resolver, but no longer carries unused partial-capability branches. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a

@@ -166,6 +166,7 @@ module.exports = {
                 coordinationRelays: [],
                 transitRelayPeerIds: [],
               },
+      subscribeRoutes: () => () => undefined,
     });
     const native = await import(nativePath);
     const phases: string[] = [];
