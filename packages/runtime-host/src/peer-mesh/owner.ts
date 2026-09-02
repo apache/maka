@@ -49,21 +49,37 @@ export async function openRuntimeHostPeerMeshComponent(
       ? { onBackgroundReconcileError: input.onBackgroundReconcileError }
       : {}),
   });
-  const serving = mesh.serve();
+  let detachResolver: (() => void) | undefined;
+  let serving: Promise<void>;
+  try {
+    detachResolver = input.endpoint.client.attachRouteResolver(mesh);
+    serving = mesh.serve();
+  } catch (error) {
+    detachResolver?.();
+    await mesh.close().catch(() => undefined);
+    throw error;
+  }
   let closeTask: Promise<void> | undefined;
   const close = () => {
-    closeTask ??= closeMesh(mesh, serving);
+    closeTask ??= closeMesh(mesh, serving, detachResolver!);
     return closeTask;
   };
   const closed = serving.then(
-    () => closeTask ?? stopUnexpectedMesh(mesh, new Error('Peer Mesh stopped unexpectedly')),
-    (error: unknown) => closeTask ?? stopUnexpectedMesh(mesh, error),
+    () =>
+      closeTask ??
+      stopUnexpectedMesh(mesh, detachResolver!, new Error('Peer Mesh stopped unexpectedly')),
+    (error: unknown) => closeTask ?? stopUnexpectedMesh(mesh, detachResolver!, error),
   );
   void closed.catch(() => undefined);
   return Object.freeze({ mesh, closed, close });
 }
 
-async function stopUnexpectedMesh(mesh: PeerMeshNode, error: unknown): Promise<never> {
+async function stopUnexpectedMesh(
+  mesh: PeerMeshNode,
+  detachResolver: () => void,
+  error: unknown,
+): Promise<never> {
+  detachResolver();
   try {
     await mesh.close();
   } catch (closeError) {
@@ -72,8 +88,13 @@ async function stopUnexpectedMesh(mesh: PeerMeshNode, error: unknown): Promise<n
   throw error;
 }
 
-async function closeMesh(mesh: PeerMeshNode, serving: Promise<void>): Promise<void> {
+async function closeMesh(
+  mesh: PeerMeshNode,
+  serving: Promise<void>,
+  detachResolver: () => void,
+): Promise<void> {
   const errors: unknown[] = [];
+  detachResolver();
   await mesh.close().catch((error: unknown) => errors.push(error));
   await serving.catch((error: unknown) => errors.push(error));
   throwCollected(errors, 'Unable to close Peer Mesh');

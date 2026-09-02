@@ -23,6 +23,7 @@ export const PEER_REACHABILITY_LEASE_TTL_MS = 5 * 60 * 1_000;
 export const PEER_REACHABILITY_REFRESH_LEAD_MS = 60 * 1_000;
 export const PEER_REACHABILITY_MAX_LIFETIME_MS = 10 * 60 * 1_000;
 export const PEER_REACHABILITY_MAX_CLOCK_SKEW_MS = 2 * 60 * 1_000;
+export const PEER_REACHABILITY_RECOVERY_HORIZON_MS = 24 * 60 * 60 * 1_000;
 export const PEER_REACHABILITY_MAX_ROUTES_PER_CLASS = 16;
 export const PEER_REACHABILITY_MAX_RECORD_BYTES = 48 * 1_024;
 
@@ -211,6 +212,13 @@ export function isPeerReachabilityLeaseCurrent(
       receipt.signature === signed.signature &&
       receipt.currentUntil > monotonicNow,
   );
+}
+
+export function isPeerReachabilityLeaseRecoverable(
+  lease: PeerReachabilityLeaseV1,
+  now: number,
+): boolean {
+  return lease.expiresAt > now - PEER_REACHABILITY_RECOVERY_HORIZON_MS;
 }
 
 function exactRecord(

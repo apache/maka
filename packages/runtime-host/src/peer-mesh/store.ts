@@ -95,6 +95,7 @@ export interface PeerMeshStoredStateV1 {
 export interface PeerMeshStateStore {
   readonly terminalFailure: Promise<never>;
   read(): PeerMeshStoredStateV1;
+  subscribe(listener: () => void): () => void;
   mutate<T>(
     operation: (state: PeerMeshStoredStateV1) =>
       | {
@@ -169,6 +170,7 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   #failure: Error | undefined;
   #closeTask: Promise<void> | undefined;
   #closed = false;
+  readonly #listeners = new Set<() => void>();
 
   constructor(
     dataRoot: string,
@@ -189,6 +191,12 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
   read(): PeerMeshStoredStateV1 {
     this.#assertOpen();
     return this.#state;
+  }
+
+  subscribe(listener: () => void): () => void {
+    this.#assertOpen();
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
   }
 
   mutate<T>(
@@ -213,6 +221,13 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
       try {
         await writeState(this.#path, this.localPeerId, canonical);
         this.#state = canonical;
+        for (const listener of this.#listeners) {
+          try {
+            listener();
+          } catch {
+            // Persisted state remains authoritative when an observer fails.
+          }
+        }
       } catch (error) {
         if (error instanceof PeerMeshPostCommitError) {
           this.#state = canonical;
@@ -238,6 +253,7 @@ class PeerMeshStateStoreImpl implements PeerMeshStateStore {
 
   async #close(): Promise<void> {
     this.#closed = true;
+    this.#listeners.clear();
     await this.#tail;
     await this.owner.close();
   }

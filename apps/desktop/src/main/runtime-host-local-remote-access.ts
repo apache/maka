@@ -27,7 +27,7 @@ import {
   issueRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import type { HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostPeerEndpoint, HostRegistration } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
@@ -107,9 +107,7 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
     readonly name: string;
     readonly transport: {
       readonly kind: 'libp2p-direct';
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
+      readonly reachability: HostPeerEndpoint;
     };
   }>;
   enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
@@ -349,7 +347,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         encodeRuntimeHostOwnerConnectionCode({
           name: hostName(),
           rootId: completed.managed.rootId,
-          transport: { kind: 'libp2p-direct', ...livePeer },
+          transport: { kind: 'libp2p-direct', reachability: livePeer },
           credential: completed.credential,
         }),
       );
@@ -524,7 +522,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       const livePeer = await readLivePeer(localClient(input.manager), peer);
       return {
         name: hostName(),
-        transport: { kind: 'libp2p-direct' as const, ...livePeer },
+        transport: { kind: 'libp2p-direct' as const, reachability: livePeer },
       };
     });
 
@@ -993,7 +991,7 @@ async function issueConnectionCode(
 async function readLivePeer(
   client: DesktopRuntimeHostClient,
   configured: LocalPeerDescriptor,
-): Promise<LocalPeerDescriptor> {
+): Promise<HostPeerEndpoint> {
   const endpoint = (await client.status()).peerEndpoint;
   if (!endpoint) {
     throw new Error('Runtime Host Direct peer is not available');
@@ -1001,12 +999,7 @@ async function readLivePeer(
   if (endpoint.lease.peerId !== configured.peerId) {
     throw new Error('Runtime Host Direct peer identity changed');
   }
-  return requireEnabledPeer({
-    state: 'enabled',
-    peerId: endpoint.lease.peerId,
-    routeHints: endpoint.lease.directRoutes,
-    coordinationRelays: endpoint.lease.coordinationRoutes,
-  });
+  return endpoint;
 }
 
 async function hasSharedAccess(

@@ -124,10 +124,11 @@ maka runtime-host service peer descriptor \
 ```
 
 The descriptor contains the PeerId, Root ID, and candidate routes, but never an access credential.
-Use those values with `runtime-host profile set --peer-id ... --peer-route ...`; supply the
-credential created by setup through `MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL`. Disable and re-enable
-preserve the PeerId and listener settings; `peer rotate` intentionally changes the PeerId, and
-service uninstall removes its key while retaining the State Root. Pass
+Raw descriptor routes are diagnostic output, not a durable Client profile: routes can change and
+are not authenticated as a current reachability claim. Use a one-time connection code when adding
+a Direct peer to Desktop. Disable and re-enable preserve the PeerId and listener settings; `peer
+rotate` intentionally changes the PeerId, and service uninstall removes its key while retaining the
+State Root. Pass
 `peer enable --clear-coordination-relays` to remove every configured coordination relay.
 
 This direct-only path is experimental and may fail on restrictive NAT or UDP-blocked networks. It

@@ -48,16 +48,22 @@ test('shares one peer endpoint, serializes same-peer connects, and cancels indep
       nativePath,
       `let finishAccept;
 let finishMeshAccept;
+let finishConnectivity;
+let connectivity = { generation: 0, connectedPeerIds: [] };
 const pending = new Map();
-const stats = { starts: 0, closes: 0, requests: [], cancellations: [] };
+const stats = { starts: 0, closes: 0, requests: [], updates: [], cancellations: [] };
 let missFirstCancellation = true;
-let selfContainedRoutesPrepared = false;
 const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   stats,
   resolveConnect: (requestId) => {
     pending.get(requestId)?.resolve(stream);
     pending.delete(requestId);
+  },
+  establishPeer: (peerId) => {
+    connectivity = { generation: connectivity.generation + 1, connectedPeerIds: [peerId] };
+    finishConnectivity?.(connectivity);
+    finishConnectivity = undefined;
   },
   failEndpoint: () => { finishAccept?.(null); finishMeshAccept?.(null); },
   ensurePeerIdentity: async () => 'client',
@@ -68,23 +74,33 @@ module.exports = {
     return {
       peerId: 'client',
       reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
+      get connectivitySnapshot() { return connectivity; },
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
       watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+      watchConnectivity: async (afterGeneration) => connectivity.generation === afterGeneration
+        ? new Promise((resolve) => { finishConnectivity = resolve; })
+        : connectivity,
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'observed' || (peerId === 'self-contained' && selfContainedRoutesPrepared)) return Promise.resolve(stream);
-        return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'observed') return Promise.resolve(stream);
+        return new Promise((resolve, reject) => pending.set(requestId, { peerId, resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
-        if (peerId === 'ready' || peerId === 'self-contained') {
-          if (peerId === 'self-contained') selfContainedRoutesPrepared = true;
-          return Promise.resolve(stream);
-        }
-        return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
+        if (peerId === 'ready' || peerId === 'self-contained') return Promise.resolve(stream);
+        return new Promise((resolve, reject) => pending.set(requestId, { peerId, resolve, reject }));
       },
       configureTransit: async () => {},
+      updateConnect: async (options) => {
+        stats.updates.push(options);
+        const request = pending.get(options.requestId);
+        if (request?.peerId === 'self-contained') {
+          request.resolve(stream);
+          pending.delete(options.requestId);
+        }
+        return Boolean(request);
+      },
       cancelConnect: async (requestId) => {
         stats.cancellations.push(requestId);
         if (missFirstCancellation) {
@@ -97,13 +113,14 @@ module.exports = {
       },
       accept: () => new Promise((resolve) => { finishAccept = resolve; }),
       acceptMeshControl: () => new Promise((resolve) => { finishMeshAccept = resolve; }),
-      close: async () => { stats.closes += 1; finishAccept?.(null); finishMeshAccept?.(null); },
+      close: async () => { stats.closes += 1; finishAccept?.(null); finishMeshAccept?.(null); finishConnectivity?.(connectivity); },
     };
   },
 };
 `,
     );
     let routesPrepared = false;
+    let selfContainedRoutesPrepared = false;
     const preparedPeerIds: string[] = [];
     let client!: ReturnType<typeof createRuntimeHostPeerClient>;
     client = createRuntimeHostPeerClient({
@@ -115,11 +132,13 @@ module.exports = {
           routesPrepared = true;
           if (peerId === 'fallback') throw new Error('Mesh refresh failed');
           if (peerId === 'self-contained') {
-            await client.connectMeshControl(peerConnectInput(peerId));
+            await new Promise((resolve) => setImmediate(resolve));
+            selfContainedRoutesPrepared = true;
           }
         },
         resolveRoutes: (peerId) =>
-          routesPrepared && peerId !== 'observed'
+          peerId !== 'observed' &&
+          (peerId === 'self-contained' ? selfContainedRoutesPrepared : routesPrepared)
             ? {
                 state: 'available',
                 routeHints: ['/memory/discovered'],
@@ -181,86 +200,54 @@ module.exports = {
     });
     await selfContained;
     assert.equal(preparedPeerIds.includes('self-contained'), true);
-    client.observeAuthenticatedRoutes({
-      peerId: 'observed',
-      routeHints: ['/memory/fresh'],
-      coordinationRelays: ['/memory/fresh-relay'],
+    client.observeAuthenticatedReachability({
+      expectedPeerId: 'observed',
+      value: signedReachability('observed', ['/memory/fresh'], ['/memory/fresh-relay']),
     });
     await client.connect({
       ...peerConnectInput('observed'),
       routeHints: ['/memory/stale'],
       coordinationRelays: ['/memory/stale-relay'],
     });
-    assert.deepEqual(native.default.stats, {
-      starts: 1,
-      closes: 0,
-      requests: [
-        {
-          requestId: 1,
-          peerId: 'pending',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 2,
-          peerId: 'shared',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 3,
-          peerId: 'shared',
-          routeHints: ['/memory/1'],
-          coordinationRelays: [],
-          transitRelayPeerIds: [],
-        },
-        {
-          requestId: 4,
-          peerId: 'ready',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 5,
-          peerId: 'fallback',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 6,
-          peerId: 'unreachable',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 7,
-          peerId: 'self-contained',
-          routeHints: ['/memory/1'],
-          coordinationRelays: [],
-          transitRelayPeerIds: [],
-        },
-        {
-          requestId: 8,
-          peerId: 'self-contained',
-          routeHints: ['/memory/discovered', '/memory/1'],
-          coordinationRelays: ['/memory/relay', '/memory/explicit-relay'],
-          transitRelayPeerIds: ['transit-peer'],
-        },
-        {
-          requestId: 9,
-          peerId: 'observed',
-          routeHints: ['/memory/fresh', '/memory/stale'],
-          coordinationRelays: ['/memory/fresh-relay', '/memory/stale-relay'],
-          transitRelayPeerIds: [],
-        },
-      ],
-      cancellations: [1, 1],
+    assert.equal(native.default.stats.starts, 1);
+    assert.equal(native.default.stats.closes, 0);
+    assert.equal(native.default.stats.requests.length, 8);
+    assert.equal(
+      native.default.stats.requests.filter(
+        ({ peerId }: { peerId: string }) => peerId === 'self-contained',
+      ).length,
+      1,
+    );
+    assert.deepEqual(native.default.stats.requests[0], {
+      requestId: 1,
+      peerId: 'pending',
+      routeHints: ['/memory/1'],
+      coordinationRelays: [],
+      transitRelayPeerIds: [],
     });
+    assert.deepEqual(native.default.stats.updates[0], {
+      requestId: 1,
+      routeHints: ['/memory/discovered', '/memory/1'],
+      coordinationRelays: ['/memory/relay'],
+      transitRelayPeerIds: ['transit-peer'],
+    });
+    assert.deepEqual(native.default.stats.requests.at(-1), {
+      requestId: 8,
+      peerId: 'observed',
+      routeHints: ['/memory/fresh', '/memory/stale'],
+      coordinationRelays: ['/memory/fresh-relay', '/memory/stale-relay'],
+      transitRelayPeerIds: [],
+    });
+    assert.deepEqual(native.default.stats.cancellations, [1, 1]);
+
+    let connectivityWakeups = 0;
+    const unsubscribeConnectivity = client.subscribeRoutes('restored', () => {
+      connectivityWakeups += 1;
+    });
+    native.default.establishPeer('restored');
+    await waitForImmediate();
+    assert.equal(connectivityWakeups, 1);
+    unsubscribeConnectivity();
 
     native.default.failEndpoint();
     await waitForImmediate();
@@ -308,13 +295,16 @@ module.exports = {
   startPeerEndpoint: (options) => {
     starts.push(options);
     return ({
-    peerId: 'peer',
-    reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
+	    peerId: 'peer',
+	    reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
+	    connectivitySnapshot: { generation: 0, connectedPeerIds: [] },
     transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
-    watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+	    watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
+	    watchConnectivity: async () => ({ generation: 0, connectedPeerIds: [] }),
     connect: async () => stream,
     connectMeshControl: async () => stream,
     configureTransit: async () => {},
+    updateConnect: async () => true,
     cancelConnect: async () => true,
     accept: async () => null,
     acceptMeshControl: async () => null,
@@ -389,6 +379,27 @@ function streamWith(chunk: Buffer): RuntimeHostPeerNativeStream {
     write: async () => undefined,
     close: async () => undefined,
     abort: () => undefined,
+  };
+}
+
+function signedReachability(
+  peerId: string,
+  directRoutes: readonly string[],
+  coordinationRoutes: readonly string[],
+) {
+  const now = Date.now();
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }
 

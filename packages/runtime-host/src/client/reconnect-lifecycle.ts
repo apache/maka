@@ -49,6 +49,7 @@ export interface RuntimeHostReconnectLifecycle<T extends RuntimeHostReconnectRes
   readonly current: T | undefined;
   waitForCurrent(previous?: T, signal?: AbortSignal): Promise<T>;
   subscribe(listener: (current: T | undefined) => void): () => void;
+  wake(): void;
   suspend(): Promise<RuntimeHostReconnectSuspension<T>>;
   quiesce(): Promise<RuntimeHostReconnectQuiescence<T>>;
   close(): Promise<void>;
@@ -121,6 +122,8 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   #discardTask: Promise<void> = Promise.resolve();
   #closeTask: Promise<void> | undefined;
   #resolveClosed!: () => void;
+  #wakeDelay: (() => void) | undefined;
+  #wakeGeneration = 0;
 
   constructor(input: {
     readonly initial?: T;
@@ -195,6 +198,13 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   subscribe(listener: (current: T | undefined) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  wake(): void {
+    this.#wakeGeneration += 1;
+    const wake = this.#wakeDelay;
+    this.#wakeDelay = undefined;
+    wake?.();
   }
 
   async suspend(): Promise<RuntimeHostReconnectSuspension<T>> {
@@ -301,6 +311,7 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
   }
 
   async #reconnect(signal: AbortSignal): Promise<void> {
+    let attemptedWakeGeneration = this.#wakeGeneration;
     while (!this.#closed && !this.#quiesced && !this.#terminalError && !this.#current) {
       const delayMs = reconnectDelayMs(
         this.#failureCount - 1,
@@ -309,8 +320,12 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
         this.#random,
         this.#unstableMaxMs,
       );
+      const wakeGeneration = this.#wakeGeneration;
       try {
-        if (delayMs > 0) await this.#wait(delayMs, signal);
+        if (delayMs > 0 && wakeGeneration === attemptedWakeGeneration) {
+          await this.#waitForReconnectDelay(delayMs, signal, wakeGeneration);
+        }
+        attemptedWakeGeneration = this.#wakeGeneration;
         const resource = await this.#connect(signal);
         this.#install(resource);
       } catch (error) {
@@ -323,6 +338,28 @@ class RuntimeHostReconnectLifecycleImpl<T extends RuntimeHostReconnectResource>
         this.#failureCount += 1;
         notifyError(this.#onReconnectError, failure);
       }
+    }
+  }
+
+  async #waitForReconnectDelay(
+    delayMs: number,
+    signal: AbortSignal,
+    observedWakeGeneration: number,
+  ): Promise<void> {
+    if (this.#wakeGeneration !== observedWakeGeneration) return;
+    let wake!: () => void;
+    const routeAvailable = new Promise<void>((resolve) => {
+      wake = resolve;
+    });
+    const delayAbort = new AbortController();
+    const delaySignal = AbortSignal.any([signal, delayAbort.signal]);
+    this.#wakeDelay = wake;
+    if (this.#wakeGeneration !== observedWakeGeneration) wake();
+    try {
+      await Promise.race([this.#wait(delayMs, delaySignal), routeAvailable]);
+    } finally {
+      if (this.#wakeDelay === wake) this.#wakeDelay = undefined;
+      delayAbort.abort();
     }
   }
 

@@ -75,7 +75,8 @@ export function registerRuntimeHostCollaborationIpc(
             target.transport.kind === 'libp2p-direct'
               ? {
                   kind: 'peer' as const,
-                  coordinationRelayCount: target.transport.coordinationRelays.length,
+                  coordinationRelayCount:
+                    target.transport.reachability.lease.coordinationRoutes.length,
                 }
               : { kind: 'configured' as const },
         },

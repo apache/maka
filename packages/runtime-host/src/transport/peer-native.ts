@@ -74,11 +74,16 @@ export interface RuntimeHostPeerIdentityProof {
 export interface RuntimeHostPeerNativeEndpoint {
   readonly peerId: string;
   readonly reachabilitySnapshot: RuntimeHostPeerNativeReachabilitySnapshot;
+  readonly connectivitySnapshot: RuntimeHostPeerNativeConnectivitySnapshot;
   readonly transitSnapshot: RuntimeHostPeerTransitSnapshot;
   watchReachability(
     afterGeneration: number,
     timeoutMs: number,
   ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
+  watchConnectivity(
+    afterGeneration: number,
+    timeoutMs: number,
+  ): Promise<RuntimeHostPeerNativeConnectivitySnapshot>;
   connect(options: {
     readonly requestId: number;
     readonly peerId: string;
@@ -86,6 +91,7 @@ export interface RuntimeHostPeerNativeEndpoint {
     readonly coordinationRelays?: readonly string[];
     readonly transitRelayPeerIds?: readonly string[];
     readonly directDeadlineMs: number;
+    readonly waitForRoutes?: boolean;
   }): Promise<RuntimeHostPeerNativeStream>;
   connectMeshControl(options: {
     readonly requestId: number;
@@ -95,6 +101,12 @@ export interface RuntimeHostPeerNativeEndpoint {
     readonly transitRelayPeerIds?: readonly string[];
     readonly directDeadlineMs: number;
   }): Promise<RuntimeHostPeerNativeStream>;
+  updateConnect(options: {
+    readonly requestId: number;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly transitRelayPeerIds?: readonly string[];
+  }): Promise<boolean>;
   configureTransit(options: {
     readonly allowedPeerIds: readonly string[];
     readonly approvedRelayPeerIds: readonly string[];
@@ -110,6 +122,11 @@ export interface RuntimeHostPeerNativeReachabilitySnapshot {
   readonly generation: number;
   readonly listenAddresses: readonly string[];
   readonly activeCoordinationRelays: readonly string[];
+}
+
+export interface RuntimeHostPeerNativeConnectivitySnapshot {
+  readonly generation: number;
+  readonly connectedPeerIds: readonly string[];
 }
 
 export interface RuntimeHostPeerTransitSnapshot {
@@ -499,16 +516,22 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     isPeerId(value.peerId) &&
     'reachabilitySnapshot' in value &&
     isPeerReachabilitySnapshot(value.reachabilitySnapshot) &&
+    'connectivitySnapshot' in value &&
+    isPeerConnectivitySnapshot(value.connectivitySnapshot) &&
     'transitSnapshot' in value &&
     isPeerTransitSnapshot(value.transitSnapshot) &&
     'connect' in value &&
     typeof value.connect === 'function' &&
     'connectMeshControl' in value &&
     typeof value.connectMeshControl === 'function' &&
+    'updateConnect' in value &&
+    typeof value.updateConnect === 'function' &&
     'configureTransit' in value &&
     typeof value.configureTransit === 'function' &&
     'watchReachability' in value &&
     typeof value.watchReachability === 'function' &&
+    'watchConnectivity' in value &&
+    typeof value.watchConnectivity === 'function' &&
     'cancelConnect' in value &&
     typeof value.cancelConnect === 'function' &&
     'accept' in value &&
@@ -517,6 +540,20 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     typeof value.acceptMeshControl === 'function' &&
     'close' in value &&
     typeof value.close === 'function'
+  );
+}
+
+function isPeerConnectivitySnapshot(
+  value: unknown,
+): value is RuntimeHostPeerNativeConnectivitySnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    'connectedPeerIds' in value &&
+    Array.isArray(value.connectedPeerIds) &&
+    value.connectedPeerIds.every((peerId) => typeof peerId === 'string')
   );
 }
 

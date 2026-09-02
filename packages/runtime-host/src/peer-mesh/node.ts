@@ -58,6 +58,7 @@ import {
   PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
   peerReachabilityLeaseSigningBytes,
   peerReachabilityLeaseReceipt,
+  PEER_REACHABILITY_RECOVERY_HORIZON_MS,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityPublisher,
   type PeerReachabilityLeaseReceipt,
@@ -82,7 +83,6 @@ const CONNECT_DEADLINE_MS = 30_000;
 const CONTROL_REQUEST_DEADLINE_MS = 10_000;
 const MAX_ACTIVE_CONTROL_STREAMS = 32;
 const MAX_ACTIVE_CONTROL_STREAMS_PER_PEER = 2;
-const REACHABILITY_HISTORY_MS = 24 * 60 * 60 * 1_000;
 const EVIDENCE_PAGE_SIZE = 2;
 const RECONCILE_CONCURRENCY = 4;
 const RECONCILE_DEADLINE_MS = 60 * 1_000;
@@ -184,6 +184,7 @@ export interface PeerMeshNode {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes(peerId: string, signal: AbortSignal): Promise<void>;
+  subscribeRoutes(peerId: string, listener: () => void): () => void;
   reconcile(signal?: AbortSignal): Promise<void>;
   serve(): Promise<void>;
   close(): Promise<void>;
@@ -1002,7 +1003,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     // asks the Mesh control plane for its newest record. Callers with a
     // self-contained invitation run this reconciliation in parallel with the
     // first dial; callers without usable routes wait for it.
-    await this.reconcile(signal);
+    await this.#queueReconcile(signal, peerId);
     if (this.#pruneCompletedRecoverySweeps().has(peerId)) {
       this.#completedRecoverySweeps.add(peerId);
     }
@@ -1025,7 +1026,22 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     return visiblePeerIds;
   }
 
+  subscribeRoutes(peerId: string, listener: () => void): () => void {
+    this.#assertOpen();
+    let current = this.resolveRoutes(peerId);
+    return this.#store.subscribe(() => {
+      const next = this.resolveRoutes(peerId);
+      if (sameResolvedRoutes(current, next)) return;
+      current = next;
+      listener();
+    });
+  }
+
   reconcile(signal?: AbortSignal): Promise<void> {
+    return this.#queueReconcile(signal);
+  }
+
+  #queueReconcile(signal?: AbortSignal, excludedPeerId?: string): Promise<void> {
     if (this.#lifetime.signal.aborted) return Promise.reject(new Error('Peer Mesh node is closed'));
     const previous = this.#reconcileTail;
     let release!: () => void;
@@ -1034,7 +1050,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     });
     this.#reconcileTail = previous.then(() => turn);
     return waitForTurn(previous, signal)
-      .then(() => this.#reconcile(signal))
+      .then(() => this.#reconcile(signal, excludedPeerId))
       .finally(release);
   }
 
@@ -1127,7 +1143,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     this.#reconcileWaiters.clear();
   }
 
-  async #reconcile(signal?: AbortSignal): Promise<void> {
+  async #reconcile(signal?: AbortSignal, excludedPeerId?: string): Promise<void> {
     const lifetimeSignal = signal
       ? AbortSignal.any([signal, this.#lifetime.signal])
       : this.#lifetime.signal;
@@ -1149,7 +1165,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           readonly desiredMembership: 'active' | 'left';
           readonly roster: SignedPeerMeshRosterV1;
         }
-    > = stored.pendingJoins.map((join) => ({ kind: 'join', join }));
+    > = stored.pendingJoins
+      .filter(({ invitation }) => invitation.reachability.lease.peerId !== excludedPeerId)
+      .map((join) => ({ kind: 'join', join }));
     const gossipCursor = this.#gossipCursor;
     this.#gossipCursor = (this.#gossipCursor + 1) % PEER_MESH_MAX_MEMBERS;
     const now = this.#now();
@@ -1160,7 +1178,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         state.role === 'replica'
           ? currentAuthorityTarget(state, stored.reachability, now)
           : undefined;
-      if (authority) {
+      if (authority && authority.reachability.lease.peerId !== excludedPeerId) {
         pending.push({
           kind: 'membership',
           meshId,
@@ -1174,6 +1192,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         .filter(
           (peerId) =>
             peerId !== identity.peerId &&
+            peerId !== excludedPeerId &&
             (state.role === 'authority' || peerId !== state.roster.roster.authorityPeerId),
         )
         .flatMap((peerId) => {
@@ -1459,7 +1478,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       verifyIdentity: this.#peer.verifyIdentity.bind(this.#peer),
       ...(allowExpired ? { allowExpired: true } : {}),
     });
-    if (allowExpired && signed.lease.expiresAt + REACHABILITY_HISTORY_MS <= this.#now()) {
+    if (
+      allowExpired &&
+      signed.lease.expiresAt <= this.#now() - PEER_REACHABILITY_RECOVERY_HORIZON_MS
+    ) {
       throw new Error('Peer Mesh reachability is outside the recovery horizon');
     }
     return signed;
@@ -2166,6 +2188,22 @@ interface PeerMeshTransitEvidence {
   readonly lease: SignedPeerReachabilityLeaseV1;
 }
 
+function sameResolvedRoutes(
+  left: ReturnType<PeerMeshNode['resolveRoutes']>,
+  right: ReturnType<PeerMeshNode['resolveRoutes']>,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    sameStringValues(left.routeHints, right.routeHints) &&
+    sameStringValues(left.coordinationRelays, right.coordinationRelays) &&
+    sameStringValues(left.transitRelayPeerIds, right.transitRelayPeerIds)
+  );
+}
+
+function sameStringValues(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 function eligibleTransitEvidence(
   stored: PeerMeshStoredStateV1,
   localPeerId: string,
@@ -2719,7 +2757,7 @@ function hasReachabilityRoutes(signed: SignedPeerReachabilityLeaseV1): boolean {
 }
 
 function usableHistoricalReachability(signed: SignedPeerReachabilityLeaseV1, now: number): boolean {
-  return signed.lease.expiresAt + REACHABILITY_HISTORY_MS > now;
+  return signed.lease.expiresAt > now - PEER_REACHABILITY_RECOVERY_HORIZON_MS;
 }
 
 function peerTarget(

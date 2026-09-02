@@ -106,9 +106,7 @@ test('persists authenticated route rotation for reconnect and restart', async ()
         target.profile.kind === 'remote' ? target.profile.transport : undefined,
         {
           kind: 'libp2p-direct',
-          peerId: '12D3KooWpeer',
-          routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-          coordinationRelays: ['/memory/stale-relay'],
+          reachability: guestPeerReachability(),
         },
       );
       assert.ok(onPeerEndpoint);
@@ -118,19 +116,12 @@ test('persists authenticated route rotation for reconnect and restart', async ()
 
   const imported = await first.importInvitation(peerInvitation('guest-routes'), false, 'routes');
   assert.equal(imported.kind, 'connected');
-  observePeerEndpoint({
-    lease: {
-      version: 1,
-      peerId: '12D3KooWpeer',
-      revision: 2,
-      issuedAt: 1,
-      expiresAt: 2,
-      directRoutes: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
-      coordinationRoutes: ['/memory/fresh-relay'],
-    },
-    publicKey: 'AA',
-    signature: 'AA',
-  });
+  const rotated = guestPeerReachability(
+    2,
+    ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    ['/memory/fresh-relay'],
+  );
+  observePeerEndpoint(rotated);
   await first.close();
 
   let restarted!: ReturnType<typeof service>;
@@ -141,9 +132,7 @@ test('persists authenticated route rotation for reconnect and restart', async ()
   const target = await restartedTarget;
   assert.deepEqual(target.profile.kind === 'remote' ? target.profile.transport : undefined, {
     kind: 'libp2p-direct',
-    peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
-    coordinationRelays: ['/memory/fresh-relay'],
+    reachability: rotated,
   });
   await restarted.close();
 });
@@ -463,12 +452,30 @@ function peerInvitation(credential: string): string {
       name: 'Shared Host',
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: ['/memory/stale-relay'],
+        reachability: guestPeerReachability(),
       },
     },
   });
+}
+
+function guestPeerReachability(
+  revision = 1,
+  directRoutes: readonly string[] = ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+  coordinationRoutes: readonly string[] = ['/memory/stale-relay'],
+) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId: '12D3KooWpeer',
+      revision,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
+  };
 }
 
 function retainedMount(mountId: string): GuestSessionMount {

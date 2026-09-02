@@ -1690,13 +1690,27 @@ function peerGuestTarget(
       kind: 'remote',
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: [],
+        reachability: testPeerReachability('12D3KooWpeer'),
       },
       rootId: 'a'.repeat(64),
       access: 'session_guest',
     },
     credential: 'credential-peer',
+  };
+}
+
+function testPeerReachability(peerId: string) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }

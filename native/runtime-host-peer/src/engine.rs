@@ -76,6 +76,8 @@ const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 1024;
 const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 32;
 const MAX_ESTABLISHED_CONNECTIONS: u32 = 1024;
 const MAX_CONNECTIONS_PER_PEER: u32 = 4;
+const MAX_CONNECT_ROUTES_PER_CLASS: usize = 32;
+const MAX_CONNECT_TRANSIT_PEERS: usize = 64;
 const LISTENER_ADDRESS_QUIET_PERIOD: Duration = Duration::from_millis(250);
 const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const TRANSIT_HOLE_PUNCH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
@@ -107,6 +109,7 @@ pub struct StartOptions {
 pub struct StartedEndpoint {
     pub peer_id: PeerId,
     pub reachability: tokio::sync::watch::Receiver<ReachabilitySnapshot>,
+    pub connectivity: tokio::sync::watch::Receiver<ConnectivitySnapshot>,
     pub transit_snapshot: Arc<RwLock<TransitSnapshot>>,
     pub commands: mpsc::Sender<EngineCommand>,
     pub incoming: mpsc::Receiver<PeerStream>,
@@ -122,6 +125,17 @@ pub struct ReachabilitySnapshot {
     pub active_coordination_relays: Vec<Multiaddr>,
 }
 
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct ConnectivitySnapshot {
+    pub generation: u32,
+    pub connected_peers: Vec<PeerId>,
+}
+
+struct EndpointObservability {
+    reachability: watch::Sender<ReachabilitySnapshot>,
+    connectivity: watch::Sender<ConnectivitySnapshot>,
+}
+
 pub struct IdentitySignature {
     pub public_key: Vec<u8>,
     pub signature: Vec<u8>,
@@ -134,6 +148,13 @@ pub struct ConnectOptions {
     pub coordination_relays: Vec<Multiaddr>,
     pub transit_relay_peers: Vec<PeerId>,
     pub deadline: Duration,
+    pub wait_for_routes: bool,
+}
+
+pub struct ConnectCandidates {
+    pub route_hints: Vec<Multiaddr>,
+    pub coordination_relays: Vec<Multiaddr>,
+    pub transit_relay_peers: Vec<PeerId>,
 }
 
 pub enum EngineCommand {
@@ -145,6 +166,11 @@ pub enum EngineCommand {
     CancelConnect {
         request_id: u32,
         result: oneshot::Sender<bool>,
+    },
+    UpdateConnect {
+        request_id: u32,
+        candidates: ConnectCandidates,
+        result: oneshot::Sender<Result<bool, PeerError>>,
     },
     ConfigureTransit {
         policy: TransitPolicy,
@@ -283,6 +309,7 @@ struct TransitRuntime {
 
 struct RouteRuntime<'a> {
     reachability: Option<&'a tokio::sync::watch::Sender<ReachabilitySnapshot>>,
+    connectivity: Option<&'a tokio::sync::watch::Sender<ConnectivitySnapshot>>,
     relay_anchors: Option<&'a mut RelayAnchorHistory>,
     transit: &'a mut TransitRuntime,
 }
@@ -528,6 +555,7 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     let (mesh_incoming_tx, mesh_incoming_rx) = mpsc::channel(MESH_INCOMING_STREAM_CAPACITY);
     let (terminal_tx, terminal_rx) = mpsc::channel(1);
     let (reachability_tx, reachability_rx) = watch::channel(ReachabilitySnapshot::default());
+    let (connectivity_tx, connectivity_rx) = watch::channel(ConnectivitySnapshot::default());
     let transit_snapshot = Arc::new(RwLock::new(TransitSnapshot::default()));
     let transit_snapshot_for_thread = Arc::clone(&transit_snapshot);
     let thread = thread::Builder::new()
@@ -539,7 +567,10 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
                 incoming_tx,
                 mesh_incoming_tx,
                 ready_tx.clone(),
-                reachability_tx,
+                EndpointObservability {
+                    reachability: reachability_tx,
+                    connectivity: connectivity_tx,
+                },
                 transit_snapshot_for_thread,
             );
             if let Err(error) = result {
@@ -554,6 +585,7 @@ pub fn start(options: StartOptions) -> Result<StartedEndpoint, PeerError> {
     Ok(StartedEndpoint {
         peer_id: ready,
         reachability: reachability_rx,
+        connectivity: connectivity_rx,
         transit_snapshot,
         commands: command_tx,
         incoming: incoming_rx,
@@ -569,7 +601,7 @@ fn run_endpoint(
     incoming_tx: mpsc::Sender<PeerStream>,
     mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<PeerId, PeerError>>,
-    reachability: watch::Sender<ReachabilitySnapshot>,
+    observability: EndpointObservability,
     transit_snapshot: Arc<RwLock<TransitSnapshot>>,
 ) -> Result<(), PeerError> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -583,7 +615,7 @@ fn run_endpoint(
         incoming_tx,
         mesh_incoming_tx,
         ready_tx,
-        reachability,
+        observability,
         transit_snapshot,
     ))
 }
@@ -594,9 +626,13 @@ async fn run_endpoint_async(
     incoming_tx: mpsc::Sender<PeerStream>,
     mesh_incoming_tx: mpsc::Sender<PeerStream>,
     ready_tx: std::sync::mpsc::SyncSender<Result<PeerId, PeerError>>,
-    reachability: watch::Sender<ReachabilitySnapshot>,
+    observability: EndpointObservability,
     transit_snapshot: Arc<RwLock<TransitSnapshot>>,
 ) -> Result<(), PeerError> {
+    let EndpointObservability {
+        reachability,
+        connectivity,
+    } = observability;
     let key = match options.expected_peer_id {
         Some(expected) => {
             let key = identity_store::load_key(&options.key_path).await?;
@@ -729,6 +765,7 @@ async fn run_endpoint_async(
         &mut relay_anchors,
         &bound_addresses,
     );
+    publish_connectivity(&swarm, &connectivity);
     let _ = ready_tx.send(Ok(local_peer_id));
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
@@ -841,6 +878,41 @@ async fn run_endpoint_async(
                         false
                     };
                     let _ = result.send(cancelled);
+                }
+                Some(EngineCommand::UpdateConnect { request_id, candidates, result }) => {
+                    let updated = update_connect_candidates(
+                        &mut swarm,
+                        &mut direct,
+                        &mut coordination_relays,
+                        request_id,
+                        candidates,
+                        local_peer_id,
+                    );
+                    if matches!(updated, Ok(true)) {
+                        retry_connect_routes(
+                            &mut swarm,
+                            &mut direct,
+                            &coordination_relays,
+                            &stream_control,
+                            Instant::now(),
+                        );
+                        start_pending_webrtc_upgrades(
+                            &mut direct.pending,
+                            &direct.retiring_connections,
+                            webrtc_signaling_control.clone(),
+                            webrtc_stun_urls.as_deref(),
+                            &mut outgoing_webrtc_upgrades,
+                        );
+                        maybe_open_peer_stream(
+                            request_id,
+                            &mut direct.pending,
+                            &direct.retiring_connections,
+                            stream_control.clone(),
+                            mesh_control.clone(),
+                            opened_tx.clone(),
+                        );
+                    }
+                    let _ = result.send(updated);
                 }
                 Some(EngineCommand::ConfigureTransit {
                     policy,
@@ -1250,6 +1322,7 @@ async fn run_endpoint_async(
                     &mut direct,
                     RouteRuntime {
                         reachability: Some(&reachability),
+                        connectivity: Some(&connectivity),
                         relay_anchors: Some(&mut relay_anchors),
                         transit: &mut transit,
                     },
@@ -1494,7 +1567,8 @@ fn start_connect(
     stream_kind: StreamKind,
     active_streams: &HashMap<ConnectionId, usize>,
 ) -> Result<StartedConnect, PeerError> {
-    if options.route_hints.is_empty()
+    if !options.wait_for_routes
+        && options.route_hints.is_empty()
         && options.coordination_relays.is_empty()
         && options.transit_relay_peers.is_empty()
     {
@@ -1553,6 +1627,146 @@ fn start_connect(
         coordination_relay_peers: relay_peers,
         transit_relay_peers: options.transit_relay_peers.iter().copied().collect(),
     })
+}
+
+fn update_connect_candidates(
+    swarm: &mut Swarm<Behaviour>,
+    direct: &mut DirectConnectState,
+    coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
+    request_id: u32,
+    candidates: ConnectCandidates,
+    local_peer_id: PeerId,
+) -> Result<bool, PeerError> {
+    let Some(waiter) = direct.pending.get(&request_id) else {
+        return Ok(false);
+    };
+    let peer_id = waiter.peer_id;
+    let direct_routes = bounded_unique(
+        candidates
+            .route_hints
+            .iter()
+            .map(|address| address_with_expected_peer(address, peer_id))
+            .collect::<Result<Vec<_>, _>>()?,
+        MAX_CONNECT_ROUTES_PER_CLASS,
+    );
+    let coordination_routes =
+        bounded_unique(candidates.coordination_relays, MAX_CONNECT_ROUTES_PER_CLASS);
+    let mut relay_peers = Vec::new();
+    for relay_address in &coordination_routes {
+        let relay_peer = coordination_relay_peer_id(relay_address)?;
+        validate_relay_target(
+            relay_peer,
+            peer_id,
+            local_peer_id,
+            "coordination_unavailable",
+            "coordination relay",
+        )?;
+        if !relay_peers.contains(&relay_peer) {
+            relay_peers.push(relay_peer);
+        }
+    }
+    for relay_peer in &candidates.transit_relay_peers {
+        validate_relay_target(
+            *relay_peer,
+            peer_id,
+            local_peer_id,
+            "transit_unavailable",
+            "transit relay",
+        )?;
+    }
+
+    let old_coordination_peers = waiter
+        .coordination_relay_peers
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    let mut referenced = HashSet::new();
+    for relay_address in &coordination_routes {
+        let relay_peer = coordination_relay_peer_id(relay_address)
+            .expect("coordination relay was validated before registration");
+        register_coordination_relay(
+            coordination_relays,
+            relay_address,
+            local_peer_id,
+            false,
+            !old_coordination_peers.contains(&relay_peer) && referenced.insert(relay_peer),
+        )?;
+    }
+    let next_coordination_peers = relay_peers.iter().copied().collect::<HashSet<_>>();
+    let released_coordination_peers = old_coordination_peers
+        .difference(&next_coordination_peers)
+        .copied()
+        .collect::<Vec<_>>();
+
+    let waiter = direct
+        .pending
+        .get_mut(&request_id)
+        .expect("pending connection was retained while candidates were validated");
+    let direct_changed = waiter.direct_routes != direct_routes;
+    waiter.direct_routes = direct_routes;
+    let coordination_changed = waiter.coordination_relays != coordination_routes;
+    waiter.coordination_relays = coordination_routes;
+    waiter.coordination_relay_peers = relay_peers;
+    let next_transit = candidates
+        .transit_relay_peers
+        .into_iter()
+        .take(MAX_CONNECT_TRANSIT_PEERS)
+        .collect::<HashSet<_>>();
+    let transit_changed = waiter.transit_relay_peers != next_transit;
+    waiter.transit_relay_peers = next_transit;
+    let changed = direct_changed || coordination_changed || transit_changed;
+    if changed {
+        waiter.next_route_attempt = Instant::now();
+        waiter.transit_after = Instant::now();
+        if coordination_changed {
+            waiter.retry_coordination = true;
+        }
+        if direct_changed {
+            retire_pending_dials_by_origin(
+                swarm,
+                &mut direct.retiring_connections,
+                waiter,
+                DialOrigin::Direct,
+            );
+        }
+        if coordination_changed {
+            retire_pending_dials_by_origin(
+                swarm,
+                &mut direct.retiring_connections,
+                waiter,
+                DialOrigin::Coordination,
+            );
+        }
+        if transit_changed {
+            retire_pending_dials_by_origin(
+                swarm,
+                &mut direct.retiring_connections,
+                waiter,
+                DialOrigin::Transit,
+            );
+        }
+    }
+    release_coordination_relays(
+        swarm,
+        coordination_relays,
+        &released_coordination_peers,
+        &direct.active,
+    );
+    maintain_coordination_relays(swarm, coordination_relays, &direct.active, Instant::now());
+    Ok(true)
+}
+
+fn bounded_unique<T: PartialEq>(values: Vec<T>, limit: usize) -> Vec<T> {
+    let mut bounded = Vec::with_capacity(limit.min(values.len()));
+    for value in values {
+        if !bounded.contains(&value) {
+            bounded.push(value);
+            if bounded.len() == limit {
+                break;
+            }
+        }
+    }
+    bounded
 }
 
 fn validate_relay_target(
@@ -1841,6 +2055,10 @@ fn handle_swarm_event(
     direct: &mut DirectConnectState,
     mut route_runtime: RouteRuntime<'_>,
 ) {
+    let connectivity_changed = matches!(
+        &event,
+        SwarmEvent::ConnectionEstablished { .. } | SwarmEvent::ConnectionClosed { .. }
+    );
     match event {
         SwarmEvent::ConnectionEstablished {
             peer_id,
@@ -2107,6 +2325,9 @@ fn handle_swarm_event(
         }
         _ => {}
     }
+    if connectivity_changed && let Some(connectivity) = route_runtime.connectivity {
+        publish_connectivity(swarm, connectivity);
+    }
 }
 
 fn handle_startup_event(
@@ -2122,6 +2343,7 @@ fn handle_startup_event(
         &mut DirectConnectState::default(),
         RouteRuntime {
             reachability: None,
+            connectivity: None,
             relay_anchors: None,
             transit,
         },
@@ -2654,6 +2876,22 @@ fn publish_active_coordination_relays(
         generation,
         listen_addresses: listen_addresses.to_vec(),
         active_coordination_relays: addresses,
+    });
+}
+
+fn publish_connectivity(
+    swarm: &Swarm<Behaviour>,
+    connectivity: &watch::Sender<ConnectivitySnapshot>,
+) {
+    let mut connected_peers = swarm.connected_peers().copied().collect::<Vec<_>>();
+    connected_peers.sort_unstable_by_key(ToString::to_string);
+    let current = connectivity.borrow().clone();
+    if current.connected_peers == connected_peers {
+        return;
+    }
+    connectivity.send_replace(ConnectivitySnapshot {
+        generation: current.generation.wrapping_add(1).max(1),
+        connected_peers,
     });
 }
 
@@ -3392,6 +3630,72 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn pending_connect_accepts_a_new_route_without_restarting_the_attempt() {
+        let root = std::env::temp_dir().join(format!("maka-peer-live-route-{}", PeerId::random()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let source = start(test_endpoint_options(root.join("source.key"))).expect("start source");
+        let mut target =
+            start(test_endpoint_options(root.join("target.key"))).expect("start target");
+        let response = begin_test_connect(
+            &source,
+            ConnectOptions {
+                request_id: 1,
+                peer_id: target.peer_id,
+                route_hints: Vec::new(),
+                coordination_relays: Vec::new(),
+                transit_relay_peers: Vec::new(),
+                deadline: Duration::from_secs(5),
+                wait_for_routes: true,
+            },
+        )
+        .await;
+        let route = test_listen_address(&target);
+        let (updated, update_response) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::UpdateConnect {
+                request_id: 1,
+                candidates: ConnectCandidates {
+                    route_hints: vec![route],
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: Vec::new(),
+                },
+                result: updated,
+            })
+            .await
+            .expect("send route update");
+        assert!(
+            update_response
+                .await
+                .expect("route update response")
+                .expect("route update failed"),
+        );
+        let source_stream = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("live-route connect timeout")
+            .expect("live-route connect response")
+            .expect("live-route connect failed");
+        let target_stream = tokio::time::timeout(Duration::from_secs(5), target.incoming.recv())
+            .await
+            .expect("live-route inbound timeout")
+            .expect("live-route inbound stream");
+        assert!(
+            source
+                .connectivity
+                .borrow()
+                .connected_peers
+                .contains(&target.peer_id),
+            "the established peer connection must wake higher-level recovery",
+        );
+
+        close_test_stream(source_stream).await;
+        close_test_stream(target_stream).await;
+        stop_test_endpoint(source).await;
+        stop_test_endpoint(target).await;
+        std::fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn approved_peers_can_exchange_an_application_stream_through_transit() {
         let root = std::env::temp_dir().join(format!("maka-peer-transit-{}", PeerId::random()));
         std::fs::create_dir_all(&root).expect("create test root");
@@ -3465,6 +3769,7 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
+                wait_for_routes: false,
             },
         )
         .await;
@@ -3556,6 +3861,7 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
+                wait_for_routes: false,
             },
         )
         .await;
@@ -3585,6 +3891,7 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
+                wait_for_routes: false,
             },
         )
         .await;
@@ -3615,6 +3922,7 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
+                wait_for_routes: false,
             },
         )
         .await;
@@ -3724,6 +4032,7 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: vec![provider.peer_id],
                     deadline: Duration::from_secs(10),
+                    wait_for_routes: false,
                 },
             )
             .await,
@@ -3849,6 +4158,7 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: Vec::new(),
                     deadline: Duration::from_secs(5),
+                    wait_for_routes: false,
                 },
                 stream_kind,
                 result,
@@ -3880,6 +4190,7 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: vec![relay_peer_id],
                     deadline: Duration::from_secs(10),
+                    wait_for_routes: false,
                 },
                 stream_kind,
                 result,

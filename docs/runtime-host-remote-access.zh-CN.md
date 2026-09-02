@@ -110,11 +110,11 @@ maka runtime-host service peer descriptor \
   --expected-root-id '<rootId>'
 ```
 
-Descriptor 只包含 PeerId、Root ID 和候选 route，不包含 access credential。使用这些值执行
-`runtime-host profile set --peer-id ... --peer-route ...`，并通过
-`MAKA_RUNTIME_HOST_ACCESS_CREDENTIAL` 提供 setup 创建的 credential。Disable 后重新 enable 会保留
-PeerId 和 listener 配置；`peer rotate` 会明确更换 PeerId；卸载 service 会删除 peer key，但保留 State
-Root。执行 `peer enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
+Descriptor 只包含 PeerId、Root ID 和候选 route，不包含 access credential。这里的 route 仅用于诊断，
+不能作为长期保存的 Client profile：它既可能变化，也不是 Host 对当前可达性的签名声明。要在 Desktop
+中添加 Direct peer，请使用一次性 connection code。Disable 后重新 enable 会保留 PeerId 和 listener
+配置；`peer rotate` 会明确更换 PeerId；卸载 service 会删除 peer key，但保留 State Root。执行 `peer
+enable --clear-coordination-relays` 可以删除所有已配置的 coordination relay。
 
 Direct-only 路径仍是实验能力，在受限 NAT 或禁用 UDP 的网络中可能失败。它不会替代已有的 TLS、SSH
 或 overlay network fallback。Host 默认通过公共 IPFS DHT 的有界 client-only 视图发现 Circuit Relay v2

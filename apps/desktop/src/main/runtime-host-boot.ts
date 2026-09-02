@@ -23,6 +23,7 @@ import {
   clipboard,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   powerSaveBlocker,
   shell,
   type MessageBoxOptions,
@@ -1912,6 +1913,7 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
+  powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();
 }
 
@@ -1931,6 +1933,7 @@ async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
+  powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
   settingsBotsIpc?.dispose();
@@ -1974,6 +1977,10 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+}
+
+function wakePeerRecoveryAfterResume(): void {
+  runtimeHostManager?.wakePeerRecovery();
 }
 
 function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {

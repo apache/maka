@@ -85,6 +85,7 @@ export interface RuntimeHostDesktopManager {
     onAccessActivated?: () => void,
   ): Promise<void>;
   unmountGuest(mountId: string): Promise<void>;
+  wakePeerRecovery(): void;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
     profileId: string,
@@ -212,6 +213,7 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
+  unsubscribeRoutes?: () => void;
   skipPeerRouteRefreshOnce?: boolean;
   lastCandidate?: {
     readonly hostId: string;
@@ -621,6 +623,18 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     });
   }
 
+  wakePeerRecovery(): void {
+    for (const target of this.#targets.values()) {
+      if (
+        target.valid &&
+        target.target.profile.kind === 'remote' &&
+        target.target.profile.transport.kind === 'libp2p-direct'
+      ) {
+        target.lifecycle?.wake();
+      }
+    }
+  }
+
   async waitUntilReady(
     profileId: string,
     previousHostEpoch?: string,
@@ -857,6 +871,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
           if (!starting && target.valid) {
             target.valid = false;
             target.unsubscribeLifecycle?.();
+            target.unsubscribeRoutes?.();
             this.#ipcMain.deactivate(target.epoch);
             this.#publishState(target, {
               epoch: target.epoch,
@@ -1129,6 +1144,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {
     this.#ipcMain.activate(target.epoch);
+    const profile = target.target.profile;
+    if (profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct') {
+      target.unsubscribeRoutes = this.#baseInput.peerClient?.subscribeRoutes(
+        profile.transport.reachability.lease.peerId,
+        () => target.lifecycle?.wake(),
+      );
+    }
     target.unsubscribeLifecycle = target.lifecycle?.subscribe((candidate) => {
       if (!target.valid) return;
       this.#publishState(
@@ -1174,6 +1196,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target.valid = false;
     this.onTargetRemoved?.(target.state);
     target.unsubscribeLifecycle?.();
+    target.unsubscribeRoutes?.();
     this.#ipcMain.deactivate(target.epoch);
     try {
       await target.lifecycle?.close();

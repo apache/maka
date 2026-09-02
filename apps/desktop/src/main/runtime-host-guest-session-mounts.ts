@@ -177,7 +177,7 @@ export function createDesktopGuestSessionMountService(input: {
     if (
       closed ||
       mount.transport.kind !== 'libp2p-direct' ||
-      endpoint.lease.peerId !== mount.transport.peerId
+      endpoint.lease.peerId !== mount.transport.reachability.lease.peerId
     ) return;
     void mutate(async () => {
       if (removingMounts.has(mount.mountId)) return;
@@ -185,19 +185,14 @@ export function createDesktopGuestSessionMountService(input: {
       const retained = current.get(mount.mountId);
       if (
         retained?.transport.kind !== 'libp2p-direct' ||
-        retained.transport.peerId !== endpoint.lease.peerId ||
-        (
-          sameStrings(retained.transport.routeHints, endpoint.lease.directRoutes) &&
-          sameStrings(retained.transport.coordinationRelays, endpoint.lease.coordinationRoutes)
-        )
+        retained.transport.reachability.lease.peerId !== endpoint.lease.peerId ||
+        retained.transport.reachability.lease.revision >= endpoint.lease.revision
       ) return;
       const updated = decodeMount({
         ...retained,
         transport: {
           kind: 'libp2p-direct',
-          peerId: endpoint.lease.peerId,
-          routeHints: endpoint.lease.directRoutes,
-          coordinationRelays: endpoint.lease.coordinationRoutes,
+          reachability: endpoint,
         },
       });
       await persist(new Map(current).set(mount.mountId, updated));
@@ -465,10 +460,6 @@ export function createDesktopGuestSessionMountService(input: {
       activations.clear();
     },
   };
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 export function registerDesktopGuestSessionMountIpc(
