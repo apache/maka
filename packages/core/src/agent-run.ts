@@ -244,145 +244,98 @@ type HostedRootExecutionDescriptor = Extract<
   }
 >;
 
-export function agentRunMatchesHostedRootExecution(
-  run: AgentRunHeader,
+/**
+ * Is this invocation the one the Host admitted for that root execution?
+ *
+ * The opening fact names its root as a closed union, so each arm names the root
+ * it wants instead of asserting that every other root marker is absent. What
+ * remains is lineage, and the rule there is exactness: an admitted root has the
+ * lineage its kind implies and no other, so one comparison replaces a list of
+ * per-field negatives that had to be extended every time a lineage field was
+ * added.
+ */
+export function invocationMatchesHostedRootExecution(
+  invocation: { invocationId: string; opening: RuntimeEventInvocationOpenedContent },
   execution: HostedRootExecutionDescriptor,
 ): boolean {
-  if (execution.kind !== 'context_compact' && run.rootExecutionKind !== undefined) return false;
-  if (execution.kind === 'regenerate') {
-    return (
-      run.parentTurnId === execution.sourceTurnId &&
-      run.regeneratedFromTurnId === execution.sourceTurnId &&
-      run.parentRunId === undefined &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.continuationSource === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  if (execution.kind === 'context_compact') {
-    return (
-      run.rootExecutionKind === 'context_compact' &&
-      run.parentTurnId === undefined &&
-      run.regeneratedFromTurnId === undefined &&
-      run.parentRunId === undefined &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.continuationSource === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  if (execution.kind === 'safe_boundary_continuation') {
-    const source = run.continuationSource;
-    return (
-      run.invocationId === execution.targetInvocationId &&
-      run.parentRunId === execution.sourceRunId &&
-      run.parentTurnId === execution.sourceTurnId &&
-      source !== undefined &&
-      'protocol' in source &&
-      source.protocol === 'continuation_source_v2' &&
-      source.sourceInvocationId === execution.sourceInvocationId &&
-      source.sourceRunId === execution.sourceRunId &&
-      source.sourceTurnId === execution.sourceTurnId &&
-      source.sourceRuntimeEventHighWater === execution.sourceRuntimeEventHighWater &&
-      source.claimId === execution.claimId &&
-      source.boundaryDigest === execution.boundaryDigest &&
-      source.replayManifestDigest === execution.boundaryDigest &&
-      run.resumedFromRunId === undefined &&
-      run.retriedFromRunId === undefined &&
-      run.agentId === undefined &&
-      run.agentName === undefined &&
-      run.retriedFromTurnId === undefined &&
-      run.regeneratedFromTurnId === undefined &&
-      run.branchOfTurnId === undefined &&
-      run.parentSessionId === undefined &&
-      run.scheduledTaskId === undefined &&
-      run.legacyAutomationId === undefined &&
-      run.goalId === undefined &&
-      run.agentGraphWakeId === undefined &&
-      run.agentGraphWakeAttemptId === undefined
-    );
-  }
-  const authorityMatches = hostedRootAuthorityMatches(run, execution);
-  return (
-    authorityMatches &&
-    run.parentRunId === undefined &&
-    run.resumedFromRunId === undefined &&
-    run.retriedFromRunId === undefined &&
-    run.agentId === undefined &&
-    run.agentName === undefined &&
-    run.parentTurnId === undefined &&
-    run.retriedFromTurnId === undefined &&
-    run.regeneratedFromTurnId === undefined &&
-    run.branchOfTurnId === undefined &&
-    run.parentSessionId === undefined &&
-    run.continuationSource === undefined
-  );
-}
-
-function hostedRootAuthorityMatches(
-  run: AgentRunHeader,
-  execution: Exclude<
-    HostedRootExecutionDescriptor,
-    { kind: 'regenerate' | 'context_compact' | 'safe_boundary_continuation' }
-  >,
-): boolean {
+  const { root, source, configuration, lineage } = invocation.opening;
   switch (execution.kind) {
+    case 'regenerate':
+      return (
+        root.kind === 'user' &&
+        source.kind === 'fresh' &&
+        lineageIsExactly(lineage, {
+          parentTurnId: execution.sourceTurnId,
+          regeneratedFromTurnId: execution.sourceTurnId,
+        })
+      );
+    case 'context_compact':
+      return (
+        root.kind === 'context_compact' && source.kind === 'fresh' && lineageIsExactly(lineage, {})
+      );
+    case 'safe_boundary_continuation':
+      return (
+        root.kind === 'user' &&
+        source.kind === 'continuation' &&
+        invocation.invocationId === execution.targetInvocationId &&
+        source.sourceInvocationId === execution.sourceInvocationId &&
+        source.sourceRunId === execution.sourceRunId &&
+        source.sourceTurnId === execution.sourceTurnId &&
+        source.sourceRuntimeEventHighWater === execution.sourceRuntimeEventHighWater &&
+        source.claimId === execution.claimId &&
+        source.boundaryDigest === execution.boundaryDigest &&
+        lineageIsExactly(lineage, {
+          parentRunId: execution.sourceRunId,
+          parentTurnId: execution.sourceTurnId,
+        })
+      );
     case 'scheduled_task':
       return (
-        run.scheduledTaskId === execution.scheduledTaskId &&
-        run.legacyAutomationId === undefined &&
-        run.goalId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
+        root.kind === 'scheduled_task' &&
+        root.scheduledTaskId === execution.scheduledTaskId &&
+        source.kind === 'fresh' &&
+        lineageIsExactly(lineage, {})
       );
     case 'legacy_automation':
       return (
-        run.legacyAutomationId === execution.automationId &&
-        run.scheduledTaskId === undefined &&
-        run.goalId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
+        root.kind === 'legacy_automation' &&
+        root.legacyAutomationId === execution.automationId &&
+        source.kind === 'fresh' &&
+        lineageIsExactly(lineage, {})
       );
     case 'goal':
       return (
-        run.goalId === execution.goalId &&
-        run.scheduledTaskId === undefined &&
-        run.legacyAutomationId === undefined &&
-        run.agentGraphWakeId === undefined &&
-        run.agentGraphWakeAttemptId === undefined
+        root.kind === 'goal' &&
+        root.goalId === execution.goalId &&
+        source.kind === 'fresh' &&
+        lineageIsExactly(lineage, {})
       );
     case 'agent_graph_supervisor_wake':
       return (
+        root.kind === 'agent_graph_supervisor_wake' &&
         execution.wakeId.startsWith(`${execution.graphId}:`) &&
-        run.agentGraphWakeId === execution.wakeId &&
-        run.agentGraphWakeAttemptId === execution.attemptId &&
-        run.orchestrationMode === 'graph' &&
-        run.orchestrationSource === 'turn_override' &&
-        run.agentSwarmAuthorization === 'none' &&
-        run.scheduledTaskId === undefined &&
-        run.legacyAutomationId === undefined &&
-        run.goalId === undefined
+        root.wakeId === execution.wakeId &&
+        root.attemptId === execution.attemptId &&
+        configuration.orchestrationMode === 'graph' &&
+        configuration.orchestrationSource === 'turn_override' &&
+        configuration.agentSwarmAuthorization === 'none' &&
+        source.kind === 'fresh' &&
+        lineageIsExactly(lineage, {})
       );
   }
+}
+
+/** An admitted root has the lineage its kind implies, and no other edge. */
+function lineageIsExactly(
+  lineage: RuntimeInvocationLineage | undefined,
+  expected: RuntimeInvocationLineage,
+): boolean {
+  const actual = (lineage ?? {}) as Record<string, string | undefined>;
+  const wanted = expected as Record<string, string | undefined>;
+  const keys = Object.keys(wanted);
+  return (
+    Object.keys(actual).length === keys.length && keys.every((key) => actual[key] === wanted[key])
+  );
 }
 
 export interface AgentRunInputSummary {

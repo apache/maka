@@ -18,7 +18,8 @@
  */
 
 import {
-  agentRunMatchesHostedRootExecution,
+  invocationMatchesHostedRootExecution,
+  runtimeInvocationOpeningFromRunHeader,
   type AgentRunHeader,
   type RootExecutionDescriptor,
 } from '@maka/core/agent-run';
@@ -109,7 +110,19 @@ function assertRunMatchesExecution(
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
-      if (agentRunMatchesHostedRootExecution(run, execution)) return;
+      // Phase 2c hands this the invocation's own opening fact; until then the
+      // header is projected through the one mapping that owns that projection.
+      if (
+        invocationMatchesHostedRootExecution(
+          {
+            invocationId: run.invocationId ?? run.runId,
+            opening: runtimeInvocationOpeningFromRunHeader(run),
+          },
+          execution,
+        )
+      ) {
+        return;
+      }
       break;
     case 'linked_child_initial':
     case 'claimed_agent_graph_intent':
