@@ -58,7 +58,7 @@ export interface RuntimeContinuationMetadata {
   sourceTurnId: string;
   sourceRuntimeEventHighWater: number;
   /** Authenticated negotiation projection; never grants execution authority. */
-  sandboxBoundaryNegotiationState?: SandboxBoundaryNegotiationState;
+  sandboxBoundaryNegotiationState: SandboxBoundaryNegotiationState;
 }
 
 export interface BackendSendInput {

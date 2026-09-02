@@ -32,7 +32,10 @@ import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
-import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
+import {
+  createManagedExecutionBoundary,
+  type SandboxBoundaryNegotiationState,
+} from '@maka/core/sandbox-boundary';
 import type { SessionHeader } from '@maka/core/session';
 import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
@@ -1131,6 +1134,12 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
           sourceRunId: 'run-prev',
           sourceTurnId,
           sourceRuntimeEventHighWater: sourceRuntimeContext.length,
+          sandboxBoundaryNegotiationState: {
+            denied: true,
+            invalidRounds: 0,
+            unresolvedRounds: 0,
+            finalizationRequested: false,
+          },
         },
       }),
       events,
@@ -1144,6 +1153,55 @@ describe('AiSdkBackend sandbox boundary convergence', () => {
       'permission_handoff',
     );
     await backend.dispose();
+  });
+
+  test('rejects a continuation that omits its authenticated negotiation state', async () => {
+    const model = completionModel();
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const incompleteContinuation = {
+      sourceInvocationId: 'invocation-source',
+      sourceRunId: 'run-source',
+      sourceTurnId: 'turn-source',
+      sourceRuntimeEventHighWater: 1,
+    } as unknown as NonNullable<BackendSendInput['continuation']>;
+
+    try {
+      await assert.rejects(
+        collectEvents(
+          backend.send({
+            turnId: 'turn-continuation',
+            text: '',
+            context: [],
+            runtimeContext: [
+              runtimeTextEvent({
+                id: 'source-user',
+                turnId: 'turn-source',
+                role: 'user',
+                author: 'user',
+                text: 'continue',
+              }),
+            ],
+            continuation: incompleteContinuation,
+          }),
+          [],
+        ),
+        /missing authenticated sandbox negotiation state/,
+      );
+      assert.equal(model.doStreamCalls.length, 0);
+    } finally {
+      await backend.dispose();
+    }
   });
 
   test('starts a genuinely new user Turn with a clean negotiation state', async () => {
@@ -2036,6 +2094,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 1,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2090,6 +2149,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2137,6 +2197,7 @@ describe('AiSdkBackend model history', () => {
         sourceRunId: 'run-source',
         sourceTurnId: 'turn-source',
         sourceRuntimeEventHighWater: 1,
+        sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
       },
     })) {
       events.push(event);
@@ -2201,6 +2262,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2294,6 +2356,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 3,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2344,6 +2407,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -2412,6 +2476,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 3,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -3696,6 +3761,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-prev',
           sourceRuntimeEventHighWater: 4,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -3806,6 +3872,7 @@ describe('AiSdkBackend model history', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-prev',
           sourceRuntimeEventHighWater: 6,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -11104,6 +11171,7 @@ describe('AiSdkBackend RunTrace', () => {
           sourceRunId: 'run-source',
           sourceTurnId: 'turn-source',
           sourceRuntimeEventHighWater: 2,
+          sandboxBoundaryNegotiationState: cleanSandboxBoundaryNegotiationState(),
         },
       }),
     );
@@ -16630,6 +16698,15 @@ function sameRouteReplayProvenance(
     runtimeContextInvocations: [
       priorModelInvocation({ connectionId: 'test-connection-id', modelId, runId }),
     ],
+  };
+}
+
+function cleanSandboxBoundaryNegotiationState(): SandboxBoundaryNegotiationState {
+  return {
+    denied: false,
+    invalidRounds: 0,
+    unresolvedRounds: 0,
+    finalizationRequested: false,
   };
 }
 

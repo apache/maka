@@ -381,7 +381,7 @@ export interface RuntimeContinuationPlannerDeps {
     runId: string;
     upToEventSeq?: number;
   }): Promise<ImmutableRuntimePrefixV1>;
-  /** Optional authoritative interaction log used to cover event/row crash gaps. */
+  /** Authoritative interaction log used to cover event/row crash gaps; absence parks admission. */
   readSandboxBoundaryRequests?(sessionId: string): Promise<readonly SandboxBoundaryRequest[]>;
   readContinuationClaimStateByBoundary?(
     boundaryDigest: RuntimeBoundaryDigest,
@@ -450,8 +450,14 @@ export class RuntimeContinuationPlanner {
         `continuation replay segment ${replay.segmentIndex} is not replayable: ${replay.reason}`,
       );
     }
+    if (!this.deps.readSandboxBoundaryRequests) {
+      return parkedPlan(
+        'continuation_authority_unavailable',
+        'sandbox boundary interaction log is unavailable',
+      );
+    }
     try {
-      await this.deps.readSandboxBoundaryRequests?.(input.sessionId);
+      await this.deps.readSandboxBoundaryRequests(input.sessionId);
     } catch {
       return parkedPlan(
         'continuation_authority_unavailable',

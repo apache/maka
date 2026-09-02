@@ -79,11 +79,7 @@ import type {
   HostedInteractionBridge,
 } from '@maka/core/backend-types';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import {
-  createSandboxBoundaryFinalizationState,
-  projectSandboxBoundaryNegotiation,
-  type SandboxBoundaryNegotiationState,
-} from '@maka/core/sandbox-boundary';
+import type { SandboxBoundaryNegotiationState } from '@maka/core/sandbox-boundary';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
@@ -1422,20 +1418,11 @@ export class AiSdkBackend implements AgentBackend {
     const orchestration =
       input.orchestration ??
       resolveEffectiveOrchestration(this.input.header.orchestrationMode, undefined);
+    if (input.continuation && input.continuation.sandboxBoundaryNegotiationState === undefined) {
+      throw new Error('Runtime continuation is missing authenticated sandbox negotiation state');
+    }
     let scope: TurnScope;
-    const negotiationProjection = input.continuation?.sandboxBoundaryNegotiationState
-      ? { kind: 'valid' as const, state: input.continuation.sandboxBoundaryNegotiationState }
-      : input.continuation
-        ? projectSandboxBoundaryNegotiation(input.runtimeContext ?? [])
-        : undefined;
-    const sandboxBoundaryNegotiationState =
-      negotiationProjection === undefined
-        ? undefined
-        : negotiationProjection.kind === 'valid'
-          ? negotiationProjection.state
-          : // A continuation with an incomplete or non-canonical boundary
-            // projection must not guess at prior state or reopen negotiation.
-            createSandboxBoundaryFinalizationState();
+    const sandboxBoundaryNegotiationState = input.continuation?.sandboxBoundaryNegotiationState;
     scope = new TurnScope(
       input.turnId,
       input.runId,

@@ -2105,8 +2105,13 @@ export class SessionManager {
         }
         return authority.readImmutableRuntimePrefix(prefixInput);
       },
-      readSandboxBoundaryRequests: async (targetSessionId) =>
-        (await this.deps.store.listSandboxBoundaryRequests?.(targetSessionId)) ?? [],
+      readSandboxBoundaryRequests: async (targetSessionId) => {
+        const reader = this.deps.store.listSandboxBoundaryRequests;
+        if (typeof reader !== 'function') {
+          throw new Error('sandbox boundary interaction log is unavailable');
+        }
+        return reader.call(this.deps.store, targetSessionId);
+      },
       readContinuationClaimStateByBoundary: async (boundaryDigest) => {
         const authority = runtimeContinuationAuthority(this.deps.runtimeEventStore);
         if (!authority) throw new Error('Continuation authority is not configured');

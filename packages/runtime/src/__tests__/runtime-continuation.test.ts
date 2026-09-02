@@ -83,6 +83,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   const planner = new RuntimeContinuationPlanner({
     readSourceInvocation: async () => runInvocation('run-1'),
     readImmutableRuntimePrefix: async () => sourcePrefix,
+    readSandboxBoundaryRequests: async () => [],
     newId: () => ids.shift() ?? 'unexpected-id',
   });
 
@@ -185,6 +186,43 @@ test('RuntimeContinuationPlanner does not carry the durable negotiation projecti
   assert.equal('sandboxBoundaryNegotiationState' in (plan.continuation ?? {}), false);
 });
 
+test('RuntimeContinuationPlanner parks when the durable boundary reader is absent', async () => {
+  const sourceEvents = [
+    event({
+      id: 'source-user',
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'continue' },
+    }),
+    event({
+      id: 'source-terminal',
+      role: 'system',
+      author: 'system',
+      status: 'failed',
+      actions: { endInvocation: true },
+    }),
+  ];
+  const planner = new RuntimeContinuationPlanner({
+    readSourceRun: async () => runHeader('run-1'),
+    readImmutableRuntimePrefix: async () => immutablePrefix(sourceEvents),
+    newId: () => 'unused',
+  });
+
+  const plan = await planner.plan({
+    sessionId: 'session-1',
+    sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
+    currentCwd: '/workspace/repo',
+    sourceWorkspaceIdentity: 'workspace-1',
+    currentWorkspaceIdentity: 'workspace-1',
+    backgroundOperationsSettled: true,
+    availableToolNames: [],
+  });
+
+  assert.equal(plan.disposition, 'park');
+  assert.deepEqual(plan.rejectionReasons, ['continuation_authority_unavailable']);
+});
+
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceInvocation: async () => runInvocation('run-1'),
@@ -221,6 +259,7 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
           content: { kind: 'text', text: 'continue' },
         }),
       ]),
+    readSandboxBoundaryRequests: async () => [],
     newId: () => 'fresh-id',
   });
 
@@ -258,6 +297,7 @@ test('RuntimeContinuationPlanner parks when the source ledger does not end on it
           content: { kind: 'text', text: 'continue' },
         }),
       ]),
+    readSandboxBoundaryRequests: async () => [],
     newId: () => 'fresh-id',
   });
 
@@ -302,6 +342,7 @@ test('RuntimeContinuationPlanner rejects immutable output after the source termi
           content: { kind: 'text', text: 'must invalidate the boundary' },
         }),
       ]),
+    readSandboxBoundaryRequests: async () => [],
     newId: () => 'fresh-id',
   });
 
@@ -348,6 +389,7 @@ test('RuntimeContinuationPlanner uses canonical provider items for composite hea
           actions: { endInvocation: true },
         }),
       ]),
+    readSandboxBoundaryRequests: async () => [],
     newId: () => `fresh-id-${++nextId}`,
   });
 

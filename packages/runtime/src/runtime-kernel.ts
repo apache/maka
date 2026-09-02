@@ -781,7 +781,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       continuationAuthority,
       continuation,
       admissionRoute,
-      (await this.deps.store.listSandboxBoundaryRequests?.(continuation.sessionId)) ?? [],
+      await readRequiredSandboxBoundaryRequests(this.deps.store, continuation.sessionId),
     );
     const sourceEvents = revalidatedBoundary.events;
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
@@ -2825,7 +2825,7 @@ async function revalidateContinuationBoundary(
   store: RuntimeContinuationAuthorityStore,
   continuation: RuntimeContinuation,
   admissionRoute: ContinuationReplayAdmissionRoute,
-  durableSandboxBoundaryRequests: readonly SandboxBoundaryRequest[] = [],
+  durableSandboxBoundaryRequests: readonly SandboxBoundaryRequest[],
 ): Promise<{
   events: RuntimeEvent[];
   sandboxBoundaryNegotiationState: SandboxBoundaryNegotiationState;
@@ -2886,6 +2886,17 @@ async function revalidateContinuationBoundary(
   const sandboxBoundaryNegotiationState =
     negotiation.kind === 'valid' ? negotiation.state : createSandboxBoundaryFinalizationState();
   return { events: [...prefixes.at(-1)!.events], sandboxBoundaryNegotiationState };
+}
+
+async function readRequiredSandboxBoundaryRequests(
+  store: SessionStore,
+  sessionId: string,
+): Promise<readonly SandboxBoundaryRequest[]> {
+  const reader = store.listSandboxBoundaryRequests;
+  if (typeof reader !== 'function') {
+    throw new Error('Runtime continuation requires a durable sandbox boundary request reader');
+  }
+  return reader.call(store, sessionId);
 }
 
 function continuationClaimForExecution(
