@@ -409,3 +409,73 @@ test('visible transcript focus during pending growth keeps the live tail', async
   expect(result.transcriptControlFocused).toBe(true);
   expect(result.distance).toBeLessThanOrEqual(4);
 });
+
+test('Tab between two visible transcript controls under pending growth keeps the live tail', async ({
+  oversizedTurnWindow: page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  const root = page.locator(SCROLLER);
+  await root.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await waitForPaintedFrames(page);
+
+  const pending = await root.evaluate((element) => {
+    const list = element.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    const rootRect = element.getBoundingClientRect();
+    const visibleHeaders = [...element.querySelectorAll<HTMLElement>(
+      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+    )].filter((candidate) => {
+      const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
+      const rect = candidate.getBoundingClientRect();
+      return Boolean(boundary?.checkVisibility({ contentVisibilityAuto: true }))
+        && rect.top >= rootRect.top
+        && rect.bottom <= rootRect.bottom;
+    });
+    if (visibleHeaders.length < 2) {
+      throw new Error('need two visible tool-card headers for the Tab regression');
+    }
+    const from = visibleHeaders[0]!;
+    const to = visibleHeaders[visibleHeaders.length - 1]!;
+    to.dataset.tabTarget = 'true';
+
+    // One task: focus the first visible control, append growth, then move focus
+    // to the second visible control so `focusout` carries a real in-transcript
+    // `relatedTarget` while the ResizeObserver is still pending. A reader
+    // stepping between two controls they can both see has not left the tail, so
+    // the pin must survive — this is the release path the blur-to-body fixtures
+    // could not reach.
+    from.focus({ preventScroll: true });
+    const growth = document.createElement('div');
+    growth.dataset.tabPendingGrowth = 'true';
+    growth.style.height = '600px';
+    list.append(growth);
+    to.focus();
+
+    const toRect = to.getBoundingClientRect();
+    return {
+      focusedTarget: document.activeElement === to,
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      toVisible: toRect.bottom > rootRect.top && toRect.top < rootRect.bottom,
+    };
+  });
+  expect(pending.focusedTarget).toBe(true);
+  expect(pending.toVisible).toBe(true);
+  expect(pending.distance).toBeGreaterThan(100);
+  await waitForPaintedFrames(page, 6);
+  await waitForStableScrollGeometry(page);
+
+  const settled = await root.evaluate((element) => {
+    const active = document.activeElement as HTMLElement | null;
+    return {
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      transcriptControlFocused:
+        active?.matches('[data-maka-transcript-boundary] [role="button"]') ?? false,
+      stillOnTarget: active?.dataset.tabTarget === 'true',
+    };
+  });
+  expect(settled.transcriptControlFocused).toBe(true);
+  expect(settled.stillOnTarget).toBe(true);
+  expect(settled.distance).toBeLessThanOrEqual(4);
+});
