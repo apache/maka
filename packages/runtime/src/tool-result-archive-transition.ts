@@ -293,12 +293,17 @@ export function collectStaleToolResultArchiveCandidates(
     if (!sourceProjection) continue;
     const serializedResult = serializedToolResultProjection(sourceProjection);
     const originalBytes = utf8ByteLength(serializedResult);
+    const media = projectionArtifactMedia(sourceProjection);
     // An artifact serializes to a short reference and materializes to real
     // image bytes, so the string alone would price a screenshot at nothing.
     const originalEstimatedTokens =
       estimateTokens(serializedResult.length, charsPerToken) +
-      projectionArtifactMedia(sourceProjection).length * MATERIALIZED_IMAGE_TOKENS;
-    if (originalEstimatedTokens <= maxResultEstimatedTokens) continue;
+      media.length * MATERIALIZED_IMAGE_TOKENS;
+    // A result that carries media is always a candidate: archiving it drops
+    // whole images from the request, which is worth doing whatever the
+    // reference text around them happens to weigh. The size gate is there to
+    // spare small text results, so it only decides those.
+    if (media.length === 0 && originalEstimatedTokens <= maxResultEstimatedTokens) continue;
     candidates.push({
       runtimeEventId: event.id,
       turnId: event.turnId,
