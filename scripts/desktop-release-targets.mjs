@@ -38,9 +38,10 @@ const LINUX_ARTIFACT_ARCHITECTURES = Object.freeze({
  * Every Desktop packaging runner, for either publication channel. A target is
  * one runner: `payloads` is what it uploads, `advertised` is the subset its
  * update feed offers, and `checksums` is the subset a formal release publishes
- * a `.sha256` beside. That last set is not derivable from the other two — macOS
- * signs only its DMG while Windows signs both its installer and its archive —
- * so the descriptor decides it here and every verify script reads it.
+ * a `.sha256` beside. A checksum is issued only for a payload the platform's
+ * verify script has opened and accepted, and the macOS script opens the DMG
+ * alone — the ZIP is exercised end to end by the autoupdate verification, which
+ * issues none — so the set is recorded here rather than derived from `payloads`.
  *
  * `feed` is per runner. On macOS that is not the name clients read: both
  * architectures build one feed between them, so the packaging step names each
