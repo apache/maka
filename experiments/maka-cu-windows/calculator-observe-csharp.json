@@ -11,13 +11,7 @@
         "uia": true,
         "wgc": true
       },
-      "semanticActions": [
-        "set_value",
-        "click_element",
-        "select",
-        "toggle",
-        "scroll"
-      ],
+      "semanticActions": ["set_value", "click_element", "select", "toggle", "scroll"],
       "input": {
         "foreground": false,
         "globalPointer": false,
@@ -70,12 +64,7 @@
         "className": "ApplicationFrameWindow",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1427,
-          113,
-          418,
-          675
-        ],
+        "bounds": [1427, 113, 418, 675],
         "patterns": [],
         "actions": [],
         "value": null
@@ -88,12 +77,7 @@
         "className": "ApplicationFrameTitleBarWindow",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1603,
-          114,
-          233,
-          40
-        ],
+        "bounds": [1603, 114, 233, 40],
         "patterns": []
       },
       {
@@ -104,12 +88,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": []
       },
       {
@@ -120,12 +99,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": []
       },
       {
@@ -136,12 +110,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1665,
-          114,
-          57,
-          40
-        ],
+        "bounds": [1665, 114, 57, 40],
         "patterns": []
       },
       {
@@ -152,12 +121,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1722,
-          114,
-          57,
-          40
-        ],
+        "bounds": [1722, 114, 57, 40],
         "patterns": []
       },
       {
@@ -168,12 +132,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1779,
-          114,
-          57,
-          40
-        ],
+        "bounds": [1779, 114, 57, 40],
         "patterns": []
       },
       {
@@ -184,12 +143,7 @@
         "className": "Windows.UI.Core.CoreWindow",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          114,
-          400,
-          665
-        ],
+        "bounds": [1436, 114, 400, 665],
         "patterns": []
       },
       {
@@ -200,12 +154,7 @@
         "className": "TextBlock",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1496,
-          124,
-          45,
-          20
-        ],
+        "bounds": [1496, 124, 45, 20],
         "patterns": []
       },
       {
@@ -216,12 +165,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          154,
-          400,
-          625
-        ],
+        "bounds": [1436, 154, 400, 625],
         "patterns": []
       },
       {
@@ -232,12 +176,7 @@
         "className": "Button",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1441,
-          162,
-          50,
-          45
-        ],
+        "bounds": [1441, 162, 50, 45],
         "patterns": []
       },
       {
@@ -248,12 +187,7 @@
         "className": "LandmarkTarget",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          164,
-          400,
-          610
-        ],
+        "bounds": [1436, 164, 400, 610],
         "patterns": []
       },
       {
@@ -264,12 +198,7 @@
         "className": "TextBlock",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1496,
-          165,
-          52,
-          34
-        ],
+        "bounds": [1496, 165, 52, 34],
         "patterns": []
       },
       {
@@ -280,12 +209,7 @@
         "className": "Button",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1560,
-          164,
-          40,
-          40
-        ],
+        "bounds": [1560, 164, 40, 40],
         "patterns": []
       },
       {
@@ -296,12 +220,7 @@
         "className": "ApplicationFrameInputSinkWindow",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          154,
-          400,
-          625
-        ],
+        "bounds": [1436, 154, 400, 625],
         "patterns": []
       },
       {
@@ -312,12 +231,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          122,
-          400,
-          29
-        ],
+        "bounds": [1436, 122, 400, 29],
         "patterns": []
       },
       {
@@ -328,12 +242,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          122,
-          28,
-          28
-        ],
+        "bounds": [1436, 122, 28, 28],
         "patterns": []
       },
       {
@@ -344,12 +253,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          122,
-          28,
-          28
-        ],
+        "bounds": [1436, 122, 28, 28],
         "patterns": []
       },
       {
@@ -360,12 +264,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": true,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": []
       },
       {
@@ -376,12 +275,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": true,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": []
       },
       {
@@ -392,12 +286,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": true,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": []
       },
       {
@@ -408,18 +297,9 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1665,
-          114,
-          57,
-          40
-        ],
-        "patterns": [
-          "Invoke"
-        ],
-        "actions": [
-          "click_element"
-        ],
+        "bounds": [1665, 114, 57, 40],
+        "patterns": ["Invoke"],
+        "actions": ["click_element"],
         "value": null
       },
       {
@@ -430,12 +310,7 @@
         "className": "",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          0,
-          0,
-          0,
-          0
-        ],
+        "bounds": [0, 0, 0, 0],
         "patterns": [],
         "actions": [],
         "value": null
@@ -448,12 +323,7 @@
         "className": "ApplicationFrameInputSinkWindow",
         "isEnabled": true,
         "isOffscreen": false,
-        "bounds": [
-          1436,
-          154,
-          400,
-          625
-        ],
+        "bounds": [1436, 154, 400, 625],
         "patterns": [],
         "actions": [],
         "value": null

@@ -28,11 +28,21 @@ import { resolve, join } from 'node:path';
 const out = resolve(process.argv[2] ?? 'experiments/maka-cu-windows/real-app-probe.json');
 const artifact = (path) => {
   const absolute = resolve(path);
-  if (!existsSync(absolute)) return { path: absolute, exists: false, sizeBytes: null, sha256: null, lastWrite: null };
+  if (!existsSync(absolute))
+    return { path: absolute, exists: false, sizeBytes: null, sha256: null, lastWrite: null };
   const info = statSync(absolute);
-  return { path: absolute, exists: true, sizeBytes: info.size, sha256: createHash('sha256').update(readFileSync(absolute)).digest('hex').toUpperCase(), lastWrite: info.mtime.toISOString() };
+  return {
+    path: absolute,
+    exists: true,
+    sizeBytes: info.size,
+    sha256: createHash('sha256').update(readFileSync(absolute)).digest('hex').toUpperCase(),
+    lastWrite: info.mtime.toISOString(),
+  };
 };
-const chromeCandidates = [join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'), join(process.env.LOCALAPPDATA ?? '', 'Google/Chrome/Application/chrome.exe')];
+const chromeCandidates = [
+  join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
+  join(process.env.LOCALAPPDATA ?? '', 'Google/Chrome/Application/chrome.exe'),
+];
 const chrome = chromeCandidates.find(existsSync);
 const libreCandidates = [
   'D:\\soft\\program\\soffice.exe',
@@ -44,25 +54,50 @@ const fileVersion = (path) => {
   try {
     const version = execFileSync(
       'powershell.exe',
-      ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${path.replaceAll("'", "''")}').VersionInfo.ProductVersion`],
+      [
+        '-NoProfile',
+        '-Command',
+        `(Get-Item -LiteralPath '${path.replaceAll("'", "''")}').VersionInfo.ProductVersion`,
+      ],
       { encoding: 'utf8', windowsHide: true, timeout: 3000 },
     ).trim();
     return version || null;
-  } catch { return null; }
+  } catch {
+    return null;
+  }
 };
 const libre = libreCandidates.find(existsSync);
 let uwpPackages = [];
 try {
-  const raw = execFileSync('powershell.exe', ['-NoProfile', '-Command', "Get-AppxPackage | Where-Object {$_.Name -match 'WindowsCalculator|Microsoft.Paint|WindowsNotepad'} | Select-Object Name,Version | ConvertTo-Json -Compress"], { encoding: 'utf8', windowsHide: true }).trim();
+  const raw = execFileSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-Command',
+      "Get-AppxPackage | Where-Object {$_.Name -match 'WindowsCalculator|Microsoft.Paint|WindowsNotepad'} | Select-Object Name,Version | ConvertTo-Json -Compress",
+    ],
+    { encoding: 'utf8', windowsHide: true },
+  ).trim();
   uwpPackages = raw ? (JSON.parse(raw) instanceof Array ? JSON.parse(raw) : [JSON.parse(raw)]) : [];
-} catch { uwpPackages = []; }
+} catch {
+  uwpPackages = [];
+}
 const result = {
   schema: 'maka.cu.windows/real-app-probe/1',
   generatedAt: new Date().toISOString(),
   host: { platform: process.platform, arch: process.arch, node: process.version },
-  policy: { existingUserProfilesOpened: false, userDocumentsModified: false, temporaryLocalPageOnly: true },
+  policy: {
+    existingUserProfilesOpened: false,
+    userDocumentsModified: false,
+    temporaryLocalPageOnly: true,
+  },
   apps: {
-    chromium: { state: chrome ? 'pass' : 'blocked', executable: chrome ?? null, version: chrome ? '152.0.7977.64' : null, taskEvidence: chrome ? 'browser-task-results.json' : null },
+    chromium: {
+      state: chrome ? 'pass' : 'blocked',
+      executable: chrome ?? null,
+      version: chrome ? '152.0.7977.64' : null,
+      taskEvidence: chrome ? 'browser-task-results.json' : null,
+    },
     libreoffice: {
       state: libre ? 'available' : 'blocked',
       executable: libre ?? null,
@@ -81,7 +116,9 @@ const result = {
         : 'no supported Calculator/Paint/Notepad package detected',
     },
   },
-  artifacts: { localWebFixture: artifact('experiments/maka-cu-windows/fixture/web-task-fixture.html') },
+  artifacts: {
+    localWebFixture: artifact('experiments/maka-cu-windows/fixture/web-task-fixture.html'),
+  },
 };
 writeFileSync(out, `${JSON.stringify(result, null, 2)}\n`, 'utf8');
 console.log(JSON.stringify(result, null, 2));

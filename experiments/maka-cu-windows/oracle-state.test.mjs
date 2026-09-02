@@ -55,7 +55,12 @@ function fold(events) {
 test('click must increment exactly once, including reordered duplicate actions', () => {
   assert.equal(pageAClicked(fold([event({ event: 'click', clickCount: 1 })])), true);
   assert.equal(pageAClicked(fold([event({ event: 'click', clickCount: 2 })])), false);
-  assert.equal(pageAClicked(fold([event({ event: 'click', clickCount: 2 }), event({ event: 'click', clickCount: 1 })])), false);
+  assert.equal(
+    pageAClicked(
+      fold([event({ event: 'click', clickCount: 2 }), event({ event: 'click', clickCount: 1 })]),
+    ),
+    false,
+  );
   assert.equal(pageAClicked(fold([event({ event: 'click', clickCount: 3 })]), 2), true);
   assert.equal(pageAClicked(fold([event({ event: 'click', clickCount: 2 })]), 2), false);
   assert.equal(pageAClicked(fold([event({ event: 'click', page: 'B', clickCount: 1 })])), false);
@@ -66,7 +71,10 @@ test('a scroll event alone does not prove a downward scroll', () => {
   assert.equal(pageAScrolled(fold([event({ event: 'scroll', scrollTop: 10 })]), 20), false);
   assert.equal(pageAScrolled(fold([event({ event: 'scroll', scrollTop: 40 })]), 20), true);
   assert.equal(pageAScrolled(fold([event({ event: 'ready', scrollTop: 40 })]), 20), false);
-  assert.equal(pageAScrolled(fold([event({ event: 'scroll', page: 'B', scrollTop: 40 })]), 20), false);
+  assert.equal(
+    pageAScrolled(fold([event({ event: 'scroll', page: 'B', scrollTop: 40 })]), 20),
+    false,
+  );
 });
 
 test('enter then pageB-load then ready keeps page-A Enter evidence', () => {
@@ -160,7 +168,9 @@ test('refused helper stays blocked even if the page later changed', () => {
 test('navigation evidence survives every arrival order of the four relevant POSTs', () => {
   function permutations(items) {
     if (!items.length) return [[]];
-    return items.flatMap((item, index) => permutations(items.filter((_, other) => other !== index)).map(rest => [item, ...rest]));
+    return items.flatMap((item, index) =>
+      permutations(items.filter((_, other) => other !== index)).map((rest) => [item, ...rest]),
+    );
   }
   const events = [
     event({ event: 'compat-input', compatValue: 'expected', at: 1 }),
@@ -183,7 +193,10 @@ test('separate runs cannot combine their Enter and destination evidence', () => 
 });
 
 test('a label or unrelated page event containing the text does not prove input', () => {
-  const state = fold([event({ event: 'ready', value: 'expected' }), event({ page: 'B', event: 'input', value: 'expected' })]);
+  const state = fold([
+    event({ event: 'ready', value: 'expected' }),
+    event({ page: 'B', event: 'input', value: 'expected' }),
+  ]);
   assert.equal(pageAHasValue(state, 'expected'), false);
 });
 
@@ -193,22 +206,53 @@ test('navigation requires destination ready and exactly one Enter, including reo
   const ready = event({ event: 'ready', page: 'B' });
   assert.equal(navigationCompleted(fold([enter, load]), 'expected'), false);
   assert.equal(navigationCompleted(fold([enter, load, ready]), 'expected'), true);
-  assert.equal(navigationCompleted(fold([event({ ...enter, enterCount: 2 }), enter, load, ready]), 'expected'), false);
+  assert.equal(
+    navigationCompleted(fold([event({ ...enter, enterCount: 2 }), enter, load, ready]), 'expected'),
+    false,
+  );
   assert.equal(navigationCompleted(fold([enter, enter, load, ready]), 'expected'), false);
 });
 
 test('bound navigation requires the exact run, source field and destination URL', () => {
-  const binding = { run: 'seq-1', value: 'expected', sourceUrl: 'http://127.0.0.1:1234/page-a?run=seq-1', destinationUrl: 'http://127.0.0.1:1234/page-b?run=seq-1' };
+  const binding = {
+    run: 'seq-1',
+    value: 'expected',
+    sourceUrl: 'http://127.0.0.1:1234/page-a?run=seq-1',
+    destinationUrl: 'http://127.0.0.1:1234/page-b?run=seq-1',
+  };
   const events = [
-    event({ event: 'compat-input', sourceId: 'compat-input', url: binding.sourceUrl, compatValue: 'expected' }),
-    event({ event: 'enter', sourceId: 'compat-input', url: binding.sourceUrl, compatValue: 'expected', enterCount: 1 }),
+    event({
+      event: 'compat-input',
+      sourceId: 'compat-input',
+      url: binding.sourceUrl,
+      compatValue: 'expected',
+    }),
+    event({
+      event: 'enter',
+      sourceId: 'compat-input',
+      url: binding.sourceUrl,
+      compatValue: 'expected',
+      enterCount: 1,
+    }),
     event({ event: 'pageB-load', page: 'B', url: binding.destinationUrl }),
     event({ event: 'ready', page: 'B', url: binding.destinationUrl }),
   ];
   assert.equal(boundNavigationCompleted(fold(events), binding), true);
   assert.equal(boundNavigationCompleted(fold([...events].reverse()), binding), true);
-  for (const [index, changes] of [[0, { sourceId: 'web-input' }], [1, { sourceId: 'web-input' }], [1, { run: 'other' }], [1, { url: 'wrong-source' }], [2, { url: 'wrong-destination' }], [3, { run: 'other' }], [3, { url: 'wrong-destination' }]]) {
-    const changed = events.map((item, i) => i === index ? { ...item, ...changes } : item);
-    assert.equal(boundNavigationCompleted(fold(changed), binding), false, `${index} ${JSON.stringify(changes)}`);
+  for (const [index, changes] of [
+    [0, { sourceId: 'web-input' }],
+    [1, { sourceId: 'web-input' }],
+    [1, { run: 'other' }],
+    [1, { url: 'wrong-source' }],
+    [2, { url: 'wrong-destination' }],
+    [3, { run: 'other' }],
+    [3, { url: 'wrong-destination' }],
+  ]) {
+    const changed = events.map((item, i) => (i === index ? { ...item, ...changes } : item));
+    assert.equal(
+      boundNavigationCompleted(fold(changed), binding),
+      false,
+      `${index} ${JSON.stringify(changes)}`,
+    );
   }
 });

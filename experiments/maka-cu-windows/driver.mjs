@@ -58,7 +58,8 @@ rl.on('line', (line) => {
   }
 });
 child.on('exit', (code, signal) => {
-  for (const { reject } of pending.values()) reject(new Error(`helper exited code=${code} signal=${signal ?? 'none'}`));
+  for (const { reject } of pending.values())
+    reject(new Error(`helper exited code=${code} signal=${signal ?? 'none'}`));
   pending.clear();
 });
 
@@ -81,22 +82,36 @@ const check = (name, ok, note = '') => {
   report.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${note ? '  — ' + note : ''}`);
   if (!ok) failures++;
 };
-const patternHits = (n) => ['Value', 'Invoke', 'Toggle', 'SelectionItem'].filter((p) => n.patterns?.includes(p));
+const patternHits = (n) =>
+  ['Value', 'Invoke', 'Toggle', 'SelectionItem'].filter((p) => n.patterns?.includes(p));
 
 try {
   // 1. handshake (10s baseline)
   const hello = await call('initialize', {}, 10000);
-  check('initialize', hello.result?.protocol === 'maka.cu.windows/0', `protocol=${hello.result?.protocol}`);
+  check(
+    'initialize',
+    hello.result?.protocol === 'maka.cu.windows/0',
+    `protocol=${hello.result?.protocol}`,
+  );
 
   // 2. window list
   const list = await call('list_windows');
-  const windows = (list.result?.windows ?? []).filter((w) => w.title === 'maka-cu-windows-fixture' && !w.isOffscreen);
+  const windows = (list.result?.windows ?? []).filter(
+    (w) => w.title === 'maka-cu-windows-fixture' && !w.isOffscreen,
+  );
   check('list_windows (fixture-only)', windows.length > 0, `fixture=${windows.length}`);
-  console.log('  windows:', windows.slice(0, 6).map((w) => `#${w.hwnd} "${w.title}" (pid ${w.pid})`).join('\n            ') || '  (none)');
+  console.log(
+    '  windows:',
+    windows
+      .slice(0, 6)
+      .map((w) => `#${w.hwnd} "${w.title}" (pid ${w.pid})`)
+      .join('\n            ') || '  (none)',
+  );
   if (windows.length === 0) throw new Error('no visible top-level window to observe');
 
   const candidates = windows.filter((w) => String(w.hwnd) === hwndOverride);
-  if (candidates.length !== 1) throw new Error('supplied hwnd is not the identified fixture window');
+  if (candidates.length !== 1)
+    throw new Error('supplied hwnd is not the identified fixture window');
 
   // 3+4. observe + one semantic action — first verified target wins
   const attempts = [];
@@ -115,25 +130,61 @@ try {
       continue;
     }
     const isValue = actionable.patterns.includes('Value');
-    const res = await call('act', isValue
-      ? { snapshotId: obs.result.snapshotId, elementToken: actionable.token, op: 'set_value', value: `spike-${Date.now() % 10000}` }
-      : { snapshotId: obs.result.snapshotId, elementToken: actionable.token, op: 'click_element' });
+    const res = await call(
+      'act',
+      isValue
+        ? {
+            snapshotId: obs.result.snapshotId,
+            elementToken: actionable.token,
+            op: 'set_value',
+            value: `spike-${Date.now() % 10000}`,
+          }
+        : {
+            snapshotId: obs.result.snapshotId,
+            elementToken: actionable.token,
+            op: 'click_element',
+          },
+    );
     const o = res.result?.outcome;
     const label = isValue ? 'act set_value (ValuePattern)' : 'act click_element';
     const line = `${label} ${actionable.controlType} "${actionable.name}" path=${o?.path} status=${o?.status}${o?.reason ? ` reason=${o.reason}` : ''} verification=${o?.verification}`;
-    const again = await call('act', { snapshotId: obs.result.snapshotId, elementToken: actionable.token, op: 'set_value', value: 'x' });
+    const again = await call('act', {
+      snapshotId: obs.result.snapshotId,
+      elementToken: actionable.token,
+      op: 'set_value',
+      value: 'x',
+    });
     const spent = again.error?.message === 'snapshot_spent_or_unknown';
-    attempts.push(`${line} | snapshot spent: ${spent ? 'ok' : (again.error?.message ?? 'MISSING (accepted!)')}`);
-    if (o?.status === 'verified' && spent) chosen = { w, tree: t, snapshot: obs.result, outcome: o };
+    attempts.push(
+      `${line} | snapshot spent: ${spent ? 'ok' : (again.error?.message ?? 'MISSING (accepted!)')}`,
+    );
+    if (o?.status === 'verified' && spent)
+      chosen = { w, tree: t, snapshot: obs.result, outcome: o };
   }
 
   for (const a of attempts) report.push(`NOTE  ${a}`);
   if (chosen) {
-    check('observe (bounded tree)', chosen.tree.nodeCount > 0, `target=#${chosen.w.hwnd} nodes=${chosen.tree.nodeCount} truncated=${chosen.tree.truncated} elapsed=${chosen.tree.elapsedMs}ms`);
-    check('observe target identity', idOk(chosen.snapshot.target), JSON.stringify(chosen.snapshot.target));
-    check('semantic action verified', true, `${chosen.outcome.path} -> ${chosen.outcome.verification}`);
+    check(
+      'observe (bounded tree)',
+      chosen.tree.nodeCount > 0,
+      `target=#${chosen.w.hwnd} nodes=${chosen.tree.nodeCount} truncated=${chosen.tree.truncated} elapsed=${chosen.tree.elapsedMs}ms`,
+    );
+    check(
+      'observe target identity',
+      idOk(chosen.snapshot.target),
+      JSON.stringify(chosen.snapshot.target),
+    );
+    check(
+      'semantic action verified',
+      true,
+      `${chosen.outcome.path} -> ${chosen.outcome.verification}`,
+    );
   } else {
-    check('semantic action verified', false, 'no candidate produced a verified action (helper stayed fail-closed)');
+    check(
+      'semantic action verified',
+      false,
+      'no candidate produced a verified action (helper stayed fail-closed)',
+    );
   }
 
   // 5. cancel shape
@@ -160,5 +211,10 @@ console.log(`total ${dt}ms, failures=${failures}`);
 process.exitCode = failures > 0 ? 1 : 0;
 
 function idOk(target) {
-  return !!target && typeof target.hwnd === 'number' && typeof target.pid === 'number' && !!target.processStartTimeUtc;
+  return (
+    !!target &&
+    typeof target.hwnd === 'number' &&
+    typeof target.pid === 'number' &&
+    !!target.processStartTimeUtc
+  );
 }
