@@ -1189,7 +1189,7 @@ describe('maka-cu backend', () => {
 
   // §6.4 — the host parses the key string.
 
-  it('asks the executor to take focus when the model named the control', async () => {
+  it('enables bound keyboard dispatch by default and acquires a named control', async () => {
     const { backend, logPath } = makeBackend();
     const observation = await observeFixture(backend);
     // el_1 is the window, not the focused element — exactly the case the
@@ -1208,6 +1208,28 @@ describe('maka-cu backend', () => {
     const dispatch = received(await readRecords(logPath), 'dispatch.key')[0];
     assert.equal(dispatch?.focusToken, 'el_1');
     assert.equal(dispatch?.focusPolicy, 'acquire');
+  });
+
+  it('rejects an invalid executor path reported by dispatch.key', async () => {
+    const traces: any[] = [];
+    const { backend, logPath } = makeBackend({
+      tier: 'ax',
+      path: 'cg_event_pid',
+      onTrace: (event) => traces.push(event),
+    });
+    const observation = await observeFixture(backend);
+    const result = await backend.runSemantic!(
+      { type: 'press_key', observationId: observation.observationId, key: 'Tab' },
+      signal(),
+      RUN_CONTEXT,
+    );
+
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 1);
+    assert.equal(!result.outcome.ok && result.outcome.error, 'service_mismatch');
+    assert.match(
+      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
+      /does not permit path/,
+    );
   });
 
   it('verifies rather than takes focus when the model named no control', async () => {

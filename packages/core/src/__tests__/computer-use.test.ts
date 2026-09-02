@@ -434,70 +434,78 @@ describe('the call as the model reads it back', () => {
 
   test('an argument the model sent keeps its key even when its value is withheld', () => {
     // The failure this exists for: a projection that dropped unnamed arguments
-    // showed set_value as a call with no value and scroll as one with no
-    // direction, and the model sent that shape back.
+    // showed set_value as a call with no value and scroll_element as one with
+    // no direction, and the model sent that shape back.
     const scroll = computerUseModelCallArgs({
-      action: 'scroll',
+      action: 'scroll_element',
       observation_id: 'obs-1',
-      coordinate: [10, 20],
+      element_id: 'e7',
       scroll_direction: 'down',
       scroll_amount: 3,
     });
     assert.deepStrictEqual(scroll, {
-      action: 'scroll',
+      action: 'scroll_element',
       observation_id: 'obs-1',
-      coordinate: [10, 20],
+      element_id: 'e7',
       scroll_direction: 'down',
       scroll_amount: 3,
     });
   });
 
-  test("a coordinate is the model's own output, so it reads it back", () => {
-    // Not screen-derived: four digits the model chose and sent. Reduced to
-    // `<point>`, a model that clicked and missed cannot tell whether it has
-    // already tried that point, which is the repeated-call shape this
-    // projection exists to make visible.
+  test("semantic window geometry is the model's own output, so it reads it back", () => {
     assert.deepStrictEqual(
       computerUseModelCallArgs({
-        action: 'left_click',
+        action: 'window_action',
         observation_id: 'obs-1',
-        coordinate: [412, 88],
-      }),
-      { action: 'left_click', observation_id: 'obs-1', coordinate: [412, 88] },
-    );
-    assert.deepStrictEqual(
-      computerUseModelCallArgs({
-        action: 'left_click_drag',
-        observation_id: 'obs-1',
-        start_coordinate: [10, 20],
-        coordinate: [412, 88],
+        element_id: 'e1',
+        window_action: 'move',
+        position: [412, 88],
       }),
       {
-        action: 'left_click_drag',
+        action: 'window_action',
         observation_id: 'obs-1',
-        start_coordinate: [10, 20],
-        coordinate: [412, 88],
+        element_id: 'e1',
+        window_action: 'move',
+        position: [412, 88],
       },
     );
     assert.deepStrictEqual(
-      computerUseModelCallArgs({ action: 'zoom', observation_id: 'obs-1', region: [1, 2, 3, 4] })
-        .region,
-      [1, 2, 3, 4],
+      computerUseModelCallArgs({
+        action: 'window_action',
+        observation_id: 'obs-1',
+        element_id: 'e1',
+        window_action: 'resize',
+        size: [800, 600],
+      }),
+      {
+        action: 'window_action',
+        observation_id: 'obs-1',
+        element_id: 'e1',
+        window_action: 'resize',
+        size: [800, 600],
+      },
     );
   });
 
   test('a geometry argument that is not integers still degrades to a shape', () => {
     assert.strictEqual(
       computerUseModelCallArgs({
-        action: 'left_click',
+        action: 'window_action',
         observation_id: 'obs-1',
-        coordinate: ['412', '88'],
-      }).coordinate,
+        element_id: 'e1',
+        window_action: 'move',
+        position: ['412', '88'],
+      }).position,
       '<2 items>',
     );
     assert.strictEqual(
-      computerUseModelCallArgs({ action: 'left_click', observation_id: 'obs-1', coordinate: 'x' })
-        .coordinate,
+      computerUseModelCallArgs({
+        action: 'window_action',
+        observation_id: 'obs-1',
+        element_id: 'e1',
+        window_action: 'move',
+        position: 'x',
+      }).position,
       '<text:1>',
     );
   });

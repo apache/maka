@@ -203,7 +203,6 @@ const backend = createMakaCuBackend({
   expectedBinarySha256,
   timeoutMs: 10_000,
   physicalInputRecentlyActive,
-  allowCompatibilityInputDispatch: false,
   onTrace(event) {
     traces.push(event);
   },

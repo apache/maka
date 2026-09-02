@@ -127,10 +127,15 @@ test('publishes the real Computer Use schema through the Client Capability proto
       offers: provider.offers(),
     }),
   );
-  const coordinateSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
-    | Record<string, { items?: unknown }>
+  const actionSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
+    | Record<string, { enum?: unknown }>
     | undefined;
-  assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
+  assert.equal(
+    Array.isArray(actionSchema?.action?.enum) &&
+      actionSchema.action.enum.includes('click_element') &&
+      !actionSchema.action.enum.includes('left_click'),
+    true,
+  );
 });
 
 test('publishes every production Desktop-owned tool schema through the protocol', () => {

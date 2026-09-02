@@ -494,11 +494,9 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   // `query` and `menu` name what to look at, not what was found there.
   ['observe', new Set(['include_screenshot', 'query', 'menu'])],
   ['screenshot', new Set(['include_screenshot'])],
-  ['scroll', new Set(['scroll_direction', 'scroll_amount'])],
-  // The semantic twin of `scroll`, added after this map was written.
   ['scroll_element', new Set(['scroll_direction', 'scroll_amount'])],
   // The verb, from the enum the schema publishes. `position` and `size` are
-  // geometry and are handled by MODEL_CALL_GEOMETRY_ARGS below.
+  // semantic window geometry and are handled below.
   ['window_action', new Set(['window_action'])],
   // The text a wait is waiting for is a prediction about the screen, written
   // before the screen shows it.
@@ -522,27 +520,16 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 const MODEL_CALL_PLAIN_STEP_MEMBERS = new Set(['do', 'role']);
 
 /**
- * Geometry the model itself chose, projected verbatim.
+ * Semantic window geometry the model itself chose, projected verbatim.
  *
- * Independent of action, because these names mean the same thing wherever they
- * appear and none of them ever holds screen content: a coordinate, the drag
- * origin, the zoom rectangle, and the place and size a window was asked to take
- * are numbers the model wrote into the call. A model that clicked a point and
- * missed has to be able to see which point, or its next call is the same call.
- *
- * `position` and `size` joined late, with `window_action`. Reduced to
- * `"<point>"` they were a string where the schema wants a tuple, so a replayed
- * window move was rejected off the wire.
+ * `position` and `size` belong to `window_action`; they place or resize the
+ * observed window and never address a control by pixel. Reduced to `"<point>"`
+ * they become strings where the schema requires tuples, so replaying the
+ * model's own call would be rejected before execution.
  */
-const MODEL_CALL_GEOMETRY_ARGS = new Set([
-  'coordinate',
-  'start_coordinate',
-  'region',
-  'position',
-  'size',
-]);
+const MODEL_CALL_GEOMETRY_ARGS = new Set(['position', 'size']);
 
-/** Integers only, so a mistyped `coordinate` still degrades to a shape. */
+/** Integers only, so malformed window geometry still degrades to a shape. */
 function integerTuple(value: unknown): readonly number[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > 4) return undefined;
   return value.every((entry) => typeof entry === 'number' && Number.isInteger(entry))
