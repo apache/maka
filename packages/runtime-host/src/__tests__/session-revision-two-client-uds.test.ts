@@ -30,6 +30,11 @@ import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  buildHistoryCompactCheckpoint,
+  matchHistoryCompactCheckpointPrefix,
+  validateHistoryCompactCheckpointShape,
+} from '@maka/runtime/history-compact-checkpoint';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -104,6 +109,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
     await stopHost(host);
     host = undefined;
 
+    await seedDurableOrderCheckpoint(capability, sourceSessionId);
     host = await startHost(root, capability.rootId);
     await verifyRestartRecoveryAndAdmission(root, sourceSessionId);
     await stopHost(host);
@@ -1011,7 +1017,7 @@ async function seedSource(
     const sourceRuntimeEvents = [
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'user-1',
-        ts: 1,
+        ts: 2,
         role: 'user',
         author: 'user',
         content: {
@@ -1034,7 +1040,7 @@ async function seedSource(
       }),
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'assistant-1',
-        ts: 2,
+        ts: 1,
         role: 'model',
         author: 'agent',
         content: { kind: 'text', text: 'first response' },
@@ -1604,6 +1610,51 @@ async function seedSource(
   }
 }
 
+async function seedDurableOrderCheckpoint(
+  capability: StorageRootCapability<'interactive'>,
+  sourceSessionId: string,
+): Promise<void> {
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire execution root for checkpoint setup');
+  try {
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const coveredRuntimeEvents = (
+      await execution.runtimeEventStore.readSessionRuntimeEventEntries(sourceSessionId)
+    )
+      .map(({ event }) => event)
+      .filter((event) => event.id === 'user-1' || event.id === 'assistant-1');
+    assert.deepEqual(
+      coveredRuntimeEvents.map((event) => event.id),
+      ['user-1', 'assistant-1'],
+    );
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: sourceSessionId,
+      coveredRuntimeEvents,
+      summary: 'The first turn completed.',
+      summaryFormat: 'legacy_freeform',
+      highWaterSeq: 2,
+    });
+    await execution.agentRunStore.appendEvent(sourceSessionId, 'run-turn-1', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'checkpoint-turn-1',
+      runId: 'run-turn-1',
+      sessionId: sourceSessionId,
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        checkpointId: checkpoint.checkpointId,
+        highWaterName: checkpoint.highWaterName,
+        highWaterSeq: checkpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint,
+      },
+    });
+  } finally {
+    await owner.close();
+  }
+}
+
 async function verifyDurableBranch(
   capability: StorageRootCapability<'interactive'>,
   sourceSessionId: string,
@@ -1702,6 +1753,33 @@ async function verifyDurableBranch(
     );
     assert.ok(copiedProjectionArtifact);
     assert.equal(copiedProjectionPart.ref.relativePath, copiedProjectionArtifact.id);
+    const durableCopiedRuns =
+      await execution.agentRunStore.listSessionRuns(admittedRevisionTargetId);
+    const durableCopiedParent = durableCopiedRuns.find((run) => run.turnId === 'turn-1');
+    assert.ok(durableCopiedParent);
+    const copiedParentEvents = (
+      await execution.runtimeEventStore.readSessionRuntimeEventEntries(admittedRevisionTargetId)
+    )
+      .map(({ event }) => event)
+      .filter(
+        (event) => event.runId === durableCopiedParent.runId && event.content?.kind === 'text',
+      );
+    assert.deepEqual(
+      copiedParentEvents.map((event) => event.ts),
+      [2, 1],
+    );
+    const copiedCheckpoint = await execution.agentRunStore.readEventProjection?.(
+      admittedRevisionTargetId,
+      'history_compact_checkpoint_recorded',
+    );
+    const copiedCheckpointData = copiedCheckpoint?.data?.checkpoint;
+    assert.ok(
+      validateHistoryCompactCheckpointShape(copiedCheckpointData, admittedRevisionTargetId),
+    );
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(copiedCheckpointData, copiedParentEvents).reason,
+      undefined,
+    );
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
     assert.deepEqual(await todos.readOrBootstrap('revision-target'), { items: [] });
     assert.deepEqual(await execution.agentRunStore.listSessionRuns('revision-target'), []);

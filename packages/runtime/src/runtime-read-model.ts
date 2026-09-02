@@ -111,7 +111,22 @@ export class RuntimeReadModel {
       return this.buildView({ runs: inlineRuns, events: [], diagnostics });
     }
 
-    const ordered: Array<{ event: RuntimeEvent; runIndex: number; eventIndex: number }> = [];
+    const durableEventOrdinals = await this.readSessionRuntimeEventOrdinals(sessionId);
+    const durableEventOrdinalById = new Map(
+      durableEventOrdinals.map(({ event, ordinal }) => [event.id, ordinal]),
+    );
+    const eventsByRun = new Map<string, RuntimeEvent[]>();
+    for (const { event } of durableEventOrdinals) {
+      const runEvents = eventsByRun.get(event.runId) ?? [];
+      runEvents.push(event);
+      eventsByRun.set(event.runId, runEvents);
+    }
+    const ordered: Array<{
+      event: RuntimeEvent;
+      runIndex: number;
+      eventIndex: number;
+      ordinal?: number;
+    }> = [];
     const terminalFacts: RuntimeEventTerminalFact[] = [];
     for (let runIndex = 0; runIndex < inlineRuns.length; runIndex += 1) {
       const run = inlineRuns[runIndex]!;
@@ -121,9 +136,7 @@ export class RuntimeReadModel {
           inlineRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, activeRunContext.fact);
           terminalFacts.push(activeRunContext.fact);
           diagnostics.push(...activeRunContext.fact.diagnostics);
-          for (let eventIndex = 0; eventIndex < activeRunContext.events.length; eventIndex += 1) {
-            ordered.push({ event: activeRunContext.events[eventIndex]!, runIndex, eventIndex });
-          }
+          appendOrderedEvents(ordered, activeRunContext.events, runIndex, durableEventOrdinalById);
           continue;
         }
 
@@ -152,15 +165,15 @@ export class RuntimeReadModel {
           ]);
         }
         const overlayEvents = activeRunContext?.events.flatMap(activeInteractionOverlayEvent) ?? [];
-        for (let eventIndex = 0; eventIndex < overlayEvents.length; eventIndex += 1) {
-          ordered.push({ event: overlayEvents[eventIndex]!, runIndex, eventIndex });
-        }
+        appendOrderedEvents(ordered, overlayEvents, runIndex);
         continue;
       }
 
       let runEvents: RuntimeEvent[];
       try {
-        runEvents = await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId);
+        runEvents =
+          eventsByRun.get(run.runId) ??
+          (await this.deps.runtimeEventStore.readRuntimeEvents(sessionId, run.runId));
       } catch (error) {
         throw new RuntimeReadModelError('RuntimeEvent ledger read failed', [
           readModelDiagnostic('unsupported_event', 'RuntimeEventStore.readRuntimeEvents failed', {
@@ -237,11 +250,16 @@ export class RuntimeReadModel {
       inlineRuns[runIndex] = effectiveRunHeaderFromTerminalFact(run, terminalFact.fact);
       terminalFacts.push(terminalFact.fact);
 
-      for (let eventIndex = 0; eventIndex < runEvents.length; eventIndex += 1) {
-        ordered.push({ event: runEvents[eventIndex]!, runIndex, eventIndex });
-      }
+      appendOrderedEvents(ordered, runEvents, runIndex, durableEventOrdinalById);
     }
 
+    const fallbackEventsByRun = new Map<number, typeof ordered>();
+    for (const item of ordered) {
+      if (item.ordinal !== undefined) continue;
+      const runEvents = fallbackEventsByRun.get(item.runIndex) ?? [];
+      runEvents.push(item);
+      fallbackEventsByRun.set(item.runIndex, runEvents);
+    }
     ordered.sort(
       (a, b) =>
         a.event.ts - b.event.ts ||
@@ -249,6 +267,24 @@ export class RuntimeReadModel {
         a.eventIndex - b.eventIndex ||
         a.event.id.localeCompare(b.event.id),
     );
+
+    const nextFallbackEventByRun = new Map<number, number>();
+    for (let index = 0; index < ordered.length; index += 1) {
+      const item = ordered[index]!;
+      if (item.ordinal !== undefined) continue;
+      const next = nextFallbackEventByRun.get(item.runIndex) ?? 0;
+      ordered[index] = fallbackEventsByRun.get(item.runIndex)![next]!;
+      nextFallbackEventByRun.set(item.runIndex, next + 1);
+    }
+
+    const durableEvents = ordered
+      .filter((item) => item.ordinal !== undefined)
+      .sort((a, b) => a.ordinal! - b.ordinal! || a.event.id.localeCompare(b.event.id));
+    let nextDurableEvent = 0;
+    for (let index = 0; index < ordered.length; index += 1) {
+      if (ordered[index]!.ordinal === undefined) continue;
+      ordered[index] = durableEvents[nextDurableEvent++]!;
+    }
 
     return this.buildView({
       runs: inlineRuns,
@@ -274,6 +310,24 @@ export class RuntimeReadModel {
       events: runEvents,
       ...(fact ? { fact } : {}),
     };
+  }
+
+  private async readSessionRuntimeEventOrdinals(
+    sessionId: string,
+  ): Promise<ReadonlyArray<{ ordinal: number; event: RuntimeEvent }>> {
+    const reader = this.deps.runtimeEventStore.readSessionRuntimeEventEntries;
+    if (!reader) return [];
+    try {
+      return await reader.call(this.deps.runtimeEventStore, sessionId);
+    } catch (error) {
+      throw new RuntimeReadModelError('RuntimeEvent session order read failed', [
+        readModelDiagnostic(
+          'unsupported_event',
+          'RuntimeEventStore.readSessionRuntimeEventEntries failed',
+          { error: errorMessage(error) },
+        ),
+      ]);
+    }
   }
 
   private async backfillMissingRuntimeEvents(
@@ -503,4 +557,24 @@ function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function appendOrderedEvents(
+  ordered: Array<{
+    event: RuntimeEvent;
+    runIndex: number;
+    eventIndex: number;
+    ordinal?: number;
+  }>,
+  events: readonly RuntimeEvent[],
+  runIndex: number,
+  ordinals?: ReadonlyMap<string, number>,
+): void {
+  const hasCompleteDurableOrder =
+    ordinals !== undefined && events.every((event) => ordinals.has(event.id));
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+    const event = events[eventIndex]!;
+    const ordinal = hasCompleteDurableOrder ? ordinals.get(event.id) : undefined;
+    ordered.push({ event, runIndex, eventIndex, ...(ordinal !== undefined ? { ordinal } : {}) });
+  }
 }

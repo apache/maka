@@ -1913,6 +1913,154 @@ describe('SessionManager terminal ledger invariants', () => {
     );
   });
 
+  test('RuntimeReadModel preserves per-run event order when timestamps disagree', async () => {
+    const runStore = new TinyAgentRunStore();
+    const run = makeRunHeader({
+      sessionId: 'session-durable-order',
+      runId: 'run-durable-order',
+      turnId: 'turn-durable-order',
+      status: 'completed',
+    });
+    await runStore.createRun(run);
+    for (const event of [
+      runtimeEvent({
+        id: 'rt-user-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 2,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'hello' },
+      }),
+      runtimeEvent({
+        id: 'rt-assistant-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 1,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'world' },
+      }),
+      runtimeEvent({
+        id: 'rt-terminal-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 3,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    ]) {
+      await runStore.appendRuntimeEvent(run.sessionId, run.runId, event);
+    }
+
+    const view = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore: runStore,
+    }).getSessionView(run.sessionId);
+
+    assert.deepStrictEqual(
+      view.events.map((event) => event.id),
+      ['rt-user-durable-order', 'rt-assistant-durable-order', 'rt-terminal-durable-order'],
+    );
+  });
+
+  test('RuntimeReadModel preserves durable order around backfilled events', async () => {
+    const sessionId = 'session-mixed-durable-order';
+    const firstRun = makeRunHeader({
+      sessionId,
+      runId: 'run-first-durable',
+      turnId: 'turn-first-durable',
+      status: 'running',
+      createdAt: 1,
+    });
+    const backfilledRun = makeRunHeader({
+      sessionId,
+      runId: 'run-backfilled',
+      turnId: 'turn-backfilled',
+      status: 'completed',
+      createdAt: 2,
+    });
+    const lastRun = makeRunHeader({
+      sessionId,
+      runId: 'run-last-durable',
+      turnId: 'turn-last-durable',
+      status: 'completed',
+      createdAt: 3,
+    });
+    const runStore = new TinyAgentRunStore();
+    for (const run of [firstRun, backfilledRun, lastRun]) await runStore.createRun(run);
+
+    const firstEvent = runtimeEvent({
+      id: 'rt-first-durable',
+      invocationId: 'inv-first-durable',
+      sessionId,
+      runId: firstRun.runId,
+      turnId: firstRun.turnId,
+      ts: 100,
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
+    const lastEvent = runtimeEvent({
+      id: 'rt-last-durable',
+      invocationId: 'inv-last-durable',
+      sessionId,
+      runId: lastRun.runId,
+      turnId: lastRun.turnId,
+      ts: 1,
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
+    await runStore.appendRuntimeEvent(sessionId, firstRun.runId, firstEvent);
+    await runStore.appendRuntimeEvent(sessionId, lastRun.runId, lastEvent);
+
+    const runtimeEventStore = Object.assign(runStore, {
+      readSessionRuntimeEventEntries: async () => [
+        { ordinal: 1, event: firstEvent },
+        { ordinal: 2, event: lastEvent },
+      ],
+    });
+    const legacyMessages: StoredMessage[] = [
+      {
+        type: 'turn_state',
+        id: 'legacy-state',
+        turnId: backfilledRun.turnId,
+        ts: 50,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ];
+
+    const view = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+      projectionCache: { readMessages: async () => legacyMessages },
+    }).getSessionView(sessionId);
+
+    assert.deepStrictEqual(
+      view.events.map((event) => event.runId),
+      [firstRun.runId, backfilledRun.runId, lastRun.runId],
+    );
+  });
+
+  test('RuntimeReadModel rejects a failing durable-order reader', async () => {
+    const runStore = new TinyAgentRunStore();
+    const run = makeRunHeader({ status: 'completed' });
+    await runStore.createRun(run);
+    const runtimeEventStore = Object.assign(runStore, {
+      readSessionRuntimeEventEntries: async () => {
+        throw new Error('ordinal read rejected');
+      },
+    });
+
+    await assert.rejects(
+      new RuntimeReadModel({ runStore, runtimeEventStore }).getSessionView(run.sessionId),
+      /RuntimeEvent session order read failed/,
+    );
+  });
+
   test('RuntimeReadModel rejects terminal headers when the ledger has no valid terminal fact', async () => {
     const runStore = new TinyAgentRunStore();
     const run = makeRunHeader({

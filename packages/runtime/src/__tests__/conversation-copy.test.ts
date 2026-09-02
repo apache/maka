@@ -1209,6 +1209,67 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
   }
 });
 
+test('conversation copy can use RuntimeEvents backfilled by the read model', async () => {
+  const run = agentRunHeader({
+    runId: 'run-backfilled',
+    invocationId: 'invocation-backfilled',
+    turnId: 'turn-backfilled',
+    status: 'completed',
+    updatedAt: 3,
+    completedAt: 3,
+  });
+  const legacyMessages: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'legacy-user',
+      turnId: run.turnId,
+      ts: 1,
+      text: 'hello',
+    },
+    {
+      type: 'assistant',
+      id: 'legacy-assistant',
+      turnId: run.turnId,
+      ts: 2,
+      text: 'world',
+      modelId: 'fake-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'legacy-state',
+      turnId: run.turnId,
+      ts: 3,
+      status: 'completed',
+      partialOutputRetained: false,
+    },
+  ];
+  const runStore = {
+    listSessionRuns: async () => [run],
+    readEvents: async () => [],
+  } as Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+  const runtimeEventStore = {
+    readRuntimeEvents: async () => [],
+  } as Pick<RuntimeEventStore, 'readRuntimeEvents'>;
+  const source = await new RuntimeReadModel({
+    runStore: runStore as AgentRunStore,
+    runtimeEventStore: runtimeEventStore as RuntimeEventStore,
+    projectionCache: { readMessages: async () => legacyMessages },
+  }).getSessionView(run.sessionId);
+
+  const plan = await prepareConversationRuntimeLedgerCopy({
+    sourceSessionId: run.sessionId,
+    sourceEvents: source.events,
+    copiedMessages: source.messages,
+    runStore,
+    runtimeEventStore,
+  });
+
+  assert.deepEqual(
+    plan.runs[0]?.runtimeEvents.map((event) => event.content?.kind ?? event.status),
+    ['text', 'text', 'completed'],
+  );
+});
+
 test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-recovery-copy-'));
   const runStore = createSqliteAgentRunStore(root);
