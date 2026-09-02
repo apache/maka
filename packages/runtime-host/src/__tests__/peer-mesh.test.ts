@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as waitForImmediate, setTimeout as delay } from 'node:timers/promises';
@@ -267,6 +267,7 @@ test('rejects a modified authority-signed roster', () => {
     {
       version: 1,
       meshId: peerMeshId(keys.publicKey),
+      authorityPeerId: 'peer-a',
       revision: 1,
       members: ['peer-a'],
       closed: false,
@@ -428,6 +429,91 @@ test('repairs an existing membership with a fresh invitation after every locator
   } finally {
     await Promise.allSettled([authority.close(), member.close()]);
     await Promise.allSettled([authorityPeer.close(), memberPeer.close(), ...serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('does not let a member replace the signed Mesh authority locator', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-authority-binding-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberBPeer = network.create('peer-b');
+  const memberCPeer = network.create('peer-c');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const memberB = await openPeerMeshNode({
+    dataRoot: join(root, 'member-b'),
+    peer: memberBPeer,
+  });
+  const memberC = await openPeerMeshNode({
+    dataRoot: join(root, 'member-c'),
+    peer: memberCPeer,
+  });
+  const serving = [authority.serve(), memberB.serve(), memberC.serve()];
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await memberB.join(await authority.invite(meshId));
+    await memberC.join(await authority.invite(meshId));
+    const invitation = await authority.invite(meshId);
+
+    await assert.rejects(
+      memberB.join({ ...invitation, reachability: memberCPeer.current() }),
+      /wrong authority identity/u,
+    );
+    assert.equal(memberB.status()[0]?.authorityPeerId, 'peer-a');
+  } finally {
+    await Promise.allSettled([authority.close(), memberB.close(), memberC.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberBPeer.close(), memberCPeer.close()]);
+    await Promise.allSettled(serving);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('keeps Mesh membership while pruning reachability beyond its recovery horizon', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-expired-reachability-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  let now = Date.now();
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+    now: () => now,
+  });
+  const memberRoot = join(root, 'member');
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+    now: () => now,
+  });
+  const serving = authority.serve();
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await member.join(await authority.invite(meshId));
+    await member.close();
+
+    now += PEER_REACHABILITY_LEASE_TTL_MS + 24 * 60 * 60 * 1_000 + 1;
+    member = await openPeerMeshNode({
+      dataRoot: memberRoot,
+      peer: memberPeer,
+      now: () => now,
+    });
+
+    assert.equal(member.status()[0]?.roster.roster.meshId, meshId);
+    const persisted = JSON.parse(await readFile(join(memberRoot, 'peer-mesh.json'), 'utf8')) as {
+      readonly reachability: readonly {
+        readonly lease: { readonly peerId: string };
+      }[];
+    };
+    assert.deepEqual(
+      persisted.reachability.map(({ lease }) => lease.peerId),
+      ['peer-b'],
+    );
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close(), serving]);
     await rm(root, { recursive: true, force: true });
   }
 });

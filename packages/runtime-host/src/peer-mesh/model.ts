@@ -31,10 +31,6 @@ import {
   decodePeerMeshInvitation as decodePeerMeshInvitationWire,
   type PeerMeshInvitationV1,
 } from '../protocol/peer-mesh.js';
-import {
-  decodeSignedPeerReachabilityLease,
-  type SignedPeerReachabilityLeaseV1,
-} from '../peer-reachability/index.js';
 import { PEER_MESH_MEMBER_ADVERTISEMENT_MAX_BYTES, PEER_MESH_MAX_MEMBERS } from './limits.js';
 import { canonicalPeerMeshDisplayName } from './display-name.js';
 
@@ -52,6 +48,7 @@ export {
 export interface PeerMeshRosterV1 {
   readonly version: 1;
   readonly meshId: string;
+  readonly authorityPeerId: string;
   readonly revision: number;
   readonly members: readonly string[];
   readonly closed: boolean;
@@ -62,10 +59,6 @@ export interface SignedPeerMeshRosterV1 {
   readonly roster: PeerMeshRosterV1;
   readonly authorityPublicKey: string;
   readonly signature: string;
-}
-
-export interface PeerMeshAuthorityTarget {
-  readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
 export interface PeerMeshAuthorityKeyPair {
@@ -202,7 +195,7 @@ export function validatePeerMeshInvitation(value: unknown): PeerMeshInvitationV1
 }
 
 export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
-  const keys = ['version', 'meshId', 'revision', 'members', 'closed'];
+  const keys = ['version', 'meshId', 'authorityPeerId', 'revision', 'members', 'closed'];
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     if (Object.hasOwn(value, 'displayName')) keys.push('displayName');
   }
@@ -214,23 +207,21 @@ export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
   if (members.length === 0 || new Set(members).size !== members.length) {
     throw new Error('Peer Mesh roster members must be unique and non-empty');
   }
+  const authorityPeerId = token(record.authorityPeerId, 'authorityPeerId', 256);
+  if (!members.includes(authorityPeerId)) {
+    throw new Error('Peer Mesh authority must be present in its roster');
+  }
   if (typeof record.closed !== 'boolean') throw new Error('Invalid Peer Mesh roster closed');
   return Object.freeze({
     version: 1,
     meshId: string(record.meshId, 'meshId', 128),
+    authorityPeerId,
     revision: integer(record.revision, 'revision', 1),
     members: Object.freeze(members),
     closed: record.closed,
     ...(record.displayName === undefined
       ? {}
       : { displayName: canonicalPeerMeshDisplayName(record.displayName) }),
-  });
-}
-
-export function decodeAuthorityTarget(value: unknown): PeerMeshAuthorityTarget {
-  const record = exactObject(value, 'Peer Mesh authority target', ['reachability']);
-  return Object.freeze({
-    reachability: decodeSignedPeerReachabilityLease(record.reachability),
   });
 }
 
@@ -312,6 +303,7 @@ export function peerMeshMemberAdvertisementSigningBytes(
 function encodeRoster(roster: PeerMeshRosterV1): Buffer {
   return Buffer.from(
     `maka.peer-mesh.roster.v1\n${JSON.stringify({
+      authorityPeerId: roster.authorityPeerId,
       closed: roster.closed,
       ...(roster.displayName ? { displayName: roster.displayName } : {}),
       members: roster.members,

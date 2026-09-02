@@ -45,7 +45,6 @@ import {
   peerMeshId,
   peerMeshInvitationSecretDigest,
   signPeerMeshRoster,
-  type PeerMeshAuthorityTarget,
   type SignedPeerMeshMemberAdvertisementV1,
   type SignedPeerMeshRosterV1,
 } from './model.js';
@@ -111,10 +110,6 @@ interface PeerMeshEvidenceRevision {
   readonly revision: number;
 }
 
-interface PeerMeshAdvertisementRevision extends PeerMeshEvidenceRevision {
-  readonly meshId: string;
-}
-
 interface SyncPeerMeshRequest {
   readonly kind: 'sync';
   readonly meshId: string;
@@ -122,7 +117,7 @@ interface SyncPeerMeshRequest {
   readonly reachability: SignedPeerReachabilityLeaseV1;
   readonly advertisement: SignedPeerMeshMemberAdvertisementV1;
   readonly knownReachability: readonly PeerMeshEvidenceRevision[];
-  readonly knownAdvertisements: readonly PeerMeshAdvertisementRevision[];
+  readonly knownAdvertisements: readonly PeerMeshEvidenceRevision[];
 }
 
 type SyncPeerMeshResponse =
@@ -300,10 +295,37 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async initialize(): Promise<void> {
     const stored = this.#store.read();
     for (const lease of stored.reachability) {
-      this.#validateReachability(lease, lease.lease.peerId, true);
+      const signed = this.#reachability.verify(lease, lease.lease.peerId, {
+        allowExpired: true,
+      });
+      if (usableHistoricalReachability(signed, this.#now())) {
+        this.#recordReachabilityReceipt(signed);
+      }
+    }
+    for (const state of stored.meshes) {
+      if (state.role !== 'replica') continue;
+      const signed = this.#reachability.verify(
+        state.authorityReachability,
+        state.roster.roster.authorityPeerId,
+        { allowExpired: true },
+      );
+      if (usableHistoricalReachability(signed, this.#now())) {
+        this.#recordReachabilityReceipt(signed);
+      }
     }
     for (const advertisement of stored.advertisements) {
       this.#assertAdvertisementSignature(advertisement);
+    }
+    if (stored.reachability.some((signed) => !usableHistoricalReachability(signed, this.#now()))) {
+      await this.#store.mutate((current) => ({
+        state: {
+          ...current,
+          reachability: current.reachability.filter((signed) =>
+            usableHistoricalReachability(signed, this.#now()),
+          ),
+        },
+        result: undefined,
+      }));
     }
     await this.#refreshLocalEvidence();
     this.#unsubscribeReachability = this.#reachability.subscribe(() => {
@@ -422,6 +444,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         canonicalPeerMeshRoster({
           version: 1,
           meshId: peerMeshId(keys.publicKey),
+          authorityPeerId: identity.peerId,
           revision: 1,
           members: [identity.peerId],
           closed: false,
@@ -541,6 +564,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       if (existing?.role === 'authority') {
         throw new Error('This peer already belongs to that Peer Mesh');
       }
+      if (
+        existing?.role === 'replica' &&
+        authorityReachability.lease.peerId !== existing.roster.roster.authorityPeerId
+      ) {
+        throw new Error('Peer Mesh repair invitation has the wrong authority identity');
+      }
       assertRejoinSettled(existing, localPeerId);
       if (pending && pending.invitation.secret !== invitation.secret) {
         throw new Error('This Peer Mesh already has an unresolved join attempt');
@@ -564,6 +593,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           },
           operationSignal,
         );
+        if (stream.peerId !== authorityReachability.lease.peerId) {
+          throw new Error('Peer Mesh control stream has the wrong peer identity');
+        }
         const localReachability = await this.#reachability.refresh();
         const localAdvertisement = await this.#signLocalAdvertisement(invitation.meshId);
         await this.#store.mutate((current) => {
@@ -628,6 +660,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     signal: AbortSignal,
   ): Promise<PeerMeshStatus> {
     signal.throwIfAborted();
+    const authorityReachability = this.#validateReachability(
+      invitation.reachability,
+      invitation.reachability.lease.peerId,
+      true,
+    );
     const dispatch = await this.#store.mutate((current) => {
       const pending = current.pendingJoins.find(
         ({ invitation: candidate }) =>
@@ -672,8 +709,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     if (
       roster.roster.meshId !== invitation.meshId ||
       roster.authorityPublicKey !== invitation.authorityPublicKey ||
+      roster.roster.authorityPeerId !== stream.peerId ||
+      invitation.reachability.lease.peerId !== stream.peerId ||
       !roster.roster.members.includes(identity.peerId)
     ) {
+      await this.#discardPendingJoin(invitation);
       throw new Error('Peer Mesh authority returned an unrelated roster');
     }
     const reachability = this.#validateReachabilityPage(response.reachability, roster, true);
@@ -697,9 +737,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       }
       const state: PeerMeshReplicaStateV1 = {
         role: 'replica',
-        authority: {
-          reachability: authorityReachabilityFor(invitation),
-        },
+        authorityReachability:
+          selectReachability(
+            reachability.find(
+              ({ lease }) => lease.peerId === selectedRoster.roster.authorityPeerId,
+            ),
+            authorityReachability,
+          ) ?? authorityReachability,
         roster: selectedRoster,
         desiredMembership: pending.phase === 'leave_pending' ? 'left' : 'active',
       };
@@ -781,9 +825,21 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #resumePendingJoin(pending: PendingPeerMeshJoin, signal: AbortSignal): Promise<void> {
+    const authorityReachability = this.#validateReachability(
+      pending.invitation.reachability,
+      pending.invitation.reachability.lease.peerId,
+      true,
+    );
+    const existing = findMesh(this.#store.read().meshes, pending.invitation.meshId);
+    if (
+      existing?.role === 'replica' &&
+      authorityReachability.lease.peerId !== existing.roster.roster.authorityPeerId
+    ) {
+      throw new Error('Peer Mesh repair invitation has the wrong authority identity');
+    }
     const stream = await this.#peer.connectMeshControl(
       {
-        ...dialTarget(pending.invitation.reachability),
+        ...dialTarget(authorityReachability),
         directDeadlineMs: CONNECT_DEADLINE_MS,
       },
       signal,
@@ -1080,7 +1136,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       | {
           readonly kind: 'membership';
           readonly meshId: string;
-          readonly target: PeerMeshAuthorityTarget;
+          readonly target: SignedPeerReachabilityLeaseV1;
           readonly desiredMembership: 'active' | 'left';
           readonly roster: SignedPeerMeshRosterV1;
         }
@@ -1109,7 +1165,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         .filter(
           (peerId) =>
             peerId !== identity.peerId &&
-            (state.role === 'authority' || peerId !== state.authority.reachability.lease.peerId),
+            (state.role === 'authority' || peerId !== state.roster.roster.authorityPeerId),
         )
         .flatMap((peerId) => {
           const target = peerTarget(peerId, stored.reachability, now);
@@ -1152,7 +1208,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         } catch (error) {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
           if (operation.kind === 'membership') {
-            this.#recentlyReached.delete(operation.target.reachability.lease.peerId);
+            this.#recentlyReached.delete(operation.target.lease.peerId);
           }
           if (operation.kind === 'join' || operation.desiredMembership === 'left') {
             failures.push(error);
@@ -1177,13 +1233,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #notifyLeave(
     meshId: string,
-    target: PeerMeshAuthorityTarget,
+    target: SignedPeerReachabilityLeaseV1,
     roster: SignedPeerMeshRosterV1,
     signal: AbortSignal,
   ): Promise<void> {
     const stream = await this.#peer.connectMeshControl(
       {
-        ...dialTarget(target.reachability),
+        ...dialTarget(target),
         directDeadlineMs: CONNECT_DEADLINE_MS,
       },
       signal,
@@ -1199,7 +1255,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         throw new Error('Peer Mesh authority rejected the leave request');
       }
       await this.#applySync(meshId, response.roster, [], []);
-      this.#recentlyReached.add(target.reachability.lease.peerId);
+      this.#recentlyReached.add(target.lease.peerId);
     } finally {
       await stream.close().catch(() => undefined);
     }
@@ -1207,7 +1263,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async #syncPeer(
     meshId: string,
-    target: PeerMeshAuthorityTarget,
+    target: SignedPeerReachabilityLeaseV1,
     signal: AbortSignal,
   ): Promise<void> {
     for (let page = 0; page <= PEER_MESH_MAX_MEMBERS; page += 1) {
@@ -1221,9 +1277,9 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       if (!reachability || !advertisement) {
         throw new Error('Peer Mesh local evidence is unavailable');
       }
-      const targetPeerId = target.reachability.lease.peerId;
+      const targetPeerId = target.lease.peerId;
       const discovered = this.resolveRoutes(targetPeerId);
-      const targetRoutes = dialTarget(target.reachability);
+      const targetRoutes = dialTarget(target);
       const stream = await this.#peer.connectMeshControl(
         {
           peerId: targetPeerId,
@@ -1539,6 +1595,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         {
           version: 1,
           meshId: state.roster.roster.meshId,
+          authorityPeerId: state.roster.roster.authorityPeerId,
           revision: state.roster.roster.revision + 1,
           members: next.members,
           closed: next.closed,
@@ -1595,7 +1652,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   #scheduleRosterAnnouncement(
     roster: SignedPeerMeshRosterV1,
-    targets: readonly PeerMeshAuthorityTarget[],
+    targets: readonly SignedPeerReachabilityLeaseV1[],
   ): void {
     if (targets.length === 0 || this.#lifetime.signal.aborted) return;
     const signal = this.#lifetime.signal;
@@ -1603,7 +1660,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       targets.map(async (target) => {
         const stream = await this.#peer.connectMeshControl(
           {
-            ...dialTarget(target.reachability),
+            ...dialTarget(target),
             directDeadlineMs: CONNECT_DEADLINE_MS,
           },
           signal,
@@ -1622,7 +1679,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           if (response.kind === 'roster-rejected') {
             throw new Error('Peer Mesh roster announcement was rejected');
           }
-          this.#recentlyReached.add(target.reachability.lease.peerId);
+          this.#recentlyReached.add(target.lease.peerId);
         } finally {
           await stream.close().catch(() => undefined);
         }
@@ -1874,7 +1931,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             stored.reachability,
             this.#peer.identity().peerId,
             this.#now(),
-          ).filter(({ reachability }) => reachability.lease.peerId !== remotePeerId),
+          ).filter(({ lease }) => lease.peerId !== remotePeerId),
         );
       }
       this.#recentlyReached.add(remotePeerId);
@@ -2173,8 +2230,7 @@ function peerMeshStatus(
   const localAdvertisement = findAdvertisement(advertisements, meshId, identity.peerId);
   return Object.freeze({
     role: state.role === 'authority' ? 'authority' : 'member',
-    authorityPeerId:
-      state.role === 'authority' ? identity.peerId : state.authority.reachability.lease.peerId,
+    authorityPeerId: state.roster.roster.authorityPeerId,
     roster: state.roster,
     pendingInvitationCount:
       state.role === 'authority'
@@ -2227,14 +2283,13 @@ function currentAuthorityTarget(
   state: PeerMeshReplicaStateV1,
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   now: number,
-): PeerMeshAuthorityTarget | undefined {
-  const authorityPeerId = state.authority.reachability.lease.peerId;
+): SignedPeerReachabilityLeaseV1 | undefined {
+  const authorityPeerId = state.roster.roster.authorityPeerId;
   const learned = latestReachability(reachability, authorityPeerId, now, true);
-  const fallback = usableHistoricalReachability(state.authority.reachability, now)
-    ? state.authority.reachability
+  const fallback = usableHistoricalReachability(state.authorityReachability, now)
+    ? state.authorityReachability
     : undefined;
-  const selected = selectReachability(learned, fallback);
-  return selected ? Object.freeze({ reachability: selected }) : undefined;
+  return selectReachability(learned, fallback);
 }
 
 function rosterAnnouncementTargets(
@@ -2242,17 +2297,15 @@ function rosterAnnouncementTargets(
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   localPeerId: string,
   now: number,
-): readonly PeerMeshAuthorityTarget[] {
+): readonly SignedPeerReachabilityLeaseV1[] {
   const members = new Set(memberPeerIds);
   return Object.freeze(
-    reachability
-      .filter(
-        (signed) =>
-          signed.lease.peerId !== localPeerId &&
-          members.has(signed.lease.peerId) &&
-          usableHistoricalReachability(signed, now),
-      )
-      .map((signed) => Object.freeze({ reachability: signed })),
+    reachability.filter(
+      (signed) =>
+        signed.lease.peerId !== localPeerId &&
+        members.has(signed.lease.peerId) &&
+        usableHistoricalReachability(signed, now),
+    ),
   );
 }
 
@@ -2331,7 +2384,8 @@ function selectRoster(
 ): SignedPeerMeshRosterV1 {
   if (
     current.roster.meshId !== candidate.roster.meshId ||
-    current.authorityPublicKey !== candidate.authorityPublicKey
+    current.authorityPublicKey !== candidate.authorityPublicKey ||
+    current.roster.authorityPeerId !== candidate.roster.authorityPeerId
   ) {
     throw new Error('Peer Mesh roster has the wrong authority');
   }
@@ -2438,7 +2492,7 @@ function reachabilityRevisions(
 function advertisementRevisions(
   advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
   roster: SignedPeerMeshRosterV1,
-): readonly PeerMeshAdvertisementRevision[] {
+): readonly PeerMeshEvidenceRevision[] {
   return Object.freeze(
     advertisements
       .filter(
@@ -2448,7 +2502,6 @@ function advertisementRevisions(
       )
       .map(({ advertisement }) =>
         Object.freeze({
-          meshId: advertisement.meshId,
           peerId: advertisement.peerId,
           revision: advertisement.revision,
         }),
@@ -2462,7 +2515,7 @@ function responseEvidence(
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
   knownReachability: readonly PeerMeshEvidenceRevision[],
-  knownAdvertisements: readonly PeerMeshAdvertisementRevision[],
+  knownAdvertisements: readonly PeerMeshEvidenceRevision[],
   now: number,
 ): {
   readonly reachability: readonly SignedPeerReachabilityLeaseV1[];
@@ -2470,9 +2523,7 @@ function responseEvidence(
   readonly more: boolean;
 } {
   const knownLeases = new Map(knownReachability.map(({ peerId, revision }) => [peerId, revision]));
-  const knownAds = new Map(
-    knownAdvertisements.map(({ meshId, peerId, revision }) => [`${meshId}\n${peerId}`, revision]),
-  );
+  const knownAds = new Map(knownAdvertisements.map(({ peerId, revision }) => [peerId, revision]));
   const missing = [
     ...reachability
       .filter(
@@ -2491,7 +2542,7 @@ function responseEvidence(
         ({ advertisement }) =>
           advertisement.meshId === state.roster.roster.meshId &&
           state.roster.roster.members.includes(advertisement.peerId) &&
-          advertisement.revision > (knownAds.get(advertisementKey(advertisement)) ?? 0),
+          advertisement.revision > (knownAds.get(advertisement.peerId) ?? 0),
       )
       .map((value) => ({
         kind: 'advertisement' as const,
@@ -2594,9 +2645,9 @@ function hasPeerRecoverySource(
     (state) =>
       state.role === 'replica' &&
       shared.has(state.roster.roster.meshId) &&
-      sourcePeerIds.has(state.authority.reachability.lease.peerId) &&
-      usableHistoricalReachability(state.authority.reachability, now) &&
-      hasReachabilityRoutes(state.authority.reachability),
+      sourcePeerIds.has(state.roster.roster.authorityPeerId) &&
+      usableHistoricalReachability(state.authorityReachability, now) &&
+      hasReachabilityRoutes(state.authorityReachability),
   );
 }
 
@@ -2621,9 +2672,8 @@ function peerTarget(
   peerId: string,
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   now: number,
-): PeerMeshAuthorityTarget | undefined {
-  const signed = latestReachability(reachability, peerId, now, true);
-  return signed ? Object.freeze({ reachability: signed }) : undefined;
+): SignedPeerReachabilityLeaseV1 | undefined {
+  return latestReachability(reachability, peerId, now, true);
 }
 
 function dialTarget(reachability: SignedPeerReachabilityLeaseV1): {
@@ -2636,10 +2686,6 @@ function dialTarget(reachability: SignedPeerReachabilityLeaseV1): {
     routeHints: reachability.lease.directRoutes,
     coordinationRelays: reachability.lease.coordinationRoutes,
   });
-}
-
-function authorityReachabilityFor(invitation: PeerMeshInvitationV1): SignedPeerReachabilityLeaseV1 {
-  return invitation.reachability;
 }
 
 function findAdvertisement(
@@ -2737,7 +2783,7 @@ function decodeControlRequest(value: unknown): PeerMeshControlRequest {
       reachability: decodeSignedPeerReachabilityLease(record.reachability),
       advertisement: decodeSignedPeerMeshMemberAdvertisement(record.advertisement),
       knownReachability: decodeEvidenceRevisions(record.knownReachability),
-      knownAdvertisements: decodeAdvertisementRevisions(record.knownAdvertisements),
+      knownAdvertisements: decodeEvidenceRevisions(record.knownAdvertisements),
     };
   }
   if (record.kind === 'leave' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
@@ -2869,16 +2915,16 @@ function assertEvidencePageSize(
 
 function decodeEvidenceRevisions(value: unknown): readonly PeerMeshEvidenceRevision[] {
   if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
-    throw new Error('Invalid Peer Mesh reachability revisions');
+    throw new Error('Invalid Peer Mesh evidence revisions');
   }
   const revisions = value.map((entry) => {
     const record = recordValue(entry);
     if (!hasExactKeys(record, ['peerId', 'revision'])) {
-      throw new Error('Invalid Peer Mesh reachability revision');
+      throw new Error('Invalid Peer Mesh evidence revision');
     }
     const revision = record.revision;
     if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
-      throw new Error('Invalid Peer Mesh reachability revision');
+      throw new Error('Invalid Peer Mesh evidence revision');
     }
     return Object.freeze({
       peerId: requiredString(record.peerId, 256),
@@ -2886,33 +2932,7 @@ function decodeEvidenceRevisions(value: unknown): readonly PeerMeshEvidenceRevis
     });
   });
   if (new Set(revisions.map(({ peerId }) => peerId)).size !== revisions.length) {
-    throw new Error('Duplicate Peer Mesh reachability revision');
-  }
-  return Object.freeze(revisions);
-}
-
-function decodeAdvertisementRevisions(value: unknown): readonly PeerMeshAdvertisementRevision[] {
-  if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
-    throw new Error('Invalid Peer Mesh advertisement revisions');
-  }
-  const revisions = value.map((entry) => {
-    const record = recordValue(entry);
-    if (!hasExactKeys(record, ['meshId', 'peerId', 'revision'])) {
-      throw new Error('Invalid Peer Mesh advertisement revision');
-    }
-    const revision = record.revision;
-    if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
-      throw new Error('Invalid Peer Mesh advertisement revision');
-    }
-    return Object.freeze({
-      meshId: requiredString(record.meshId, 128),
-      peerId: requiredString(record.peerId, 256),
-      revision: revision as number,
-    });
-  });
-  const keys = revisions.map(({ meshId, peerId }) => `${meshId}\n${peerId}`);
-  if (new Set(keys).size !== keys.length) {
-    throw new Error('Duplicate Peer Mesh advertisement revision');
+    throw new Error('Duplicate Peer Mesh evidence revision');
   }
   return Object.freeze(revisions);
 }

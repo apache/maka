@@ -30,7 +30,7 @@ import { PEER_MESH_MAX_MEMBERS, PEER_MESH_MAX_MESHES } from '../peer-mesh/limits
 import {
   decodeSignedPeerReachabilityLease,
   type SignedPeerReachabilityLeaseV1,
-} from '../peer-reachability/index.js';
+} from '../peer-reachability/model.js';
 
 const PEER_ID_MAX_BYTES = 256;
 const MESH_ID_MAX_BYTES = 128;
@@ -316,7 +316,9 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
           localPeerId: requireString(localPeerId, 'Peer Mesh localPeerId', PEER_ID_MAX_BYTES),
           ...(record.localDisplayName === undefined
             ? {}
-            : { localDisplayName: canonicalPeerMeshDisplayName(record.localDisplayName) }),
+            : {
+                localDisplayName: canonicalPeerMeshDisplayName(record.localDisplayName),
+              }),
           transit: decodePeerMeshTransitProjection(record.transit),
         }),
     meshes: Object.freeze(record.meshes.map(decodePeerMeshProjection)),
@@ -433,7 +435,9 @@ function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjectio
     state: record.state,
     ...(record.expiresAt === undefined
       ? {}
-      : { expiresAt: requireCount(record.expiresAt, 'Peer Mesh member route expiry') }),
+      : {
+          expiresAt: requireCount(record.expiresAt, 'Peer Mesh member route expiry'),
+        }),
   };
 }
 

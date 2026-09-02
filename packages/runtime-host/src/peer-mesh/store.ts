@@ -24,7 +24,6 @@ import {
   type FileLifetimeOwner,
 } from '@maka/storage/file-lifetime-owner';
 import {
-  decodeAuthorityTarget,
   decodeSignedPeerMeshMemberAdvertisement,
   decodeSignedPeerMeshRoster,
   PEER_MESH_MAX_INVITATION_RECORDS,
@@ -32,7 +31,6 @@ import {
   PEER_MESH_MAX_MESHES,
   PEER_MESH_MAX_PENDING_INVITATIONS,
   type PeerMeshAuthorityKeyPair,
-  type PeerMeshAuthorityTarget,
   type SignedPeerMeshMemberAdvertisementV1,
   type SignedPeerMeshRosterV1,
   validatePeerMeshInvitation,
@@ -75,7 +73,7 @@ export interface PeerMeshAuthorityStateV1 extends PeerMeshStateBase {
 
 export interface PeerMeshReplicaStateV1 extends PeerMeshStateBase {
   readonly role: 'replica';
-  readonly authority: PeerMeshAuthorityTarget;
+  readonly authorityReachability: SignedPeerReachabilityLeaseV1;
   readonly desiredMembership: 'active' | 'left';
 }
 
@@ -259,7 +257,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
   const expectedKeys =
     record.role === 'authority'
       ? ['role', 'roster', 'authorityPrivateKey', 'invitations']
-      : ['role', 'roster', 'authority', 'desiredMembership'];
+      : ['role', 'roster', 'authorityReachability', 'desiredMembership'];
   if (
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !Object.hasOwn(record, key))
@@ -271,8 +269,8 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
   }
   const roster = decodeSignedPeerMeshRoster(record.roster);
   if (record.role === 'authority') {
-    if (!roster.roster.members.includes(localPeerId)) {
-      throw new Error('Peer Mesh authority is not present in its roster');
+    if (roster.roster.authorityPeerId !== localPeerId) {
+      throw new Error('Peer Mesh authority identity does not match its roster');
     }
     const privateKey = boundedString(record.authorityPrivateKey, 'authorityPrivateKey', 256);
     validatePeerMeshAuthorityKeyPair({
@@ -286,13 +284,13 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
       invitations: Object.freeze(decodeInvitations(record.invitations)),
     });
   }
-  const authority = decodeAuthorityTarget(record.authority);
-  if (!roster.roster.members.includes(authority.reachability.lease.peerId)) {
-    throw new Error('Peer Mesh authority is not present in its roster');
+  const authorityReachability = decodeSignedPeerReachabilityLease(record.authorityReachability);
+  if (authorityReachability.lease.peerId !== roster.roster.authorityPeerId) {
+    throw new Error('Peer Mesh authority reachability has the wrong identity');
   }
   return Object.freeze({
     role: 'replica',
-    authority,
+    authorityReachability,
     roster,
     desiredMembership: decodeDesiredMembership(record.desiredMembership),
   });
