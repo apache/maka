@@ -25,14 +25,16 @@ import {
   type ClientCapabilityProvider,
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
-import type {
-  ClientCapabilityCallFrame,
-  ClientCapabilityCallResult,
-  ClientCapabilityContentBlock,
-  ClientCapabilityHostPathAccess,
-  ClientCapabilityOffer,
-  ClientCapabilityServiceCallFrame,
-  ClientCapabilityServiceOffer,
+import {
+  decodeClientCapabilityToolInputSchema,
+  type ClientCapabilityCallFrame,
+  type ClientCapabilityCallResult,
+  type ClientCapabilityContentBlock,
+  type ClientCapabilityHostPathAccess,
+  type ClientCapabilityOffer,
+  type ClientCapabilityServiceCallFrame,
+  type ClientCapabilityServiceOffer,
+  type ClientCapabilityToolDescriptor,
 } from "@maka/runtime-host/protocol";
 import { toJSONSchema, z } from "zod";
 import { withBrowserOriginAdmission } from './browser/browser-origin-admission.js';
@@ -47,11 +49,23 @@ export interface DesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly MakaTool[];
+  /** Keep compatible tools when a dynamic provider declares a wider schema dialect. */
+  readonly omitUnsupportedTools?: boolean;
 }
 
-interface NativeToolBinding {
+interface PreparedDesktopCapabilityTool {
   readonly tool: MakaTool;
+  readonly descriptor: ClientCapabilityToolDescriptor;
 }
+
+interface PreparedDesktopCapabilityGroup {
+  readonly offerId: string;
+  readonly label: string;
+  readonly description: string;
+  readonly tools: readonly PreparedDesktopCapabilityTool[];
+}
+
+type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool">;
 
 type DesktopToolModelOutput = Awaited<
   ReturnType<NonNullable<MakaTool["toModelOutput"]>>
@@ -112,8 +126,8 @@ export function createDesktopNativeCapabilityProvider(
   input: DesktopNativeCapabilityProviderInput,
   providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
-  const groups = capabilityGroups(input);
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
+  const groups = prepareCapabilityGroups(capabilityGroups(input));
   const offers = Object.freeze(
     groups.map((group) => capabilityOffer(group, hostPathAccess)),
   );
@@ -419,7 +433,7 @@ function abortInvocations(
 }
 
 function capabilityOffer(
-  group: DesktopCapabilityGroup,
+  group: PreparedDesktopCapabilityGroup,
   hostPathAccess: ClientCapabilityHostPathAccess,
 ): ClientCapabilityOffer {
   return Object.freeze({
@@ -430,23 +444,54 @@ function capabilityOffer(
     label: group.label,
     description: group.description,
     tools: Object.freeze(
-      group.tools.map((tool) =>
-        Object.freeze({
-          serverId: group.offerId,
-          name: tool.name,
-          description: tool.description,
-          inputSchema: toolInputSchema(tool),
-          ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
-          ...(tool.displayName
-            ? { annotations: Object.freeze({ title: tool.displayName }) }
-            : {}),
-        }),
-      ),
+      group.tools.map(({ descriptor }) => descriptor),
     ),
   });
 }
 
-function toolInputSchema(tool: MakaTool): Record<string, unknown> {
+function prepareCapabilityGroups(
+  groups: readonly DesktopCapabilityGroup[],
+): PreparedDesktopCapabilityGroup[] {
+  return groups.flatMap((group) => {
+    const tools = group.tools.flatMap((tool): PreparedDesktopCapabilityTool[] => {
+      const declaredSchema = declaredToolInputSchema(tool);
+      let inputSchema: Record<string, unknown>;
+      try {
+        inputSchema = Object.freeze(
+          decodeClientCapabilityToolInputSchema(declaredSchema),
+        );
+      } catch (error) {
+        if (!group.omitUnsupportedTools) throw error;
+        return [];
+      }
+      return [{
+        tool,
+        descriptor: capabilityToolDescriptor(group.offerId, tool, inputSchema),
+      }];
+    });
+    if (group.omitUnsupportedTools && tools.length === 0) return [];
+    return [{ ...group, tools }];
+  });
+}
+
+function capabilityToolDescriptor(
+  offerId: string,
+  tool: MakaTool,
+  inputSchema: Record<string, unknown>,
+): ClientCapabilityToolDescriptor {
+  return Object.freeze({
+    serverId: offerId,
+    name: tool.name,
+    description: tool.description,
+    inputSchema,
+    ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
+    ...(tool.displayName
+      ? { annotations: Object.freeze({ title: tool.displayName }) }
+      : {}),
+  });
+}
+
+function declaredToolInputSchema(tool: MakaTool): Record<string, unknown> {
   const schema = tool.parameters instanceof z.ZodType
     ? toJSONSchema(tool.parameters, {
         io: "input",
@@ -457,12 +502,7 @@ function toolInputSchema(tool: MakaTool): Record<string, unknown> {
       })
     : cloneDeclaredJsonSchema(tool);
   delete schema.$schema;
-  if (schema.type !== "object") {
-    throw new Error(
-      `Desktop native capability tool schema must be an object: ${tool.name}`,
-    );
-  }
-  return Object.freeze(schema);
+  return schema;
 }
 
 function cloneDeclaredJsonSchema(tool: MakaTool): Record<string, unknown> {
@@ -504,11 +544,11 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function indexBindings(
-  groups: readonly DesktopCapabilityGroup[],
+  groups: readonly PreparedDesktopCapabilityGroup[],
 ): Map<string, NativeToolBinding> {
   const bindings = new Map<string, NativeToolBinding>();
   for (const group of groups) {
-    for (const tool of group.tools) {
+    for (const { tool } of group.tools) {
       const key = bindingKey({
         offerId: group.offerId,
         serverId: group.offerId,

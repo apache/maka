@@ -1000,6 +1000,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
                   description:
                     "Use MCP tools connected by this Desktop client.",
                   tools: mcpTools,
+                  omitUnsupportedTools: true,
                 },
               ]),
         ];

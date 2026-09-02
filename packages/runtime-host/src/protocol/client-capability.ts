@@ -673,11 +673,7 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
     ['serverId', 'name', 'inputSchema'],
     ['description', 'annotations', 'activityKind'],
   );
-  const inputSchema = decodeJsonRecord(record.inputSchema, 'inputSchema');
-  if (jsonByteLength(inputSchema) > 32 * 1024) {
-    throw invalidProtocolFrame('Client Capability tool schema is too large');
-  }
-  validateToolInputSchema(inputSchema);
+  const inputSchema = decodeClientCapabilityToolInputSchema(record.inputSchema);
   return {
     serverId: requireString(record.serverId, 'serverId', 128),
     name: requireString(record.name, 'name', 128),
@@ -698,6 +694,15 @@ function decodeToolDescriptor(value: unknown): ClientCapabilityToolDescriptor {
       ? {}
       : { annotations: decodeToolAnnotations(record.annotations) }),
   };
+}
+
+export function decodeClientCapabilityToolInputSchema(value: unknown): Record<string, unknown> {
+  const inputSchema = decodeJsonRecord(value, 'inputSchema');
+  if (jsonByteLength(inputSchema) > 32 * 1024) {
+    throw invalidProtocolFrame('Client Capability tool schema is too large');
+  }
+  validateToolInputSchema(inputSchema);
+  return inputSchema;
 }
 
 function decodeToolActivityKind(value: unknown): ToolActivityKind {

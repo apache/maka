@@ -36,10 +36,17 @@ test('MCP tools stay bound to the connection generation that advertised them', a
     await manager.sync({
       version: MCP_CONFIG_VERSION,
       mcpServers: {
-        fixture: { command: process.execPath, args: [fixturePath] },
+        fixture: {
+          command: process.execPath,
+          args: [fixturePath, '--schema-annotations'],
+        },
       },
     });
     const tools = buildMcpTools(manager);
+    assert.deepEqual(tools.map((tool) => tool.name), [
+      'mcp__fixture__annotated',
+      'mcp__fixture__echo',
+    ]);
     const echo = tools.find((tool) => tool.name === 'mcp__fixture__echo');
     assert.ok(echo);
     assert.equal(echo.categoryHint, 'network_send');
@@ -56,6 +63,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
           label: 'MCP',
           description: 'MCP tools connected by this Desktop client.',
           tools,
+          omitUnsupportedTools: true,
         },
       ],
     });
@@ -69,7 +77,32 @@ test('MCP tools stay bound to the connection generation that advertised them', a
       type: 'object',
       properties: { value: { type: 'string' } },
     });
+    assert.deepEqual(provider.offers()[0]?.tools.map((tool) => tool.name), [
+      'mcp__fixture__echo',
+    ]);
     if (!provider.call) throw new Error('Expected a callable Desktop capability provider');
+    assert.throws(
+      () => provider.call!(
+        {
+          kind: 'client.capability.call',
+          invocationId: 'incompatible-invocation',
+          registrationId: 'registration-1',
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: 'mcp__fixture__annotated',
+          arguments: {},
+          sessionId: 'session',
+          turnId: 'turn',
+          toolCallId: 'incompatible-capability-call',
+          cwd: process.cwd(),
+        },
+        {
+          signal: new AbortController().signal,
+          accept: async () => undefined,
+        },
+      ),
+      /not offered/u,
+    );
     assert.deepEqual(
       await provider.call(
         {
