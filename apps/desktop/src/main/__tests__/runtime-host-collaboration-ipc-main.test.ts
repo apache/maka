@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   decodeCollaborationInvitationCode,
   encodeCollaborationInvitationCode,
@@ -147,5 +148,39 @@ test('requires plaintext confirmation and reports the issued invitation routes',
   assert.deepEqual(
     (peerResult as { invitation: { connectivity: unknown } }).invitation.connectivity,
     { kind: 'peer', coordinationRelayCount: 1 },
+  );
+});
+
+test('treats an unavailable collaboration authority as an empty background inbox', async () => {
+  const handlers = new Map<string, IpcHandler>();
+  registerRuntimeHostCollaborationIpc(
+    {
+      async queryCollaborationTurnRequests() {
+        throw new RuntimeHostOperationError(
+          'collaboration.turn-request.query',
+          'operation_unavailable',
+          'Runtime Host collaboration authority is unavailable',
+        );
+      },
+    } as unknown as Parameters<typeof registerRuntimeHostCollaborationIpc>[0],
+    {
+      handle(channel, listener) {
+        handlers.set(channel, listener);
+      },
+    },
+    async () => {
+      throw new Error('not used');
+    },
+  );
+  const query = handlers.get('session-collaboration:turn-request:query');
+  assert.ok(query);
+
+  assert.deepEqual(await query({} as Parameters<IpcHandler>[0]), {
+    canRequestTurns: false,
+    requests: [],
+  });
+  await assert.rejects(
+    query({} as Parameters<IpcHandler>[0], 'session-1'),
+    RuntimeHostOperationError,
   );
 });

@@ -133,7 +133,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
-    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize only; session support in progress)`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
@@ -302,7 +302,11 @@ export async function runMakaCli(
     }
     case 'acp': {
       const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
-      return runMakaAcpStdioServer({ version });
+      return runMakaAcpStdioServer({
+        workspaceRoot: dataRoots.workspaceRoot,
+        clientDataRoot: dataRoots.clientDataRoot,
+        version,
+      });
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');

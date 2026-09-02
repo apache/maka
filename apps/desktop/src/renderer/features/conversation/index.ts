@@ -17,9 +17,26 @@
  * under the License.
  */
 
+import {
+  captureTranscriptReadingAnchor,
+  currentTranscriptRange,
+  newestDurablePromptSequence,
+  refreshTranscriptTurnLandmarks,
+  restoreSessionTranscriptRange,
+} from './controller/transcript-reading-position.js';
+
+export const transcriptReadingPosition = {
+  captureAnchor: captureTranscriptReadingAnchor,
+  currentRange: currentTranscriptRange,
+  newestDurablePromptSequence,
+  refreshLandmarks: refreshTranscriptTurnLandmarks,
+  restoreRange: restoreSessionTranscriptRange,
+};
+
 export {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
   type TaskReadinessNotice,
-} from './features/conversation/index.js';
+} from './model/task-readiness-notice.js';
+export * from './model/session-ui-state.js';

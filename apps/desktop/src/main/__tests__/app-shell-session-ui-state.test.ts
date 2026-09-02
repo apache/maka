@@ -31,6 +31,7 @@ import {
   createInitialAppShellSessionUiState,
   type AppShellSessionUiState,
 } from '../../renderer/app-shell-session-ui-state.js';
+import { transcriptReadingPosition } from '../../renderer/features/conversation/index.js';
 
 function boundaryRequest(requestId: string): SandboxBoundaryRequestEvent {
   return {
@@ -70,6 +71,7 @@ function seededState(): AppShellSessionUiState {
       drop: [boundaryRequest('drop')],
       keep: [boundaryRequest('keep')],
     },
+    transcriptRestoreUnavailableBySession: { drop: 'turn-drop', keep: 'turn-keep' },
   };
 }
 
@@ -187,6 +189,7 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(Object.keys(next.stopPendingBySession), ['keep']);
     assert.deepEqual(Object.keys(next.liveTurnBySession), ['keep']);
     assert.deepEqual(Object.keys(next.interactionBySession), ['keep']);
+    assert.deepEqual(Object.keys(next.transcriptRestoreUnavailableBySession), ['keep']);
   });
 
   it('keeps state identity for no-op map updates and only replaces the selected map', () => {
@@ -232,6 +235,183 @@ describe('app shell session UI state controller', () => {
     controller.clearSessionUiState('drop');
 
     assert.deepEqual(Object.keys(controller.sessionEventHealthBySessionRef.current), ['keep']);
+  });
+
+  it('owns per-session transcript reading anchors without notifying render subscribers', () => {
+    let notifications = 0;
+    const controller = createAppShellSessionUiStateController();
+    controller.subscribe(() => {
+      notifications += 1;
+    });
+
+    controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop', sequence: 7 });
+    controller.setTranscriptReadingAnchor('keep', { turnId: 'turn-keep', sequence: 11 });
+    controller.setTranscriptReadingAnchor('drop', { turnId: 'turn-drop' });
+
+    assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {
+      drop: { turnId: 'turn-drop', sequence: 7 },
+      keep: { turnId: 'turn-keep', sequence: 11 },
+    });
+    assert.equal(notifications, 0, 'reading anchors have no live render subscriber');
+
+    controller.setTranscriptReadingAnchor('keep', undefined);
+    controller.clearSessionUiState('drop');
+
+    assert.deepEqual(controller.transcriptReadingAnchorBySessionRef.current, {});
+    assert.equal(notifications, 0);
+  });
+
+  it('publishes unavailable transcript restores only until they are consumed', () => {
+    let notifications = 0;
+    const controller = createAppShellSessionUiStateController();
+    controller.subscribe(() => {
+      notifications += 1;
+    });
+
+    controller.setTranscriptRestoreUnavailable('session', 'turn-missing');
+
+    assert.deepEqual(controller.getState().transcriptRestoreUnavailableBySession, {
+      session: 'turn-missing',
+    });
+    assert.equal(notifications, 1);
+
+    controller.setTranscriptRestoreUnavailable('session', undefined);
+
+    assert.deepEqual(controller.getState().transcriptRestoreUnavailableBySession, {});
+    assert.equal(notifications, 2);
+  });
+
+  it('enriches a Turn-only reading anchor when its range sequence arrives later', () => {
+    let anchor: { turnId: string; sequence?: number } | undefined;
+    transcriptReadingPosition.restoreRange({
+      sessionId: 'session',
+      readingAnchor: { turnId: 'turn' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => 17,
+          newestDurableUserSequence: () => 17,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('the resident Turn must not load another range'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('the resident range must not replace messages'),
+      setReadingAnchor: (_sessionId, next) => {
+        anchor = next;
+      },
+      onError: (error) => assert.fail(String(error)),
+    });
+
+    assert.deepEqual(anchor, { turnId: 'turn', sequence: 17 });
+  });
+
+  it('does not enrich a reading anchor from another Session range', () => {
+    let sequenceReads = 0;
+    let anchor: { turnId: string; sequence?: number } | undefined;
+    transcriptReadingPosition.restoreRange({
+      sessionId: 'active',
+      readingAnchor: { turnId: 'turn' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'stale' }),
+          sequenceForTurn: () => {
+            sequenceReads += 1;
+            return 17;
+          },
+          newestDurableUserSequence: () => 17,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('a stale range must not load'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('a stale range must not replace messages'),
+      setReadingAnchor: (_sessionId, next) => {
+        anchor = next;
+      },
+      onError: (error) => assert.fail(String(error)),
+    });
+
+    assert.equal(sequenceReads, 0);
+    assert.equal(anchor, undefined);
+  });
+
+  it('abandons a Turn-only restore that remains absent after the range is ready', async () => {
+    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    let unavailable: { sessionId: string; turnId: string } | undefined;
+    const options = {
+      sessionId: 'session',
+      readingAnchor: { turnId: 'missing' },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => null,
+          newestDurableUserSequence: () => null,
+          snapshot: () => ({ messages: [] }),
+        },
+        ready: async () => undefined,
+        loadAround: async () => assert.fail('a Turn-only anchor has no load target'),
+      },
+      isCurrent: () => true,
+      setMessages: () => assert.fail('an unavailable target must not replace messages'),
+      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
+        anchorWrites.push(next);
+      },
+      onRestoreUnavailable: (sessionId: string, turnId: string) => {
+        unavailable = { sessionId, turnId };
+      },
+      onError: (error: unknown) => assert.fail(String(error)),
+    };
+
+    transcriptReadingPosition.restoreRange(options);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(anchorWrites, [undefined]);
+    assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'missing' });
+  });
+
+  it('abandons a known-sequence restore when loadAround cannot make the Turn resident', async () => {
+    let loadedSequence: number | undefined;
+    let unavailable: { sessionId: string; turnId: string } | undefined;
+    let messages: Array<{ id: string }> | undefined;
+    const anchorWrites: Array<{ turnId: string; sequence?: number } | undefined> = [];
+    const options = {
+      sessionId: 'session',
+      readingAnchor: { turnId: 'removed', sequence: 23 },
+      controller: {
+        store: {
+          range: () => ({ sessionId: 'session' }),
+          sequenceForTurn: () => null,
+          newestDurableUserSequence: () => 29,
+          snapshot: () => ({ messages: [{ id: 'latest' }] }),
+        },
+        ready: async () => undefined,
+        loadAround: async (sequence: number) => {
+          loadedSequence = sequence;
+        },
+      },
+      isCurrent: () => true,
+      setMessages: (next: Array<{ id: string }>) => {
+        messages = next;
+      },
+      setReadingAnchor: (_sessionId: string, next: { turnId: string; sequence?: number } | undefined) => {
+        anchorWrites.push(next);
+      },
+      onRestoreUnavailable: (sessionId: string, turnId: string) => {
+        unavailable = { sessionId, turnId };
+      },
+      onError: (error: unknown) => assert.fail(String(error)),
+    };
+
+    transcriptReadingPosition.restoreRange(options);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(loadedSequence, 23);
+    assert.deepEqual(messages, [{ id: 'latest' }]);
+    assert.deepEqual(anchorWrites, [undefined]);
+    assert.deepEqual(unavailable, { sessionId: 'session', turnId: 'removed' });
   });
 
   it('keeps the synchronous live-turn ref aligned with reducer updates', () => {

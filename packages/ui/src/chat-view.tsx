@@ -264,6 +264,9 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  /** Runtime-only reading position restored without search focus or highlight. */
+  restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
@@ -538,6 +541,8 @@ export function ChatView(props: {
     sessionId: props.activeSession?.id,
     messages: props.messages,
     target: props.scrollTargetTurn,
+    restoreTarget: props.restoreTargetTurn,
+    onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
     onLoadEarlierHistory: props.onLoadEarlierHistory,

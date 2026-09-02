@@ -21,10 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
-import {
-  describeChatConfigurationReason,
-  NO_REAL_CONNECTION_CODE,
-} from '@maka/core/connection-error-copy';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
@@ -309,7 +306,7 @@ export async function createExecutionRuntimeHostComposition(
     // local simulation, configure a real model and start a new one.
     backends.register('fake', () => {
       throw new Error(
-        `${NO_REAL_CONNECTION_CODE}:fake_backend: ${describeChatConfigurationReason('fake_backend')}`,
+        `${NO_REAL_CONNECTION_CODE}:fake_backend: Runtime Host cannot send on a retired local-simulation connection; configure a real model and start a new task`,
       );
     });
     const runtimePolicyActivation = new RuntimePolicyActivationGate();

@@ -42,6 +42,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
@@ -100,6 +101,35 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   assert.equal(closes, 1);
 });
 
+test('connection-only CLI bootstrap does not read the model connection catalog', async () => {
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {},
+  } as unknown as RuntimeHostConnection;
+  const context = await connectRuntimeHostCliConnection(
+    { rootPath: '/runtime-host-root' },
+    {
+      connectOrSpawn: async () => connectedHostResult(connection),
+      readConnectionCatalog: async () => {
+        throw new Error('model connection catalog unavailable');
+      },
+    },
+  );
+
+  assert.equal(context.connection.connectionId, connection.connectionId);
+  await context.close();
+});
+
 test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
   let closes = 0;
   await assert.rejects(
@@ -123,6 +153,83 @@ test('CLI refuses a staged Host whose durable installation claim is missing', as
     /RUNTIME_HOST_RECOVERY_REQUIRED/u,
   );
   assert.equal(closes, 1);
+});
+
+test('CLI Runtime Host bootstrap aborts a stalled catalog read and closes its connection', async () => {
+  const controller = new AbortController();
+  const catalogStarted = deferred<void>();
+  const abortReason = new Error('ACP connection closed');
+  let closes = 0;
+  let connectSignal: AbortSignal | undefined;
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {
+      closes += 1;
+    },
+  } as unknown as RuntimeHostConnection;
+
+  const connecting = connectRuntimeHostCli(
+    { rootPath: '/runtime-host-root', signal: controller.signal },
+    {
+      connectOrSpawn: async (input) => {
+        connectSignal = input.signal;
+        return {
+          kind: 'connected',
+          connection,
+          registration: hostRegistration(),
+        };
+      },
+      readConnectionCatalog: async () => {
+        catalogStarted.resolve();
+        return new Promise(() => {});
+      },
+    },
+  );
+  await catalogStarted.promise;
+  controller.abort(abortReason);
+
+  await assert.rejects(connecting, (error: unknown) => error === abortReason);
+  assert.equal(connectSignal, controller.signal);
+  assert.equal(closes, 1);
+});
+
+test('CLI Runtime Host bootstrap closes an initial connection acquired after abort', async () => {
+  const controller = new AbortController();
+  const connectStarted = deferred<void>();
+  const acquired = deferred<ReturnType<typeof connectedHostResult>>();
+  const abortReason = new Error('ACP connection closed');
+  let closes = 0;
+  const connection = {
+    close: async () => {
+      closes += 1;
+    },
+  } as unknown as RuntimeHostConnection;
+
+  const connecting = connectRuntimeHostCli(
+    { rootPath: '/runtime-host-root', signal: controller.signal },
+    {
+      connectOrSpawn: async () => {
+        connectStarted.resolve();
+        return acquired.promise;
+      },
+    },
+  );
+  await connectStarted.promise;
+  controller.abort(abortReason);
+
+  await assert.rejects(connecting, (error: unknown) => error === abortReason);
+  acquired.resolve(connectedHostResult(connection));
+  await waitFor(() => closes === 1);
 });
 
 test('non-interactive CLI reports how to retire an incompatible Runtime Host', async () => {
@@ -545,6 +652,14 @@ function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegist
   };
 }
 
+function connectedHostResult(connection: RuntimeHostConnection) {
+  return {
+    kind: 'connected' as const,
+    connection,
+    registration: hostRegistration(),
+  };
+}
+
 function incompatibleRemoteHandshake(overrides: Partial<HostIncompatible> = {}): HostIncompatible {
   return {
     kind: 'incompatible',
@@ -580,4 +695,22 @@ function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeH
     mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
     readRemoteProfileIfCurrent: async () => assert.fail('unexpected read'),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('condition was not reached');
 }

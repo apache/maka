@@ -17,9 +17,19 @@
  * under the License.
  */
 
-export {
-  deriveTaskReadinessNotice,
-  isTaskSubmissionHardBlocked,
-  resolveTaskReadinessModelTarget,
-  type TaskReadinessNotice,
-} from './features/conversation/index.js';
+export function createObservableState<S>(initial: S) {
+  let current = initial;
+  const listeners = new Set<() => void>();
+  return {
+    getState: (): S => current,
+    subscribe(listener: () => void): () => void {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    replaceState(next: S): void {
+      if (next === current) return;
+      current = next;
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}

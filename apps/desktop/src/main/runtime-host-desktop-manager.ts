@@ -79,7 +79,11 @@ export interface RuntimeHostDesktopManager {
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void>;
-  finalizeGuestAccess(mountId: string, signal?: AbortSignal): Promise<void>;
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void>;
   unmountGuest(mountId: string): Promise<void>;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
@@ -208,6 +212,7 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
+  skipPeerRouteRefreshOnce?: boolean;
   lastCandidate?: {
     readonly hostId: string;
     readonly hostEpoch: string;
@@ -355,11 +360,21 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return this.#mutateTarget(profileId, () => this.#finalizeAccessCredential(profileId));
   }
 
-  finalizeGuestAccess(mountId: string, signal?: AbortSignal): Promise<void> {
-    return this.#mutateTarget(mountId, () => this.#finalizeAccessCredential(mountId, signal));
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void> {
+    return this.#mutateTarget(mountId, () =>
+      this.#finalizeAccessCredential(mountId, signal, onAccessActivated),
+    );
   }
 
-  async #finalizeAccessCredential(profileId: string, externalSignal?: AbortSignal): Promise<void> {
+  async #finalizeAccessCredential(
+    profileId: string,
+    externalSignal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<void> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
@@ -390,7 +405,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             () => candidate.client.finalizeAccessCredential(remainingMs),
             signal,
           );
+          notifyAccessActivated(onAccessActivated);
           if (finalized.reconnectRequired) {
+            if (
+              target.target.profile.kind === 'remote' &&
+              target.target.profile.transport.kind === 'libp2p-direct'
+            ) {
+              target.skipPeerRouteRefreshOnce = true;
+            }
             await candidate.close();
             await this.#waitForReadyCandidate(lifecycle, candidate, signal);
           }
@@ -829,6 +851,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
               ? AbortSignal.any([signal, initialSignal])
               : signal,
             starting ? target.input.profileTarget?.sshInteraction : 'batch',
+            starting ? target.input.onConnectionPhase : undefined,
           ),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
@@ -859,10 +882,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target: DesktopRuntimeHostTargetGeneration,
     signal: AbortSignal,
     sshInteraction: RuntimeHostSshInteraction | undefined,
+    onConnectionPhase: ((phase: RuntimeHostConnectionPhase) => void) | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
     let localRecoveryAttempted = false;
     const inheritedExit = target.input.onExit;
+    let refreshPeerRoutes = target.skipPeerRouteRefreshOnce !== true;
+    target.skipPeerRouteRefreshOnce = false;
     const tryRecoverLocalHost = async (): Promise<boolean> => {
       if (target.input.profileTarget || localRecoveryAttempted || !this.recoverLocalHost) {
         return false;
@@ -888,14 +914,17 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             ipcMain: this.#ipcMain.createTarget(target.epoch),
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
-            onConnectionPhase: (phase) => {
-              target.input.onConnectionPhase?.(phase);
-            },
+            // Import progress belongs to the initial connection only. Override
+            // the callback inherited from target.input so reconnects cannot
+            // replay one-shot join progress.
+            onConnectionPhase: (phase) => onConnectionPhase?.(phase),
+            ...(refreshPeerRoutes ? {} : { refreshPeerRoutes: false }),
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
           },
           target.observations,
         );
+        refreshPeerRoutes = true;
       } catch (error) {
         signal.throwIfAborted();
         if (await tryRecoverLocalHost()) continue;
@@ -1230,6 +1259,14 @@ function pairingFinalizeTimedOut(error: unknown): boolean {
     error.operation === 'access.credential.finalize' &&
     error.reason === 'timeout'
   );
+}
+
+function notifyAccessActivated(observer: (() => void) | undefined): void {
+  try {
+    observer?.();
+  } catch {
+    // Presentation progress cannot control credential finalization.
+  }
 }
 
 function withRuntimeHostTarget(

@@ -156,7 +156,15 @@ module.exports = {
     native.default.resolveConnect(3);
     await control;
 
-    await client.connect(peerConnectInput('ready'));
+    const preparedBeforeReopen = preparedPeerIds.length;
+    const reopenPhases: string[] = [];
+    await client.connect(
+      { ...peerConnectInput('ready'), refreshRoutes: false },
+      undefined,
+      (phase) => reopenPhases.push(phase),
+    );
+    assert.equal(preparedPeerIds.length, preparedBeforeReopen);
+    assert.deepEqual(reopenPhases, ['connecting']);
     await client.connect(peerConnectInput('fallback'));
     await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
       return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';

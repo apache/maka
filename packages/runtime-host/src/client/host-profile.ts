@@ -388,6 +388,7 @@ export async function connectRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly refreshPeerRoutes?: boolean;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
     readonly onHostStatus?: (status: HostStatusResult) => void;
   },
@@ -445,6 +446,7 @@ export async function connectRemoteRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly refreshPeerRoutes?: boolean;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
     readonly onHostStatus?: (status: HostStatusResult) => void;
   },
@@ -467,6 +469,9 @@ export async function connectRemoteRuntimeHostProfile(
       expectedRootId: input.profile.rootId,
       clientInstanceId: input.clientInstanceId,
       peerClient: requireRuntimeHostPeerClient(input.peerClient),
+      ...(input.refreshPeerRoutes === undefined
+        ? {}
+        : { refreshPeerRoutes: input.refreshPeerRoutes }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
       ...(input.handshakeTimeoutMs === undefined
@@ -593,6 +598,7 @@ export async function connectPeerRuntimeHost(input: {
   readonly expectedRootId: string;
   readonly clientInstanceId: string;
   readonly peerClient: RuntimeHostPeerClient;
+  readonly refreshPeerRoutes?: boolean;
   readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
@@ -607,6 +613,7 @@ export async function connectPeerRuntimeHost(input: {
       routeHints: input.transport.routeHints,
       coordinationRelays: input.transport.coordinationRelays,
       directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
+      ...(input.refreshPeerRoutes === undefined ? {} : { refreshRoutes: input.refreshPeerRoutes }),
     },
     input.signal,
     input.onConnectionPhase,

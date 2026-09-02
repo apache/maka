@@ -129,13 +129,17 @@ export {
 } from './wsl-environment.js';
 export {
   RuntimeHostCatalogReadError,
+  RuntimeHostSessionCatalogRevisionChangedError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjectDetails,
   readRuntimeHostResources,
   readRuntimeHostProjects,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
+  type RuntimeHostSessionCatalogPage,
+  type RuntimeHostSessionCatalogPageCursor,
   type RuntimeHostConnectionCatalogEntry,
   type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';

@@ -103,6 +103,22 @@ rejected. Legacy import allowlists may only shrink relative to the base branch. 
 dependency replacement is allowed only when it moves ownership behind a shell,
 feature public, or application public/contract boundary.
 
+Validated copy catalogs are the one admitted dependency class: the locale
+policy (#2672) forces user-visible copy out of business files and into
+`locales/*-copy.ts` catalogs, which necessarily adds import edges the debt
+ratchet would otherwise forbid. A catalog is admitted structurally, re-verified
+on every run: it must carry a `UiCatalog` marker from `@maka/core/ui-locale`,
+record zero tracked hook/bridge/lifecycle/environment/action-factory
+capabilities, and keep its runtime imports to bare package specifiers — never
+relative or `@maka/desktop/` paths — so a catalog cannot become a dependency
+tunnel. Type-only imports are erased at compile time and stay admitted
+regardless of target. A `locales/*-copy.ts` file that fails validation is a
+dedicated violation (`copy catalog validation failed: …`), never a silent fall
+back to the ratchet. Admitted edges are excluded from dependency-count
+ratchets, closure admission, and feature/Desktop-adapter legacy budgets;
+everything else about the importing file still ratchets, and root-entry
+import/token counts stay strict.
+
 `ownership[].targetZone` is migration-roadmap metadata in this foundation: its
 shape and legacy path coverage are validated, but it does not claim to prove
 that a capability has reached its final owner. The directory dependency rules

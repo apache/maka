@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import {
   encodeDesktopCollaborationInvitation,
@@ -91,10 +92,18 @@ export function registerRuntimeHostCollaborationIpc(
   handleReconnectableRead(
     ipcMain,
     'session-collaboration:turn-request:query',
-    (_event, sessionId: unknown) =>
-      client.queryCollaborationTurnRequests(
-        sessionId === undefined ? undefined : requiredId(sessionId, 'Session'),
-      ),
+    async (_event, sessionId: unknown) => {
+      const requestedSessionId =
+        sessionId === undefined ? undefined : requiredId(sessionId, 'Session');
+      try {
+        return await client.queryCollaborationTurnRequests(requestedSessionId);
+      } catch (error) {
+        if (requestedSessionId === undefined && isCollaborationInboxUnavailable(error)) {
+          return { canRequestTurns: false, requests: [] };
+        }
+        throw error;
+      }
+    },
   );
   ipcMain.handle(
     'session-collaboration:turn-request:acknowledge',
@@ -124,6 +133,14 @@ export function registerRuntimeHostCollaborationIpc(
     'session-collaboration:revokePrincipal',
     (_event, principalId: unknown) =>
       client.revokeCollaborationPrincipal(requiredId(principalId, 'Principal')),
+  );
+}
+
+function isCollaborationInboxUnavailable(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostOperationError &&
+    error.operation === 'collaboration.turn-request.query' &&
+    error.code === 'operation_unavailable'
   );
 }
 
