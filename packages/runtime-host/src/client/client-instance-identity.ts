@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { link, mkdir, open, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import { requireClientInstanceId } from '../protocol/index.js';
 
 const CLIENT_IDENTITY_SCHEMA_VERSION = 1;
@@ -90,16 +91,6 @@ async function readClientIdentity(path: string): Promise<ClientIdentityDocument 
     schemaVersion: CLIENT_IDENTITY_SCHEMA_VERSION,
     clientInstanceId: requireClientInstanceId(value.clientInstanceId),
   };
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
