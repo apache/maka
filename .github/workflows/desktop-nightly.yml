@@ -86,24 +86,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: macos-arm64
-            platform: macos
+          - platform: macos
             arch: arm64
             runner: macos-15
-          - target: macos-x64
-            platform: macos
+          - platform: macos
             arch: x64
             runner: macos-15-intel
-          - target: windows-x64
-            platform: windows
+          - platform: windows
             arch: x64
             runner: windows-2025
-          - target: linux-x64
-            platform: linux
+          - platform: linux
             arch: x64
             runner: ubuntu-24.04
-          - target: linux-arm64
-            platform: linux
+          - platform: linux
             arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -193,9 +188,7 @@ jobs:
 
       - name: Verify the Windows Nightly
         if: matrix.platform == 'windows'
-        run: >-
-          npm run verify:windows-x64 --
-          "apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-win-x64.exe"
+        run: npm run verify:windows-x64 -- "${{ matrix.arch }}"
 
       - name: Package the Linux Nightly
         if: matrix.platform == 'linux'
@@ -211,7 +204,7 @@ jobs:
           STAGE_DIRECTORY: ${{ runner.temp }}/desktop-nightly
         run: |
           node scripts/desktop-nightly.mjs stage-target \
-            "${{ matrix.target }}" \
+            "${{ matrix.platform }}-${{ matrix.arch }}" \
             apps/desktop/release \
             "$STAGE_DIRECTORY" \
             "$NIGHTLY_VERSION"
@@ -219,7 +212,7 @@ jobs:
       - name: Preserve the verified Nightly artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-nightly-${{ matrix.target }}
+          name: desktop-nightly-${{ matrix.platform }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/desktop-nightly
           if-no-files-found: error
           compression-level: 0

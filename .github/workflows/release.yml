@@ -41,7 +41,6 @@ jobs:
       tag: ${{ steps.identity.outputs.tag }}
       source_commit: ${{ steps.identity.outputs.source_commit }}
       source_reference_tag: ${{ steps.identity.outputs.source_reference_tag }}
-      exe: ${{ steps.identity.outputs.exe }}
       cli_archive: ${{ steps.identity.outputs.cli_archive }}
       node_version: ${{ steps.identity.outputs.node_version }}
       npm_version: ${{ steps.identity.outputs.npm_version }}
@@ -96,24 +95,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - target: macos-arm64
-            platform: macos
+          - platform: macos
             arch: arm64
             runner: macos-15
-          - target: macos-x64
-            platform: macos
+          - platform: macos
             arch: x64
             runner: macos-15-intel
-          - target: windows-x64
-            platform: windows
+          - platform: windows
             arch: x64
             runner: windows-2025
-          - target: linux-x64
-            platform: linux
+          - platform: linux
             arch: x64
             runner: ubuntu-24.04
-          - target: linux-arm64
-            platform: linux
+          - platform: linux
             arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
@@ -218,14 +212,14 @@ jobs:
       # end-to-end update proof runs once, on the architecture most installs
       # use. package-macos-autoupdate-next.mjs enforces the same restriction.
       - name: Build the version-bumped macOS update
-        if: matrix.target == 'macos-arm64'
+        if: matrix.platform == 'macos' && matrix.arch == 'arm64'
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: npm run package:macos-autoupdate-next
 
       - name: Verify macOS automatic update end to end
-        if: matrix.target == 'macos-arm64'
+        if: matrix.platform == 'macos' && matrix.arch == 'arm64'
         run: |
           npm run verify:macos-autoupdate -- \
             "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-arm64.zip" \
@@ -239,7 +233,23 @@ jobs:
 
       - name: Verify the Windows release
         if: matrix.platform == 'windows'
-        run: npm run verify:windows-x64 -- "apps/desktop/release/${{ needs.release-identity.outputs.exe }}"
+        run: npm run verify:windows-x64 -- "${{ matrix.arch }}"
+
+      # Discovered, not spelled out, for the same reason as the DMG above: this
+      # runner builds one installer, and the name is the descriptor's to decide.
+      # The installer steps below are handed a path rather than a target, so
+      # unlike `verify:windows-x64` they cannot resolve it themselves.
+      - name: Locate the packaged Windows installer
+        id: installer
+        if: matrix.platform == 'windows'
+        run: |
+          shopt -s nullglob
+          exes=(apps/desktop/release/*.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          echo "exe=${exes[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Download and verify the pinned Windows upgrade baseline
         id: previous
@@ -255,7 +265,7 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-installer -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             "${{ steps.previous.outputs.exe }}"
 
       - name: Build the version-bumped autoupdate installer
@@ -266,14 +276,14 @@ jobs:
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-autoupdate -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
       - name: Prove deterministic mid-install failure rollback
         if: matrix.platform == 'windows'
         run: |
           npm run verify:windows-installer-rollback -- \
-            "apps/desktop/release/${{ needs.release-identity.outputs.exe }}" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
       # Linux ships unsigned for the same reason Windows does: there is no
@@ -289,14 +299,14 @@ jobs:
       - name: Stage the exact product artifact group
         run: >-
           node scripts/product-release-artifacts.mjs stage
-          "desktop-${{ matrix.target }}"
+          "desktop-${{ matrix.platform }}-${{ matrix.arch }}"
           apps/desktop/release
           "${{ runner.temp }}/release-assets"
 
       - name: Upload the verified release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-desktop-${{ matrix.target }}-${{ github.run_attempt }}
+          name: release-desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assets
           if-no-files-found: error
           retention-days: 30

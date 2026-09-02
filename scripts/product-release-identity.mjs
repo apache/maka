@@ -121,7 +121,6 @@ export function resolveProductReleaseIdentity({
 
   const toolchain = releaseToolchainFromManifest(rootManifest);
   const targets = desktopReleaseTargets(version, { nightly: false });
-  const exe = `Maka-${version}-win-x64.exe`;
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
   const cliGroup = [cliArchive, `${cliArchive}.sha256`];
   const uploaded = (target) => [
@@ -157,7 +156,6 @@ export function resolveProductReleaseIdentity({
     tag: `v${version}`,
     sourceCommit: sha,
     sourceReferenceTag,
-    exe,
     cliArchive,
     artifacts,
     releaseAssets,
@@ -203,7 +201,6 @@ function githubOutputEntries(identity) {
     tag: identity.tag,
     source_commit: identity.sourceCommit,
     source_reference_tag: identity.sourceReferenceTag,
-    exe: identity.exe,
     cli_archive: identity.cliArchive,
     node_version: identity.nodeVersion,
     node_archive: identity.nodeArchive,

@@ -104,7 +104,7 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   const download = workflow.jobs.publish.steps.find(
     (step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern,
   );
-  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.target }}');
+  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}-${{ matrix.arch }}');
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
@@ -118,24 +118,22 @@ test('Desktop Nightly packages the GitHub dev feeds and grants write only to its
   );
   // The runner never names its own uploads; the target descriptor does.
   assert.match(stage.run, /desktop-nightly\.mjs stage-target/u);
-  assert.match(stage.run, /\$\{\{ matrix\.target \}\}/u);
+  assert.match(stage.run, /\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/u);
   assert.doesNotMatch(JSON.stringify(workflow), /latest-mac\.yml|latest\.yml/u);
+  // Nor does it name a distributable: the descriptor does, and the verifiers
+  // read it from there.
+  assert.doesNotMatch(JSON.stringify(workflow), /win-x64\.exe/u);
 });
 
 test('every packaged Desktop target ships from a runner of its own architecture', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   const targets = workflow.jobs.desktop.strategy.matrix.include;
-  assert.deepEqual(
-    targets.map((entry) => entry.target),
-    ['macos-arm64', 'macos-x64', 'windows-x64', 'linux-x64', 'linux-arm64'],
-  );
+  const names = targets.map((entry) => `${entry.platform}-${entry.arch}`);
+  assert.deepEqual(names, ['macos-arm64', 'macos-x64', 'windows-x64', 'linux-x64', 'linux-arm64']);
   const nightlyTargets = desktopNightlyTargets('0.2.0-dev.42.20260829').map(
     (target) => target.name,
   );
-  assert.deepEqual(targets.map((entry) => entry.target).toSorted(), nightlyTargets.toSorted());
-  for (const entry of targets) {
-    assert.equal(entry.target, `${entry.platform}-${entry.arch}`);
-  }
+  assert.deepEqual(names.toSorted(), nightlyTargets.toSorted());
   assert.deepEqual(
     targets.map((entry) => entry.runner),
     ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],

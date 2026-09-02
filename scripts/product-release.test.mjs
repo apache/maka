@@ -97,9 +97,11 @@ test('one root version defines every product artifact from one source commit', (
     'https://nodejs.org/download/release/v24.18.1/node-v24.18.1-darwin-arm64.tar.xz',
   );
   assert.equal(identity.npmVersion, '11.19.0');
-  assert.equal(identity.exe, 'Maka-1.2.3-win-x64.exe');
   assert.equal(identity.cliArchive, 'Maka-1.2.3-cli-mac-arm64.zip');
   assert.equal(Object.hasOwn(identity, 'sourceArchive'), false);
+  // Desktop artifact names come from the target descriptor alone; the identity
+  // restates none of them.
+  assert.equal(Object.hasOwn(identity, 'exe'), false);
   assert.deepEqual(identity.artifacts, {
     'desktop-macos-arm64': [
       'Maka-1.2.3-mac-arm64.dmg',
@@ -842,7 +844,7 @@ test('one product workflow gates one draft release on every required artifact', 
     assert.ok(verifierIndex >= 0 && verifierIndex < uploadIndex);
   }
   for (const [jobName, group] of [
-    ['desktop', 'desktop-${{ matrix.target }}'],
+    ['desktop', 'desktop-${{ matrix.platform }}-${{ matrix.arch }}'],
     ['cli-macos-arm64', 'cli-macos-arm64'],
   ]) {
     const stage = jobs[jobName].steps.find(
@@ -895,14 +897,11 @@ test('one product workflow gates one draft release on every required artifact', 
   // held to it here instead of being a second list that can drift.
   const matrix = jobs.desktop.strategy.matrix.include;
   assert.deepEqual(
-    matrix.map((entry) => entry.target).toSorted(),
+    matrix.map((entry) => `${entry.platform}-${entry.arch}`).toSorted(),
     desktopReleaseTargets('1.2.3', { nightly: false })
       .map((target) => target.name)
       .toSorted(),
   );
-  for (const entry of matrix) {
-    assert.equal(entry.target, `${entry.platform}-${entry.arch}`);
-  }
   assert.deepEqual(
     matrix.map((entry) => entry.runner),
     ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],
@@ -914,6 +913,11 @@ test('one product workflow gates one draft release on every required artifact', 
     .filter((run) => typeof run === 'string')
     .join('\n');
   assert.equal((commands.match(/gh release create/gu) ?? []).length, 1);
+  // The Windows installer's name belongs to the target descriptor. The workflow
+  // resolves it — by discovering the one packaged `.exe`, or by handing the
+  // architecture to a verifier that reads the descriptor — never by spelling it.
+  assert.doesNotMatch(commands, /win-x64\.exe/u);
+  assert.equal(Object.hasOwn(jobs['release-identity'].outputs, 'exe'), false);
   assert.equal(jobs.desktop['timeout-minutes'], 75);
   assert.match(commands, /npm run package:windows-autoupdate-next/u);
   assert.match(commands, /npm run verify:windows-autoupdate/u);
