@@ -33,6 +33,7 @@ import type {
 } from '@maka/core/session';
 import {
   createFakeWorkbarServices,
+  dispatchQuoteCompanionInput,
   useQuoteCompanion,
   sessionHasExactModelChoice,
   WorkbarServicesProvider,
@@ -362,6 +363,201 @@ test('first send after a completed turn forks through the settled turn', async (
 });
 
 test('does not fork on mount or when the source Session object refreshes', async () => {
+test('dispatches /compact to the committed companion fork without sending model input', async () => {
+  const compactCalls: string[] = [];
+  let sendCalls = 0;
+  let steerCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls.push(sessionId);
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn',
+          runId: 'compact-run',
+          status: 'completed' as const,
+          terminalEventId: 'compact-complete',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+    send: async () => {
+      sendCalls += 1;
+      return { ok: true as const, turnId: 'unexpected-send' };
+    },
+    steer: async () => {
+      steerCalls += 1;
+      return { kind: 'started' as const, turnId: 'unexpected-steer' };
+    },
+  });
+
+  assert.equal(await rendered.send('  /compact  '), true);
+  assert.deepEqual(compactCalls, ['side-conversation']);
+  assert.equal(sendCalls, 0);
+  assert.equal(steerCalls, 0);
+});
+
+test('dispatches the exact /compact Composer command before steering or ordinary send', async () => {
+  const calls: string[] = [];
+  assert.equal(
+    await dispatchQuoteCompanionInput({
+      text: '  /compact  ',
+      streaming: true,
+      compact: async () => {
+        calls.push('compact');
+        return true;
+      },
+      steer: async () => {
+        calls.push('steer');
+        return true;
+      },
+      send: async () => {
+        calls.push('send');
+        return true;
+      },
+    }),
+    true,
+  );
+  assert.deepEqual(calls, ['compact']);
+});
+
+test('keeps an async companion compaction exclusive until its terminal event', async () => {
+  let compactCalls = 0;
+  let sendCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      return {
+        kind: 'started' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn',
+          runId: 'compact-run',
+          status: 'running' as const,
+        },
+      };
+    },
+    send: async () => {
+      sendCalls += 1;
+      return { ok: true as const, turnId: 'unexpected-send' };
+    },
+  });
+
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(await rendered.send('ordinary question'), false);
+  assert.equal(compactCalls, 1);
+  assert.equal(sendCalls, 0);
+});
+
+test('clears a failed companion compaction request so it can be retried', async () => {
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      if (compactCalls === 1) throw new Error('temporary compact failure');
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-retry-turn',
+          runId: 'compact-retry-run',
+          status: 'completed' as const,
+          terminalEventId: 'compact-retry-complete',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+  });
+
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
+});
+
+test('rejects /compact while the companion is running without consuming staged quotes', async () => {
+  const pendingSend = deferred<{ ok: true; turnId: string }>();
+  let compactCalls = 0;
+  const consumed: CompanionQuoteSnapshot[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      compact: async () => {
+        compactCalls += 1;
+        throw new Error('compact should not run while busy');
+      },
+      send: () => pendingSend.promise,
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'quoted context' } }],
+      onQuotesConsumed: (snapshot) => consumed.push(snapshot),
+    },
+  );
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = rendered.send('ordinary question');
+    await Promise.resolve();
+  });
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(compactCalls, 0);
+  assert.deepEqual(consumed, []);
+
+  await act(async () => {
+    pendingSend.resolve({ ok: true, turnId: 'running-turn' });
+    assert.equal(await sendResult, true);
+  });
+});
+
+test('rejects /compact while the companion fork is preparing', async () => {
+  const pendingFork = deferred<SessionSummary>();
+  let send!: (text: string) => Promise<boolean>;
+  let compactCalls = 0;
+  let branchStarted = false;
+  const rendered = await renderProbe(
+    {
+      branchFromTurn: async () => {
+        branchStarted = true;
+        return { ok: true as const, session: await pendingFork.promise };
+      },
+      compact: async () => {
+        compactCalls += 1;
+        throw new Error('compact should not run before fork commit');
+      },
+    },
+    {
+      ownership: true,
+      onSend: (value) => (send = value),
+      ready: () => branchStarted,
+    },
+  );
+
+  assert.equal(await send('/compact'), false);
+  assert.equal(compactCalls, 0);
+  await act(async () => {
+    pendingFork.resolve(session('side-conversation'));
+    await Promise.resolve();
+  });
+});
+
+test('rejects /compact for an archived companion fork without invoking Runtime Host', async () => {
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    branchFromTurn: async () => ({
+      ok: true as const,
+      session: session('side-conversation', { isArchived: true }),
+    }),
+    compact: async () => {
+      compactCalls += 1;
+      throw new Error('compact should not run for an archived fork');
+    },
+  });
+
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(compactCalls, 0);
+});
+
   let branchCount = 0;
   const { container, root, services } = await renderProbe(
     {

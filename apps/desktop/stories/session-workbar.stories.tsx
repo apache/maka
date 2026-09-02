@@ -901,6 +901,21 @@ function bridge(options: {
       branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
+      compact: async () => ({
+        kind: 'finished' as const,
+        turn: {
+          sessionId: SIDE_CHAT_SESSION.id,
+          turnId: 'story-side-chat-compact-turn',
+          runId: 'story-side-chat-compact-run',
+          status: 'completed' as const,
+          terminalEventId: 'story-side-chat-compact-complete',
+          contextCompactionOutcome: {
+            kind: 'unchanged' as const,
+            reason: 'already_current',
+          },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
       steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),

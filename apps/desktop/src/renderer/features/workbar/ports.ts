@@ -45,7 +45,10 @@ import type { SessionTrace } from '@maka/core/session-trace';
 import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { Result } from '@maka/core/result';
-import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
+import type {
+  ContextCompactResult,
+  ContextDiagnosticsResult,
+} from '@maka/runtime-host/protocol';
 import type { MergedUsageSummary } from '@maka/core/usage-ledger-merge';
 import type {
   ShellRunPtyDataEvent,
@@ -233,6 +236,7 @@ export interface SideChatSessionPort {
   >;
   cleanupSessionCopy(sessionId: string): Promise<void>;
   abandonSessionCopy(sourceSessionId: string, copyId: string): Promise<void>;
+  compact(sessionId: string): Promise<ContextCompactResult>;
   send(
     sessionId: string,
     command: {

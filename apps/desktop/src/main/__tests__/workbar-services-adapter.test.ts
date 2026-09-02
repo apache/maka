@@ -166,6 +166,7 @@ describe('createDesktopWorkbarServices', () => {
     });
     await services.sideChat.cleanupSessionCopy('fork');
     await services.sideChat.abandonSessionCopy('s', 'copy');
+    await services.sideChat.compact('fork');
     await services.sideChat.send('fork', {
       type: 'send',
       turnId: 'turn-2',
@@ -227,6 +228,7 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.branchFromTurn',
         'sessions.cleanupSessionCopy',
         'sessions.abandonSessionCopy',
+        'sessions.compact',
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
