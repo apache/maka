@@ -255,7 +255,7 @@ jobs:
           BASE_SHA: ${{ steps.comparison.outputs.base }}
         run: |
           if [[ -n "$BASE_SHA" ]]; then
-            npm run check:renderer-architecture -- --base "$BASE_SHA"
+            npm run check:renderer-architecture -- --base "$BASE_SHA" --strict-base
           else
             npm run check:renderer-architecture
           fi

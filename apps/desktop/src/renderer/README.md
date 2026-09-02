@@ -104,6 +104,14 @@ capabilities and dependencies, so ordinary implementation can evolve without
 token-count ledger noise. A support entry may move one way from the AppShell
 closure to the root closure without resetting its budget; the reverse move is
 rejected. Legacy import allowlists may only shrink relative to the base branch.
+CI runs the checker as `--base <sha> --strict-base`: the ratchet re-derives the
+base commit's debt from its materialized tree rather than trusting its committed
+ledger, and `--strict-base` turns any failure to materialize or analyze that tree
+into a hard error instead of a silent fallback to the committed ledger. When the
+checker script itself differs from the base commit, the base commit's checker is
+also imported and run over both trees, and any debt the base rules would have
+flagged fails as a `base-checker cross-check:` violation, so one change cannot
+weaken a rule and lower both sides of the ratchet at once.
 
 Dependency-path debt prices only regressive runtime edges. Type-only imports
 are erased at compile time and never count. Edges into a shell, feature public,
