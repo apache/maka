@@ -810,11 +810,12 @@ const updateService = createAppUpdateService({
   // the Sigstore verifier below.
   verifyDownloadedUpdate: updateTestFeed
     ? async () => {}
-    : ({ downloadedFile, version }) =>
+    : ({ downloadedFile, version, files }) =>
         verifyDownloadedUpdateAttestation({
           channel: desktopUpdateChannel,
           downloadedFile,
           version,
+          files,
           trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),
         }),
   prepareInstall: async (input) => {

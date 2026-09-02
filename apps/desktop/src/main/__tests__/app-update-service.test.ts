@@ -27,7 +27,10 @@ import {
   type AppUpdateInstallRequest,
   type AppUpdateStatus,
 } from '../app-update-service.js';
-import type { DownloadedUpdateAttestationVerifier } from '../app-update-attestation.js';
+import type {
+  DownloadedUpdateAttestationInput,
+  DownloadedUpdateAttestationVerifier,
+} from '../app-update-attestation.js';
 
 const FIRST_UPDATE_CHECK_DELAY_MS = 10_000;
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
@@ -287,9 +290,13 @@ describe('AppUpdateService', () => {
       updater.emit('update-available', updateInfo('1.1.0'));
       return { isUpdateAvailable: true };
     };
+    const verified: DownloadedUpdateAttestationInput[] = [];
     const { clock, service } = createHarness({
       updater,
       onStatusChange: (status) => statuses.push(status),
+      verifyDownloadedUpdate: async (input) => {
+        verified.push(input);
+      },
     });
 
     service.start();
@@ -305,10 +312,20 @@ describe('AppUpdateService', () => {
     });
     updater.emit('update-downloaded', {
       ...updateInfo('1.1.0'),
-      downloadedFile: '/tmp/maka-update.zip',
+      files: [{ url: 'Maka-1.1.0-mac-arm64.zip', sha512: '', size: 1 }],
+      downloadedFile: '/tmp/Maka-1.1.0-mac-arm64.zip',
     });
     await settleUpdateVerification();
 
+    // The verifier identifies the payload the updater chose, so the event's
+    // own file list has to reach it alongside the cached file.
+    assert.deepEqual(verified, [
+      {
+        downloadedFile: '/tmp/Maka-1.1.0-mac-arm64.zip',
+        version: '1.1.0',
+        files: [{ url: 'Maka-1.1.0-mac-arm64.zip', sha512: '', size: 1 }],
+      },
+    ]);
     assert.deepEqual(statuses.map((status) => status.state), [
       'checking',
       'available',

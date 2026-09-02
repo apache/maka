@@ -71,15 +71,9 @@ function provenanceBundle(name: string, sha256: string): Bundle {
   } as unknown as Bundle;
 }
 
-test('download verification accepts only a trusted exact artifact subject', async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, 'cached-update.zip');
-  const bytes = Buffer.from('attested update bytes');
-  await writeFile(artifact, bytes);
-  const digest = createHash('sha256').update(bytes).digest('hex');
-  const bundle = provenanceBundle('Maka-1.2.3-mac-arm64.zip', digest);
-  const bundleBytes = Buffer.from(JSON.stringify({
+function serializedBundle(name: string, sha256: string): Buffer {
+  const bundle = provenanceBundle(name, sha256);
+  return Buffer.from(JSON.stringify({
     mediaType: bundle.mediaType,
     verificationMaterial: {
       certificate: { rawBytes: Buffer.from('fixture certificate').toString('base64') },
@@ -95,24 +89,129 @@ test('download verification accepts only a trusted exact artifact subject', asyn
       signatures: [{ sig: Buffer.from('fixture signature').toString('base64') }],
     },
   }));
-  const options = {
-    downloadedFile: artifact,
-    version: '1.2.3',
-    platform: 'darwin' as const,
-    arch: 'arm64',
+}
+
+const FIXTURE_VERSION = '1.2.3';
+
+/**
+ * Every payload the release descriptor advertises, so the verifier fails here
+ * rather than in production if the two ever describe different artifacts.
+ */
+const { desktopReleaseTargets } = (await import(
+  new URL('../../../../../scripts/desktop-release-targets.mjs', import.meta.url).href
+)) as {
+  desktopReleaseTargets: (
+    version: string,
+    options: { nightly: boolean },
+  ) => { advertised: string[] }[];
+};
+
+const ADVERTISED_PAYLOADS = desktopReleaseTargets(FIXTURE_VERSION, { nightly: false }).flatMap(
+  (target) => target.advertised,
+);
+
+/** One cached download, named by the updater after the feed entry it chose. */
+async function stageDownload(
+  directory: string,
+  name: string,
+): Promise<{ downloadedFile: string; digest: string }> {
+  const downloadedFile = join(directory, name);
+  const bytes = Buffer.from(`update bytes for ${name}`);
+  await writeFile(downloadedFile, bytes);
+  return { downloadedFile, digest: createHash('sha256').update(bytes).digest('hex') };
+}
+
+function feedFiles(names: readonly string[]): { url: string }[] {
+  return names.map((name) => ({ url: name }));
+}
+
+test('download verification accepts every payload the release descriptor advertises', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  assert.deepEqual(ADVERTISED_PAYLOADS, [
+    `Maka-${FIXTURE_VERSION}-mac-arm64.zip`,
+    `Maka-${FIXTURE_VERSION}-mac-x64.zip`,
+    `Maka-${FIXTURE_VERSION}-win-x64.exe`,
+    `Maka-${FIXTURE_VERSION}-linux-x86_64.AppImage`,
+    `Maka-${FIXTURE_VERSION}-linux-amd64.deb`,
+    `Maka-${FIXTURE_VERSION}-linux-arm64.AppImage`,
+    `Maka-${FIXTURE_VERSION}-linux-arm64.deb`,
+  ]);
+
+  for (const name of ADVERTISED_PAYLOADS) {
+    const { downloadedFile, digest } = await stageDownload(directory, name);
+    await verifyDownloadedUpdateAttestation({
+      downloadedFile,
+      version: FIXTURE_VERSION,
+      // A feed lists sibling payloads too; only the downloaded one is verified.
+      files: feedFiles(ADVERTISED_PAYLOADS),
+      trustRootCacheDirectory: join(directory, 'trust'),
+      fetchBundle: async () => serializedBundle(name, digest),
+      verifyBundle: async () => {},
+    });
+  }
+});
+
+test('download verification follows the chosen payload, not the running architecture', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-update-rosetta-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // An x64 macOS build under Rosetta reports process.arch 'x64' while
+  // electron-updater downloads the arm64 ZIP.
+  const name = `Maka-${FIXTURE_VERSION}-mac-arm64.zip`;
+  const { downloadedFile, digest } = await stageDownload(directory, name);
+
+  await verifyDownloadedUpdateAttestation({
+    downloadedFile,
+    version: FIXTURE_VERSION,
+    files: feedFiles([name, `Maka-${FIXTURE_VERSION}-mac-x64.zip`]),
     trustRootCacheDirectory: join(directory, 'trust'),
-    fetchBundle: async () => bundleBytes,
+    fetchBundle: async () => serializedBundle(name, digest),
+    verifyBundle: async () => {},
+  });
+});
+
+test('download verification rejects a payload the feed, the version or the attestation disowns', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-reject-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const name = `Maka-${FIXTURE_VERSION}-mac-arm64.zip`;
+  const { downloadedFile, digest } = await stageDownload(directory, name);
+  const options = {
+    downloadedFile,
+    version: FIXTURE_VERSION,
+    files: feedFiles([name]),
+    trustRootCacheDirectory: join(directory, 'trust'),
+    fetchBundle: async () => serializedBundle(name, digest),
     verifyBundle: async () => {},
   };
 
-  await verifyDownloadedUpdateAttestation(options);
   await assert.rejects(
-    verifyDownloadedUpdateAttestation({ ...options, platform: 'win32', arch: 'x64' }),
-    /does not identify/u,
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      files: feedFiles([`Maka-${FIXTURE_VERSION}-win-x64.exe`]),
+    }),
+    /not a payload the update feed offered/u,
   );
 
-  await writeFile(artifact, 'different update bytes');
-  await assert.rejects(verifyDownloadedUpdateAttestation(options), /does not identify/u);
+  const stale = await stageDownload(directory, `Maka-1.2.2-mac-arm64.zip`);
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      downloadedFile: stale.downloadedFile,
+      files: feedFiles([`Maka-1.2.2-mac-arm64.zip`]),
+      fetchBundle: async () => serializedBundle(`Maka-1.2.2-mac-arm64.zip`, stale.digest),
+    }),
+    /does not belong to version 1\.2\.3/u,
+  );
+
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      fetchBundle: async () =>
+        serializedBundle(name, createHash('sha256').update('other bytes').digest('hex')),
+    }),
+    /does not identify/u,
+  );
 
   await assert.rejects(
     verifyDownloadedUpdateAttestation({
@@ -128,40 +227,20 @@ test('download verification accepts only a trusted exact artifact subject', asyn
 test('nightly verification fetches provenance from the versioned GitHub Release asset', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-nightly-attestation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
-  const artifact = join(directory, 'cached-update.zip');
-  const bytes = Buffer.from('nightly update bytes');
-  await writeFile(artifact, bytes);
   const version = '0.2.0-dev.20260829.42';
   const name = `Maka-${version}-mac-arm64.zip`;
-  const digest = createHash('sha256').update(bytes).digest('hex');
-  const bundle = provenanceBundle(name, digest);
+  const { downloadedFile, digest } = await stageDownload(directory, name);
   let fetchedUrl = '';
 
   await verifyDownloadedUpdateAttestation({
     channel: 'nightly',
-    downloadedFile: artifact,
+    downloadedFile,
     version,
-    platform: 'darwin',
-    arch: 'arm64',
+    files: feedFiles([name]),
     trustRootCacheDirectory: join(directory, 'trust'),
     fetchBundle: async (url) => {
       fetchedUrl = url;
-      return Buffer.from(JSON.stringify({
-        mediaType: bundle.mediaType,
-        verificationMaterial: {
-          certificate: { rawBytes: Buffer.from('fixture certificate').toString('base64') },
-          tlogEntries: [],
-        },
-        dsseEnvelope: {
-          payloadType: bundle.content.$case === 'dsseEnvelope'
-            ? bundle.content.dsseEnvelope.payloadType
-            : '',
-          payload: bundle.content.$case === 'dsseEnvelope'
-            ? Buffer.from(bundle.content.dsseEnvelope.payload).toString('base64')
-            : '',
-          signatures: [{ sig: Buffer.from('fixture signature').toString('base64') }],
-        },
-      }));
+      return serializedBundle(name, digest);
     },
     verifyBundle: async () => {},
   });
