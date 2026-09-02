@@ -58,6 +58,7 @@ import {
   PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
   peerReachabilityLeaseSigningBytes,
   peerReachabilityLeaseReceipt,
+  verifySignedPeerReachabilityLease,
   type PeerReachabilityPublisher,
   type PeerReachabilityLeaseReceipt,
   type SignedPeerReachabilityLeaseV1,
@@ -1451,8 +1452,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     expectedPeerId: string,
     allowExpired = false,
   ): SignedPeerReachabilityLeaseV1 {
-    const signed = this.#reachability.verify(value, expectedPeerId, {
-      allowExpired,
+    const signed = verifySignedPeerReachabilityLease({
+      value,
+      expectedPeerId,
+      now: this.#now(),
+      verifyIdentity: this.#peer.verifyIdentity.bind(this.#peer),
+      ...(allowExpired ? { allowExpired: true } : {}),
     });
     if (allowExpired && signed.lease.expiresAt + REACHABILITY_HISTORY_MS <= this.#now()) {
       throw new Error('Peer Mesh reachability is outside the recovery horizon');
