@@ -27,6 +27,7 @@ import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   isCanonicalRuntimeHostWebSocketPath,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostStatusResult,
   requireClientInstanceId,
   requireHostRootId,
 } from '../protocol/index.js';
@@ -71,6 +72,7 @@ const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const PEER_ID_MAX_BYTES = 160;
 const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
 const PEER_ROUTE_MAX = 16;
+const DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS = 5_000;
 const PROFILE_CREDENTIAL_RECORD_PREFIX = 'maka-runtime-host-profile-credential-v1:';
 const PROFILE_INCARNATION_ID_MAX_BYTES = 128;
 export const RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES = 8 * 1024;
@@ -223,6 +225,11 @@ export interface RuntimeHostProfileCatalog {
     readonly rebound: boolean;
     readonly document: RuntimeHostProfileDocument;
   }>;
+  /** Update mutable profile metadata while this exact profile lifetime remains current. */
+  updateRemoteProfileIfCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+    update: (profile: RemoteRuntimeHostProfile) => RemoteRuntimeHostProfile,
+  ): Promise<boolean>;
   /** Serialize one sidecar mutation with catalog updates while this profile lifetime remains current. */
   mutateRemoteProfileIfCurrent(
     target: RuntimeHostRemoteProfileIncarnation,
@@ -381,7 +388,9 @@ export async function connectRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly refreshPeerRoutes?: boolean;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -437,7 +446,9 @@ export async function connectRemoteRuntimeHostProfile(
     readonly readyTimeoutMs?: number;
     readonly sshInteraction?: RuntimeHostSshInteraction;
     readonly peerClient?: RuntimeHostPeerClient;
+    readonly refreshPeerRoutes?: boolean;
     readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
   },
   overrides: {
     connect?: typeof connectRemoteRuntimeHost;
@@ -458,6 +469,9 @@ export async function connectRemoteRuntimeHostProfile(
       expectedRootId: input.profile.rootId,
       clientInstanceId: input.clientInstanceId,
       peerClient: requireRuntimeHostPeerClient(input.peerClient),
+      ...(input.refreshPeerRoutes === undefined
+        ? {}
+        : { refreshPeerRoutes: input.refreshPeerRoutes }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
       ...(input.connectTimeoutMs === undefined ? {} : { connectTimeoutMs: input.connectTimeoutMs }),
       ...(input.handshakeTimeoutMs === undefined
@@ -466,6 +480,7 @@ export async function connectRemoteRuntimeHostProfile(
       ...(input.onConnectionPhase === undefined
         ? {}
         : { onConnectionPhase: input.onConnectionPhase }),
+      ...(input.onHostStatus === undefined ? {} : { onHostStatus: input.onHostStatus }),
     });
   } else {
     notifyConnectionPhase(input.onConnectionPhase, 'connecting');
@@ -511,6 +526,7 @@ export async function connectRemoteRuntimeHostProfile(
       ...(input.handshakeTimeoutMs === undefined
         ? {}
         : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      ...(input.onHostStatus === undefined ? {} : { onHostStatus: input.onHostStatus }),
     });
     try {
       input.signal?.throwIfAborted();
@@ -582,18 +598,22 @@ export async function connectPeerRuntimeHost(input: {
   readonly expectedRootId: string;
   readonly clientInstanceId: string;
   readonly peerClient: RuntimeHostPeerClient;
+  readonly refreshPeerRoutes?: boolean;
   readonly signal?: AbortSignal;
   readonly connectTimeoutMs?: number;
   readonly handshakeTimeoutMs?: number;
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
+  const handshakeTimeoutMs = input.handshakeTimeoutMs ?? DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS;
   const stream = await input.peerClient.connect(
     {
       peerId: input.transport.peerId,
       routeHints: input.transport.routeHints,
       coordinationRelays: input.transport.coordinationRelays,
       directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
+      ...(input.refreshPeerRoutes === undefined ? {} : { refreshRoutes: input.refreshPeerRoutes }),
     },
     input.signal,
     input.onConnectionPhase,
@@ -608,7 +628,7 @@ export async function connectPeerRuntimeHost(input: {
     await writeRuntimeHostPeerAuthentication(stream, input.credential);
     const authentication = await readRuntimeHostPeerAuthenticationResult(
       stream,
-      input.handshakeTimeoutMs,
+      handshakeTimeoutMs,
     );
     if (!authentication.accepted) {
       throw new RuntimeHostProfileConnectionError(
@@ -628,9 +648,14 @@ export async function connectPeerRuntimeHost(input: {
         max: RUNTIME_HOST_PROTOCOL_VERSION,
       },
       clientInstanceId: input.clientInstanceId,
-      ...(input.handshakeTimeoutMs === undefined
-        ? {}
-        : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
+      handshakeTimeoutMs,
+      onHostStatus: (status) => {
+        const endpoint = status.peerEndpoint;
+        if (endpoint?.peerId === input.transport.peerId) {
+          input.peerClient.observeAuthenticatedRoutes(endpoint);
+        }
+        input.onHostStatus?.(status);
+      },
       ...(stream.path ? { peerPath: stream.path } : {}),
     });
     input.signal?.throwIfAborted();
@@ -699,6 +724,9 @@ export function remoteRuntimeHostUnavailableError(
       break;
     case 'unreachable':
       message = `${subject} could not reach its endpoint`;
+      break;
+    case 'handshake_timed_out':
+      message = `${subject} timed out while establishing its protocol session`;
       break;
     default:
       message = `${subject} is unavailable (${reason})`;
@@ -989,6 +1017,42 @@ class FileRuntimeHostProfileCatalog implements RuntimeHostProfileCatalog {
         throw error;
       }
       return { rebound: true, document: next };
+    });
+  }
+
+  updateRemoteProfileIfCurrent(
+    target: RuntimeHostRemoteProfileIncarnation,
+    update: (profile: RemoteRuntimeHostProfile) => RemoteRuntimeHostProfile,
+  ): Promise<boolean> {
+    const expectedProfile = decodeRemoteRuntimeHostProfile(target.profile);
+    const expectedIncarnationId = requireProfileIncarnationId(target.profileIncarnationId);
+    return this.#exclusive(async () => {
+      const current = await this.#readSnapshot();
+      const profile = current.profiles.find(
+        (candidate): candidate is RemoteRuntimeHostProfile =>
+          candidate.id === expectedProfile.id && candidate.kind === 'remote',
+      );
+      if (!profile || !sameRemoteRuntimeHostProfileTarget(profile, expectedProfile)) return false;
+      const credential = await this.credentials.get(profile);
+      if (credential?.profileIncarnationId !== expectedIncarnationId) return false;
+      const value = update(profile);
+      if (value === profile) return true;
+      const updated = decodeRemoteRuntimeHostProfile(value);
+      if (
+        updated.id !== profile.id ||
+        !sameRemoteRuntimeHostProfileTarget(updated, profile) ||
+        runtimeHostProfileAccess(updated) !== runtimeHostProfileAccess(profile)
+      ) {
+        throw new Error('A Runtime Host profile metadata update must retain its connection');
+      }
+      const next = decodeRuntimeHostProfileDocument({
+        schemaVersion: PROFILE_SCHEMA_VERSION,
+        profiles: current.profiles.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      });
+      await writeProfileDocument(this.path, next);
+      return true;
     });
   }
 

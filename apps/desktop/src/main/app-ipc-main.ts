@@ -66,8 +66,8 @@ export function registerAppClientIpc(
   targetIpc.handle('window:setTitlebarControlsVisible', (event, visible: unknown): void => {
     mainWindowController.setTitlebarControlsVisible(event.sender, visible);
   });
-  targetIpc.handle('window:notifyRendererReady', (): void => {
-    mainWindowController.notifyRendererReady();
+  targetIpc.handle('window:notifyRendererReady', (event): void => {
+    mainWindowController.notifyRendererReady(event.sender, event.senderFrame);
   });
   targetIpc.handle('window:setThemeSource', (event, themePref: unknown): void => {
     mainWindowController.setThemeSource(event.sender, themePref);

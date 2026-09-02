@@ -57,7 +57,7 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
-## `@astryxdesign/core@0.5.0`
+## `@astryxdesign/core@0.5.2`
 
 Five published component seams drop host-owned state or semantics:
 
@@ -91,5 +91,17 @@ rewritten or later text still reveals and fades from a parsed-visible boundary.
 Markdown can also transform the displayed prefix immediately before its
 existing incremental parser, so host syntax such as math stays behind the
 streaming cursor without adding another parser or scheduler.
+
+One hunk is a geometry fix rather than a seam. `ChatLayout`'s frosted dock
+layer is a per-density constant (80/100/120px) while the dock it fades is
+sized by its content. At `balanced` the 100px layer starts 90px inside the
+opaque composer, so the ramp is invisible wherever the composer paints and
+134px of transcript stays crisp under the dock — the fade only ever shows in
+the gutters flanking the composer. The layer now fills the dock container and
+sits behind its chrome, so the scroll button still reads crisply on top of it.
+No product override can reach this: the layer renders with `stylex.props()`
+alone — no `themeProps`, no `data-*`, no custom property — so the only handle
+is a structural selector that breaks the moment a caller passes
+`scrollButton={null}`. See #3446.
 
 Delete each hunk when the corresponding behavior ships in Astryx.

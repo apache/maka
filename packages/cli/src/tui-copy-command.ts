@@ -42,6 +42,8 @@ export interface TuiCopyCopy {
   readonly tooLarge: string;
   /** Shown when there is nothing to copy yet. */
   readonly nothingToCopy: string;
+  /** Shown when `/copy` receives an unsupported argument. */
+  readonly usage: string;
   /** Role label for user turns in `/copy all`. */
   readonly roleUser: string;
   /** Role label for assistant turns in `/copy all`. */

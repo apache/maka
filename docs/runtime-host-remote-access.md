@@ -206,11 +206,16 @@ manager, and adds a Direct peer listener alongside Local IPC. Share the one-time
 with the other Desktop. Turning remote access off removes only the Direct peer listener; removing
 the background service returns Local Host ownership to Desktop and retains all data.
 
+The Host can also print a complete one-time code with
+`maka runtime-host access connection-code [--name <display-name>] [--root <path>]`. Direct peer
+must already be enabled. The code contains the current live routes and a pending Owner credential;
+it expires after 15 minutes and is consumed by one Desktop.
+
 The credential is stored separately from the Profile. Desktop keeps Local and every enabled remote Host connected independently. Choose one as the default for new Sessions; existing Sessions continue to use their owning Host. A failed remote connection remains visible without interrupting the other Hosts. After connecting, choose a Project registered on that Host; Client-local directory actions remain unavailable.
 
 During guided pairing, the delivered credential has the selected Client grants and expires after 15 minutes unless Desktop explicitly finalizes it after saving the local binding.
 
-For an SSH-managed computer, open its **Manage** action to inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
+For an SSH-managed computer, open its **Manage** action to create a connection code, inspect the installed release, service state, published directory roots, and recent logs, or to start, restart, repair, or uninstall the service. Uninstalling preserves the remote State Root and does not remove the Desktop Profile; removing a Profile does not uninstall the remote service. Manually configured direct connections remain usable but must be managed on the Host machine.
 
 ## Connect TUI or CLI
 

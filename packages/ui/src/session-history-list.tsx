@@ -63,6 +63,7 @@ import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import {
+  type SessionRailData,
   useSessionRailData,
   useSessionRailRowSelection,
   useSessionRailSelection,
@@ -286,6 +287,7 @@ function SessionListGroups(props: {
         stale={rail.staleSessionIds?.has(session.id) ?? false}
         worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
         meta={rail.sessionMeta?.(session)}
+        sessionBadge={rail.sessionBadge}
         onSelectSession={rail.onSelectSession}
         actions={(session as SessionSummary & { readonly shared?: true }).shared
           ? undefined
@@ -490,6 +492,7 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   stale: boolean;
   worktree: boolean;
   meta?: string;
+  sessionBadge?: SessionRailData['sessionBadge'];
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
@@ -604,6 +607,11 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           // the two on hover or keyboard focus. The span is rendered even with
           // no timestamp so the column exists on every row.
           <span className="maka-session-row-end">
+            {props.sessionBadge ? (
+              <span className="maka-session-row-attention-badge">
+                {props.sessionBadge(props.session)}
+              </span>
+            ) : null}
             {props.meta ? (
               <span className="maka-session-row-host-badge" title={props.meta}>
                 <Badge variant="neutral" label={props.meta} />

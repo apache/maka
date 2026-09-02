@@ -166,25 +166,6 @@ describe('mapSessionEventToRuntimeEvent (pure)', () => {
     });
   });
 
-  test('context_budget_exhausted keeps its detail in the durable terminal state', () => {
-    const mapped = mapSessionEventToRuntimeEvent(
-      ev({
-        type: 'complete',
-        stopReason: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
-      }),
-      ctx,
-      createSessionEventMapMemory(),
-    );
-
-    assert.equal(mapped.status, 'failed');
-    assert.deepEqual(mapped.actions?.stateDelta, {
-      stopReason: 'context_budget_exhausted',
-      failureClass: 'context_budget_exhausted',
-      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
-    });
-  });
-
   test('tool_output_delta and tool_progress map to partial tool-role heartbeats', () => {
     const mem = createSessionEventMapMemory();
     const a = mapSessionEventToRuntimeEvent(

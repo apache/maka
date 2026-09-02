@@ -17,14 +17,6 @@
  * under the License.
  */
 
-// apps/desktop/src/renderer/error-boundary.tsx
-//
-// Top-level React error boundary. If anything in the renderer throws during
-// render or in a lifecycle method, the boundary catches it and shows a
-// friendly fallback with stack details and a "Try again" button instead of a
-// blank white window (the old behavior — a Vite/Electron renderer that
-// crashed early just left the user staring at an empty viewport).
-
 import { Component, type ErrorInfo, type ReactNode } from 'react';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -135,12 +127,10 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
   };
 
   render(): ReactNode {
-    const { error, errorInfo, copyState } = this.state;
+    const { error, copyState } = this.state;
     if (!error) return this.props.children;
     return (
       <ErrorBoundaryFallback
-        error={error}
-        errorInfo={errorInfo}
         copyState={copyState}
         locale={this.props.locale}
         onCopyReport={this.handleCopyReport}
@@ -151,29 +141,19 @@ export class ErrorBoundary extends Component<{ children: ReactNode; locale: UiLo
   }
 }
 
-// The fallback face, split out of the class so its four `copyState` values can
-// be rendered directly in Storybook — the crash surface is otherwise reachable
-// only by actually crashing the renderer (and the failed-copy state only by
-// additionally failing the clipboard bridge).
-// The class owns all state and side effects; this component only paints.
 export function ErrorBoundaryFallback({
-  error,
-  errorInfo,
   copyState,
   locale,
   onCopyReport,
   onReset,
   onReload,
 }: {
-  error: Error;
-  errorInfo?: ErrorInfo | null;
   copyState: ErrorBoundaryCopyState;
   locale: UiLocale;
   onCopyReport: () => void;
   onReset: () => void;
   onReload: () => void;
 }): ReactNode {
-  const safeStack = redactSecrets(`${error.name}: ${error.message}${error.stack ? `\n\n${error.stack}` : ''}`);
   const copyPending = copyState === 'pending';
   const copy = getShellCopy(locale).errorBoundary;
   const copyLabel = copyPending
@@ -196,18 +176,7 @@ export function ErrorBoundaryFallback({
         </span>
         <div className="maka-error-copy">
           <h2>{copy.title}</h2>
-          <p>
-            {copy.descriptionBeforeRetry} <strong>{copy.retry}</strong> {copy.descriptionBeforeReload}{' '}
-            <strong>{copy.reload}</strong> {copy.descriptionAfterReload}
-          </p>
-          <pre className="maka-error-stack" role="group" aria-label={copy.errorDetails}>
-            {safeStack}
-          </pre>
-          {errorInfo?.componentStack && (
-            <pre className="maka-error-stack" role="group" aria-label={copy.componentStack}>
-              {redactSecrets(errorInfo.componentStack.trim())}
-            </pre>
-          )}
+          <p>{copy.description}</p>
           <div className="maka-error-actions">
             <UiButton
               variant="secondary"

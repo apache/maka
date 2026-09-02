@@ -283,6 +283,41 @@ export interface TokenUsageFields {
   contextBudget?: ContextBudgetDiagnostic;
   /** Links this aggregate to per-physical-request AgentRun trace rows. */
   providerRequestTraceId?: string;
+  /**
+   * The send's LAST provider request, as a pair: the input tokens the provider
+   * reported for it, and the wire payload chars the runtime measured for that
+   * same request. `input` above is the send's sum across steps and cannot
+   * anchor anything; this pair can, so the next turn estimates its first
+   * request from real usage instead of guessing the whole payload at char/4.
+   *
+   * Only the pair means anything — an anchor taken from one request and a
+   * baseline from another is off by a whole step's growth — so the two numbers
+   * live in one object that is written and read together. Absent means no
+   * anchor, and the estimate falls back to the cold start.
+   */
+  lastRequestAnchor?: LastRequestAnchor;
+}
+
+/** Real input tokens of one provider request, paired with its measured payload chars. */
+export interface LastRequestAnchor {
+  inputTokens: number;
+  payloadChars: number;
+}
+
+const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
+  ['inputTokens', 'payloadChars'],
+  [],
+);
+
+export function isLastRequestAnchor(value: unknown): value is LastRequestAnchor {
+  return (
+    isRecord(value) &&
+    hasExactShape(value, LAST_REQUEST_ANCHOR_SHAPE) &&
+    isFiniteNumber(value.inputTokens) &&
+    isFiniteNumber(value.payloadChars) &&
+    value.inputTokens > 0 &&
+    value.payloadChars > 0
+  );
 }
 
 export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
@@ -303,7 +338,8 @@ export function isTokenUsageFields(value: unknown): value is TokenUsageFields {
     (value.promptSegments === undefined ||
       (Array.isArray(value.promptSegments) &&
         value.promptSegments.every(isPromptSegmentEstimate))) &&
-    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget))
+    (value.contextBudget === undefined || isContextBudgetDiagnostic(value.contextBudget)) &&
+    (value.lastRequestAnchor === undefined || isLastRequestAnchor(value.lastRequestAnchor))
   );
 }
 

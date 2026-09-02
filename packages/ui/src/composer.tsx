@@ -340,6 +340,8 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    activeModelConnectionId?: string;
+    activeModelConnectionSlug?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
@@ -423,7 +425,6 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     permissionMode?: PermissionMode;
-    permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
@@ -2008,7 +2009,6 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || props.permissionModePending === true
                     || Boolean(props.permissionModeDisabledReason)
                   }
                   disabledReason={props.permissionModeDisabledReason}
@@ -2024,6 +2024,8 @@ export const Composer = forwardRef<
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
+                    activeModelConnectionId={props.activeModelConnectionId}
+                    activeModelConnectionSlug={props.activeModelConnectionSlug}
                     activeModel={props.activeModel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
@@ -2068,7 +2070,6 @@ export const Composer = forwardRef<
                     onChange={props.onThinkingLevelChange}
                     disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={modelSwitchAvailability.pending}
                   />
                 ) : (
                   <ThinkingLevelSelector

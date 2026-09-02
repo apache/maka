@@ -114,7 +114,7 @@ export class MakaActivityStripComponent implements Component {
 export class MakaPendingQueueComponent implements Component {
   constructor(
     private readonly state: MakaPiTranscriptState,
-    private readonly locale: UiLocale = 'en',
+    private readonly locale: UiLocale,
   ) {}
 
   invalidate(): void {}

@@ -97,6 +97,7 @@ export class HostRuntimePolicyCoordinator {
   readonly handlers: RuntimePolicyOperationHandlerMap = {
     'runtime.policy.query': () => this.#queryPolicy(),
     'runtime.policy.mutate': (input) => this.#mutatePolicy(input),
+    'runtime.policy.network-proxy.update': (input) => this.#updateNetworkProxy(input),
     'connection.catalog.query': (input) => this.#queryCatalog(input),
     'connection.catalog.create': (input) => this.#createConnection(input),
     'connection.catalog.update': (input) => this.#updateConnection(input),
@@ -142,6 +143,33 @@ export class HostRuntimePolicyCoordinator {
         );
       }
       return projectPolicyMutation(await this.#stores.runtimePolicy.mutate(input));
+    });
+  }
+
+  async #updateNetworkProxy(
+    input: Parameters<RuntimePolicyOperationHandlerMap['runtime.policy.network-proxy.update']>[0],
+  ): Promise<OperationOutcome<'runtime.policy.network-proxy.update'>> {
+    return this.#storeMutation(async () => {
+      try {
+        await this.validateMutation({
+          expectedRevision: input.expectedPolicyRevision,
+          operation: { kind: 'set_network_proxy', value: input.networkProxy },
+        });
+      } catch (error) {
+        throw new RuntimePolicyStoreError(
+          'invalid_policy_input',
+          'Network proxy update failed Host validation',
+          { cause: error },
+        );
+      }
+      const result = await this.#stores.operations.updateNetworkProxy(input);
+      return result.kind === 'committed'
+        ? {
+            kind: 'committed' as const,
+            revision: result.snapshot.revision,
+            credentialStatus: result.credentialStatus,
+          }
+        : result;
     });
   }
 
@@ -241,7 +269,11 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.set'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.set(input);
-      if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
+      if (
+        result.kind === 'connection_not_found' ||
+        result.kind === 'connection_stale' ||
+        result.kind === 'credential_stale'
+      ) {
         return result;
       }
       const status = result.snapshot.entries.find((entry) =>
@@ -259,6 +291,9 @@ export class HostRuntimePolicyCoordinator {
   ): Promise<OperationOutcome<'credential.vault.delete'>> {
     return this.#storeMutation(async () => {
       const result = await this.#stores.credentialVault.delete(input);
+      if (result.kind === 'connection_stale') {
+        throw invariantFailure('Credential deletion returned an impossible connection conflict');
+      }
       if (result.kind === 'connection_not_found' || result.kind === 'credential_stale') {
         return result;
       }

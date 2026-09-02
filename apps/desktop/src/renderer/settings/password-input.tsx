@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { ICON_SIZE, Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
@@ -63,7 +69,10 @@ export function PasswordInput(props: {
   isRequired?: boolean;
   isOptional?: boolean;
   isDisabled?: boolean;
-  onBlur?(): void;
+  onFocusExit?(): void;
+  onEnter?(): void;
+  onKeyDown?(event: KeyboardEvent<HTMLInputElement>): void;
+  hasCopyAction?: boolean;
   hasAutoFocus?: boolean;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
@@ -125,12 +134,29 @@ export function PasswordInput(props: {
       isRequired={props.isRequired}
       isOptional={props.isOptional}
       status={props.status}
+      onBlurCapture={(event) => {
+        const destination = event.relatedTarget;
+        if (!destination && !event.currentTarget.ownerDocument.hasFocus()) {
+          return;
+        }
+        if (
+          destination &&
+          event.currentTarget.contains(destination as Node)
+        ) {
+          return;
+        }
+        props.onFocusExit?.();
+      }}
     >
       <TextInput
         type={visible ? 'text' : 'password'}
         value={props.value}
         onChange={(value) => props.onChange(value)}
-        onBlur={props.onBlur}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.key === 'Process') return;
+          if (event.key === 'Enter') props.onEnter?.();
+          props.onKeyDown?.(event);
+        }}
         placeholder={props.placeholder}
         label={copy.value}
         isLabelHidden
@@ -141,7 +167,7 @@ export function PasswordInput(props: {
       />
       {/* InputGroupText: the sanctioned addon segment — bare IconButtons break the group's caps. */}
       <InputGroupText>
-        {props.value && !props.isDisabled && (
+        {(props.hasCopyAction ?? true) && props.value && !props.isDisabled && (
           <IconButton
             variant="ghost"
             size="sm"

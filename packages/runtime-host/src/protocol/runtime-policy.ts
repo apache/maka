@@ -41,6 +41,8 @@ import {
   normalizeDeleteCredentialInput,
   normalizeRemoveCatalogConnectionInput,
   normalizeOptionalRequestBodyOverlay,
+  normalizeNetworkProxyUpdate,
+  normalizeNetworkProxyCredentialTarget,
   normalizeRequestHeaderUpdates,
   normalizeRuntimePolicyMutation,
   normalizeSetCredentialInput,
@@ -59,10 +61,12 @@ import {
   type CredentialVersionBasis,
   type DeleteCredentialInput,
   type MutateRuntimePolicyInput,
+  type NetworkProxyCredentialTarget,
   type RemoveCatalogConnectionInput,
   type RequestHeaderUpdate,
   type RevisionConflict,
   type RuntimePolicySnapshot,
+  type UpdateNetworkProxyInput,
   type SetCredentialInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
@@ -107,6 +111,20 @@ export type RuntimePolicyMutateInput = MutateRuntimePolicyInput;
 export type RuntimePolicyMutateResult =
   | { readonly kind: 'committed'; readonly revision: number }
   | RevisionConflict;
+export type RuntimePolicyNetworkProxyUpdateInput = UpdateNetworkProxyInput;
+export type RuntimePolicyNetworkProxyUpdateResult =
+  | {
+      readonly kind: 'committed';
+      readonly revision: number;
+      readonly credentialStatus: CredentialStatus;
+    }
+  | RevisionConflict
+  | {
+      readonly kind: 'proxy_target_mismatch';
+      readonly expected: NetworkProxyCredentialTarget;
+      readonly actual: NetworkProxyCredentialTarget;
+    }
+  | CredentialStale;
 
 export type ConnectionCatalogCursor =
   | { readonly connectionIndex: number; readonly part: 'connection' }
@@ -244,6 +262,7 @@ export type CredentialVaultQueryResult =
 export type SetCredentialResult =
   | CredentialCommitted
   | { readonly kind: 'connection_not_found' }
+  | ConnectionStale
   | CredentialStale;
 export type DeleteCredentialResult =
   | CredentialCommitted
@@ -303,6 +322,17 @@ export const RUNTIME_POLICY_OPERATION_SPECS = {
     errors: MUTATION_ERRORS,
     decodeInput: decodeRuntimePolicyMutation,
     decodeOutput: decodeRuntimePolicyMutationResult,
+  }),
+  'runtime.policy.network-proxy.update': defineOperation<
+    RuntimePolicyNetworkProxyUpdateInput,
+    RuntimePolicyNetworkProxyUpdateResult,
+    (typeof MUTATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: MUTATION_ERRORS,
+    decodeInput: decodeRuntimePolicyNetworkProxyUpdate,
+    decodeOutput: decodeRuntimePolicyNetworkProxyUpdateResult,
   }),
   'connection.catalog.query': defineOperation<
     ConnectionCatalogQueryInput,
@@ -447,6 +477,51 @@ function decodeRuntimePolicyMutationResult(value: unknown): RuntimePolicyMutateR
     return { kind: 'committed', revision: revision(committed.revision, 'runtime policy revision') };
   }
   return revisionConflict(item, 'runtime policy mutation result');
+}
+
+function decodeRuntimePolicyNetworkProxyUpdate(
+  value: unknown,
+): RuntimePolicyNetworkProxyUpdateInput {
+  const input = decodeDomain(() => normalizeNetworkProxyUpdate(value));
+  if (
+    input.credential.kind === 'replace' &&
+    Buffer.byteLength(input.credential.secret, 'utf8') > CREDENTIAL_SECRET_MAX_BYTES
+  ) {
+    throw invalidProtocolFrame('Invalid network proxy credential secret');
+  }
+  return input;
+}
+
+function decodeRuntimePolicyNetworkProxyUpdateResult(
+  value: unknown,
+): RuntimePolicyNetworkProxyUpdateResult {
+  const item = requireRecord(value, 'network proxy update result');
+  if (item.kind === 'committed') {
+    const committed = requireExactRecord(item, 'network proxy update committed result', [
+      'kind',
+      'revision',
+      'credentialStatus',
+    ]);
+    return {
+      kind: 'committed',
+      revision: revision(committed.revision, 'runtime policy revision'),
+      credentialStatus: decodeDomain(() => decodeCredentialStatus(committed.credentialStatus)),
+    };
+  }
+  if (item.kind === 'credential_stale') return credentialStale(item);
+  if (item.kind === 'proxy_target_mismatch') {
+    const mismatch = requireExactRecord(item, 'network proxy target mismatch', [
+      'kind',
+      'expected',
+      'actual',
+    ]);
+    return {
+      kind: 'proxy_target_mismatch',
+      expected: decodeDomain(() => normalizeNetworkProxyCredentialTarget(mismatch.expected)),
+      actual: decodeDomain(() => normalizeNetworkProxyCredentialTarget(mismatch.actual)),
+    };
+  }
+  return revisionConflict(item, 'network proxy update result');
 }
 
 function decodeCatalogQueryInput(value: unknown): ConnectionCatalogQueryInput {
@@ -886,6 +961,7 @@ function decodeSetCredentialResult(value: unknown): SetCredentialResult {
     requireExactRecord(item, 'credential connection not found result', ['kind']);
     return { kind: 'connection_not_found' };
   }
+  if (item.kind === 'connection_stale') return connectionStale(item);
   return credentialStale(item);
 }
 

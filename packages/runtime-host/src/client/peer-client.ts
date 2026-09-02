@@ -37,6 +37,7 @@ export interface RuntimeHostPeerConnectInput {
   readonly coordinationRelays?: readonly string[];
   readonly transitRelayPeerIds?: readonly string[];
   readonly directDeadlineMs: number;
+  readonly refreshRoutes?: boolean;
 }
 
 export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
@@ -66,6 +67,11 @@ export interface RuntimeHostPeerClient {
     readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
+  observeAuthenticatedRoutes(input: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  }): void;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
@@ -129,6 +135,13 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #automaticRelayDiscovery: boolean;
   readonly #webRtcStunUrls: readonly string[] | undefined;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
+  readonly #authenticatedRoutes = new Map<
+    string,
+    Readonly<{
+      routeHints: readonly string[];
+      coordinationRelays: readonly string[];
+    }>
+  >();
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
   #meshDraining: Promise<void> | undefined;
@@ -210,13 +223,30 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       });
   }
 
+  observeAuthenticatedRoutes(input: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  }): void {
+    if (input.routeHints.length === 0 && input.coordinationRelays.length === 0) return;
+    this.#authenticatedRoutes.set(
+      input.peerId,
+      Object.freeze({
+        routeHints: Object.freeze([...input.routeHints]),
+        coordinationRelays: Object.freeze([...input.coordinationRelays]),
+      }),
+    );
+  }
+
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
     onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
-    notifyPhase(onPhase, 'discovering');
-    await this.#prepareRoutes(input, signal);
+    if (input.refreshRoutes !== false) {
+      notifyPhase(onPhase, 'discovering');
+      await this.#prepareRoutes(input, signal);
+    }
     notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
   }
@@ -337,13 +367,18 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const requestId = this.#allocateRequestId();
     const discovered =
       kind === 'application' ? this.#routeResolver?.resolveRoutes(input.peerId) : undefined;
+    const authenticated =
+      kind === 'application' ? this.#authenticatedRoutes.get(input.peerId) : undefined;
     const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
       ...input,
-      routeHints: mergeAddresses(discovered?.routeHints ?? [], input.routeHints),
-      coordinationRelays: mergeAddresses(
-        discovered?.coordinationRelays ?? [],
-        input.coordinationRelays,
-      ),
+      routeHints: mergeAddresses(discovered?.routeHints ?? [], [
+        ...(authenticated?.routeHints ?? []),
+        ...input.routeHints,
+      ]),
+      coordinationRelays: mergeAddresses(discovered?.coordinationRelays ?? [], [
+        ...(authenticated?.coordinationRelays ?? []),
+        ...(input.coordinationRelays ?? []),
+      ]),
       transitRelayPeerIds: mergeValues(
         discovered?.transitRelayPeerIds ?? [],
         input.transitRelayPeerIds,

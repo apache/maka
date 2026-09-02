@@ -26,12 +26,15 @@ import {
   buildConnectionModelCatalogEntries,
   buildModelCatalogEntries,
   resolveConnectionModelCatalog,
+  resolveDraftConnectionModelCatalog,
 } from '../model-catalog.js';
 import {
   CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS,
   CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION,
   CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION,
+  decodeModelCatalogEntry,
 } from '../runtime-policy.js';
+import { hasModelMetadata } from '../model-metadata.js';
 
 /**
  * Whether a build's default model is one the chat can send to. The catalog
@@ -471,4 +474,85 @@ test('no provider resolves past the wire bound at the storage maxima', () => {
   // that drifted above what any catalog can reach would stop reporting when
   // the projection grows underneath it.
   assert.equal(largest, CONNECTION_CATALOG_MAX_ENTRIES_PER_CONNECTION);
+});
+
+test('describedByMetadata reports whether resolved metadata covers a model, and rides the wire (#4496)', () => {
+  // A model the bundled catalog knows: the Host's entry can describe it, so the
+  // renderer trusts the catalog and shows no hand-entry row. The value is the
+  // same question `hasModelMetadata` answers — decided once, on the Host.
+  const known = buildConnectionModelCatalogEntries({
+    connection: {
+      slug: 'alibaba-cn',
+      providerType: 'alibaba-cn',
+      defaultModel: 'qwen3.8-max',
+      modelSource: 'fallback',
+    },
+  }).find((entry) => entry.id === 'qwen3.8-max');
+  assert.equal(known?.describedByMetadata, true);
+  assert.equal(known?.describedByMetadata, hasModelMetadata('alibaba-cn', 'qwen3.8-max'));
+
+  // A bare id no inventory describes — the #1584 case the capability editor
+  // exists for — reports false, so the renderer still asks the user.
+  const [bare] = buildModelCatalogEntries({
+    providerType: 'alibaba-cn',
+    defaultModel: 'made-up-model-4496',
+    models: [{ id: 'made-up-model-4496' }],
+    modelSource: 'fetched',
+  });
+  assert.equal(bare?.describedByMetadata, false);
+  assert.equal(bare?.describedByMetadata, hasModelMetadata('alibaba-cn', 'made-up-model-4496'));
+
+  // The field crosses the wire and is required, so it survives a round-trip and
+  // an entry predating it fails the decoder that now expects it — the
+  // client-Host mismatch the epoch bump gates.
+  assert.ok(known);
+  assert.equal(
+    decodeModelCatalogEntry(JSON.parse(JSON.stringify(known))).describedByMetadata,
+    true,
+  );
+  const { describedByMetadata: _dropped, ...legacy } = known;
+  assert.throws(() => decodeModelCatalogEntry(legacy));
+});
+
+test('a divergent draft keeps the Host metadata-coverage decision for ids it already described (#4496)', () => {
+  // A model the Host learned about after this renderer build was cut: the Host
+  // resolved the connection and marked it described, but the renderer's bundled
+  // table — the stale authority this field stops trusting — has never heard of
+  // it. Editing the model list must not let that stale table overturn the
+  // Host's answer and bring the spurious capability-declaration row back.
+  const stored = {
+    slug: 'alibaba-cn',
+    providerType: 'alibaba-cn' as const,
+    defaultModel: 'future-model-4496',
+    enabledModelIds: ['future-model-4496'],
+    models: [{ id: 'future-model-4496' }],
+    modelSource: 'fetched' as const,
+  };
+  assert.equal(hasModelMetadata('alibaba-cn', 'future-model-4496'), false);
+  const hostEntries = resolveConnectionModelCatalog(stored).map((entry) =>
+    entry.id === 'future-model-4496' ? { ...entry, describedByMetadata: true } : entry,
+  );
+  const connection = { ...stored, catalogEntries: hostEntries };
+
+  // Unedited: the Host's entries are returned verbatim, coverage intact.
+  const unedited = resolveDraftConnectionModelCatalog(connection, {
+    models: stored.models,
+    modelSource: stored.modelSource,
+    enabledModelIds: stored.enabledModelIds,
+  });
+  assert.equal(
+    unedited.find((entry) => entry.id === 'future-model-4496')?.describedByMetadata,
+    true,
+  );
+
+  // Edited — a fresh id the Host has never seen is added, so the draft diverges
+  // and is rebuilt locally. The known id keeps the Host's coverage; only the
+  // brand-new id, which the Host never described, takes the local answer.
+  const edited = resolveDraftConnectionModelCatalog(connection, {
+    models: [...stored.models, { id: 'brand-new-4496' }],
+    modelSource: 'fetched',
+    enabledModelIds: ['future-model-4496', 'brand-new-4496'],
+  });
+  assert.equal(edited.find((entry) => entry.id === 'future-model-4496')?.describedByMetadata, true);
+  assert.equal(edited.find((entry) => entry.id === 'brand-new-4496')?.describedByMetadata, false);
 });

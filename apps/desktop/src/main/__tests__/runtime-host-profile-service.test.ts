@@ -679,6 +679,63 @@ test('classifies connection-code failures without exposing transport errors to t
   );
 });
 
+test('persists authenticated Owner routes imported through a connection code', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const staleTransport = {
+    kind: 'libp2p-direct' as const,
+    peerId: '12D3KooWpeer',
+    routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+    coordinationRelays: ['/memory/stale-relay'],
+  };
+  const freshEndpoint = {
+    peerId: staleTransport.peerId,
+    routeHints: ['/ip4/198.51.100.9/udp/44002/quic-v1'],
+    coordinationRelays: ['/memory/fresh-relay'],
+  };
+  let observedIncarnation: string | undefined;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target, _sshInteraction, onPeerEndpoint) => {
+      observedIncarnation = target.profileIncarnationId;
+      assert.deepEqual(
+        target.profile.kind === 'remote' ? target.profile.transport : undefined,
+        staleTransport,
+      );
+      assert.ok(onPeerEndpoint);
+      onPeerEndpoint(freshEndpoint);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.importConnectionCode(
+    encodeRuntimeHostOwnerConnectionCode({
+      name: 'Other computer',
+      rootId: ROOT_ID,
+      transport: staleTransport,
+      credential: 'pending-owner-token',
+    }),
+  );
+
+  assert.equal(result.kind, 'connected');
+  if (result.kind !== 'connected') return;
+  const persisted = await catalog.resolve(result.profileId);
+  assert.equal(persisted.credential, 'pending-owner-token');
+  assert.equal(persisted.profileIncarnationId, observedIncarnation);
+  assert.deepEqual(
+    persisted.profile.kind === 'remote' ? persisted.profile.transport : undefined,
+    { kind: 'libp2p-direct', ...freshEndpoint },
+  );
+  const restarted = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  assert.deepEqual(restarted.remotes, [persisted]);
+});
+
 test("finishes a persisted pairing after Desktop restarts before finalization", async () => {
   const root = await clientRoot();
   const catalog = await stageInterruptedPairing(root);
@@ -716,12 +773,27 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const activated: ResolvedRuntimeHostProfile[] = [];
+  const livePeer = {
+    peerId: "12D3KooWpeer",
+    routeHints: ["/ip4/192.0.2.9/udp/44002/quic-v1"],
+    coordinationRelays: ["/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay"],
+  };
+  let exposeReadyState = false;
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup,
     catalog,
     managedServices,
-    states: () => [connectingLocal()],
+    states: () =>
+      exposeReadyState
+        ? [
+            connectingLocal(),
+            readyWithPeerEndpoint(
+              { profile: MANAGED_PROFILE, credential: "owner-token" },
+              livePeer,
+            ),
+          ]
+        : [connectingLocal()],
     enable: async (target) => {
       activated.push(target);
     },
@@ -755,10 +827,15 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
     routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
     coordinationRelays: [],
   });
+  exposeReadyState = true;
   assert.deepEqual(
     await service.resolveCollaborationConnectionTarget(MANAGED_PROFILE),
-    { name: MANAGED_PROFILE.name, transport: direct.profile.transport },
+    {
+      name: MANAGED_PROFILE.name,
+      transport: { kind: "libp2p-direct", ...livePeer },
+    },
   );
+  exposeReadyState = false;
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
 
   const beforeRejectedRemoval = {
@@ -1598,6 +1675,27 @@ function ready(target: ResolvedRuntimeHostProfile): RuntimeHostDesktopTargetStat
     readiness: "ready",
     candidate: {
       client: { hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID },
+    } as never,
+  };
+}
+
+function readyWithPeerEndpoint(
+  target: ResolvedRuntimeHostProfile,
+  peerEndpoint: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  },
+): RuntimeHostDesktopTargetState {
+  return {
+    epoch: `epoch-${target.profile.id}`,
+    target,
+    readiness: "ready",
+    candidate: {
+      client: {
+        hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID,
+        status: async () => ({ peerEndpoint }),
+      },
     } as never,
   };
 }

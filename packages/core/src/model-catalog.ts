@@ -81,6 +81,13 @@ export interface ModelCatalogEntry {
   thinkingLevels: readonly ThinkingLevel[];
   contextWindow?: number;
   knowledgeCutoff?: string;
+  /**
+   * Whether the metadata the Host resolved describes this model at all. The
+   * renderer reads it to decide whether a model needs a hand-written capability
+   * declaration: the Host owns the (possibly refreshed) catalog, so a client
+   * asks the entry rather than its own bundled table, which may be older.
+   */
+  describedByMetadata: boolean;
 }
 
 export interface BuildConnectionModelCatalogInput {
@@ -335,19 +342,37 @@ export interface ConnectionModelDraft {
  * The other branch is the client-side resolution an editor legitimately needs:
  * once the draft diverges — model rows just fetched, ids just ticked — it
  * describes a connection the Host has never been told about and so cannot
- * have resolved.
+ * have resolved. Even then, metadata coverage is a fact about the id, not the
+ * edited row: the Host settled `describedByMetadata` against its (possibly
+ * refreshed) catalog, and the client's bundled table — the stale authority
+ * this field exists to stop trusting — must not overturn it. So the local
+ * rebuild keeps the Host's answer for every id it already described; only an
+ * id the Host has never seen falls back to the locally computed value.
  */
 export function resolveDraftConnectionModelCatalog(
   connection: BuildConnectionModelCatalogInput['connection'] & HostResolvedConnectionCatalog,
   draft: ConnectionModelDraft,
 ): readonly ModelCatalogEntry[] {
   if (draftMatchesConnection(connection, draft)) return connection.catalogEntries;
+  const hostCoverage = new Map(
+    connection.catalogEntries.map((entry): [string, boolean] => [
+      entry.id,
+      entry.describedByMetadata,
+    ]),
+  );
   return resolveConnectionModelCatalog({
     ...connection,
     enabledModelIds: [...draft.enabledModelIds],
     models:
       draft.modelSource === 'fetched' || draft.models.length > 0 ? [...draft.models] : undefined,
     modelSource: draft.modelSource,
+  }).map((entry) => {
+    // Sync point: `describedByMetadata` has two producers — `makeEntry` above
+    // and this overlay — so a future field decided on the Host must be patched
+    // back here too, or the local rebuild will silently downgrade it.
+    const hostDescribed = hostCoverage.get(entry.id);
+    if (hostDescribed === undefined || hostDescribed === entry.describedByMetadata) return entry;
+    return { ...entry, describedByMetadata: hostDescribed };
   });
 }
 
@@ -474,6 +499,10 @@ function makeEntry(
     isDefault: overrides.isDefault ?? normalizedModel.id === normalizedDefaultModel,
     supportsVision: capabilities.vision === true,
     thinkingLevels: thinkingVariantsForConnection(thinkingContext, normalizedModel.id),
+    // Whether metadata describes this id at all — the same question
+    // `hasModelMetadata` answers, decided here on the Host's catalog so a client
+    // need not re-ask its own bundled table (which a Host refresh never reaches).
+    describedByMetadata: Object.keys(metadata).length > 0,
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(knowledgeCutoff !== undefined ? { knowledgeCutoff } : {}),
   };

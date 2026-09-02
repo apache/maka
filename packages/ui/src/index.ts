@@ -22,6 +22,7 @@ export * from './assistant-stream.js';
 export * from './chat-empty-hero.js';
 export * from './chat-model-helpers.js';
 export * from './use-mounted-ref.js';
+export * from './session-setting-intent.js';
 export * from './components.js';
 export type { ComposerProps } from './components.js';
 export type { SandboxBoundaryPromptProps } from './sandbox-boundary-prompt.js';

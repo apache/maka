@@ -18,6 +18,7 @@
  */
 
 import type { IpcMain } from 'electron';
+import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
@@ -900,6 +901,30 @@ export function createDesktopRuntimeHostManagement(input: {
     );
   };
 
+  const createConnectionCode = async (profileId: unknown): Promise<string> => {
+    const access = await resolveAccess(profileId);
+    const response = await input.runAccessManagement({
+      ...access.target,
+      action: 'connection-code',
+      name: access.managed.profile.name,
+    });
+    if (response.kind === 'error') throw new Error(response.error.message);
+    if (response.action !== 'connection-code') {
+      throw new Error('Remote Runtime Host did not return a connection code');
+    }
+    const decoded = decodeRuntimeHostOwnerConnectionCode(response.connectionCode);
+    if (decoded.rootId !== access.managed.profile.rootId) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Host');
+    }
+    const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(
+      access.managed.profile.id,
+    );
+    if (peerProfile.peerId && decoded.transport.peerId !== peerProfile.peerId) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Direct peer');
+    }
+    return response.connectionCode;
+  };
+
   const rotateCredential = async (
     profileId: unknown,
   ): Promise<DesktopRuntimeHostAccessSnapshot> => {
@@ -980,6 +1005,7 @@ export function createDesktopRuntimeHostManagement(input: {
     run: 'runtime-host-management:run',
     update: 'runtime-host-management:update',
     configureProjectDirectories: 'runtime-host-management:configure-project-directories',
+    createConnectionCode: 'runtime-host-management:create-connection-code',
     listCredentials: 'runtime-host-management:list-credentials',
     rotateCredential: 'runtime-host-management:rotate-credential',
     revokeCredential: 'runtime-host-management:revoke-credential',
@@ -1019,6 +1045,8 @@ export function createDesktopRuntimeHostManagement(input: {
         allowInterruptActiveTasks,
       ),
   );
+  input.ipcMain.handle(channels.createConnectionCode, (_event, profileId: unknown) =>
+    createConnectionCode(profileId));
   input.ipcMain.handle(channels.listCredentials, (_event, profileId: unknown) =>
     listCredentials(profileId));
   input.ipcMain.handle(channels.rotateCredential, (_event, profileId: unknown) =>

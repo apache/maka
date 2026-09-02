@@ -75,6 +75,7 @@ export function useShellChatModel(options: {
   newTaskKey: string;
   activationCandidate?: NewChatModelCandidate;
   activeSession: SessionSummary | undefined;
+  sessionHealthSession: SessionSummary | undefined;
   persistedComposerDefaults: ComposerDefaults | null;
   usePersistedComposerDefaults: boolean;
   /** Settings → 通用 → 默认思考级别; undefined means "no preference". */
@@ -103,7 +104,17 @@ export function useShellChatModel(options: {
   setPendingNewChatThinkingLevel: (next: ThinkingLevel | null) => void;
   sessionHealthNotice: SessionHealthNoticeView | undefined;
 } {
-  const { uiLocale, connections, defaultConnection, activationCandidate, activeSession, persistedComposerDefaults, openSettingsSection, openModelPicker } = options;
+  const {
+    uiLocale,
+    connections,
+    defaultConnection,
+    activationCandidate,
+    activeSession,
+    sessionHealthSession,
+    persistedComposerDefaults,
+    openSettingsSection,
+    openModelPicker,
+  } = options;
   const conversationCopy = getDesktopConversationCopy(uiLocale);
   const [pendingNewChatModelChoice, setPendingNewChatModel] = useNewTaskChoice<
     NewChatModelCandidate | null
@@ -121,6 +132,13 @@ export function useShellChatModel(options: {
           activeSession.llmConnectionId !== undefined &&
           connection.connectionId === activeSession.llmConnectionId &&
           connection.slug === activeSession.llmConnectionSlug,
+      )
+    : undefined;
+  const sessionHealthConnection = sessionHealthSession
+    ? connections.find(
+        (connection) =>
+          connection.connectionId === sessionHealthSession.llmConnectionId &&
+          connection.slug === sessionHealthSession.llmConnectionSlug,
       )
     : undefined;
   const { chatModelChoices } = options;
@@ -247,13 +265,13 @@ export function useShellChatModel(options: {
   const sessionHealthNotice = useMemo<SessionHealthNoticeView | undefined>(() => {
     const derived = deriveSessionHealthNotice({
       locale: uiLocale,
-      session: activeSession,
+      session: sessionHealthSession,
       outcome: options.sessionSendOutcome,
       connections,
       hasModelChoices: chatModelChoices.length > 0,
       modelChoicesSettled: options.connectionSnapshotReady,
       modelPickerDisabled: options.modelPickerDisabled,
-      lastTestStatus: activeConnection?.lastTestStatus,
+      lastTestStatus: sessionHealthConnection?.lastTestStatus,
     });
     if (!derived) return undefined;
     const target = derived.onClickTarget;
@@ -275,16 +293,17 @@ export function useShellChatModel(options: {
     // effect to re-create on every render due to its function identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    activeSession?.id,
-    activeSession?.llmConnectionSlug,
-    activeSession?.model,
+    sessionHealthSession?.id,
+    sessionHealthSession?.llmConnectionId,
+    sessionHealthSession?.llmConnectionSlug,
+    sessionHealthSession?.model,
     options.sessionSendOutcome,
     connections,
     chatModelChoices.length,
     options.connectionSnapshotReady,
     options.modelPickerDisabled,
     options.refreshModelChoices,
-    activeConnection?.lastTestStatus,
+    sessionHealthConnection?.lastTestStatus,
     uiLocale,
     openModelPicker,
   ]);

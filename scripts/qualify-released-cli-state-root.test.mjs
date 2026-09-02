@@ -197,9 +197,10 @@ test('durable state covers the control namespace, not only the State Root', () =
   // State Root, not inside it. A golden copy scoped to the State Root alone
   // restored a workspace whose control records had already moved on, so the
   // transition it proved was never the one a user performs.
-  const locations = durableStateLocations('/qualification-scope');
+  const scope = resolve(tmpdir(), 'qualification-scope');
+  const locations = durableStateLocations(scope);
   assert.ok(locations.length >= 2);
-  assert.ok(locations.some(({ live }) => live === join('/qualification-scope', 'state-root')));
+  assert.ok(locations.some(({ live }) => live === join(scope, 'state-root')));
   assert.ok(
     locations.some(({ live }) => live.endsWith(join('.cache', 'maka', 'runtime-hosts'))),
     'the account-local control namespace must be captured and restored',

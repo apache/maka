@@ -220,6 +220,7 @@ interface DesktopRuntimeHostSshAccessTarget {
 export type DesktopRuntimeHostSshAccessInput = DesktopRuntimeHostSshAccessTarget &
   (
     | { readonly action: 'list' }
+    | { readonly action: 'connection-code'; readonly name: string }
     | { readonly action: 'prepare'; readonly currentCredentialFingerprint: string }
     | {
         readonly action: 'revoke';
@@ -1326,7 +1327,9 @@ function runtimeHostAccessManagementRemoteCommand(
           '--credential', input.credentialId,
           '--current-fingerprint', input.currentCredentialFingerprint,
         ]
-      : [];
+      : input.action === 'connection-code'
+        ? ['--name', input.name]
+        : [];
   const command = [
     input.operatorPath,
     'access',

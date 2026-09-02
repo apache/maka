@@ -100,7 +100,7 @@
 .settingsWebSearchResult p {
     font: var(--maka-text-body);
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     white-space: pre-wrap;
     word-break: break-word;
   }

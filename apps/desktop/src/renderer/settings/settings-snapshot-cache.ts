@@ -17,9 +17,8 @@
  * under the License.
  */
 
-import type { AppSettings } from '@maka/core/settings';
+import type { AppSettings, RuntimeHostAppSettings } from '@maka/core/settings';
 import type {
-  IdentifiedLlmConnection,
   ProjectedLlmConnection,
 } from '@maka/core/llm-connections';
 import type {
@@ -39,8 +38,8 @@ export interface SettingsSnapshotCache {
   readRuntimeHostCatalog(): DesktopRuntimeHostProfileSnapshot | undefined;
   commitRuntimeHostCatalogRead(snapshot: DesktopRuntimeHostProfileSnapshot): void;
 
-  readRuntimeHostSettings(key: string): AppSettings | undefined;
-  commitRuntimeHostSettingsRead(key: string, snapshot: AppSettings): void;
+  readRuntimeHostSettings(key: string): RuntimeHostAppSettings | undefined;
+  commitRuntimeHostSettingsRead(key: string, snapshot: RuntimeHostAppSettings): void;
 
   readRuntimeHostConnections(key: string): RuntimeHostConnectionsSnapshot | undefined;
   commitRuntimeHostConnectionsRead(
@@ -61,7 +60,7 @@ export function runtimeHostSettingsKey(host: DesktopRuntimeHostRef): string {
 export function createSettingsSnapshotCache(): SettingsSnapshotCache {
   let client: AppSettings | undefined;
   let runtimeHostCatalog: DesktopRuntimeHostProfileSnapshot | undefined;
-  const runtimeHostSettings = new Map<string, AppSettings>();
+  const runtimeHostSettings = new Map<string, RuntimeHostAppSettings>();
   const runtimeHostConnections = new Map<string, RuntimeHostConnectionsSnapshot>();
 
   return {

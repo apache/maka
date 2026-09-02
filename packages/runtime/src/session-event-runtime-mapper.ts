@@ -563,6 +563,9 @@ function mapBackendSessionEvent(
               : {}),
             ...(event.promptSegments !== undefined ? { promptSegments: event.promptSegments } : {}),
             ...(event.contextBudget !== undefined ? { contextBudget: event.contextBudget } : {}),
+            ...(event.lastRequestAnchor !== undefined
+              ? { lastRequestAnchor: event.lastRequestAnchor }
+              : {}),
           },
         },
         ...(event.providerRequestTraceId !== undefined
@@ -641,12 +644,6 @@ function completeRuntimeEvent(
   if (status === 'failed') {
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
-  }
-  // The context_budget_exhausted outcome carries which invariant made the turn
-  // unrecoverable; the durable terminal state must not collapse it to a bare
-  // failure class.
-  if (event.contextBudgetExhaustedDetail !== undefined) {
-    stateDelta.contextBudgetExhaustedDetail = event.contextBudgetExhaustedDetail;
   }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;

@@ -132,10 +132,12 @@ jobs:
       - name: Check ASF source headers
         run: npm run check:asf-headers
 
-      # Everything below needs an installed toolchain. A plan that selected no
-      # surface stops at the install-free checks above.
+      # Everything below this line may need an installed toolchain, so each
+      # step names the selections it belongs to. `setup-node` itself is
+      # unconditional: it costs seconds on a runner the job is already holding,
+      # and gating it needed a twelve-term disjunction over every other
+      # selection that a new lane had to remember to join (#4475).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.plan.outputs.heavy == 'true'
         with:
           node-version: '24'
           cache: npm
@@ -171,6 +173,12 @@ jobs:
       - name: Install dependencies
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      - name: Check localized TUI copy boundaries
+        if: steps.plan.outputs.code == 'true'
+        run: |
+          npm run check:tui-copy
+          node --test scripts/check-tui-copy.test.mjs
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
@@ -328,7 +336,37 @@ jobs:
 
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
-        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+        run: |
+          set -euo pipefail
+          display_base=90
+          worker_count=4
+          xvfb_pids=()
+          cleanup() {
+            kill "${xvfb_pids[@]}" 2>/dev/null || true
+            wait "${xvfb_pids[@]}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            Xvfb ":$display" -screen 0 1280x1024x24 -nolisten tcp \
+              >"$RUNNER_TEMP/xvfb-$display.log" 2>&1 &
+            xvfb_pids+=("$!")
+          done
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            for _ in {1..50}; do
+              [[ -S "/tmp/.X11-unix/X$display" ]] && break
+              kill -0 "${xvfb_pids[$index]}" 2>/dev/null || break
+              sleep 0.1
+            done
+            if [[ ! -S "/tmp/.X11-unix/X$display" ]]; then
+              cat "$RUNNER_TEMP/xvfb-$display.log"
+              exit 1
+            fi
+          done
+          MAKA_E2E_X_DISPLAY_BASE="$display_base" \
+            npm exec -w @maka/desktop -- playwright test \
+              --config e2e/playwright.config.ts --workers="$worker_count"
 
       - name: Browser WebContentsView semantic smoke
         if: steps.plan.outputs.e2e == 'true'

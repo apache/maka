@@ -41,6 +41,7 @@ import { fingerprintAgentGraphRunnableIntent } from '@maka/runtime/stream-graph-
 import type { AgentGraphRunnableIntent } from '@maka/runtime/stream-graph-readiness';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
+import { createSessionStore } from '@maka/storage/session-store';
 import {
   LONG_TERM_MEMORY_DATABASE_NAME,
   openInteractiveLongTermMemoryStoreForWrite,
@@ -103,8 +104,34 @@ test('production composition owns the long-term memory database lifecycle', asyn
   });
 });
 
-test('production composition reaches Ready when the optional context reader cannot open', async () => {
+test('production composition reaches Ready when the optional context Store cannot open', async () => {
   await withCompositionRoot(async ({ root, owner }) => {
+    const requestFingerprint = `sha256:${'a'.repeat(64)}` as const;
+    const preparingSessionId = 'preparing-context-copy';
+    const sessionStore = createSessionStore(root);
+    await sessionStore.createStableSession({
+      sessionId: preparingSessionId,
+      requestFingerprint,
+      input: {
+        cwd: root,
+        llmConnectionId: FAKE_CONNECTION_ID,
+        llmConnectionSlug: 'fake',
+        model: 'fake-model',
+        permissionMode: 'ask',
+        name: 'Preparing context copy',
+        labels: [],
+        parentSessionId: 'source-session',
+        branchOfTurnId: 'source-turn',
+        conversationCopy: {
+          kind: 'branch',
+          sourceSessionId: 'source-session',
+          sourceTurnId: 'source-turn',
+          requestFingerprint,
+          state: 'preparing',
+        },
+      },
+    });
+    await sessionStore.close?.();
     await mkdir(join(root, CONTEXT_OFFLOAD_DATABASE_NAME));
     const originalConsoleError = console.error;
     const diagnostics: string[] = [];
@@ -114,12 +141,30 @@ test('production composition reaches Ready when the optional context reader cann
       composition = await createExecutionRuntimeHostComposition(compositionContext(owner));
       assert.equal(composition.workspaceExecution.state, 'ready');
       assert.equal(
-        diagnostics.some((message) => message.includes('optional context-offload reader')),
+        diagnostics.some((message) => message.includes('optional context-offload Store')),
+        true,
+      );
+      await composition.recover();
+      assert.equal(
+        diagnostics.some((message) =>
+          message.includes('conversation copy cleanup deferred during recovery'),
+        ),
         true,
       );
     } finally {
       console.error = originalConsoleError;
-      await composition?.close();
+      if (composition) {
+        await composition.close();
+      }
+    }
+    const reopened = createSessionStore(root);
+    try {
+      assert.equal(
+        (await reopened.readHeaderSnapshot(preparingSessionId)).conversationCopy?.state,
+        'preparing',
+      );
+    } finally {
+      await reopened.close?.();
     }
   });
 });

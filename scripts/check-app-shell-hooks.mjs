@@ -137,7 +137,7 @@ export const ALLOWED = {
     // facade on this fiber.
     useSessionNavigationReads: 1,
     useSessionCollaborationDialog: 1,
-    useSessionSettingIntent: 2,
+    useSessionSettingIntent: 1,
     useSettingsModal: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,
@@ -147,7 +147,7 @@ export const ALLOWED = {
     useShellResume: 1,
     useShellRunUpdates: 1,
     useShellSearch: 1,
-    useStableActions: 7,
+    useStableActions: 6,
     useState: 15,
     useTaskEntryController: 1,
     useTaskSubmissionReadiness: 1,

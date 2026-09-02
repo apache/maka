@@ -45,6 +45,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - [Deep Research durable workspace](./deep-research-durable-workspace.md)
 - [SessionTodo lifecycle](./session-todo-lifecycle.md)
+- [Desktop message queue](./desktop-message-queue.md)
 - [Work Board contract](./work-board-contract.md)
 - [Work Board Phase 1 surface](./work-board-phase1.md)
 - [WorkHub domain language](./workhub-domain-language.md)
@@ -55,7 +56,9 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
 - [Runtime resume Phase 3–4 implementation route](./architecture/runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Skill catalog policy](./skill-catalog-policy.md)
+- [Provider-hosted web search capability](./web-search-provider-capability.md)
 - [Agent Swarm](./agent-swarm.md)
+- [Side Conversation](./side-conversation.md)
 - [Agent Graph stream scheduling](./architecture/agent-graph-stream-scheduling-draft.md) ([中文](./architecture/agent-graph-stream-scheduling-draft.zh-CN.md))
 - [IM 扫码接入 runtime architecture](./architecture/bot-onboarding-runtime.zh-CN.md)
 - [Backend architecture chapters](./architecture/)

@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { realpath } from 'node:fs/promises';
 import { PassThrough } from 'node:stream';
 import { describe, test } from 'node:test';
 import { RequestError, methods } from '@agentclientprotocol/sdk';
@@ -118,19 +119,14 @@ describe('Maka ACP child process', () => {
       await harness.withClient(async ({ context }) => {
         assert.deepEqual(await context.request(methods.agent.initialize, { protocolVersion: 1 }), {
           protocolVersion: 1,
-          agentCapabilities: {},
+          agentCapabilities: { sessionCapabilities: { list: {} } },
           authMethods: [],
           agentInfo: { name: 'maka', title: 'Maka', version: '0.2.0' },
         });
-
-        await assert.rejects(
-          context.request('session/new', { cwd: harness.workspaceRoot }),
-          (error: unknown) => {
-            assert.ok(error instanceof RequestError);
-            assert.equal(error.code, -32601);
-            assert.deepEqual(error.data, { method: 'session/new' });
-            return true;
-          },
+        assert.equal(
+          await harness.hasRuntimeHostRootMarker(),
+          false,
+          'initialize must not begin Runtime Host discovery or candidate startup',
         );
       });
 
@@ -139,12 +135,100 @@ describe('Maka ACP child process', () => {
       assert.equal(harness.stderr, '');
 
       const lines = harness.stdout.split(/\r?\n/u).filter((line) => line.trim().length > 0);
-      assert.ok(lines.length >= 2, 'expected initialize and method-not-found responses');
+      assert.ok(lines.length >= 1, 'expected initialize response');
       for (const line of lines) {
         const message: unknown = JSON.parse(line);
         assertJsonRpcMessage(message);
       }
     });
+  });
+
+  test('serves multiple ACP Sessions through a real Runtime Host', {
+    timeout: 30_000,
+  }, async () => {
+    await withAcpChildProcessHarness(
+      async (harness) => {
+        await harness.withClient(async ({ context }) => {
+          await context.request(methods.agent.initialize, { protocolVersion: 1 });
+          const first = await context.request(methods.agent.session.new, {
+            cwd: harness.workspaceRoot,
+            mcpServers: [],
+          });
+          const second = await context.request(methods.agent.session.new, {
+            cwd: harness.workspaceRoot,
+            mcpServers: [],
+          });
+          assert.notEqual(first.sessionId, second.sessionId);
+          const listed = await context.request(methods.agent.session.list, {
+            cwd: harness.workspaceRoot,
+          });
+          assert.deepEqual(
+            new Set(listed.sessions.map((session) => session.sessionId)),
+            new Set([first.sessionId, second.sessionId]),
+          );
+          const hostCwd = await realpath(harness.workspaceRoot);
+          assert.equal(
+            listed.sessions.every((session) => session.cwd === hostCwd),
+            true,
+          );
+
+          await assert.rejects(
+            context.request(methods.agent.session.close, { sessionId: first.sessionId }),
+            (error: unknown) => {
+              assert.ok(error instanceof RequestError);
+              assert.equal(error.code, -32601);
+              assert.deepEqual(error.data, { method: 'session/close' });
+              return true;
+            },
+          );
+        });
+
+        await harness.closeStdin();
+        assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+        assert.equal(harness.stderr, '');
+
+        const lines = harness.stdout.split(/\r?\n/u).filter((line) => line.trim().length > 0);
+        assert.ok(lines.length >= 5, 'expected initialize, new, list, and method responses');
+        for (const line of lines) {
+          const message: unknown = JSON.parse(line);
+          assertJsonRpcMessage(message);
+        }
+      },
+      { startRuntimeHost: true },
+    );
+  });
+
+  test('creates more than sixteen Sessions without attaching on a real Runtime Host', {
+    timeout: 30_000,
+  }, async () => {
+    await withAcpChildProcessHarness(
+      async (harness) => {
+        await harness.withClient(async ({ context }) => {
+          await context.request(methods.agent.initialize, { protocolVersion: 1 });
+          const createdSessionIds: string[] = [];
+          for (let index = 0; index < 17; index += 1) {
+            const created = await context.request(methods.agent.session.new, {
+              cwd: harness.workspaceRoot,
+              mcpServers: [],
+            });
+            createdSessionIds.push(created.sessionId);
+          }
+
+          const listed = await context.request(methods.agent.session.list, {
+            cwd: harness.workspaceRoot,
+          });
+          assert.deepEqual(
+            new Set(listed.sessions.map((session) => session.sessionId)),
+            new Set(createdSessionIds),
+          );
+        });
+
+        await harness.closeStdin();
+        assert.deepEqual(await harness.waitForExit(), { code: 0, signal: null });
+        assert.equal(harness.stderr, '');
+      },
+      { startRuntimeHost: true },
+    );
   });
 });
 

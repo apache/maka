@@ -84,6 +84,7 @@ import {
   type MemoryQueryInput,
   type MemoryQueryResult,
   type GoalControlAction,
+  type HostStatusResult,
   type GoalProjection,
   type OperationInput,
   type OperationOutput,
@@ -284,6 +285,10 @@ export class DesktopRuntimeHostClient {
   }
 
   get hostId(): string {
+    return this.rootId;
+  }
+
+  get rootId(): string {
     return this.connection.rootId;
   }
 
@@ -293,6 +298,10 @@ export class DesktopRuntimeHostClient {
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
   }
 
   finalizeAccessCredential(
@@ -331,8 +340,11 @@ export class DesktopRuntimeHostClient {
     return this.request('collaboration.turn-request.create', { intent });
   }
 
-  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
-    return this.request('collaboration.turn-request.query', { sessionId });
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
   }
 
   acknowledgeCollaborationTurnRequest(
@@ -417,6 +429,12 @@ export class DesktopRuntimeHostClient {
       if (result.kind === "committed") return this.queryRuntimePolicy();
     }
     throw revisionConflict("Runtime Policy update", "workspace");
+  }
+
+  updateNetworkProxy(
+    input: OperationInput<"runtime.policy.network-proxy.update">,
+  ): Promise<OperationOutput<"runtime.policy.network-proxy.update">> {
+    return this.request("runtime.policy.network-proxy.update", input);
   }
 
   queryMemory(input: MemoryQueryInput): Promise<MemoryQueryResult> {

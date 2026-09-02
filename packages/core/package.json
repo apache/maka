@@ -79,6 +79,7 @@
     "./work-board": "./dist/work-board.js",
     "./workhub-creation-intent": "./dist/workhub-creation-intent.js",
     "./deep-research": "./dist/deep-research.js",
+    "./session-start-mode": "./dist/session-start-mode.js",
     "./long-term-memory": "./dist/long-term-memory.js",
     "./local-memory": "./dist/local-memory.js",
     "./web-search": "./dist/web-search.js",
@@ -147,6 +148,7 @@
     "./ui-locale": "./dist/ui-locale.js",
     "./unified-diff": "./dist/unified-diff.js",
     "./dev-single-instance": "./dist/dev-single-instance.js",
+    "./maka-wordmark": "./dist/maka-wordmark.js",
     "./test-only/async-primitives": "./dist/test-only/async-primitives.js"
   },
   "scripts": {

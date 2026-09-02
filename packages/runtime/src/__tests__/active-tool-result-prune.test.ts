@@ -82,6 +82,7 @@ describe('active current-turn tool-result pruning', () => {
       stepNumber: 1,
       model: {},
       messages: originalMessages,
+      resolveDispatch: (active) => ({ systemPromptChars: 0, activeTools: [...(active ?? [])] }),
     });
 
     assert.deepEqual(result?.activeTools, ['Read', TOOL_SEARCH_NAME]);
@@ -327,6 +328,7 @@ describe('active current-turn tool-result pruning', () => {
       model: {},
       messages: [{ role: 'user', content: 'load rive' }],
       activeTools: plan.activeTools,
+      resolveDispatch: (active) => ({ systemPromptChars: 0, activeTools: [...(active ?? [])] }),
     });
 
     assert.ok(!plan.activeTools.includes('RiveWorkflow'), 'step 0 hides the group tool');

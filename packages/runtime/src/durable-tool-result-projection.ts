@@ -173,6 +173,48 @@ export function durableProjectionToToolResultOutput(
   }
 }
 
+/** One image a Tool Result puts in the request. */
+export interface MaterializedToolResultMedia {
+  /** How the model is told to name it once it is gone. */
+  label: string;
+}
+
+/** The images the artifact parts of one durable projection put in the request. */
+export function projectionArtifactMedia(
+  projection: DurableToolResultProjection,
+): MaterializedToolResultMedia[] {
+  if (projection.kind !== 'content') return [];
+  return projection.parts.flatMap((part) =>
+    part.kind === 'artifact'
+      ? [
+          {
+            label: part.ref.kind === 'session_context' ? part.ref.refId : part.ref.relativePath,
+          },
+        ]
+      : [],
+  );
+}
+
+/**
+ * The images one Tool Result puts in the request: the artifact parts of its
+ * durable projection, or — for a pre-artifact image the decoder still hands to
+ * materialization raw — that legacy result.
+ */
+export function effectiveToolResultMedia(
+  effective: EffectiveToolResultProjection,
+  sessionId: string,
+): MaterializedToolResultMedia[] {
+  if (effective.kind === 'projection') return projectionArtifactMedia(effective.projection);
+  if (effective.kind !== 'legacy_output') return [];
+  const image = sessionImageResult(effective.output, sessionId);
+  if (!image) return [];
+  return [
+    {
+      label: image.ref.kind === 'session_context' ? image.ref.refId : image.ref.relativePath,
+    },
+  ];
+}
+
 /**
  * The one pure decision of WHICH source a replayed Tool Result materializes
  * from: a durable projection wins, and only a response that has none (legacy
@@ -204,7 +246,7 @@ export function rewriteDurableToolResultProjectionArtifactRefs(
   };
 }
 
-type EffectiveToolResultProjection =
+export type EffectiveToolResultProjection =
   | {
       kind: 'projection';
       projection: DurableToolResultProjection;

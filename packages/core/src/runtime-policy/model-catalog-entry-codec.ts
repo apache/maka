@@ -42,8 +42,16 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
       'thinkingLevels',
       'contextWindow',
       'knowledgeCutoff',
+      'describedByMetadata',
     ],
-    ['id', 'canUseAsChatDefault', 'isDefault', 'supportsVision', 'thinkingLevels'],
+    [
+      'id',
+      'canUseAsChatDefault',
+      'isDefault',
+      'supportsVision',
+      'thinkingLevels',
+      'describedByMetadata',
+    ],
   );
   // The fields an entry shares with a stored model row keep one decoder, so a
   // bound that moves moves for both. `decodeConnectionModel` rejects unknown
@@ -58,6 +66,7 @@ export function decodeModelCatalogEntry(value: unknown): ModelCatalogEntry {
     isDefault: booleanValue(item.isDefault, 'entry default flag'),
     supportsVision: booleanValue(item.supportsVision, 'entry vision support'),
     thinkingLevels: decodeThinkingLevels(item.thinkingLevels),
+    describedByMetadata: booleanValue(item.describedByMetadata, 'entry metadata coverage'),
   };
 }
 

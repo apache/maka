@@ -3313,7 +3313,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           state.entries.push({
             kind: 'notice',
             level: 'error',
-            text: 'Usage: /copy [all]',
+            text: copyCopy.usage,
           });
           requestRender();
           return;

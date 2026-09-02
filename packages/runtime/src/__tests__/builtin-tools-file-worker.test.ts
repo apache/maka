@@ -169,6 +169,7 @@ describe('builtin file tools use the sandboxed worker', () => {
   test('uses one worker read operation for image paths', async () => {
     const cwd = await temporaryDirectory('maka-file-worker-cwd-');
     const calls: FilesystemWorkerExecuteInput[] = [];
+    let snapshotOwnerId: string | undefined;
     const tools = buildBuiltinTools({
       filesystemWorker: {
         execute: async (input) => {
@@ -176,11 +177,14 @@ describe('builtin file tools use the sandboxed worker', () => {
           return { kind: 'read_image', base64: 'iVBORw0KGgo=', mimeType: 'image/png' };
         },
       },
-      snapshotImage: async () => ({
-        kind: 'session_file',
-        sessionId: 'session-1',
-        relativePath: 'artifact-1',
-      }),
+      snapshotImage: async (input) => {
+        snapshotOwnerId = input.ownerId;
+        return {
+          kind: 'session_context',
+          sessionId: 'session-1',
+          refId: 'context-1',
+        };
+      },
       sandboxPlatform: 'darwin',
     });
 
@@ -188,6 +192,72 @@ describe('builtin file tools use the sandboxed worker', () => {
 
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0]?.operation, { kind: 'read', path: 'image.png', offset: 1, limit: 1 });
+    assert.equal(snapshotOwnerId, 'toolop-Read');
+  });
+
+  test('releases a Read image snapshot when durable result commit fails', async () => {
+    const released: Array<{ sessionId: string; refId: string }> = [];
+    const read = buildBuiltinTools({
+      releaseImageSnapshot: async (input) => {
+        released.push(input);
+      },
+    }).find((candidate) => candidate.name === 'Read');
+    if (!read?.compensateDurableOutcomeCommitFailure) {
+      throw new Error('Read image compensation missing');
+    }
+
+    await read.compensateDurableOutcomeCommitFailure({
+      result: {
+        kind: 'image',
+        mimeType: 'image/png',
+        ref: { kind: 'session_context', sessionId: 'session-1', refId: 'context-1' },
+      },
+      isError: false,
+      sessionId: 'session-1',
+      operationId: 'toolop-Read',
+    });
+
+    assert.deepEqual(released, [{ sessionId: 'session-1', refId: 'context-1' }]);
+  });
+
+  test('refuses to snapshot a Read image without a durable operation identity', async () => {
+    const tools = buildBuiltinTools({
+      filesystemWorker: {
+        execute: async () => ({
+          kind: 'read_image',
+          base64: 'iVBORw0KGgo=',
+          mimeType: 'image/png',
+        }),
+      },
+      snapshotImage: async () => {
+        assert.fail('snapshot must not run without a durable operation identity');
+      },
+      sandboxPlatform: 'darwin',
+    });
+    const read = tools.find((candidate) => candidate.name === 'Read');
+    if (!read) throw new Error('Read tool missing');
+
+    await assert.rejects(
+      Promise.resolve(
+        read.impl(
+          { path: 'image.png' },
+          {
+            sessionId: 'session-1',
+            turnId: 'turn-1',
+            toolCallId: 'provider-call-reused',
+            cwd: await temporaryDirectory('maka-file-worker-cwd-'),
+            permissionMode: 'ask',
+            executionBoundary: createManagedExecutionBoundary(
+              createWorkspaceWritePermissionProfile(),
+              0,
+            ),
+            abortSignal: new AbortController().signal,
+            emitOutput: () => {},
+          },
+        ),
+      ),
+      /require a durable tool operation identity/,
+    );
   });
 
   test('serializes writes through real and symlinked cwd paths', async () => {
@@ -423,6 +493,7 @@ async function runTool(
     sessionId: 'session-1',
     turnId: 'turn-1',
     toolCallId: `tool-${name}`,
+    operationId: `toolop-${name}`,
     cwd,
     permissionMode: 'ask',
     executionBoundary: createManagedExecutionBoundary(createWorkspaceWritePermissionProfile(), 0),

@@ -23,6 +23,7 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test';
 import { ToastProvider, useToast } from '@maka/ui';
 import type {
   AppSettings,
+  RuntimeHostAppSettings,
   SettingsSection,
   ThemePalette,
   ThemePreference,
@@ -56,7 +57,9 @@ import { createDefaultSettings, mergeSettings } from '@maka/core/settings';
 import { DEFAULT_DAILY_REVIEW_CONFIG } from '@maka/core/daily-review';
 import { SettingsSurface } from '../../src/renderer/settings/settings-surface';
 import { ConnectionSettingsServicesProvider } from '../../src/renderer/features/connection-settings';
+import { RuntimeHostManagementServicesProvider } from '../../src/renderer/features/runtime-host-management';
 import { createDesktopConnectionSettingsServices } from '../../src/renderer/platform/desktop/create-connection-settings-services';
+import { createDesktopRuntimeHostManagementServices } from '../../src/renderer/platform/desktop/create-runtime-host-management-services';
 import { createUiLocaleUpdateGate } from '../../src/renderer/settings/ui-locale-update-gate';
 import {
   createSettingsSnapshotCache,
@@ -709,11 +712,29 @@ const unavailableRuntimeHostProfiles: DesktopRuntimeHostProfileSnapshot = {
 
 const STORY_RUNTIME_HOST_KEY = 'local:storybook-local-host';
 
+function storyRuntimeSettings(
+  settings: AppSettings = createDefaultSettings(),
+  passwordConfigured = false,
+): RuntimeHostAppSettings {
+  return {
+    ...settings,
+    network: {
+      proxy: {
+        ...settings.network.proxy,
+        passwordConfigured,
+      },
+    },
+  };
+}
+
 function seedGeneralSnapshotCache(cache: SettingsSnapshotCache): void {
   const settings = createDefaultSettings();
   cache.commitClientRead(settings);
   cache.commitRuntimeHostCatalogRead(runtimeHostProfiles);
-  cache.commitRuntimeHostSettingsRead(STORY_RUNTIME_HOST_KEY, settings);
+  cache.commitRuntimeHostSettingsRead(
+    STORY_RUNTIME_HOST_KEY,
+    storyRuntimeSettings(settings),
+  );
   cache.commitRuntimeHostConnectionsRead(STORY_RUNTIME_HOST_KEY, {
     connections,
     defaultSlug: 'zai-live',
@@ -734,7 +755,7 @@ function seedGeneralTwoHostSnapshotCache(cache: SettingsSnapshotCache): void {
 }
 
 let storyClientSettings = createDefaultSettings();
-let storyRuntimeHostSettings = createDefaultSettings();
+let storyRuntimeHostSettings = storyRuntimeSettings();
 
 const makaBridge = {
   runtimeHostProfiles: {
@@ -780,7 +801,16 @@ const makaBridge = {
       return { settings: storyClientSettings };
     },
     update: async (patch: Parameters<typeof window.maka.settings.update>[0]): Promise<UpdateAppSettingsResult> => {
-      storyRuntimeHostSettings = mergeSettings(storyRuntimeHostSettings, patch);
+      const merged = mergeSettings(storyRuntimeHostSettings, patch);
+      storyRuntimeHostSettings = storyRuntimeSettings(
+        merged,
+        patch.network?.proxy?.credential?.kind === 'replace'
+          ? true
+          : patch.network?.proxy?.credential?.kind === 'delete' ||
+              patch.network?.proxy?.authEnabled === false
+            ? false
+            : storyRuntimeHostSettings.network.proxy.passwordConfigured,
+      );
       return { settings: storyRuntimeHostSettings };
     },
     subscribeClientChanged: () => () => undefined,
@@ -1604,6 +1634,9 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
   const [connectionSettingsServices] = useState(
     createDesktopConnectionSettingsServices,
   );
+  const [runtimeHostManagementServices] = useState(
+    createDesktopRuntimeHostManagementServices,
+  );
 
   return (
     <>
@@ -1622,27 +1655,29 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
         }}
       >
         <ConnectionSettingsServicesProvider services={connectionSettingsServices}>
-          <SettingsSurface
-            onClose={noop}
-            themePref={themePref}
-            onThemeChange={setThemePref}
-            themePalette={themePalette}
-            onThemePaletteChange={setThemePalette}
-            onUiLocalePreferenceChange={noop}
-            uiLocaleUpdateGate={uiLocaleUpdateGate}
-            onDefaultPermissionModeChange={noop}
-            request={{ section: props.section }}
-            openProviderCatalog={props.openProviderCatalog}
-            initialConnectionSlug={props.initialConnectionSlug}
-            initialFocusRef={initialFocusRef}
-            onOpenDailyReview={noop}
-            onOpenSession={noop}
-            archivedTasks={archivedTasks}
-            onTaskImported={noop}
-            onRemoteHostAdded={noop}
-            onSelectedRuntimeHostProfileIdChange={noop}
-            snapshotCache={snapshotCache}
-          />
+          <RuntimeHostManagementServicesProvider services={runtimeHostManagementServices}>
+            <SettingsSurface
+              onClose={noop}
+              themePref={themePref}
+              onThemeChange={setThemePref}
+              themePalette={themePalette}
+              onThemePaletteChange={setThemePalette}
+              onUiLocalePreferenceChange={noop}
+              uiLocaleUpdateGate={uiLocaleUpdateGate}
+              onDefaultPermissionModeChange={noop}
+              request={{ section: props.section }}
+              openProviderCatalog={props.openProviderCatalog}
+              initialConnectionSlug={props.initialConnectionSlug}
+              initialFocusRef={initialFocusRef}
+              onOpenDailyReview={noop}
+              onOpenSession={noop}
+              archivedTasks={archivedTasks}
+              onTaskImported={noop}
+              onRemoteHostAdded={noop}
+              onSelectedRuntimeHostProfileIdChange={noop}
+              snapshotCache={snapshotCache}
+            />
+          </RuntimeHostManagementServicesProvider>
         </ConnectionSettingsServicesProvider>
       </div>
     </>

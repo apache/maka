@@ -18,5 +18,9 @@
  */
 
 export { SessionCollaborationServicesProvider } from './services-context';
+export { useSessionCollaborationDialog } from './controller/use-session-collaboration-dialog';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
+export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';
+export { SessionTurnRequestBadge } from './ui/session-turn-request-badge';
+export { SessionTurnRequestInboxProvider } from './turn-request-inbox-context';
 export type { SessionCollaborationServices } from './ports';

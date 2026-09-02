@@ -6006,7 +6006,7 @@ describe('AiSdkBackend model history', () => {
     );
   });
 
-  test('blank summary preserves history and stops before an oversized request', async () => {
+  test('a blank summary preserves history and never records a checkpoint', async () => {
     const model = completionModel();
     const storedMessages: StoredMessage[] = [];
     const events: SessionEvent[] = [];
@@ -6067,12 +6067,14 @@ describe('AiSdkBackend model history', () => {
       events.push(event);
     }
 
-    assert.equal(model.doStreamCalls.length, 0);
+    // A blank summary is not a checkpoint; the raw history goes out unchanged.
     assert.equal(recordCalls, 0);
+    assert.equal(model.doStreamCalls.length, 1);
+    assert.match(JSON.stringify(model.doStreamCalls[0]?.prompt), /BLANK_RETAINED_TAIL/);
     const terminal = events.find(
       (event): event is Extract<SessionEvent, { type: 'complete' }> => event.type === 'complete',
     );
-    assert.equal(terminal?.stopReason, 'context_budget_exhausted');
+    assert.equal(terminal?.stopReason, 'end_turn');
   });
 
   test('replays a matching Codex V3 checkpoint as native provider state', async () => {

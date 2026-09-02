@@ -21,8 +21,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
 import {
-  collectRuntimeHostSessionCatalogs,
   collectRuntimeHostSessionCatalogsWithCoverage,
+  reconcileRuntimeHostSessionCatalog,
+  resolveRuntimeHostSessionCatalog,
 } from '../../preload/runtime-host-session-catalog.js';
 
 function session(id: string, activityAt: number): DesktopSessionSummary {
@@ -30,13 +31,17 @@ function session(id: string, activityAt: number): DesktopSessionSummary {
 }
 
 test('keeps healthy Host catalogs when another Host rejects', async () => {
-  const sessions = await collectRuntimeHostSessionCatalogs([
-    Promise.resolve([session('older', 1)]),
-    Promise.reject(new Error('remote unavailable')),
-    Promise.resolve([session('newer', 2)]),
+  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage([
+    { hostId: 'older', access: 'owner', sessions: Promise.resolve([session('older', 1)]) },
+    {
+      hostId: 'unavailable',
+      access: 'owner',
+      sessions: Promise.reject(new Error('remote unavailable')),
+    },
+    { hostId: 'newer', access: 'owner', sessions: Promise.resolve([session('newer', 2)]) },
   ]);
 
-  assert.deepEqual(sessions.map(({ id }) => id), ['newer', 'older']);
+  assert.deepEqual(catalog.sessions.map(({ id }) => id), ['newer', 'older']);
 });
 
 test('reports exactly which Host catalogs are complete', async () => {
@@ -57,19 +62,85 @@ test('collapses overlapping Guest catalogs in favor of the Owner authority', asy
   const owner = session('shared-session', 2);
   const guest = { ...owner, shared: true as const };
 
-  const sessions = await collectRuntimeHostSessionCatalogs([
-    Promise.resolve([guest]),
-    Promise.resolve([owner]),
+  const catalog = await collectRuntimeHostSessionCatalogsWithCoverage([
+    { hostId: 'shared', access: 'session_guest', sessions: Promise.resolve([guest]) },
+    { hostId: 'shared', access: 'owner', sessions: Promise.resolve([owner]) },
   ]);
 
-  assert.deepEqual(sessions, [owner]);
+  assert.deepEqual(catalog.sessions, [owner]);
+});
+
+test('retains a Guest catalog row only while its Runtime Host profile remains known', () => {
+  const shared = {
+    ...session('shared-session', 2),
+    runtimeHostId: 'host-guest',
+    profileId: 'guest-profile',
+    shared: true as const,
+  };
+
+  const reconnecting = reconcileRuntimeHostSessionCatalog([shared], {
+    sessions: [],
+    completeHostIds: [],
+    knownProfileIds: ['guest-profile'],
+  });
+  assert.deepEqual(reconnecting, [shared]);
+
+  assert.deepEqual(
+    reconcileRuntimeHostSessionCatalog(reconnecting, {
+      sessions: [{ ...shared, activityAt: 3 }],
+      completeHostIds: ['host-guest'],
+      knownProfileIds: ['guest-profile'],
+    }),
+    [{ ...shared, activityAt: 3 }],
+  );
+
+  assert.deepEqual(
+    reconcileRuntimeHostSessionCatalog(reconnecting, {
+      sessions: [],
+      completeHostIds: [],
+      knownProfileIds: [],
+    }),
+    [],
+  );
+});
+
+test('keeps healthy Owner catalogs when Guest mount inventory is unavailable', async () => {
+  const owner = {
+    ...session('owner-session', 3),
+    runtimeHostId: 'owner-host',
+    profileId: 'owner-profile',
+  };
+  const shared = {
+    ...session('shared-session', 2),
+    runtimeHostId: 'guest-host',
+    profileId: 'guest-profile',
+    shared: true as const,
+  };
+
+  assert.deepEqual(
+    await resolveRuntimeHostSessionCatalog(
+      [shared],
+      Promise.resolve({ sessions: [owner], completeHostIds: ['owner-host'] }),
+      () => ['owner-profile'],
+      Promise.reject(new Error('Guest mount store is unreadable')),
+    ),
+    [owner, shared],
+  );
 });
 
 test('fails when every Host catalog rejects', async () => {
   await assert.rejects(
-    collectRuntimeHostSessionCatalogs([
-      Promise.reject(new Error('first unavailable')),
-      Promise.reject(new Error('second unavailable')),
+    collectRuntimeHostSessionCatalogsWithCoverage([
+      {
+        hostId: 'first',
+        access: 'owner',
+        sessions: Promise.reject(new Error('first unavailable')),
+      },
+      {
+        hostId: 'second',
+        access: 'owner',
+        sessions: Promise.reject(new Error('second unavailable')),
+      },
     ]),
     /Every Runtime Host Session Catalog request failed/,
   );

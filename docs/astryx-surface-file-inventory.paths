@@ -22,12 +22,19 @@ apps/desktop/src/renderer/features/module-hub/services-context.tsx
 apps/desktop/src/renderer/features/module-hub/ui/module-hub-host.tsx
 apps/desktop/src/renderer/features/runtime-host-management/services-context.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/peer-mesh-peer-id-button.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-add-computer-menu.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-button.tsx
+apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-peer-mesh-dialog.tsx
 apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profile-pairing-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
+apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
+apps/desktop/src/renderer/features/session-settings/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/services-context.tsx
 apps/desktop/src/renderer/features/task-entry/ui/task-entry-host.tsx
 apps/desktop/src/renderer/features/workbar/services-context.tsx
@@ -85,7 +92,6 @@ apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
-apps/desktop/src/renderer/settings/runtime-host-connection-code-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx
 apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx
 apps/desktop/src/renderer/settings/runtime-host-onboarding-dialog.tsx
