@@ -21,7 +21,7 @@
 
 - Status: implementation plan
 - Tracking issue: [#4554](https://github.com/apache/maka/issues/4554)
-- Baseline: `main` at `72eb982d5081f610e047f18d96e2188f0fe17073`
+- Baseline: `main` at `6c8e749d3df8b5a41e570538523fa772cc4d9333`
 - Delivery: four stacked pull requests
 
 ## Review charter
