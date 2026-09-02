@@ -26,12 +26,11 @@ export async function collectAvailablePendingTurnRequests(
   const available = results.flatMap(
     (result) => result.status === 'fulfilled' ? [result.value] : [],
   );
-  if (queries.length > 0 && available.length === 0) {
-    throw new AggregateError(
-      results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
-      'Every Runtime Host collaboration inbox request failed',
-    );
-  }
+  // A Host with no collaboration authority rejects every inbox query with
+  // `operation_unavailable`. That is a valid composition (e.g. the default
+  // Local Host), not a failure, so when no Host answered we surface an empty
+  // inbox instead of throwing — the next poll repopulates it once a capable
+  // Host appears.
   return available
     .flat()
     .sort((left, right) => left.createdAt.localeCompare(right.createdAt));

@@ -38,12 +38,16 @@ test('keeps available collaboration inboxes when another Owner Host rejects', as
   assert.deepEqual(requests.map(({ requestId }) => requestId), ['earlier', 'later']);
 });
 
-test('retains the previous inbox projection when every Owner Host rejects', async () => {
-  await assert.rejects(
-    collectAvailablePendingTurnRequests([
-      Promise.reject(new Error('first unavailable')),
-      Promise.reject(new Error('second unavailable')),
-    ]),
-    /Every Runtime Host collaboration inbox request failed/,
-  );
+test('returns an empty inbox when every Owner Host rejects', async () => {
+  // A Host without a collaboration authority (e.g. the default Local Host)
+  // rejects each query with `operation_unavailable`. That is a valid
+  // composition, not an error, so the inbox resolves empty rather than
+  // throwing — the poller keeps the quiet, empty inbox instead of logging an
+  // IPC failure every interval.
+  const requests = await collectAvailablePendingTurnRequests([
+    Promise.reject(new Error('first unavailable')),
+    Promise.reject(new Error('second unavailable')),
+  ]);
+
+  assert.deepEqual(requests, []);
 });
