@@ -731,17 +731,20 @@ function projectInteractionFormField(field: InteractionFormField): InteractionFo
         }),
   };
   if (field.kind !== 'single_select' && field.kind !== 'multi_select') {
-    // `name` is a protocol identity returned to the tool; a string default is
-    // rendered into an input the user reads and accepts.
+    // `name` is a protocol identity returned to the tool. A string default is
+    // both display text and a canonical answer value, so a safety rewrite must
+    // not silently change its semantics under the original constraints.
     if (field.kind === 'string' && field.default !== undefined) {
+      const { default: canonicalDefault, ...fieldWithoutDefault } = field;
+      const projectedDefault = projectInteractionReviewText(
+        canonicalDefault,
+        INTERACTION_FORM_VALUE_MAX_BYTES,
+        true,
+      );
       return {
-        ...field,
+        ...fieldWithoutDefault,
         ...display,
-        default: projectInteractionReviewText(
-          field.default,
-          INTERACTION_FORM_VALUE_MAX_BYTES,
-          true,
-        ),
+        ...(projectedDefault === canonicalDefault ? { default: canonicalDefault } : {}),
       };
     }
     return { ...field, ...display };

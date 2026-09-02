@@ -1200,6 +1200,57 @@ describe('Interaction decoding and validity', () => {
     assert.doesNotMatch(JSON.stringify(projected), /message-secret|requester-secret|source-secret/);
   });
 
+  test('drops string defaults that cannot be represented without changing canonical semantics', () => {
+    const bidiDefault = '\u202e';
+    const secretDefault = 'sk-live-secret';
+    const projected = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Review defaults',
+      requester: { name: 'deploy' },
+      fields: [
+        {
+          kind: 'string',
+          name: 'direction',
+          label: 'Direction',
+          required: false,
+          default: bidiDefault,
+          minLength: 1,
+          maxLength: 1,
+        },
+        {
+          kind: 'string',
+          name: 'token',
+          label: 'Token',
+          required: false,
+          default: secretDefault,
+          minLength: secretDefault.length,
+          maxLength: secretDefault.length,
+        },
+        {
+          kind: 'string',
+          name: 'contact',
+          label: 'Contact',
+          required: false,
+          default: 'password=secret@example.test',
+          format: 'email',
+        },
+        {
+          kind: 'string',
+          name: 'safe-contact',
+          label: 'Safe contact',
+          required: false,
+          default: 'owner@example.test',
+          format: 'email',
+        },
+      ],
+    });
+
+    assert.equal(projected.fields[0]?.default, undefined);
+    assert.equal(projected.fields[1]?.default, undefined);
+    assert.equal(projected.fields[2]?.default, undefined);
+    assert.equal(projected.fields[3]?.default, 'owner@example.test');
+  });
+
   test('rejects form option labels that collide after safe projection', () => {
     assert.throws(() =>
       projectInteractionFormRequest({
