@@ -689,19 +689,12 @@ test('persists authenticated Owner routes imported through a connection code', a
     routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
     coordinationRelays: ['/memory/stale-relay'],
   };
-  const freshEndpoint = {
-    lease: {
-      version: 1 as const,
-      peerId: staleTransport.peerId,
-      revision: 2,
-      issuedAt: 1,
-      expiresAt: 2,
-      directRoutes: ['/ip4/198.51.100.9/udp/44002/quic-v1'],
-      coordinationRoutes: ['/memory/fresh-relay'],
-    },
-    publicKey: 'AA',
-    signature: 'AA',
-  };
+  const freshEndpoint = peerReachability(
+    staleTransport.peerId,
+    2,
+    ['/ip4/198.51.100.9/udp/44002/quic-v1'],
+    ['/memory/fresh-relay'],
+  );
   let observedIncarnation: string | undefined;
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -738,7 +731,12 @@ test('persists authenticated Owner routes imported through a connection code', a
   assert.equal(persisted.profileIncarnationId, observedIncarnation);
   assert.deepEqual(
     persisted.profile.kind === 'remote' ? persisted.profile.transport : undefined,
-    { kind: 'libp2p-direct', ...freshEndpoint },
+    {
+      kind: 'libp2p-direct',
+      peerId: freshEndpoint.lease.peerId,
+      routeHints: freshEndpoint.lease.directRoutes,
+      coordinationRelays: freshEndpoint.lease.coordinationRoutes,
+    },
   );
   const restarted = await resolveDesktopRuntimeHostStartup(root, { catalog });
   assert.deepEqual(restarted.remotes, [persisted]);
@@ -781,11 +779,12 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const activated: ResolvedRuntimeHostProfile[] = [];
-  const livePeer = {
-    peerId: "12D3KooWpeer",
-    routeHints: ["/ip4/192.0.2.9/udp/44002/quic-v1"],
-    coordinationRelays: ["/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay"],
-  };
+  const livePeer = peerReachability(
+    '12D3KooWpeer',
+    2,
+    ['/ip4/192.0.2.9/udp/44002/quic-v1'],
+    ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  );
   let exposeReadyState = false;
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
@@ -840,7 +839,12 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
     await service.resolveCollaborationConnectionTarget(MANAGED_PROFILE),
     {
       name: MANAGED_PROFILE.name,
-      transport: { kind: "libp2p-direct", ...livePeer },
+      transport: {
+        kind: 'libp2p-direct',
+        peerId: livePeer.lease.peerId,
+        routeHints: livePeer.lease.directRoutes,
+        coordinationRelays: livePeer.lease.coordinationRoutes,
+      },
     },
   );
   exposeReadyState = false;
@@ -1689,11 +1693,7 @@ function ready(target: ResolvedRuntimeHostProfile): RuntimeHostDesktopTargetStat
 
 function readyWithPeerEndpoint(
   target: ResolvedRuntimeHostProfile,
-  peerEndpoint: {
-    readonly peerId: string;
-    readonly routeHints: readonly string[];
-    readonly coordinationRelays: readonly string[];
-  },
+  peerEndpoint: ReturnType<typeof peerReachability>,
 ): RuntimeHostDesktopTargetState {
   return {
     epoch: `epoch-${target.profile.id}`,
@@ -1705,6 +1705,27 @@ function readyWithPeerEndpoint(
         status: async () => ({ peerEndpoint }),
       },
     } as never,
+  };
+}
+
+function peerReachability(
+  peerId: string,
+  revision = 1,
+  directRoutes: readonly string[] = ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+  coordinationRoutes: readonly string[] = [],
+) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from(`signature-${revision}`).toString('base64url'),
   };
 }
 
