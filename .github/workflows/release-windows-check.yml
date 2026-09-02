@@ -107,6 +107,10 @@ on:
         description: Compare two clean unsigned builds without publishing or signing
         type: boolean
         default: false
+      diagnose_existing:
+        description: Diagnose artifacts from the completed Windows comparison run
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -121,7 +125,7 @@ concurrency:
 
 jobs:
   package:
-    if: ${{ !inputs.reproducibility_probe }}
+    if: ${{ !inputs.reproducibility_probe && !inputs.diagnose_existing }}
     runs-on: windows-2025
     timeout-minutes: 45
     defaults:
@@ -343,3 +347,38 @@ jobs:
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
           if (environmentDifferences.length || differences.length) process.exitCode = 1;
           NODE
+
+  reproducibility-diagnose:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnose_existing }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the existing experiment source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api repos/apache/maka/actions/runs/33643012549 --jq .head_sha)" = 48b0408003edcf9594c38e2cb1bfc79beb4283b5
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: windows-repro-*
+          path: evidence
+          run-id: 33643012549
+          github-token: ${{ github.token }}
+
+      - name: Diagnose original bytes without rebuilding or executing them
+        run: node scripts/diagnose-windows-repro.mjs evidence > windows-repro-diagnosis.json
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-repro-diagnosis
+          path: windows-repro-diagnosis.json
+          if-no-files-found: error
+          retention-days: 7
