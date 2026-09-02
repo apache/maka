@@ -96,7 +96,7 @@ export interface TranscriptScrollAuthority {
  * At its boundary Chromium may chain the wheel to the transcript unless the
  * nested surface explicitly contains overscroll.
  */
-function nestedScrollerConsumesUpwardInput(
+export function nestedScrollerConsumesUpwardInput(
   path: readonly EventTarget[],
   root: HTMLElement,
 ): boolean {
@@ -111,10 +111,6 @@ function nestedScrollerConsumesUpwardInput(
     if (['contain', 'none'].includes(style.overscrollBehaviorY)) return true;
   }
   return false;
-}
-
-export function nestedScrollerConsumesWheel(event: WheelEvent, root: HTMLElement): boolean {
-  return nestedScrollerConsumesUpwardInput(event.composedPath(), root);
 }
 
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
@@ -211,12 +207,17 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       lastClientHeight = target.clientHeight;
       target.addEventListener('scroll', onScroll, { passive: true });
       const onWheel = (event: WheelEvent): void => {
+        // Already released: nothing here writes `scrollTop`, so skip the
+        // composed-path `getComputedStyle` walk — a forced style recalc on
+        // every wheel event of the exact gesture the perf gate measures.
+        if (!pinned) return;
         if (event.deltaY >= 0 || target.scrollTop <= 0) return;
-        if (nestedScrollerConsumesWheel(event, target)) return;
+        if (nestedScrollerConsumesUpwardInput(event.composedPath(), target)) return;
         releaseTail();
       };
       target.addEventListener('wheel', onWheel, { passive: true });
       const onKeyDown = (event: KeyboardEvent): void => {
+        if (!pinned) return;
         const upward = ['ArrowUp', 'PageUp', 'Home'].includes(event.key)
           || (event.key === ' ' && event.shiftKey);
         if (!upward || event.defaultPrevented || target.scrollTop <= 0) return;
@@ -262,7 +263,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             next.closest(TRANSCRIPT_SELECTOR) !== null && isOutsideViewport(next),
         };
       };
-      const focusEventRoot = target.ownerDocument || target;
+      const focusEventRoot = target.ownerDocument;
       focusEventRoot.addEventListener('focusout', onFocusOut, true);
       const onFocusIn = (event: FocusEvent): void => {
         if (!(event.target instanceof HTMLElement)) {

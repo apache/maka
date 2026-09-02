@@ -173,8 +173,23 @@ test('PageUp releases the live tail while skipped geometry materializes', async 
   await root.evaluate((element) => {
     const list = element.querySelector('.maka-chat-message-list');
     if (!list) throw new Error('the transcript content box is missing');
-    element.tabIndex = -1;
-    element.focus({ preventScroll: true });
+    // The production scroller carries no tabindex, so `event.target === root`
+    // is unreachable there. A real PageUp is dispatched from a focused control
+    // inside the list and reaches the handler through
+    // `event.target.closest('.maka-chat-message-list')`. Focus a visible card
+    // header to exercise that path instead of focusing the scroller itself.
+    const rootRect = element.getBoundingClientRect();
+    const header = [...element.querySelectorAll<HTMLElement>(
+      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+    )].find((candidate) => {
+      const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
+      const rect = candidate.getBoundingClientRect();
+      return boundary?.checkVisibility({ contentVisibilityAuto: true })
+        && rect.top >= rootRect.top
+        && rect.bottom <= rootRect.bottom;
+    });
+    if (!header) throw new Error('the visible tool-card header is missing');
+    header.focus({ preventScroll: true });
     element.addEventListener('keydown', (event) => {
       if (event.key !== 'PageUp') return;
       const growth = document.createElement('div');
