@@ -322,6 +322,41 @@ describe("assistant reply selection", () => {
     ]);
 
     assert.equal(turn?.durationMs, 1);
+    assert.equal(turn?.workDurationMs, 120_000);
+  });
+
+  test("uses the settled durable event span for a legacy work-log duration", () => {
+    const [turn] = materializeTurns([
+      originalUser,
+      {
+        type: "tool_call",
+        id: "read-1",
+        turnId: "t1",
+        ts: 3,
+        toolName: "Read",
+        args: { path: "README.md" },
+      },
+      {
+        type: "tool_result",
+        id: "read-result-1",
+        turnId: "t1",
+        ts: 10,
+        toolUseId: "read-1",
+        isError: false,
+        content: { kind: "text", text: "done" },
+      },
+      {
+        type: "assistant",
+        id: "final",
+        turnId: "t1",
+        ts: 11,
+        text: "Done.",
+        modelId: "fixture",
+      },
+    ]);
+
+    assert.equal(turn?.durationMs, 10);
+    assert.equal(turn?.workDurationMs, 10);
   });
 });
 

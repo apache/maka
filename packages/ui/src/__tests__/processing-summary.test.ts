@@ -85,6 +85,17 @@ describe('processing summary', () => {
     assert.equal(summarizeProcessing(entries, 'en'), 'Reading a file');
   });
 
+  test('preserves semantic categories for legacy tools without activityKind', () => {
+    const entries = [
+      tools(
+        tool('bash-1', 'Bash', 'completed'),
+        tool('read-1', 'Read', 'completed'),
+      ),
+    ];
+
+    assert.equal(summarizeProcessing(entries, 'zh'), '运行 1 条命令，读取 1 个文件');
+  });
+
   test('shows thinking when it is the latest live activity', () => {
     const entries = [
       tools(tool('read-1', 'Read', 'running', 'read')),

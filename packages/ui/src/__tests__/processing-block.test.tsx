@@ -129,7 +129,7 @@ test('folds completed reasoning and tool activity into one collapsed work log', 
   const turn = {
     ...fixtureTurn(workTimeline(true, false)),
     status: 'completed' as const,
-    durationMs: 273_000,
+    workDurationMs: 273_000,
   };
 
   const markup = renderToStaticMarkup(
@@ -318,7 +318,7 @@ test('shows the turn duration only on the final assistant segment', () => {
       },
     ]),
     status: 'completed' as const,
-    durationMs: 10_000,
+    workDurationMs: 10_000,
   };
 
   const markup = renderToStaticMarkup(

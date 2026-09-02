@@ -134,7 +134,7 @@ export function summarizeProcessing(
         .find((item) => isInFlightToolStatus(item.status));
       if (!active) continue;
       const intent = redactSecrets(formatUserVisibleToolText(active.intent ?? '', locale));
-      return intent ? copy.running(intent) : copy.runningKind[active.activityKind ?? 'tool'];
+      return intent ? copy.running(intent) : copy.runningKind[activityKindForTool(active)];
     }
   }
 
@@ -144,7 +144,7 @@ export function summarizeProcessing(
   let failed = 0;
   let interrupted = 0;
   for (const tool of tools) {
-    const kind = tool.activityKind ?? 'tool';
+    const kind = activityKindForTool(tool);
     if (!counts.has(kind)) order.push(kind);
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
     if (tool.status === 'errored') failed += 1;
@@ -156,4 +156,39 @@ export function summarizeProcessing(
   return parts.length > 0
     ? copy.join(parts)
     : getConversationCopy(locale).messages.workLog;
+}
+
+function activityKindForTool(item: ToolActivityItem): ToolActivityKind {
+  if (item.activityKind) return item.activityKind;
+  const name = item.toolName.toLowerCase();
+  if (name.startsWith('browser_')) return 'browser';
+  switch (name) {
+    case 'read':
+    case 'list':
+      return 'read';
+    case 'glob':
+    case 'grep':
+      return 'search';
+    case 'websearch':
+    case 'web_search':
+      return 'websearch';
+    case 'webfetch':
+    case 'web_fetch':
+      return 'webfetch';
+    case 'write':
+    case 'edit':
+    case 'multiedit':
+    case 'apply_patch':
+      return 'edit';
+    case 'bash':
+    case 'shell':
+    case 'stopbackgroundtask':
+    case 'stop_background_task':
+      return 'command';
+    case 'exploreagent':
+    case 'explore_agent':
+      return 'explore';
+    default:
+      return 'tool';
+  }
 }

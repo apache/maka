@@ -402,6 +402,8 @@ export interface TurnViewModel {
   modelId?: string;
   /** Wall-clock ms between earliest user/tool message and assistant message. */
   durationMs?: number;
+  /** Wall-clock ms covered by the turn's settled durable event span. */
+  workDurationMs?: number;
   /** Token totals summed across all `token_usage` messages within the turn. */
   tokens?: {
     input: number;
@@ -671,6 +673,11 @@ export function materializeTurns(
   const turnRecordById = new Map(
     turnRecords.map((turn) => [turn.turnId, turn]),
   );
+  const terminalStateTsByTurnId = new Map<string, number>();
+  for (const message of messages) {
+    if (message.type !== "turn_state" || message.status === "running") continue;
+    terminalStateTsByTurnId.set(message.turnId, message.ts);
+  }
   const order: string[] = [];
   const byId = new Map<string, TurnViewModel>();
   const looseTurnId = "__loose";
@@ -818,6 +825,14 @@ export function materializeTurns(
       toolItemByUseId,
     );
     turn.tools = timelineTools(turn.timeline);
+    if (turn.status !== "running") {
+      const terminalStateTs = terminalStateTsByTurnId.get(turnId);
+      const settledAt = terminalStateTs ?? Math.max(
+        turn.startedAt,
+        ...turnMessages.map((message) => message.ts),
+      );
+      turn.workDurationMs = settledAt - turn.startedAt;
+    }
   }
 
   return order.map((turnId) => byId.get(turnId)!);

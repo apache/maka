@@ -708,7 +708,7 @@ export const TurnView = memo(function TurnView(props: {
               {workItems.length > 0 && (
                 <TurnWorkLog
                   collapsed={workLogCollapsed}
-                  durationMs={ownsTurnChrome ? turn.durationMs : undefined}
+                  durationMs={ownsTurnChrome ? turn.workDurationMs : undefined}
                   startedAt={ownsTurnChrome ? turn.startedAt : undefined}
                 >
                   {workItems.map((item, index) =>
