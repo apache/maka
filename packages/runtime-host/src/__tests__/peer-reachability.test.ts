@@ -126,6 +126,14 @@ test('peer reachability publisher persists the exact revision before exposing it
     assert.equal(second.current().lease.revision, 2);
     assert.deepEqual(second.current().lease.directRoutes, ['/memory/peer-a-new']);
     await second.close();
+
+    await assert.rejects(
+      openPeerReachabilityPublisher({
+        dataRoot: root,
+        peer: new TestPeerIdentity('peer-b'),
+      }),
+      /different peer/,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

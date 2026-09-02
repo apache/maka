@@ -155,7 +155,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
       });
       this.verify(signed, identity.peerId);
       try {
-        await writeState(this.path, identity.peerId, signed);
+        await writeState(this.path, signed);
         this.#adopt(signed, now, monotonicNow);
       } catch (error) {
         if (error instanceof PeerReachabilityPostCommitError) {
@@ -225,17 +225,12 @@ async function readState(
       throw new Error('Invalid peer reachability state document');
     }
     const record = document as Record<string, unknown>;
-    if (
-      record.version !== 1 ||
-      Object.keys(record).length !== 3 ||
-      typeof record.localPeerId !== 'string' ||
-      record.localPeerId !== peer.identity().peerId
-    ) {
-      throw new Error('Peer reachability state belongs to a different peer identity');
+    if (record.version !== 1 || Object.keys(record).length !== 2) {
+      throw new Error('Invalid peer reachability state document');
     }
     return authenticateSignedPeerReachabilityLease({
       value: record.current,
-      expectedPeerId: record.localPeerId,
+      expectedPeerId: peer.identity().peerId,
       verifyIdentity: peer.verifyIdentity.bind(peer),
     });
   } catch (error) {
@@ -246,10 +241,9 @@ async function readState(
 
 async function writeState(
   path: string,
-  localPeerId: string,
   current: SignedPeerReachabilityLeaseV1,
 ): Promise<void> {
-  const document = `${JSON.stringify({ version: 1, localPeerId, current }, null, 2)}\n`;
+  const document = `${JSON.stringify({ version: 1, current }, null, 2)}\n`;
   if (Buffer.byteLength(document) > MAX_STATE_BYTES) {
     throw new Error('Peer reachability state is too large');
   }
