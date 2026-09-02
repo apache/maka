@@ -300,6 +300,7 @@ jobs:
           } | Sort-Object { $_.path })
           if ($files.Count -eq 0) { throw 'No release files found' }
           ConvertTo-Json -InputObject $files -Depth 4 | Set-Content evidence/files.json -Encoding utf8
+          Copy-Item apps/desktop/release/latest.yml evidence/latest.yml
 
       - name: Retain evidence even when packaging fails
         if: always()
