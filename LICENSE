@@ -208,10 +208,13 @@ Vercel AI SDK
 Source: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.11
         https://www.npmjs.com/package/@ai-sdk/provider/v/4.0.3
 Patched package: https://www.npmjs.com/package/@ai-sdk/provider-utils/v/5.0.28
+                 https://www.npmjs.com/package/@ai-sdk/open-responses/v/2.0.34
 Repository: https://github.com/vercel/ai/tree/main/packages/provider-utils
             https://github.com/vercel/ai/tree/main/packages/provider
+            https://github.com/vercel/ai/tree/main/packages/open-responses
 Adapted declarations: @ai-sdk/provider-utils 5.0.11, @ai-sdk/provider 4.0.3
 Dependency patch: patches/@ai-sdk+provider-utils+5.0.28.patch
+                  patches/@ai-sdk+open-responses+2.0.34.patch
 Copyright 2023 Vercel, Inc.
 License: Apache-2.0
 
@@ -223,8 +226,9 @@ License, Version 2.0 above applies to the adapted material.
 The pinned versions are the ones present when the adaptation was made. The
 adapted declarations are unchanged through @ai-sdk/provider-utils 5.0.25 and
 @ai-sdk/provider 4.0.7, the versions recorded by the code origin audit. Maka
-also redistributes a patch against @ai-sdk/provider-utils 5.0.28; that patch
-modifies Apache-2.0 source and is covered by the license reproduced above.
+also redistributes patches against @ai-sdk/provider-utils 5.0.28 and
+@ai-sdk/open-responses 2.0.34; those patches modify Apache-2.0 source and are
+covered by the license reproduced above.
 
 Astryx
 

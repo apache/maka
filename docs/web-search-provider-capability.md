@@ -19,10 +19,11 @@
 
 # Provider-hosted web search capability
 
-Status: implemented for OpenAI Responses and Anthropic Messages
-`web_search_20250305`; other provider-native wires remain explicit follow-ups.
+Status: implemented for OpenAI Responses, Alibaba Token Plan Open Responses,
+and Anthropic Messages `web_search_20250305`; other provider-native wires
+remain explicit follow-ups.
 Verified against public provider documentation and shipped client/SDK behavior
-on 2026-08-04.
+through 2026-08-24.
 
 ## Problem
 
@@ -59,7 +60,14 @@ set `capabilities.webSearch`; otherwise narrow provider/model rules apply.
 The implemented native adapters are:
 
 - `openai-responses` for Codex-style `web_search`;
+- `openai-responses` over the Alibaba Token Plan Open Responses profile for
+  `qwen3.8-max` Harness `web_search`;
 - `anthropic-messages` for Claude Code-compatible `web_search_20250305`.
+
+Alibaba Token Plan stays deliberately narrower than the provider's published
+model matrix: the current Runtime routes only `qwen3.8-max` through its verified
+Responses profile. Qwen 3.7 models remain on Chat in Maka and therefore do not
+receive a provider-native search tool yet.
 
 ## Execution surfaces
 
@@ -105,8 +113,11 @@ turn-start tool surface
 The search request uses the existing model credential. It does not duplicate the
 secret into web-search settings, start a nested model request, or expose the
 secret to the renderer. Provider search call/results are marked
-`providerExecuted`, preserved separately from local ToolRuntime execution, and
-replayed through the native provider-tool shape.
+`providerExecuted` and preserved separately from local ToolRuntime execution.
+Adapters that can round-trip the pair replay its native provider-tool shape.
+Alibaba Open Responses currently keeps the durable episode and grounded text but
+omits the pair from the next provider request, because that adapter cannot yet
+round-trip provider-executed results without producing a dangling output.
 
 The durable event keeps normalized `result` data for the canonical read model,
 UI, and exports, plus opaque `providerOutput` data for provider-protocol replay.
@@ -187,7 +198,8 @@ search-heavy workflows that value source visibility over cache economics.
 | OpenAI API | Responses `web_search` tool | Maka currently enables the native path for GPT-5 families, whose runtime wire is already Responses | Integrated through `openai-responses` |
 | Custom Responses relay | Responses `web_search` tool when explicitly declared by model metadata | `openai-responses-compatible` connections with `apiProtocol=openai-responses` and `capabilities.webSearch=true` | Integrated through `openai-responses` |
 | xAI API / OAuth | Responses Agent Tools `web_search` | Maka currently enables the verified Grok 4.5 Responses route | Integrated through `openai-responses` |
-| Alibaba Model Studio | Responses `web_search` | Qwen 3.5 Plus/Flash provider support is recorded | Provider supports it; Maka Responses adapter pending |
+| Alibaba Token Plan | Responses Harness `web_search` | `qwen3.8-max` on the Token Plan China/Singapore access paths | Integrated through the Alibaba Open Responses profile; live smoke pending |
+| Alibaba Model Studio pay-as-you-go | Responses `web_search` | Provider model and deployment support varies | Provider supports it; Maka pay-as-you-go Responses adapter pending |
 | Anthropic / Claude subscription | Messages `web_search_20250305` | Current Claude Opus/Sonnet/Haiku/Fable families | Integrated through `anthropic-messages` |
 | MiniMax API / Coding Plan | Anthropic-compatible `web_search_20250305` | MiniMax M2.7/M3 families | Integrated through `anthropic-messages`; live provider verification pending |
 | Google Gemini | Gemini API grounding with Google Search | Supported Gemini 2.0+ model families vary by release | Provider supports it; Maka adapter pending |

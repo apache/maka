@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { streamText, type ToolSet } from 'ai';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
@@ -539,6 +540,204 @@ describe('responses wire request body', () => {
 
     assert.equal(body?.store, false);
     assert.equal(headers?.get('x-token-plan-routing'), 'custom');
+  });
+
+  test('Alibaba Token Plan lowers and decodes provider-executed web search', async () => {
+    let body: Record<string, unknown> | undefined;
+    const webSearchCall = {
+      type: 'web_search_call',
+      id: 'web-search-1',
+      status: 'completed',
+      action: {
+        type: 'search',
+        query: 'latest Maka',
+        sources: [{ type: 'url', url: 'https://maka.example/releases' }],
+      },
+    };
+    const message = {
+      type: 'message',
+      id: 'message-1',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'Maka shipped.', annotations: [] }],
+    };
+    const completed = {
+      id: 'response-web-search',
+      object: 'response',
+      created_at: 1,
+      model: 'qwen3.8-max',
+      status: 'completed',
+      output: [webSearchCall, message],
+      usage: {
+        input_tokens: 10,
+        output_tokens: 4,
+        total_tokens: 14,
+        x_tools: { web_search: { count: 1 } },
+      },
+    };
+    const events = [
+      { type: 'response.created', response: { id: completed.id } },
+      {
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { ...webSearchCall, status: 'in_progress', action: undefined },
+      },
+      { type: 'response.output_item.done', output_index: 0, item: webSearchCall },
+      { type: 'response.output_item.added', output_index: 1, item: message },
+      {
+        type: 'response.output_text.delta',
+        item_id: message.id,
+        output_index: 1,
+        content_index: 0,
+        delta: 'Maka shipped.',
+      },
+      { type: 'response.output_item.done', output_index: 1, item: message },
+      { type: 'response.completed', response: completed },
+    ];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+    const tools = lowerModelTools({
+      WebSearch: {
+        kind: 'provider',
+        providerTool: { kind: 'openai-web-search', searchContextSize: 'medium' },
+      },
+    });
+    const result = streamText({
+      model,
+      messages: [{ role: 'user', content: 'What shipped?' }],
+      tools: tools as ToolSet,
+      maxRetries: 0,
+    });
+    const parts = [];
+    for await (const part of result.fullStream) parts.push(part);
+
+    assert.deepEqual(body?.tools, [{ type: 'web_search' }]);
+    assert.equal(body?.store, false);
+    const call = parts.find((part) => part.type === 'tool-call');
+    assert.ok(call && call.type === 'tool-call');
+    assert.equal(call.toolCallId, 'web-search-1');
+    assert.equal(call.toolName, 'WebSearch');
+    assert.equal(call.providerExecuted, true);
+    const toolResult = parts.find((part) => part.type === 'tool-result');
+    assert.ok(toolResult && toolResult.type === 'tool-result');
+    assert.equal(toolResult.providerExecuted, true);
+    assert.deepEqual(toolResult.output, {
+      action: { type: 'search', query: 'latest Maka' },
+      sources: [{ type: 'url', url: 'https://maka.example/releases' }],
+    });
+    assert.equal(await result.text, 'Maka shipped.');
+    const finishStep = parts.find((part) => part.type === 'finish-step');
+    assert.ok(finishStep && finishStep.type === 'finish-step');
+    assert.deepEqual(finishStep.usage.raw?.x_tools, { web_search: { count: 1 } });
+  });
+
+  test('Open Responses preserves search, open-page, and find-in-page actions', async () => {
+    let body: Record<string, unknown> | undefined;
+    const calls = [
+      {
+        type: 'web_search_call',
+        id: 'search-1',
+        status: 'completed',
+        action: { type: 'search', queries: ['latest Maka'] },
+      },
+      {
+        type: 'web_search_call',
+        id: 'open-1',
+        status: 'completed',
+        action: { type: 'open_page', url: 'https://maka.example/releases' },
+      },
+      {
+        type: 'web_search_call',
+        id: 'find-1',
+        status: 'completed',
+        action: {
+          type: 'find_in_page',
+          url: 'https://maka.example/releases',
+          pattern: 'WebSearch',
+        },
+      },
+    ];
+    const completed = {
+      id: 'response-page-actions',
+      object: 'response',
+      created_at: 1,
+      model: 'deepseek-v4-flash',
+      status: 'completed',
+      output: calls,
+      usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+    };
+    const events = [
+      { type: 'response.created', response: { id: completed.id } },
+      ...calls.flatMap((call, output_index) => [
+        {
+          type: 'response.output_item.added',
+          output_index,
+          item: { ...call, status: 'in_progress', action: undefined },
+        },
+        { type: 'response.output_item.done', output_index, item: call },
+      ]),
+      { type: 'response.completed', response: completed },
+    ];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(
+        `${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const model = getAIModel({
+      connection: { ...conn('deepseek'), baseUrl: 'https://deepseek.example' },
+      apiKey: 'deepseek-key',
+      modelId: 'deepseek-v4-flash',
+      fetch,
+    });
+    const tools = lowerModelTools({
+      WebSearch: {
+        kind: 'provider',
+        providerTool: { kind: 'openai-web-search', searchContextSize: 'medium' },
+      },
+    });
+    const result = streamText({
+      model,
+      messages: [{ role: 'user', content: 'Search, open, and find.' }],
+      tools: tools as ToolSet,
+      maxRetries: 0,
+    });
+    const parts = [];
+    for await (const part of result.fullStream) parts.push(part);
+
+    assert.deepEqual(body?.tools, [{ type: 'web_search' }]);
+    assert.deepEqual(
+      parts
+        .filter((part) => part.type === 'tool-result')
+        .map((part) => (part.type === 'tool-result' ? part.output : undefined)),
+      [
+        { action: { type: 'search', queries: ['latest Maka'] } },
+        { action: { type: 'openPage', url: 'https://maka.example/releases' } },
+        {
+          action: {
+            type: 'findInPage',
+            url: 'https://maka.example/releases',
+            pattern: 'WebSearch',
+          },
+        },
+      ],
+    );
   });
 
   test('adds the V2 trigger only through the explicit OpenAI provider option', async () => {

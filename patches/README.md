@@ -57,6 +57,21 @@ Streaming tool-call association for gateways that reuse or omit `index` / `id`
 
 Delete when that guard passes against an unpatched package.
 
+## `@ai-sdk/open-responses@2.0.34`
+
+The adapter drops every provider-defined tool and only decodes function-call
+output items. Alibaba Token Plan exposes its provider-executed Harness web
+search over the otherwise supported Responses wire, using
+`tools: [{ type: "web_search" }]` and `web_search_call` output items. The patch
+lowers that one published tool shape and maps its streamed call/result pair into
+the AI SDK provider-executed tool protocol; all other provider-defined tools
+remain unsupported. Product-level wire tests pin the request and result shape.
+
+Tracked upstream by vercel/ai#19933 and its implementation PR #19939. Delete
+this patch when a released `Experimental_OpenResponsesBareExtension` codec can
+own the exact `web_search` and `web_search_call` wire types and the product-level
+wire/replay tests pass against the unpatched package.
+
 ## `@astryxdesign/core@0.5.0`
 
 Five published component seams drop host-owned state or semantics:

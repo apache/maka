@@ -145,6 +145,28 @@ test('turn-start routing compiles Claude models to the CC-compatible Anthropic t
   });
 });
 
+test('turn-start routing compiles Qwen3.8 Max Token Plan to Responses web search', () => {
+  const routed = routeWebSearchTools({
+    tools: [],
+    settings: { enabled: true, defaultProvider: 'model' },
+    connection: {
+      slug: 'alibaba-token-plan-cn',
+      providerType: 'alibaba-token-plan-cn',
+      defaultModel: 'qwen3.8-max',
+    },
+    model: 'qwen3.8-max',
+    tavilyReady: false,
+    allowAddNative: true,
+  });
+
+  assert.equal(routed.length, 1);
+  assert.equal(routed[0]?.name, NATIVE_WEB_SEARCH_TOOL_NAME);
+  assert.deepEqual(routed[0]?.providerTool, {
+    kind: 'openai-web-search',
+    searchContextSize: 'medium',
+  });
+});
+
 test('root surfaces do not advertise unsupported DeepSeek native search', () => {
   const connection = {
     slug: 'deepseek',
