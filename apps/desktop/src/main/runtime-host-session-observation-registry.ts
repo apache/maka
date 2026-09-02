@@ -88,7 +88,13 @@ interface TranscriptRegistration {
   readonly target: RuntimeHostTranscriptTarget;
   readonly destroyedListener: () => void;
   readonly ready: TranscriptReadiness;
+  restore: TranscriptRestore | undefined;
   lifecycle: 'pending' | 'active';
+}
+
+interface TranscriptRestore {
+  readonly source: SessionObservationSource;
+  readonly ready: ObservationReadiness;
 }
 
 interface TranscriptReadiness {
@@ -226,6 +232,11 @@ export class RuntimeHostSessionObservationRegistry {
     if (this.#source === source) {
       this.#source = undefined;
       this.#bindTarget = (target) => target;
+      for (const registration of this.#transcripts.values()) {
+        if (registration.restore?.source === source) {
+          registration.restore.ready.resolve();
+        }
+      }
     }
   }
 
@@ -316,6 +327,7 @@ export class RuntimeHostSessionObservationRegistry {
       target,
       destroyedListener,
       ready,
+      restore: undefined,
       lifecycle: 'pending',
     };
     this.#transcripts.set(consumerId, registration);
@@ -454,6 +466,14 @@ export class RuntimeHostSessionObservationRegistry {
     }
     const source = requireTranscriptSource(this.#source);
     try {
+      const restore = registration.restore;
+      if (restore?.source === source) await restore.ready.promise;
+      if (
+        this.#source !== source ||
+        this.#transcripts.get(consumerId) !== registration
+      ) {
+        return;
+      }
       await operation(source);
     } catch (error) {
       // Once either owner changes, this rejection belongs to stale work and
@@ -470,7 +490,14 @@ export class RuntimeHostSessionObservationRegistry {
 
   #restoreTranscripts(source: SessionObservationSource): void {
     for (const [consumerId, registration] of this.#transcripts) {
-      void this.#restoreTranscript(source, consumerId, registration);
+      registration.restore?.ready.resolve();
+      const restore: TranscriptRestore = {
+        source,
+        ready: observationReadiness(),
+      };
+      void restore.ready.promise.catch(() => undefined);
+      registration.restore = restore;
+      void this.#restoreTranscript(source, consumerId, registration, restore);
     }
   }
 
@@ -478,6 +505,7 @@ export class RuntimeHostSessionObservationRegistry {
     source: SessionObservationSource,
     consumerId: string,
     registration: TranscriptRegistration,
+    restore: TranscriptRestore,
   ): Promise<void> {
     try {
       const transcriptSource = requireTranscriptSource(source);
@@ -486,18 +514,33 @@ export class RuntimeHostSessionObservationRegistry {
         consumerId,
         this.#bindTranscriptTarget(registration.target),
       );
-      if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
+      if (
+        this.#source === source &&
+        this.#transcripts.get(consumerId) === registration &&
+        registration.restore === restore
+      ) {
         registration.lifecycle = 'active';
         registration.ready.resolve(result);
+        registration.restore = undefined;
+        restore.ready.resolve();
       } else {
+        restore.ready.resolve();
         await transcriptSource.closeTranscript(consumerId);
       }
     } catch (error) {
-      if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
+      if (
+        this.#source === source &&
+        this.#transcripts.get(consumerId) === registration &&
+        registration.restore === restore
+      ) {
         if (registration.lifecycle === 'pending') {
           this.#deleteTranscript(consumerId, registration);
+        } else {
+          restore.ready.reject(error instanceof Error ? error : new Error(String(error)));
         }
         this.#onError(error);
+      } else {
+        restore.ready.resolve();
       }
     }
   }
@@ -505,6 +548,7 @@ export class RuntimeHostSessionObservationRegistry {
   #deleteTranscript(consumerId: string, registration: TranscriptRegistration): void {
     if (this.#transcripts.get(consumerId) !== registration) return;
     this.#transcripts.delete(consumerId);
+    registration.restore?.ready.resolve();
     registration.target.off('destroyed', registration.destroyedListener);
     registration.ready.reject(new Error('Transcript observation ended before it became ready'));
   }

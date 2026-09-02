@@ -521,6 +521,8 @@ test('does not hold Host observation recovery on transcript replay', async () =>
   const transcriptReplay = deferred<DesktopTranscriptOpenResult>();
   let transcriptReplayStarted = false;
   let transcriptReplayCompleted = false;
+  let transcriptRangeStarted = false;
+  let transcriptAcknowledged = false;
   const replacement = {
     async observe() {
       await observationSeed.promise;
@@ -532,8 +534,13 @@ test('does not hold Host observation recovery on transcript replay', async () =>
       transcriptReplayCompleted = true;
       return result;
     },
-    async loadTranscriptBefore() {},
+    async loadTranscriptBefore() {
+      transcriptRangeStarted = true;
+    },
     async loadTranscriptAround() {},
+    acknowledgeTranscript() {
+      transcriptAcknowledged = true;
+    },
     async closeTranscript() {},
   };
   const attaching = observations.attach(replacement);
@@ -548,7 +555,24 @@ test('does not hold Host observation recovery on transcript replay', async () =>
   assert.deepEqual(await attaching, ['session-1']);
   assert.equal(attached, true);
 
+  const range = observations.loadTranscriptBefore(
+    {
+      consumerId: 'consumer-1',
+      sessionId: 'session-1',
+      hostEpoch: 'host-second',
+      anchorSequence: null,
+      maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    },
+    transcriptTarget.id,
+  );
+  observations.acknowledgeTranscript('consumer-1', 'second', 1, transcriptTarget.id);
+  await Promise.resolve();
+  assert.equal(transcriptRangeStarted, false);
+  assert.equal(transcriptAcknowledged, true);
+
   transcriptReplay.resolve(transcriptResult('second'));
+  await range;
+  assert.equal(transcriptRangeStarted, true);
   await waitFor(() => transcriptReplayCompleted);
   await observations.close();
 });
