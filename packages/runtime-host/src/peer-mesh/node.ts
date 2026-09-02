@@ -1263,18 +1263,10 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     target: SignedPeerReachabilityLeaseV1,
     signal: AbortSignal,
   ): Promise<void> {
+    const localPeerId = this.#peer.identity().peerId;
+    const targetPeerId = target.lease.peerId;
     for (let page = 0; page <= PEER_MESH_MAX_MEMBERS; page += 1) {
-      await this.#refreshLocalEvidence();
-      const stored = this.#store.read();
-      const state = findMesh(stored.meshes, meshId);
-      const localPeerId = this.#peer.identity().peerId;
-      if (!state || !isActiveMembership(state, localPeerId)) return;
-      const reachability = latestReachability(stored.reachability, localPeerId, this.#now(), true);
-      const advertisement = findAdvertisement(stored.advertisements, meshId, localPeerId);
-      if (!reachability || !advertisement) {
-        throw new Error('Peer Mesh local evidence is unavailable');
-      }
-      const targetPeerId = target.lease.peerId;
+      if (!isActiveMeshMember(this.#store.read().meshes, meshId, localPeerId, targetPeerId)) return;
       const discovered = this.resolveRoutes(targetPeerId);
       const targetRoutes = dialTarget(target);
       const stream = await this.#peer.connectMeshControl(
@@ -1291,6 +1283,20 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         signal,
       );
       try {
+        await this.#refreshLocalEvidence();
+        const stored = this.#store.read();
+        if (!isActiveMeshMember(stored.meshes, meshId, localPeerId, targetPeerId)) return;
+        const state = findMesh(stored.meshes, meshId)!;
+        const reachability = latestReachability(
+          stored.reachability,
+          localPeerId,
+          this.#now(),
+          true,
+        );
+        const advertisement = findAdvertisement(stored.advertisements, meshId, localPeerId);
+        if (!reachability || !advertisement) {
+          throw new Error('Peer Mesh local evidence is unavailable');
+        }
         const response = await exchangeControl(
           stream,
           {

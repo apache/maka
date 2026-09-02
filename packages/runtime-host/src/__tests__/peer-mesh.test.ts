@@ -174,6 +174,42 @@ test('authenticates three peers, consumes invitations once, and keeps authority 
   }
 });
 
+test('does not synchronize reachability to a peer removed after reconciliation selected it', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-revoked-sync-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
+  const serving = [authority.serve(), member.serve()];
+  try {
+    const mesh = await authority.create();
+    await member.join(await authority.invite(mesh.roster.roster.meshId));
+    await authority.reconcile();
+    const synchronizedBeforeRemoval = memberPeer.receivedControlCount('sync');
+
+    const connection = authorityPeer.stallNextConnection();
+    const reconciliation = authority.reconcile();
+    await connection.started;
+    await authority.remove(mesh.roster.roster.meshId, 'peer-b');
+    connection.release();
+    await reconciliation;
+
+    assert.equal(memberPeer.receivedControlCount('sync'), synchronizedBeforeRemoval);
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled(serving);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close()]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('commits an offline leave locally and reconciles it after restart', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-leave-'));
   const network = new MemoryPeerNetwork();
@@ -1187,6 +1223,7 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
       }
     | undefined;
   #failNextSignature = false;
+  readonly #receivedControlKinds: string[] = [];
 
   constructor(
     private readonly peerId: string,
@@ -1318,6 +1355,10 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
     return { started, release };
   }
 
+  receivedControlCount(kind: string): number {
+    return this.#receivedControlKinds.filter((candidate) => candidate === kind).length;
+  }
+
   failNextSignature(): void {
     this.#failNextSignature = true;
   }
@@ -1401,7 +1442,14 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
     if (!remote || !remote.#reachable) {
       throw new Error('Peer is unavailable');
     }
-    const [localStream, remoteStream] = memoryStreamPair(this.peerId, input.peerId);
+    const [localStream, remoteStream] = memoryStreamPair(this.peerId, input.peerId, (bytes) => {
+      const newline = bytes.indexOf(0x0a);
+      if (newline < 0) return;
+      const value = JSON.parse(bytes.subarray(0, newline).toString('utf8')) as {
+        readonly kind?: unknown;
+      };
+      if (typeof value.kind === 'string') remote.#receivedControlKinds.push(value.kind);
+    });
     if (remote.#failNextResponse) {
       remote.#failNextResponse = false;
       remoteStream.failNextWrite();
@@ -1500,9 +1548,13 @@ function memorySignature(peerId: string, payload: Buffer): Buffer {
   return createHash('sha256').update(peerId).update(payload).digest();
 }
 
-function memoryStreamPair(localPeerId: string, remotePeerId: string): [MemoryStream, MemoryStream] {
+function memoryStreamPair(
+  localPeerId: string,
+  remotePeerId: string,
+  observeRemote?: (bytes: Buffer) => void,
+): [MemoryStream, MemoryStream] {
   const local = new MemoryStream(remotePeerId);
-  const remote = new MemoryStream(localPeerId);
+  const remote = new MemoryStream(localPeerId, observeRemote);
   local.connect(remote);
   remote.connect(local);
   return [local, remote];
@@ -1515,7 +1567,10 @@ class MemoryStream implements RuntimeHostPeerNativeStream {
   #closed = false;
   #failNextWrite = false;
 
-  constructor(readonly peerId: string) {}
+  constructor(
+    readonly peerId: string,
+    private readonly observe?: (bytes: Buffer) => void,
+  ) {}
 
   connect(remote: MemoryStream): void {
     this.#remote = remote;
@@ -1554,6 +1609,7 @@ class MemoryStream implements RuntimeHostPeerNativeStream {
   }
 
   push(chunk: Buffer | null): void {
+    if (chunk) this.observe?.(chunk);
     const waiter = this.#waiters.shift();
     if (waiter) waiter(chunk);
     else this.#incoming.push(chunk);
