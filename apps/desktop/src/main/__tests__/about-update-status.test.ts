@@ -20,54 +20,73 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  aboutChannelBadge,
+  aboutChannelFacts,
+  aboutUpdateStatusDetail,
 } from '../../renderer/settings/about-update-status.js';
 import { getSettingsPreferencesCopy } from '../../renderer/locales/settings-preferences-copy.js';
 
 const copy = getSettingsPreferencesCopy('zh').about;
 
-test('a packaged nightly build is labelled Nightly, never 正式版', () => {
-  const badge = aboutChannelBadge(
-    { buildMode: 'packaged', buildCommit: null, updateChannel: 'nightly' },
-    copy,
-  );
-  assert.deepEqual(badge, {
-    label: 'Nightly',
-    variant: 'orange',
-    channelName: 'Nightly',
-  });
+test('a packaged nightly is tokened Nightly, never 正式版', () => {
+  const facts = aboutChannelFacts({ buildMode: 'packaged', updateChannel: 'nightly' }, copy);
+  assert.equal(facts.key, 'nightly');
+  assert.equal(facts.name, 'Nightly');
+  assert.deepEqual(facts.token, { label: 'Nightly', color: 'orange' });
+  assert.match(facts.summary, /会覆盖正式版安装/);
 });
 
-test('a packaged release build keeps the release pill', () => {
-  const badge = aboutChannelBadge(
-    { buildMode: 'packaged', buildCommit: null, updateChannel: 'release' },
-    copy,
-  );
-  assert.deepEqual(badge, {
-    label: '正式版',
-    variant: 'blue',
-    channelName: '正式版',
-  });
+test('a packaged release wears no token — it is the default state', () => {
+  const facts = aboutChannelFacts({ buildMode: 'packaged', updateChannel: 'release' }, copy);
+  assert.equal(facts.key, 'release');
+  assert.equal(facts.name, '正式版');
+  assert.equal(facts.token, null);
 });
 
-test('a dev checkout carries its commit on a neutral pill', () => {
-  const withCommit = aboutChannelBadge(
-    { buildMode: 'dev', buildCommit: 'abc1234', updateChannel: 'release' },
-    copy,
-  );
-  assert.deepEqual(withCommit, {
-    label: '本地开发版 · abc1234',
-    variant: 'neutral',
-    channelName: '本地开发版',
-  });
+test('buildMode decides before updateChannel, whose dev value is a placeholder', () => {
+  const facts = aboutChannelFacts({ buildMode: 'dev', updateChannel: 'nightly' }, copy);
+  assert.equal(facts.key, 'dev');
+  assert.equal(facts.name, '本地开发版');
+  assert.deepEqual(facts.token, { label: '本地开发版', color: 'gray' });
+});
 
-  const withoutCommit = aboutChannelBadge(
-    { buildMode: 'dev', buildCommit: null, updateChannel: 'nightly' },
-    copy,
+test('a dev build reports why it never updates, whatever the updater says', () => {
+  assert.equal(
+    aboutUpdateStatusDetail(
+      { state: 'downloaded', currentVersion: '0.2.0', latestVersion: '0.2.1' },
+      copy,
+      { isDevBuild: true },
+    ),
+    copy.updateDevBuildHelp,
   );
-  assert.deepEqual(withoutCommit, {
-    label: '本地开发版',
-    variant: 'neutral',
-    channelName: '本地开发版',
-  });
+});
+
+test('the nightly steady states each read as themselves', () => {
+  const detail = (status: Parameters<typeof aboutUpdateStatusDetail>[0]) =>
+    aboutUpdateStatusDetail(status, copy, { isDevBuild: false });
+
+  assert.equal(
+    detail({
+      state: 'downloading',
+      currentVersion: '0.2.0-dev.11.20260831',
+      latestVersion: '0.2.0-dev.12.20260901',
+      progress: { percent: 42.4, bytesPerSecond: 1, transferred: 1, total: 2 },
+    }),
+    '正在下载 v0.2.0-dev.12.20260901（42%）…',
+  );
+  assert.equal(
+    detail({
+      state: 'verifying',
+      currentVersion: '0.2.0-dev.11.20260831',
+      latestVersion: '0.2.0-dev.12.20260901',
+    }),
+    '正在验证 v0.2.0-dev.12.20260901 的发布来源…',
+  );
+  assert.equal(
+    detail({
+      state: 'downloaded',
+      currentVersion: '0.2.0-dev.11.20260831',
+      latestVersion: '0.2.0-dev.12.20260901',
+    }),
+    'v0.2.0-dev.12.20260901 已下载，可在侧栏选择重启安装。',
+  );
 });

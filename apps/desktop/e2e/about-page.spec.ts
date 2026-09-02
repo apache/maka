@@ -24,16 +24,16 @@ test('About renders channel facts, support, and privacy sections', async ({ wind
   await page.getByRole('button', { name: '设置' }).click();
   await page.getByRole('button', { name: '关于', exact: true }).click();
 
-  // The channel pill must agree with the version string: the fixture app is a
-  // dev checkout, so the pill reads 本地开发版 (with commit), never 正式版.
-  const heroBadge = page.locator('.settingsAboutHeading');
-  await expect(heroBadge.getByText(/本地开发版/)).toBeVisible();
-  await expect(heroBadge.getByText('正式版')).toHaveCount(0);
+  // The channel token must agree with the version string: the fixture app is a
+  // dev checkout, so it reads 本地开发版, never 正式版.
+  await expect(page.getByText('本地开发版', { exact: true }).first()).toBeVisible();
+  await expect(page.getByText('正式版', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('本地开发构建，不检查更新。')).toBeVisible();
 
-  // The archive readout: channel meaning, runtime, and workspace path. The
-  // fixture's workspace is a throwaway temp dir, so assert the code-wrapped
-  // path itself rather than a `~` prefix.
-  await expect(page.getByText('不自动更新')).toBeVisible();
+  // The archive readout: channel, runtime, and workspace path. The fixture's
+  // workspace is a throwaway temp dir, so assert the code-wrapped path itself
+  // rather than a `~` prefix.
+  await expect(page.getByRole('heading', { name: '版本信息' })).toBeVisible();
   await expect(page.getByText(/Electron \d+\.\d+\.\d+/)).toBeVisible();
   await expect(page.locator('dd code')).toBeVisible();
 
@@ -45,7 +45,7 @@ test('About renders channel facts, support, and privacy sections', async ({ wind
 
   // Support lives outside the info conditional: usable even when `app.info`
   // fails, which is exactly when a user reaches for it.
-  await expect(page.getByRole('heading', { name: '支持与诊断' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '支持', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: '复制', exact: true })).toBeEnabled();
   await expect(page.getByRole('button', { name: '查看' })).toBeEnabled();
 

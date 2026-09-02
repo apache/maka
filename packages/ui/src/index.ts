@@ -96,12 +96,6 @@ export * from './primitives/stat-tile.js';
 // slot, implementation swapped behind it. badgeVariants retired with the cva
 // recipe (no consumers).
 export { Badge, type BadgeProps, type BadgeVariant } from '@astryxdesign/core';
-// PageHeader — the shared page-header shell (convergence round 3). One shell
-// for the module hero (as='h2': 技能 / 定时任务) and the settings intros
-// (as='h3': permission / health / about). Wrapper class + per-slot
-// CSS stay at the call site; the primitive converges STRUCTURE only.
-export { PageHeader } from './primitives/page-header.js';
-export type { PageHeaderProps } from './primitives/page-header.js';
 // ModulePage — the ONE shell every module page renders into (Astryx Layout,
 // incident-console archetype). Born in this package for 定时任务 / 每日回顾;
 // exported so the renderer-owned MCP page renders the same surface.

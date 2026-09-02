@@ -228,15 +228,17 @@ export type SettingsPreferencesCopy = {
     devBuild: string;
     packagedBuild: string;
     nightlyBuild: string;
-    subtitle: string;
+    buildInfoTitle: string;
     channelLabel: string;
+    versionLabel: string;
+    buildLabel: string;
     runtimeLabel: string;
     workspaceLabel: string;
+    /** One sentence saying what following this channel means for the user. */
     channelSummaries: Record<'dev' | 'nightly' | 'release', string>;
     platformNames: Record<string, string>;
-    updatesLede: string;
+    updateStatusLabel: string;
     supportTitle: string;
-    supportLede: string;
     reportIssueHelp: string;
     reportIssueOpen: string;
     copyAction: string;
@@ -352,16 +354,20 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
     about: {
-      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', nightlyBuild: 'Nightly', subtitle: '本地优先的 AI 助手 · 桌面端运行环境',
-      channelLabel: '渠道', runtimeLabel: '运行环境', workspaceLabel: '工作区',
-      channelSummaries: { dev: '不自动更新', nightly: '每晚构建，自动跟随更新', release: '打包安装，自动检查更新' },
+      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', nightlyBuild: 'Nightly',
+      buildInfoTitle: '版本信息', channelLabel: '渠道', versionLabel: '版本', buildLabel: '构建', runtimeLabel: '运行环境', workspaceLabel: '工作区',
+      channelSummaries: {
+        dev: '本地开发构建，不检查更新。',
+        nightly: '每日构建的预发布版，自动更新到最新 nightly，会覆盖正式版安装。',
+        release: '正式发布版，自动接收稳定更新。',
+      },
       platformNames: { darwin: 'macOS', win32: 'Windows', linux: 'Linux' },
-      updatesTitle: '软件更新', updatesLede: 'Maka 检查并安装新版本的渠道与状态。',
-      supportTitle: '支持与诊断', supportLede: '出问题时的三件事：取证、上报、查快捷键。',
+      updatesTitle: '软件更新', updateStatusLabel: '更新状态',
+      supportTitle: '支持',
       copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径，以及近期脱敏的 Desktop 与 Runtime Host 日志；仅写入剪贴板，不会自动上传。',
       reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
       keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
-      privacyLabel: '隐私承诺', privacyTitle: '隐私承诺', privacyLede: 'Maka 对本机数据与通信的三条承诺。', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
+      privacyLabel: '隐私承诺', privacyTitle: '本地优先 · 隐私默认', privacyLede: 'Maka 对本机数据与通信的三条承诺。', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
       checkForUpdates: '检查更新',
       checkingForUpdates: '检查中…',
       updateHelp: '后台也会定期检查；需要重启安装时侧栏会提示。',
@@ -414,16 +420,20 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
-      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', nightlyBuild: 'Nightly', subtitle: 'A local-first AI assistant · Desktop runtime',
-      channelLabel: 'Channel', runtimeLabel: 'Runtime', workspaceLabel: 'Workspace',
-      channelSummaries: { dev: 'no automatic updates', nightly: 'Nightly build, updates follow automatically', release: 'Packaged install, checks for updates automatically' },
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', nightlyBuild: 'Nightly',
+      buildInfoTitle: 'Version details', channelLabel: 'Channel', versionLabel: 'Version', buildLabel: 'Build', runtimeLabel: 'Runtime', workspaceLabel: 'Workspace',
+      channelSummaries: {
+        dev: 'A local development build. It does not check for updates.',
+        nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
+        release: 'The official release build. It receives stable updates automatically.',
+      },
       platformNames: { darwin: 'macOS', win32: 'Windows', linux: 'Linux' },
-      updatesTitle: 'Software updates', updatesLede: 'How Maka checks for and installs new versions.',
-      supportTitle: 'Support & diagnostics', supportLede: 'Three things when something breaks: capture, report, look up shortcuts.',
+      updatesTitle: 'Software updates', updateStatusLabel: 'Update status',
+      supportTitle: 'Support',
       copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted Desktop and Runtime Host logs. The report is written only to the clipboard and is never uploaded automatically.',
       reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
       keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
-      privacyLabel: 'Privacy commitments', privacyTitle: 'Privacy commitments', privacyLede: 'Three commitments about your local data and network use.', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
+      privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyLede: 'Three commitments about your local data and network use.', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
       checkForUpdates: 'Check for updates',
       checkingForUpdates: 'Checking…',
       updateHelp: 'Maka also checks in the background. When a restart is required, the sidebar will prompt you.',

@@ -22,43 +22,48 @@ import type { SettingsPreferencesCopy } from '../locales/settings-preferences-co
 
 type AboutCopy = SettingsPreferencesCopy['about'];
 
-/** The channel pill's Astryx Badge variant, narrow enough to assign directly. */
-export type AboutChannelBadgeVariant = 'neutral' | 'blue' | 'orange';
+export type AboutChannelKey = 'dev' | 'nightly' | 'release';
 
-export interface AboutChannelBadge {
-  readonly label: string;
-  readonly variant: AboutChannelBadgeVariant;
-  /** The bare channel name without the dev commit suffix — for readouts that
-   *  already sit next to the version pill and don't need it repeated. */
-  readonly channelName: string;
+export interface AboutChannelFacts {
+  readonly key: AboutChannelKey;
+  /** The channel's own name, as the 版本信息 readout and the lead Token use it. */
+  readonly name: string;
+  /** One sentence saying what following this channel means. */
+  readonly summary: string;
+  /**
+   * The lead `Token`, or null. A release install is the default state and gets
+   * no mark: Astryx reserves colour for what departs from it, so tokening every
+   * channel would make none of them stand out.
+   */
+  readonly token: { readonly label: string; readonly color: 'orange' | 'gray' } | null;
 }
 
 /**
- * What the version pill next to "Maka" actually says, pure for unit tests.
+ * What the About lead says about this build's channel, pure for unit tests.
  *
  * Build mode and release channel answer different questions: `buildMode` says
  * how this binary was produced (a checkout vs a packaged install), while
- * `updateChannel` says which release feed it follows. A packaged nightly is a
- * real install but NOT a release, so the old "packaged → 正式版" mapping lied
- * to exactly the users running nightly builds. Dev mode keeps the commit in
- * the label and drops to `neutral`: a checkout is not a release artifact
- * either, so it must not wear the release blue.
+ * `updateChannel` says which release feed it follows. A dev checkout follows no
+ * feed at all — its `updateChannel` is the updater's `release` placeholder — so
+ * `buildMode` decides first, and the old "packaged → 正式版" mapping that lied
+ * to nightly users stays gone.
  */
-export function aboutChannelBadge(
-  info: Pick<DesktopAppInfo, 'buildMode' | 'buildCommit' | 'updateChannel'>,
+export function aboutChannelFacts(
+  info: Pick<DesktopAppInfo, 'buildMode' | 'updateChannel'>,
   copy: AboutCopy,
-): AboutChannelBadge {
-  if (info.buildMode === 'dev') {
-    return {
-      label: info.buildCommit ? `${copy.devBuild} · ${info.buildCommit}` : copy.devBuild,
-      variant: 'neutral',
-      channelName: copy.devBuild,
-    };
-  }
-  if (info.updateChannel === 'nightly') {
-    return { label: copy.nightlyBuild, variant: 'orange', channelName: copy.nightlyBuild };
-  }
-  return { label: copy.packagedBuild, variant: 'blue', channelName: copy.packagedBuild };
+): AboutChannelFacts {
+  const key: AboutChannelKey = info.buildMode === 'dev' ? 'dev' : info.updateChannel;
+  const name = key === 'nightly'
+    ? copy.nightlyBuild
+    : key === 'dev'
+      ? copy.devBuild
+      : copy.packagedBuild;
+  return {
+    key,
+    name,
+    summary: copy.channelSummaries[key],
+    token: key === 'release' ? null : { label: name, color: key === 'nightly' ? 'orange' : 'gray' },
+  };
 }
 
 /** Map updater state to About-page detail copy (pure for unit tests). */
