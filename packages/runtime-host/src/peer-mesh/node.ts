@@ -302,17 +302,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         this.#recordReachabilityReceipt(signed);
       }
     }
-    for (const state of stored.meshes) {
-      if (state.role !== 'replica') continue;
-      const signed = this.#reachability.verify(
-        state.authorityReachability,
-        state.roster.roster.authorityPeerId,
-        { allowExpired: true },
-      );
-      if (usableHistoricalReachability(signed, this.#now())) {
-        this.#recordReachabilityReceipt(signed);
-      }
-    }
     for (const advertisement of stored.advertisements) {
       this.#assertAdvertisementSignature(advertisement);
     }
@@ -737,13 +726,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       }
       const state: PeerMeshReplicaStateV1 = {
         role: 'replica',
-        authorityReachability:
-          selectReachability(
-            reachability.find(
-              ({ lease }) => lease.peerId === selectedRoster.roster.authorityPeerId,
-            ),
-            authorityReachability,
-          ) ?? authorityReachability,
         roster: selectedRoster,
         desiredMembership: pending.phase === 'leave_pending' ? 'left' : 'active',
       };
@@ -756,7 +738,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           pendingJoins: current.pendingJoins.filter((candidate) => candidate !== pending),
           reachability: mergeReachability(
             current.reachability,
-            [...reachability, localReachability],
+            [...reachability, authorityReachability, localReachability],
             this.#now(),
           ),
           advertisements: mergeAdvertisements(current.advertisements, [
@@ -2284,12 +2266,7 @@ function currentAuthorityTarget(
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   now: number,
 ): SignedPeerReachabilityLeaseV1 | undefined {
-  const authorityPeerId = state.roster.roster.authorityPeerId;
-  const learned = latestReachability(reachability, authorityPeerId, now, true);
-  const fallback = usableHistoricalReachability(state.authorityReachability, now)
-    ? state.authorityReachability
-    : undefined;
-  return selectReachability(learned, fallback);
+  return latestReachability(reachability, state.roster.roster.authorityPeerId, now, true);
 }
 
 function rosterAnnouncementTargets(
@@ -2641,14 +2618,7 @@ function hasPeerRecoverySource(
     const signed = latestReachability(stored.reachability, sourcePeerId, now, true);
     if (signed && hasReachabilityRoutes(signed)) return true;
   }
-  return stored.meshes.some(
-    (state) =>
-      state.role === 'replica' &&
-      shared.has(state.roster.roster.meshId) &&
-      sourcePeerIds.has(state.roster.roster.authorityPeerId) &&
-      usableHistoricalReachability(state.authorityReachability, now) &&
-      hasReachabilityRoutes(state.authorityReachability),
-  );
+  return false;
 }
 
 function hasReachabilityRoutes(signed: SignedPeerReachabilityLeaseV1): boolean {
@@ -2657,15 +2627,6 @@ function hasReachabilityRoutes(signed: SignedPeerReachabilityLeaseV1): boolean {
 
 function usableHistoricalReachability(signed: SignedPeerReachabilityLeaseV1, now: number): boolean {
   return signed.lease.expiresAt + REACHABILITY_HISTORY_MS > now;
-}
-
-function selectReachability(
-  first: SignedPeerReachabilityLeaseV1 | undefined,
-  second: SignedPeerReachabilityLeaseV1 | undefined,
-): SignedPeerReachabilityLeaseV1 | undefined {
-  if (!first) return second;
-  if (!second || first.lease.revision >= second.lease.revision) return first;
-  return second;
 }
 
 function peerTarget(

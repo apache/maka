@@ -73,7 +73,6 @@ export interface PeerMeshAuthorityStateV1 extends PeerMeshStateBase {
 
 export interface PeerMeshReplicaStateV1 extends PeerMeshStateBase {
   readonly role: 'replica';
-  readonly authorityReachability: SignedPeerReachabilityLeaseV1;
   readonly desiredMembership: 'active' | 'left';
 }
 
@@ -257,7 +256,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
   const expectedKeys =
     record.role === 'authority'
       ? ['role', 'roster', 'authorityPrivateKey', 'invitations']
-      : ['role', 'roster', 'authorityReachability', 'desiredMembership'];
+      : ['role', 'roster', 'desiredMembership'];
   if (
     Object.keys(record).length !== expectedKeys.length ||
     expectedKeys.some((key) => !Object.hasOwn(record, key))
@@ -284,13 +283,8 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
       invitations: Object.freeze(decodeInvitations(record.invitations)),
     });
   }
-  const authorityReachability = decodeSignedPeerReachabilityLease(record.authorityReachability);
-  if (authorityReachability.lease.peerId !== roster.roster.authorityPeerId) {
-    throw new Error('Peer Mesh authority reachability has the wrong identity');
-  }
   return Object.freeze({
     role: 'replica',
-    authorityReachability,
     roster,
     desiredMembership: decodeDesiredMembership(record.desiredMembership),
   });
