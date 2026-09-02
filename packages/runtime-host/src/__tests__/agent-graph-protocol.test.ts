@@ -100,7 +100,8 @@ describe('Agent Graph Client protocol', () => {
       signals: [{ kind: 'attention' as const, reason: 'form_request' as const }],
     };
     assert.deepEqual(
-      decodeAgentGraphClientSnapshot({ ...snapshot, recentActivity: [formActivity] }).recentActivity,
+      decodeAgentGraphClientSnapshot({ ...snapshot, recentActivity: [formActivity] })
+        .recentActivity,
       [formActivity],
     );
     AGENT_GRAPH_OPERATION_SPECS['agent.graph.query'].assertOutputForInput?.(
