@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
@@ -105,15 +106,29 @@ export async function packageMacos({
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const dmgPath = join(releaseDirectory, `Maka-${buildVersion}-mac-${targetArch}.dmg`);
-  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-mac-${targetArch}.zip`);
-  const channel = buildVersion === manifest.version ? 'latest' : 'dev';
-  const updateMetadataPath = join(releaseDirectory, `${channel}-mac.yml`);
-  // Both architectures write `<channel>-mac.yml`, and both uploads land in one
-  // directory before publication. Naming the feed after its architecture here
-  // is what keeps the two from overwriting each other; they are merged back
-  // into the single feed clients read at publication time.
-  const architectureMetadataPath = join(releaseDirectory, `${channel}-mac-${targetArch}.yml`);
+  const nightly = buildVersion !== manifest.version;
+  const target = desktopReleaseTargets(buildVersion, { nightly }).find(
+    (entry) => entry.name === `macos-${targetArch}`,
+  );
+  const dmgPath = join(
+    releaseDirectory,
+    target.payloads.find((name) => name.endsWith('.dmg')),
+  );
+  const zipPath = join(
+    releaseDirectory,
+    target.payloads.find((name) => name.endsWith('.zip')),
+  );
+  // Both architectures write the one feed clients read, and both uploads land
+  // in one directory before publication. Naming the feed after its architecture
+  // here is what keeps the two from overwriting each other; they are merged
+  // back into the single feed at publication time.
+  const updateMetadataPath = join(
+    releaseDirectory,
+    desktopPublishedFeeds(buildVersion, { nightly }).find((feed) =>
+      feed.mergedFrom?.includes(target.feed),
+    ).name,
+  );
+  const architectureMetadataPath = join(releaseDirectory, target.feed);
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);

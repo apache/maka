@@ -28,6 +28,7 @@ import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.co
 import { packageLinux } from './package-linux.mjs';
 import { packageMacos } from './package-macos.mjs';
 import { packageWindowsX64 } from './package-windows-x64.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 
@@ -56,7 +57,10 @@ test('a nightly package embeds only the Apache GitHub dev update authority', () 
 
 test('the macOS Nightly wrapper accepts dev update metadata', async () => {
   const version = '0.2.0-dev.42.20260829';
-  await packageMacos({
+  const macosTarget = desktopReleaseTargets(version, { nightly: true }).find(
+    (entry) => entry.name === 'macos-arm64',
+  );
+  const dmgPath = await packageMacos({
     targetArch: 'arm64',
     platform: 'darwin',
     arch: 'arm64',
@@ -74,17 +78,26 @@ test('the macOS Nightly wrapper accepts dev update metadata', async () => {
       // The feed leaves packaging under its architecture so the two macOS
       // uploads cannot overwrite each other.
       assert.equal(basename(source), 'dev-mac.yml');
+      assert.equal(basename(destination), macosTarget.feed);
       assert.equal(basename(destination), 'dev-mac-arm64.yml');
     },
     assertFile: async (path) => {
       if (path.endsWith('.yml')) assert.equal(basename(path), 'dev-mac.yml');
     },
   });
+  // Nothing here spells a distributable's name: the descriptor does.
+  assert.equal(
+    basename(dmgPath),
+    macosTarget.payloads.find((name) => name.endsWith('.dmg')),
+  );
 });
 
 test('the Windows Nightly wrapper accepts dev update metadata', async () => {
   const version = '0.2.0-dev.42.20260829';
-  await packageWindowsX64({
+  const windowsTarget = desktopReleaseTargets(version, { nightly: true }).find(
+    (entry) => entry.name === 'windows-x64',
+  );
+  const { exePath, zipPath } = await packageWindowsX64({
     platform: 'win32',
     arch: 'x64',
     env: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
@@ -93,9 +106,21 @@ test('the Windows Nightly wrapper accepts dev update metadata', async () => {
     makeDirectory: async () => {},
     copy: async () => {},
     assertFile: async (path) => {
-      if (path.endsWith('.yml')) assert.equal(basename(path), 'dev.yml');
+      if (path.endsWith('.yml')) {
+        assert.equal(basename(path), windowsTarget.feed);
+        assert.equal(basename(path), 'dev.yml');
+      }
     },
   });
+  // Nothing here spells a distributable's name: the descriptor does.
+  assert.equal(
+    basename(exePath),
+    windowsTarget.payloads.find((name) => name.endsWith('.exe')),
+  );
+  assert.equal(
+    basename(zipPath),
+    windowsTarget.payloads.find((name) => name.endsWith('.zip')),
+  );
 });
 
 test('the Linux Nightly wrapper builds the AppImage before the deb and merges one feed', async () => {

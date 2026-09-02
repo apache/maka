@@ -23,6 +23,7 @@ import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -107,12 +108,18 @@ export async function packageWindowsX64({
 
   const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
   const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const exePath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.exe`);
-  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.zip`);
-  const updateMetadataPath = join(
+  const target = desktopReleaseTargets(buildVersion, {
+    nightly: buildVersion !== manifest.version,
+  }).find((entry) => entry.name === 'windows-x64');
+  const exePath = join(
     releaseDirectory,
-    buildVersion === manifest.version ? 'latest.yml' : 'dev.yml',
+    target.payloads.find((name) => name.endsWith('.exe')),
   );
+  const zipPath = join(
+    releaseDirectory,
+    target.payloads.find((name) => name.endsWith('.zip')),
+  );
+  const updateMetadataPath = join(releaseDirectory, target.feed);
   const unpackedDirectory = join(releaseDirectory, 'win-unpacked');
 
   for (const path of requiredElectronLicensePaths) {

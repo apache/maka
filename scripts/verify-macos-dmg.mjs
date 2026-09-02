@@ -184,17 +184,21 @@ export async function verifyPackagedMacApp(
 }
 
 export async function verifyMacosDmg(
-  inputPath,
-  { platform = process.platform, run = runCommandFromRepo, verifyApp = verifyPackagedMacApp } = {},
+  arch,
+  {
+    platform = process.platform,
+    run = runCommandFromRepo,
+    verifyApp = verifyPackagedMacApp,
+    environment = process.env,
+    checksum = sha256File,
+  } = {},
 ) {
   if (platform !== 'darwin') {
     throw new Error('DMG verification requires macOS.');
   }
-  if (!inputPath) {
-    throw new Error('Usage: npm run verify:macos -- <path-to-dmg>');
-  }
 
-  const dmgPath = resolve(inputPath);
+  const distributables = await macosDistributables(arch, environment);
+  const dmgPath = resolve(distributables.dmgPath);
   await access(dmgPath);
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
   const mountpoint = join(temporaryDirectory, 'mounted');
@@ -218,10 +222,16 @@ export async function verifyMacosDmg(
 
   try {
     await verifyApp(copiedApp, { workingDirectory: temporaryDirectory });
-    const sha256 = await sha256File(dmgPath);
-    const checksumPath = `${dmgPath}.sha256`;
-    await writeFile(checksumPath, `${sha256}  ${basename(dmgPath)}\n`, 'utf8');
-    return { dmgPath, checksumPath, sha256 };
+    // Which payloads a formal release publishes a `.sha256` beside is the
+    // descriptor's to decide, the way `verify:linux` already reads it.
+    const checksums = [];
+    for (const path of distributables.checksumSubjects) {
+      const sha256 = await checksum(path);
+      const checksumPath = `${path}.sha256`;
+      await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
+      checksums.push({ path, checksumPath, sha256 });
+    }
+    return { dmgPath, checksums };
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
@@ -234,7 +244,7 @@ export async function verifyMacosDmg(
  * beside the one this branch exists to establish — and, unlike the descriptor,
  * that copy was checked by nothing.
  */
-async function macosDmgPath(arch, environment = process.env) {
+async function macosDistributables(arch, environment = process.env) {
   const manifest = JSON.parse(
     await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
   );
@@ -245,17 +255,20 @@ async function macosDmgPath(arch, environment = process.env) {
   if (!target) {
     throw new Error('Usage: npm run verify:macos -- <arm64|x64>');
   }
-  return join(
-    repoRoot,
-    'apps',
-    'desktop',
-    'release',
-    target.payloads.find((name) => name.endsWith('.dmg')),
-  );
+  const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
+  return {
+    dmgPath: join(
+      releaseDirectory,
+      target.payloads.find((name) => name.endsWith('.dmg')),
+    ),
+    checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyMacosDmg(await macosDmgPath(process.argv[2] ?? process.arch));
+  const result = await verifyMacosDmg(process.argv[2] ?? process.arch);
   console.log(`Verified ${result.dmgPath}`);
-  console.log(`SHA-256 ${result.sha256}`);
+  for (const { path, sha256 } of result.checksums) {
+    console.log(`SHA-256 ${sha256}  ${basename(path)}`);
+  }
 }
