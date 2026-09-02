@@ -18,7 +18,6 @@
  */
 
 export {
-  type PeerMeshAuthorityTarget,
   type PeerMeshRosterV1,
   type SignedPeerMeshRosterV1,
 } from './model.js';
