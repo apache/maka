@@ -107,6 +107,10 @@ on:
         description: Compare two clean unsigned builds without publishing or signing
         type: boolean
         default: false
+      source_commit:
+        description: Source commit to compare (defaults to this experiment branch)
+        type: string
+        default: ''
       diagnose_existing:
         description: Diagnose artifacts from the completed Windows comparison run
         type: boolean
@@ -235,7 +239,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.source_commit || github.sha }}
           path: sample-${{ matrix.sample }}
           persist-credentials: false
 
@@ -310,8 +314,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Verify the packaged Windows release
+        run: npm run verify:windows-x64 -- x64
+
   reproducibility-compare:
     needs: reproducibility-build
+    if: ${{ !cancelled() && inputs.reproducibility_probe }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
