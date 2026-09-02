@@ -239,10 +239,7 @@ async function readState(
   }
 }
 
-async function writeState(
-  path: string,
-  current: SignedPeerReachabilityLeaseV1,
-): Promise<void> {
+async function writeState(path: string, current: SignedPeerReachabilityLeaseV1): Promise<void> {
   const document = `${JSON.stringify({ version: 1, current }, null, 2)}\n`;
   if (Buffer.byteLength(document) > MAX_STATE_BYTES) {
     throw new Error('Peer reachability state is too large');
