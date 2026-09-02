@@ -24,6 +24,7 @@ import type {
   RuntimeHostPeerTransitRelayCandidate,
   RuntimeHostPeerTransitSnapshot,
 } from '../transport/peer-native.js';
+import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
 import {
@@ -55,6 +56,7 @@ import {
   decodeSignedPeerReachabilityLease,
   isPeerReachabilityLeaseCurrent,
   PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
+  peerReachabilityLeaseSigningBytes,
   peerReachabilityLeaseReceipt,
   type PeerReachabilityPublisher,
   type PeerReachabilityLeaseReceipt,
@@ -107,9 +109,10 @@ type RedeemInvitationResponse =
 
 type RedeemInvitationRejectionReason = 'invalid' | 'expired' | 'closed' | 'full';
 
-interface PeerMeshEvidenceRevision {
+interface PeerMeshEvidenceSummary {
   readonly peerId: string;
   readonly revision: number;
+  readonly digest: string;
 }
 
 interface SyncPeerMeshRequest {
@@ -118,8 +121,8 @@ interface SyncPeerMeshRequest {
   readonly roster: SignedPeerMeshRosterV1;
   readonly reachability: SignedPeerReachabilityLeaseV1;
   readonly advertisement: SignedPeerMeshMemberAdvertisementV1;
-  readonly knownReachability: readonly PeerMeshEvidenceRevision[];
-  readonly knownAdvertisements: readonly PeerMeshEvidenceRevision[];
+  readonly knownReachability: readonly PeerMeshEvidenceSummary[];
+  readonly knownAdvertisements: readonly PeerMeshEvidenceSummary[];
 }
 
 type SyncPeerMeshResponse =
@@ -1313,12 +1316,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             roster: state.roster,
             reachability,
             advertisement,
-            knownReachability: reachabilityRevisions(
+            knownReachability: reachabilitySummaries(
               stored.reachability,
               state.roster,
               this.#now(),
             ),
-            knownAdvertisements: advertisementRevisions(stored.advertisements, state.roster),
+            knownAdvertisements: advertisementSummaries(stored.advertisements, state.roster),
           },
           decodeSyncResponse,
           signal,
@@ -2448,7 +2451,7 @@ function mergeReachability(
     }
     if (
       candidate.lease.revision === existing.lease.revision &&
-      JSON.stringify(candidate) !== JSON.stringify(existing)
+      reachabilityFactDigest(candidate) !== reachabilityFactDigest(existing)
     ) {
       throw new Error('Peer reachability revision identifies conflicting facts');
     }
@@ -2474,7 +2477,7 @@ function mergeAdvertisements(
     }
     if (
       candidate.advertisement.revision === existing.advertisement.revision &&
-      JSON.stringify(candidate) !== JSON.stringify(existing)
+      advertisementFactDigest(candidate) !== advertisementFactDigest(existing)
     ) {
       throw new Error('Peer Mesh advertisement revision identifies conflicting facts');
     }
@@ -2486,11 +2489,11 @@ function mergeAdvertisements(
   );
 }
 
-function reachabilityRevisions(
+function reachabilitySummaries(
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   roster: SignedPeerMeshRosterV1,
   now: number,
-): readonly PeerMeshEvidenceRevision[] {
+): readonly PeerMeshEvidenceSummary[] {
   return Object.freeze(
     reachability
       .filter(
@@ -2498,15 +2501,21 @@ function reachabilityRevisions(
           usableHistoricalReachability(signed, now) &&
           roster.roster.members.includes(signed.lease.peerId),
       )
-      .map(({ lease }) => Object.freeze({ peerId: lease.peerId, revision: lease.revision }))
+      .map((signed) =>
+        Object.freeze({
+          peerId: signed.lease.peerId,
+          revision: signed.lease.revision,
+          digest: reachabilityFactDigest(signed),
+        }),
+      )
       .sort((left, right) => left.peerId.localeCompare(right.peerId)),
   );
 }
 
-function advertisementRevisions(
+function advertisementSummaries(
   advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
   roster: SignedPeerMeshRosterV1,
-): readonly PeerMeshEvidenceRevision[] {
+): readonly PeerMeshEvidenceSummary[] {
   return Object.freeze(
     advertisements
       .filter(
@@ -2514,10 +2523,11 @@ function advertisementRevisions(
           advertisement.meshId === roster.roster.meshId &&
           roster.roster.members.includes(advertisement.peerId),
       )
-      .map(({ advertisement }) =>
+      .map((signed) =>
         Object.freeze({
-          peerId: advertisement.peerId,
-          revision: advertisement.revision,
+          peerId: signed.advertisement.peerId,
+          revision: signed.advertisement.revision,
+          digest: advertisementFactDigest(signed),
         }),
       )
       .sort((left, right) => left.peerId.localeCompare(right.peerId)),
@@ -2528,23 +2538,31 @@ function responseEvidence(
   state: PeerMeshStateV1,
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
-  knownReachability: readonly PeerMeshEvidenceRevision[],
-  knownAdvertisements: readonly PeerMeshEvidenceRevision[],
+  knownReachability: readonly PeerMeshEvidenceSummary[],
+  knownAdvertisements: readonly PeerMeshEvidenceSummary[],
   now: number,
 ): {
   readonly reachability: readonly SignedPeerReachabilityLeaseV1[];
   readonly advertisements: readonly SignedPeerMeshMemberAdvertisementV1[];
   readonly more: boolean;
 } {
-  const knownLeases = new Map(knownReachability.map(({ peerId, revision }) => [peerId, revision]));
-  const knownAds = new Map(knownAdvertisements.map(({ peerId, revision }) => [peerId, revision]));
+  const knownLeases = new Map(knownReachability.map((summary) => [summary.peerId, summary]));
+  const knownAds = new Map(knownAdvertisements.map((summary) => [summary.peerId, summary]));
   const missing = [
     ...reachability
       .filter(
         (signed) =>
           usableHistoricalReachability(signed, now) &&
           state.roster.roster.members.includes(signed.lease.peerId) &&
-          signed.lease.revision > (knownLeases.get(signed.lease.peerId) ?? 0),
+          evidenceRequiresTransfer(
+            {
+              peerId: signed.lease.peerId,
+              revision: signed.lease.revision,
+              digest: reachabilityFactDigest(signed),
+            },
+            knownLeases.get(signed.lease.peerId),
+            'Peer reachability',
+          ),
       )
       .map((value) => ({
         kind: 'reachability' as const,
@@ -2553,10 +2571,18 @@ function responseEvidence(
       })),
     ...advertisements
       .filter(
-        ({ advertisement }) =>
-          advertisement.meshId === state.roster.roster.meshId &&
-          state.roster.roster.members.includes(advertisement.peerId) &&
-          advertisement.revision > (knownAds.get(advertisement.peerId) ?? 0),
+        (signed) =>
+          signed.advertisement.meshId === state.roster.roster.meshId &&
+          state.roster.roster.members.includes(signed.advertisement.peerId) &&
+          evidenceRequiresTransfer(
+            {
+              peerId: signed.advertisement.peerId,
+              revision: signed.advertisement.revision,
+              digest: advertisementFactDigest(signed),
+            },
+            knownAds.get(signed.advertisement.peerId),
+            'Peer Mesh advertisement',
+          ),
       )
       .map((value) => ({
         kind: 'advertisement' as const,
@@ -2578,6 +2604,31 @@ function responseEvidence(
     ),
     more: missing.length > EVIDENCE_PAGE_SIZE,
   });
+}
+
+function evidenceRequiresTransfer(
+  local: PeerMeshEvidenceSummary,
+  remote: PeerMeshEvidenceSummary | undefined,
+  label: string,
+): boolean {
+  if (!remote || local.revision > remote.revision) return true;
+  if (local.revision < remote.revision) return false;
+  if (local.digest !== remote.digest) {
+    throw new Error(`${label} revision identifies conflicting facts`);
+  }
+  return false;
+}
+
+function reachabilityFactDigest(signed: SignedPeerReachabilityLeaseV1): string {
+  return evidenceDigest(peerReachabilityLeaseSigningBytes(signed.lease));
+}
+
+function advertisementFactDigest(signed: SignedPeerMeshMemberAdvertisementV1): string {
+  return evidenceDigest(peerMeshMemberAdvertisementSigningBytes(signed.advertisement));
+}
+
+function evidenceDigest(bytes: Uint8Array): string {
+  return createHash('sha256').update(bytes).digest('hex');
 }
 
 function initialEvidence(
@@ -2780,8 +2831,8 @@ function decodeControlRequest(value: unknown): PeerMeshControlRequest {
       roster: decodeSignedPeerMeshRoster(record.roster),
       reachability: decodeSignedPeerReachabilityLease(record.reachability),
       advertisement: decodeSignedPeerMeshMemberAdvertisement(record.advertisement),
-      knownReachability: decodeEvidenceRevisions(record.knownReachability),
-      knownAdvertisements: decodeEvidenceRevisions(record.knownAdvertisements),
+      knownReachability: decodeEvidenceSummaries(record.knownReachability),
+      knownAdvertisements: decodeEvidenceSummaries(record.knownAdvertisements),
     };
   }
   if (record.kind === 'leave' && hasExactKeys(record, ['kind', 'meshId', 'roster'])) {
@@ -2911,22 +2962,26 @@ function assertEvidencePageSize(
   }
 }
 
-function decodeEvidenceRevisions(value: unknown): readonly PeerMeshEvidenceRevision[] {
+function decodeEvidenceSummaries(value: unknown): readonly PeerMeshEvidenceSummary[] {
   if (!Array.isArray(value) || value.length > PEER_MESH_MAX_MEMBERS) {
     throw new Error('Invalid Peer Mesh evidence revisions');
   }
   const revisions = value.map((entry) => {
     const record = recordValue(entry);
-    if (!hasExactKeys(record, ['peerId', 'revision'])) {
+    if (!hasExactKeys(record, ['peerId', 'revision', 'digest'])) {
       throw new Error('Invalid Peer Mesh evidence revision');
     }
     const revision = record.revision;
     if (!Number.isSafeInteger(revision) || (revision as number) < 1) {
       throw new Error('Invalid Peer Mesh evidence revision');
     }
+    if (typeof record.digest !== 'string' || !/^[0-9a-f]{64}$/u.test(record.digest)) {
+      throw new Error('Invalid Peer Mesh evidence digest');
+    }
     return Object.freeze({
       peerId: requiredString(record.peerId, 256),
       revision: revision as number,
+      digest: record.digest,
     });
   });
   if (new Set(revisions.map(({ peerId }) => peerId)).size !== revisions.length) {

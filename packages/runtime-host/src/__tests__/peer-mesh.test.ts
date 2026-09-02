@@ -659,6 +659,88 @@ test('rejects conflicting reachability facts at the same revision during Mesh sy
   }
 });
 
+test('rejects equal-revision conflicts exposed by Mesh anti-entropy summaries', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-summary-equivocation-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberBPeer = network.create('peer-b');
+  const memberCPeer = network.create('peer-c');
+  const authorityRoot = join(root, 'authority');
+  const authority = await openPeerMeshNode({ dataRoot: authorityRoot, peer: authorityPeer });
+  const memberB = await openPeerMeshNode({ dataRoot: join(root, 'member-b'), peer: memberBPeer });
+  const memberC = await openPeerMeshNode({ dataRoot: join(root, 'member-c'), peer: memberCPeer });
+  const serving = [authority.serve(), memberB.serve(), memberC.serve()];
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await memberB.join(await authority.invite(meshId));
+    await memberC.join(await authority.invite(meshId));
+    await memberC.reconcile();
+    const originalRoutes = memberC.resolveRoutes('peer-b');
+    assert.deepEqual(originalRoutes?.routeHints, ['/memory/peer-b/p2p/peer-b']);
+
+    const original = memberBPeer.current();
+    const conflictingLease = canonicalPeerReachabilityLease({
+      ...original.lease,
+      directRoutes: ['/memory/conflicting/p2p/peer-b'],
+    });
+    const conflictingProof = await memberBPeer.signIdentity(
+      peerReachabilityLeaseSigningBytes(conflictingLease),
+    );
+    const conflicting = memberBPeer.verify(
+      decodeSignedPeerReachabilityLease({
+        lease: conflictingLease,
+        publicKey: conflictingProof.publicKey.toString('base64url'),
+        signature: conflictingProof.signature.toString('base64url'),
+      }),
+      'peer-b',
+    );
+    const conflictingDigest = createHash('sha256')
+      .update(peerReachabilityLeaseSigningBytes(conflicting.lease))
+      .digest('hex');
+    const persisted = JSON.parse(await readFile(join(authorityRoot, 'peer-mesh.json'), 'utf8')) as {
+      readonly advertisements: readonly SignedPeerMeshMemberAdvertisementV1[];
+    };
+    const advertisement = persisted.advertisements.find(
+      ({ advertisement: candidate }) =>
+        candidate.meshId === meshId && candidate.peerId === 'peer-a',
+    );
+    assert.ok(advertisement);
+
+    const stream = await authorityPeer.connectMeshControl({ peerId: 'peer-c' });
+    await stream.write(
+      Buffer.from(
+        `${JSON.stringify({
+          kind: 'sync',
+          meshId,
+          roster: authority.status()[0]?.roster,
+          reachability: authorityPeer.current(),
+          advertisement,
+          knownReachability: [
+            {
+              peerId: 'peer-b',
+              revision: conflictingLease.revision,
+              digest: conflictingDigest,
+            },
+          ],
+          knownAdvertisements: [],
+        })}\n`,
+      ),
+    );
+
+    assert.equal(await stream.read(), null);
+    assert.deepEqual(memberC.resolveRoutes('peer-b'), originalRoutes);
+  } finally {
+    await Promise.allSettled([authority.close(), memberB.close(), memberC.close()]);
+    await Promise.allSettled([
+      authorityPeer.close(),
+      memberBPeer.close(),
+      memberCPeer.close(),
+      ...serving,
+    ]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('publishes a changed local route promptly and refreshes a live cached peer route', {
   timeout: 10_000,
 }, async () => {
