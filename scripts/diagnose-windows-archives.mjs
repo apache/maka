@@ -20,9 +20,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { inflateRawSync } from 'node:zlib';
 import { comparePe } from './diagnose-windows-repro.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -49,6 +50,22 @@ function artifact(sample, name) {
 
 function zipEvidence(bytes) {
   const normalized = Buffer.from(bytes);
+  function isolateNtfsTimes(offset, size) {
+    const end = offset + size;
+    while (offset < end) {
+      const id = bytes.readUInt16LE(offset);
+      const length = bytes.readUInt16LE(offset + 2);
+      assert.ok(offset + 4 + length <= end);
+      if (id === 10) {
+        assert.equal(length, 32);
+        assert.equal(bytes.readUInt16LE(offset + 8), 1);
+        assert.equal(bytes.readUInt16LE(offset + 10), 24);
+        normalized.fill(0, offset + 12, offset + 36);
+      }
+      offset += 4 + length;
+    }
+    assert.equal(offset, end);
+  }
   let end = bytes.length - 22;
   while (end >= Math.max(0, bytes.length - 65557) && bytes.readUInt32LE(end) !== 0x06054b50) end--;
   assert.ok(end >= 0, 'Missing ZIP end record');
@@ -80,6 +97,8 @@ function zipEvidence(bytes) {
     });
     normalized.fill(0, offset + 12, offset + 16);
     normalized.fill(0, local + 10, local + 14);
+    isolateNtfsTimes(offset + 46 + nameLength, extraLength);
+    isolateNtfsTimes(local + 30 + bytes.readUInt16LE(local + 26), bytes.readUInt16LE(local + 28));
     offset += 46 + nameLength + extraLength + commentLength;
   }
   assert.equal(offset, end, 'Unexpected bytes between central directory and end record');
@@ -122,6 +141,51 @@ const extractedPe = extractedDifferences
     name,
     comparison: comparePe(...extracted.map((sample) => readFileSync(join(sample.root, name)))),
   }));
+
+const nsisHeaders = samples.map((sample, index) => {
+  const bytes = artifact(sample, exeName);
+  const marker = bytes.indexOf(Buffer.from('efbeadde4e756c6c736f6674496e7374', 'hex'));
+  assert.ok(marker >= 4, 'NSIS first header missing');
+  const first = marker - 4;
+  const length = bytes.readUInt32LE(first + 28);
+  assert.ok(length >>> 31, 'Expected a compressed NSIS header');
+  const dataStart = first + 32 + (length & 0x7fffffff);
+  const header = inflateRawSync(bytes.subarray(first + 32, dataStart));
+  assert.equal(header.length, bytes.readUInt32LE(first + 20));
+  const normalized = Buffer.from(header);
+  const times = [...extracted[index].files.keys()].map((name) => {
+    const mtime = statSync(join(extracted[index].root, name), { bigint: true }).mtimeNs;
+    const time = Buffer.alloc(8);
+    time.writeBigUInt64LE(mtime / 100n + 116444736000000000n);
+    const offsets = [];
+    for (
+      let offset = header.indexOf(time);
+      offset >= 0;
+      offset = header.indexOf(time, offset + 8)
+    ) {
+      normalized.fill(0, offset, offset + 8);
+      offsets.push(offset);
+    }
+    return { name, filetime: time.toString('hex'), offsets };
+  });
+  return { header, normalized, times, dataHash: hash(bytes.subarray(dataStart, -4)) };
+});
+const headerDifferences = [];
+for (
+  let offset = 0;
+  offset < Math.max(...nsisHeaders.map((entry) => entry.header.length));
+  offset++
+) {
+  if (nsisHeaders[0].header[offset] !== nsisHeaders[1].header[offset]) {
+    if (headerDifferences.length < 24)
+      headerDifferences.push({
+        offset,
+        bytes: nsisHeaders.map((entry) =>
+          entry.header.subarray(offset, offset + 8).toString('hex'),
+        ),
+      });
+  }
+}
 console.log(
   JSON.stringify(
     {
@@ -130,7 +194,14 @@ console.log(
       verifiedArchiveHashes: true,
       zip: {
         entryCounts: zips.map((zip) => zip.entries.length),
-        equalAfterOnlyDosTimeIsolation: zips[0].normalizedHash === zips[1].normalizedHash,
+        equalAfterDosAndNtfsTimeIsolation: zips[0].normalizedHash === zips[1].normalizedHash,
+        compressedEntryDataEqual:
+          zips[0].entries.length === zips[1].entries.length &&
+          zips[0].entries.every(
+            (entry, index) =>
+              entry.name === zips[1].entries[index].name &&
+              entry.compressedHash === zips[1].entries[index].compressedHash,
+          ),
         changedEntries: zipChanges.length,
         firstChanges: zipChanges.slice(0, 12),
       },
@@ -138,6 +209,15 @@ console.log(
       extractedFileCounts: extracted.map((sample) => sample.files.size),
       extractedDifferences,
       extractedPe,
+      nsisHeader: {
+        sizes: nsisHeaders.map((entry) => entry.header.length),
+        dataAfterHeaderEqual: nsisHeaders[0].dataHash === nsisHeaders[1].dataHash,
+        equalAfterExtractedFiletimeIsolation: nsisHeaders[0].normalized.equals(
+          nsisHeaders[1].normalized,
+        ),
+        times: nsisHeaders.map((entry) => entry.times),
+        firstDifferences: headerDifferences,
+      },
       note: 'Only in-memory diagnostic isolation; original artifacts are not modified or executed. Archive extraction alone does not establish installer equivalence.',
     },
     null,
