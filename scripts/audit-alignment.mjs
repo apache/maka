@@ -127,7 +127,7 @@ async function auditFixture([fixture, readySelector]) {
   try {
     const issues = await withFixtureWindow(
       fixture,
-      { theme: 'light', readySelector, settleMs: 0 },
+      { theme: 'light', readySelector, settleMs: QUIET_MS },
       async ({ evaluate }) => {
         await evaluate(QUIESCENT_EXPR(QUIET_MS, SETTLE_MS));
         return JSON.parse(await evaluate(EXPR));

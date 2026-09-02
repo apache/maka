@@ -60,6 +60,8 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
 // The smoke observes render completion, focus, and the accessibility tree; it
 // does not compare pixels. Every story supplies that structural evidence once,
 // while these canonical surfaces also prove the separate dark token block.
+// Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
+// or renderer branches; expand this set if that invariant changes.
 const DARK_THEME_SENTINEL_STORY_IDS = new Set([
   'design-system-palette-matrix--all-palettes',
   'product-accessibility-dialogs--rename-conversation',

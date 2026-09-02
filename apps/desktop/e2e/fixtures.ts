@@ -490,7 +490,6 @@ async function withE2eWindow(
 interface PromptRailWorker {
   app: ElectronApplication;
   page: Page;
-  pristine: boolean;
   viewport: { width: number; height: number };
 }
 
@@ -507,10 +506,6 @@ async function setPromptRailWindowVisible(
 }
 
 async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
-  if (worker.pristine) {
-    worker.pristine = false;
-    return;
-  }
   await worker.page.evaluate(async () => {
     const controls = (
       window as typeof window & {
@@ -689,7 +684,7 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       showWindow: true,
     }, async (page, { app }) => {
       const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      await use({ app, page, pristine: true, viewport });
+      await use({ app, page, viewport });
     });
   }, { scope: 'worker' }],
   // A multi-prompt transcript for the prompt anchor rail. Shown, because every
