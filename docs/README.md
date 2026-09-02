@@ -42,7 +42,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 ## Blogs
 
-- [Log Is the Runtime：Maka 如何用 Append-Only Log 管理 Agent 状态与上下文](./blogs/log-is-the-runtime.zh-CN.md)
+- [Log Is the Runtime: How Maka Uses an Append-Only Log to Manage Agent State and Context](./blogs/log-is-the-runtime.md) ([中文](./blogs/log-is-the-runtime.zh-CN.md))
 
 ## Current contracts
 
