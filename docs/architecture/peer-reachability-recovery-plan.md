@@ -289,7 +289,7 @@ charter. Their evidence is adjudicated into this ledger:
 | R2-S1 | simplification | confirmed | Remembered Relay anchors are persisted regardless of whether public discovery is enabled; discovery selects new anchors, while anchor recovery is a separate concern. |
 | R2-S2 | simplification | confirmed | Relay-anchor persistence uses one coalescing watch slot instead of an unbounded snapshot queue. |
 | R2-S3 | simplification | confirmed | Mesh presence reads the native Swarm connectivity snapshot instead of maintaining a partial, stale `recentlyReached` cache. |
-| R2-S4 | simplification | confirmed | Both reachability and advertisement anti-entropy use the same Mesh-scoped `{ peerId, revision }` vector. |
+| R2-S4 | simplification | superseded | The shared revision-only vector was simpler, but it hid equal-revision conflicts between replicas. R11-C1 replaces it with one shared content-bound summary. |
 | R2-S5 | simplification | rejected | The one-shot post-finalization refresh suppression remains: it prevents guest credential finalization from becoming a second network acquisition, as required by the frozen collaboration invariant. |
 | R2-S6 | simplification | superseded | The target wrapper was removed first; R3-S2 then removed the remaining duplicate authority lease from replica state entirely. |
 | R2-CI1 | CI | confirmed | Lower-stack Desktop fixtures retain the flat transport shape until PR4 introduces signed profile reachability, preserving each PR's review boundary. |
@@ -315,6 +315,8 @@ charter. Their evidence is adjudicated into this ledger:
 | R10-C1 | correctness | confirmed | Persisted recovery evidence is authenticated independently of receiver freshness policy. A lease from before a wall-clock rollback remains a bounded dial hint but receives no currentness receipt until its issue time is credible; the local publisher can immediately replace it with a higher revision. Direct profiles use the same historical-evidence admission path. |
 | R10-C2 | correctness | confirmed | Authenticated Mesh input now flows through the common reachability merge without deleting the prior record first. Equal revisions with different signed facts fail closed, preserving the revision vector's convergence contract. |
 | R10-S1 | simplification | confirmed | Desktop's managed-service descriptor retains only the immutable PeerId. Startup route arrays no longer form an unsigned, stale availability gate; connection codes and collaboration targets come from the Runtime Host's live signed endpoint. |
+| R11-C1 | correctness | confirmed | Reachability and advertisement anti-entropy now summarize each signed fact as `{ peerId, revision, digest }`, where the digest binds the canonical signed payload. Equal-revision disagreement is rejected during summary comparison instead of remaining silently partitioned between replicas. |
+| R11-C2 | correctness | confirmed | Each WebRTC Relay upgrade now has its own fenced identity and child cancellation token. Removing its Relay retires the active attempt, a replacement can start in the same connection attempt, and a late success is closed unless both its identity and Relay membership are still current. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
