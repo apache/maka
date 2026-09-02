@@ -22,7 +22,10 @@ export {
   type PeerMeshRosterV1,
   type SignedPeerMeshRosterV1,
 } from './model.js';
-export { decodePeerMeshInvitation, type PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
+export {
+  decodePeerMeshInvitation,
+  type PeerMeshInvitationV1,
+} from '../protocol/peer-mesh.js';
 export {
   openPeerMeshNode,
   type PeerMeshNode,
@@ -31,8 +34,9 @@ export {
 } from './node.js';
 export {
   openRuntimeHostPeerMeshComponent,
-  openRuntimeHostPeerMeshOwner,
   type RuntimeHostPeerMeshComponent,
-  type RuntimeHostPeerMeshOwner,
 } from './owner.js';
-export { hasPeerMeshIdentityObligations, PeerMeshPostCommitError } from './store.js';
+export {
+  hasPeerMeshIdentityObligations,
+  PeerMeshPostCommitError,
+} from './store.js';

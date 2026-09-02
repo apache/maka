@@ -18,12 +18,7 @@
  */
 
 import { join } from 'node:path';
-import {
-  openRuntimeHostPeerEndpointOwner,
-  type PeerReachabilityPublisher,
-  type RuntimeHostPeerEndpointOwner,
-} from '../peer-reachability/index.js';
-import type { RuntimeHostPeerClient } from '../client/peer-client.js';
+import type { RuntimeHostPeerEndpointOwner } from '../peer-reachability/index.js';
 import { openPeerMeshNode, type PeerMeshNode } from './node.js';
 import { migrateLegacyPeerMeshState } from './store.js';
 
@@ -31,11 +26,6 @@ export interface RuntimeHostPeerMeshComponent {
   readonly mesh: PeerMeshNode;
   readonly closed: Promise<void>;
   close(): Promise<void>;
-}
-
-export interface RuntimeHostPeerMeshOwner extends RuntimeHostPeerMeshComponent {
-  readonly client: RuntimeHostPeerClient;
-  readonly reachability: PeerReachabilityPublisher;
 }
 
 interface RuntimeHostPeerMeshComponentInput {
@@ -73,60 +63,6 @@ export async function openRuntimeHostPeerMeshComponent(
   return Object.freeze({ mesh, closed, close });
 }
 
-export async function openRuntimeHostPeerMeshOwner(input: {
-  readonly nativePath: string;
-  readonly keyPath: string;
-  readonly expectedPeerId?: string;
-  readonly dataRoot: string;
-  readonly endpointKind: 'client' | 'host';
-  readonly listenAddresses?: readonly string[];
-  readonly coordinationRelays?: readonly string[];
-  readonly automaticRelayDiscovery?: boolean;
-  readonly webRtcStunUrls?: readonly string[];
-  readonly onBackgroundReconcileError?: (error: unknown) => void;
-}): Promise<RuntimeHostPeerMeshOwner> {
-  const endpoint = await openRuntimeHostPeerEndpointOwner(input);
-  let component: RuntimeHostPeerMeshComponent;
-  try {
-    component = await openRuntimeHostPeerMeshComponent({
-      dataRoot: input.dataRoot,
-      endpoint,
-      endpointKind: input.endpointKind,
-      ...(input.onBackgroundReconcileError
-        ? { onBackgroundReconcileError: input.onBackgroundReconcileError }
-        : {}),
-    });
-  } catch (error) {
-    await endpoint.close().catch(() => undefined);
-    throw error;
-  }
-  let closeTask: Promise<void> | undefined;
-  const close = () => {
-    closeTask ??= closeCombinedOwner(component, endpoint);
-    return closeTask;
-  };
-  const closed = component.closed.then(
-    () => closeTask ?? close(),
-    async (error: unknown) => {
-      if (closeTask) return closeTask;
-      try {
-        await endpoint.close();
-      } catch (closeError) {
-        throw new AggregateError([error, closeError], 'Runtime Host Peer Mesh owner failed');
-      }
-      throw error;
-    },
-  );
-  void closed.catch(() => undefined);
-  return Object.freeze({
-    client: endpoint.client,
-    reachability: endpoint.reachability,
-    mesh: component.mesh,
-    closed,
-    close,
-  });
-}
-
 async function stopUnexpectedMesh(mesh: PeerMeshNode, error: unknown): Promise<never> {
   try {
     await mesh.close();
@@ -141,16 +77,6 @@ async function closeMesh(mesh: PeerMeshNode, serving: Promise<void>): Promise<vo
   await mesh.close().catch((error: unknown) => errors.push(error));
   await serving.catch((error: unknown) => errors.push(error));
   throwCollected(errors, 'Unable to close Peer Mesh');
-}
-
-async function closeCombinedOwner(
-  component: RuntimeHostPeerMeshComponent,
-  endpoint: RuntimeHostPeerEndpointOwner,
-): Promise<void> {
-  const errors: unknown[] = [];
-  await component.close().catch((error: unknown) => errors.push(error));
-  await endpoint.close().catch((error: unknown) => errors.push(error));
-  throwCollected(errors, 'Unable to close Runtime Host Peer Mesh owner');
 }
 
 function throwCollected(errors: readonly unknown[], message: string): void {
