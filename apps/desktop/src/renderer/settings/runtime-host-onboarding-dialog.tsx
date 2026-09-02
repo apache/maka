@@ -37,12 +37,12 @@ import {
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
   readonly initialTargetKind: 'ssh' | 'wsl';
+  readonly supportsWsl: boolean;
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
-  const isWindows = navigator.userAgent.includes('Windows');
   const revision = useRef(-1);
   const [snapshot, setSnapshot] = useState<DesktopRuntimeHostOnboardingSnapshot>({
     kind: 'idle',
@@ -50,7 +50,7 @@ export function RuntimeHostOnboardingDialog(props: {
   });
   const [name, setName] = useState('');
   const [targetKind, setTargetKind] = useState<'ssh' | 'wsl'>(
-    isWindows ? props.initialTargetKind : 'ssh',
+    props.supportsWsl ? props.initialTargetKind : 'ssh',
   );
   const [destination, setDestination] = useState('');
   const [distribution, setDistribution] = useState('');
@@ -78,7 +78,7 @@ export function RuntimeHostOnboardingDialog(props: {
   }, [props.isOpen]);
 
   useEffect(() => {
-    if (!props.isOpen || !isWindows) return;
+    if (!props.isOpen || !props.supportsWsl) return;
     let disposed = false;
     void window.maka.runtimeHostOnboarding.listWslDistributions().then((available) => {
       if (disposed) return;
@@ -86,7 +86,7 @@ export function RuntimeHostOnboardingDialog(props: {
       setDistribution((current) => current || available[0] || '');
     }, () => undefined);
     return () => { disposed = true; };
-  }, [isWindows, props.isOpen]);
+  }, [props.isOpen, props.supportsWsl]);
 
   const running = snapshot.kind === 'running';
   const canStart =
@@ -178,7 +178,7 @@ export function RuntimeHostOnboardingDialog(props: {
                     isDisabled={running}
                     onChange={setName}
                   />
-                  {isWindows ? (
+                  {props.supportsWsl ? (
                     <SegmentedControl
                       label={copy.setupTarget}
                       value={targetKind}

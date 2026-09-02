@@ -64,6 +64,7 @@ import {
   RuntimeHostPairingRecoveryButton,
   RuntimeHostPeerMeshDialog,
   RuntimeHostProfileMoreMenu,
+  useRuntimeHostManagementServices,
   type RuntimeHostPairingActionCopy,
 } from '../features/runtime-host-management';
 import { SessionCollaborationJoinDialog } from '../features/session-collaboration';
@@ -102,6 +103,7 @@ export function RuntimeHostProfilesSection(props: {
     cancel: copy.cancel,
   };
   const collaborationCopy = getSessionCollaborationCopy(locale);
+  const managementServices = useRuntimeHostManagementServices();
   const mountedRef = useMountedRef();
   const toast = useToast();
   const [snapshot, setSnapshot] = useState<
@@ -758,6 +760,7 @@ export function RuntimeHostProfilesSection(props: {
         key={showOnboarding ?? 'closed'}
         isOpen={showOnboarding !== undefined}
         initialTargetKind={showOnboarding ?? 'ssh'}
+        supportsWsl={managementServices.supportsWsl}
         onClose={() => {
           setShowOnboarding(undefined);
           void reload();

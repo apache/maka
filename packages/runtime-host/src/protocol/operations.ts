@@ -353,6 +353,13 @@ export const REMOTE_OWNER_OPERATION_GRANTS = Object.freeze([
   'workhub.coordination.resolve',
 ] as const satisfies readonly OperationKey[]);
 
+export const REMOTE_DESKTOP_OWNER_ACCESS_POLICY = Object.freeze({
+  principalKind: 'remote_owner' as const,
+  operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
+  canPublishClientCapabilities: true,
+  canUseHostPaths: false,
+});
+
 const REMOTE_OWNER_OPERATION_GRANT_SET = new Set<OperationKey>(REMOTE_OWNER_OPERATION_GRANTS);
 
 export function operationAllowsRemoteOwner(operation: OperationKey): boolean {

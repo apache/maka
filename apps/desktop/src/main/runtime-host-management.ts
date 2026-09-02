@@ -18,6 +18,7 @@
  */
 
 import type { IpcMain } from 'electron';
+import { decodeRuntimeHostOwnerConnectionCode } from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
@@ -910,6 +911,16 @@ export function createDesktopRuntimeHostManagement(input: {
     if (response.kind === 'error') throw new Error(response.error.message);
     if (response.action !== 'connection-code') {
       throw new Error('Remote Runtime Host did not return a connection code');
+    }
+    const decoded = decodeRuntimeHostOwnerConnectionCode(response.connectionCode);
+    if (decoded.rootId !== access.managed.profile.rootId) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Host');
+    }
+    const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(
+      access.managed.profile.id,
+    );
+    if (peerProfile.peerId && decoded.transport.peerId !== peerProfile.peerId) {
+      throw new Error('Remote Runtime Host returned a connection code for a different Direct peer');
     }
     return response.connectionCode;
   };

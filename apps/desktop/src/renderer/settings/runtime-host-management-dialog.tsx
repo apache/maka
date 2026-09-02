@@ -932,7 +932,9 @@ export function RuntimeHostManagementDialog(props: {
                             </details>
                           ) : null}
                           <div className="settingsRuntimeHostUpdatePolicyActions">
-                            {directPeer.state === 'enabled' && props.onConnectionCodeCreated ? (
+                            {directPeer.state === 'enabled' &&
+                            result?.accessManagementAvailable &&
+                            props.onConnectionCodeCreated ? (
                               <RuntimeHostConnectionCodeButton
                                 profileId={target.id}
                                 label={copy.createConnectionCode}

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
@@ -26,6 +27,7 @@ import {
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,
@@ -155,9 +157,8 @@ export async function runRuntimeHostAccessConnectionCodeCli(
     connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
     const connectionCode = await issueRuntimeHostOwnerConnectionCode({
       rootPath: options.rootPath,
-      rootId: connection.rootId,
       name: options.name?.trim() || truncateUtf8(hostname(), 128) || 'Runtime Host',
-      principalId: 'cli-owner:connection-code',
+      principalId: `connection-code:${randomUUID()}`,
       client: connection,
     });
     process.stdout.write(
@@ -305,15 +306,14 @@ export function resolveRuntimeHostAccessIssue(
       canUseHostPaths: options.canUseHostPaths,
     };
   }
-  const canPublishClientCapabilities = options.preset === 'desktop-client';
+  if (options.preset === 'desktop-client') return REMOTE_DESKTOP_OWNER_ACCESS_POLICY;
   const operationGrants = REMOTE_OWNER_OPERATION_GRANTS.filter(
-    (operation) =>
-      canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
+    (operation) => !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
   );
   return {
     principalKind: 'remote_owner',
     operationGrants,
-    canPublishClientCapabilities,
+    canPublishClientCapabilities: false,
     canUseHostPaths: false,
   };
 }

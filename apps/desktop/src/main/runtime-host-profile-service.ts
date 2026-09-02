@@ -124,6 +124,7 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedDirectPeerProfile(profileId: string): Promise<{
     readonly exists: boolean;
     readonly enabled: boolean;
+    readonly peerId?: string;
   }>;
   upsertManagedDirectPeerProfile(
     profileId: string,
@@ -993,9 +994,15 @@ export function createDesktopRuntimeHostProfileService(input: {
     resolveManagedDirectPeerProfile(profileId) {
       return mutate(async () => {
         const peerProfileId = managedDirectPeerProfileId(profileId);
+        const profile = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === peerProfileId,
+        );
         return {
-          exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
+          exists: profile !== undefined,
           enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
+          ...(profile?.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
+            ? { peerId: profile.transport.peerId }
+            : {}),
         };
       });
     },

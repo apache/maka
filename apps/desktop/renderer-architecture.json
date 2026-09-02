@@ -3785,9 +3785,7 @@
           "window.maka.runtimeHostOnboarding.start": 1,
           "window.maka.runtimeHostOnboarding.subscribe": 1
         },
-        "environmentCapabilities": {
-          "navigator.userAgent.includes": 1
-        },
+        "environmentCapabilities": {},
         "hookCalls": {
           "useEffect": 2,
           "useRef": 2,
@@ -3830,6 +3828,7 @@
         "hookCalls": {
           "useEffect": 1,
           "useMountedRef": 1,
+          "useRuntimeHostManagementServices": 1,
           "useState": 10,
           "useToast": 1,
           "useUiLocale": 1

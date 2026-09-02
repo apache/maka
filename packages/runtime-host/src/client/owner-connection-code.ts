@@ -19,7 +19,7 @@
 
 import { z } from 'zod';
 import { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
-import { REMOTE_OWNER_OPERATION_GRANTS, requireHostRootId } from '../protocol/index.js';
+import { REMOTE_DESKTOP_OWNER_ACCESS_POLICY, requireHostRootId } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 import {
   decodeRuntimeHostRemoteTransport,
@@ -62,11 +62,10 @@ export interface RuntimeHostOwnerConnectionCode {
 
 export interface IssueRuntimeHostOwnerConnectionCodeInput {
   readonly rootPath: string;
-  readonly rootId: string;
   readonly name: string;
   readonly principalId: string;
   readonly expectedPeerId?: string;
-  readonly client: Pick<RuntimeHostConnection, 'request' | 'status'>;
+  readonly client: Pick<RuntimeHostConnection, 'request' | 'rootId' | 'status'>;
 }
 
 /**
@@ -78,7 +77,7 @@ export async function issueRuntimeHostOwnerConnectionCode(
   input: IssueRuntimeHostOwnerConnectionCodeInput,
 ): Promise<string> {
   const name = nameSchema.parse(input.name);
-  const rootId = requireHostRootId(input.rootId);
+  const rootId = requireHostRootId(input.client.rootId);
   const endpoint = (await input.client.status()).peerEndpoint;
   if (!endpoint) throw new Error('Runtime Host Direct peer is not available');
   if (input.expectedPeerId && endpoint.peerId !== input.expectedPeerId) {
@@ -86,11 +85,8 @@ export async function issueRuntimeHostOwnerConnectionCode(
   }
   const transport = requireDirectPeerTransport({ kind: 'libp2p-direct', ...endpoint });
   const prepared = await input.client.request('access.credential.prepare', {
-    principalKind: 'remote_owner',
+    ...REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
     principalId: input.principalId,
-    operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
-    canPublishClientCapabilities: true,
-    canUseHostPaths: false,
     bindClientInstance: true,
   });
   const credential = await consumeAccessCredentialDelivery(

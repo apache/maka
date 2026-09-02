@@ -328,7 +328,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           changed.response.restarted ? previousHostEpoch : undefined,
         );
         return enabledResult(
-          await issueConnectionCode(input.rootPath, desired.rootId, peer, localClient(input.manager)),
+          await issueConnectionCode(input.rootPath, peer, localClient(input.manager)),
         );
       }
 
@@ -511,7 +511,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
-      return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
+      return issueConnectionCode(input.rootPath, peer, localClient(input.manager));
     });
 
   const createCollaborationConnectionTarget = () =>
@@ -978,13 +978,11 @@ function enabledResult(
 
 async function issueConnectionCode(
   rootPath: string,
-  rootId: string,
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
   return issueRuntimeHostOwnerConnectionCode({
     rootPath,
-    rootId,
     name: hostName(),
     principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
     expectedPeerId: peer.peerId,
