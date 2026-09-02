@@ -1530,6 +1530,7 @@ function registerHostClientIpc(
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
+      updateChannel: desktopUpdateChannel,
       e2eFixture,
       projectManagement: targetProjectManagement,
       allowLocalProjectPaths: !usesHostWorkspace,

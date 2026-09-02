@@ -227,6 +227,7 @@ export type SettingsPreferencesCopy = {
     clipboardUnavailable: string;
     devBuild: string;
     packagedBuild: string;
+    nightlyBuild: string;
     subtitle: string;
     privacyLabel: string;
     privacyTitle: string;
@@ -339,7 +340,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
     about: {
-      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', subtitle: '本地优先的 AI 助手 · 桌面端运行环境', privacyLabel: '隐私与安全', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['所有任务、设置、凭据和 Skill 指令文件都保留在本机工作区。', '模型密钥保存在本机凭据文件内；订阅账号令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权。', '每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'], copying: '复制中…', copyDiagnostics: '复制诊断信息', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径，以及近期脱敏的 Desktop 与 Runtime Host 日志；仅写入剪贴板，不会自动上传。', keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看', reportIssueLabel: '报告问题',
+      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', nightlyBuild: 'Nightly', subtitle: '本地优先的 AI 助手 · 桌面端运行环境', privacyLabel: '隐私与安全', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['所有任务、设置、凭据和 Skill 指令文件都保留在本机工作区。', '模型密钥保存在本机凭据文件内；订阅账号令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权。', '每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'], copying: '复制中…', copyDiagnostics: '复制诊断信息', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径，以及近期脱敏的 Desktop 与 Runtime Host 日志；仅写入剪贴板，不会自动上传。', keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看', reportIssueLabel: '报告问题',
       updatesTitle: '软件更新',
       checkForUpdates: '检查更新',
       checkingForUpdates: '检查中…',
@@ -393,7 +394,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
-      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each task.'], copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted Desktop and Runtime Host logs. The report is written only to the clipboard and is never uploaded automatically.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', nightlyBuild: 'Nightly', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each task.'], copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted Desktop and Runtime Host logs. The report is written only to the clipboard and is never uploaded automatically.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',
       updatesTitle: 'Software updates',
       checkForUpdates: 'Check for updates',
       checkingForUpdates: 'Checking…',

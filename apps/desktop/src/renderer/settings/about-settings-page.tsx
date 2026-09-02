@@ -36,6 +36,7 @@ import { settingsActionErrorMessage } from './settings-error-copy.js';
 import { SettingsSkeletonStack } from './settings-skeleton.js';
 import { useActionGuard } from './use-action-guard.js';
 import { aboutUpdateStatusDetail } from './about-update-status.js';
+import { aboutChannelBadge } from './about-channel-badge.js';
 import { getSettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
 import {
@@ -161,6 +162,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
         description={infoError} />
     );
   } else {
+    const channelBadge = aboutChannelBadge(info, copy);
     aboutContent = (
       <>
         <PageHeader
@@ -174,14 +176,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           badge={
             <>
               <Badge variant="neutral" label={`v${info.appVersion}`} />
-              <Badge
-                variant="blue"
-                label={info.buildMode === 'dev'
-                  ? info.buildCommit
-                    ? `${copy.devBuild} · ${info.buildCommit}`
-                    : copy.devBuild
-                  : copy.packagedBuild}
-              />
+              <Badge variant={channelBadge.variant} label={channelBadge.label} />
             </>
           }
           subtitle={copy.subtitle}
