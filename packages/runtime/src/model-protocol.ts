@@ -349,6 +349,8 @@ export interface ModelFailure {
   /** Provider-requested delay for the next physical attempt, in milliseconds. */
   retryAfterMs?: number;
   code?: string;
+  /** Bounded, redacted provider response retained for user diagnostics. */
+  diagnosticSummary?: string;
 }
 
 /**

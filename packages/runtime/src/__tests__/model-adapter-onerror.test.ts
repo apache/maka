@@ -154,6 +154,7 @@ describe('ModelAdapter.startStream onError', () => {
         message: 'Rate limit exceeded',
         retryable: true,
         retryAfterMs: 2500,
+        diagnosticSummary: 'rate limited (status=429)',
       },
     ]);
     const outcome = await requireAlreadySettled(result.outcome);
@@ -204,6 +205,7 @@ describe('ModelAdapter.startStream onError', () => {
         kind: 'unknown',
         message: 'Plaintext Responses reasoning item is missing final summary metadata',
         retryable: false,
+        diagnosticSummary: 'Plaintext Responses reasoning item is missing final summary metadata',
       },
     ]);
     const outcome = await requireAlreadySettled(result.outcome);
@@ -249,6 +251,7 @@ describe('ModelAdapter.startStream onError', () => {
       retryable: false,
       message: 'Rate limit exceeded',
       code: 'rate_limit_exceeded',
+      diagnosticSummary: 'Provider stopped the stream with an error (code=rate_limit_exceeded)',
     });
     assert.equal(outcome.usage?.rawFinishReason, 'rate_limit_exceeded');
   });
@@ -288,6 +291,7 @@ describe('ModelAdapter.startStream onError', () => {
         message: 'Rate limit exceeded',
         retryable: true,
         retryAfterMs: 2500,
+        diagnosticSummary: 'rate limited (status=429)',
       },
     ]);
     assert.deepEqual(await result.outcome, {
@@ -485,6 +489,8 @@ describe('ModelAdapter.startStream onError', () => {
           kind: 'network',
           message: 'Network error',
           retryable: true,
+          diagnosticSummary:
+            'Client network socket disconnected before secure TLS connection was established',
         },
       ]);
     } finally {

@@ -485,6 +485,24 @@ describe("unfinished tools take their status from the turn", () => {
     ]);
     assert.equal(turn?.tools[0]?.status, "interrupted");
   });
+
+  test("restores provider failure detail from a reloaded turn state", () => {
+    const [turn] = materializeTurns([
+      userMsg("t1", 1, "run it"),
+      {
+        type: "turn_state",
+        id: "s1",
+        turnId: "t1",
+        ts: 2,
+        status: "failed",
+        errorClass: "rate_limit",
+        failureMessage: "provider says retry after 30 seconds",
+        partialOutputRetained: false,
+      },
+    ]);
+    assert.equal(turn?.errorClass, "rate_limit");
+    assert.equal(turn?.failureMessage, "provider says retry after 30 seconds");
+  });
 });
 
 describe("live tool status over persisted", () => {

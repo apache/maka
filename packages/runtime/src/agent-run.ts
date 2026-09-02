@@ -82,6 +82,7 @@ import {
   buildStatusPatch,
   isTerminalRunStatus,
   normalizeStopSessionSource,
+  providerFailureMessageFromEvent,
   statusFromEvent,
   turnStatusFromEvent,
 } from './session-projection-helpers.js';
@@ -122,7 +123,12 @@ export interface AgentRunHooks {
     turnId: string,
     status: TurnRecord['status'],
     lineage?: AgentRunLineage,
-    options?: { ts?: number; errorClass?: string; abortSource?: string },
+    options?: {
+      ts?: number;
+      errorClass?: string;
+      failureMessage?: string;
+      abortSource?: string;
+    },
   ): Promise<void>;
 }
 
@@ -906,6 +912,7 @@ export class AgentRun {
         {
           ts: ev.ts,
           errorClass: turnStatus.errorClass,
+          failureMessage: turnStatus.failureMessage,
           ...(turnStatus.status === 'aborted' && this.abortSource
             ? { abortSource: this.abortSource }
             : {}),
@@ -930,10 +937,14 @@ export class AgentRun {
           .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
             ts: ev.ts,
             errorClass: ev.reason ?? ev.code ?? 'unknown',
+            failureMessage: ev.type === 'error' ? providerFailureMessageFromEvent(ev) : undefined,
           })
           .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
 
-        this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message);
+        this.markRunFailed(
+          ev.reason ?? ev.code ?? 'unknown',
+          (ev.type === 'error' ? providerFailureMessageFromEvent(ev) : undefined) ?? ev.message,
+        );
       }
     }
   }

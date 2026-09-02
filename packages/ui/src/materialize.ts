@@ -415,6 +415,7 @@ export interface TurnViewModel {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
+  failureMessage?: string;
   partialOutputRetained: boolean;
   user?: ChatItem;
   tools: ToolActivityItem[];
@@ -742,6 +743,7 @@ export function materializeTurns(
           : {}),
         ...(record?.abortSource ? { abortSource: record.abortSource } : {}),
         ...(record?.errorClass ? { errorClass: record.errorClass } : {}),
+        ...(record?.failureMessage ? { failureMessage: record.failureMessage } : {}),
         partialOutputRetained: record?.partialOutputRetained ?? false,
         tools: [],
         notes: [],

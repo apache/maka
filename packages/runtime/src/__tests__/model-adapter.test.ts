@@ -402,6 +402,7 @@ describe('ModelAdapter stream and error normalization', () => {
       code: '429',
       message: 'Rate limit exceeded',
       retryable: false,
+      diagnosticSummary: '429 rate limit (code=429)',
     });
     // The backend consumes the typed failure without recovering the raw
     // provider error shape.
@@ -409,6 +410,7 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.equal(shaped.reason, 'rate_limit');
     assert.equal(shaped.code, '429');
     assert.equal(shaped.message, 'Rate limit exceeded');
+    assert.deepEqual(shaped.details, { providerSummary: '429 rate limit (code=429)' });
   });
 
   test('normalizes a status-less provider server_error into a retryable outage', () => {
@@ -432,6 +434,8 @@ describe('ModelAdapter stream and error normalization', () => {
         code: 'server_error',
         message: 'Provider returned an error',
         retryable: true,
+        diagnosticSummary:
+          'Streaming response failed: [502] Upstream error from Nvidia: Service temporarily overloaded (code=server_error)',
       },
     });
   });
@@ -935,6 +939,24 @@ describe('ModelAdapter stream and error normalization', () => {
     assert.match(event.message, /… \(code=provider_error, requestId=req-123\)$/);
     assert.equal(Buffer.byteLength(event.message, 'utf8') <= 2 * 1024, true);
     assert.equal(event.message.includes('sk-live-secret-token-value'), false);
+  });
+
+  test('re-scrubs a pre-normalized provider diagnostic at the event boundary', () => {
+    const event = newAdapter().makeErrorEvent('turn-1', {
+      type: 'model_failure',
+      kind: 'rate_limit',
+      message: 'Rate limit exceeded',
+      retryable: false,
+      diagnosticSummary: `provider says api_key=sk-live-secret-token-value ${'x'.repeat(4_000)}`,
+    });
+
+    const providerSummary =
+      event.details && !Array.isArray(event.details) ? event.details.providerSummary : undefined;
+    assert.equal(
+      typeof providerSummary === 'string' && providerSummary.includes('sk-live-secret-token-value'),
+      false,
+    );
+    assert.equal(Buffer.byteLength(String(providerSummary ?? ''), 'utf8') <= 2 * 1024, true);
   });
 
   test('normalizes cache and reasoning usage variants in the adapter module', () => {

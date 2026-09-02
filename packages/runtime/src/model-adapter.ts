@@ -25,7 +25,8 @@ import {
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
-import { generalizedErrorMessage } from '@maka/core/redaction';
+import { generalizedErrorMessage, redactSecrets } from '@maka/core/redaction';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import type { CacheMissInputSource } from '@maka/core/usage-stats/types';
 import { rawFinishReasonString } from './model-protocol.js';
 import type {
@@ -63,6 +64,7 @@ import {
 import {
   classifyError,
   errorPresentationFromClass,
+  PROVIDER_FAILURE_SUMMARY_MAX_BYTES,
   providerFailureSummary,
   providerRetryMetadata,
 } from './provider-error-classification.js';
@@ -541,6 +543,14 @@ export class ModelAdapter {
 
   makeErrorEvent(turnId: string, err: unknown, reasonOverride?: string): ErrorEvent {
     const failure = normalizeModelFailure(err);
+    const diagnosticSummary =
+      isModelFailure(err) && typeof err.diagnosticSummary === 'string'
+        ? truncateUtf8(
+            redactSecrets(err.diagnosticSummary),
+            PROVIDER_FAILURE_SUMMARY_MAX_BYTES,
+            '…',
+          )
+        : undefined;
     return {
       type: 'error',
       id: this.input.newId(),
@@ -554,6 +564,7 @@ export class ModelAdapter {
           ? { reason: failure.kind }
           : {}),
       message: failure.message,
+      ...(diagnosticSummary ? { details: { providerSummary: diagnosticSummary } } : {}),
     };
   }
 
@@ -1292,6 +1303,7 @@ function normalizeProviderFailure(error: unknown): ModelFailure {
   return {
     ...failure,
     ...(summary?.code !== undefined ? { code: summary.code } : {}),
+    ...(summary?.message !== undefined ? { diagnosticSummary: summary.message } : {}),
     ...(failure.kind === 'unknown' && summary !== undefined ? { message: summary.message } : {}),
   };
 }

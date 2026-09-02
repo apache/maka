@@ -138,6 +138,9 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
 // canonical OAuth material with an empty enable-all-discovered selection.
 // Older peers reject these wire values, so incompatible pairs must fail the
 // handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
+// 110: Session Turn projections carry bounded provider failure summaries for
+// live and reloaded failed-turn diagnostics. Older peers cannot preserve or
+// render this additional failure context safely.
 // 101: Session Turn requests can carry regeneration intents and Guests can
 // atomically withdraw pending requests. Older peers do not share this command
 // vocabulary or the expanded Guest operation grant.

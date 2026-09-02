@@ -136,6 +136,8 @@ describe('OpenAI Responses ModelAdapter continuation', () => {
         retryable: true,
         code: 'OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR',
         message: 'Network error',
+        diagnosticSummary:
+          'closed before completion (code=OPENAI_RESPONSES_WEBSOCKET_TRANSPORT_ERROR)',
       },
     ]);
   });
