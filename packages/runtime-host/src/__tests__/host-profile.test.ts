@@ -28,6 +28,7 @@ import {
   RuntimeHostRemoteCompatibilityError,
 } from '../client/index.js';
 import {
+  connectPeerRuntimeHost,
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
   createRuntimeHostCapabilityProviderCredentialStore,
@@ -41,6 +42,7 @@ import {
   type RuntimeHostProfileCredential,
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -48,6 +50,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostIncompatible,
 } from '../protocol/index.js';
+import { RuntimeHostPeerError } from '../transport/peer-native.js';
 
 const ROOT_A = 'a'.repeat(64);
 const ROOT_B = 'b'.repeat(64);
@@ -1114,6 +1117,56 @@ describe('Runtime Host profiles', () => {
         return true;
       },
     );
+  });
+
+  test('treats immutable Direct target and native capability failures as terminal', async () => {
+    const profile = directPeerProfile('peer-a', ['/memory/peer-a']);
+    const connect = (peerClient: RuntimeHostPeerClient) =>
+      connectPeerRuntimeHost({
+        profileId: profile.id,
+        transport: profile.transport,
+        credential: 'opaque-token',
+        expectedRootId: profile.rootId,
+        clientInstanceId: 'client-1',
+        peerClient,
+      });
+    const invalidEvidence = new Error('signature is invalid');
+    await assert.rejects(
+      () =>
+        connect({
+          observeAuthenticatedReachability: () => {
+            throw invalidEvidence;
+          },
+        } as unknown as RuntimeHostPeerClient),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'target_mismatch');
+        assert.equal(error.cause, invalidEvidence);
+        return true;
+      },
+    );
+
+    for (const code of ['peer_identity_mismatch', 'peer_native_unavailable'] as const) {
+      const failure = new RuntimeHostPeerError(code, code);
+      await assert.rejects(
+        () =>
+          connect({
+            observeAuthenticatedReachability: () => profile.transport.reachability,
+            connect: async () => {
+              throw failure;
+            },
+          } as unknown as RuntimeHostPeerClient),
+        (error: unknown) => {
+          assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+          assert.equal(error.cause, failure);
+          if (code === 'peer_identity_mismatch') {
+            assert.ok(error instanceof RuntimeHostProfileConnectionError);
+            assert.equal(error.reason, 'target_mismatch');
+          }
+          return true;
+        },
+      );
+    }
   });
 
   test('reports retryable remote connection failure categories', async () => {

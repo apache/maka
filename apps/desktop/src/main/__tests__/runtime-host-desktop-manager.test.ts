@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
+  RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
 } from '@maka/runtime-host/client';
@@ -1072,6 +1073,31 @@ test('keeps an initially unavailable Direct target live and wakes it on new rout
   await manager.waitUntilReady('office');
   assert.equal(manager.current('office')?.candidate, remote.candidate);
   assert.equal(starts, 4);
+  await manager.close();
+});
+
+test('does not activate a Direct target whose immediate retry fails permanently', async () => {
+  const local = candidateHarness();
+  const permanent = new RuntimeHostPermanentReconnectError('credential rejected');
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) throw new Error('route is temporarily unavailable');
+        throw permanent;
+      },
+    },
+  );
+
+  await assert.rejects(manager.enable(peerTarget('office')), (error: unknown) => error === permanent);
+  assert.equal(starts, 3);
+  assert.equal(manager.current('office'), undefined);
+  const state = manager.entries().find((entry) => entry.target.profile.id === 'office');
+  assert.equal(state?.readiness, 'unavailable');
+  if (state?.readiness === 'unavailable') assert.equal(state.error, permanent);
   await manager.close();
 });
 

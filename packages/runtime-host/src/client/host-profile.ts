@@ -275,8 +275,9 @@ export class RuntimeHostProfileConnectionError extends RuntimeHostPermanentRecon
   constructor(
     readonly reason: RuntimeHostProfileConnectionFailureReason,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'RuntimeHostProfileConnectionError';
   }
 }
@@ -608,25 +609,54 @@ export async function connectPeerRuntimeHost(input: {
   input.signal?.throwIfAborted();
   const handshakeTimeoutMs = input.handshakeTimeoutMs ?? DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS;
   const peerId = input.transport.reachability.lease.peerId;
-  const reachability = input.peerClient.observeAuthenticatedReachability({
-    expectedPeerId: peerId,
-    value: input.transport.reachability,
-    allowHistorical: true,
-  });
+  let reachability: SignedPeerReachabilityLeaseV1;
+  try {
+    reachability = input.peerClient.observeAuthenticatedReachability({
+      expectedPeerId: peerId,
+      value: input.transport.reachability,
+      allowHistorical: true,
+    });
+  } catch (cause) {
+    throw new RuntimeHostProfileConnectionError(
+      'target_mismatch',
+      `Runtime Host profile ${input.profileId} contains invalid peer reachability evidence`,
+      { cause },
+    );
+  }
   const bootstrap = isPeerReachabilityLeaseRecoverable(reachability.lease, Date.now())
     ? reachability.lease
     : undefined;
-  const stream = await input.peerClient.connect(
-    {
-      peerId,
-      routeHints: bootstrap?.directRoutes ?? [],
-      coordinationRelays: bootstrap?.coordinationRoutes ?? [],
-      directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
-      ...(input.refreshPeerRoutes === undefined ? {} : { refreshRoutes: input.refreshPeerRoutes }),
-    },
-    input.signal,
-    input.onConnectionPhase,
-  );
+  let stream: Awaited<ReturnType<RuntimeHostPeerClient['connect']>>;
+  try {
+    stream = await input.peerClient.connect(
+      {
+        peerId,
+        routeHints: bootstrap?.directRoutes ?? [],
+        coordinationRelays: bootstrap?.coordinationRoutes ?? [],
+        directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
+        ...(input.refreshPeerRoutes === undefined
+          ? {}
+          : { refreshRoutes: input.refreshPeerRoutes }),
+      },
+      input.signal,
+      input.onConnectionPhase,
+    );
+  } catch (cause) {
+    if (cause instanceof RuntimeHostPeerError && cause.code === 'peer_identity_mismatch') {
+      throw new RuntimeHostProfileConnectionError(
+        'target_mismatch',
+        `Runtime Host profile ${input.profileId} resolved to a different peer identity`,
+        { cause },
+      );
+    }
+    if (cause instanceof RuntimeHostPeerError && cause.code === 'peer_native_unavailable') {
+      throw new RuntimeHostPermanentReconnectError(
+        'Runtime Host peer networking is unavailable in this Maka build',
+        { cause },
+      );
+    }
+    throw cause;
+  }
   const abort = () => stream.abort();
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
