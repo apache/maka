@@ -51,8 +51,10 @@ import {
 import { canonicalPeerMeshDisplayName } from './display-name.js';
 import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 import {
+  authenticateSignedPeerReachabilityLease,
   decodeSignedPeerReachabilityLease,
   isPeerReachabilityLeaseCurrent,
+  PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
   peerReachabilityLeaseReceipt,
   type PeerReachabilityPublisher,
   type PeerReachabilityLeaseReceipt,
@@ -294,23 +296,29 @@ class PeerMeshNodeImpl implements PeerMeshNode {
 
   async initialize(): Promise<void> {
     const stored = this.#store.read();
+    const now = this.#now();
     for (const lease of stored.reachability) {
-      const signed = this.#reachability.verify(lease, lease.lease.peerId, {
-        allowExpired: true,
+      const signed = authenticateSignedPeerReachabilityLease({
+        value: lease,
+        expectedPeerId: lease.lease.peerId,
+        verifyIdentity: this.#peer.verifyIdentity.bind(this.#peer),
       });
-      if (usableHistoricalReachability(signed, this.#now())) {
+      if (
+        usableHistoricalReachability(signed, now) &&
+        signed.lease.issuedAt <= now + PEER_REACHABILITY_MAX_CLOCK_SKEW_MS
+      ) {
         this.#recordReachabilityReceipt(signed);
       }
     }
     for (const advertisement of stored.advertisements) {
       this.#assertAdvertisementSignature(advertisement);
     }
-    if (stored.reachability.some((signed) => !usableHistoricalReachability(signed, this.#now()))) {
+    if (stored.reachability.some((signed) => !usableHistoricalReachability(signed, now))) {
       await this.#store.mutate((current) => ({
         state: {
           ...current,
           reachability: current.reachability.filter((signed) =>
-            usableHistoricalReachability(signed, this.#now()),
+            usableHistoricalReachability(signed, now),
           ),
         },
         result: undefined,
@@ -1833,11 +1841,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         ) {
           return { state: current, result: rejected('invalid') };
         }
-        const reachability = mergeAuthenticatedReachability(
-          current.reachability,
-          remoteReachability,
-          now,
-        );
+        const reachability = mergeReachability(current.reachability, [remoteReachability], now);
         const advertisements = mergeAdvertisements(current.advertisements, [remoteAdvertisement]);
         const evidence = initialEvidence(
           state,
@@ -1919,11 +1923,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           redeemedInvitation(invitation, remotePeerId),
         ],
       };
-      const reachability = mergeAuthenticatedReachability(
-        current.reachability,
-        remoteReachability,
-        now,
-      );
+      const reachability = mergeReachability(current.reachability, [remoteReachability], now);
       const advertisements = mergeAdvertisements(current.advertisements, [remoteAdvertisement]);
       const evidence = initialEvidence(
         updated,
@@ -2054,7 +2054,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const remoteMember = !roster.roster.closed && roster.roster.members.includes(remotePeerId);
       const reachability =
         localMember && remoteMember
-          ? mergeAuthenticatedReachability(current.reachability, remoteReachability, this.#now())
+          ? mergeReachability(current.reachability, [remoteReachability], this.#now())
           : current.reachability;
       const advertisements =
         localMember && remoteMember
@@ -2455,22 +2455,6 @@ function mergeReachability(
   }
   return Object.freeze(
     [...leases.values()].sort((left, right) => left.lease.peerId.localeCompare(right.lease.peerId)),
-  );
-}
-
-function mergeAuthenticatedReachability(
-  current: readonly SignedPeerReachabilityLeaseV1[],
-  candidate: SignedPeerReachabilityLeaseV1,
-  now: number,
-): readonly SignedPeerReachabilityLeaseV1[] {
-  const existing = current.find(({ lease }) => lease.peerId === candidate.lease.peerId);
-  if (existing && existing.lease.revision > candidate.lease.revision) {
-    return current;
-  }
-  return mergeReachability(
-    current.filter(({ lease }) => lease.peerId !== candidate.lease.peerId),
-    [candidate],
-    now,
   );
 }
 

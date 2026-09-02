@@ -18,6 +18,7 @@
  */
 
 export {
+  authenticateSignedPeerReachabilityLease,
   canonicalPeerReachabilityLease,
   decodeSignedPeerReachabilityLease,
   PEER_REACHABILITY_LEASE_TTL_MS,

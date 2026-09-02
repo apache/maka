@@ -30,6 +30,7 @@ import {
   generatePeerMeshAuthorityKeyPair,
   peerMeshId,
   signPeerMeshRoster,
+  type SignedPeerMeshMemberAdvertisementV1,
 } from '../peer-mesh/model.js';
 import {
   openPeerMeshNode as openPeerMeshNodeImpl,
@@ -40,6 +41,7 @@ import {
   canonicalPeerReachabilityLease,
   decodeSignedPeerReachabilityLease,
   PEER_REACHABILITY_LEASE_TTL_MS,
+  PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
   PEER_REACHABILITY_REFRESH_LEAD_MS,
   peerReachabilityLeaseSigningBytes,
   samePeerReachabilityRoutes,
@@ -547,6 +549,109 @@ test('keeps Mesh membership while pruning reachability beyond its recovery horiz
       persisted.reachability.map(({ lease }) => lease.peerId),
       ['peer-b'],
     );
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close(), serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('recovers persisted Mesh reachability after the wall clock moves backward', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-clock-rollback-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  let now = Date.now();
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+    now: () => now,
+  });
+  const memberRoot = join(root, 'member');
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+    now: () => now,
+  });
+  const serving = authority.serve();
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await member.join(await authority.invite(meshId));
+    const previous = memberPeer.current();
+    await member.close();
+
+    now -= PEER_REACHABILITY_MAX_CLOCK_SKEW_MS + 1;
+    member = await openPeerMeshNode({
+      dataRoot: memberRoot,
+      peer: memberPeer,
+      now: () => now,
+    });
+
+    assert.equal(member.status()[0]?.roster.roster.meshId, meshId);
+    assert.equal(memberPeer.current().lease.revision, previous.lease.revision + 1);
+    assert.equal(memberPeer.current().lease.issuedAt, now);
+  } finally {
+    await Promise.allSettled([authority.close(), member.close()]);
+    await Promise.allSettled([authorityPeer.close(), memberPeer.close(), serving]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects conflicting reachability facts at the same revision during Mesh sync', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-reachability-equivocation-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberPeer = network.create('peer-b');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const memberRoot = join(root, 'member');
+  const member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+  const serving = authority.serve();
+  try {
+    const meshId = (await authority.create()).roster.roster.meshId;
+    await member.join(await authority.invite(meshId));
+    const originalRoutes = authority.resolveRoutes('peer-b');
+    const original = memberPeer.current();
+    const conflictingLease = canonicalPeerReachabilityLease({
+      ...original.lease,
+      directRoutes: ['/memory/conflicting/p2p/peer-b'],
+    });
+    const proof = await memberPeer.signIdentity(
+      peerReachabilityLeaseSigningBytes(conflictingLease),
+    );
+    const conflicting = decodeSignedPeerReachabilityLease({
+      lease: conflictingLease,
+      publicKey: proof.publicKey.toString('base64url'),
+      signature: proof.signature.toString('base64url'),
+    });
+    const persisted = JSON.parse(await readFile(join(memberRoot, 'peer-mesh.json'), 'utf8')) as {
+      readonly advertisements: readonly SignedPeerMeshMemberAdvertisementV1[];
+    };
+    const advertisement = persisted.advertisements.find(
+      ({ advertisement: candidate }) =>
+        candidate.meshId === meshId && candidate.peerId === 'peer-b',
+    );
+    assert.ok(advertisement);
+
+    const stream = await memberPeer.connectMeshControl({ peerId: 'peer-a' });
+    await stream.write(
+      Buffer.from(
+        `${JSON.stringify({
+          kind: 'sync',
+          meshId,
+          roster: authority.status()[0]?.roster,
+          reachability: conflicting,
+          advertisement,
+          knownReachability: [],
+          knownAdvertisements: [],
+        })}\n`,
+      ),
+    );
+
+    assert.equal(await stream.read(), null);
+    assert.deepEqual(authority.resolveRoutes('peer-b'), originalRoutes);
   } finally {
     await Promise.allSettled([authority.close(), member.close()]);
     await Promise.allSettled([authorityPeer.close(), memberPeer.close(), serving]);
@@ -1255,6 +1360,7 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
     const now = this.#now();
     if (
       this.#reachability &&
+      this.#reachability.lease.issuedAt <= now &&
       this.#reachability.lease.expiresAt > now + PEER_REACHABILITY_REFRESH_LEAD_MS &&
       samePeerReachabilityRoutes(this.#reachability.lease, identity)
     ) {
