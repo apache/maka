@@ -239,6 +239,16 @@ complete 矩阵已通过，WPF 兼容读回是当前真实桌面路径的下一�
 blocked。此前 v3 中 Rust 的单次 `comtat-text` 是偶发注入/读回抖动，v4 未复现，暂不
 改动 Rust 派发策略；后续真实应用矩阵需保留重复轮次以捕捉此类低频差异。
 
+## Calculator 只读 UIA 探针
+
+使用 Computer Use 选取唯一的系统 Calculator 窗口（HWND `1115970`），只做截图和
+UIA observe，未点击最小化/关闭、未写入计算表达式。C# 结果为 24 个节点，但该
+绑定未暴露可执行模式；Rust direct-COM 结果为 49 个节点，显示区暴露 `Value`，
+标题栏按钮暴露 `Invoke`。原始结果分别保存在
+`calculator-observe-csharp.json` 和 `calculator-observe-rust.json`。这进一步说明
+真实应用矩阵必须分别记录 provider 能见度和动作结果，不能用一个语言的节点数推断
+另一个语言的能力，也不能把只读 observe 当成动作成功。
+
 ## 真实应用可用性与 Notepad 探针
 
 只读探测结果保存于 `real-app-probe-latest.json`：Chrome 可用；LibreOffice 未安装；
