@@ -199,7 +199,7 @@ export interface SandboxBoundarySettlement {
  */
 export function projectSandboxBoundaryNegotiation(
   events: readonly RuntimeEvent[],
-  durableRequests: readonly SandboxBoundaryRequest[] = [],
+  durableRequests: readonly SandboxBoundaryRequest[],
 ): SandboxBoundaryNegotiationProjection {
   let denied = false;
   let invalidRounds = 0;
@@ -229,8 +229,25 @@ export function projectSandboxBoundaryNegotiation(
     kind: 'invalid',
     reason,
   });
+  const applyApproval = (requestId: string): SandboxBoundaryNegotiationProjection | undefined => {
+    if (denied || finalizationRequested) {
+      return invalid(`sandbox boundary approval ${requestId} reopens a closed negotiation`);
+    }
+    denied = false;
+    invalidRounds = 0;
+    unresolvedRounds = 0;
+    invalidSteps.clear();
+    unresolvedSteps.clear();
+    finalizationRequested = false;
+    return undefined;
+  };
   const addFailure = (kind: 'invalid' | 'unresolved', step: string): void => {
     hasStatefulEvent = true;
+    if (denied) {
+      finalizationRequested = true;
+      return;
+    }
+    if (finalizationRequested) return;
     const steps = kind === 'invalid' ? invalidSteps : unresolvedSteps;
     if (steps.has(step)) return;
     steps.add(step);
@@ -325,17 +342,8 @@ export function projectSandboxBoundaryNegotiation(
       if (decision.status === 'denied') {
         denied = true;
       } else if (decision.status === 'approved') {
-        if (denied || finalizationRequested) {
-          return invalid(
-            `sandbox boundary approval ${decision.requestId} reopens a closed negotiation`,
-          );
-        }
-        denied = false;
-        invalidRounds = 0;
-        unresolvedRounds = 0;
-        invalidSteps.clear();
-        unresolvedSteps.clear();
-        finalizationRequested = false;
+        const approvalError = applyApproval(decision.requestId);
+        if (approvalError) return approvalError;
       } else {
         addFailure('unresolved', `request:${decision.requestId}`);
       }
@@ -398,11 +406,6 @@ export function projectSandboxBoundaryNegotiation(
       }
       const step = event.refs?.stepId ?? boundaryCall?.step ?? call.step;
       addFailure(failure, step);
-    } else if (content.isError === true && boundaryCall) {
-      // Older ledgers did not carry a structured invalid-boundary marker. Do
-      // not infer a count from their text; the relevant lineage is incomplete
-      // and must be rejected closed by the continuation caller.
-      return invalid(`sandbox boundary call ${content.id} lacks a canonical failure marker`);
     }
     if (boundaryCall) {
       if (boundaryResponses.has(content.id)) {
@@ -462,17 +465,8 @@ export function projectSandboxBoundaryNegotiation(
       if (request.status === 'denied') {
         denied = true;
       } else if (request.status === 'approved') {
-        if (denied || finalizationRequested) {
-          return invalid(
-            `sandbox boundary approval ${request.requestId} reopens a closed negotiation`,
-          );
-        }
-        denied = false;
-        invalidRounds = 0;
-        unresolvedRounds = 0;
-        invalidSteps.clear();
-        unresolvedSteps.clear();
-        finalizationRequested = false;
+        const approvalError = applyApproval(request.requestId);
+        if (approvalError) return approvalError;
       } else {
         addFailure('unresolved', `request:${request.requestId}`);
       }
@@ -510,6 +504,13 @@ export function projectSandboxBoundaryNegotiation(
 
 function isBoundaryAuthorityCall(toolName: string, args: unknown): boolean {
   if (toolName === 'request_sandbox_boundary') return true;
+  if (
+    toolName === 'invalid' &&
+    isRecord(args) &&
+    args.sandboxBoundaryAttempt === true
+  ) {
+    return true;
+  }
   if (toolName !== 'Bash' || !isRecord(args)) return false;
   return args.boundary_intent !== undefined && args.boundary_intent !== 'current';
 }

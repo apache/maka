@@ -456,14 +456,6 @@ export class RuntimeContinuationPlanner {
         'sandbox boundary interaction log is unavailable',
       );
     }
-    try {
-      await this.deps.readSandboxBoundaryRequests(input.sessionId);
-    } catch {
-      return parkedPlan(
-        'continuation_authority_unavailable',
-        'sandbox boundary interaction log is unavailable',
-      );
-    }
     let durableClaimState: ContinuationClaimStateV1 | undefined;
     try {
       durableClaimState = await this.deps.readContinuationClaimStateByBoundary?.(

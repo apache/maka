@@ -2879,12 +2879,23 @@ async function revalidateContinuationBoundary(
       'Runtime continuation replay changed after planning',
     );
   }
+  const trimmedSuffixEventIds = new Set(
+    replay.plan.segments.flatMap((segment) => segment.trimmedSuffixEventIds),
+  );
+  const negotiationEvents = prefixes
+    .flatMap((prefix) => prefix.events)
+    .filter((event) => !trimmedSuffixEventIds.has(event.id));
   const negotiation = projectSandboxBoundaryNegotiation(
-    prefixes.flatMap((prefix) => prefix.events),
+    negotiationEvents,
     durableSandboxBoundaryRequests,
   );
-  const sandboxBoundaryNegotiationState =
-    negotiation.kind === 'valid' ? negotiation.state : createSandboxBoundaryFinalizationState();
+  if (negotiation.kind !== 'valid') {
+    throw new RuntimeContinuationRevalidationError(
+      'source_replay_changed',
+      `Runtime continuation sandbox negotiation is invalid: ${negotiation.reason}`,
+    );
+  }
+  const sandboxBoundaryNegotiationState = negotiation.state;
   return { events: [...prefixes.at(-1)!.events], sandboxBoundaryNegotiationState };
 }
 

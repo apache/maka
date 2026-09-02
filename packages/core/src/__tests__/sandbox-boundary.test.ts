@@ -26,7 +26,7 @@ import {
   decodeExecutionBoundary,
   executionBoundaryContains,
   executionBoundaryDisplayMode,
-  projectSandboxBoundaryNegotiation,
+  projectSandboxBoundaryNegotiation as projectSandboxBoundaryNegotiationImpl,
   type SandboxBoundaryRequest,
   validateSandboxBoundaryExpansion,
 } from '../sandbox-boundary.js';
@@ -39,6 +39,11 @@ import {
   createWorkspaceWritePermissionProfile,
   type PermissionProfileManaged,
 } from '../permission-profile.js';
+
+const projectSandboxBoundaryNegotiation = (
+  events: readonly RuntimeEvent[],
+  durableRequests: readonly SandboxBoundaryRequest[] = [],
+) => projectSandboxBoundaryNegotiationImpl(events, durableRequests);
 
 describe('executionBoundaryDisplayMode', () => {
   test('keeps the read-only/writable distinction the boundary carries (#1611)', () => {
@@ -512,9 +517,9 @@ describe('projectSandboxBoundaryNegotiation', () => {
       kind: 'valid',
       state: {
         denied: true,
-        invalidRounds: 1,
-        unresolvedRounds: 1,
-        finalizationRequested: false,
+        invalidRounds: 0,
+        unresolvedRounds: 0,
+        finalizationRequested: true,
       },
     });
   });
@@ -642,7 +647,15 @@ describe('projectSandboxBoundaryNegotiation', () => {
       kind: 'text',
       text: 'Tool arguments failed validation',
     };
-    assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+    assert.deepEqual(projectSandboxBoundaryNegotiation([call, response]), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 0,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
 
     const blankJustification = request('request-2', 'boundary-2', 'tool-2');
     (
@@ -698,6 +711,52 @@ describe('projectSandboxBoundaryNegotiation', () => {
       'invalid_boundary_declaration',
     );
     assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
+  });
+
+  test('counts internal invalid repair calls as boundary attempts', () => {
+    const events = [
+      base('repair-call', {
+        role: 'model',
+        author: 'agent',
+        refs: { toolCallId: 'repair-tool' },
+        content: {
+          kind: 'function_call',
+          id: 'repair-tool',
+          name: 'invalid',
+          args: {
+            tool: 'request_sandbox_boundary',
+            error: 'boundary was denied',
+            sandboxBoundaryAttempt: true,
+          },
+        },
+      }),
+      base('repair-response', {
+        role: 'tool',
+        author: 'tool',
+        refs: { toolCallId: 'repair-tool' },
+        content: {
+          kind: 'function_response',
+          id: 'repair-tool',
+          name: 'invalid',
+          isError: true,
+          result: {
+            kind: 'text',
+            text: 'Sandbox boundary correction failed.',
+            sandboxFailure: { reason: 'invalid_boundary_declaration' },
+          },
+        },
+      }),
+    ];
+
+    assert.deepEqual(projectSandboxBoundaryNegotiation(events), {
+      kind: 'valid',
+      state: {
+        denied: false,
+        invalidRounds: 1,
+        unresolvedRounds: 0,
+        finalizationRequested: false,
+      },
+    });
   });
 
   test('requests finalization after the bounded correction budget', () => {
