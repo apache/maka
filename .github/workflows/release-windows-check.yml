@@ -291,6 +291,7 @@ jobs:
             [ordered]@{
               path = [System.IO.Path]::GetRelativePath($releaseRoot, $_.FullName).Replace('\', '/')
               size = $_.Length
+              mtimeUtc = $_.LastWriteTimeUtc.ToString('o')
               sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             }
           } | Sort-Object { $_.path })
