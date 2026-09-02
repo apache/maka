@@ -163,9 +163,22 @@ describe('composer interaction queue', () => {
     assert.equal(activeInteractionFor(reconciled, 's')?.requestId, 'missed');
   });
 
-  test('does not hide the composer for a form until the form surface is installed', () => {
-    const queues = reconcileInteractions({}, 's', [form('form-1')]);
+  test('form requests enter and leave the shared queue', () => {
+    let queues = reduceInteractionQueues({}, 's', form('form-1'));
 
+    assert.equal(activeInteractionFor(queues, 's')?.type, 'form_request');
+    queues = reduceInteractionQueues(queues, 's', {
+      type: 'form_answer_ack',
+      id: 'evt_form_ack',
+      turnId: 'turn_1',
+      ts: 1,
+      requestId: 'form-1',
+      toolUseId: 'call_form-1',
+    });
     assert.equal(activeInteractionFor(queues, 's'), undefined);
+
+    queues = reconcileInteractions({}, 's', [form('rehydrated-form')]);
+
+    assert.equal(activeInteractionFor(queues, 's')?.requestId, 'rehydrated-form');
   });
 });
