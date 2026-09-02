@@ -130,18 +130,11 @@
    skippable so Chromium does not lay out and paint every Markdown, reasoning,
    and tool subtree while the reader crosses one nearby block.
 
-   The first selector handles top-level answers, pure-reasoning runs, and a
-   whole Processing fold. The second keeps the fold useful after it becomes
-   visible by bounding each of its reasoning/tool children too. `auto` retains
-   the measured block size after first paint, which preserves native scroll
+   Renderers apply the marker at the source of each timeline block, including
+   the children of a Processing fold. `auto` retains the measured block size
+   after first paint, preserving native scroll
    anchoring when a skipped block leaves and re-enters the viewport. */
-.maka-assistant-answer-content > :is(
-  .maka-chat-message-bubble-assistant,
-  .maka-processing-sequence,
-  .maka-deep-thinking,
-  .maka-tool-activity-card
-),
-.maka-processing-sequence > * {
+.maka-chat-message-list [data-maka-transcript-boundary] {
   content-visibility: auto;
   /* First-paint intrinsic-size ESTIMATE for scroll-anchor stability, not a
      fixed height: `auto <n>px` still grows to the block's real size after
@@ -150,25 +143,12 @@
   contain-intrinsic-block-size: auto 96px;
 }
 
-/* Reasoning runs and tool/activity cards (the latter wrap terminal
-   stdout/stderr output — see .maka-tool-output-chunk in tool-activity.tsx) are
-   routinely multi-line: dozens of lines, hundreds of px, not 96. A 96px
-   placeholder therefore guarantees a large scrollHeight correction the moment
-   the reader scrolls up to one of these skipped blocks, which the
-   live-tail-release layer then has to compensate for. Give them a
-   representative first-paint intrinsic-size ESTIMATE instead, so Chromium's
-   native overflow-anchor can absorb most of that correction. 320px is a
-   defensible middle-ground for a multi-line tool/reasoning block (roughly a
-   dozen-plus lines of output plus card chrome) — still an ESTIMATE, not a
-   clamp: `auto 320px` continues to grow to the real measured size after paint,
-   so it cannot regress correctness, only reduce the worst-case correction
-   magnitude versus the 96px placeholder. */
-.maka-assistant-answer-content > :is(
-  .maka-processing-sequence,
-  .maka-deep-thinking,
-  .maka-tool-activity-card
-),
-.maka-processing-sequence > * {
+/* Reasoning runs, Processing children, linked-agent lists, and tool/activity
+   cards are routinely multi-line. Their 320px first-paint estimate lets native
+   overflow anchoring absorb more of the intrinsic-size correction. It remains
+   an estimate rather than a clamp: the block grows to its measured size after
+   paint. */
+.maka-chat-message-list [data-maka-transcript-boundary="large"] {
   contain-intrinsic-block-size: auto 320px;
 }
 
@@ -373,8 +353,8 @@
   font: var(--maka-text-supporting);
   display: inline-flex;
   border-radius: var(--radius-pill);
-  background: oklch(from var(--info) l c h / 0.08);
-  color: var(--info-text);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {

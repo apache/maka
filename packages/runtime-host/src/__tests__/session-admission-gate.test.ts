@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
@@ -146,11 +147,3 @@ test('rejects accidental admission re-entry instead of deadlocking', async () =>
     );
   });
 });
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}

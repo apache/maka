@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
@@ -916,15 +917,6 @@ async function createRunningAttempt(
     turnId: 'crashed-turn',
   });
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
 function snapshot(overrides: Partial<AgentGraphClientSnapshot> = {}): AgentGraphClientSnapshot {
   return {
     schemaVersion: 1,

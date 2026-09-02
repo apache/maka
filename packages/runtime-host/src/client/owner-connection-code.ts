@@ -18,7 +18,9 @@
  */
 
 import { z } from 'zod';
-import { requireHostRootId } from '../protocol/index.js';
+import { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
+import { REMOTE_OWNER_OPERATION_GRANTS, requireHostRootId } from '../protocol/index.js';
+import type { RuntimeHostConnection } from './connection.js';
 import {
   decodeRuntimeHostRemoteTransport,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
@@ -28,11 +30,19 @@ import {
 const PREFIX = 'maka-runtime-host:connect:v1:';
 const ENCODED_MAX_BYTES = 48 * 1024;
 
+export const REMOTE_DESKTOP_OWNER_ACCESS_POLICY = Object.freeze({
+  principalKind: 'remote_owner' as const,
+  operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
+  canPublishClientCapabilities: true,
+  canUseHostPaths: false,
+});
+
 const boundedString = (maxBytes: number) =>
   z
     .string()
     .min(1)
     .refine((value) => Buffer.byteLength(value, 'utf8') <= maxBytes);
+const nameSchema = boundedString(128);
 const payloadSchema = z
   .object({
     schemaVersion: z.literal(1),
@@ -55,6 +65,43 @@ export interface RuntimeHostOwnerConnectionCode {
   readonly rootId: string;
   readonly transport: Extract<RuntimeHostRemoteTransport, { kind: 'libp2p-direct' }>;
   readonly credential: string;
+}
+
+export interface IssueRuntimeHostOwnerConnectionCodeInput {
+  readonly rootPath: string;
+  readonly name: string;
+  readonly principalId: string;
+  readonly expectedPeerId?: string;
+  readonly client: Pick<RuntimeHostConnection, 'request' | 'rootId' | 'status'>;
+}
+
+/**
+ * Issue one pending Owner credential and bind it to the Host's current,
+ * authenticated Direct peer endpoint. The credential remains one-time and
+ * short-lived until the importing Client finalizes it.
+ */
+export async function issueRuntimeHostOwnerConnectionCode(
+  input: IssueRuntimeHostOwnerConnectionCodeInput,
+): Promise<string> {
+  const name = nameSchema.parse(input.name);
+  const rootId = requireHostRootId(input.client.rootId);
+  const endpoint = (await input.client.status()).peerEndpoint;
+  if (!endpoint) throw new Error('Runtime Host Direct peer is not available');
+  if (input.expectedPeerId && endpoint.peerId !== input.expectedPeerId) {
+    throw new Error('Runtime Host Direct peer identity changed');
+  }
+  const transport = requireDirectPeerTransport({ kind: 'libp2p-direct', ...endpoint });
+  const prepared = await input.client.request('access.credential.prepare', {
+    ...REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
+    principalId: input.principalId,
+    bindClientInstance: true,
+  });
+  const credential = await consumeAccessCredentialDelivery(
+    input.rootPath,
+    prepared.deliveryId,
+    prepared.credentialId,
+  );
+  return encodeRuntimeHostOwnerConnectionCode({ name, rootId, transport, credential });
 }
 
 export function encodeRuntimeHostOwnerConnectionCode(

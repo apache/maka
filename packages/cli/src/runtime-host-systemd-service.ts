@@ -213,7 +213,7 @@ export function createSystemdUserRuntimeHostService(
       await runLifecycleAction(context, 'restart');
       await ensureSystemdUpdateSchedulerStartedIfInstalled(scheduler);
     },
-    retire: () => runLifecycleAction(context, 'stop'),
+    retire: () => retireSystemdSupervisor(context),
     logs: async () => {
       const readJournal = async (unitName: string): Promise<string> => {
         const result = await runJournalctl([
@@ -325,7 +325,7 @@ export function createSystemdUserRuntimeHostLifecycleProvider(
         await context.runSystemctl(['reset-failed', context.unitName]);
         await runLifecycleAction(context, 'start');
       },
-      retire: () => runLifecycleAction(context, 'stop'),
+      retire: () => retireSystemdSupervisor(context),
       logs: () => readJournal(context.unitName),
       uninstall: () => uninstallSystemdSupervisor(context),
     },
@@ -766,7 +766,7 @@ async function stopSystemdManagedDeployment(
     errors.push(error);
   }
   try {
-    await runLifecycleAction(service, 'stop');
+    await retireSystemdSupervisor(service);
   } catch (error) {
     errors.push(error);
   }
@@ -777,6 +777,12 @@ async function stopSystemdManagedDeployment(
       { cause: new AggregateError(errors) },
     );
   }
+}
+
+async function retireSystemdSupervisor(context: SystemdUnitContext): Promise<void> {
+  const status = await readSystemdStatus(context);
+  if (!isSystemdUnitRunning(status)) return;
+  await runLifecycleAction(context, 'stop');
 }
 
 async function removeSystemdUpdateScheduler(context: SystemdUpdateSchedulerContext): Promise<void> {

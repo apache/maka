@@ -287,6 +287,7 @@ test('a gesture a nested scroller consumed does not release the tail', async ({
   await page.setViewportSize({ width: 900, height: 700 });
   await sendPrompt(page, LONG_PROMPT);
   await expect(answeredTurns(page)).toHaveCount(1, { timeout: 30_000 });
+  await waitForPaintedFrames(page);
   const settled = await scrollMetrics(page);
   expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
 

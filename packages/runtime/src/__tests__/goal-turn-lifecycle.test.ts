@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -25,15 +26,6 @@ import {
   drainGoalTurn,
   type GoalTurnOutcome,
 } from '../goal-turn-lifecycle.js';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-}
-
 function complete(
   turnId: string,
   stopReason: Extract<SessionEvent, { type: 'complete' }>['stopReason'],

@@ -37,7 +37,9 @@ export * from './tools/inspector/session-inspector-overview-model.js';
 export * from './tools/side-chat/quote-companion-panel-state.js';
 export * from './tools/side-chat/quote-companion-core.js';
 export * from './tools/side-chat/quote-companion-visibility.js';
-export { useQuoteCompanion } from './tools/side-chat/use-quote-companion.js';
+export {
+  useQuoteCompanion,
+} from './tools/side-chat/use-quote-companion.js';
 export * from './tools/terminal/session-terminal-hydration.js';
 export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
@@ -73,8 +75,8 @@ export function createFakeWorkbarServices(
       subscribePtyData: noopSubscription,
       subscribeResync: noopSubscription,
     },
-    tasks: {
-      list: async () => [],
+    todo: {
+      read: async () => [],
       subscribeChanges: noopSubscription,
     },
     browser: {
@@ -136,6 +138,7 @@ export function createFakeWorkbarServices(
       },
       regenerateTurn: async () => undefined,
       respondToSandboxBoundary: async () => undefined,
+      respondToClientCapability: async () => undefined,
       respondToUserQuestion: async () => undefined,
       subscribeEvents: (_sessionId, _handler, onSeeded) => {
         onSeeded?.();

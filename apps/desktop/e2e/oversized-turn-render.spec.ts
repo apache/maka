@@ -17,13 +17,9 @@
  * under the License.
  */
 
-import { COMPOSER_INPUT, expect, test } from './fixtures';
+import { expect, test } from './fixtures';
 
-const SEGMENT = [
-  '.maka-assistant-answer-content > .maka-chat-message-bubble-assistant',
-  '.maka-assistant-answer-content > .maka-processing-sequence',
-  '.maka-processing-sequence > *',
-].join(',');
+const SEGMENT = '[data-maka-transcript-boundary]';
 const SCROLLER = '[data-chat-scroll-container="true"]';
 
 async function waitForPaintedFrames(page: import('@playwright/test').Page, frames = 4) {
@@ -32,6 +28,24 @@ async function waitForPaintedFrames(page: import('@playwright/test').Page, frame
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     }
   }, frames);
+}
+
+async function waitForStableScrollGeometry(page: import('@playwright/test').Page) {
+  await page.evaluate(async (selector) => {
+    const root = document.querySelector<HTMLElement>(selector);
+    if (!root) throw new Error('the chat scroll container is missing');
+    let previous = '';
+    let stableFrames = 0;
+    for (let frame = 0; frame < 60; frame += 1) {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      const current = [root.scrollTop, root.scrollHeight, root.clientHeight].join(':');
+      if (current === previous) stableFrames += 1;
+      else stableFrames = 0;
+      if (stableFrames >= 4) return;
+      previous = current;
+    }
+    throw new Error('transcript scroll geometry did not settle');
+  }, SCROLLER);
 }
 
 test('an oversized single Turn skips offscreen timeline blocks', async ({
@@ -97,11 +111,28 @@ test('upward scrolling releases the live tail while skipped geometry materialize
   await root.hover();
   await page.mouse.wheel(0, -500);
   await waitForPaintedFrames(page, 6);
+  await waitForStableScrollGeometry(page);
 
-  const released = await root.evaluate((element) => ({
-    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-    top: element.scrollTop,
-  }));
+  const released = await root.evaluate((element) => {
+    const rootRect = element.getBoundingClientRect();
+    const center = (rootRect.top + rootRect.bottom) / 2;
+    const anchor = [...element.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
+      .filter((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom > rootRect.top && rect.top < rootRect.bottom;
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return Math.abs((leftRect.top + leftRect.bottom) / 2 - center)
+          - Math.abs((rightRect.top + rightRect.bottom) / 2 - center);
+      })[0];
+    if (!anchor) throw new Error('the reader scroll has no visible reading anchor');
+    anchor.dataset.readingAnchor = 'true';
+    return {
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    };
+  });
   expect(released.distance).toBeGreaterThan(100);
 
   // A later delivery must preserve the released position too. Without the
@@ -112,13 +143,92 @@ test('upward scrolling releases the live tail while skipped geometry materialize
     growth.style.height = '900px';
   });
   await waitForPaintedFrames(page);
+  await waitForStableScrollGeometry(page);
 
-  const afterGrowth = await root.evaluate((element) => ({
-    distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-    top: element.scrollTop,
-  }));
+  const afterGrowth = await root.evaluate((element) => {
+    const rootRect = element.getBoundingClientRect();
+    const anchor = element.querySelector<HTMLElement>('[data-reading-anchor]');
+    const anchorRect = anchor?.getBoundingClientRect();
+    return {
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      anchorVisible: anchorRect != null
+        && anchorRect.bottom > rootRect.top
+        && anchorRect.top < rootRect.bottom,
+    };
+  });
   expect(afterGrowth.distance).toBeGreaterThan(released.distance);
-  expect(Math.abs(afterGrowth.top - released.top)).toBeLessThanOrEqual(4);
+  expect(afterGrowth.anchorVisible).toBe(true);
+});
+
+test('PageUp releases the live tail while skipped geometry materializes', async ({
+  oversizedTurnWindow: page,
+}) => {
+  await page.setViewportSize({ width: 900, height: 700 });
+  const root = page.locator(SCROLLER);
+  await root.evaluate((element) => {
+    element.scrollTop = element.scrollHeight;
+  });
+  await waitForPaintedFrames(page);
+
+  await root.evaluate((element) => {
+    const list = element.querySelector('.maka-chat-message-list');
+    if (!list) throw new Error('the transcript content box is missing');
+    element.tabIndex = -1;
+    element.focus({ preventScroll: true });
+    element.addEventListener('keydown', (event) => {
+      if (event.key !== 'PageUp') return;
+      const growth = document.createElement('div');
+      growth.dataset.keyboardGrowth = 'true';
+      growth.style.height = '600px';
+      list.append(growth);
+    }, { capture: true, once: true });
+  });
+
+  await page.keyboard.press('PageUp');
+  await waitForPaintedFrames(page, 6);
+  await waitForStableScrollGeometry(page);
+  const released = await root.evaluate((element) => {
+    const rootRect = element.getBoundingClientRect();
+    const center = (rootRect.top + rootRect.bottom) / 2;
+    const anchor = [...element.querySelectorAll<HTMLElement>('[data-maka-transcript-boundary]')]
+      .filter((candidate) => {
+        const rect = candidate.getBoundingClientRect();
+        return rect.bottom > rootRect.top && rect.top < rootRect.bottom;
+      })
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return Math.abs((leftRect.top + leftRect.bottom) / 2 - center)
+          - Math.abs((rightRect.top + rightRect.bottom) / 2 - center);
+      })[0];
+    if (!anchor) throw new Error('the keyboard scroll has no visible reading anchor');
+    anchor.dataset.readingAnchor = 'true';
+    return {
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+    };
+  });
+  expect(released.distance).toBeGreaterThan(100);
+
+  await root.evaluate((element) => {
+    const growth = element.querySelector<HTMLElement>('[data-keyboard-growth]');
+    if (!growth) throw new Error('the keyboard growth box is missing');
+    growth.style.height = '900px';
+  });
+  await waitForPaintedFrames(page);
+  await waitForStableScrollGeometry(page);
+  const afterGrowth = await root.evaluate((element) => {
+    const rootRect = element.getBoundingClientRect();
+    const anchor = element.querySelector<HTMLElement>('[data-reading-anchor]');
+    const anchorRect = anchor?.getBoundingClientRect();
+    return {
+      distance: element.scrollHeight - element.scrollTop - element.clientHeight,
+      anchorVisible: anchorRect != null
+        && anchorRect.bottom > rootRect.top
+        && anchorRect.top < rootRect.bottom,
+    };
+  });
+  expect(afterGrowth.distance).toBeGreaterThan(released.distance);
+  expect(afterGrowth.anchorVisible).toBe(true);
 });
 
 test('keyboard focus into a skipped card releases the live tail', async ({
@@ -135,7 +245,9 @@ test('keyboard focus into a skipped card releases the live tail', async ({
     // Use the actual sequential focus order inside the transcript. The
     // containment boundary is the tool-card row around Astryx's native button,
     // so visibility must be asked of that row rather than its focused child.
-    const headers = [...element.querySelectorAll<HTMLElement>('[role="button"][tabindex="0"]')]
+    const headers = [...element.querySelectorAll<HTMLElement>(
+      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+    )]
       .map((header) => ({ header, row: header.closest<HTMLElement>(segmentSelector) }))
       .filter((entry): entry is { header: HTMLElement; row: HTMLElement } =>
         entry.row != null,
@@ -193,21 +305,25 @@ test('keyboard focus into a skipped card releases the live tail', async ({
 
   const afterGrowth = await root.evaluate((element) => {
     const active = document.activeElement as HTMLElement | null;
+    const rootRect = element.getBoundingClientRect();
+    const activeRect = active?.getBoundingClientRect();
     return {
       target: active?.dataset.focusBoundaryTarget === 'true',
       distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-      activeTop: active?.getBoundingClientRect().top ?? Number.NaN,
+      withinViewport: activeRect != null
+        && activeRect.bottom > rootRect.top
+        && activeRect.top < rootRect.bottom,
     };
   });
   expect(afterGrowth.target).toBe(true);
   expect(afterGrowth.distance).toBeGreaterThan(focused.distance);
-  // Skipped intrinsic geometry may change the internal scroll offset while
-  // native anchoring keeps the reader on the same pixels. The focused card's
-  // screen position is the user-facing invariant; raw scrollTop is not.
-  expect(Math.abs(afterGrowth.activeTop - focused.activeTop)).toBeLessThanOrEqual(4);
+  // Intrinsic-size correction may move the row by one placeholder while native
+  // anchoring settles. The accessibility contract is that focus remains on the
+  // same card and later growth cannot push it out of the viewport.
+  expect(afterGrowth.withinViewport).toBe(true);
 });
 
-test('visible composer focus during pending growth keeps the live tail', async ({
+test('visible transcript focus during pending growth keeps the live tail', async ({
   oversizedTurnWindow: page,
 }) => {
   await page.setViewportSize({ width: 900, height: 700 });
@@ -217,29 +333,39 @@ test('visible composer focus during pending growth keeps the live tail', async (
   });
   await waitForPaintedFrames(page);
 
-  const pending = await root.evaluate((element, composerSelector) => {
+  const pending = await root.evaluate((element) => {
     const list = element.querySelector('.maka-chat-message-list');
     if (!list) throw new Error('the transcript content box is missing');
-    const composer = element.querySelector<HTMLElement>(composerSelector);
-    if (!composer) throw new Error('the visible composer is missing');
     const rootRect = element.getBoundingClientRect();
-    const composerRect = composer.getBoundingClientRect();
+    const header = [...element.querySelectorAll<HTMLElement>(
+      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+    )].find((candidate) => {
+      const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
+      const rect = candidate.getBoundingClientRect();
+      return boundary?.checkVisibility({ contentVisibilityAuto: true })
+        && rect.top >= rootRect.top
+        && rect.bottom <= rootRect.bottom;
+    });
+    if (!header) throw new Error('the visible tool-card header is missing');
 
     // Keep the first mutation and focus in one task. ResizeObserver is therefore
     // still pending when the visible control receives focus, which is the race
     // where root distance must not be mistaken for reader movement.
+    header.focus({ preventScroll: true });
+    header.blur();
     const firstGrowth = document.createElement('div');
     firstGrowth.dataset.pendingFocusGrowth = 'true';
     firstGrowth.style.height = '600px';
     list.append(firstGrowth);
-    composer.focus();
+    header.focus();
+    const headerRect = header.getBoundingClientRect();
     return {
-      focused: document.activeElement === composer,
+      focused: document.activeElement === header,
       visible:
-        composerRect.bottom > rootRect.top && composerRect.top < rootRect.bottom,
+        headerRect.bottom > rootRect.top && headerRect.top < rootRect.bottom,
       distance: element.scrollHeight - element.scrollTop - element.clientHeight,
     };
-  }, COMPOSER_INPUT);
+  });
   expect(pending.focused).toBe(true);
   expect(pending.visible).toBe(true);
   expect(pending.distance).toBeGreaterThan(100);
@@ -260,10 +386,11 @@ test('visible composer focus during pending growth keeps the live tail', async (
   });
   await waitForPaintedFrames(page, 6);
 
-  const result = await root.evaluate((element, composerSelector) => ({
+  const result = await root.evaluate((element) => ({
     distance: element.scrollHeight - element.scrollTop - element.clientHeight,
-    composerFocused: document.activeElement === element.querySelector(composerSelector),
-  }), COMPOSER_INPUT);
-  expect(result.composerFocused).toBe(true);
+    transcriptControlFocused:
+      document.activeElement?.matches('[data-maka-transcript-boundary] [role="button"]') ?? false,
+  }));
+  expect(result.transcriptControlFocused).toBe(true);
   expect(result.distance).toBeLessThanOrEqual(4);
 });

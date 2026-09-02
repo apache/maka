@@ -33,6 +33,7 @@ import {
   interactionCanonicalOutcomesEquivalent,
   isInteractionAnswerValidForRequest,
   isInteractionCanonicalOutcomeValidForRequest,
+  projectInteractionClientCapabilityRequest,
   projectInteractionPermissionRequest,
   projectInteractionQuestionRequest,
   projectInteractionSandboxBoundaryRequest,
@@ -779,6 +780,49 @@ describe('Interaction decoding and validity', () => {
         }),
       ),
       false,
+    );
+  });
+
+  test('keeps Client Capability approval tied to the exact Host grant target', () => {
+    const request = projectInteractionClientCapabilityRequest({
+      toolUseId: 'browser-call-1',
+      target: {
+        providerId: 'provider-1',
+        contractId: 'contract-1',
+        serverId: 'desktop_browser',
+        toolName: 'browser_snapshot',
+        capability: 'browser',
+        scope: { kind: 'browser_origin', origin: 'https://example.com' },
+      },
+    });
+    const answer = decodeInteractionAnswer({ kind: 'client_capability', decision: 'allow' });
+    const outcome = decodeInteractionCanonicalOutcome({
+      kind: 'client_capability_decision',
+      decision: 'allow',
+      committedAt: 2,
+    });
+    assert.equal(isInteractionAnswerValidForRequest(request, answer), true);
+    assert.equal(isInteractionCanonicalOutcomeValidForRequest(request, outcome), true);
+    assert.equal(
+      isInteractionCanonicalOutcomeValidForRequest(
+        request,
+        decodeInteractionCanonicalOutcome({
+          kind: 'closure',
+          reason: 'timed_out',
+          committedAt: 3,
+        }),
+      ),
+      true,
+    );
+    assert.deepEqual(decodeInteractionRequest(request), request);
+    assert.throws(() =>
+      projectInteractionClientCapabilityRequest({
+        ...request,
+        target: {
+          ...request.target,
+          scope: { kind: 'browser_origin', origin: 'https://example.com/path' },
+        },
+      }),
     );
   });
 

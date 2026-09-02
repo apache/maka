@@ -42,9 +42,12 @@ Only use Windows assets attached to a Maka GitHub Release. The NSIS installer is
    `winget install BurntSushi.ripgrep.MSVC` if Runtime's `Grep` tool is needed. Restart Maka after
    changing `PATH`.
 
-The release gate installs a pinned v0.1.9 build, fully smokes it, upgrades the same installation to
-the candidate, fully smokes the candidate, waits for installed processes to exit, and runs the real
-uninstaller. A second gate proves the automatic, running-app upgrade path: the installed candidate,
+The release gate installs the previously published build pinned in
+`scripts/windows-upgrade-baseline.json` — by tag, asset name, and SHA-256 — fully smokes it, upgrades
+the same installation to the candidate, fully smokes the candidate, waits for installed processes to
+exit, and runs the real uninstaller. The baseline is verified against the contract that build shipped
+under, not the candidate's: it may predate resources the candidate must carry, and it carries its own
+update channel. A second gate proves the automatic, running-app upgrade path: the installed candidate,
 running, discovers a newer build through its packaged electron-updater against a loopback test feed,
 downloads it in the background, hands off to the NSIS installer, relaunches as the new version, and
 passes the full packaged smoke — with the feed requests (including the differential-download probe),
@@ -105,8 +108,9 @@ workspace data first; the preview does not yet claim business-data migration gua
 5. 启动 Maka，在 **设置 → 模型**中配置模型。需要 Runtime `Grep` 工具时，执行
    `winget install BurntSushi.ripgrep.MSVC`，并在 `PATH` 更新后重启 Maka。
 
-发布门禁会安装固定的 v0.1.9、执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内
-进程退出，并运行真实卸载器。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
+发布门禁会安装 `scripts/windows-upgrade-baseline.json` 中按 tag、资产名与 SHA-256 固定的既往已发布构建，
+执行完整 smoke、在同一目录升级候选版本、再次完整 smoke、等待安装目录内进程退出，并运行真实卸载器。基线按
+其发布时所处的契约校验，而非候选版本的契约：它可能不含候选版本必须携带的资源，也带着自己的更新通道。另一个门禁证明**运行中的自动更新路径**：已安装且正在运行的候选版本通过打包的
 electron-updater 从 loopback 测试 feed 发现新版本、后台下载、交接给 NSIS 安装器、以新版本自动重启并通过
 完整打包 smoke——feed 请求（含差量下载探测）、`downloaded` 状态及其精确版本对、最终安装版本均逐项断言；
 `checking`/`downloading` 等瞬态不逐项断言。

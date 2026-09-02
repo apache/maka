@@ -28,6 +28,9 @@ const STRESS_ENABLED = process.env.MAKA_TRANSCRIPT_STRESS === '1';
 // software/virtual display is useful for functional E2E, but is not comparable
 // to the macOS arm64 environment in which this release threshold was measured.
 const NATIVE_MACOS_ARM64_PERF_GATE = process.platform === 'darwin' && process.arch === 'arm64';
+const performanceTest = PERF_ENABLED ? test : test.skip;
+const stressTest = STRESS_ENABLED ? test : test.skip;
+const nativePerformanceTest = PERF_ENABLED && NATIVE_MACOS_ARM64_PERF_GATE ? test : test.skip;
 const SCROLLER = '[data-chat-scroll-container="true"]';
 
 interface BrowserCounters {
@@ -254,10 +257,9 @@ async function measureSessionSwitch(page: Page): Promise<number> {
   return performance.now() - start;
 }
 
-test('LoAF capability is explicit when Chromium cannot measure it', async ({
+performanceTest('LoAF capability is explicit when Chromium cannot measure it', async ({
   promptRailWindow: page,
 }) => {
-  test.skip(!PERF_ENABLED, 'manual same-build CDP A/B harness');
   await page.evaluate(() => {
     Object.defineProperty(PerformanceObserver, 'supportedEntryTypes', {
       configurable: true,
@@ -269,8 +271,7 @@ test('LoAF capability is explicit when Chromium cannot measure it', async ({
   expect(frames.loafSupported).toBe(false);
 });
 
-test('warm native transcript scroll metrics', async ({ promptRailWindow: page }) => {
-  test.skip(!PERF_ENABLED, 'manual same-build CDP A/B harness');
+performanceTest('warm native transcript scroll metrics', async ({ promptRailWindow: page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
@@ -327,14 +328,9 @@ test('warm native transcript scroll metrics', async ({ promptRailWindow: page })
   console.log(`TRANSCRIPT_PERF ${JSON.stringify(result)}`);
 });
 
-test('oversized single Turn upward scroll metrics', async ({
+nativePerformanceTest('oversized single Turn upward scroll metrics', async ({
   oversizedTurnWindow: page,
 }) => {
-  test.skip(!PERF_ENABLED, 'manual same-build CDP oversized-Turn harness');
-  test.skip(
-    !NATIVE_MACOS_ARM64_PERF_GATE,
-    '50 ms release gate is calibrated for native macOS arm64, not Linux/Xvfb',
-  );
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   await expect(page.locator('[data-turn-id="turn-oversized-fixture"]')).toHaveCount(1);
@@ -350,11 +346,7 @@ test('oversized single Turn upward scroll metrics', async ({
   const before = await performanceMetrics(cdp);
   const frames = await scrollGesture(page, -distance, 480);
   const after = await performanceMetrics(cdp);
-  const skippedSegments = await page.locator([
-    '.maka-assistant-answer-content > .maka-chat-message-bubble-assistant',
-    '.maka-assistant-answer-content > .maka-processing-sequence',
-    '.maka-processing-sequence > *',
-  ].join(',')).evaluateAll((elements) =>
+  const skippedSegments = await page.locator('[data-maka-transcript-boundary]').evaluateAll((elements) =>
     (elements as HTMLElement[]).filter((element) =>
       !element.checkVisibility({ contentVisibilityAuto: true })).length,
   );
@@ -380,12 +372,12 @@ test('oversized single Turn upward scroll metrics', async ({
     result.loafOver50Ms,
     `oversized-Turn upward scroll exceeded the 50 ms Long Animation Frame gate: ${JSON.stringify(result)}`,
   ).toBe(0);
+  expect(result.skippedSegments).toBeGreaterThan(0);
 });
 
-test('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
+stressTest('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
   promptRailWindow: page,
 }) => {
-  test.skip(!STRESS_ENABLED, 'manual 600+ Turn stress harness');
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   const cdp = await page.context().newCDPSession(page);

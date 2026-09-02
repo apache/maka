@@ -19,7 +19,6 @@
 
 import type { Meta, StoryObj } from '@storybook/react-vite';
 import { fn } from 'storybook/test';
-import type { ErrorInfo } from 'react';
 import {
   ErrorBoundaryFallback,
   type ErrorBoundaryCopyState,
@@ -39,42 +38,11 @@ const onCopyReport = fn();
 const onReset = fn();
 const onReload = fn();
 
-// Explicitly synthetic diagnostics used only to exercise the fallback layout.
-// The generic fixture names do not represent a Maka product call chain.
-function buildRendererError(name: string, message: string, frames: string[]): Error {
-  const error = new Error(message);
-  error.name = name;
-  error.stack = [`${name}: ${message}`, ...frames.map((frame) => `    at ${frame}`)].join('\n');
-  return error;
-}
-
-const syntheticError = buildRendererError(
-  'TypeError',
-  "Cannot read properties of undefined (reading 'messages')",
-  [
-    'SyntheticCrashFixture (<synthetic-storybook-fixture>:42:7)',
-    'renderWithHooks (react-dom.development.js:15486:18)',
-    'mountIndeterminateComponent (react-dom.development.js:20103:13)',
-    'beginWork (react-dom.development.js:21626:16)',
-  ],
-);
-
-const syntheticComponentStack: ErrorInfo = {
-  componentStack: [
-    '',
-    '    at SyntheticCrashFixture (<synthetic-storybook-fixture>:42:7)',
-    '    at SyntheticParentFixture (<synthetic-storybook-fixture>:18:3)',
-    '    at ErrorBoundary',
-  ].join('\n'),
-};
-
 const resolveLocale = (globals: Record<string, unknown>) => (globals.locale === 'en' ? 'en' : 'zh');
 
-function fallback(copyState: ErrorBoundaryCopyState, error: Error, errorInfo: ErrorInfo) {
+function fallback(copyState: ErrorBoundaryCopyState) {
   return (_args: unknown, { globals }: { globals: Record<string, unknown> }) => (
     <ErrorBoundaryFallback
-      error={error}
-      errorInfo={errorInfo}
       copyState={copyState}
       locale={resolveLocale(globals)}
       onCopyReport={onCopyReport}
@@ -84,23 +52,21 @@ function fallback(copyState: ErrorBoundaryCopyState, error: Error, errorInfo: Er
   );
 }
 
-// Visual snapshot of the fallback's idle state. In production, ErrorBoundary supplies
-// this Error/ErrorInfo shape after catching a renderer crash.
 export const DefaultFallback: Story = {
-  render: fallback('idle', syntheticError, syntheticComponentStack),
+  render: fallback('idle'),
 };
 
 // Visual snapshot of the fallback's pending state; it does not exercise the copy transition.
 export const CopyPending: Story = {
-  render: fallback('pending', syntheticError, syntheticComponentStack),
+  render: fallback('pending'),
 };
 
 // Visual snapshot of the fallback's copied state; it does not exercise the copy transition.
 export const Copied: Story = {
-  render: fallback('copied', syntheticError, syntheticComponentStack),
+  render: fallback('copied'),
 };
 
 // Visual snapshot of the fallback's failed state; it does not exercise the copy transition.
 export const CopyFailed: Story = {
-  render: fallback('failed', syntheticError, syntheticComponentStack),
+  render: fallback('failed'),
 };

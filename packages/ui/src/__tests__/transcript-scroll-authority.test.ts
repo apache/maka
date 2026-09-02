@@ -44,10 +44,6 @@ interface FakeRoot {
   emitScroll(): void;
   /** Dispatch an upward wheel whose default action can move this root. */
   emitUpwardWheel(): void;
-  emitFocusOut(next: unknown): void;
-  emitFocusIn(target: unknown): void;
-  contains(target: unknown): boolean;
-  getBoundingClientRect(): Pick<DOMRect, 'top' | 'bottom'>;
   grow(by: number): void;
   /** Take height away from the viewport, as a resize or a taller dock does. */
   shrinkViewport(by: number): void;
@@ -79,20 +75,6 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
       };
       for (const listener of [...(listeners.get('wheel') ?? [])]) listener(event);
     },
-    emitFocusOut(next) {
-      const event = { relatedTarget: next };
-      for (const listener of [...(listeners.get('focusout') ?? [])]) listener(event);
-    },
-    emitFocusIn(target) {
-      const event = { target };
-      for (const listener of [...(listeners.get('focusin') ?? [])]) listener(event);
-    },
-    contains(target) {
-      return target instanceof FakeFocusTarget;
-    },
-    getBoundingClientRect() {
-      return { top: 0, bottom: root.clientHeight };
-    },
     grow(by) {
       root.scrollHeight += by;
     },
@@ -111,29 +93,6 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
       return Reflect.set(target, property, value);
     },
   });
-}
-
-class FakeFocusTarget {
-  constructor(private readonly rect: Pick<DOMRect, 'top' | 'bottom'>) {}
-
-  closest(): this {
-    return this;
-  }
-
-  getBoundingClientRect(): Pick<DOMRect, 'top' | 'bottom'> {
-    return this.rect;
-  }
-}
-
-function withFakeHTMLElement<T>(run: () => T): T {
-  const globals = globalThis as { HTMLElement?: unknown };
-  const original = globals.HTMLElement;
-  globals.HTMLElement = FakeFocusTarget;
-  try {
-    return run();
-  } finally {
-    globals.HTMLElement = original;
-  }
 }
 
 /**
@@ -242,43 +201,20 @@ test('reader movement releases the tail when content grows before the scroll eve
   });
 });
 
-test('focus reveal of an already-visible control preserves pending tail growth', () => {
-  withFakeHTMLElement(() => withObservers((resize) => {
+test('viewport-only geometry movement preserves a pinned transcript', () => {
+  withObservers((resize) => {
     const root = fakeRoot();
     const authority = createTranscriptScrollAuthority();
     authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
 
-    root.grow(500);
-    const visibleControl = new FakeFocusTarget({ top: 100, bottom: 140 });
-    root.emitFocusOut(visibleControl);
-    // Chromium may reveal a partially visible target before focusin. That
-    // browser-owned movement is not evidence that the reader left the tail.
-    root.scrollTop = 2_300;
-    root.emitFocusIn(visibleControl);
+    root.shrinkViewport(100);
+    root.scrollTop = 2_390;
+    root.emitScroll();
     assert.equal(authority.getSnapshot().pinned, true);
 
     resize();
-    assert.equal(root.scrollTop, 2_900);
-  }));
-});
-
-test('focus entering a control outside the viewport releases the tail', () => {
-  withFakeHTMLElement(() => withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-
-    const offscreenControl = new FakeFocusTarget({ top: -200, bottom: -160 });
-    root.emitFocusOut(offscreenControl);
-    root.scrollTop = 1_800;
-    root.emitFocusIn(offscreenControl);
-    assert.equal(authority.getSnapshot().pinned, false);
-
-    root.grow(500);
-    resize();
-    assert.equal(root.scrollTop, 1_800);
-  }));
+    assert.equal(root.scrollTop, 2_500);
+  });
 });
 
 test('returning to the tail re-pins, and following resumes', () => {

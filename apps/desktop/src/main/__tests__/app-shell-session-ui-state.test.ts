@@ -70,8 +70,6 @@ function seededState(): AppShellSessionUiState {
       drop: [boundaryRequest('drop')],
       keep: [boundaryRequest('keep')],
     },
-    pendingPermissionModeBySession: { drop: true, keep: true },
-    pendingSessionModelBySession: { drop: true, keep: true },
   };
 }
 
@@ -91,6 +89,12 @@ describe('session live run display state', () => {
 });
 
 describe('app shell session UI state controller', () => {
+  it('does not mirror session-setting writes into UI pending state', () => {
+    const state = createInitialAppShellSessionUiState();
+    assert.equal('pendingPermissionModeBySession' in state, false);
+    assert.equal('pendingSessionModelBySession' in state, false);
+  });
+
   it('selects background terminal sessions without cutting off the active handoff', () => {
     const sessions = [
       { id: 'running', status: 'running' },
@@ -183,8 +187,6 @@ describe('app shell session UI state controller', () => {
     assert.deepEqual(Object.keys(next.stopPendingBySession), ['keep']);
     assert.deepEqual(Object.keys(next.liveTurnBySession), ['keep']);
     assert.deepEqual(Object.keys(next.interactionBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingPermissionModeBySession), ['keep']);
-    assert.deepEqual(Object.keys(next.pendingSessionModelBySession), ['keep']);
   });
 
   it('keeps state identity for no-op map updates and only replaces the selected map', () => {

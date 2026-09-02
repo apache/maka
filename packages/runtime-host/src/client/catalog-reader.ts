@@ -23,6 +23,7 @@ import {
   type ConnectionCatalogCursor,
   type ConnectionCatalogPageItem,
   type ConnectionCatalogQueryResult,
+  type ModelCatalogEntry,
   type RelayModelProfile,
   type RelayModelProfiles,
   type SessionCatalogItem,
@@ -56,10 +57,12 @@ export interface RuntimeHostSkillCatalogSnapshot {
 
 export type RuntimeHostConnectionCatalogEntry = Omit<
   Extract<ConnectionCatalogPageItem, { kind: 'connection' }>,
-  'kind' | 'connectionIndex' | 'enabledModelIdCount' | 'modelCount'
+  'kind' | 'connectionIndex' | 'enabledModelIdCount' | 'modelCount' | 'catalogEntryCount'
 > & {
   readonly enabledModelIds: readonly string[];
   readonly models: readonly Extract<ConnectionCatalogPageItem, { kind: 'model' }>['model'][];
+  /** The connection's models as the Host resolved them, in catalog order. */
+  readonly catalogEntries: readonly ModelCatalogEntry[];
   readonly relayModelProfiles?: RelayModelProfiles;
 };
 
@@ -424,6 +427,7 @@ function assembleConnectionCatalog(
       header: Extract<ConnectionCatalogPageItem, { kind: 'connection' }>;
       enabledModelIds: Map<number, string>;
       models: Map<number, RuntimeHostConnectionCatalogEntry['models'][number]>;
+      catalogEntries: Map<number, ModelCatalogEntry>;
       relayProfiles: Map<string, RelayModelProfile>;
     }
   >();
@@ -436,6 +440,7 @@ function assembleConnectionCatalog(
       header: item,
       enabledModelIds: new Map(),
       models: new Map(),
+      catalogEntries: new Map(),
       relayProfiles: new Map(),
     });
   }
@@ -443,9 +448,18 @@ function assembleConnectionCatalog(
     if (item.kind === 'connection') continue;
     const entry = entries.get(item.connectionIndex);
     if (!entry) throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
-    const values = item.kind === 'enabled_model_id' ? entry.enabledModelIds : entry.models;
+    const values =
+      item.kind === 'enabled_model_id'
+        ? entry.enabledModelIds
+        : item.kind === 'model'
+          ? entry.models
+          : entry.catalogEntries;
     const expectedCount =
-      item.kind === 'enabled_model_id' ? entry.header.enabledModelIdCount : entry.header.modelCount;
+      item.kind === 'enabled_model_id'
+        ? entry.header.enabledModelIdCount
+        : item.kind === 'model'
+          ? entry.header.modelCount
+          : entry.header.catalogEntryCount;
     if (item.itemIndex >= expectedCount || values.has(item.itemIndex)) {
       throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
     }
@@ -454,8 +468,10 @@ function assembleConnectionCatalog(
       // Reassemble the profile table the projector spread across items; the
       // downstream type is the per-model map, not the wire's per-item shape.
       if (item.relayProfile !== undefined) entry.relayProfiles.set(item.modelId, item.relayProfile);
-    } else {
+    } else if (item.kind === 'model') {
       entry.models.set(item.itemIndex, item.model);
+    } else {
+      entry.catalogEntries.set(item.itemIndex, item.entry);
     }
   }
   if (entries.size !== first.connectionCount) {
@@ -466,7 +482,8 @@ function assembleConnectionCatalog(
     .map(([, entry]): RuntimeHostConnectionCatalogEntry => {
       if (
         entry.enabledModelIds.size !== entry.header.enabledModelIdCount ||
-        entry.models.size !== entry.header.modelCount
+        entry.models.size !== entry.header.modelCount ||
+        entry.catalogEntries.size !== entry.header.catalogEntryCount
       ) {
         throw new RuntimeHostCatalogReadError('connection', 'invalid_projection');
       }
@@ -475,12 +492,14 @@ function assembleConnectionCatalog(
         connectionIndex: _index,
         enabledModelIdCount: _enabledCount,
         modelCount: _modelCount,
+        catalogEntryCount: _catalogEntryCount,
         ...header
       } = entry.header;
       return {
         ...header,
         enabledModelIds: orderedValues(entry.enabledModelIds),
         models: orderedValues(entry.models),
+        catalogEntries: orderedValues(entry.catalogEntries),
         ...(entry.relayProfiles.size === 0
           ? {}
           : { relayModelProfiles: Object.fromEntries(entry.relayProfiles) }),

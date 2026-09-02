@@ -17,11 +17,11 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { AgentRunEvent, AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import { expect } from '../test-helpers.js';
 import { inspectAgentRunReadModel } from '../agent-run-inspect.js';
 
 const sessionId = 'session-1';
@@ -78,27 +78,26 @@ describe('inspectAgentRunReadModel', () => {
 
     const inspected = await inspectAgentRunReadModel(runStore, runStore, { sessionId, runId });
 
-    expect(inspected.sourceHealth).toEqual({
+    assert.deepStrictEqual(inspected.sourceHealth, {
       runtimeLedger: 'present',
       runtimeTerminalPresent: true,
       operationalTerminalPresent: true,
       statusConsistency: 'consistent',
     });
-    expect(inspected.terminalRuntimeFact?.runStatus).toBe('completed');
-    expect(inspected.operationalTerminalEvent?.type).toBe('run_completed');
-    expect(inspected.runtimeEvents.map((event) => event.id)).toEqual([
-      'rt-user',
-      'rt-assistant',
-      'rt-complete',
-    ]);
-    expect(inspected.projection?.messages.map((message) => message.type)).toEqual([
-      'user',
-      'assistant',
-      'turn_state',
-    ]);
-    expect(
+    assert.strictEqual(inspected.terminalRuntimeFact?.runStatus, 'completed');
+    assert.strictEqual(inspected.operationalTerminalEvent?.type, 'run_completed');
+    assert.deepStrictEqual(
+      inspected.runtimeEvents.map((event) => event.id),
+      ['rt-user', 'rt-assistant', 'rt-complete'],
+    );
+    assert.deepStrictEqual(
+      inspected.projection?.messages.map((message) => message.type),
+      ['user', 'assistant', 'turn_state'],
+    );
+    assert.strictEqual(
       inspected.diagnostics.some((diagnostic) => diagnostic.code === 'status_consistency_mismatch'),
-    ).toBe(false);
+      false,
+    );
   });
 
   test('reports missing and corrupt runtime-events without discarding operational facts', async () => {
@@ -115,13 +114,17 @@ describe('inspectAgentRunReadModel', () => {
       runId,
     });
 
-    expect(missing.events.map((event) => event.type)).toEqual(['run_completed']);
-    expect(missing.sourceHealth.runtimeLedger).toBe('missing');
-    expect(missing.sourceHealth.operationalTerminalPresent).toBe(true);
-    expect(missing.sourceHealth.runtimeTerminalPresent).toBe(false);
-    expect(
+    assert.deepStrictEqual(
+      missing.events.map((event) => event.type),
+      ['run_completed'],
+    );
+    assert.strictEqual(missing.sourceHealth.runtimeLedger, 'missing');
+    assert.strictEqual(missing.sourceHealth.operationalTerminalPresent, true);
+    assert.strictEqual(missing.sourceHealth.runtimeTerminalPresent, false);
+    assert.strictEqual(
       missing.diagnostics.some((diagnostic) => diagnostic.code === 'missing_runtime_ledger'),
-    ).toBe(true);
+      true,
+    );
 
     const corruptRuntimeStore = new MemoryAgentRunStore({ failRuntimeEventReads: true });
     await corruptRuntimeStore.createRun(makeHeader({ status: 'completed' }));
@@ -136,12 +139,16 @@ describe('inspectAgentRunReadModel', () => {
       runId,
     });
 
-    expect(corrupt.events.map((event) => event.type)).toEqual(['run_completed']);
-    expect(corrupt.sourceHealth.runtimeLedger).toBe('read_failed');
-    expect(corrupt.sourceHealth.operationalTerminalPresent).toBe(true);
-    expect(
+    assert.deepStrictEqual(
+      corrupt.events.map((event) => event.type),
+      ['run_completed'],
+    );
+    assert.strictEqual(corrupt.sourceHealth.runtimeLedger, 'read_failed');
+    assert.strictEqual(corrupt.sourceHealth.operationalTerminalPresent, true);
+    assert.strictEqual(
       corrupt.diagnostics.some((diagnostic) => diagnostic.code === 'runtime_ledger_read_failed'),
-    ).toBe(true);
+      true,
+    );
   });
 
   test('diagnoses status disagreement between header operational and RuntimeEvent facts', async () => {
@@ -162,11 +169,12 @@ describe('inspectAgentRunReadModel', () => {
 
     const inspected = await inspectAgentRunReadModel(runStore, runStore, { sessionId, runId });
 
-    expect(inspected.sourceHealth.statusConsistency).toBe('inconsistent');
-    expect(inspected.terminalRuntimeFact?.runStatus).toBe('completed');
-    expect(
+    assert.strictEqual(inspected.sourceHealth.statusConsistency, 'inconsistent');
+    assert.strictEqual(inspected.terminalRuntimeFact?.runStatus, 'completed');
+    assert.strictEqual(
       inspected.diagnostics.some((diagnostic) => diagnostic.code === 'status_consistency_mismatch'),
-    ).toBe(true);
+      true,
+    );
   });
 });
 

@@ -161,9 +161,9 @@ export function resolveWorkspaceReleaseFiles(directory, manifest) {
           `${manifest.name ?? 'Workspace package'} release dist must be a directory.`,
         );
       }
-    } else if (!entry.isFile()) {
+    } else if (!entry.isFile() && !entry.isDirectory()) {
       throw new Error(
-        `${manifest.name ?? 'Workspace package'} release asset must be a regular file: ${releaseFile}`,
+        `${manifest.name ?? 'Workspace package'} release asset must be a regular file or directory: ${releaseFile}`,
       );
     }
   }

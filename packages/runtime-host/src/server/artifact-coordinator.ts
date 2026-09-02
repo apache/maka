@@ -20,7 +20,7 @@
 import { createHash } from 'node:crypto';
 import { attachmentKindFromMimeType } from '@maka/core/attachments';
 import type { AttachmentRef } from '@maka/core/events';
-import type { ArtifactRecord } from '@maka/core/artifacts';
+import { isArtifactSharedSessionReadable, type ArtifactRecord } from '@maka/core/artifacts';
 import {
   authenticateInteractiveArtifactStoreWriter,
   sanitizeArtifactName,
@@ -51,8 +51,6 @@ import { ConnectionBoundChunkUploads } from './connection-bound-chunk-uploads.js
 const MAX_ACTIVE_ARTIFACT_UPLOADS = 16;
 const MAX_STAGED_ARTIFACT_UPLOAD_BYTES = 128 * 1024 * 1024;
 const ARTIFACT_UPLOAD_TTL_MS = 5 * 60 * 1000;
-const SHARED_ARTIFACT_SOURCES = new Set(['user_upload', 'tool_result']);
-
 interface ArtifactUploadMetadata {
   readonly attachmentKind: AttachmentRef['kind'];
   readonly name: string;
@@ -443,9 +441,7 @@ export class HostArtifactCoordinator {
     );
     if (!grant) return;
     const entry = await this.#store.getInSession(input.sessionId, input.artifactId);
-    return entry.record?.status === 'live' &&
-      entry.record.source !== undefined &&
-      SHARED_ARTIFACT_SOURCES.has(entry.record.source)
+    return entry.record?.status === 'live' && isArtifactSharedSessionReadable(entry.record)
       ? grant.grantId
       : undefined;
   }

@@ -36,13 +36,10 @@
  * Being the only writer is what makes the ordinary state exact rather than
  * guessed. It remembers the offset it wrote, so a scroll event that finds the
  * scroller still on that offset is its own echo and any other stable-geometry
- * offset is the reader — by construction, with no timing heuristic. The one
- * ambiguous delivery is an upward wheel that materializes intrinsic geometry
- * before its scroll event; a scoped wheel listener releases early only when no
- * nested scroller can consume that input. Focus has the same ambiguity when
- * keyboard or assistive navigation enters a skipped content-visibility subtree,
- * so focus entering from outside the viewport releases before its geometry can
- * move the tail.
+ * offset is the reader — by construction, with no timing heuristic. Geometry
+ * can still move the offset before its scroll event, so upward reader inputs
+ * release synchronously while their ownership is known. The scroll event stays
+ * geometry-neutral instead of guessing intent from an intrinsic-size change.
  */
 
 import {
@@ -58,13 +55,7 @@ import { ChatLayoutScrollButton } from '@astryxdesign/core/Chat';
 const PIN_THRESHOLD_PX = 10;
 const BUTTON_THRESHOLD_PX = 100;
 const TRANSCRIPT_SELECTOR = '.maka-chat-message-list';
-const FOCUS_VISIBILITY_BOUNDARY = [
-  '.maka-assistant-answer-content > .maka-chat-message-bubble-assistant',
-  '.maka-assistant-answer-content > .maka-processing-sequence',
-  '.maka-assistant-answer-content > .maka-deep-thinking',
-  '.maka-assistant-answer-content > .maka-tool-activity-card',
-  '.maka-processing-sequence > *',
-].join(',');
+const TRANSCRIPT_BOUNDARY_SELECTOR = '[data-maka-transcript-boundary]';
 
 export interface TranscriptScrollSnapshot {
   /** Following the tail: growth writes `scrollTop`. */
@@ -105,22 +96,25 @@ export interface TranscriptScrollAuthority {
  * At its boundary Chromium may chain the wheel to the transcript unless the
  * nested surface explicitly contains overscroll.
  */
-export function nestedScrollerConsumesWheel(event: WheelEvent, root: HTMLElement): boolean {
-  for (const target of event.composedPath()) {
+function nestedScrollerConsumesUpwardInput(
+  path: readonly EventTarget[],
+  root: HTMLElement,
+): boolean {
+  for (const target of path) {
     if (target === root) break;
     if (!(target instanceof HTMLElement)) continue;
     const style = getComputedStyle(target);
     const overflowY = style.overflowY;
     if (!['auto', 'scroll', 'overlay'].includes(overflowY)) continue;
     if (target.scrollHeight <= target.clientHeight) continue;
-    if (event.deltaY < 0 && target.scrollTop > 0) return true;
-    if (
-      event.deltaY > 0
-      && target.scrollTop + target.clientHeight < target.scrollHeight
-    ) return true;
+    if (target.scrollTop > 0) return true;
     if (['contain', 'none'].includes(style.overscrollBehaviorY)) return true;
   }
   return false;
+}
+
+export function nestedScrollerConsumesWheel(event: WheelEvent, root: HTMLElement): boolean {
+  return nestedScrollerConsumesUpwardInput(event.composedPath(), root);
 }
 
 export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
@@ -188,22 +182,17 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         // put it on is the echo of that write, however late it arrives; any
         // other offset is the reader, exactly, and not by inference. Nested
         // scrollers (a tool output box, a terminal) never reach here at all:
-        // `scroll` does not bubble. The narrow wheel listener below separately
-        // rejects those nested paths before it can release this authority.
+        // `scroll` does not bubble, so nested movement never reaches this
+        // handler.
         if (lastWrittenTop !== undefined && Math.abs(target.scrollTop - lastWrittenTop) < 1) {
           lastScrollHeight = target.scrollHeight;
           lastClientHeight = target.clientHeight;
           return;
         }
-        // An event that arrives with the scroll geometry changed is the content
-        // or the viewport moving under the reader, not the reader moving:
-        // anchoring holding them still as turns land above, growth that outran
-        // this authority's own write, or a resize the browser answered by
-        // clamping the offset. Their offset changed and their intent did not,
-        // so the pin — which is that intent — must not be re-derived from where
-        // they now are, and nobody may be told the reader asked for anything.
-        // The affordance still follows the new distance, because that is a fact
-        // about the viewport rather than about them.
+        // A geometry-changing event cannot prove reader intent. Streaming,
+        // native anchoring and content-visibility correction can all move both
+        // the offset and scrollHeight before delivery, so input listeners below
+        // handle the ambiguous upward paths while ownership is still known.
         const moved =
           target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
         lastScrollHeight = target.scrollHeight;
@@ -221,35 +210,42 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       lastScrollHeight = target.scrollHeight;
       lastClientHeight = target.clientHeight;
       target.addEventListener('scroll', onScroll, { passive: true });
-      // Ordinarily the non-bubbling scroll event is the exact reader signal.
-      // One combined case needs intent one step earlier: content-visibility can
-      // replace intrinsic geometry before Chromium delivers the scroll caused
-      // by this wheel. `onScroll` must then classify the changed geometry as
-      // content movement, so release synchronously while the input ownership
-      // is still unambiguous. A wheel consumed by a nested scroller is not an
-      // outer-transcript gesture and leaves the pin untouched.
       const onWheel = (event: WheelEvent): void => {
         if (event.deltaY >= 0 || target.scrollTop <= 0) return;
         if (nestedScrollerConsumesWheel(event, target)) return;
         releaseTail();
       };
       target.addEventListener('wheel', onWheel, { passive: true });
-      // Sequential keyboard navigation and assistive technology can focus an
-      // element in a content-visibility:auto subtree that is currently skipped.
-      // Chromium materializes that subtree and scrolls it into view, but the
-      // resulting scroll/resize deliveries cannot distinguish that reader move
-      // from geometry growth. Release while focus ownership is unambiguous.
-      // `focusin` is too late to decide whether focus moved the reader: Chromium
-      // has already scrolled a partially visible control fully into view by then.
-      // The preceding focusout names the incoming target in `relatedTarget`, so
-      // remember whether its containment boundary was outside the viewport before
-      // the browser reveals it. This also distinguishes pending geometry growth
-      // from reader movement without depending on ResizeObserver delivery order.
+      const onKeyDown = (event: KeyboardEvent): void => {
+        const upward = ['ArrowUp', 'PageUp', 'Home'].includes(event.key)
+          || (event.key === ' ' && event.shiftKey);
+        if (!upward || event.defaultPrevented || target.scrollTop <= 0) return;
+        if (!(event.target instanceof HTMLElement)) return;
+        if (event.target !== target && event.target.closest(TRANSCRIPT_SELECTOR) === null) return;
+        if (event.target.closest('input, textarea, [contenteditable="true"]')) return;
+        if (nestedScrollerConsumesUpwardInput(event.composedPath(), target)) return;
+        releaseTail();
+      };
+      target.addEventListener('keydown', onKeyDown);
+      const onPointerDown = (event: PointerEvent): void => {
+        if (event.target !== target || target.scrollTop <= 0) return;
+        const scrollbarWidth = target.offsetWidth - target.clientWidth;
+        if (scrollbarWidth <= 0) return;
+        const rootRect = target.getBoundingClientRect();
+        if (event.clientX >= rootRect.right - scrollbarWidth) releaseTail();
+      };
+      target.addEventListener('pointerdown', onPointerDown, { passive: true });
+      // Focus navigation is the one reader action Chromium can perform before
+      // it delivers the resulting scroll event: focusing a skipped boundary
+      // materializes it and reveals the target first. Capture the incoming
+      // target before that browser-owned reveal so a genuinely offscreen
+      // transcript control releases the tail early. A visible control leaves
+      // the pin unchanged and subsequent growth follows normally.
       let incomingFocus:
         | { readonly target: HTMLElement; readonly outsideViewport: boolean }
         | undefined;
       const isOutsideViewport = (element: HTMLElement): boolean => {
-        const boundary = element.closest<HTMLElement>(FOCUS_VISIBILITY_BOUNDARY) ?? element;
+        const boundary = element.closest<HTMLElement>(TRANSCRIPT_BOUNDARY_SELECTOR) ?? element;
         const focusedRect = boundary.getBoundingClientRect();
         const rootRect = target.getBoundingClientRect();
         return focusedRect.bottom <= rootRect.top || focusedRect.top >= rootRect.bottom;
@@ -266,9 +262,6 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             next.closest(TRANSCRIPT_SELECTOR) !== null && isOutsideViewport(next),
         };
       };
-      // Listen on the document so focus entering from the sidebar or another
-      // surface is captured before it reaches this scroll root too. The fallback
-      // keeps the state-machine harness independent of a full DOM implementation.
       const focusEventRoot = target.ownerDocument || target;
       focusEventRoot.addEventListener('focusout', onFocusOut, true);
       const onFocusIn = (event: FocusEvent): void => {
@@ -279,7 +272,7 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         const before = incomingFocus?.target === event.target ? incomingFocus : undefined;
         incomingFocus = undefined;
         if (!pinned) return;
-        if (!event.target.closest(TRANSCRIPT_SELECTOR)) return;
+        if (event.target.closest(TRANSCRIPT_SELECTOR) === null) return;
         if (before?.outsideViewport === false) return;
         const outsideViewport = isOutsideViewport(event.target);
         const readerMoved =
@@ -328,6 +321,8 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
         target.removeEventListener('wheel', onWheel);
+        target.removeEventListener('keydown', onKeyDown);
+        target.removeEventListener('pointerdown', onPointerDown);
         target.removeEventListener('focusin', onFocusIn);
         focusEventRoot.removeEventListener('focusout', onFocusOut, true);
         lastWrittenTop = undefined;

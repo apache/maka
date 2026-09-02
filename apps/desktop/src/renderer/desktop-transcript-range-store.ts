@@ -213,6 +213,15 @@ export class DesktopTranscriptRangeStore {
     return this.#snapshot;
   }
 
+  durableEntries(): ReadonlyArray<{ readonly sequence: number; readonly message: StoredMessage }> {
+    return [...this.#durable.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([sequence, record]) => ({
+        sequence,
+        message: structuredClone(record.message),
+      }));
+  }
+
   range(): DesktopTranscriptRangeState {
     if (!this.#sourceSessionId || !this.#generation || !this.#hostEpoch) {
       throw new Error('Desktop transcript range is not initialized');

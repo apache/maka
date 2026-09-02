@@ -79,6 +79,18 @@ export interface TranscriptHistoryNoticeProps {
   onReturnToLatest(): Promise<void> | void;
 }
 
+export interface ChatViewGoalIndicatorProps {
+  /**
+   * Active autonomous-goal indicator for the session, or undefined when no
+   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
+   * pause/resume/clear affordances so a token-burning goal is never invisible
+   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
+   * autonomous continuation; `onPause`/`onResume` control it without a model
+   * turn.
+   */
+  goalIndicator?: SessionContextGoal;
+}
+
 /** Persistent navigation position with a direct path back to the transcript tail. */
 export function TranscriptHistoryNotice({
   title,
@@ -126,6 +138,7 @@ export interface TransientUserMessageProjection {
   text: string;
   ts: number;
   attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
   /**
@@ -172,7 +185,6 @@ export function ChatView(props: {
    *  avoid bringing the full provider SVG library into @maka/ui. */
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
-  modelChangePending?: boolean;
   onModelChange?(input: {
     llmConnectionId: string;
     llmConnectionSlug: string;
@@ -204,15 +216,6 @@ export function ChatView(props: {
     renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
-  /**
-   * Active autonomous-goal indicator for the session, or undefined when no
-   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
-   * pause/resume/clear affordances so a token-burning goal is never invisible
-   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
-   * autonomous continuation; `onPause`/`onResume` control it without a model
-   * turn.
-   */
-  goalIndicator?: SessionContextGoal;
   /** Error from loading the active session's persisted message log. */
   messageLoadError?: string;
   messageLoadRetryPending?: boolean;
@@ -332,7 +335,7 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
-}) {
+} & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;

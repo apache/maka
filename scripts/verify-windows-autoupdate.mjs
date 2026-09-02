@@ -23,6 +23,7 @@ import { access, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import {
   feedServed,
   startDesktopUpdateFeed,
@@ -140,13 +141,17 @@ export async function verifyWindowsAutoupdate(
       `The served version ${nextVersion} must be newer than the candidate ${candidateVersion}.`,
     );
   }
-  const nextInstallerName = `Maka-${nextVersion}-win-x64.exe`;
+  // The served build is the same target under a bumped version, so the
+  // descriptor names its installer here too.
+  const nextInstallerName = desktopReleaseTargets(nextVersion, { nightly: false })
+    .find((entry) => entry.name === 'windows-x64')
+    .payloads.find((name) => name.endsWith('.exe'));
   installerVersion(join(nextDirectory, nextInstallerName));
   await verifyDesktopUpdateArtifacts({
     directory: nextDirectory,
     metadataName: 'latest.yml',
     version: nextVersion,
-    artifactName: nextInstallerName,
+    artifactNames: [nextInstallerName],
   });
 
   const temporaryDirectory = await makeTemporaryDirectory();

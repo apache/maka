@@ -82,6 +82,7 @@ export class DesktopTranscriptReplica {
   readonly generation: string;
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
+  readonly #durableCoverage: DesktopRuntimeHostSession['transcriptBootstrap']['durableCoverage'];
   readonly #maxResidentBytes: number;
   readonly #maxResidentTurns: number;
   readonly #maxOverlayBytes: number;
@@ -110,6 +111,7 @@ export class DesktopTranscriptReplica {
     options: DesktopTranscriptReplicaOptions,
   ) {
     this.#handle = handle;
+    this.#durableCoverage = handle.transcriptBootstrap.durableCoverage;
     this.sessionId = handle.snapshot.session.sessionId;
     this.generation = options.generation ?? randomUUID();
     this.hostEpoch = handle.hostEpoch;
@@ -255,7 +257,7 @@ export class DesktopTranscriptReplica {
       if (
         anchor !== null &&
         decoded.messages.length > 0 &&
-        decoded.messages.at(-1)!.identity !== anchor - 1
+        !this.#matchesCoverageStep(anchor, decoded.messages.at(-1)!.identity + 1)
       ) {
         throw correlationError('Desktop transcript older page did not meet its anchor');
       }
@@ -308,7 +310,7 @@ export class DesktopTranscriptReplica {
       if (
         decoded.messages.length > 0 &&
         (loadTail
-          ? decoded.messages.at(-1)!.identity !== sequence
+          ? !this.#matchesCoverageStep(sequence, decoded.messages.at(-1)!.identity)
           : decoded.messages[0]!.identity !== sequence)
       ) {
         throw correlationError('Desktop transcript range did not meet its anchor');
@@ -406,7 +408,7 @@ export class DesktopTranscriptReplica {
       }
       let cursor: string | null = null;
       const anchorSequence = this.#durableThrough;
-      let expectedSequence = (anchorSequence ?? -1) + 1;
+      let nextSequence = (anchorSequence ?? -1) + 1;
       do {
         if (!this.#resident) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
@@ -426,12 +428,12 @@ export class DesktopTranscriptReplica {
           this.#acceptRange(decoded.messages);
           if (
             decoded.messages.length > 0 &&
-            decoded.messages[0]!.identity !== expectedSequence
+            !this.#matchesCoverageStep(decoded.messages[0]!.identity, nextSequence)
           ) {
             throw correlationError('Desktop transcript catch-up has a sequence gap');
           }
           if (decoded.messages.length > 0) {
-            expectedSequence = decoded.messages.at(-1)!.identity + 1;
+            nextSequence = decoded.messages.at(-1)!.identity + 1;
           }
           const completedOverlayMessageIds = this.#installDurable(decoded.messages);
           const evictedDurableSequences = this.#evictToBudget(
@@ -445,13 +447,13 @@ export class DesktopTranscriptReplica {
       } while (cursor !== null);
       // A concurrent `discard()` (LRU reclaim for another observed session) can
       // flip `#resident` to false across any page `await` above. The per-page
-      // callback already returns early in that case, so `expectedSequence` is
+      // callback already returns early in that case, so `nextSequence` is
       // left short of the watermark. Without this guard the check below would
       // turn a benign memory reclaim into a fatal `correlation_changed` that
       // drives the session terminal. A discarded replica has no watermark to
       // meet, so return cleanly and let a later resume re-catch-up.
       if (!this.#resident) return;
-      if (expectedSequence !== target + 1) {
+      if (this.#durableCoverage === 'complete' && nextSequence !== target + 1) {
         throw correlationError('Desktop transcript catch-up ended before its watermark');
       }
       this.#durableThrough = target;
@@ -505,10 +507,16 @@ export class DesktopTranscriptReplica {
     for (let index = 1; index < messages.length; index += 1) {
       const previous = messages[index - 1]!.identity;
       const current = messages[index]!.identity;
-      if (current !== previous + 1) {
+      if (!this.#matchesCoverageStep(current, previous + 1)) {
         throw correlationError('Desktop transcript page has a sequence gap');
       }
     }
+  }
+
+  #matchesCoverageStep(sequence: number, firstPossibleSequence: number): boolean {
+    return this.#durableCoverage === 'complete'
+      ? sequence === firstPossibleSequence
+      : sequence >= firstPossibleSequence;
   }
 
   #publish(

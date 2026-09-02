@@ -23,6 +23,8 @@ import {
   ARTIFACT_ENTITY_ID_MAX_CHARS,
   ARTIFACT_TURN_KEY_MAX_CHARS,
   canUserDeleteArtifact,
+  isArtifactSharedSessionReadable,
+  isArtifactUserVisible,
   isArtifactTurnKey,
   isCanonicalArtifactEntityId,
 } from '../artifacts.js';
@@ -59,5 +61,23 @@ describe('Artifact user-delete policy', () => {
     assert.equal(canUserDeleteArtifact({ source: 'deep_research' }), false);
     assert.equal(canUserDeleteArtifact({ source: 'user_upload' }), true);
     assert.equal(canUserDeleteArtifact({ source: undefined }), true);
+  });
+});
+
+describe('Artifact source policy', () => {
+  test('keeps projection artifacts internal, durable, and readable in shared sessions', () => {
+    const projection = { source: 'tool_result_projection' as const };
+
+    assert.equal(canUserDeleteArtifact(projection), false);
+    assert.equal(isArtifactUserVisible(projection), false);
+    assert.equal(isArtifactSharedSessionReadable(projection), true);
+  });
+
+  test('preserves unattributed artifact defaults', () => {
+    const unattributed = { source: undefined };
+
+    assert.equal(canUserDeleteArtifact(unattributed), true);
+    assert.equal(isArtifactUserVisible(unattributed), true);
+    assert.equal(isArtifactSharedSessionReadable(unattributed), false);
   });
 });

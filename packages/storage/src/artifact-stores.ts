@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ArtifactRecord } from '@maka/core/artifacts';
+import type { ArtifactRecord, ArtifactSource } from '@maka/core/artifacts';
 import {
   createSqliteArtifactStoreWriteAuthority,
   type ArtifactAuthorityStore,
@@ -41,8 +41,10 @@ import {
 export {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
   type ArtifactAttachmentResourceReader,
+  type ReadImageSnapshotPlan,
 } from './artifact-attachments.js';
 export { persistProviderRequestCaptureArtifact } from './provider-request-capture-artifact.js';
 
@@ -57,7 +59,31 @@ export interface InteractiveArtifactStoreWriter extends DurableArtifactAttachmen
   readonly [writerBrand]: true;
   recover(): Promise<void>;
   create(input: CreateArtifactInput): Promise<ArtifactRecord>;
-  deleteOwnedDeepResearchArtifactInSession(sessionId: string, artifactId: string): Promise<void>;
+  /**
+   * Create, reporting whether THIS call is the one that published the artifact.
+   *
+   * `create` is idempotent on a content-derived id: a second caller for the same
+   * bytes gets the existing record back. A caller that may later reclaim what it
+   * published cannot infer ownership from that success — it would reclaim an
+   * artifact an earlier, already-committed projection still references. The
+   * probe and the create share one write lease, so the receipt is exact.
+   */
+  createOwned(
+    input: CreateArtifactInput,
+  ): Promise<{ record: ArtifactRecord; publishedByThisCall: boolean }>;
+  /**
+   * Narrow system delete for one Session-owned artifact of a declared source.
+   *
+   * Not a user delete: the sources this serves are `userDeletable: false`
+   * precisely because durable replay may depend on them. The caller must name
+   * the source it believes it owns, and a mismatch throws — so a caller that is
+   * wrong about what it is reclaiming reclaims nothing.
+   */
+  deleteOwnedArtifactInSession(
+    sessionId: string,
+    artifactId: string,
+    source: ArtifactSource,
+  ): Promise<void>;
   copyConversationArtifacts(
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
@@ -140,10 +166,21 @@ function createWriterFacade(
       const acceptedInput = snapshotCreateInput(input);
       return run(() => store.create(acceptedInput));
     },
-    deleteOwnedDeepResearchArtifactInSession: (sessionId, artifactId) =>
+    createOwned: (input) => {
+      const acceptedInput = snapshotCreateInput(input);
+      return run(async () => {
+        const plannedId = acceptedInput.id;
+        const existing = plannedId
+          ? await store.getInSession(acceptedInput.sessionId, plannedId)
+          : undefined;
+        const record = await store.create(acceptedInput);
+        return { record, publishedByThisCall: !existing?.record };
+      });
+    },
+    deleteOwnedArtifactInSession: (sessionId, artifactId, source) =>
       run(async () => {
         const entry = await store.getInSession(sessionId, artifactId);
-        if (!entry.record || entry.record.source !== 'deep_research') {
+        if (!entry.record || entry.record.source !== source) {
           throw new Error('Artifact does not belong to the expected Session authority');
         }
         await store.delete(artifactId);
@@ -154,6 +191,9 @@ function createWriterFacade(
         turnIds: Object.freeze([...input.turnIds]),
         ...(input.excludeArtifactIds
           ? { excludeArtifactIds: Object.freeze([...input.excludeArtifactIds]) }
+          : {}),
+        ...(input.includeArtifactIds
+          ? { includeArtifactIds: Object.freeze([...input.includeArtifactIds]) }
           : {}),
         ...(input.linkedArtifacts
           ? {

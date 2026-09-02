@@ -79,7 +79,6 @@ export function ToolOutputSurface(props: {
   kind: string;
   heading?: string;
   body?: string;
-  attention?: 'error' | 'warning';
   actions?: ReactNode;
   actionIdentity?: string;
   children: ReactNode;
@@ -108,11 +107,7 @@ export function ToolOutputSurface(props: {
     <div
       data-slot="tool-output"
       data-kind={props.kind}
-      className={cn(
-        TOOL_OUTPUT_PANEL_CLASS,
-        props.attention === 'error' && 'maka-tool-output-destructive-border',
-        props.attention === 'warning' && 'maka-tool-output-warning-border',
-      )}
+      className={TOOL_OUTPUT_PANEL_CLASS}
     >
       {command && (
         <div className="maka-tool-output-command-row">
@@ -368,7 +363,6 @@ function TerminalPreview(props: {
       kind="terminal"
       heading={safeCmd}
       body={props.output ? shellOutputText(props.output, copy) : undefined}
-      attention={props.sandboxBlocked ? 'warning' : succeeded ? undefined : 'error'}
       actionIdentity={props.actionIdentity}
     >
       {props.output ? (
@@ -415,7 +409,6 @@ function ShellRunPreview(props: {
   const sandboxBlocked = isSandboxDeniedToolResult(result);
   const safeCmd = redactSecrets(result.cmd);
   const output = isShellOutput(result.output) ? result.output : undefined;
-  const attention = result.status === 'failed' || result.status === 'orphaned' || (result.exitCode !== undefined && result.exitCode !== 0);
 
   if (result.mode === 'pty') {
     return (
@@ -423,7 +416,6 @@ function ShellRunPreview(props: {
         result={result}
         output={output?.mode === 'pty' ? output : undefined}
         safeCmd={safeCmd}
-        attention={attention}
         sandboxBlocked={sandboxBlocked}
         source={props.source}
       />
@@ -444,7 +436,6 @@ function ShellRunPreview(props: {
       kind="shell_run"
       heading={safeCmd}
       body={pipeOutput ? shellOutputText(pipeOutput, copy) : undefined}
-      attention={attention ? (sandboxBlocked ? 'warning' : 'error') : undefined}
       actionIdentity={props.actionIdentity}
     >
       <p className={TOOL_OUTPUT_NOTE_CLASS}>
@@ -473,7 +464,6 @@ function PtyShellSurface(props: {
   result: Extract<ToolResultContent, { kind: 'shell_run' }>;
   output?: Extract<ShellOutput, { mode: 'pty' }>;
   safeCmd: string;
-  attention: boolean;
   sandboxBlocked: boolean;
   source?: 'owned' | 'unavailable';
 }) {
@@ -483,15 +473,7 @@ function PtyShellSurface(props: {
     <div
       data-slot="tool-output"
       data-kind="pty-shell"
-      className={cn(
-        TOOL_OUTPUT_PANEL_CLASS,
-        'maka-pty-shell',
-        props.attention && (
-          props.sandboxBlocked
-            ? 'maka-tool-output-warning-border'
-            : 'maka-tool-output-destructive-border'
-        ),
-      )}
+      className={cn(TOOL_OUTPUT_PANEL_CLASS, 'maka-pty-shell')}
     >
       <header className="maka-pty-shell-header">
         <span className="maka-pty-shell-title">

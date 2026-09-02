@@ -32,7 +32,7 @@ import { DEFAULT_SESSION_NAME, normalizeUserSessionName } from '@maka/core/sessi
 import {
   isSessionStartModeLabel as isExecutionSemanticLabel,
   sessionStartModeSpec,
-} from '@maka/core/deep-research';
+} from '@maka/core/session-start-mode';
 import {
   isWorkHubCoordinationSessionId,
   isWorkHubCoordinationSessionTarget,
@@ -247,6 +247,7 @@ export class HostSessionCatalogCoordinator {
           ...(workspace.projectId === null ? {} : { projectId: workspace.projectId }),
           name: prepared.name,
           labels: [...prepared.labels],
+          llmConnectionId: model.connectionId,
           llmConnectionSlug: model.connectionSlug,
           model: model.model,
           ...(input.thinkingLevel === undefined ? {} : { thinkingLevel: input.thinkingLevel }),

@@ -30,6 +30,7 @@
 import type {
   AttachmentRef,
   ContextCompactionOutcome,
+  DirectoryReference,
   MessageContent,
   QuoteRef,
   SessionEvent,
@@ -40,6 +41,7 @@ import type { InteractionClosureReason } from './interaction.js';
 import type { RuntimeEvent } from './runtime-event.js';
 import type { SandboxBoundaryResponse, SandboxBoundarySettlement } from './sandbox-boundary.js';
 import type { StoredMessage, PersistedBackendKind } from './session.js';
+import type { AgentRunHeader } from './agent-run.js';
 import type { UserQuestionResponse } from './user-question.js';
 import type { ContextBudgetDiagnostic } from './usage-stats/types.js';
 import type { EffectiveOrchestration } from './orchestration.js';
@@ -73,6 +75,8 @@ export interface BackendSendInput {
   headAnchorRuntimeEvent?: RuntimeEvent;
   text: string;
   attachments?: AttachmentRef[];
+  /** Live Host-bound directories folded into model text without eager filesystem reads. */
+  directoryReferences?: DirectoryReference[];
   /** Inline quoted excerpts folded into the model-facing user content. */
   quotes?: QuoteRef[];
   /**
@@ -88,6 +92,12 @@ export interface BackendSendInput {
    * compatibility projection.
    */
   runtimeContext?: RuntimeEvent[];
+  /**
+   * Existing durable run headers for `runtimeContext`, used only to verify
+   * provider-owned replay against the current model route. RuntimeEvents stay
+   * the transcript authority; route provenance remains owned by AgentRun.
+   */
+  runtimeContextRunHeaders?: readonly AgentRunHeader[];
   /** Continue from an already committed RuntimeEvent boundary without adding another user turn. */
   continuation?: RuntimeContinuationMetadata;
   /**
@@ -167,6 +177,8 @@ export interface BackendCompactHistoryInput {
    */
   runId: string;
   runtimeContext: readonly RuntimeEvent[];
+  /** Source-run route authority for provider-owned history projected into the compaction call. */
+  runtimeContextRunHeaders?: readonly AgentRunHeader[];
 }
 
 export interface BackendCompactHistoryResult {
@@ -178,11 +190,12 @@ export type BackendStopMode = 'immediate' | 'after_step';
 
 /**
  * The live session-event vocabulary accepted from a backend. `queue_update`
- * belongs to the runtime kernel, while legacy permission requests and
+ * belongs to the runtime kernel, Client Capability approval events belong to
+ * the Host-owned Interaction projection, and legacy permission requests and
  * acknowledgements were replaced by sandbox-boundary events. `send` stays
  * typed as `SessionEvent` for implementation ergonomics; the flow drops these
- * retired variants at ingress so they are never mapped, observed, or persisted
- * by a new run.
+ * non-backend variants at ingress so they are never mapped or persisted by a
+ * new run.
  */
 export type BackendSessionEvent = Exclude<
   SessionEvent,
@@ -192,6 +205,8 @@ export type BackendSessionEvent = Exclude<
       type:
         | 'queue_update'
         | 'message_admission'
+        | 'client_capability_request'
+        | 'client_capability_decision_ack'
         | 'permission_request'
         | 'permission_answer_ack'
         | 'permission_closure_ack'

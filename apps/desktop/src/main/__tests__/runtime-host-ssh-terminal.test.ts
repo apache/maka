@@ -40,6 +40,7 @@ import {
   createDesktopRuntimeHostSshTerminal,
   runtimeHostDevelopmentPeerTargetFromUname,
 } from '../runtime-host-ssh-terminal.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test('maps supported SSH uname identities to development peer targets', () => {
   assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
@@ -170,9 +171,11 @@ test('keeps setup credentials out of the interactive terminal projection', async
   assert.deepEqual(progress, ['installing_service']);
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token|MAKA_RUNTIME/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /mktemp -d/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /--prefix/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /mktemp -d/u);
+  assert.match(remoteCommand, /--prefix/u);
+  assert.match(remoteCommand, /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  assert.doesNotMatch(remoteCommand, /--update-existing/u);
   await harness.terminal.close();
 });
 
@@ -638,12 +641,48 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
-test('requests relay-discovery status only on the peer-management frame', async () => {
+test('creates an owner connection code through the framed SSH operator channel', async () => {
+  const harness = createHarness('pending');
+  const connectionCode = 'maka-runtime-host:connect:v1:secret-code';
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'connection-code',
+    name: "Owner's Linux",
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(encodeRuntimeHostAccessManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'connection-code',
+    connectionCode,
+  }));
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(
+    result.kind === 'result' && result.action === 'connection-code'
+      ? result.connectionCode
+      : undefined,
+    connectionCode,
+  );
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /access.*connection-code/u);
+  assert.match(command, /--name/u);
+  assert.match(command, /Owner/u);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-code|MAKA_RUNTIME/u);
+  await harness.terminal.close();
+});
+
+test('requests adaptive-connectivity status only on the peer-management frame', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runPeerManagement({
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    webRtcStunStatus: true,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/srv/maka',
@@ -653,7 +692,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
   });
   await waitFor(() => harness.pty.hasDataListener());
   const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
-  assert.match(command, /peer.*status.*--framed.*--relay-discovery-status/u);
+  assert.match(
+    command,
+    /peer.*status.*--framed.*--relay-discovery-status.*--webrtc-stun-status/u,
+  );
 
   harness.pty.emitData(
     encodeRuntimeHostPeerManagementFrame({
@@ -667,6 +709,7 @@ test('requests relay-discovery status only on the peer-management frame', async 
         routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
         coordinationRelays: [],
         automaticRelayDiscovery: true,
+        webRtcStunPolicy: { kind: 'default' },
       },
     }),
   );
@@ -674,6 +717,10 @@ test('requests relay-discovery status only on the peer-management frame', async 
 
   const result = await management;
   assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
+  assert.deepEqual(
+    result.kind === 'result' ? result.status.webRtcStunPolicy : undefined,
+    { kind: 'default' },
+  );
   await harness.terminal.close();
 });
 
@@ -914,6 +961,7 @@ test('uploads a development release archive before running the same remote setup
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY=/u);
   assert.ok(remoteCommand.includes(integrity));
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /--update-existing/u);
   assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.match(remoteCommand, /exec \/bin\/sh -c/u);
@@ -1048,9 +1096,5 @@ class FakePty {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail('Condition was not reached');
+  await pollFor(predicate, { attempts: 100, pollMs: 1, message: 'Condition was not reached' });
 }

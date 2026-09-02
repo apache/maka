@@ -18,9 +18,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import {
   CONNECTION_CATALOG_MAX_CONNECTIONS,
   decodeConnectionModelId,
+  connectionCredentialTarget,
+  decodeConnectionCredentialTarget,
   decodeConnectionSlug,
   decodeProviderType,
   decodeRuntimePolicyEntityId,
@@ -35,8 +38,11 @@ import {
   RequestCustomizationValidationError,
   normalizeCredentialSecret,
   normalizeCatalogConnectionBaseUrl,
+  normalizeNetworkProxyUpdate,
+  networkProxyCredentialTarget,
   type ConnectionCatalogEntry,
   type ConnectionCatalogSnapshot,
+  type ConnectionCredentialTarget,
   type ConnectionVersionBasis,
   type ConnectionModelDiscoveryResult,
   type ConnectionTestSummary,
@@ -54,17 +60,27 @@ import {
   type MigrateSystemSeedInput,
   type SetDefaultConnectionTargetInput,
   type UpdateCatalogConnectionInput,
+  type UpdateNetworkProxyInput,
+  type UpdateNetworkProxyResult,
 } from '@maka/core/runtime-policy';
+import {
+  applyModelFactOverridesToConnection,
+  applyModelFactOverridesToCatalogSnapshot,
+  type ModelFactsDocument,
+} from '@maka/core/model-facts';
 import { deriveProviderAuthContract, type ProviderAuthAction } from '@maka/core/provider-auth';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   deriveConnectionSlug,
+  deriveInteractiveOAuthConnectionSlug,
   effectiveBaseUrl,
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
+  providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { deepFreeze } from './codec.js';
+import { deepFreeze, nextRevision } from './codec.js';
 import {
   catalogSnapshot,
   connectionBasis,
@@ -90,6 +106,7 @@ import {
   commitOutcomeUnknown,
   decodeConnectionInput,
   decodeCredentialInput,
+  decodePolicyInput,
   RuntimePolicyStoreError,
 } from './errors.js';
 import {
@@ -97,6 +114,7 @@ import {
   connectionRequestHeadersLocator,
   type CredentialStatusQueryResult,
   type BeginConnectionTestResult,
+  type BoundCredentialMaterialExportResult,
   type BeginModelFetchResult,
   type BeginInteractiveOAuthLoginResult,
   type CompareAndSetOAuthCredentialInput,
@@ -109,7 +127,9 @@ import {
   type ConnectionOnboardingTicket,
   type ConnectionTestTicket,
   type InteractiveOAuthLoginCompletionResult,
+  type InteractiveOAuthLoginInput,
   type InteractiveOAuthLoginProvider,
+  type InteractiveOAuthLoginTarget,
   type InteractiveOAuthLoginTicket,
   type ModelFetchTicket,
   type ExecutionConnectionRef,
@@ -118,7 +138,7 @@ import {
   type ResolveExecutionConnectionResult,
   type ResolveNetworkProxyExecutionInput,
   type ResolveNetworkProxyExecutionResult,
-  type ResolveWebFetchExecutionResult,
+  type ResolveHostOutboundExecutionResult,
   type ResolveWebSearchExecutionInput,
   type ResolveWebSearchExecutionResult,
   type ReplaceConnectionRequestHeadersResult,
@@ -126,12 +146,21 @@ import {
 import {
   clearConnectionOnboardingIntent,
   prepareConnectionOnboardingIntent,
+  prepareInteractiveOAuthEnrollmentIntent,
   readConnectionOnboardingIntent,
   writeConnectionOnboardingIntent,
   type ConnectionOnboardingIntent,
+  type InteractiveOAuthEnrollmentIntent,
 } from './onboarding-transaction.js';
+import {
+  findInteractiveOAuthLoginReceipt,
+  readInteractiveOAuthLoginReceipts,
+  sameInteractiveOAuthLoginTarget,
+  upsertInteractiveOAuthLoginReceipt,
+} from './oauth-login-receipt-document.js';
 import { policySnapshot, RuntimePolicyDocumentOwner } from './policy-document.js';
 import { SerializedOperationLane } from '../serialized-operation-lane.js';
+import { ModelFactsDocumentOwner } from '../model-facts-store.js';
 
 type RootExecutor = <T>(operation: (root: string) => Promise<T>) => Promise<T>;
 
@@ -181,6 +210,7 @@ type SemanticConnectionBasis =
       readonly kind: 'connection_test';
       readonly requestBodyOverlayJson: string;
       readonly model: ConnectionTestModelBasis;
+      readonly modelFactsFingerprint: string;
     });
 
 interface ConnectionTicketRecord {
@@ -227,8 +257,12 @@ interface ConnectionOnboardingTicketRecord {
 
 interface InteractiveOAuthLoginTicketRecord {
   readonly kind: 'interactive_oauth_login';
-  readonly connectionBasis: ConnectionVersionBasis;
-  readonly providerType: InteractiveOAuthLoginProvider;
+  readonly attemptId: string;
+  readonly target: InteractiveOAuthLoginTarget;
+  readonly connectionBefore: ConnectionCatalogEntry | null;
+  readonly connectionAfter: ConnectionCatalogEntry & {
+    readonly providerType: InteractiveOAuthLoginProvider;
+  };
   readonly credentialBasis: CredentialVersionBasis | null;
   state: TicketState;
 }
@@ -243,6 +277,8 @@ export class RuntimePolicyCoordinator {
   private readonly policy = new RuntimePolicyDocumentOwner();
   private readonly catalog = new ConnectionCatalogDocumentOwner();
   private readonly vault = new CredentialVaultDocumentOwner();
+  private readonly modelFacts = new ModelFactsDocumentOwner();
+  private warnedModelFactsFingerprint: string | undefined;
   private readonly tickets = new WeakMap<object, OperationTicketRecord>();
   private onboardingRecoveryRequired = false;
 
@@ -254,6 +290,7 @@ export class RuntimePolicyCoordinator {
     return this.lane.run(async (root) => {
       await cleanupRuntimePolicyDocumentTemps(root);
       await this.recoverConnectionOnboarding(root);
+      await readInteractiveOAuthLoginReceipts(root);
       const catalog = await this.catalog.read(root);
       const vault = await this.vault.read(root);
       await this.vault.deleteOrphanedConnectionCredentials(
@@ -269,7 +306,7 @@ export class RuntimePolicyCoordinator {
   }
 
   getCatalogSnapshot() {
-    return this.inLane(async (root) => catalogSnapshot(await this.catalog.read(root)));
+    return this.inLane(async (root) => this.projectCatalogSnapshot(root));
   }
 
   getVaultSnapshot() {
@@ -316,12 +353,77 @@ export class RuntimePolicyCoordinator {
     });
   }
 
+  updateNetworkProxy(rawInput: UpdateNetworkProxyInput): Promise<UpdateNetworkProxyResult> {
+    return this.inLane(async (root) => {
+      const input = decodePolicyInput(() => normalizeNetworkProxyUpdate(rawInput));
+      const policy = await this.policy.read(root);
+      const preparedPolicy = this.policy.prepareMutation(policy, {
+        expectedRevision: input.expectedPolicyRevision,
+        operation: { kind: 'set_network_proxy', value: input.networkProxy },
+      });
+      if (preparedPolicy.kind !== 'ready') return preparedPolicy;
+
+      if (
+        input.credential.kind === 'replace' &&
+        input.credential.expectedTarget &&
+        !isDeepStrictEqual(
+          networkProxyCredentialTarget(policy.policy.networkProxy),
+          input.credential.expectedTarget,
+        )
+      ) {
+        return deepFreeze({
+          kind: 'proxy_target_mismatch' as const,
+          expected: input.credential.expectedTarget,
+          actual: networkProxyCredentialTarget(policy.policy.networkProxy),
+        });
+      }
+
+      const vault = await this.vault.read(root);
+      const existing = findCredential(vault, networkProxyCredentialLocator());
+      if (!matchesCredentialExpectation(existing, input.expectedCredential)) {
+        return deepFreeze({
+          kind: 'credential_stale' as const,
+          expected: input.expectedCredential,
+          actual: existing ? credentialBasis(existing) : null,
+        });
+      }
+      // Preflight every document before publishing either side of the compound update.
+      if (input.credential.kind === 'replace' && existing?.secret !== input.credential.secret) {
+        const prepared = this.vault.prepareSet(vault, {
+          locator: networkProxyCredentialLocator(),
+          expected: existing
+            ? { credentialId: existing.credentialId, revision: existing.revision }
+            : null,
+          secret: input.credential.secret,
+        });
+        if (prepared.kind !== 'ready') {
+          if (prepared.kind === 'credential_stale') return prepared;
+          throw codecError('invalid_credential_input', 'Network proxy credential is invalid');
+        }
+      } else if (input.credential.kind === 'delete' && existing) {
+        const prepared = this.vault.prepareDelete(vault, {
+          expected: credentialBasis(existing),
+        });
+        if (prepared.kind !== 'ready') {
+          if (prepared.kind === 'credential_stale') return prepared;
+          throw codecError('invalid_credential_input', 'Network proxy credential is invalid');
+        }
+      }
+
+      return this.applyNetworkProxyUpdate(root, input);
+    });
+  }
+
   createConnection(input: CreateCatalogConnectionInput) {
-    return this.inLane((root) => this.catalog.create(root, input));
+    return this.inLane(async (root) =>
+      this.projectCatalogMutation(root, await this.catalog.create(root, input)),
+    );
   }
 
   updateConnection(input: UpdateCatalogConnectionInput) {
-    return this.inLane((root) => this.catalog.update(root, input));
+    return this.inLane(async (root) =>
+      this.projectCatalogMutation(root, await this.catalog.update(root, input)),
+    );
   }
 
   removeConnection(rawInput: RemoveCatalogConnectionInput) {
@@ -342,7 +444,10 @@ export class RuntimePolicyCoordinator {
       const vault = await this.vault.read(root);
       if (!connection) {
         await this.vault.deleteConnectionCredentials(root, vault, expected.connectionId);
-        return deepFreeze({ kind: 'committed' as const, snapshot: catalogSnapshot(catalog) });
+        return deepFreeze({
+          kind: 'committed' as const,
+          snapshot: await this.projectCatalogSnapshot(root),
+        });
       }
       const result = await this.catalog.remove(root, { expected });
       if (result.kind === 'committed') {
@@ -355,12 +460,14 @@ export class RuntimePolicyCoordinator {
           );
         }
       }
-      return result;
+      return this.projectCatalogMutation(root, result);
     });
   }
 
   setDefaultTarget(input: SetDefaultConnectionTargetInput) {
-    return this.inLane((root) => this.catalog.setDefaultTarget(root, input));
+    return this.inLane(async (root) =>
+      this.projectCatalogMutation(root, await this.catalog.setDefaultTarget(root, input)),
+    );
   }
 
   migrateSystemSeed(input: MigrateSystemSeedInput) {
@@ -395,10 +502,23 @@ export class RuntimePolicyCoordinator {
         if (!connection) {
           return deepFreeze({ kind: 'connection_not_found' as const });
         }
+        if (
+          input.expectedConnection &&
+          !isDeepStrictEqual(connectionCredentialTarget(connection), input.expectedConnection)
+        ) {
+          return deepFreeze({
+            kind: 'connection_stale' as const,
+            expected: {
+              connectionId: input.expectedConnection.connectionId,
+              revision: input.expectedConnection.revision,
+            },
+            actual: connectionBasis(connection),
+          });
+        }
         assertConnectionIsWritable(connection);
         const required = connectionCredentialLocator(
           connection.connectionId,
-          PROVIDER_DEFAULTS[connection.providerType].authKind,
+          PROVIDER_REGISTRY[connection.providerType].authKind,
         );
         if (locator.kind !== 'request_headers' && (!required || required.kind !== locator.kind)) {
           throw codecError(
@@ -460,7 +580,7 @@ export class RuntimePolicyCoordinator {
       // reaches it today (execution resolution refuses first), which is
       // exactly why it would have stayed open.
       assertConnectionIsWritable(connection);
-      if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+      if (PROVIDER_REGISTRY[connection.providerType].authKind !== 'oauth_token') {
         throw codecError(
           'invalid_credential_input',
           'OAuth refresh credential does not match the provider auth contract',
@@ -477,32 +597,65 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  beginInteractiveOAuthLogin(rawConnectionId: string): Promise<BeginInteractiveOAuthLoginResult> {
+  beginInteractiveOAuthLogin(
+    rawInput: InteractiveOAuthLoginInput,
+  ): Promise<BeginInteractiveOAuthLoginResult> {
     return this.inLane(async (root) => {
-      const connectionId = decodeConnectionInput(() =>
-        decodeRuntimePolicyEntityId(rawConnectionId),
-      );
+      const input = normalizeInteractiveOAuthLoginInput(rawInput);
+      const receipts = await readInteractiveOAuthLoginReceipts(root);
+      const receipt = findInteractiveOAuthLoginReceipt(receipts, input.attemptId);
+      if (receipt) {
+        return deepFreeze(
+          sameInteractiveOAuthLoginTarget(receipt.target, input.target)
+            ? {
+                kind: 'authenticated' as const,
+                target: structuredClone(receipt.target),
+                connection: structuredClone(receipt.connection),
+              }
+            : { kind: 'attempt_conflict' as const },
+        );
+      }
       const catalog = await this.catalog.read(root);
-      const connection = findConnection(catalog, { connectionId });
-      if (!connection) return deepFreeze({ kind: 'connection_not_found' as const });
-      if (!connection.enabled) return deepFreeze({ kind: 'connection_disabled' as const });
+      let connectionBefore: ConnectionCatalogEntry | null;
+      let connectionAfter: ConnectionCatalogEntry & {
+        readonly providerType: InteractiveOAuthLoginProvider;
+      };
+      if (input.target.kind === 'create') {
+        if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
+          return deepFreeze({ kind: 'catalog_full' as const });
+        }
+        connectionBefore = null;
+        connectionAfter = newInteractiveOAuthConnection(
+          randomUUID(),
+          deriveInteractiveOAuthConnectionSlug(
+            input.target.providerType,
+            catalog.connections.map(({ slug }) => slug),
+          ),
+          input.target.providerType,
+        );
+      } else {
+        const existing = findConnection(catalog, { connectionId: input.target.connectionId });
+        if (!existing) return deepFreeze({ kind: 'connection_not_found' as const });
+        if (!isInteractiveOAuthLoginProvider(existing.providerType)) {
+          return deepFreeze({ kind: 'provider_action_unavailable' as const });
+        }
+        connectionBefore = structuredClone(existing);
+        connectionAfter = reenabledInteractiveOAuthConnection(
+          existing as ConnectionCatalogEntry & {
+            readonly providerType: InteractiveOAuthLoginProvider;
+          },
+        );
+      }
+      const connection = connectionBefore ?? connectionAfter;
       if (!isInteractiveOAuthLoginProvider(connection.providerType)) {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: 'hidden' as const,
-        });
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const contract = deriveProviderAuthContract({
         providerType: connection.providerType,
-        enabled: true,
         hasSecret: false,
-        lastTestStatus: connection.lastTest?.status,
       });
-      if (contract.actionAvailability.start_oauth !== 'available') {
-        return deepFreeze({
-          kind: 'provider_action_unavailable' as const,
-          availability: contract.actionAvailability.start_oauth,
-        });
+      if (!contract.actionAvailability.start_oauth) {
+        return deepFreeze({ kind: 'provider_action_unavailable' as const });
       }
       const prepared = await this.prepareConnectionMaterial(root, connection, false);
       if (prepared.kind !== 'ready') return prepared;
@@ -515,21 +668,42 @@ export class RuntimePolicyCoordinator {
       }
       const existing = findCredential(await this.vault.read(root), locator);
       const ticket = this.issueInteractiveOAuthLoginTicket(
-        connectionBasis(connection),
-        connection.providerType,
+        input.attemptId,
+        input.target,
+        connectionBefore,
+        connectionAfter,
         existing ? credentialBasis(existing) : null,
       );
       return deepFreeze({
         kind: 'ready' as const,
         ticket,
-        connection: structuredClone(connection) as ConnectionCatalogEntry & {
-          readonly providerType: InteractiveOAuthLoginProvider;
-        },
+        target: structuredClone(input.target),
+        identity: interactiveOAuthConnectionIdentity(connectionAfter),
+        connection: structuredClone(connectionAfter),
         secretMaterial: prepared.secretMaterial.networkProxy
           ? { networkProxy: prepared.secretMaterial.networkProxy }
           : {},
         networkProxy: structuredClone(prepared.networkProxy),
       });
+    });
+  }
+
+  queryInteractiveOAuthLogin(rawAttemptId: string) {
+    return this.inLane(async (root) => {
+      const attemptId = decodeInteractiveOAuthAttemptId(rawAttemptId, 'invalid_connection_input');
+      const receipt = findInteractiveOAuthLoginReceipt(
+        await readInteractiveOAuthLoginReceipts(root),
+        attemptId,
+      );
+      return deepFreeze(
+        receipt
+          ? {
+              kind: 'authenticated' as const,
+              target: structuredClone(receipt.target),
+              connection: structuredClone(receipt.connection),
+            }
+          : { kind: 'not_found' as const },
+      );
     });
   }
 
@@ -542,19 +716,18 @@ export class RuntimePolicyCoordinator {
       this.inLane(async (root) => {
         const secret = decodeCredentialInput(() => normalizeCredentialSecret(rawSecret));
         const catalog = await this.catalog.read(root);
-        const connection = findConnection(catalog, claimed.connectionBasis);
         const changed: Array<'connection' | 'credential'> = [];
-        if (
-          !connection ||
-          connection.revision !== claimed.connectionBasis.revision ||
-          connection.providerType !== claimed.providerType ||
-          !connection.enabled
-        ) {
+        const preparedCatalog = this.catalog.prepareOAuthEnrollmentUpsert(
+          catalog,
+          claimed.connectionBefore,
+          claimed.connectionAfter,
+        );
+        if (preparedCatalog.kind !== 'ready') {
           changed.push('connection');
         }
         const locator = {
           scope: 'connection',
-          connectionId: claimed.connectionBasis.connectionId,
+          connectionId: claimed.connectionAfter.connectionId,
           kind: 'oauth_token',
         } as const;
         const vault = await this.vault.read(root);
@@ -569,43 +742,33 @@ export class RuntimePolicyCoordinator {
         if (changed.length > 0) {
           return deepFreeze({ kind: 'superseded' as const, changed });
         }
-        const prepared = this.vault.prepareSet(vault, {
-          locator,
-          expected: claimed.credentialBasis
-            ? {
-                credentialId: claimed.credentialBasis.credentialId,
-                revision: claimed.credentialBasis.revision,
-              }
-            : null,
+        const intent = prepareInteractiveOAuthEnrollmentIntent({
+          attemptId: claimed.attemptId,
+          target: claimed.target,
+          connectionBefore: claimed.connectionBefore,
+          connectionAfter: claimed.connectionAfter,
+          credentialBasis: claimed.credentialBasis,
           secret,
         });
-        if (prepared.kind !== 'ready') {
-          return deepFreeze({
-            kind: 'superseded' as const,
-            changed: ['credential'] as const,
-          });
-        }
-        const cleared = await this.catalog.clearConnectionLastTest(
-          root,
-          catalog,
-          locator.connectionId,
-        );
         try {
-          await this.vault.commitSet(root, prepared);
+          await writeConnectionOnboardingIntent(root, intent);
         } catch (error) {
-          if (cleared) {
-            throw commitOutcomeUnknown(
-              'Connection verification was cleared before OAuth login completed',
-              error,
-            );
-          }
+          if (isCommitOutcomeUnknown(error)) this.onboardingRecoveryRequired = true;
           throw error;
         }
-        return deepFreeze({
-          kind: 'committed' as const,
-          credentialId: prepared.entry.credentialId,
-          revision: prepared.entry.revision,
-        });
+        try {
+          const result = await this.applyInteractiveOAuthEnrollment(root, intent);
+          await clearConnectionOnboardingIntent(root);
+          this.onboardingRecoveryRequired = false;
+          return deepFreeze({ kind: 'committed' as const, ...result });
+        } catch (error) {
+          this.onboardingRecoveryRequired = true;
+          if (isCommitOutcomeUnknown(error)) throw error;
+          throw commitOutcomeUnknown(
+            'OAuth enrollment has a durable intent and must recover before retrying',
+            error,
+          );
+        }
       }),
     );
   }
@@ -677,21 +840,18 @@ export class RuntimePolicyCoordinator {
         return deepFreeze({ kind: 'provider_retired' as const });
       }
 
-      const contract = deriveProviderAuthContract({
-        providerType: connection.providerType,
-        enabled: true,
-        hasSecret: true,
-        lastTestStatus: connection.lastTest?.status,
-      });
       const prepared = await this.prepareConnectionMaterial(
         root,
         connection,
-        contract.requiresSecret,
+        providerAuthRequiresSecret(connection.providerType),
       );
       if (prepared.kind !== 'ready') return prepared;
       return deepFreeze({
         kind: 'ready' as const,
-        connection: structuredClone(connection),
+        connection: applyModelFactOverridesToConnection(
+          structuredClone(connection),
+          (await this.readModelFacts(root)).document.overrides,
+        ),
         secretMaterial: prepared.secretMaterial,
         networkProxy: structuredClone(prepared.networkProxy),
       });
@@ -700,15 +860,63 @@ export class RuntimePolicyCoordinator {
 
   exportCredentialMaterial(
     rawLocator: CredentialLocator,
-  ): Promise<RuntimePolicyCredentialMaterial | null> {
+  ): Promise<RuntimePolicyCredentialMaterial | null>;
+  exportCredentialMaterial(
+    rawLocator: CredentialLocator,
+    rawExpectedConnection: ConnectionCredentialTarget,
+  ): Promise<BoundCredentialMaterialExportResult>;
+  exportCredentialMaterial(
+    rawLocator: CredentialLocator,
+    rawExpectedConnection?: ConnectionCredentialTarget,
+  ): Promise<RuntimePolicyCredentialMaterial | null | BoundCredentialMaterialExportResult> {
     return this.inLane(async (root) => {
       const locator = decodeCredentialInput(() => decodeCredentialLocator(rawLocator));
+      const expectedConnection = rawExpectedConnection
+        ? decodeConnectionInput(() => decodeConnectionCredentialTarget(rawExpectedConnection))
+        : undefined;
+      if (expectedConnection && locator.scope !== 'connection') {
+        throw codecError(
+          'invalid_credential_input',
+          'Only connection credentials accept a connection target basis',
+        );
+      }
       if (locator.scope === 'connection') {
         const catalog = await this.catalog.read(root);
-        if (!this.validateConnectionCredentialLocator(catalog, locator)) return null;
+        const connection = findConnection(catalog, locator);
+        if (
+          expectedConnection &&
+          (!connection ||
+            !isDeepStrictEqual(connectionCredentialTarget(connection), expectedConnection))
+        ) {
+          return deepFreeze({
+            kind: 'connection_stale' as const,
+            expected: {
+              connectionId: expectedConnection.connectionId,
+              revision: expectedConnection.revision,
+            },
+            actual: connection ? connectionBasis(connection) : null,
+          });
+        }
+        if (!this.validateConnectionCredentialLocator(catalog, locator)) {
+          return expectedConnection
+            ? deepFreeze({ kind: 'exported' as const, material: null })
+            : null;
+        }
       }
       const credential = findCredential(await this.vault.read(root), locator);
-      return credential ? credentialMaterial(credential) : null;
+      const material = credential
+        ? {
+            ...credentialMaterial(credential),
+            ...(locator.scope === 'network_proxy'
+              ? {
+                  proxyTarget: networkProxyCredentialTarget(
+                    (await this.policy.read(root)).policy.networkProxy,
+                  ),
+                }
+              : {}),
+          }
+        : null;
+      return expectedConnection ? deepFreeze({ kind: 'exported' as const, material }) : material;
     });
   }
 
@@ -923,7 +1131,7 @@ export class RuntimePolicyCoordinator {
     });
   }
 
-  resolveWebFetchExecution(): Promise<ResolveWebFetchExecutionResult> {
+  resolveHostOutboundExecution(): Promise<ResolveHostOutboundExecutionResult> {
     return this.inLane(async (root) => {
       const policy = (await this.policy.read(root)).policy;
       if (policy.privacy.incognitoActive) {
@@ -991,7 +1199,10 @@ export class RuntimePolicyCoordinator {
           connectionBasis(checked.connection),
           result,
         );
-        return deepFreeze({ kind: 'committed' as const, snapshot });
+        return deepFreeze({
+          kind: 'committed' as const,
+          snapshot: await this.projectCatalogSnapshot(root),
+        });
       }),
     );
   }
@@ -1065,7 +1276,7 @@ export class RuntimePolicyCoordinator {
       let requestHeadersSecret: string | null = null;
       const locator = connectionCredentialLocator(
         target.candidate.connectionId,
-        PROVIDER_DEFAULTS[providerType].authKind,
+        PROVIDER_REGISTRY[providerType].authKind,
       );
       if (locator) {
         credential = credentialStatus(vault, locator);
@@ -1329,21 +1540,32 @@ export class RuntimePolicyCoordinator {
         'test_credentials',
       );
       if (prepared.kind !== 'ready') return prepared;
+      const facts = await this.readModelFacts(root);
+      const projectedConnection = applyModelFactOverridesToConnection(
+        structuredClone(prepared.connection),
+        facts.document.overrides,
+      );
       const modelId =
         rawModelId === null
           ? null
           : decodeConnectionInput(() => decodeConnectionModelId(rawModelId));
-      if (modelId !== null && !isCanonicalConnectionTestModel(prepared.connection, modelId)) {
+      if (modelId !== null && !isCanonicalConnectionTestModel(projectedConnection, modelId)) {
         throw codecError(
           'invalid_connection_input',
           'Connection test model is not in the canonical model set',
         );
       }
-      const ticket = this.issueTicket('connection_test', connectionTestSemanticBasis(prepared));
+      const ticket = this.issueTicket(
+        'connection_test',
+        connectionTestSemanticBasis(
+          prepared,
+          this.modelFacts.fingerprintForConnection(facts.document, prepared.connection),
+        ),
+      );
       return deepFreeze({
         kind: 'ready' as const,
         ticket: ticket as ConnectionTestTicket,
-        connection: structuredClone(prepared.connection),
+        connection: projectedConnection,
         modelId,
         secretMaterial: prepared.secretMaterial,
         networkProxy: structuredClone(prepared.networkProxy),
@@ -1358,6 +1580,9 @@ export class RuntimePolicyCoordinator {
     const claimed = this.claimTicket(ticket, 'connection_test');
     return this.completeClaimedTicket(claimed, () =>
       this.inLane(async (root) => {
+        if (claimed.basis.kind !== 'connection_test') {
+          throw new Error('Coordinator admitted a non-connection-test ticket');
+        }
         const catalog = await this.catalog.read(root);
         const checked = await this.checkSemanticConnectionBasis(root, catalog, claimed.basis);
         if (checked.changed.length > 0 || !checked.connection) {
@@ -1368,8 +1593,12 @@ export class RuntimePolicyCoordinator {
           catalog,
           connectionBasis(checked.connection),
           result,
+          claimed.basis.modelFactsFingerprint,
         );
-        return deepFreeze({ kind: 'committed' as const, snapshot });
+        return deepFreeze({
+          kind: 'committed' as const,
+          snapshot: await this.projectCatalogSnapshot(root),
+        });
       }),
     );
   }
@@ -1388,13 +1617,10 @@ export class RuntimePolicyCoordinator {
 
     const contract = deriveProviderAuthContract({
       providerType: connection.providerType,
-      enabled: true,
       hasSecret: true,
-      lastTestStatus: connection.lastTest?.status,
     });
-    const availability = contract.actionAvailability[action];
-    if (availability !== 'available') {
-      return deepFreeze({ kind: 'provider_action_unavailable' as const, availability });
+    if (!contract.actionAvailability[action]) {
+      return deepFreeze({ kind: 'provider_action_unavailable' as const });
     }
     return this.prepareConnectionMaterial(root, connection, contract.requiresSecret);
   }
@@ -1407,7 +1633,7 @@ export class RuntimePolicyCoordinator {
     | PreparedConnectionMaterial
     | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   > {
-    const authKind = PROVIDER_DEFAULTS[connection.providerType].authKind;
+    const authKind = PROVIDER_REGISTRY[connection.providerType].authKind;
     const locator = connectionCredentialLocator(connection.connectionId, authKind);
     const policy = await this.policy.read(root);
     const networkProxy = structuredClone(policy.policy.networkProxy);
@@ -1478,7 +1704,7 @@ export class RuntimePolicyCoordinator {
     if (locator.kind === 'request_headers') return true;
     const required = connectionCredentialLocator(
       connection.connectionId,
-      PROVIDER_DEFAULTS[connection.providerType].authKind,
+      PROVIDER_REGISTRY[connection.providerType].authKind,
     );
     if (!required || required.kind !== locator.kind) {
       throw codecError(
@@ -1513,17 +1739,31 @@ export class RuntimePolicyCoordinator {
   }> {
     const connection = findConnection(catalog, { connectionId: basis.connectionId });
     const changed: ConnectionEffectChangedDomain[] = [];
+    const facts = basis.kind === 'connection_test' ? await this.readModelFacts(root) : undefined;
     if (
-      !connection ||
-      connection.providerType !== basis.providerType ||
-      !connection.enabled ||
-      canonicalEffectiveEndpoint(connection) !== basis.effectiveEndpoint ||
+      basis.kind === 'connection_test' &&
+      (!connection ||
+        this.modelFacts.fingerprintForConnection(facts!.document, connection) !==
+          basis.modelFactsFingerprint)
+    ) {
+      changed.push('connection');
+    }
+    const effectiveConnection =
+      connection && basis.kind === 'connection_test'
+        ? applyModelFactOverridesToConnection(connection, facts!.document.overrides)
+        : connection;
+    if (
+      !effectiveConnection ||
+      effectiveConnection.providerType !== basis.providerType ||
+      !effectiveConnection.enabled ||
+      canonicalEffectiveEndpoint(effectiveConnection) !== basis.effectiveEndpoint ||
       (basis.kind === 'model_fetch' &&
-        !sameStringArray(connection.enabledModelIds, basis.enabledModelIds)) ||
+        !sameStringArray(effectiveConnection.enabledModelIds, basis.enabledModelIds)) ||
       (basis.kind === 'connection_test' &&
-        JSON.stringify(connection.requestBodyOverlay ?? {}) !== basis.requestBodyOverlayJson) ||
+        JSON.stringify(effectiveConnection.requestBodyOverlay ?? {}) !==
+          basis.requestBodyOverlayJson) ||
       (basis.kind === 'connection_test' &&
-        !sameConnectionTestModelBasis(connectionTestModelBasis(connection), basis.model))
+        !sameConnectionTestModelBasis(connectionTestModelBasis(connection!), basis.model))
     ) {
       changed.push('connection');
     }
@@ -1576,15 +1816,21 @@ export class RuntimePolicyCoordinator {
   }
 
   private issueInteractiveOAuthLoginTicket(
-    connectionBasisValue: ConnectionVersionBasis,
-    providerType: InteractiveOAuthLoginProvider,
+    attemptId: string,
+    target: InteractiveOAuthLoginTarget,
+    connectionBefore: ConnectionCatalogEntry | null,
+    connectionAfter: ConnectionCatalogEntry & {
+      readonly providerType: InteractiveOAuthLoginProvider;
+    },
     credentialBasisValue: CredentialVersionBasis | null,
   ): InteractiveOAuthLoginTicket {
     const ticket = Object.freeze(Object.create(null)) as object;
     this.tickets.set(ticket, {
       kind: 'interactive_oauth_login',
-      connectionBasis: connectionBasisValue,
-      providerType,
+      attemptId,
+      target: structuredClone(target),
+      connectionBefore: connectionBefore ? structuredClone(connectionBefore) : null,
+      connectionAfter: structuredClone(connectionAfter),
       credentialBasis: credentialBasisValue,
       state: 'available',
     });
@@ -1636,7 +1882,11 @@ export class RuntimePolicyCoordinator {
     }
     this.onboardingRecoveryRequired = true;
     try {
-      await this.applyConnectionOnboarding(root, intent);
+      if (intent.schemaVersion === 3) {
+        await this.applyInteractiveOAuthEnrollment(root, intent);
+      } else {
+        await this.applyConnectionOnboarding(root, intent);
+      }
       await clearConnectionOnboardingIntent(root);
       this.onboardingRecoveryRequired = false;
     } catch (error) {
@@ -1648,6 +1898,186 @@ export class RuntimePolicyCoordinator {
       if (isCommitOutcomeUnknown(error)) throw error;
       throw commitOutcomeUnknown('Connection onboarding recovery did not converge', error);
     }
+  }
+
+  private async applyNetworkProxyUpdate(
+    root: string,
+    input: UpdateNetworkProxyInput,
+  ): Promise<Extract<UpdateNetworkProxyResult, { readonly kind: 'committed' }>> {
+    const policy = await this.policy.read(root);
+    const vault = await this.vault.read(root);
+    const locator = networkProxyCredentialLocator();
+    const existing = findCredential(vault, locator);
+    const credentialChanged =
+      input.credential.kind === 'replace'
+        ? existing?.secret !== input.credential.secret
+        : input.credential.kind === 'delete' && existing !== undefined;
+    const proxyChanged = !isDeepStrictEqual(policy.policy.networkProxy, input.networkProxy);
+    const effectiveProxyChanged = !sameEffectiveProxyConfiguration(
+      effectiveProxyConfigurationBasis(policy.policy.networkProxy),
+      effectiveProxyConfigurationBasis(input.networkProxy),
+    );
+    const cleared =
+      credentialChanged || effectiveProxyChanged
+        ? await this.catalog.clearAllConnectionLastTests(root, await this.catalog.read(root))
+        : false;
+    let durableChange = cleared;
+    let snapshot = policySnapshot(policy);
+    try {
+      const commitCredential = async (): Promise<void> => {
+        if (input.credential.kind === 'replace' && credentialChanged) {
+          const prepared = this.vault.prepareSet(vault, {
+            locator,
+            expected: existing
+              ? { credentialId: existing.credentialId, revision: existing.revision }
+              : null,
+            secret: input.credential.secret,
+          });
+          if (prepared.kind !== 'ready') {
+            throw codecError('invalid_document', 'Network proxy credential update became stale');
+          }
+          await this.vault.commitSet(root, prepared);
+          durableChange = true;
+        } else if (input.credential.kind === 'delete' && existing) {
+          const prepared = this.vault.prepareDelete(vault, {
+            expected: credentialBasis(existing),
+          });
+          if (prepared.kind !== 'ready') {
+            throw codecError('invalid_document', 'Network proxy credential deletion became stale');
+          }
+          await this.vault.commitDelete(root, prepared);
+          durableChange = true;
+        }
+      };
+
+      const commitPolicy = async (): Promise<void> => {
+        if (!proxyChanged) return;
+        const prepared = this.policy.prepareMutation(policy, {
+          expectedRevision: policy.revision,
+          operation: { kind: 'set_network_proxy', value: input.networkProxy },
+        });
+        if (prepared.kind !== 'ready') {
+          throw codecError('invalid_document', 'Network proxy policy update became stale');
+        }
+        snapshot = (await this.policy.commitMutation(root, prepared)).snapshot;
+        durableChange = true;
+      };
+
+      // Never leave an enabled policy pointing at an absent credential: publish a
+      // replacement before enabling its use, and retire credential use before deletion.
+      if (
+        input.credential.kind === 'delete' &&
+        !requiresNetworkProxyCredential(input.networkProxy)
+      ) {
+        await commitPolicy();
+        await commitCredential();
+      } else {
+        await commitCredential();
+        await commitPolicy();
+      }
+    } catch (error) {
+      if (durableChange && !isCommitOutcomeUnknown(error)) {
+        throw commitOutcomeUnknown('Network proxy update committed only some effects', error);
+      }
+      throw error;
+    }
+    const finalVault = await this.vault.read(root);
+    return deepFreeze({
+      kind: 'committed' as const,
+      snapshot,
+      credentialStatus: credentialStatus(finalVault, locator),
+    });
+  }
+
+  private async applyInteractiveOAuthEnrollment(
+    root: string,
+    intent: InteractiveOAuthEnrollmentIntent,
+  ): Promise<{
+    readonly credentialId: string;
+    readonly revision: number;
+    readonly connection: ReturnType<typeof interactiveOAuthConnectionIdentity>;
+  }> {
+    const existingReceipt = findInteractiveOAuthLoginReceipt(
+      await readInteractiveOAuthLoginReceipts(root),
+      intent.attemptId,
+    );
+    const intendedIdentity = interactiveOAuthConnectionIdentity(intent.connectionAfter);
+    if (
+      existingReceipt &&
+      (!sameInteractiveOAuthLoginTarget(existingReceipt.target, intent.target) ||
+        existingReceipt.connection.connectionId !== intendedIdentity.connectionId ||
+        existingReceipt.connection.slug !== intendedIdentity.slug ||
+        existingReceipt.connection.providerType !== intendedIdentity.providerType)
+    ) {
+      throw codecError(
+        'invalid_document',
+        'OAuth login receipt conflicts with the enrollment intent',
+      );
+    }
+    const catalog = await this.catalog.read(root);
+    // Validate the complete catalog transition before the vault-first write.
+    // A damaged intent must never rotate a real account and discover its
+    // identity collision only afterwards.
+    const catalogPrepared = this.catalog.prepareOAuthEnrollmentUpsert(
+      catalog,
+      intent.connectionBefore,
+      intent.connectionAfter,
+    );
+    if (catalogPrepared.kind !== 'ready') {
+      throw codecError(
+        'invalid_document',
+        `OAuth enrollment catalog preflight returned ${catalogPrepared.kind}`,
+      );
+    }
+    const locator = {
+      scope: 'connection',
+      connectionId: intent.connectionAfter.connectionId,
+      kind: 'oauth_token',
+    } as const;
+    const vault = await this.vault.read(root);
+    let credential = findCredential(vault, locator);
+    if (credential?.secret !== intent.secret) {
+      if (
+        intent.credentialBasis
+          ? !sameCredentialBasis(credential, intent.credentialBasis)
+          : credential !== undefined
+      ) {
+        throw codecError('invalid_document', 'OAuth enrollment credential basis changed');
+      }
+      const prepared = this.vault.prepareSet(vault, {
+        locator,
+        expected: intent.credentialBasis
+          ? {
+              credentialId: intent.credentialBasis.credentialId,
+              revision: intent.credentialBasis.revision,
+            }
+          : null,
+        secret: intent.secret,
+      });
+      if (prepared.kind !== 'ready') {
+        throw codecError(
+          'invalid_document',
+          `OAuth enrollment credential write returned ${prepared.kind}`,
+        );
+      }
+      await this.vault.commitSet(root, prepared);
+      credential = prepared.entry;
+    }
+    if (!credential) {
+      throw codecError('invalid_document', 'OAuth enrollment did not produce a credential');
+    }
+    await this.catalog.commitPreparedOnboarding(root, catalogPrepared);
+    const connection = intendedIdentity;
+    await upsertInteractiveOAuthLoginReceipt(root, {
+      attemptId: intent.attemptId,
+      target: intent.target,
+      connection,
+    });
+    return {
+      credentialId: credential.credentialId,
+      revision: credential.revision,
+      connection,
+    };
   }
 
   private async applyConnectionOnboarding(
@@ -1741,6 +2171,88 @@ export class RuntimePolicyCoordinator {
       return operation(root);
     });
   }
+
+  private async projectCatalogSnapshot(root: string): Promise<ConnectionCatalogSnapshot> {
+    const facts = await this.readModelFacts(root);
+    const snapshot = catalogSnapshot(await this.catalog.read(root));
+    return deepFreeze(
+      hideStaleModelFactsVerification(
+        applyModelFactOverridesToCatalogSnapshot(snapshot, facts.document.overrides),
+        snapshot,
+        facts.document,
+        this.modelFacts,
+      ),
+    );
+  }
+
+  private async readModelFacts(root: string) {
+    const facts = await this.modelFacts.readWithDiagnostics(root);
+    if (facts.diagnostic !== undefined && this.warnedModelFactsFingerprint !== facts.fingerprint) {
+      process.emitWarning(`model-facts.json is ${facts.diagnostic}; ignoring its overrides`, {
+        type: 'RuntimePolicyWarning',
+      });
+      this.warnedModelFactsFingerprint = facts.fingerprint;
+    }
+    return facts;
+  }
+
+  private async projectCatalogMutation<T extends { readonly kind: string }>(
+    root: string,
+    result: T,
+  ): Promise<T> {
+    if (result.kind !== 'committed' || !('snapshot' in result)) return result;
+    return deepFreeze({
+      ...result,
+      snapshot: await this.projectCatalogSnapshot(root),
+    }) as T;
+  }
+}
+
+function hideStaleModelFactsVerification(
+  projected: ConnectionCatalogSnapshot,
+  persisted: ConnectionCatalogSnapshot,
+  document: ModelFactsDocument,
+  owner: ModelFactsDocumentOwner,
+): ConnectionCatalogSnapshot {
+  const persistedById = new Map(
+    persisted.connections.map((connection) => [connection.connectionId, connection] as const),
+  );
+  return {
+    ...projected,
+    connections: projected.connections.map((connection) => {
+      if (connection.lastTest === undefined) return connection;
+      const raw = persistedById.get(connection.connectionId);
+      if (!raw) return connection;
+      const current = owner.fingerprintForConnection(document, raw);
+      const emptyFactsFingerprint = owner.fingerprintForConnection(
+        { ...document, overrides: {} },
+        raw,
+      );
+      // Catalogs written before model facts existed have no marker. They remain
+      // valid until facts for this connection actually exist; every test
+      // recorded by this feature carries a connection-scoped marker and is
+      // checked exactly.
+      if (
+        raw.lastTestModelFactsFingerprint === current ||
+        (raw.lastTestModelFactsFingerprint === undefined && current === emptyFactsFingerprint)
+      ) {
+        return connection;
+      }
+      const {
+        lastTest: _lastTest,
+        lastTestModelFactsFingerprint: _lastTestModelFactsFingerprint,
+        ...withoutLastTest
+      } = connection;
+      return withoutLastTest;
+    }),
+  };
+}
+
+function matchesCredentialExpectation(
+  actual: ReturnType<typeof findCredential>,
+  expected: CredentialVersionBasis | null,
+): boolean {
+  return expected === null ? actual === undefined : sameCredentialBasis(actual, expected);
 }
 
 function isCommitOutcomeUnknown(error: unknown): error is RuntimePolicyStoreError {
@@ -1782,12 +2294,14 @@ function modelFetchSemanticBasis(
 
 function connectionTestSemanticBasis(
   prepared: PreparedConnectionMaterial,
+  modelFactsFingerprint: string,
 ): Extract<SemanticConnectionBasis, { readonly kind: 'connection_test' }> {
   return {
     kind: 'connection_test',
     ...commonSemanticConnectionBasis(prepared),
     requestBodyOverlayJson: JSON.stringify(prepared.connection.requestBodyOverlay ?? {}),
     model: connectionTestModelBasis(prepared.connection),
+    modelFactsFingerprint,
   };
 }
 
@@ -1946,4 +2460,78 @@ function isInteractiveOAuthLoginProvider(
   providerType: ProviderType,
 ): providerType is InteractiveOAuthLoginProvider {
   return providerType === 'openai-codex' || providerType === 'xai-oauth';
+}
+
+function normalizeInteractiveOAuthLoginInput(
+  input: InteractiveOAuthLoginInput,
+): InteractiveOAuthLoginInput {
+  const attemptId = decodeInteractiveOAuthAttemptId(input?.attemptId, 'invalid_connection_input');
+  const target = input?.target;
+  if (target?.kind === 'create') {
+    const providerType = decodeConnectionInput(() => decodeProviderType(target.providerType));
+    if (!isInteractiveOAuthLoginProvider(providerType)) {
+      throw codecError('invalid_connection_input', 'OAuth create target provider is unsupported');
+    }
+    return { attemptId, target: { kind: 'create', providerType } };
+  }
+  if (target?.kind === 'existing') {
+    return {
+      attemptId,
+      target: {
+        kind: 'existing',
+        connectionId: decodeConnectionInput(() => decodeRuntimePolicyEntityId(target.connectionId)),
+      },
+    };
+  }
+  throw codecError('invalid_connection_input', 'Unknown interactive OAuth login target');
+}
+
+function newInteractiveOAuthConnection(
+  connectionId: string,
+  slug: string,
+  providerType: InteractiveOAuthLoginProvider,
+): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
+  const defaults = PROVIDER_REGISTRY[providerType];
+  return {
+    connectionId,
+    revision: 1,
+    slug,
+    name: defaults.label,
+    providerType,
+    enabled: true,
+    enabledModelIds: providerFallbackModelIds(defaults),
+    models: [],
+  };
+}
+
+function reenabledInteractiveOAuthConnection(
+  connection: ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider },
+): ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider } {
+  if (connection.enabled && connection.lastTest === undefined) return structuredClone(connection);
+  const { lastTest: _lastTest, ...withoutLastTest } = connection;
+  return {
+    ...withoutLastTest,
+    revision: nextRevision(connection.revision),
+    enabled: true,
+  };
+}
+
+function interactiveOAuthConnectionIdentity(
+  connection: ConnectionCatalogEntry & { readonly providerType: InteractiveOAuthLoginProvider },
+) {
+  return {
+    connectionId: connection.connectionId,
+    slug: connection.slug,
+    providerType: connection.providerType,
+  } as const;
+}
+
+function decodeInteractiveOAuthAttemptId(
+  value: unknown,
+  source: 'invalid_connection_input' | 'invalid_document',
+): string {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+    throw codecError(source, 'OAuth attempt id is invalid');
+  }
+  return value;
 }

@@ -17,10 +17,10 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { ToolOutputDeltaEvent } from '@maka/core/events';
 import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
-import { expect } from '../test-helpers.js';
 import { createToolOutputDeltaEmitter } from '../tool-output-delta.js';
 
 describe('ToolOutputDelta emitter', () => {
@@ -38,10 +38,16 @@ describe('ToolOutputDelta emitter', () => {
     emitter.emit('stdout', 'one\n');
     emitter.emit('stderr', 'two\n');
 
-    expect(events.map((event) => event.seq)).toEqual([1, 2]);
-    expect(events.map((event) => event.stream)).toEqual(['stdout', 'stderr']);
-    expect(events[0]?.toolCallId).toBe('tool-1');
-    expect(events[0]?.toolUseId).toBe('tool-1');
+    assert.deepStrictEqual(
+      events.map((event) => event.seq),
+      [1, 2],
+    );
+    assert.deepStrictEqual(
+      events.map((event) => event.stream),
+      ['stdout', 'stderr'],
+    );
+    assert.strictEqual(events[0]?.toolCallId, 'tool-1');
+    assert.strictEqual(events[0]?.toolUseId, 'tool-1');
   });
 
   test('redacts chunk metadata without mutating the event shape', () => {
@@ -57,10 +63,10 @@ describe('ToolOutputDelta emitter', () => {
 
     emitter.emit('stdout', 'Authorization: Bearer sk-live-secret-token-value\n');
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.redacted).toBe(true);
-    expect(events[0]?.chunk).toContain('[redacted]');
-    expect(events[0]?.chunk.includes('sk-live-secret-token-value')).toBe(false);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0]?.redacted, true);
+    assert.ok(events[0]?.chunk.includes('[redacted]'));
+    assert.strictEqual(events[0]?.chunk.includes('sk-live-secret-token-value'), false);
   });
 
   test('buffers unterminated chunks so secrets split across writes are still redacted', () => {
@@ -75,12 +81,12 @@ describe('ToolOutputDelta emitter', () => {
     });
 
     emitter.emit('stdout', 'token=sk-live-secret');
-    expect(events).toHaveLength(0);
+    assert.strictEqual(events.length, 0);
     emitter.emit('stdout', '-token-value\n');
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.redacted).toBe(true);
-    expect(events[0]?.chunk.includes('sk-live-secret-token-value')).toBe(false);
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0]?.redacted, true);
+    assert.strictEqual(events[0]?.chunk.includes('sk-live-secret-token-value'), false);
   });
 
   test('keeps a redaction tail when forced to flush a long unterminated stream', () => {
@@ -98,8 +104,11 @@ describe('ToolOutputDelta emitter', () => {
     emitter.emit('stdout', '-token-value\n');
 
     const body = events.map((event) => event.chunk).join('');
-    expect(body.includes('sk-live-secret-token-value')).toBe(false);
-    expect(events.some((event) => event.redacted)).toBe(true);
+    assert.strictEqual(body.includes('sk-live-secret-token-value'), false);
+    assert.strictEqual(
+      events.some((event) => event.redacted),
+      true,
+    );
   });
 
   test('enforces chunk bound before pushing to renderer', () => {
@@ -115,8 +124,11 @@ describe('ToolOutputDelta emitter', () => {
 
     emitter.emit('stdout', `${'x'.repeat(TOOL_OUTPUT_DELTA_MAX_CHARS + 300)}\n`);
 
-    expect(events.length > 1).toBe(true);
-    expect(events.every((event) => event.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS)).toBe(true);
+    assert.strictEqual(events.length > 1, true);
+    assert.strictEqual(
+      events.every((event) => event.chunk.length <= TOOL_OUTPUT_DELTA_MAX_CHARS),
+      true,
+    );
   });
 
   test('flush emits the final partial chunk before tool_result can arrive', () => {
@@ -131,11 +143,11 @@ describe('ToolOutputDelta emitter', () => {
     });
 
     emitter.emit('stdout', 'partial');
-    expect(events).toHaveLength(0);
+    assert.strictEqual(events.length, 0);
     emitter.flush();
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.chunk).toBe('partial');
+    assert.strictEqual(events.length, 1);
+    assert.strictEqual(events[0]?.chunk, 'partial');
   });
 });
 

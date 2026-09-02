@@ -20,47 +20,7 @@
 /** Read-only Deep Research session semantics and prompt contract. */
 
 import type { DeepResearchRun } from './deep-research-run.js';
-import type { PermissionMode } from './permission.js';
-
-/**
- * A product intent a caller can open a new session at, distinct from the
- * ordinary chat that needs no intent at all. Absence is spelled `undefined`,
- * not a `'chat'` member: a second spelling of "no mode" is a second thing to
- * keep in agreement.
- */
-export interface SessionStartModeSpec {
-  readonly name: string;
-  readonly labels: readonly string[];
-  readonly permissionMode: PermissionMode;
-}
-
-export const SESSION_START_MODE_SPECS = {
-  deep_research: {
-    name: 'Deep Research',
-    labels: ['mode:deep_research'],
-    permissionMode: 'explore',
-  },
-} as const satisfies Record<string, SessionStartModeSpec>;
-
-export type SessionStartMode = keyof typeof SESSION_START_MODE_SPECS;
-export const SESSION_START_MODES: readonly SessionStartMode[] = Object.keys(
-  SESSION_START_MODE_SPECS,
-) as SessionStartMode[];
-export const SESSION_START_MODE_LABELS: readonly string[] = [
-  ...new Set(Object.values(SESSION_START_MODE_SPECS).flatMap((spec) => spec.labels)),
-];
-
-export function isSessionStartMode(value: unknown): value is SessionStartMode {
-  return typeof value === 'string' && Object.hasOwn(SESSION_START_MODE_SPECS, value);
-}
-
-export function sessionStartModeSpec(mode: SessionStartMode): SessionStartModeSpec {
-  return SESSION_START_MODE_SPECS[mode];
-}
-
-export function isSessionStartModeLabel(value: unknown): value is string {
-  return typeof value === 'string' && SESSION_START_MODE_LABELS.includes(value);
-}
+import { SESSION_START_MODE_SPECS } from './session-start-mode.js';
 
 export const DEEP_RESEARCH_SESSION_NAME = SESSION_START_MODE_SPECS.deep_research.name;
 export const DEEP_RESEARCH_SESSION_LABEL = SESSION_START_MODE_SPECS.deep_research.labels[0];

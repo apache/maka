@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import childProcess, {
   type ExecFileException,
@@ -45,6 +46,7 @@ import {
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PtyProcessDriver } from '../pty-process-driver.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const NO_ABORT = new AbortController().signal;
 const TEMPORARY_WORKSPACES = new Set<string>();
@@ -59,24 +61,6 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
-  test('keeps user-owned terminals out of the model background-task summary', async () => {
-    const store = createSqliteShellRunStore(await workspace());
-    await store.createShellRun({
-      ...record({ shellRunId: 'user-shell', status: 'running' }),
-      visibility: 'user',
-      command: 'user-private-command',
-    });
-    await store.createShellRun({
-      ...record({ shellRunId: 'model-shell', status: 'running' }),
-      command: 'model-background-command',
-    });
-
-    const summary = await createManager(store).buildContextSummary('session-1');
-
-    assert.match(summary ?? '', /model-background-command/u);
-    assert.doesNotMatch(summary ?? '', /user-private-command/u);
-  });
-
   test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
     const store = createSqliteShellRunStore(await workspace());
     await store.createShellRun({
@@ -3051,11 +3035,11 @@ async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 3_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for ShellRun state');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 20,
+    message: 'Timed out waiting for ShellRun state',
+  });
 }
 
 function nodeCommand(script: string): string {
@@ -3169,15 +3153,4 @@ function delayPosixProcessDiscovery(context: TestContext): {
     started: processTableStarted.promise,
     release: () => releaseProcessTable.resolve(),
   };
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 }

@@ -19,6 +19,7 @@
 
 mod bindings;
 mod engine;
+mod webrtc_direct;
 
 pub use bindings::{
     ConfigurePeerTransitOptions, ConnectPeerOptions, PeerEndpoint, PeerIdentitySignature,

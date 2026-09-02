@@ -94,10 +94,10 @@ export async function runRuntimeHostTui(input: RunRuntimeHostTuiInput): Promise<
         )
         .map((choice) => choice.model),
       modelChoices: context.modelChoices,
+      subscribeModelCatalogChanges: context.subscribeModelCatalogChanges,
       connectionSlug: context.connectionSlug,
       connectionId: context.connectionId,
       connectionIdentities: context.connectionIdentities,
-      providerType: context.providerType,
       modelContextWindow: context.modelContextWindow,
       permissionMode: context.prospectivePermissionMode,
       turnActivity: context.turnActivity,

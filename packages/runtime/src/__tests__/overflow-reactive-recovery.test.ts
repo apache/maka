@@ -27,7 +27,7 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -44,6 +44,7 @@ import {
   type HistoryCompactCheckpoint,
   type HistoryCompactProviderState,
 } from '../history-compact-checkpoint.js';
+import { HistoryCompactSummarizerError } from '../history-compact-error.js';
 import {
   createTestAiSdkBackend,
   testToolResultArchive,
@@ -61,6 +62,7 @@ function reactiveStructuredSummary(foldedRuntimeEvents: RuntimeEvent[]): string 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const ANCHOR_TEXT = 'reactive overflow recovery keep my exact words';
 const OVERFLOW_MESSAGE = 'prompt is too long: 213462 tokens > 200000 maximum';
+const PROVIDER_STATE_IDENTITY = `sha256:${'1'.repeat(64)}` as const;
 
 /**
  * Per-provider-request script. Each entry drives one `doStream` invocation:
@@ -126,17 +128,26 @@ const BIG_RESULT = 'BIG_RESULT_'.repeat(200);
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  /**
+   * A model that declares no context window, on a provider whose default
+   * policy sets no history budget either — so nothing can synthesize one.
+   */
+  withoutContextWindow?: boolean;
   reserveTokens?: number;
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
   bigPriors?: boolean;
+  /** Leave same-route and cross-route signed thinking in a reduced pre-turn tail. */
+  reasoningReplayTail?: boolean;
   /** Add one hydrated historical image that fits the proactive capacity estimate. */
   imagePrior?: boolean;
   /** Put one image attachment on the durable current-turn user anchor. */
   currentImage?: boolean;
   /** Make Read return a newly produced image during this turn. */
   liveImageResult?: boolean;
-  summarize?: () =>
+  summarize?: (input: {
+    source: { foldedRuntimeEvents: RuntimeEvent[] };
+  }) =>
     | Promise<string | HistoryCompactProviderState | undefined>
     | string
     | HistoryCompactProviderState
@@ -193,6 +204,7 @@ interface ReactiveFixture {
   summarizerCalls: () => number;
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
+  priorRunHeaders: AgentRunHeader[];
   events: SessionEvent[];
   llmCalls: ReactiveLlmCall[];
   /** Canonical settlements, whole, when `canonicalAccounting` is on. */
@@ -457,7 +469,37 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
             'model',
             `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
           ),
+          ...(options.reasoningReplayTail
+            ? [
+                {
+                  ...runtimeTextEvent('same-route-reasoning', 'turn-0', 'model', ''),
+                  runId: 'same-route-prior-run',
+                  invocationId: 'same-route-prior-run',
+                  content: {
+                    kind: 'thinking' as const,
+                    text: 'SAME_ROUTE_PRIVATE_REASONING',
+                    signature: 'same-route-signature',
+                  },
+                },
+                {
+                  ...runtimeTextEvent('prior-reasoning', 'turn-0', 'model', ''),
+                  runId: 'prior-run',
+                  invocationId: 'prior-run',
+                  content: {
+                    kind: 'thinking' as const,
+                    text: 'CROSS_ROUTE_PRIVATE_REASONING',
+                    signature: 'cross-route-signature',
+                  },
+                },
+              ]
+            : []),
         ];
+  const priorRunHeaders: AgentRunHeader[] = options.reasoningReplayTail
+    ? [
+        priorRunHeader('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
+        priorRunHeader('prior-run', 'source-connection-id', 'source-model-id'),
+      ]
+    : [];
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
     ...(options.currentImage
@@ -517,13 +559,13 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
           return options.providerNative
             ? ({
                 kind: 'openai_codex_remote_v2',
-                connectionSlug: 'codex-subscription',
+                connectionId: 'test-connection-id',
                 modelId: 'mock-model-id',
                 itemId: 'cmp_reactive',
                 encryptedContent: 'REACTIVE_ENCRYPTED_STATE',
               } satisfies HistoryCompactProviderState)
             : options.summarize
-              ? await options.summarize()
+              ? await options.summarize(input)
               : reactiveStructuredSummary(input.source.foldedRuntimeEvents);
         },
         recordHistoryCompactCheckpoint: (checkpoint: HistoryCompactCheckpoint) => {
@@ -545,9 +587,15 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       ...(options.providerNative
         ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
         : {}),
-      models: [{ id: 'mock-model-id', contextWindow }],
+      ...(options.withoutContextWindow ? { providerType: 'deepseek' as const } : {}),
+      models: [
+        options.withoutContextWindow
+          ? { id: 'mock-model-id' }
+          : { id: 'mock-model-id', contextWindow },
+      ],
     },
     apiKey: 'sk-test',
+    ...(options.reasoningReplayTail ? { providerStateIdentity: PROVIDER_STATE_IDENTITY } : {}),
     modelId: 'mock-model-id',
     modelFactory: () => model,
     ...(options.imagePrior || options.currentImage || options.liveImageResult
@@ -574,7 +622,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ref: {
                 kind: 'session_file' as const,
                 sessionId: 'session-1',
-                relativePath: 'live.png',
+                relativePath: 'live_image',
               },
             };
           }
@@ -600,7 +648,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
     contextBudget: {
       name: 'reactive-test',
-      maxHistoryEstimatedTokens: 100_000,
+      // An undeclared window on this provider carries no history budget either,
+      // matching what the default policy builds for it.
+      ...(options.withoutContextWindow ? {} : { maxHistoryEstimatedTokens: 100_000 }),
       historyCompact: {
         enabled: true,
         ...(midTurnEnabled ? { midTurn: { enabled: true, reserveTokens } } : {}),
@@ -659,6 +709,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     summarizerCalls: () => counters.summarizerCalls,
     anchor,
     priorEvents,
+    priorRunHeaders,
     events,
     llmCalls,
     commits,
@@ -680,6 +731,7 @@ async function runTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
+    runtimeContextRunHeaders: fixture.priorRunHeaders,
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -1117,6 +1169,36 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(successorPrompt.includes(RAW_SPAN_ONE), true);
   });
 
+  test('step-0 overflow recovery gates reasoning on retry and durable reload', async () => {
+    let summarizeCalls = 0;
+    const fixture = buildReactiveFixture({
+      script: ['overflow', 'tool', 'done'],
+      bigPriors: true,
+      reasoningReplayTail: true,
+      summarize: (input) => {
+        summarizeCalls += 1;
+        if (summarizeCalls <= 2) {
+          throw new HistoryCompactSummarizerError('input_too_large');
+        }
+        return reactiveStructuredSummary(input.source.foldedRuntimeEvents);
+      },
+    });
+    await runTurn(fixture);
+
+    assert.equal(fixture.model.doStreamCalls.length, 3);
+    assert.equal(fixture.summarizerCalls(), 3);
+    for (const call of fixture.model.doStreamCalls.slice(1)) {
+      const prompt = JSON.stringify(call.prompt);
+      assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);
+      assert.match(prompt, new RegExp(ANCHOR_TEXT));
+      assert.match(prompt, /SAME_ROUTE_PRIVATE_REASONING/);
+      assert.match(prompt, /same-route-signature/);
+      assert.doesNotMatch(prompt, /CROSS_ROUTE_PRIVATE_REASONING/);
+      assert.doesNotMatch(prompt, /cross-route-signature/);
+    }
+    assert.match(JSON.stringify(fixture.model.doStreamCalls[2]?.prompt), new RegExp(RAW_SPAN_ONE));
+  });
+
   test('the resend seals the fold recovery made for it, and the request before it seals none', async () => {
     // Recovery is the other place the boundary moves between two dispatches of
     // one send, and the harder one: the fold happens after a request was
@@ -1299,6 +1381,28 @@ describe('reactive overflow recovery in the streaming backend', () => {
 
     assert.equal(fixture.model.doStreamCalls.length, 2);
     assert.equal(fixture.recorded.length, 0);
+  });
+
+  test('recovers a model whose context window nothing can supply', async () => {
+    // DeepSeek publishes no window and its default policy sets no history
+    // budget, so no number could be synthesized and mid-turn state was skipped
+    // entirely. That left the one provider with no proactive threshold ALSO
+    // without reactive recovery. The overflow is a real provider rejection, so
+    // recovery needs no window of its own.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      withoutContextWindow: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
   });
 
   test('recovers from a plain-object in-stream error part, not just Error instances (review round-8 P1-1)', async () => {
@@ -1587,7 +1691,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // First-request overflow with no prior turns: the pool is just the current
     // user message, so there is no safe completed span to fold. Recovery is not
     // possible, so the provider error is surfaced honestly (not a fake success,
-    // and not a synthesized context_budget_exhausted — the provider rejected).
+    // and not a locally synthesized verdict — the provider rejected).
     const fixture = buildReactiveFixture({ script: ['overflow'], withoutPriorTurns: true });
     await runTurn(fixture);
 
@@ -1680,20 +1784,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 1);
   });
 
-  test('a checkpoint fold never sneaks an injected steering message past the capacity verdict', async () => {
-    // Round-5 F2: injected steering is PINNED out of the foldable span. If a
-    // mid-turn fold could cover it, the verdict would credit the fold with
-    // chars the request never actually sheds (the accumulator re-appends the
-    // directive), passing a request whose real payload it never measured.
+  test('a checkpoint fold never covers an injected steering message', async () => {
+    // Round-5 F2: injected steering is PINNED out of the foldable span, so a
+    // measurement of the folded request is a measurement of what the provider
+    // actually receives — the accumulator re-appends the directive either way.
     //
-    // Scenario: steer once at step 1 (6k chars — folds fine, stays in the
-    // tail, measured). At step 2 a second, window-breaking steer (12k chars)
-    // arrives and the fold's cut can now reach PAST the first steering
-    // event. Unpinned, the fold covers it, the verdict sees a shrunken
-    // payload and passes, and the post-verdict re-append ships an unmeasured
-    // over-window request to a happy end_turn. Pinned, the fold cannot cover
-    // it, the honest estimate exceeds the window, and the verdict terminates
-    // explicitly BEFORE the request goes out.
+    // Scenario: steer once at step 1 (6k chars), then again at step 2 (12k)
+    // so the fold's cut can reach PAST the first steering event. Unpinned,
+    // the fold would swallow the first steer and the request that goes out
+    // would carry chars nothing measured.
     const fixture = buildReactiveFixture({
       script: ['tool', 'tool', 'done'],
       contextWindow: 2_000,
@@ -1721,15 +1820,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
       return [];
     });
 
-    // The verdict measured the pinned, steering-inclusive payload and refused
-    // it explicitly instead of completing on an unmeasured over-window request
-    // (unpinned, the fold hides the first steer from the measurement and the
-    // turn ends happily on end_turn). The third request is rejected locally
-    // before the provider adapter is called.
-    assert.equal(complete(fixture)?.stopReason, 'context_budget_exhausted');
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    // Both steers were durably delivered to the ledger before the verdict —
-    // they are owned by history, not lost.
+    // The first steer survives the fold verbatim in the last request: it was
+    // pinned out of the covered span, not summarized away.
+    assert.match(JSON.stringify(fixture.model.doStreamCalls.at(-1)?.prompt), /PIN_STEER_ONE/);
+    // Both steers were durably delivered to the ledger — owned by history.
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 2);
   });
 
@@ -1825,11 +1919,32 @@ function header(): SessionHeader {
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model-id',
     permissionMode: 'ask',
     schemaVersion: 1,
+  };
+}
+
+function priorRunHeader(runId: string, llmConnectionId: string, modelId: string): AgentRunHeader {
+  return {
+    runId,
+    sessionId: 'session-1',
+    turnId: 'turn-0',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionId,
+    llmConnectionSlug: 'anthropic-source',
+    modelId,
+    providerStateIdentity:
+      runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
+    cwd: '/tmp/maka',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 2,
+    completedAt: 2,
   };
 }
 

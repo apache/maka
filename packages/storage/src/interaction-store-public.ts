@@ -25,6 +25,7 @@
 export {
   STORED_INTERACTION_OUTCOME_MAX_BYTES,
   STORED_INTERACTION_REQUEST_MAX_BYTES,
+  STORED_CLIENT_CAPABILITY_SESSION_GRANT_MAX_BYTES,
   InteractionStoreError,
   authenticateInteractionStoreReader,
   authenticateInteractionStoreWriter,

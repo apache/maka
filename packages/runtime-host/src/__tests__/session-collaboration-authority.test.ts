@@ -64,7 +64,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
     ]);
     const credentialId = authority.authenticate(invitation.credential)?.credentialId;
     assert.ok(credentialId);
-    await authority.finalize(credentialId, 'guest-client');
+    await authority.finalize(credentialId, 'guest-client', false);
     const activeGuest = authority.authenticate(invitation.credential);
     assert.deepEqual(activeGuest?.operationGrants, [
       'host.status',
@@ -78,6 +78,7 @@ test('Session Guest invitation, grants, and revocation form one durable authorit
       'subscription.close',
       'session.transcript.page',
       'session.transcript.overlay.release',
+      'access.credential.finalize',
     ]);
     assert.ok(activeGuest);
     const unidentifiedQuery = queryCollaborationTurnRequests(
@@ -153,6 +154,52 @@ test('Turn requests reject execution input that the Owner cannot review', () => 
       }),
     /Unknown Session Turn request intent field/u,
   );
+});
+
+test('Owner can query one durable Turn-request inbox without exposing another Guest', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-session-turn-request-inbox-'));
+  const authority = await openRuntimeHostAccessAuthority(directory);
+  try {
+    assert.deepEqual(HOST_OPERATION_SPECS['collaboration.turn-request.query'].decodeInput({}), {});
+    const firstGuest = await activateTurnGuest(authority, 'session-1');
+    const secondGuest = await activateTurnGuest(authority, 'session-2');
+    await authority.createTurnAccessRequest(firstGuest, {
+      intent: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        content: { text: 'First request' },
+      },
+    });
+    await authority.createTurnAccessRequest(secondGuest, {
+      intent: {
+        sessionId: 'session-2',
+        turnId: 'turn-2',
+        content: { text: 'Second request' },
+      },
+    });
+
+    assert.deepEqual(
+      authority
+        .queryTurnAccessRequests(LOCAL_OWNER, {})
+        .requests.map((request) => request.intent.sessionId),
+      ['session-1', 'session-2'],
+    );
+    assert.deepEqual(
+      authority
+        .queryTurnAccessRequests(sessionGuest(firstGuest), {})
+        .requests.map((request) => request.intent.sessionId),
+      ['session-1'],
+    );
+    assert.deepEqual(
+      authority
+        .queryTurnAccessRequests(LOCAL_OWNER, { sessionId: 'session-2' })
+        .requests.map((request) => request.intent.sessionId),
+      ['session-2'],
+    );
+  } finally {
+    await authority.close();
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('an approved exact Turn request survives restart and is admitted once', async () => {
@@ -591,14 +638,17 @@ test('drain does not terminalize an in-flight admission failure', async () => {
   }
 });
 
-async function activateTurnGuest(authority: RuntimeHostAccessAuthority): Promise<string> {
+async function activateTurnGuest(
+  authority: RuntimeHostAccessAuthority,
+  sessionId = 'session-1',
+): Promise<string> {
   const prepared = await authority.prepareCollaborationInvitation('root-1', {
-    sessionId: 'session-1',
+    sessionId,
     grantKinds: ['session_turn_request'],
   });
   const invitation = decodeCollaborationInvitationCode(prepared.invitationCode);
   const credentialId = authority.authenticate(invitation.credential)?.credentialId;
   assert.ok(credentialId);
-  await authority.finalize(credentialId, 'guest-client');
+  await authority.finalize(credentialId, 'guest-client', false);
   return prepared.principalId;
 }

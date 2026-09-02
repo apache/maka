@@ -111,6 +111,8 @@ async function mountRegion(): Promise<{
             children: createElement(AstryxLocaleProvider, {
               children: createElement(ChatComposerRegion, {
               composerRef: composer,
+              directoryComposerProps: {},
+              directoryPickerEnabled: false,
               active: true,
               onboardingComposerHidden: false,
               activeInteraction: undefined,
@@ -119,8 +121,7 @@ async function mountRegion(): Promise<{
               newTaskSendPending,
               stopPendingBySession: {},
               respondToSandboxBoundary: () => {},
-              activeSandboxBoundary: undefined,
-              activeQuestion: undefined,
+              respondToClientCapability: () => {},
               respondToUserQuestion: () => {},
               stop: () => {},
               onSend: () => {},

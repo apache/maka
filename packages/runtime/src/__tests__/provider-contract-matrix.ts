@@ -77,9 +77,31 @@ export const SUBSCRIPTION_WIRE_ADAPTER_KINDS: ReadonlySet<ProviderRuntimeAdapter
   ['openai-codex', 'github-copilot'],
 );
 
+/**
+ * The wire a provider's Runtime adapter speaks, which its `/models` endpoint
+ * follows. Derived from the adapter rather than declared beside it: the two
+ * cannot then disagree.
+ */
+export type ProviderWireProtocol = 'anthropic' | 'openai' | 'google' | 'cohere';
+
+function wireProtocolFor(def: ProviderDefaults): ProviderWireProtocol {
+  switch (def.runtimeAdapter.kind) {
+    case 'anthropic':
+      return 'anthropic';
+    case 'google':
+      return 'google';
+    case 'cohere':
+      return 'cohere';
+    case 'unavailable':
+      throw new Error('an unavailable adapter has no wire');
+    default:
+      return 'openai';
+  }
+}
+
 /** Derived expectation for a generated `discovery` cell. */
 export interface ProviderContractDiscoveryPlan {
-  protocol: ProviderDefaults['protocol'];
+  protocol: ProviderWireProtocol;
   /**
    * How the discovery request carries (or omits) a credential:
    *   - `none`     the request must carry no credential — a public model list, or
@@ -153,7 +175,6 @@ export interface ProviderContractEdgeWireSample {
 
 export interface ProviderContractRow {
   providerType: ProviderType;
-  protocol: ProviderDefaults['protocol'];
   adapterKind: ProviderRuntimeAdapter['kind'];
   discoveryKind: ProviderModelDiscovery['kind'];
   /** Deterministic model id generated cells drive through discovery and the wire. */
@@ -174,7 +195,7 @@ function overrideKeyFor(providerType: ProviderType, dimension: ProviderContractD
   return `${providerType}:${dimension}`;
 }
 
-function wireForProtocol(protocol: ProviderDefaults['protocol']): ProviderContractWire {
+function wireForProtocol(protocol: ProviderWireProtocol): ProviderContractWire {
   switch (protocol) {
     case 'openai':
       return 'openai-chat';
@@ -275,7 +296,7 @@ function edgeWireSamplesFor(
           'generated executor; own it with a named override binding instead of an edge declaration',
       );
     }
-    return { modelId, wire: wireForProtocol(def.protocol) };
+    return { modelId, wire: wireForProtocol(wireProtocolFor(def)) };
   });
 }
 
@@ -330,7 +351,7 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
         state: 'generated',
         dimension: 'discovery',
         discovery: {
-          protocol: def.protocol,
+          protocol: wireProtocolFor(def),
           auth:
             discovery.auth === 'none' || def.authKind === 'none'
               ? 'none'
@@ -383,7 +404,7 @@ function wireDimensionCell(
         'OpenAI Responses relay wire is provider-specific until the matrix has a generated Responses executor',
     };
   }
-  return { state: 'generated', dimension, wire: wireForProtocol(def.protocol) };
+  return { state: 'generated', dimension, wire: wireForProtocol(wireProtocolFor(def)) };
 }
 
 function reasoningReplayCell(
@@ -463,7 +484,6 @@ export function buildProviderContractRow(
 ): ProviderContractRow {
   return {
     providerType,
-    protocol: def.protocol,
     adapterKind: def.runtimeAdapter.kind,
     discoveryKind: def.modelDiscovery.kind,
     sampleModelId: sampleModelIdFor(providerType, def),

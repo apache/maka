@@ -21,10 +21,13 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
   type ReactNode,
+  type RefObject,
 } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
 import type { ProjectRecord } from '@maka/core/project';
@@ -35,6 +38,7 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
+  CircleCheckBig,
   FolderOpen,
   Pencil,
   Pin,
@@ -46,6 +50,7 @@ import {
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
 import { Badge } from '@astryxdesign/core/Badge';
+import { useHoverCard, type HoverCardReturn } from '@astryxdesign/core/HoverCard';
 import { MoreMenu } from '@astryxdesign/core/MoreMenu';
 import {
   SideNavItem,
@@ -56,13 +61,60 @@ import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
-import { useSessionRailData } from './session-rail-context.js';
+import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
+import {
+  type SessionRailData,
+  useSessionRailData,
+  useSessionRailRowSelection,
+  useSessionRailSelection,
+} from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
+import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
 
 type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
+
+const SIDEBAR_HOVER_CARD_DELAY_MS = 300;
+const SIDEBAR_HOVER_CARD_HIDE_DELAY_MS = 120;
+
+/**
+ * Attach a hover card without feeding its positioning ref through SideNavItem.
+ *
+ * SideNavItem merges the consumer ref with an internal popover ref. The latter
+ * changes on selection renders, which makes React detach and reattach every
+ * merged ref and churns the CSS anchor name. Positioning is immutable for a
+ * mounted row, while interaction listeners may follow the hook's latest
+ * callbacks, so keep those two lifecycles separate here.
+ */
+function useSidebarHoverCardTrigger(
+  containerRef: RefObject<HTMLElement | null>,
+  hoverCard: Pick<HoverCardReturn, 'positionRef' | 'interactionRef'>,
+): void {
+  const positionRef = useRef(hoverCard.positionRef).current;
+  const interactionRef = hoverCard.interactionRef;
+
+  useEffect(() => {
+    const trigger = containerRef.current?.querySelector<HTMLElement>(
+      'button.astryx-side-nav-item',
+    ) ?? null;
+    positionRef(trigger);
+    return () => {
+      positionRef(null);
+    };
+  }, [containerRef, positionRef]);
+
+  useEffect(() => {
+    const trigger = containerRef.current?.querySelector<HTMLElement>(
+      'button.astryx-side-nav-item',
+    ) ?? null;
+    interactionRef(trigger);
+    return () => {
+      interactionRef(null);
+    };
+  }, [containerRef, interactionRef]);
+}
 
 export interface SessionRowActions {
   onToggleFlag(sessionId: string, next: boolean): void | Promise<void>;
@@ -89,12 +141,36 @@ export interface SessionHistoryGroup {
 
 export function SessionHistoryList() {
   const rail = useSessionRailData();
+  const selection = useSessionRailSelection();
   const locale = useUiLocale();
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+    if (event.key !== 'Escape' && event.key !== 'Delete' && event.key !== 'Backspace') return;
+    // The text-entry guard comes first, and now covers Escape too: a rename
+    // field is where Escape means "abandon this edit", and answering it by
+    // clearing the selection behind the dialog would be a second, invisible
+    // effect of one keypress.
     const active = document.activeElement as HTMLElement | null;
     if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
+    const selecting = selection?.active === true;
+    const marked = selecting && selection.selectedIds.size > 0;
+    if (event.key === 'Escape') {
+      // Escape leaves the mode, matching the 取消 button. Without it the only
+      // way out is finding that button, and a mode entered by accident from the
+      // row menu becomes one the user is stuck in.
+      if (!selecting) return;
+      event.preventDefault();
+      selection.onExit();
+      return;
+    }
+    if (marked) {
+      // Delete is about the marked set once one exists. Deleting the focused
+      // row instead would act on one of several rows the user marked, which is
+      // the shape of an unrecoverable surprise. The sweep confirms first.
+      event.preventDefault();
+      void selection?.onDeleteSelected();
+      return;
+    }
     const row = active.closest<HTMLElement>(
       '[data-maka-contract="session-row"], [data-session-id]',
     );
@@ -107,6 +183,27 @@ export function SessionHistoryList() {
     }
   }
 
+  // Memoized on what it derives from. Rebuilt per render it would give
+  // `SessionListGroups` a new `props.groups` every time, which defeats the
+  // per-group memo below it — and this component re-renders on every session
+  // switch, because `rail.activeId` is part of the value it reads.
+  const groups = useMemo(
+    () =>
+      rail.groups
+        ? rail.groups.map((g) => ({
+            key: g.id,
+            label: g.label,
+            sessions: g.sessions,
+            project: g.project,
+          }))
+        : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
+            key: g.id,
+            label: g.label,
+            sessions: g.sessions,
+          })),
+    [locale, rail.groups, rail.sessions],
+  );
+
   // Outer SideNav is the sole navigation landmark and it already carries this
   // panel's name; naming this element too put "任务列表" inside "任务列表",
   // which is one ambiguous match for anything selecting by that name and no
@@ -114,22 +211,7 @@ export function SessionHistoryList() {
   // handler, nothing an assistive tech user needs to be told about separately.
   return (
     <div className="maka-session-list" onKeyDown={handleListKeyDown}>
-      <SessionListGroups
-        groups={
-          rail.groups
-            ? rail.groups.map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-                project: g.project,
-              }))
-            : groupSessionsForHistory(rail.sessions, locale).map((g) => ({
-                key: g.id,
-                label: g.label,
-                sessions: g.sessions,
-              }))
-        }
-      />
+      <SessionListGroups groups={groups} />
     </div>
   );
 }
@@ -205,6 +287,7 @@ function SessionListGroups(props: {
         stale={rail.staleSessionIds?.has(session.id) ?? false}
         worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
         meta={rail.sessionMeta?.(session)}
+        sessionBadge={rail.sessionBadge}
         onSelectSession={rail.onSelectSession}
         actions={(session as SessionSummary & { readonly shared?: true }).shared
           ? undefined
@@ -243,6 +326,7 @@ function SessionListGroups(props: {
           label={group.label}
           project={project}
           sessions={group.sessions}
+          streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
             if (project) {
@@ -280,6 +364,8 @@ function SessionListGroups(props: {
     <>
       {renameDialog}
       {props.groups.map((group) => {
+        // Once per group, never per row: a fresh array for each row would hand
+        // every `SessionNavRow` a new prop identity and defeat its memo.
         const items = group.sessions.map((session) => renderSessionRow(session));
         if (!group.label) {
           return (
@@ -303,28 +389,41 @@ function ProjectNavRow(props: {
   label: string;
   project?: ProjectRecord;
   sessions: SessionSummary[];
+  streamingSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
   renderSession(session: SessionSummary): ReactNode;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const hoverDescriptionId = useId();
+  const hoverSummary = useMemo(
+    () =>
+      createProjectHoverCardSummary(
+        props.project,
+        props.sessions,
+        props.streamingSessionIds,
+      ),
+    [props.project, props.sessions, props.streamingSessionIds],
+  );
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
   const hasSessions = props.sessions.length > 0;
   const hasActions = props.project !== undefined && props.projectActions !== undefined;
+  const hasMeta = (props.project !== undefined && !props.project.available) || hasActions;
   return (
-    <div data-project-id={props.groupKey} className="maka-project-row">
+    <div ref={containerRef} data-project-id={props.groupKey} className="maka-project-row">
       <SideNavItem
         key="navigation"
         label={props.label}
+        aria-describedby={hoverDescriptionId}
         icon={FolderOpen}
         collapsible={hasSessions ? { defaultIsCollapsed: false } : undefined}
-        endContent={
+        endContent={hasMeta ? (
           <ProjectItemMeta
             project={props.project}
-            sessionCount={props.sessions.length}
             reserveAction={hasActions}
           />
-        }
+        ) : undefined}
         trailingAction={
           props.project && props.projectActions ? (
             <ProjectItemActions
@@ -338,12 +437,53 @@ function ProjectNavRow(props: {
       >
         {/* sidebar.css keeps an 8px nest so session titles share the project x. */}
         {hasSessions ? (
-          <VStack gap={0.5}>{props.sessions.map((session) => props.renderSession(session))}</VStack>
+          <VStack gap={0.5}>
+            {props.sessions.map((session) => props.renderSession(session))}
+          </VStack>
         ) : undefined}
       </SideNavItem>
+      <ProjectHoverCardDescription
+        id={hoverDescriptionId}
+        summary={hoverSummary}
+      />
+      <ProjectHoverCardLayer
+        containerRef={containerRef}
+        label={props.label}
+        project={props.project}
+        summary={hoverSummary}
+      />
     </div>
   );
 }
+
+const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
+  containerRef: RefObject<HTMLElement | null>;
+  label: string;
+  project?: ProjectRecord;
+  summary: ProjectHoverCardSummary;
+}) {
+  const locale = useUiLocale();
+  const copy = getSessionHoverCardCopy(locale);
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: props.project
+      ? copy.projectDetailsLabel(props.label)
+      : copy.groupDetailsLabel(props.label),
+  });
+  useSidebarHoverCardTrigger(props.containerRef, hoverCard);
+
+  return hoverCard.renderHoverCard(
+    <ProjectHoverCardContent
+      label={props.label}
+      summary={props.summary}
+      locale={locale}
+    />,
+  );
+});
 
 const SessionNavRow = memo(function SessionNavRow(props: {
   session: SessionSummary;
@@ -352,11 +492,21 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   stale: boolean;
   worktree: boolean;
   meta?: string;
+  sessionBadge?: SessionRailData['sessionBadge'];
   onSelectSession(sessionId: string): void;
   actions?: SessionRowActions;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const hoverDescriptionId = useId();
   const locale = useUiLocale();
+  // The ROW half of the selection, not the whole of it. Read here rather than
+  // threaded through `renderSessionRow`, which is memoized on the rail value —
+  // but read from the narrow context, because a consumer re-renders on any
+  // change to the value it subscribes to and the wide one carries
+  // `listedSessionIds`, which moves whenever the catalog does (#4109).
+  const selection = useSessionRailRowSelection();
+  const marked = selection?.selectedIds.has(props.session.id) ?? false;
   const copy = getConversationCopy(locale).sessions;
   const signals = sessionRowSignals(
     props.session,
@@ -364,6 +514,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
     locale,
   );
   const signal = signals[0];
+  const previewStatus = signal?.tooltip ?? signal?.label ?? presentSessionStatus(
+    props.session.status === 'running' && props.session.runningTurnIds !== undefined
+      ? 'active'
+      : props.session.status,
+    locale,
+  ).label;
   // What the row communicates without text and the dot does NOT already say,
   // inside the button so it lands in the accessible name. `signals[0]` is
   // skipped because `StatusDot` carries it; the rest of the list, the worktree
@@ -384,14 +540,33 @@ const SessionNavRow = memo(function SessionNavRow(props: {
 
   return (
     <div
+      ref={containerRef}
       className="maka-session-row"
       data-maka-contract="session-row"
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
       data-worktree={props.worktree ? 'true' : undefined}
+      data-selected={marked ? 'true' : undefined}
+      data-selecting={selection?.active ? 'true' : undefined}
     >
+      {/* Outside the SideNavItem, not in its icon slot: that slot is the status
+          dot's fixed gutter, and a checkbox there would take the one column the
+          rail uses to say what a task is doing. The box gets its own leading
+          column, which only exists while the mode does. */}
+      {selection?.active ? (
+        <span className="maka-session-row-check">
+          <CheckboxInput
+            size="sm"
+            value={marked}
+            label={props.session.name}
+            isLabelHidden
+            onChange={(checked) => selection.onToggleRow(props.session.id, checked)}
+          />
+        </span>
+      ) : null}
       <SideNavItem
         label={props.session.name}
+        aria-describedby={hoverDescriptionId}
         size="md"
         isSelected={props.active}
         // Slot 1, the row's leading edge. A fixed gutter every row pays for,
@@ -432,7 +607,16 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           // the two on hover or keyboard focus. The span is rendered even with
           // no timestamp so the column exists on every row.
           <span className="maka-session-row-end">
-            {props.meta ? <Badge variant="neutral" label={props.meta} /> : null}
+            {props.sessionBadge ? (
+              <span className="maka-session-row-attention-badge">
+                {props.sessionBadge(props.session)}
+              </span>
+            ) : null}
+            {props.meta ? (
+              <span className="maka-session-row-host-badge" title={props.meta}>
+                <Badge variant="neutral" label={props.meta} />
+              </span>
+            ) : null}
             <span className="maka-session-row-time">
               {props.session.lastMessageAt ? (
                 <RelativeTime
@@ -449,6 +633,18 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           </span>
         }
       />
+      <SessionHoverCardDescription
+        id={hoverDescriptionId}
+        session={props.session}
+        status={previewStatus}
+        locale={locale}
+      />
+      <SessionHoverCardLayer
+        containerRef={containerRef}
+        session={props.session}
+        status={previewStatus}
+        locale={locale}
+      />
       {props.actions && (
         <SessionItemActions
           session={props.session}
@@ -460,9 +656,227 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   );
 });
 
+const SessionHoverCardLayer = memo(function SessionHoverCardLayer(props: {
+  containerRef: RefObject<HTMLElement | null>;
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const copy = getSessionHoverCardCopy(props.locale);
+  const hoverCard = useHoverCard({
+    placement: 'end',
+    alignment: 'start',
+    delay: SIDEBAR_HOVER_CARD_DELAY_MS,
+    hideDelay: SIDEBAR_HOVER_CARD_HIDE_DELAY_MS,
+    focusTrigger: 'always',
+    label: copy.sessionDetailsLabel(props.session.name),
+  });
+  useSidebarHoverCardTrigger(props.containerRef, hoverCard);
+
+  return hoverCard.renderHoverCard(
+    <SessionHoverCardContent
+      session={props.session}
+      status={props.status}
+      locale={props.locale}
+    />,
+  );
+});
+
+function SessionHoverCardDescription(props: {
+  id: string;
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const conversationCopy = getConversationCopy(props.locale);
+  const copy = getSessionHoverCardCopy(props.locale);
+  const session = props.session;
+  const permission = conversationCopy.permissions.mode[session.permissionMode].label;
+  const description = [
+    props.status,
+    session.lastMessagePreview || copy.noMessages,
+    session.model,
+    permission,
+    session.cwd,
+    session.lastMessageAt
+      ? `${copy.updated} ${formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}`
+      : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+
+  return <span id={props.id} className="maka-visually-hidden" aria-label={description} />;
+}
+
+function SessionHoverCardContent(props: {
+  session: SessionSummary;
+  status: string;
+  locale: UiLocale;
+}) {
+  const conversationCopy = getConversationCopy(props.locale);
+  const copy = getSessionHoverCardCopy(props.locale);
+  const session = props.session;
+  const permission = conversationCopy.permissions.mode[session.permissionMode].label;
+
+  return (
+    <span className="maka-sidebar-hover-card" data-kind="session">
+      <span className="maka-sidebar-hover-card-title">{session.name}</span>
+      <span
+        className="maka-sidebar-hover-card-preview"
+        data-empty={session.lastMessagePreview ? undefined : 'true'}
+      >
+        {session.lastMessagePreview || copy.noMessages}
+      </span>
+      <span className="maka-sidebar-hover-card-meta">
+        <span>{props.status}</span>
+        <span aria-hidden="true">·</span>
+        <span>{session.model}</span>
+        <span aria-hidden="true">·</span>
+        <span>{permission}</span>
+      </span>
+      {session.cwd ? (
+        <span className="maka-sidebar-hover-card-path" title={session.cwd}>
+          {session.cwd}
+        </span>
+      ) : null}
+      {session.lastMessageAt ? (
+        <span className="maka-sidebar-hover-card-updated">
+          {copy.updated}{' '}
+          <RelativeTime ts={session.lastMessageAt} />
+          <span className="maka-visually-hidden">
+            {formatAbsoluteTimestamp(session.lastMessageAt, props.locale)}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function ProjectHoverCardDescription(props: {
+  id: string;
+  summary: ProjectHoverCardSummary;
+}) {
+  const locale = useUiLocale();
+  const copy = getSessionHoverCardCopy(locale);
+  const summary = props.summary;
+  const description = [
+    summary.path,
+    copy.taskCount(summary.taskCount),
+    summary.runningCount > 0 ? copy.runningTaskCount(summary.runningCount) : undefined,
+    summary.available !== undefined
+      ? summary.available
+        ? copy.projectAvailable
+        : copy.projectUnavailable
+      : undefined,
+    summary.locationCount > 1
+      ? copy.locationCount(summary.locationCount)
+      : undefined,
+    summary.latestActivity
+      ? `${copy.updated} ${formatAbsoluteTimestamp(summary.latestActivity, locale)}`
+      : undefined,
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ');
+
+  return <span id={props.id} className="maka-visually-hidden" aria-label={description} />;
+}
+
+function ProjectHoverCardContent(props: {
+  label: string;
+  summary: ProjectHoverCardSummary;
+  locale: UiLocale;
+}) {
+  const copy = getSessionHoverCardCopy(props.locale);
+  const summary = props.summary;
+
+  return (
+    <span className="maka-sidebar-hover-card" data-kind="project">
+      <span className="maka-sidebar-hover-card-title">{props.label}</span>
+      {summary.path ? (
+        <span className="maka-sidebar-hover-card-path" title={summary.path}>
+          {summary.path}
+        </span>
+      ) : null}
+      <span className="maka-sidebar-hover-card-meta">
+        <span>{copy.taskCount(summary.taskCount)}</span>
+        {summary.runningCount > 0 ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{copy.runningTaskCount(summary.runningCount)}</span>
+          </>
+        ) : null}
+        {summary.available !== undefined ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>
+              {summary.available ? copy.projectAvailable : copy.projectUnavailable}
+            </span>
+          </>
+        ) : null}
+        {summary.locationCount > 1 ? (
+          <>
+            <span aria-hidden="true">·</span>
+            <span>{copy.locationCount(summary.locationCount)}</span>
+          </>
+        ) : null}
+      </span>
+      {summary.latestActivity ? (
+        <span className="maka-sidebar-hover-card-updated">
+          {copy.updated}{' '}
+          <RelativeTime ts={summary.latestActivity} />
+          <span className="maka-visually-hidden">
+            {formatAbsoluteTimestamp(summary.latestActivity, props.locale)}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+interface ProjectHoverCardSummary {
+  path?: string;
+  taskCount: number;
+  runningCount: number;
+  available?: boolean;
+  locationCount: number;
+  latestActivity?: number;
+}
+
+function createProjectHoverCardSummary(
+  project: ProjectRecord | undefined,
+  sessions: readonly SessionSummary[],
+  streamingSessionIds: ReadonlySet<string> | undefined,
+): ProjectHoverCardSummary {
+  return {
+    path: preferredProjectPath(project),
+    taskCount: sessions.length,
+    runningCount: sessions.filter(
+      (session) =>
+        resolveSessionRunningState(
+          session,
+          streamingSessionIds?.has(session.id) ?? false,
+        ).running,
+    ).length,
+    available: project?.available,
+    locationCount: project?.locations.length ?? 0,
+    latestActivity: sessions.reduce<number | undefined>(
+      (latest, session) => Math.max(latest ?? 0, session.lastMessageAt ?? 0) || undefined,
+      undefined,
+    ),
+  };
+}
+
+function preferredProjectPath(project: ProjectRecord | undefined): string | undefined {
+  if (!project) return undefined;
+  return (
+    project.preferredPath ??
+    project.locations.find((location) => !location.isWorktree)?.path ??
+    project.locations[0]?.path
+  );
+}
+
 function ProjectItemMeta(props: {
   project?: ProjectRecord;
-  sessionCount: number;
   reserveAction: boolean;
 }) {
   const copy = getConversationCopy(useUiLocale()).sessions;
@@ -471,7 +885,6 @@ function ProjectItemMeta(props: {
       {props.project && !props.project.available && (
         <AlertTriangle size={ICON_SIZE.meta} aria-label={copy.projectUnavailable} />
       )}
-      <Badge variant="neutral" label={props.sessionCount} />
       {props.reserveAction ? (
         <span className="maka-session-row-trailing" aria-hidden="true" />
       ) : null}
@@ -591,6 +1004,11 @@ function SessionItemActions(props: {
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const trailingRef = useRef<HTMLSpanElement>(null);
+  // The way in. ⌘-click is invisible to anyone who has not been told about it,
+  // and this menu is where a person already looks for what a row can do — so
+  // selection is discoverable from the same place as pin, rename, and archive.
+  // The narrow context again: this renders once per row.
+  const selection = useSessionRailRowSelection();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
   const actionContext = [
@@ -651,6 +1069,18 @@ function SessionItemActions(props: {
           if (intent) window.requestAnimationFrame(intent);
         }}
         items={[
+          ...(selection && !selection.active
+            ? [
+                {
+                  label: copy.selectRow,
+                  icon: CircleCheckBig,
+                  // Enters the mode AND marks this row: the person picked a
+                  // row, not an abstract mode, and landing them in an empty
+                  // selection would discard the choice they just made.
+                  onClick: () => selection.onEnter(props.session.id),
+                },
+              ]
+            : []),
           {
             label: props.session.isFlagged ? copy.unpin : copy.pin,
             icon: props.session.isFlagged ? PinOff : Pin,
@@ -736,17 +1166,13 @@ function sessionRowSignals(
 ): SessionRowSignal[] {
   const copy = getConversationCopy(locale).sessions;
   const signals: SessionRowSignal[] = [];
-  const requiresUserAttention =
-    session.status === 'waiting_for_user' || session.status === 'blocked';
+  const runningState = resolveSessionRunningState(session, options.streaming);
 
   // `active`, through the same vocabulary as everything else here: streaming is
   // the system working on it right now, which is what that semantic names.
   // Writing `accent` directly would resolve to the identical colour and reopen
   // the drift this change closed — half the row's dots deciding for themselves.
-  if (
-    !requiresUserAttention &&
-    (options.streaming || (session.runningTurnIds?.length ?? 0) > 0)
-  ) {
+  if (runningState.responding) {
     signals.push({
       variant: dotForStatus('active'),
       label: copy.respondingAriaLabel,
@@ -756,9 +1182,7 @@ function sessionRowSignals(
   }
 
   const { label, variant } = presentSessionStatus(session.status, locale);
-  const liveStateOwnsRunningStatus =
-    session.status === 'running' && session.runningTurnIds !== undefined;
-  if (variant && !liveStateOwnsRunningStatus) {
+  if (variant && !runningState.liveStateOwnsRunningStatus) {
     const blockedDetail =
       session.status === 'blocked' && session.blockedReason
         ? describeBlockedReason(session.blockedReason, locale)
@@ -796,6 +1220,41 @@ function sessionRowSignals(
   }
 
   return signals;
+}
+
+interface SessionRunningState {
+  responding: boolean;
+  running: boolean;
+  liveStateOwnsRunningStatus: boolean;
+}
+
+/**
+ * One live-state authority for both task rows and their project summary.
+ *
+ * Renderer-local streaming covers the send-to-catalog synchronization window;
+ * Runtime Host turn ids cover other windows and bot channels. A persisted
+ * `running` status remains the fallback only while Host live state is unknown.
+ */
+function resolveSessionRunningState(
+  session: SessionSummary,
+  rendererStreaming: boolean,
+): SessionRunningState {
+  const requiresUserAttention =
+    session.status === 'waiting_for_user' || session.status === 'blocked';
+  const liveStateOwnsRunningStatus =
+    session.status === 'running' && session.runningTurnIds !== undefined;
+  const responding =
+    !requiresUserAttention &&
+    (rendererStreaming || (session.runningTurnIds?.length ?? 0) > 0);
+  return {
+    responding,
+    running:
+      responding ||
+      (!requiresUserAttention &&
+        session.status === 'running' &&
+        !liveStateOwnsRunningStatus),
+    liveStateOwnsRunningStatus,
+  };
 }
 
 interface SessionGroup {

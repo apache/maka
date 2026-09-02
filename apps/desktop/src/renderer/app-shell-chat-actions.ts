@@ -103,17 +103,30 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
+type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
+type MessageContextOptions = {
+  directoryReferences?: DirectoryReferences;
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+};
+type SendOptions = MessageContextOptions & {
+  turnOrchestration?: TurnOrchestration;
+  displayText?: string;
+  onSessionResolved?: (sessionId: string) => void;
+};
+
+function copiedArray<K extends string, T>(
+  key: K,
+  values: readonly T[] | undefined,
+): Partial<Record<K, T[]>> {
+  return values?.length ? { [key]: [...values] } as Record<K, T[]> : {};
+}
+
 export interface AppShellChatActions {
   send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options?: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    },
+    options?: SendOptions,
   ): Promise<boolean>;
   /**
    * Resolves with whether the Message was sent. An unproven outcome counts as
@@ -125,10 +138,7 @@ export interface AppShellChatActions {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options?: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    },
+    options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
@@ -235,17 +245,20 @@ export function createAppShellChatActions(deps: {
       placement?: TransientUserMessageProjection['transientPlacement'];
       hostTurnId?: string;
       updateOnly?: boolean;
+      directoryReferences?: DirectoryReferences;
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     const next: TransientUserMessageProjection = {
       id: messageId,
       ts: Date.now(),
       text,
-      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
-      ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+      ...copiedArray('attachments', attachments),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [...(options.inlineReferences ?? [])],
       transientPlacement: options.placement ?? 'current_turn',
       ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
@@ -336,6 +349,7 @@ export function createAppShellChatActions(deps: {
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
+    const directoryReferences = input.command.directoryReferences;
     const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
@@ -383,7 +397,8 @@ export function createAppShellChatActions(deps: {
         updateOnly: true,
         placement,
         ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
         inlineReferences: result.inlineReferences ?? [],
       },
     );
@@ -397,14 +412,9 @@ export function createAppShellChatActions(deps: {
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    } = {},
+    options: SendOptions = {},
   ): Promise<boolean> {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
@@ -474,7 +484,8 @@ export function createAppShellChatActions(deps: {
           options.displayText ?? text,
           [],
           {
-            ...(quotes && quotes.length > 0 ? { quotes } : {}),
+            ...copiedArray('directoryReferences', directoryReferences),
+            ...copiedArray('quotes', quotes),
             inlineReferences: [],
           },
         );
@@ -503,14 +514,13 @@ export function createAppShellChatActions(deps: {
         const sendCommand = {
           text,
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
           ...(retainedAttachments && retainedAttachments.length > 0
             ? { retainedAttachments }
             : {}),
-          ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
         };
         const submitted = await submitAndProject({
           sessionId: session.id,
@@ -523,7 +533,7 @@ export function createAppShellChatActions(deps: {
               : {}),
           },
           ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          ...copiedArray('quotes', quotes),
           exactTurn,
           isSurfaceVisible: () => activeIdRef.current === session.id,
         });
@@ -562,7 +572,8 @@ export function createAppShellChatActions(deps: {
         options.displayText ?? text,
         [],
         {
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
           inlineReferences: [],
         },
       );
@@ -578,14 +589,13 @@ export function createAppShellChatActions(deps: {
       const sendCommand = {
         text,
         ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
+        ...copiedArray('attachmentItems', attachmentItems),
         ...(retainedAttachments && retainedAttachments.length > 0
           ? { retainedAttachments }
           : {}),
-        ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-        ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-          : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
+        ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
       };
       const submitted = await submitAndProject({
         sessionId,
@@ -596,7 +606,7 @@ export function createAppShellChatActions(deps: {
           ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
         },
         ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(quotes && quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('quotes', quotes),
         exactTurn,
         isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
@@ -671,16 +681,15 @@ export function createAppShellChatActions(deps: {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    } = {},
+    options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
       placement,
-      ...(quotes.length > 0 ? { quotes } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
@@ -692,14 +701,13 @@ export function createAppShellChatActions(deps: {
         placement,
         command: {
           text,
-          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
-          ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences?.length
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
         },
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
       // A refused Message opened nothing and left no row. Reporting it as sent

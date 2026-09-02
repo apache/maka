@@ -34,6 +34,7 @@ import {
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 
 import type { BackendSessionEvent } from '@maka/core/backend-types';
+import { compatibilityToolResultProjection } from './durable-tool-result-projection.js';
 
 export interface RuntimeEventMapContext {
   readonly sessionId: string;
@@ -129,7 +130,7 @@ export function mapSessionEventToRuntimeEvent(
   ctx: RuntimeEventMapContext,
   memory: SessionEventMapMemory = createSessionEventMapMemory(),
 ): RuntimeEvent {
-  if (event.type === 'queue_update' || event.type === 'message_admission') {
+  if (isHostProjectionSessionEvent(event)) {
     // These are Host/kernel projection facts, not backend events. The live
     // ingress drops them, so reaching this line bypassed that authority boundary.
     throw new Error(`${event.type} is not a backend event`);
@@ -142,10 +143,24 @@ export function mapSessionEventToRuntimeEvent(
 }
 
 export function isLiveBackendSessionEvent(event: SessionEvent): event is BackendSessionEvent {
+  return !isHostProjectionSessionEvent(event) && !isLegacyPermissionSessionEvent(event);
+}
+
+function isHostProjectionSessionEvent(event: SessionEvent): event is Extract<
+  SessionEvent,
+  {
+    type:
+      | 'queue_update'
+      | 'message_admission'
+      | 'client_capability_request'
+      | 'client_capability_decision_ack';
+  }
+> {
   return (
-    event.type !== 'queue_update' &&
-    event.type !== 'message_admission' &&
-    !isLegacyPermissionSessionEvent(event)
+    event.type === 'queue_update' ||
+    event.type === 'message_admission' ||
+    event.type === 'client_capability_request' ||
+    event.type === 'client_capability_decision_ack'
   );
 }
 
@@ -332,6 +347,24 @@ function mapBackendSessionEvent(
       };
     case 'tool_result': {
       const name = memory.toolNameByUseId.get(event.toolUseId) ?? '';
+      const content = {
+        kind: 'function_response' as const,
+        id: event.toolUseId,
+        name,
+        result: event.content,
+        ...(event.isError ? { isError: true as const } : {}),
+        ...(event.providerExecuted !== undefined
+          ? { providerExecuted: event.providerExecuted }
+          : {}),
+        ...(event.providerExecuted && event.providerOutput !== undefined
+          ? { providerOutput: structuredClone(event.providerOutput) }
+          : {}),
+      };
+      const modelProjection =
+        event.modelProjection ??
+        (event.operationId === undefined
+          ? compatibilityToolResultProjection(content, ctx.sessionId)
+          : undefined);
       const ev: RuntimeEvent = {
         ...base,
         role: 'tool',
@@ -339,17 +372,8 @@ function mapBackendSessionEvent(
         ...(event.origin !== undefined ? { origin: event.origin } : {}),
         ...(event.modelVisibility !== undefined ? { modelVisibility: event.modelVisibility } : {}),
         content: {
-          kind: 'function_response',
-          id: event.toolUseId,
-          name,
-          result: event.content,
-          ...(event.isError ? { isError: true } : {}),
-          ...(event.providerExecuted !== undefined
-            ? { providerExecuted: event.providerExecuted }
-            : {}),
-          ...(event.providerExecuted && event.providerOutput !== undefined
-            ? { providerOutput: structuredClone(event.providerOutput) }
-            : {}),
+          ...content,
+          ...(modelProjection ? { modelProjection } : {}),
         },
         refs: {
           toolCallId: event.toolUseId,
@@ -539,6 +563,9 @@ function mapBackendSessionEvent(
               : {}),
             ...(event.promptSegments !== undefined ? { promptSegments: event.promptSegments } : {}),
             ...(event.contextBudget !== undefined ? { contextBudget: event.contextBudget } : {}),
+            ...(event.lastRequestAnchor !== undefined
+              ? { lastRequestAnchor: event.lastRequestAnchor }
+              : {}),
           },
         },
         ...(event.providerRequestTraceId !== undefined
@@ -617,12 +644,6 @@ function completeRuntimeEvent(
   if (status === 'failed') {
     stateDelta.failureClass =
       memory.failureClass ?? failureClassFromCompleteStopReason(stopReason) ?? 'runtime_error';
-  }
-  // The context_budget_exhausted outcome carries which invariant made the turn
-  // unrecoverable; the durable terminal state must not collapse it to a bare
-  // failure class.
-  if (event.contextBudgetExhaustedDetail !== undefined) {
-    stateDelta.contextBudgetExhaustedDetail = event.contextBudgetExhaustedDetail;
   }
   if (event.contextCompactionOutcome !== undefined) {
     stateDelta.contextCompactionOutcome = event.contextCompactionOutcome;

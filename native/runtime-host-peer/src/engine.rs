@@ -34,11 +34,19 @@ use libp2p::{
     noise, ping, relay,
     swarm::{
         ConnectionId, NetworkBehaviour, SwarmEvent,
+        behaviour::toggle::Toggle,
         dial_opts::{DialOpts, PeerCondition},
     },
     tcp, yamux,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
+
+use crate::webrtc_direct::{
+    SIGNALING_PROTOCOL, UpgradeOptions, UpgradeRole, WebRtcConnection, WebRtcTransport,
+    WebRtcTransportControl, upgrade_connection,
+};
 
 mod address;
 mod application_stream;
@@ -46,13 +54,11 @@ mod identity_store;
 mod peer_stream;
 mod relay_discovery;
 
-pub(crate) use address::transit_relay_peer_id;
-use address::{
-    address_with_expected_peer, address_with_peer, coordination_relay_peer_id, is_relayed_address,
-};
+use address::{address_with_expected_peer, address_with_peer, is_relayed_address};
+pub(crate) use address::{coordination_relay_peer_id, transit_relay_peer_id};
 use identity_store::load_or_create_key;
 use peer_stream::spawn_stream;
-pub use peer_stream::{PeerStream, StreamCommand};
+pub use peer_stream::{DirectTransport, PeerConnectionPath, PeerStream, StreamCommand};
 
 const APPLICATION_PROTOCOL: &str = "/maka/runtime-host/peer/1";
 const MESH_CONTROL_PROTOCOL: &str = "/maka/runtime-host/mesh-control/1";
@@ -60,6 +66,9 @@ const IDENTIFY_PROTOCOL: &str = "/maka/runtime-host/peer-identify/1";
 const COMMAND_CAPACITY: usize = 32;
 const INCOMING_STREAM_CAPACITY: usize = 16;
 const MESH_INCOMING_STREAM_CAPACITY: usize = 32;
+const WEBRTC_SIGNALING_STREAM_CAPACITY: usize = 8;
+const MAX_CONCURRENT_WEBRTC_UPGRADES: usize = 4;
+const WEBRTC_UPGRADE_DEADLINE: Duration = Duration::from_secs(15);
 const MAX_PENDING_INCOMING_CONNECTIONS: u32 = 32;
 const MAX_PENDING_OUTGOING_CONNECTIONS: u32 = 1024;
 const MAX_ESTABLISHED_INCOMING_CONNECTIONS: u32 = 32;
@@ -67,11 +76,13 @@ const MAX_ESTABLISHED_CONNECTIONS: u32 = 1024;
 const MAX_CONNECTIONS_PER_PEER: u32 = 4;
 const LISTENER_ADDRESS_QUIET_PERIOD: Duration = Duration::from_millis(250);
 const COORDINATION_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+const TRANSIT_HOLE_PUNCH_RETRY_INTERVAL: Duration = Duration::from_secs(30);
 const AUTOMATIC_RELAY_COOLDOWN: Duration = Duration::from_secs(30);
 const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_COORDINATION_RESERVATIONS: usize = 2;
 const MAX_AUTOMATIC_RELAY_CANDIDATES: usize = 8;
 const MAX_RELAY_ADDRESSES_PER_PEER: usize = 4;
+const MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES: usize = 16;
 const TRANSIT_FALLBACK_DELAY: Duration = Duration::from_secs(3);
 const MAX_TRANSIT_RESERVATIONS: usize = 32;
 const MAX_TRANSIT_CIRCUITS: usize = 8;
@@ -86,6 +97,7 @@ pub struct StartOptions {
     pub listen_addresses: Vec<Multiaddr>,
     pub coordination_relays: Vec<Multiaddr>,
     pub automatic_relay_discovery: bool,
+    pub web_rtc_stun_urls: Option<Vec<String>>,
 }
 
 pub struct StartedEndpoint {
@@ -135,7 +147,14 @@ pub enum EngineCommand {
 
 pub struct TransitPolicy {
     pub allowed_peers: HashSet<PeerId>,
-    pub relays: Vec<Multiaddr>,
+    pub approved_relays: HashSet<PeerId>,
+    pub relays: Vec<TransitRelayCandidate>,
+}
+
+pub struct TransitRelayCandidate {
+    pub peer_id: PeerId,
+    pub addresses: Vec<Multiaddr>,
+    pub coordination_relays: Vec<Multiaddr>,
 }
 
 #[derive(Clone)]
@@ -190,14 +209,17 @@ struct Behaviour {
     ping: ping::Behaviour,
     application_stream: application_stream::Behaviour,
     mesh_control: application_stream::Behaviour,
+    webrtc_signaling: Toggle<application_stream::Behaviour>,
 }
 
 struct PendingConnect {
+    attempt_id: ConnectAttemptId,
     peer_id: PeerId,
     result: oneshot::Sender<Result<PeerStream, PeerError>>,
     stream_kind: StreamKind,
     deadline: Instant,
-    opening: Option<tokio::task::JoinHandle<()>>,
+    opening: Option<PendingStreamOpen>,
+    rejected_connections: HashSet<ConnectionId>,
     dials: HashMap<ConnectionId, DialOrigin>,
     direct_routes: Vec<Multiaddr>,
     coordination_relays: Vec<Multiaddr>,
@@ -206,7 +228,17 @@ struct PendingConnect {
     transit_after: Instant,
     next_route_attempt: Instant,
     retry_coordination: bool,
+    webrtc_attempted: bool,
+    cancellation: CancellationToken,
 }
+
+struct PendingStreamOpen {
+    connection_id: ConnectionId,
+    task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ConnectAttemptId(u64);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
@@ -219,6 +251,7 @@ pub(super) enum DialOrigin {
     Direct,
     Coordination,
     Transit,
+    WebRtc,
 }
 
 struct StartedConnect {
@@ -229,6 +262,7 @@ struct StartedConnect {
 
 struct TransitRuntime {
     allowed_peers: Arc<RwLock<HashSet<PeerId>>>,
+    approved_relays: HashSet<PeerId>,
     trusted_relays: Arc<RwLock<HashSet<PeerId>>>,
     reservations: HashSet<PeerId>,
     circuits: HashMap<(PeerId, PeerId), usize>,
@@ -255,17 +289,59 @@ impl relay::RateLimiter for AllowedPeerLimiter {
 
 #[derive(Default)]
 struct DirectConnectState {
+    next_attempt_id: u64,
     pending: HashMap<u32, PendingConnect>,
-    active: HashMap<PeerId, ConnectionId>,
+    active: HashMap<ConnectionId, usize>,
     retiring_connections: HashSet<ConnectionId>,
+}
+
+enum PendingAttemptAdmission {
+    Active(PendingConnect),
+    Expired(PendingConnect),
+}
+
+impl DirectConnectState {
+    fn allocate_attempt_id(&mut self) -> ConnectAttemptId {
+        let attempt_id = ConnectAttemptId(self.next_attempt_id);
+        self.next_attempt_id += 1;
+        attempt_id
+    }
+
+    fn take_pending_attempt(
+        &mut self,
+        request_id: u32,
+        attempt_id: ConnectAttemptId,
+        now: Instant,
+    ) -> Option<PendingAttemptAdmission> {
+        if self
+            .pending
+            .get(&request_id)
+            .is_none_or(|pending| pending.attempt_id != attempt_id)
+        {
+            return None;
+        }
+        self.pending.remove(&request_id).map(|pending| {
+            if pending.deadline <= now {
+                PendingAttemptAdmission::Expired(pending)
+            } else {
+                PendingAttemptAdmission::Active(pending)
+            }
+        })
+    }
 }
 
 struct CoordinationRelay {
     addresses: Vec<Multiaddr>,
     automatic_addresses: Vec<Multiaddr>,
     transit_addresses: Vec<Multiaddr>,
+    transit_coordination_relays: Vec<Multiaddr>,
+    transit_bootstrap_addresses: Vec<Multiaddr>,
+    transit_bootstrap_references: usize,
     reservation_addresses: Vec<Multiaddr>,
     connections: HashSet<ConnectionId>,
+    owned_connections: HashSet<ConnectionId>,
+    relayed_connections: HashSet<ConnectionId>,
+    direct_connection_addresses: HashMap<ConnectionId, Multiaddr>,
     pending_connection: Option<ConnectionId>,
     identify_received: bool,
     identify_sent: bool,
@@ -275,6 +351,7 @@ struct CoordinationRelay {
     reservation_listener: Option<ListenerId>,
     next_connection_attempt: Instant,
     next_reservation_attempt: Instant,
+    replace_relayed_at: Option<Instant>,
 }
 
 impl Default for CoordinationRelay {
@@ -284,8 +361,14 @@ impl Default for CoordinationRelay {
             addresses: Vec::new(),
             automatic_addresses: Vec::new(),
             transit_addresses: Vec::new(),
+            transit_coordination_relays: Vec::new(),
+            transit_bootstrap_addresses: Vec::new(),
+            transit_bootstrap_references: 0,
             reservation_addresses: Vec::new(),
             connections: HashSet::new(),
+            owned_connections: HashSet::new(),
+            relayed_connections: HashSet::new(),
+            direct_connection_addresses: HashMap::new(),
             pending_connection: None,
             identify_received: false,
             identify_sent: false,
@@ -295,6 +378,7 @@ impl Default for CoordinationRelay {
             reservation_listener: None,
             next_connection_attempt: now,
             next_reservation_attempt: now,
+            replace_relayed_at: None,
         }
     }
 }
@@ -305,13 +389,18 @@ impl CoordinationRelay {
     }
 
     fn is_active(&self) -> bool {
-        self.reserve || !self.transit_addresses.is_empty() || self.client_references > 0
+        self.reserve
+            || !self.transit_addresses.is_empty()
+            || !self.transit_coordination_relays.is_empty()
+            || self.transit_bootstrap_references > 0
+            || self.client_references > 0
     }
 
     fn connection_lost(&mut self, now: Instant) -> Option<ListenerId> {
         self.identify_received = false;
         self.identify_sent = false;
         self.next_connection_attempt = now;
+        self.replace_relayed_at = None;
         self.next_reservation_attempt = now
             + if self.is_automatic() {
                 AUTOMATIC_RELAY_COOLDOWN
@@ -342,7 +431,16 @@ impl CoordinationRelay {
 
 struct OpenedStream {
     request_id: u32,
-    result: Result<application_stream::OpenedStream, String>,
+    attempt_id: ConnectAttemptId,
+    connection_id: ConnectionId,
+    result: Result<application_stream::OpenedStream, application_stream::OpenStreamError>,
+}
+
+struct OutgoingWebRtcUpgrade {
+    request_id: u32,
+    attempt_id: ConnectAttemptId,
+    peer_id: PeerId,
+    result: Result<WebRtcConnection, String>,
 }
 
 pub(super) enum StreamCompletion {
@@ -350,6 +448,7 @@ pub(super) enum StreamCompletion {
         connection_id: ConnectionId,
     },
     MeshControl {
+        connection_id: ConnectionId,
         coordination_relay_peers: Vec<PeerId>,
     },
 }
@@ -489,16 +588,27 @@ async fn run_endpoint_async(
         None => load_or_create_key(&options.key_path).await?,
     };
     let local_peer_id = PeerId::from(key.public());
+    let webrtc_stun_urls = options.web_rtc_stun_urls.clone();
     let allowed_transit_peers = Arc::new(RwLock::new(HashSet::new()));
     let trusted_transit_relays = Arc::new(RwLock::new(HashSet::new()));
-    let (mut swarm, stream_control, mut incoming_streams, mesh_control, mut mesh_incoming) =
-        build_swarm(
-            key,
-            Arc::clone(&allowed_transit_peers),
-            Arc::clone(&trusted_transit_relays),
-        )?;
+    let BuiltSwarm {
+        mut swarm,
+        stream_control,
+        mut incoming_streams,
+        mesh_control,
+        mut mesh_incoming,
+        webrtc_signaling_control,
+        mut webrtc_signaling_incoming,
+        webrtc_transport,
+    } = build_swarm(
+        key,
+        Arc::clone(&allowed_transit_peers),
+        Arc::clone(&trusted_transit_relays),
+        webrtc_stun_urls.is_some(),
+    )?;
     let mut transit = TransitRuntime {
         allowed_peers: allowed_transit_peers,
+        approved_relays: HashSet::new(),
         trusted_relays: trusted_transit_relays,
         reservations: HashSet::new(),
         circuits: HashMap::new(),
@@ -531,12 +641,16 @@ async fn run_endpoint_async(
     for relay in &options.coordination_relays {
         register_coordination_relay(&mut coordination_relays, relay, local_peer_id, true, false)?;
     }
-    maintain_coordination_relays(&mut swarm, &mut coordination_relays, false, Instant::now());
+    maintain_coordination_relays(
+        &mut swarm,
+        &mut coordination_relays,
+        &HashMap::new(),
+        Instant::now(),
+    );
 
     let startup_deadline = Instant::now() + Duration::from_secs(10);
     let mut address_quiet_deadline = None;
     let mut bound_addresses = HashSet::new();
-    let mut startup_external_candidate_ready = false;
     loop {
         let deadline = address_quiet_deadline
             .unwrap_or(startup_deadline)
@@ -553,13 +667,9 @@ async fn run_endpoint_async(
                     address_quiet_deadline = Some(Instant::now() + LISTENER_ADDRESS_QUIET_PERIOD);
                 }
             }
-            Ok(event) => handle_startup_event(
-                &mut swarm,
-                event,
-                &mut coordination_relays,
-                &mut startup_external_candidate_ready,
-                &mut transit,
-            ),
+            Ok(event) => {
+                handle_startup_event(&mut swarm, event, &mut coordination_relays, &mut transit)
+            }
             Err(_) if pending_listeners.is_empty() => break,
             Err(_) => {
                 return Err(PeerError::new(
@@ -572,18 +682,25 @@ async fn run_endpoint_async(
     let mut bound_addresses = bound_addresses.into_iter().collect::<Vec<_>>();
     bound_addresses.sort_unstable_by_key(ToString::to_string);
     transit.listen_addresses.clone_from(&bound_addresses);
+    if webrtc_stun_urls.is_some() {
+        swarm
+            .listen_on("/webrtc".parse().expect("constant multiaddr"))
+            .map_err(|error| PeerError::new("peer_native_failed", error.to_string()))?;
+    }
     let _ = ready_tx.send(Ok((local_peer_id, bound_addresses)));
 
     let (opened_tx, mut opened_rx) = mpsc::channel::<OpenedStream>(COMMAND_CAPACITY);
     let (stream_completed_tx, mut stream_completed_rx) =
         mpsc::channel::<CompletedStream>(MAX_ESTABLISHED_CONNECTIONS as usize);
     let mut direct = DirectConnectState::default();
-    let mut external_candidate_ready = startup_external_candidate_ready;
     let mut deadline_tick = tokio::time::interval(Duration::from_millis(100));
     deadline_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut discovered_relays = options
         .automatic_relay_discovery
         .then(relay_discovery::spawn);
+    let webrtc_cancellation = CancellationToken::new();
+    let mut incoming_webrtc_upgrades = JoinSet::new();
+    let mut outgoing_webrtc_upgrades = JoinSet::new();
 
     loop {
         tokio::select! {
@@ -591,8 +708,6 @@ async fn run_endpoint_async(
                 Some(EngineCommand::Connect { options, stream_kind, result }) => {
                     if direct.pending.contains_key(&options.request_id)
                         || direct.pending.values().any(|connect| connect.peer_id == options.peer_id)
-                        || (stream_kind == StreamKind::Application
-                            && direct.active.contains_key(&options.peer_id))
                     {
                         let _ = result.send(Err(PeerError::new(
                             "peer_connect_in_progress",
@@ -606,6 +721,7 @@ async fn run_endpoint_async(
                         &options,
                         local_peer_id,
                         stream_kind,
+                        &direct.active,
                     ) {
                         Ok(peers) => peers,
                         Err(error) => {
@@ -623,12 +739,15 @@ async fn run_endpoint_async(
                     };
                     let retry_coordination = stream_kind == StreamKind::Application
                         && stream_control.has_relayed_connection(options.peer_id);
+                    let attempt_id = direct.allocate_attempt_id();
                     direct.pending.insert(request_id, PendingConnect {
+                        attempt_id,
                         peer_id: options.peer_id,
                         result,
                         stream_kind,
                         deadline: Instant::now() + options.deadline,
                         opening: None,
+                        rejected_connections: HashSet::new(),
                         dials: HashMap::new(),
                         direct_routes: started.direct_routes,
                         coordination_relays: options.coordination_relays,
@@ -637,14 +756,22 @@ async fn run_endpoint_async(
                         transit_after,
                         next_route_attempt: Instant::now(),
                         retry_coordination,
+                        webrtc_attempted: false,
+                        cancellation: CancellationToken::new(),
                     });
                     retry_connect_routes(
                         &mut swarm,
                         &mut direct,
                         &coordination_relays,
                         &stream_control,
-                        external_candidate_ready,
                         Instant::now(),
+                    );
+                    start_pending_webrtc_upgrades(
+                        &mut direct.pending,
+                        &direct.retiring_connections,
+                        webrtc_signaling_control.clone(),
+                        webrtc_stun_urls.as_deref(),
+                        &mut outgoing_webrtc_upgrades,
                     );
                     maybe_open_peer_stream(
                         request_id,
@@ -682,6 +809,7 @@ async fn run_endpoint_async(
                         &stream_control,
                         &mut coordination_relays,
                         &mut transit,
+                        &direct.active,
                         policy,
                         local_peer_id,
                     );
@@ -696,10 +824,16 @@ async fn run_endpoint_async(
                         &mut direct,
                         &coordination_relays,
                         &stream_control,
-                        external_candidate_ready,
                         Instant::now(),
                     );
                     let requests = direct.pending.keys().copied().collect::<Vec<_>>();
+                    start_pending_webrtc_upgrades(
+                        &mut direct.pending,
+                        &direct.retiring_connections,
+                        webrtc_signaling_control.clone(),
+                        webrtc_stun_urls.as_deref(),
+                        &mut outgoing_webrtc_upgrades,
+                    );
                     for request_id in requests {
                         maybe_open_peer_stream(
                             request_id,
@@ -713,22 +847,126 @@ async fn run_endpoint_async(
                     let _ = result.send(());
                 }
                 Some(EngineCommand::Stop { result }) => {
+                    webrtc_cancellation.cancel();
+                    incoming_webrtc_upgrades.abort_all();
+                    for pending in direct.pending.values() {
+                        pending.cancellation.cancel();
+                    }
+                    outgoing_webrtc_upgrades.abort_all();
                     let _ = result.send(());
                     return Ok(());
                 }
-                None => return Ok(()),
+                None => {
+                    webrtc_cancellation.cancel();
+                    incoming_webrtc_upgrades.abort_all();
+                    for pending in direct.pending.values() {
+                        pending.cancellation.cancel();
+                    }
+                    outgoing_webrtc_upgrades.abort_all();
+                    return Ok(());
+                }
             },
             Some(stream) = incoming_streams.recv() => {
-                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
+                *direct.active.entry(stream.connection_id).or_default() += 1;
+                let peer_stream = spawn_stream(
+                    stream.peer_id,
+                    stream.path,
+                    stream.stream,
+                    Some((
+                        StreamCompletion::Application {
+                            connection_id: stream.connection_id,
+                        },
+                        stream_completed_tx.clone(),
+                    )),
+                );
                 if incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream closes it. A slow Host cannot create an unbounded queue.
                 }
             }
             Some(stream) = mesh_incoming.recv() => {
-                let peer_stream = spawn_stream(stream.peer_id, stream.stream, None);
+                *direct.active.entry(stream.connection_id).or_default() += 1;
+                let peer_stream = spawn_stream(
+                    stream.peer_id,
+                    stream.path,
+                    stream.stream,
+                    Some((
+                        StreamCompletion::MeshControl {
+                            connection_id: stream.connection_id,
+                            coordination_relay_peers: Vec::new(),
+                        },
+                        stream_completed_tx.clone(),
+                    )),
+                );
                 if mesh_incoming_tx.try_send(peer_stream).is_err() {
                     // Dropping the stream applies bounded backpressure to Mesh control callers.
                 }
+            }
+            Some(stream) = webrtc_signaling_incoming.recv() => {
+                if incoming_webrtc_upgrades.len() >= MAX_CONCURRENT_WEBRTC_UPGRADES {
+                    webrtc_debug(format_args!(
+                        "rejected inbound upgrade from {}: concurrency limit reached",
+                        stream.peer_id,
+                    ));
+                    continue;
+                }
+                let cancellation = webrtc_cancellation.child_token();
+                let stun_urls = webrtc_stun_urls.clone().unwrap_or_default();
+                incoming_webrtc_upgrades.spawn(async move {
+                    upgrade_connection(
+                        stream.stream,
+                        stream.peer_id,
+                        stream.peer_id,
+                        UpgradeRole::Answerer,
+                        UpgradeOptions {
+                            stun_urls,
+                            udp_bind_addresses: vec!["0.0.0.0:0".to_owned()],
+                            deadline: WEBRTC_UPGRADE_DEADLINE,
+                            cancellation,
+                        },
+                    )
+                    .await
+                });
+            }
+            Some(upgrade) = incoming_webrtc_upgrades.join_next(), if !incoming_webrtc_upgrades.is_empty() => {
+                match upgrade {
+                    Ok(Ok((peer, connection))) => {
+                        if let Err(error) = webrtc_transport.inject_inbound(peer, connection) {
+                            webrtc_debug(format_args!(
+                                "discarded completed inbound upgrade from {peer}: {error}",
+                            ));
+                        }
+                    }
+                    Ok(Err(error)) => {
+                        webrtc_debug(format_args!("inbound upgrade failed: {error}"));
+                    }
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        webrtc_debug(format_args!("inbound upgrade task failed: {error}"));
+                    }
+                }
+            }
+            Some(upgrade) = outgoing_webrtc_upgrades.join_next(), if !outgoing_webrtc_upgrades.is_empty() => {
+                match upgrade {
+                    Ok(completed) => {
+                        complete_outgoing_webrtc_upgrade(
+                            &mut swarm,
+                            &webrtc_transport,
+                            &mut direct,
+                            completed,
+                        );
+                    }
+                    Err(error) if error.is_cancelled() => {}
+                    Err(error) => {
+                        webrtc_debug(format_args!("outbound upgrade task failed: {error}"));
+                    }
+                }
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
+                );
             }
             Some(candidate) = async {
                 match &mut discovered_relays {
@@ -745,6 +983,7 @@ async fn run_endpoint_async(
                 rebalance_automatic_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     Instant::now(),
                 );
                 publish_active_coordination_relays(
@@ -754,16 +993,30 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
-                    external_candidate_ready,
+                    &direct.active,
                     Instant::now(),
                 );
             }
             Some(completed) = stream_completed_rx.recv() => {
                 match completed.kind {
                     StreamCompletion::Application { connection_id } => {
-                        direct.active.retain(|_, active| *active != connection_id);
+                        release_active_stream(&mut direct.active, connection_id);
+                        let candidates = retained_transit_candidates(&coordination_relays, &transit);
+                        reconcile_transit_reservations(
+                            &mut swarm,
+                            &mut coordination_relays,
+                            candidates,
+                            &HashSet::new(),
+                            local_peer_id,
+                            &direct.active,
+                            &stream_control,
+                        );
                     }
-                    StreamCompletion::MeshControl { coordination_relay_peers } => {
+                    StreamCompletion::MeshControl {
+                        connection_id,
+                        coordination_relay_peers,
+                    } => {
+                        release_active_stream(&mut direct.active, connection_id);
                         release_coordination_relays(
                             &mut swarm,
                             &mut coordination_relays,
@@ -776,49 +1029,86 @@ async fn run_endpoint_async(
             }
             Some(opened) = opened_rx.recv() => {
                 let request_id = opened.request_id;
-                if let Some(mut waiter) = direct.pending.remove(&opened.request_id) {
-                    match opened.result {
-                        Ok(opened) => {
-                            if waiter.stream_kind == StreamKind::Application
-                                && opened.relay_peer_id.is_some_and(|relay_peer| {
-                                    !waiter.transit_relay_peers.contains(&relay_peer)
-                                })
-                            {
-                                let connection_id = opened.connection_id;
-                                direct.retiring_connections.insert(connection_id);
-                                let _ = swarm.close_connection(connection_id);
-                                waiter.opening.take();
-                                waiter.dials.remove(&connection_id);
-                                waiter.next_route_attempt = Instant::now();
-                                direct.pending.insert(request_id, waiter);
-                                retry_connect_routes(
-                                    &mut swarm,
-                                    &mut direct,
-                                    &coordination_relays,
-                                    &stream_control,
-                                    external_candidate_ready,
-                                    Instant::now(),
-                                );
-                                maybe_open_peer_stream(
-                                    request_id,
-                                    &mut direct.pending,
-                                    &direct.retiring_connections,
-                                    stream_control.clone(),
-                                    mesh_control.clone(),
-                                    opened_tx.clone(),
-                                );
-                                continue;
-                            }
-                            let result = match waiter.stream_kind {
+                let connection_id = opened.connection_id;
+                let Some(admission) = direct.take_pending_attempt(
+                    opened.request_id,
+                    opened.attempt_id,
+                    Instant::now(),
+                ) else {
+                    continue;
+                };
+                let mut waiter = match admission {
+                    PendingAttemptAdmission::Active(waiter) => waiter,
+                    PendingAttemptAdmission::Expired(waiter) => {
+                        let error = pending_connect_deadline_error(&waiter);
+                        fail_pending_connect(
+                            &mut swarm,
+                            &mut direct,
+                            &mut coordination_relays,
+                            waiter,
+                            error,
+                        );
+                        continue;
+                    }
+                };
+                if waiter
+                    .opening
+                    .as_ref()
+                    .is_none_or(|opening| opening.connection_id != connection_id)
+                {
+                    direct.pending.insert(request_id, waiter);
+                    continue;
+                }
+                waiter.opening.take();
+                if waiter.webrtc_attempted {
+                    webrtc_debug(format_args!(
+                        "application stream result peer={} request={} success={}",
+                        waiter.peer_id,
+                        request_id,
+                        opened.result.is_ok(),
+                    ));
+                }
+                match opened.result {
+                    Ok(opened) => {
+                        if waiter.stream_kind == StreamKind::Application
+                            && opened.path.relay_peer_id().is_some_and(|relay_peer| {
+                                !waiter.transit_relay_peers.contains(&relay_peer)
+                            })
+                        {
+                            direct.retiring_connections.insert(connection_id);
+                            let _ = swarm.close_connection(connection_id);
+                            waiter.dials.remove(&connection_id);
+                            waiter.rejected_connections.insert(connection_id);
+                            waiter.next_route_attempt = Instant::now();
+                            direct.pending.insert(request_id, waiter);
+                            retry_connect_routes(
+                                &mut swarm,
+                                &mut direct,
+                                &coordination_relays,
+                                &stream_control,
+                                Instant::now(),
+                            );
+                            maybe_open_peer_stream(
+                                request_id,
+                                &mut direct.pending,
+                                &direct.retiring_connections,
+                                stream_control.clone(),
+                                mesh_control.clone(),
+                                opened_tx.clone(),
+                            );
+                            continue;
+                        }
+                        waiter.cancellation.cancel();
+                        abort_pending_openings(&mut waiter);
+                        let result = match waiter.stream_kind {
                             StreamKind::Application => {
-                                let connection_id = opened.connection_id;
                                 retire_direct_dials(
                                     &mut swarm,
                                     &mut direct.retiring_connections,
                                     waiter.dials,
                                     Some(connection_id),
                                 );
-                                direct.active.insert(waiter.peer_id, connection_id);
+                                *direct.active.entry(connection_id).or_default() += 1;
                                 release_coordination_relays(
                                     &mut swarm,
                                     &mut coordination_relays,
@@ -827,6 +1117,7 @@ async fn run_endpoint_async(
                                 );
                                 Ok(spawn_stream(
                                     waiter.peer_id,
+                                    opened.path,
                                     opened.stream,
                                     Some((
                                         StreamCompletion::Application { connection_id },
@@ -839,13 +1130,16 @@ async fn run_endpoint_async(
                                     &mut swarm,
                                     &mut direct.retiring_connections,
                                     waiter.dials,
-                                    None,
+                                    Some(connection_id),
                                 );
+                                *direct.active.entry(connection_id).or_default() += 1;
                                 Ok(spawn_stream(
                                     waiter.peer_id,
+                                    opened.path,
                                     opened.stream,
                                     Some((
                                         StreamCompletion::MeshControl {
+                                            connection_id,
                                             coordination_relay_peers: waiter
                                                 .coordination_relay_peers,
                                         },
@@ -853,27 +1147,49 @@ async fn run_endpoint_async(
                                     )),
                                 ))
                             }
-                            };
-                            let _ = waiter.result.send(result);
+                        };
+                        let _ = waiter.result.send(result);
+                    }
+                    Err(application_stream::OpenStreamError::UnsupportedProtocol) => {
+                        fail_pending_connect(
+                            &mut swarm,
+                            &mut direct,
+                            &mut coordination_relays,
+                            waiter,
+                            PeerError::new(
+                                "peer_protocol_unsupported",
+                                "peer does not support the requested stream protocol",
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        webrtc_debug(format_args!(
+                            "stream candidate failed peer={} request={} connection={connection_id}: {error}",
+                            waiter.peer_id,
+                            request_id,
+                        ));
+                        waiter.rejected_connections.insert(connection_id);
+                        if waiter.dials.remove(&connection_id).is_some() {
+                            direct.retiring_connections.insert(connection_id);
+                            let _ = swarm.close_connection(connection_id);
                         }
-                        Err(message) => {
-                            let code = match waiter.stream_kind {
-                                StreamKind::Application
-                                    if !waiter.transit_relay_peers.is_empty() =>
-                                {
-                                    "transit_unavailable"
-                                }
-                                StreamKind::Application => "direct_path_unavailable",
-                                StreamKind::MeshControl => "mesh_control_unavailable",
-                            };
-                            fail_pending_connect(
-                                &mut swarm,
-                                &mut direct,
-                                &mut coordination_relays,
-                                waiter,
-                                PeerError::new(code, message),
-                            );
-                        }
+                        waiter.next_route_attempt = Instant::now();
+                        direct.pending.insert(request_id, waiter);
+                        retry_connect_routes(
+                            &mut swarm,
+                            &mut direct,
+                            &coordination_relays,
+                            &stream_control,
+                            Instant::now(),
+                        );
+                        maybe_open_peer_stream(
+                            request_id,
+                            &mut direct.pending,
+                            &direct.retiring_connections,
+                            stream_control.clone(),
+                            mesh_control.clone(),
+                            opened_tx.clone(),
+                        );
                     }
                 }
             }
@@ -883,7 +1199,6 @@ async fn run_endpoint_async(
                     event,
                     &mut coordination_relays,
                     &mut direct,
-                    &mut external_candidate_ready,
                     RouteRuntime {
                         active_coordination_relays: &active_coordination_relays,
                         transit: &mut transit,
@@ -892,6 +1207,7 @@ async fn run_endpoint_async(
                 rebalance_automatic_relays(
                     &mut swarm,
                     &mut coordination_relays,
+                    &direct.active,
                     Instant::now(),
                 );
                 publish_active_coordination_relays(
@@ -901,10 +1217,17 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
-                    external_candidate_ready,
+                    &direct.active,
                     Instant::now(),
                 );
                 let requests = direct.pending.keys().copied().collect::<Vec<_>>();
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
+                );
                 for request_id in requests {
                     maybe_open_peer_stream(
                         request_id,
@@ -918,7 +1241,12 @@ async fn run_endpoint_async(
             }
             _ = deadline_tick.tick() => {
                 let now = Instant::now();
-                rebalance_automatic_relays(&mut swarm, &mut coordination_relays, now);
+                rebalance_automatic_relays(
+                    &mut swarm,
+                    &mut coordination_relays,
+                    &direct.active,
+                    now,
+                );
                 publish_active_coordination_relays(
                     &coordination_relays,
                     &active_coordination_relays,
@@ -926,7 +1254,7 @@ async fn run_endpoint_async(
                 maintain_coordination_relays(
                     &mut swarm,
                     &mut coordination_relays,
-                    external_candidate_ready,
+                    &direct.active,
                     now,
                 );
                 retry_connect_routes(
@@ -934,35 +1262,27 @@ async fn run_endpoint_async(
                     &mut direct,
                     &coordination_relays,
                     &stream_control,
-                    external_candidate_ready,
                     now,
+                );
+                start_pending_webrtc_upgrades(
+                    &mut direct.pending,
+                    &direct.retiring_connections,
+                    webrtc_signaling_control.clone(),
+                    webrtc_stun_urls.as_deref(),
+                    &mut outgoing_webrtc_upgrades,
                 );
                 let expired = direct.pending.iter()
                     .filter_map(|(request_id, item)| (item.deadline <= now).then_some(*request_id))
                     .collect::<Vec<_>>();
                 for request_id in expired {
                     if let Some(waiter) = direct.pending.remove(&request_id) {
-                        let (code, message) = match waiter.stream_kind {
-                            StreamKind::Application
-                                if !waiter.transit_relay_peers.is_empty() => (
-                                "transit_unavailable",
-                                "no direct or approved transit path was established before the deadline",
-                            ),
-                            StreamKind::Application => (
-                                "direct_path_unavailable",
-                                "no direct path was established before the deadline",
-                            ),
-                            StreamKind::MeshControl => (
-                                "mesh_control_unavailable",
-                                "no Mesh control path was established before the deadline",
-                            ),
-                        };
+                        let error = pending_connect_deadline_error(&waiter);
                         fail_pending_connect(
                             &mut swarm,
                             &mut direct,
                             &mut coordination_relays,
                             waiter,
-                            PeerError::new(code, message),
+                            error,
                         );
                     }
                 }
@@ -971,18 +1291,40 @@ async fn run_endpoint_async(
     }
 }
 
-type BuiltSwarm = (
-    Swarm<Behaviour>,
-    application_stream::Control,
-    mpsc::Receiver<application_stream::InboundStream>,
-    application_stream::Control,
-    mpsc::Receiver<application_stream::InboundStream>,
-);
+fn pending_connect_deadline_error(waiter: &PendingConnect) -> PeerError {
+    let (code, message) = match waiter.stream_kind {
+        StreamKind::Application if !waiter.transit_relay_peers.is_empty() => (
+            "transit_unavailable",
+            "no direct or approved transit path was established before the deadline",
+        ),
+        StreamKind::Application => (
+            "direct_path_unavailable",
+            "no direct path was established before the deadline",
+        ),
+        StreamKind::MeshControl => (
+            "mesh_control_unavailable",
+            "no Mesh control path was established before the deadline",
+        ),
+    };
+    PeerError::new(code, message)
+}
+
+struct BuiltSwarm {
+    swarm: Swarm<Behaviour>,
+    stream_control: application_stream::Control,
+    incoming_streams: mpsc::Receiver<application_stream::InboundStream>,
+    mesh_control: application_stream::Control,
+    mesh_incoming: mpsc::Receiver<application_stream::InboundStream>,
+    webrtc_signaling_control: application_stream::Control,
+    webrtc_signaling_incoming: mpsc::Receiver<application_stream::InboundStream>,
+    webrtc_transport: WebRtcTransportControl,
+}
 
 fn build_swarm(
     key: identity::Keypair,
     allowed_transit_peers: Arc<RwLock<HashSet<PeerId>>>,
     trusted_transit_relays: Arc<RwLock<HashSet<PeerId>>>,
+    webrtc_enabled: bool,
 ) -> Result<BuiltSwarm, PeerError> {
     let (application_stream, control, incoming) = application_stream::Behaviour::new(
         StreamProtocol::new(APPLICATION_PROTOCOL),
@@ -994,6 +1336,13 @@ fn build_swarm(
         MESH_INCOMING_STREAM_CAPACITY,
         None,
     );
+    let (webrtc_signaling, webrtc_signaling_control, webrtc_signaling_incoming) =
+        application_stream::Behaviour::new(
+            StreamProtocol::new(SIGNALING_PROTOCOL),
+            WEBRTC_SIGNALING_STREAM_CAPACITY,
+            None,
+        );
+    let (webrtc, webrtc_transport) = WebRtcTransport::new();
     let swarm = SwarmBuilder::with_existing_identity(key)
         .with_tokio()
         .with_tcp(
@@ -1003,6 +1352,8 @@ fn build_swarm(
         )
         .map_err(native_error)?
         .with_quic()
+        .with_other_transport(move |_| webrtc)
+        .map_err(native_error)?
         .with_dns()
         .map_err(native_error)?
         .with_relay_client(noise::Config::new, yamux::Config::default)
@@ -1030,6 +1381,7 @@ fn build_swarm(
             ping: ping::Behaviour::new(ping::Config::new()),
             application_stream,
             mesh_control: mesh_stream,
+            webrtc_signaling: Toggle::from(webrtc_enabled.then_some(webrtc_signaling)),
         })
         .map_err(native_error)
         .map(|builder| {
@@ -1038,7 +1390,16 @@ fn build_swarm(
             })
         })
         .map(|builder| builder.build())?;
-    Ok((swarm, control, incoming, mesh_control, mesh_incoming))
+    Ok(BuiltSwarm {
+        swarm,
+        stream_control: control,
+        incoming_streams: incoming,
+        mesh_control,
+        mesh_incoming,
+        webrtc_signaling_control,
+        webrtc_signaling_incoming,
+        webrtc_transport,
+    })
 }
 
 fn transit_relay_config(allowed_peers: Arc<RwLock<HashSet<PeerId>>>) -> relay::Config {
@@ -1077,6 +1438,7 @@ fn start_connect(
     options: &ConnectOptions,
     local_peer_id: PeerId,
     stream_kind: StreamKind,
+    active_streams: &HashMap<ConnectionId, usize>,
 ) -> Result<StartedConnect, PeerError> {
     if options.route_hints.is_empty()
         && options.coordination_relays.is_empty()
@@ -1131,7 +1493,7 @@ fn start_connect(
             referenced.insert(relay_peer),
         )?;
     }
-    maintain_coordination_relays(swarm, coordination_relays, false, Instant::now());
+    maintain_coordination_relays(swarm, coordination_relays, active_streams, Instant::now());
     Ok(StartedConnect {
         direct_routes: direct_targets,
         coordination_relay_peers: relay_peers,
@@ -1161,12 +1523,169 @@ fn validate_relay_target(
     Ok(())
 }
 
+fn release_active_stream(active: &mut HashMap<ConnectionId, usize>, connection_id: ConnectionId) {
+    let Some(streams) = active.get_mut(&connection_id) else {
+        return;
+    };
+    *streams -= 1;
+    if *streams == 0 {
+        active.remove(&connection_id);
+    }
+}
+
+fn start_pending_webrtc_upgrades(
+    pending: &mut HashMap<u32, PendingConnect>,
+    retiring_connections: &HashSet<ConnectionId>,
+    signaling_control: application_stream::Control,
+    stun_urls: Option<&[String]>,
+    upgrades: &mut JoinSet<OutgoingWebRtcUpgrade>,
+) {
+    let Some(stun_urls) = stun_urls else {
+        return;
+    };
+    for request_id in pending.keys().copied().collect::<Vec<_>>() {
+        if upgrades.len() >= MAX_CONCURRENT_WEBRTC_UPGRADES {
+            return;
+        }
+        let Some(waiter) = pending.get_mut(&request_id) else {
+            continue;
+        };
+        if waiter.stream_kind != StreamKind::Application || waiter.webrtc_attempted {
+            continue;
+        }
+        let relay_peers = waiter
+            .coordination_relay_peers
+            .iter()
+            .copied()
+            .chain(waiter.transit_relay_peers.iter().copied())
+            .collect::<HashSet<_>>();
+        if !signaling_control.has_relayed_connection_via(
+            waiter.peer_id,
+            retiring_connections,
+            &relay_peers,
+        ) {
+            continue;
+        }
+
+        waiter.webrtc_attempted = true;
+        let attempt_id = waiter.attempt_id;
+        let peer_id = waiter.peer_id;
+        let cancellation = waiter.cancellation.clone();
+        let excluded_connections = retiring_connections.clone();
+        let stun_urls = stun_urls.to_vec();
+        let mut signaling_control = signaling_control.clone();
+        upgrades.spawn(async move {
+            let signaling = tokio::select! {
+                _ = cancellation.cancelled() => {
+                    return OutgoingWebRtcUpgrade {
+                        request_id,
+                        attempt_id,
+                        peer_id,
+                        result: Err("WebRTC direct upgrade was cancelled".to_owned()),
+                    };
+                }
+                result = signaling_control.open_relayed_stream(
+                    peer_id,
+                    &excluded_connections,
+                    &relay_peers,
+                ) => result,
+            };
+            let result = match signaling {
+                Ok(signaling) => upgrade_connection(
+                    signaling.stream,
+                    peer_id,
+                    peer_id,
+                    UpgradeRole::Offerer,
+                    UpgradeOptions {
+                        stun_urls,
+                        udp_bind_addresses: vec!["0.0.0.0:0".to_owned()],
+                        deadline: WEBRTC_UPGRADE_DEADLINE,
+                        cancellation,
+                    },
+                )
+                .await
+                .map(|(_, connection)| connection)
+                .map_err(|error| error.to_string()),
+                Err(error) => Err(error.to_string()),
+            };
+            OutgoingWebRtcUpgrade {
+                request_id,
+                attempt_id,
+                peer_id,
+                result,
+            }
+        });
+    }
+}
+
+fn complete_outgoing_webrtc_upgrade(
+    swarm: &mut Swarm<Behaviour>,
+    transport: &WebRtcTransportControl,
+    direct: &mut DirectConnectState,
+    completed: OutgoingWebRtcUpgrade,
+) {
+    let OutgoingWebRtcUpgrade {
+        request_id,
+        attempt_id,
+        peer_id,
+        result,
+    } = completed;
+    let current = direct
+        .pending
+        .get(&request_id)
+        .is_some_and(|waiter| waiter.attempt_id == attempt_id && waiter.peer_id == peer_id);
+    if !current {
+        if let Ok(connection) = result {
+            connection.close_in_background();
+        }
+        return;
+    }
+    let connection = match result {
+        Ok(connection) => connection,
+        Err(error) => {
+            webrtc_debug(format_args!(
+                "outbound upgrade to {} failed: {error}",
+                peer_id,
+            ));
+            return;
+        }
+    };
+    let address = match transport.register_outbound(peer_id, connection) {
+        Ok(address) => address,
+        Err(error) => {
+            webrtc_debug(format_args!(
+                "could not register outbound upgrade to {}: {error}",
+                peer_id,
+            ));
+            return;
+        }
+    };
+    let options = DialOpts::peer_id(peer_id)
+        .condition(PeerCondition::Always)
+        .addresses(vec![address])
+        .build();
+    let connection_id = options.connection_id();
+    if swarm.dial(options).is_ok() {
+        let waiter = direct
+            .pending
+            .get_mut(&request_id)
+            .expect("current WebRTC upgrade has a pending connect");
+        waiter.dials.insert(connection_id, DialOrigin::WebRtc);
+        webrtc_debug(format_args!(
+            "direct dial submitted peer={} request={} connection={connection_id}",
+            peer_id, request_id,
+        ));
+    } else {
+        transport.discard_outbound(peer_id);
+    }
+}
+
 fn maybe_open_peer_stream(
     request_id: u32,
     pending: &mut HashMap<u32, PendingConnect>,
     retiring_connections: &HashSet<ConnectionId>,
-    mut application_control: application_stream::Control,
-    mut mesh_control: application_stream::Control,
+    application_control: application_stream::Control,
+    mesh_control: application_stream::Control,
     opened_tx: mpsc::Sender<OpenedStream>,
 ) {
     let Some(waiter) = pending.get_mut(&request_id) else {
@@ -1175,32 +1694,77 @@ fn maybe_open_peer_stream(
     let peer_id = waiter.peer_id;
     let eligible_relay_peers = match waiter.stream_kind {
         StreamKind::Application => waiter.transit_relay_peers.clone(),
-        StreamKind::MeshControl => waiter.coordination_relay_peers.iter().copied().collect(),
+        StreamKind::MeshControl => waiter
+            .coordination_relay_peers
+            .iter()
+            .copied()
+            .chain(waiter.transit_relay_peers.iter().copied())
+            .collect(),
     };
-    let available = match waiter.stream_kind {
-        StreamKind::Application => {
-            application_control.has_connection(peer_id, retiring_connections, &eligible_relay_peers)
-        }
-        StreamKind::MeshControl => {
-            mesh_control.has_connection(peer_id, retiring_connections, &eligible_relay_peers)
-        }
-    };
-    if waiter.opening.is_some() || !available {
+    let excluded = retiring_connections
+        .union(&waiter.rejected_connections)
+        .copied()
+        .collect::<HashSet<_>>();
+    if waiter.opening.is_some() {
         return;
     }
     let stream_kind = waiter.stream_kind;
-    let retiring_connections = retiring_connections.clone();
-    waiter.opening = Some(tokio::spawn(async move {
-        let control = match stream_kind {
-            StreamKind::Application => &mut application_control,
-            StreamKind::MeshControl => &mut mesh_control,
-        };
-        let result = control
-            .open_stream(peer_id, &retiring_connections, &eligible_relay_peers)
-            .await
-            .map_err(|error| error.to_string());
-        let _ = opened_tx.send(OpenedStream { request_id, result }).await;
-    }));
+    let candidates = match stream_kind {
+        StreamKind::Application => {
+            application_control.eligible_connections(peer_id, &excluded, &eligible_relay_peers)
+        }
+        StreamKind::MeshControl => {
+            mesh_control.eligible_connections(peer_id, &excluded, &eligible_relay_peers)
+        }
+    };
+    let Some((connection_id, _)) = candidates
+        .into_iter()
+        .min_by_key(|(_, path)| stream_candidate_priority(path))
+    else {
+        return;
+    };
+    let attempt_id = waiter.attempt_id;
+    let cancellation = waiter.cancellation.clone();
+    if stream_kind == StreamKind::Application && waiter.webrtc_attempted {
+        webrtc_debug(format_args!(
+            "opening application stream peer={peer_id} request={request_id} connection={connection_id}"
+        ));
+    }
+    let mut control = match stream_kind {
+        StreamKind::Application => application_control,
+        StreamKind::MeshControl => mesh_control,
+    };
+    waiter.opening = Some(PendingStreamOpen {
+        connection_id,
+        task: tokio::spawn(async move {
+            let result = tokio::select! {
+                _ = cancellation.cancelled() => return,
+                result = control.open_stream_on(
+                    connection_id,
+                    peer_id,
+                    &eligible_relay_peers,
+                ) => result,
+            };
+            let _ = opened_tx
+                .send(OpenedStream {
+                    request_id,
+                    attempt_id,
+                    connection_id,
+                    result,
+                })
+                .await;
+        }),
+    });
+}
+
+fn stream_candidate_priority(path: &PeerConnectionPath) -> u8 {
+    match path {
+        PeerConnectionPath::Direct(DirectTransport::Quic) => 0,
+        PeerConnectionPath::Direct(DirectTransport::Tcp) => 1,
+        PeerConnectionPath::Direct(DirectTransport::WebRtc) => 2,
+        PeerConnectionPath::Direct(DirectTransport::Other) => 3,
+        PeerConnectionPath::Transit { .. } => 4,
+    }
 }
 
 fn handle_swarm_event(
@@ -1208,7 +1772,6 @@ fn handle_swarm_event(
     event: SwarmEvent<BehaviourEvent>,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     direct: &mut DirectConnectState,
-    external_candidate_ready: &mut bool,
     route_runtime: RouteRuntime<'_>,
 ) {
     match event {
@@ -1218,6 +1781,15 @@ fn handle_swarm_event(
             endpoint,
             ..
         } => {
+            if direct
+                .pending
+                .values()
+                .any(|connect| connect.dials.get(&connection_id) == Some(&DialOrigin::WebRtc))
+            {
+                webrtc_debug(format_args!(
+                    "direct connection established peer={peer_id} connection={connection_id}"
+                ));
+            }
             discovery_debug(format_args!(
                 "connection established peer={peer_id} relayed={}",
                 endpoint.is_relayed()
@@ -1227,17 +1799,25 @@ fn handle_swarm_event(
                 return;
             }
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
-                if relay.pending_connection == Some(connection_id) {
+                let lifecycle_owned = relay.pending_connection == Some(connection_id);
+                if lifecycle_owned {
                     relay.pending_connection = None;
                 }
                 if relay.is_active() {
                     relay.connections.insert(connection_id);
-                } else {
-                    let _ = swarm.close_connection(connection_id);
+                    if lifecycle_owned {
+                        relay.owned_connections.insert(connection_id);
+                    }
+                    if endpoint.is_relayed() {
+                        relay.relayed_connections.insert(connection_id);
+                    } else {
+                        relay.replace_relayed_at = None;
+                        relay.direct_connection_addresses.insert(
+                            connection_id,
+                            address_with_peer(endpoint.get_remote_address().clone(), peer_id),
+                        );
+                    }
                 }
-            }
-            for connect in direct.pending.values_mut() {
-                connect.dials.remove(&connection_id);
             }
         }
         SwarmEvent::ConnectionClosed {
@@ -1248,10 +1828,22 @@ fn handle_swarm_event(
             direct.retiring_connections.remove(&connection_id);
             for connect in direct.pending.values_mut() {
                 connect.dials.remove(&connection_id);
+                connect.rejected_connections.remove(&connection_id);
+                if connect
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.connection_id == connection_id)
+                    && let Some(opening) = connect.opening.take()
+                {
+                    opening.task.abort();
+                }
             }
-            direct.active.retain(|_, active| *active != connection_id);
+            direct.active.remove(&connection_id);
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
                 relay.connections.remove(&connection_id);
+                relay.owned_connections.remove(&connection_id);
+                relay.relayed_connections.remove(&connection_id);
+                relay.direct_connection_addresses.remove(&connection_id);
             }
             let mut reservation_changed = false;
             let mut discard_automatic = false;
@@ -1270,7 +1862,12 @@ fn handle_swarm_event(
                 discard_automatic = relay.is_automatic() && !was_accepted;
             }
             if discard_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
             if reservation_changed {
                 publish_active_coordination_relays(
@@ -1288,6 +1885,15 @@ fn handle_swarm_event(
             direct.retiring_connections.remove(&connection_id);
             for connect in direct.pending.values_mut() {
                 connect.dials.remove(&connection_id);
+                connect.rejected_connections.remove(&connection_id);
+                if connect
+                    .opening
+                    .as_ref()
+                    .is_some_and(|opening| opening.connection_id == connection_id)
+                    && let Some(opening) = connect.opening.take()
+                {
+                    opening.task.abort();
+                }
             }
             let mut failed_automatic = None;
             for (peer_id, relay) in coordination_relays.iter_mut() {
@@ -1300,13 +1906,24 @@ fn handle_swarm_event(
                 }
             }
             if let Some(peer_id) = failed_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
         }
         SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
             remote_peer_id,
             result: Err(_),
         })) => {
+            if let Some(relay) = coordination_relays.get_mut(&remote_peer_id)
+                && (!relay.transit_addresses.is_empty()
+                    || !relay.transit_coordination_relays.is_empty())
+            {
+                relay.replace_relayed_at = Some(Instant::now() + TRANSIT_HOLE_PUNCH_RETRY_INTERVAL);
+            }
             for connect in direct.pending.values_mut().filter(|connect| {
                 connect.peer_id == remote_peer_id && connect.stream_kind == StreamKind::Application
             }) {
@@ -1314,7 +1931,14 @@ fn handle_swarm_event(
                 connect.next_route_attempt = Instant::now();
             }
         }
-        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(_)) => {}
+        SwarmEvent::Behaviour(BehaviourEvent::Dcutr(dcutr::Event {
+            remote_peer_id,
+            result: Ok(_),
+        })) => {
+            if let Some(relay) = coordination_relays.get_mut(&remote_peer_id) {
+                relay.replace_relayed_at = None;
+            }
+        }
         SwarmEvent::Behaviour(BehaviourEvent::RelayClient(
             relay::client::Event::ReservationReqAccepted { relay_peer_id, .. },
         )) => {
@@ -1350,7 +1974,12 @@ fn handle_swarm_event(
                     if let Some(relay) = coordination_relays.get_mut(&relay_peer) {
                         relay.reservation_accepted = false;
                     }
-                    discard_automatic_relay_candidate(swarm, coordination_relays, relay_peer);
+                    discard_automatic_relay_candidate(
+                        swarm,
+                        coordination_relays,
+                        relay_peer,
+                        &direct.active,
+                    );
                 }
                 publish_active_coordination_relays(
                     coordination_relays,
@@ -1365,13 +1994,7 @@ fn handle_swarm_event(
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
                 relay.identify_received = true;
             }
-            request_coordination_reservation(
-                swarm,
-                coordination_relays,
-                peer_id,
-                *external_candidate_ready,
-                Instant::now(),
-            );
+            request_coordination_reservation(swarm, coordination_relays, peer_id, Instant::now());
         }
         SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Sent {
             peer_id, ..
@@ -1379,25 +2002,7 @@ fn handle_swarm_event(
             if let Some(relay) = coordination_relays.get_mut(&peer_id) {
                 relay.identify_sent = true;
             }
-            request_coordination_reservation(
-                swarm,
-                coordination_relays,
-                peer_id,
-                *external_candidate_ready,
-                Instant::now(),
-            );
-        }
-        SwarmEvent::NewExternalAddrCandidate { .. } => {
-            *external_candidate_ready = true;
-            for peer_id in coordination_relays.keys().copied().collect::<Vec<_>>() {
-                request_coordination_reservation(
-                    swarm,
-                    coordination_relays,
-                    peer_id,
-                    true,
-                    Instant::now(),
-                );
-            }
+            request_coordination_reservation(swarm, coordination_relays, peer_id, Instant::now());
         }
         SwarmEvent::ListenerClosed {
             listener_id,
@@ -1420,7 +2025,12 @@ fn handle_swarm_event(
                 }
             }
             if let Some(peer_id) = rejected_automatic {
-                discard_automatic_relay_candidate(swarm, coordination_relays, peer_id);
+                discard_automatic_relay_candidate(
+                    swarm,
+                    coordination_relays,
+                    peer_id,
+                    &direct.active,
+                );
             }
             if changed {
                 publish_active_coordination_relays(
@@ -1437,7 +2047,6 @@ fn handle_startup_event(
     swarm: &mut Swarm<Behaviour>,
     event: SwarmEvent<BehaviourEvent>,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
-    external_candidate_ready: &mut bool,
     transit: &mut TransitRuntime,
 ) {
     handle_swarm_event(
@@ -1445,7 +2054,6 @@ fn handle_startup_event(
         event,
         coordination_relays,
         &mut DirectConnectState::default(),
-        external_candidate_ready,
         RouteRuntime {
             active_coordination_relays: &Arc::new(RwLock::new(Vec::new())),
             transit,
@@ -1458,19 +2066,18 @@ fn configure_transit(
     application_stream: &application_stream::Control,
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     transit: &mut TransitRuntime,
+    active_streams: &HashMap<ConnectionId, usize>,
     policy: TransitPolicy,
     local_peer_id: PeerId,
 ) -> HashSet<PeerId> {
     let TransitPolicy {
         allowed_peers,
+        approved_relays,
         relays,
     } = policy;
     let trusted_relays = relays
         .iter()
-        .map(|address| {
-            transit_relay_peer_id(address)
-                .expect("transit relay address was validated before reconciliation")
-        })
+        .map(|candidate| candidate.peer_id)
         .collect::<HashSet<_>>();
     let was_enabled = transit
         .allowed_peers
@@ -1478,38 +2085,38 @@ fn configure_transit(
         .map(|current| !current.is_empty())
         .unwrap_or(false);
     let enabled = !allowed_peers.is_empty();
-    let removed = transit
+    let removed_allowed_peers = transit
         .allowed_peers
         .read()
         .map(|current| {
             current
                 .difference(&allowed_peers)
                 .copied()
-                .collect::<Vec<_>>()
+                .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
-    let (changed_relays, revoked_relays) = transit
+    let removed_trusted_relays = transit
         .trusted_relays
         .read()
         .map(|current| {
-            (
-                current
-                    .symmetric_difference(&trusted_relays)
-                    .copied()
-                    .collect::<HashSet<_>>(),
-                current
-                    .difference(&trusted_relays)
-                    .copied()
-                    .collect::<HashSet<_>>(),
-            )
+            current
+                .difference(&trusted_relays)
+                .copied()
+                .collect::<HashSet<_>>()
         })
         .unwrap_or_default();
+    let revoked_relays = transit
+        .approved_relays
+        .difference(&approved_relays)
+        .copied()
+        .collect::<HashSet<_>>();
     if let Ok(mut current) = transit.allowed_peers.write() {
         *current = allowed_peers;
     }
     if let Ok(mut current) = transit.trusted_relays.write() {
         *current = trusted_relays;
     }
+    transit.approved_relays = approved_relays;
     if enabled && !was_enabled {
         let existing = swarm.external_addresses().cloned().collect::<HashSet<_>>();
         transit.published_addresses = transit
@@ -1526,15 +2133,32 @@ fn configure_transit(
             swarm.remove_external_address(&address);
         }
     }
-    for peer_id in removed {
+    for peer_id in removed_allowed_peers.iter().copied().filter(|peer_id| {
+        transit.reservations.contains(peer_id)
+            || transit
+                .circuits
+                .keys()
+                .any(|(source, destination)| source == peer_id || destination == peer_id)
+    }) {
         let _ = swarm.disconnect_peer_id(peer_id);
     }
-    for connection_id in application_stream.connections_via(&changed_relays) {
+    for connection_id in application_stream.connections_via(&revoked_relays) {
         let _ = swarm.close_connection(connection_id);
     }
-    reconcile_transit_reservations(swarm, coordination_relays, relays, local_peer_id);
+    reconcile_transit_reservations(
+        swarm,
+        coordination_relays,
+        relays,
+        &revoked_relays,
+        local_peer_id,
+        active_streams,
+        application_stream,
+    );
     publish_transit_snapshot(transit);
-    revoked_relays
+    removed_trusted_relays
+        .union(&revoked_relays)
+        .copied()
+        .collect()
 }
 
 fn reconcile_pending_transit_connects(
@@ -1558,7 +2182,7 @@ fn reconcile_pending_transit_connects(
             .transit_relay_peers
             .retain(|peer| !revoked_relays.contains(peer));
         if let Some(opening) = waiter.opening.take() {
-            opening.abort();
+            opening.task.abort();
         }
         retire_pending_dials_by_origin(
             swarm,
@@ -1617,9 +2241,8 @@ fn fail_pending_connect(
     mut waiter: PendingConnect,
     error: PeerError,
 ) {
-    if let Some(opening) = waiter.opening.take() {
-        opening.abort();
-    }
+    waiter.cancellation.cancel();
+    abort_pending_openings(&mut waiter);
     retire_direct_dials(swarm, &mut direct.retiring_connections, waiter.dials, None);
     release_coordination_relays(
         swarm,
@@ -1630,59 +2253,134 @@ fn fail_pending_connect(
     let _ = waiter.result.send(Err(error));
 }
 
+fn abort_pending_openings(waiter: &mut PendingConnect) {
+    if let Some(opening) = waiter.opening.take() {
+        opening.task.abort();
+    }
+}
+
 fn reconcile_transit_reservations(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
-    addresses: Vec<Multiaddr>,
+    candidates: Vec<TransitRelayCandidate>,
+    revoked_relays: &HashSet<PeerId>,
     local_peer_id: PeerId,
+    active_streams: &HashMap<ConnectionId, usize>,
+    application_stream: &application_stream::Control,
 ) {
-    let mut desired = HashMap::<PeerId, Vec<Multiaddr>>::new();
-    for address in addresses {
-        let peer_id = transit_relay_peer_id(&address)
-            .expect("transit relay address was validated before reconciliation");
-        if peer_id == local_peer_id {
-            continue;
+    let active_relays = application_stream.relays_with_active_streams(active_streams);
+    let desired = candidates
+        .into_iter()
+        .filter(|candidate| candidate.peer_id != local_peer_id)
+        .map(|candidate| (candidate.peer_id, candidate))
+        .collect::<HashMap<_, _>>();
+    let mut bootstrap = HashMap::<PeerId, (Vec<Multiaddr>, usize)>::new();
+    for candidate in desired.values() {
+        for address in &candidate.coordination_relays {
+            let peer_id = coordination_relay_peer_id(address)
+                .expect("transit bootstrap relay was validated before reconciliation");
+            if peer_id == local_peer_id || peer_id == candidate.peer_id {
+                continue;
+            }
+            let entry = bootstrap.entry(peer_id).or_default();
+            remember_relay_address(&mut entry.0, address.clone());
+            entry.1 += 1;
         }
-        remember_relay_address(desired.entry(peer_id).or_default(), address);
     }
 
-    let removed = relays
-        .iter()
-        .filter_map(|(peer_id, relay)| {
-            (!relay.transit_addresses.is_empty() && !desired.contains_key(peer_id))
-                .then_some(*peer_id)
-        })
-        .collect::<Vec<_>>();
-    for peer_id in removed {
-        let remove = if let Some(relay) = relays.get_mut(&peer_id) {
-            relay.transit_addresses.clear();
-            if relay.is_active() {
-                false
-            } else {
-                relay.reservation_accepted = false;
-                relay.reservation_addresses.clear();
-                if let Some(listener) = relay.reservation_listener.take() {
-                    swarm.remove_listener(listener);
-                }
-                for connection_id in relay.connections.drain() {
-                    let _ = swarm.close_connection(connection_id);
-                }
-                true
-            }
+    let mut peer_ids = relays.keys().copied().collect::<HashSet<_>>();
+    peer_ids.extend(desired.keys().copied());
+    peer_ids.extend(bootstrap.keys().copied());
+    for peer_id in peer_ids {
+        let relay = relays.entry(peer_id).or_default();
+        let retain_live_route =
+            active_relays.contains(&peer_id) && !revoked_relays.contains(&peer_id);
+        let next_transit_addresses = if let Some(candidate) = desired.get(&peer_id) {
+            candidate.addresses.clone()
+        } else if retain_live_route {
+            relay.transit_addresses.clone()
         } else {
-            false
+            Vec::new()
         };
-        if remove {
-            relays.remove(&peer_id);
+        let next_transit_coordination_relays = if let Some(candidate) = desired.get(&peer_id) {
+            candidate.coordination_relays.clone()
+        } else if retain_live_route {
+            relay.transit_coordination_relays.clone()
+        } else {
+            Vec::new()
+        };
+        let (next_bootstrap_addresses, next_bootstrap_references) =
+            bootstrap.get(&peer_id).cloned().unwrap_or_default();
+        let reachability_changed = relay.transit_addresses != next_transit_addresses
+            || relay.transit_coordination_relays != next_transit_coordination_relays
+            || relay.transit_bootstrap_addresses != next_bootstrap_addresses
+            || relay.transit_bootstrap_references != next_bootstrap_references;
+        relay.transit_addresses = next_transit_addresses;
+        relay.transit_coordination_relays = next_transit_coordination_relays;
+        relay.transit_bootstrap_addresses = next_bootstrap_addresses;
+        relay.transit_bootstrap_references = next_bootstrap_references;
+        if reachability_changed {
+            let now = Instant::now();
+            relay.next_connection_attempt = now;
+            relay.next_reservation_attempt = now;
+            let has_direct_connection = relay
+                .connections
+                .iter()
+                .any(|connection| !relay.relayed_connections.contains(connection));
+            let has_owned_relayed_connection = relay
+                .owned_connections
+                .iter()
+                .any(|connection| relay.relayed_connections.contains(connection));
+            if !has_direct_connection && has_owned_relayed_connection {
+                relay.replace_relayed_at = Some(now + TRANSIT_HOLE_PUNCH_RETRY_INTERVAL);
+            }
         }
     }
-    for (peer_id, addresses) in desired {
-        let relay = relays.entry(peer_id).or_default();
-        relay.transit_addresses = addresses;
-        relay.next_connection_attempt = Instant::now();
-        relay.next_reservation_attempt = Instant::now();
+
+    for peer_id in relays
+        .iter()
+        .filter_map(|(peer_id, relay)| (!relay.is_active()).then_some(*peer_id))
+        .collect::<Vec<_>>()
+    {
+        let mut relay = relays
+            .remove(&peer_id)
+            .expect("inactive relay was just observed");
+        relay.reservation_accepted = false;
+        relay.reservation_addresses.clear();
+        if let Some(listener) = relay.reservation_listener.take() {
+            swarm.remove_listener(listener);
+        }
+        for connection_id in relay.owned_connections.drain() {
+            if !active_streams.contains_key(&connection_id) {
+                let _ = swarm.close_connection(connection_id);
+            }
+        }
+        relay.direct_connection_addresses.clear();
     }
-    maintain_coordination_relays(swarm, relays, true, Instant::now());
+    maintain_coordination_relays(swarm, relays, active_streams, Instant::now());
+}
+
+fn retained_transit_candidates(
+    relays: &HashMap<PeerId, CoordinationRelay>,
+    transit: &TransitRuntime,
+) -> Vec<TransitRelayCandidate> {
+    transit
+        .trusted_relays
+        .read()
+        .map(|trusted| {
+            trusted
+                .iter()
+                .filter_map(|peer_id| {
+                    let relay = relays.get(peer_id)?;
+                    Some(TransitRelayCandidate {
+                        peer_id: *peer_id,
+                        addresses: relay.transit_addresses.clone(),
+                        coordination_relays: relay.transit_coordination_relays.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn handle_transit_event(transit: &mut TransitRuntime, event: relay::Event) {
@@ -1792,6 +2490,7 @@ fn register_automatic_relay_candidate(
 fn rebalance_automatic_relays(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
+    active_streams: &HashMap<ConnectionId, usize>,
     now: Instant,
 ) {
     let manual_reservations = relays
@@ -1840,8 +2539,10 @@ fn rebalance_automatic_relays(
             swarm.remove_listener(listener);
         }
         if relay.client_references == 0 {
-            for connection_id in relay.connections.drain() {
-                let _ = swarm.close_connection(connection_id);
+            for connection_id in relay.owned_connections.iter().copied() {
+                if !active_streams.contains_key(&connection_id) {
+                    let _ = swarm.close_connection(connection_id);
+                }
             }
         }
     }
@@ -1851,13 +2552,38 @@ fn publish_active_coordination_relays(
     relays: &HashMap<PeerId, CoordinationRelay>,
     snapshot: &Arc<RwLock<Vec<Multiaddr>>>,
 ) {
-    let mut addresses = relays
-        .values()
-        .filter(|relay| relay.reserve && relay.reservation_accepted)
-        .flat_map(|relay| relay.reservation_addresses.iter().cloned())
+    let mut relay_routes = relays
+        .iter()
+        .filter(|(_, relay)| relay.reserve && relay.reservation_accepted)
+        .map(|(peer_id, relay)| {
+            let mut routes = relay.reservation_addresses.clone();
+            routes.sort_unstable_by_key(ToString::to_string);
+            routes.dedup();
+            (peer_id.to_string(), routes)
+        })
         .collect::<Vec<_>>();
-    addresses.sort_unstable_by_key(ToString::to_string);
-    addresses.dedup();
+    relay_routes.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+    let mut addresses = Vec::new();
+    let mut seen = HashSet::new();
+    let route_count = relay_routes
+        .iter()
+        .map(|(_, routes)| routes.len())
+        .max()
+        .unwrap_or_default();
+    'routes: for route_index in 0..route_count {
+        for (_, routes) in &relay_routes {
+            let Some(address) = routes.get(route_index) else {
+                continue;
+            };
+            if seen.insert(address.clone()) {
+                addresses.push(address.clone());
+                if addresses.len() == MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES {
+                    break 'routes;
+                }
+            }
+        }
+    }
     if let Ok(mut current) = snapshot.write() {
         *current = addresses;
     }
@@ -1981,6 +2707,7 @@ fn discard_automatic_relay_candidate(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     peer_id: PeerId,
+    active_streams: &HashMap<ConnectionId, usize>,
 ) {
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
@@ -2005,8 +2732,10 @@ fn discard_automatic_relay_candidate(
     let mut relay = relays
         .remove(&peer_id)
         .expect("automatic relay candidate was read from the same map");
-    for connection_id in relay.connections.drain() {
-        let _ = swarm.close_connection(connection_id);
+    for connection_id in relay.owned_connections.drain() {
+        if !active_streams.contains_key(&connection_id) {
+            let _ = swarm.close_connection(connection_id);
+        }
     }
 }
 
@@ -2014,7 +2743,7 @@ fn release_coordination_relays(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     peers: &[PeerId],
-    active_outbound: &HashMap<PeerId, ConnectionId>,
+    active_outbound: &HashMap<ConnectionId, usize>,
 ) {
     for peer_id in peers {
         let Some(relay) = relays.get_mut(peer_id) else {
@@ -2029,11 +2758,8 @@ fn release_coordination_relays(
         if let Some(listener) = relay.reservation_listener.take() {
             swarm.remove_listener(listener);
         }
-        for connection_id in relay.connections.drain() {
-            if !active_outbound
-                .values()
-                .any(|active| *active == connection_id)
-            {
+        for connection_id in relay.owned_connections.iter().copied() {
+            if !active_outbound.contains_key(&connection_id) {
                 let _ = swarm.close_connection(connection_id);
             }
         }
@@ -2044,14 +2770,19 @@ fn dial_coordination_relay(
     swarm: &mut Swarm<Behaviour>,
     peer_id: PeerId,
     relay: &mut CoordinationRelay,
+    addresses: Vec<Multiaddr>,
     now: Instant,
 ) {
-    if relay.pending_connection.is_some() || relay.next_connection_attempt > now {
+    if addresses.is_empty()
+        || relay.pending_connection.is_some()
+        || relay.next_connection_attempt > now
+    {
         return;
     }
     relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
     let options = DialOpts::peer_id(peer_id)
-        .addresses(relay_dial_addresses(relay))
+        .condition(PeerCondition::Always)
+        .addresses(addresses)
         .build();
     let connection_id = options.connection_id();
     if swarm.dial(options).is_ok() {
@@ -2062,20 +2793,60 @@ fn dial_coordination_relay(
 fn maintain_coordination_relays(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
-    external_candidate_ready: bool,
+    active_streams: &HashMap<ConnectionId, usize>,
     now: Instant,
 ) {
     for peer_id in relays.keys().copied().collect::<Vec<_>>() {
-        if relays.get(&peer_id).is_none_or(|relay| !relay.is_active()) {
+        let Some(relay) = relays.get(&peer_id) else {
+            continue;
+        };
+        if !relay.is_active() {
             continue;
         }
-        if !swarm.is_connected(&peer_id) {
-            if let Some(relay) = relays.get_mut(&peer_id) {
-                dial_coordination_relay(swarm, peer_id, relay, now);
+        let transit_provider =
+            !relay.transit_addresses.is_empty() || !relay.transit_coordination_relays.is_empty();
+        let has_direct_connection = relay
+            .connections
+            .iter()
+            .any(|connection| !relay.relayed_connections.contains(connection));
+        let owned_relayed_connections = relay
+            .owned_connections
+            .intersection(&relay.relayed_connections)
+            .copied()
+            .collect::<Vec<_>>();
+        if transit_provider && !has_direct_connection && !owned_relayed_connections.is_empty() {
+            if relay.replace_relayed_at.is_some_and(|retry| retry <= now) {
+                let stale = owned_relayed_connections
+                    .iter()
+                    .copied()
+                    .filter(|connection| !active_streams.contains_key(connection))
+                    .collect::<Vec<_>>();
+                if let Some(relay) = relays.get_mut(&peer_id) {
+                    if stale.is_empty() {
+                        relay.replace_relayed_at = Some(now + TRANSIT_HOLE_PUNCH_RETRY_INTERVAL);
+                    } else {
+                        relay.replace_relayed_at = None;
+                        relay.next_connection_attempt = now + COORDINATION_RETRY_INTERVAL;
+                    }
+                }
+                for connection_id in stale {
+                    let _ = swarm.close_connection(connection_id);
+                }
             }
             continue;
         }
-        request_coordination_reservation(swarm, relays, peer_id, external_candidate_ready, now);
+        // A connection may have been established before this peer became a
+        // coordination or transit relay. Establish one lifecycle-owned
+        // connection when no observed direct path can carry the reservation;
+        // unrelated application streams remain outside lifecycle cleanup.
+        if !has_direct_connection {
+            let addresses = relay_dial_addresses(peer_id, relay, relays);
+            if let Some(relay) = relays.get_mut(&peer_id) {
+                dial_coordination_relay(swarm, peer_id, relay, addresses, now);
+            }
+            continue;
+        }
+        request_coordination_reservation(swarm, relays, peer_id, now);
     }
 }
 
@@ -2083,17 +2854,25 @@ fn request_coordination_reservation(
     swarm: &mut Swarm<Behaviour>,
     relays: &mut HashMap<PeerId, CoordinationRelay>,
     peer_id: PeerId,
-    external_candidate_ready: bool,
     now: Instant,
 ) {
     let Some(relay) = relays.get_mut(&peer_id) else {
         return;
     };
-    if !(relay.reserve || !relay.transit_addresses.is_empty())
+    // Transit policy can be installed after Identify has already completed on an
+    // existing connection. The reservation request still negotiates Relay v2.
+    let identified =
+        !relay.transit_addresses.is_empty() || (relay.identify_received && relay.identify_sent);
+    let transit_provider =
+        !relay.transit_addresses.is_empty() || !relay.transit_coordination_relays.is_empty();
+    let directly_connected = relay
+        .connections
+        .iter()
+        .any(|connection| !relay.relayed_connections.contains(connection));
+    if !(relay.reserve || transit_provider)
         || relay.reservation_listener.is_some()
-        || !relay.identify_received
-        || !relay.identify_sent
-        || !external_candidate_ready
+        || !identified
+        || (transit_provider && !directly_connected)
         || relay.next_reservation_attempt > now
     {
         return;
@@ -2115,10 +2894,30 @@ fn request_coordination_reservation(
     }
 }
 
-fn relay_dial_addresses(relay: &CoordinationRelay) -> Vec<Multiaddr> {
+fn relay_dial_addresses(
+    peer_id: PeerId,
+    relay: &CoordinationRelay,
+    relays: &HashMap<PeerId, CoordinationRelay>,
+) -> Vec<Multiaddr> {
     let mut addresses = relay.addresses.clone();
     addresses.extend(relay.automatic_addresses.iter().cloned());
     addresses.extend(relay.transit_addresses.iter().cloned());
+    addresses.extend(relay.transit_bootstrap_addresses.iter().cloned());
+    addresses.extend(
+        relay
+            .transit_coordination_relays
+            .iter()
+            .filter_map(|address| {
+                let bootstrap_peer = coordination_relay_peer_id(address).ok()?;
+                let bootstrap = relays.get(&bootstrap_peer)?;
+                (bootstrap.identify_received && bootstrap.identify_sent).then(|| {
+                    address
+                        .clone()
+                        .with(Protocol::P2pCircuit)
+                        .with(Protocol::P2p(peer_id))
+                })
+            }),
+    );
     addresses.sort_unstable_by_key(ToString::to_string);
     addresses.dedup();
     addresses
@@ -2130,6 +2929,7 @@ fn relay_reservation_addresses(relay: &CoordinationRelay) -> Vec<Multiaddr> {
     } else {
         let mut addresses = relay.addresses.clone();
         addresses.extend(relay.transit_addresses.iter().cloned());
+        addresses.extend(relay.direct_connection_addresses.values().cloned());
         addresses.sort_unstable_by_key(ToString::to_string);
         addresses.dedup();
         addresses
@@ -2142,12 +2942,17 @@ fn discovery_debug(message: std::fmt::Arguments<'_>) {
     }
 }
 
+fn webrtc_debug(message: std::fmt::Arguments<'_>) {
+    if std::env::var_os("MAKA_WEBRTC_DIAGNOSTICS").is_some() {
+        eprintln!("[peer-webrtc] {message}");
+    }
+}
+
 fn retry_connect_routes(
     swarm: &mut Swarm<Behaviour>,
     direct: &mut DirectConnectState,
     coordination_relays: &HashMap<PeerId, CoordinationRelay>,
     stream_control: &application_stream::Control,
-    external_candidate_ready: bool,
     now: Instant,
 ) {
     for connect in direct.pending.values_mut() {
@@ -2155,11 +2960,12 @@ fn retry_connect_routes(
         if connect.next_route_attempt > now {
             continue;
         }
-        if stream_control.has_connection(
-            peer_id,
-            &direct.retiring_connections,
-            &connect.transit_relay_peers,
-        ) {
+        let excluded = direct
+            .retiring_connections
+            .union(&connect.rejected_connections)
+            .copied()
+            .collect::<HashSet<_>>();
+        if stream_control.has_connection(peer_id, &excluded, &connect.transit_relay_peers) {
             continue;
         }
         connect.next_route_attempt = now + COORDINATION_RETRY_INTERVAL;
@@ -2178,24 +2984,11 @@ fn retry_connect_routes(
             .any(|origin| *origin == DialOrigin::Coordination)
             && (connect.retry_coordination || !stream_control.has_relayed_connection(peer_id))
         {
-            let mut targets = Vec::new();
-            for relay in &connect.coordination_relays {
-                let relay_peer = coordination_relay_peer_id(relay)
-                    .expect("coordination relay was validated before connecting");
-                if !external_candidate_ready
-                    || coordination_relays
-                        .get(&relay_peer)
-                        .is_none_or(|relay| !relay.identify_received || !relay.identify_sent)
-                {
-                    continue;
-                }
-                targets.push(
-                    relay
-                        .clone()
-                        .with(Protocol::P2pCircuit)
-                        .with(Protocol::P2p(peer_id)),
-                );
-            }
+            let targets = coordination_dial_targets(
+                peer_id,
+                &connect.coordination_relays,
+                coordination_relays,
+            );
             if let Some(connection_id) = dial_direct_targets(swarm, peer_id, targets) {
                 connect
                     .dials
@@ -2216,7 +3009,12 @@ fn retry_connect_routes(
                     .transit_relay_peers
                     .iter()
                     .filter_map(|relay_peer| coordination_relays.get(relay_peer))
-                    .flat_map(|relay| relay.transit_addresses.iter())
+                    .flat_map(|relay| {
+                        relay
+                            .transit_addresses
+                            .iter()
+                            .chain(relay.direct_connection_addresses.values())
+                    })
                     .map(|address| {
                         address
                             .clone()
@@ -2229,6 +3027,29 @@ fn retry_connect_routes(
             connect.dials.insert(connection_id, DialOrigin::Transit);
         }
     }
+}
+
+fn coordination_dial_targets(
+    peer_id: PeerId,
+    addresses: &[Multiaddr],
+    relays: &HashMap<PeerId, CoordinationRelay>,
+) -> Vec<Multiaddr> {
+    addresses
+        .iter()
+        .filter(|address| {
+            let relay_peer = coordination_relay_peer_id(address)
+                .expect("coordination relay was validated before connecting");
+            relays
+                .get(&relay_peer)
+                .is_some_and(|relay| relay.identify_received && relay.identify_sent)
+        })
+        .map(|address| {
+            address
+                .clone()
+                .with(Protocol::P2pCircuit)
+                .with(Protocol::P2p(peer_id))
+        })
+        .collect()
 }
 
 fn dial_direct_targets(
@@ -2269,6 +3090,85 @@ fn native_error(error: impl std::fmt::Display) -> PeerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn application_streams_commit_on_the_best_established_path() {
+        let relay_peer_id = PeerId::random();
+        assert!(
+            stream_candidate_priority(&PeerConnectionPath::Direct(DirectTransport::Quic))
+                < stream_candidate_priority(&PeerConnectionPath::Direct(DirectTransport::WebRtc))
+        );
+        assert!(
+            stream_candidate_priority(&PeerConnectionPath::Direct(DirectTransport::WebRtc))
+                < stream_candidate_priority(&PeerConnectionPath::Transit { relay_peer_id })
+        );
+    }
+
+    #[test]
+    fn coordination_dial_only_requires_an_identified_relay() {
+        let relay_peer_id = PeerId::random();
+        let target_peer_id = PeerId::random();
+        let relay_address: Multiaddr = format!("/ip4/203.0.113.1/tcp/4001/p2p/{relay_peer_id}")
+            .parse()
+            .expect("valid relay address");
+        let relays = HashMap::from([(
+            relay_peer_id,
+            CoordinationRelay {
+                identify_received: true,
+                identify_sent: true,
+                ..CoordinationRelay::default()
+            },
+        )]);
+
+        assert_eq!(
+            coordination_dial_targets(
+                target_peer_id,
+                std::slice::from_ref(&relay_address),
+                &relays,
+            ),
+            vec![
+                relay_address
+                    .with(Protocol::P2pCircuit)
+                    .with(Protocol::P2p(target_peer_id))
+            ],
+        );
+    }
+
+    #[test]
+    fn completion_at_the_immutable_deadline_cannot_commit() {
+        let now = Instant::now();
+        let mut direct = DirectConnectState::default();
+        let attempt_id = direct.allocate_attempt_id();
+        let (result, _response) = oneshot::channel();
+        direct.pending.insert(
+            7,
+            PendingConnect {
+                attempt_id,
+                peer_id: PeerId::random(),
+                result,
+                stream_kind: StreamKind::Application,
+                deadline: now,
+                opening: None,
+                rejected_connections: HashSet::new(),
+                dials: HashMap::new(),
+                direct_routes: Vec::new(),
+                coordination_relays: Vec::new(),
+                coordination_relay_peers: Vec::new(),
+                transit_relay_peers: HashSet::new(),
+                transit_after: now,
+                next_route_attempt: now,
+                retry_coordination: false,
+                webrtc_attempted: false,
+                cancellation: CancellationToken::new(),
+            },
+        );
+
+        assert!(matches!(
+            direct.take_pending_attempt(7, attempt_id, now),
+            Some(PendingAttemptAdmission::Expired(_))
+        ));
+        assert!(direct.pending.is_empty());
+    }
 
     #[tokio::test]
     async fn identity_signature_is_bound_to_peer_and_payload() {
@@ -2328,23 +3228,38 @@ mod tests {
                 .expect("Mesh inbound timeout")
                 .expect("Mesh inbound stream");
 
-        for request_id in 2..=3 {
-            let application_left = connect_test_stream(
-                &left,
-                right.peer_id,
-                route.clone(),
-                request_id,
-                StreamKind::Application,
-            )
-            .await;
-            let application_right =
-                tokio::time::timeout(Duration::from_secs(5), right.incoming.recv())
-                    .await
-                    .expect("application inbound timeout")
-                    .expect("application inbound stream");
-            close_test_stream(application_left).await;
-            close_test_stream(application_right).await;
-        }
+        let first_left = connect_test_stream(
+            &left,
+            right.peer_id,
+            route.clone(),
+            2,
+            StreamKind::Application,
+        )
+        .await;
+        let first_right = tokio::time::timeout(Duration::from_secs(5), right.incoming.recv())
+            .await
+            .expect("first application inbound timeout")
+            .expect("first application inbound stream");
+        let second_left =
+            connect_test_stream(&left, right.peer_id, route, 3, StreamKind::Application).await;
+        let mut second_right = tokio::time::timeout(Duration::from_secs(5), right.incoming.recv())
+            .await
+            .expect("second application inbound timeout")
+            .expect("second application inbound stream");
+
+        close_test_stream(first_left).await;
+        close_test_stream(first_right).await;
+        write_test_stream(&second_left, b"second-still-open").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), second_right.incoming.recv())
+                .await
+                .expect("second application read timeout")
+                .expect("second application stream ended")
+                .expect("second application read failed"),
+            b"second-still-open",
+        );
+        close_test_stream(second_left).await;
+        close_test_stream(second_right).await;
 
         write_test_stream(&mesh_left, b"still-open").await;
         assert_eq!(
@@ -2366,7 +3281,7 @@ mod tests {
     async fn approved_peers_can_exchange_an_application_stream_through_transit() {
         let root = std::env::temp_dir().join(format!("maka-peer-transit-{}", PeerId::random()));
         std::fs::create_dir_all(&root).expect("create test root");
-        let relay = start(test_endpoint_options(root.join("relay.key"))).expect("start relay");
+        let mut relay = start(test_endpoint_options(root.join("relay.key"))).expect("start relay");
         let source = start(test_endpoint_options(root.join("source.key"))).expect("start source");
         let target_key = root.join("target.key");
         let target_peer_id = ensure_identity(target_key.clone())
@@ -2379,6 +3294,19 @@ mod tests {
             .expect("relay listen address")
             .clone();
         let mut target = start(test_endpoint_options(target_key)).expect("start target");
+        let target_relay_stream = connect_test_stream(
+            &target,
+            relay.peer_id,
+            relay_address.clone(),
+            1,
+            StreamKind::Application,
+        )
+        .await;
+        let relay_target_stream =
+            tokio::time::timeout(Duration::from_secs(5), relay.incoming.recv())
+                .await
+                .expect("relay bootstrap inbound timeout")
+                .expect("relay bootstrap inbound stream");
         configure_test_transit_with_reservations(
             &target,
             HashSet::new(),
@@ -2392,6 +3320,31 @@ mod tests {
         )
         .await;
         wait_for_test_snapshot(&relay, |snapshot| snapshot.active_reservation_count == 2).await;
+
+        let mesh_source = connect_test_stream_through_transit(
+            &source,
+            target.peer_id,
+            relay.peer_id,
+            10,
+            StreamKind::MeshControl,
+        )
+        .await;
+        let mut mesh_target =
+            tokio::time::timeout(Duration::from_secs(5), target.mesh_incoming.recv())
+                .await
+                .expect("transit Mesh inbound timeout")
+                .expect("transit Mesh inbound stream");
+        write_test_stream(&mesh_source, b"mesh-through-transit").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), mesh_target.incoming.recv())
+                .await
+                .expect("transit Mesh read timeout")
+                .expect("transit Mesh stream ended")
+                .expect("transit Mesh read failed"),
+            b"mesh-through-transit",
+        );
+        close_test_stream(mesh_source).await;
+        close_test_stream(mesh_target).await;
 
         let response = begin_test_connect(
             &source,
@@ -2434,7 +3387,30 @@ mod tests {
             1,
         );
 
-        configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
+        configure_test_transit_policy(
+            &source,
+            HashSet::new(),
+            HashSet::from([relay.peer_id]),
+            Vec::new(),
+        )
+        .await;
+        write_test_stream(&source_stream, b"after-route-expiry").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), target_stream.incoming.recv())
+                .await
+                .expect("expired route read timeout")
+                .expect("expired route stream ended")
+                .expect("expired route read failed"),
+            b"after-route-expiry",
+        );
+        configure_test_transit_with_reservations(
+            &source,
+            HashSet::new(),
+            vec![relay_address.clone()],
+        )
+        .await;
+
+        configure_test_transit(&source, HashSet::new()).await;
         wait_for_test_snapshot(&relay, |snapshot| snapshot.active_circuit_count == 0).await;
         let (result, response) = oneshot::channel();
         if source_stream
@@ -2454,6 +3430,12 @@ mod tests {
                 "revoked transit stream remained writable",
             );
         }
+        configure_test_transit_with_reservations(
+            &source,
+            HashSet::new(),
+            vec![relay_address.clone()],
+        )
+        .await;
 
         let response = begin_test_connect(
             &source,
@@ -2476,9 +3458,12 @@ mod tests {
             panic!("revoked pending transit connect succeeded");
         };
         assert_eq!(error.code, "transit_unavailable");
+        configure_test_transit(&relay, HashSet::from([target.peer_id])).await;
 
         close_test_stream(source_stream).await;
         close_test_stream(target_stream).await;
+        close_test_stream(target_relay_stream).await;
+        close_test_stream(relay_target_stream).await;
 
         configure_test_transit(&relay, HashSet::from([source.peer_id, target.peer_id])).await;
         let response = begin_test_connect(
@@ -2540,9 +3525,136 @@ mod tests {
         };
         assert_eq!(error.code, "peer_connect_cancelled");
 
+        let source_stream = connect_test_stream(
+            &source,
+            target.peer_id,
+            target
+                .listen_addresses
+                .first()
+                .expect("target retry route")
+                .clone(),
+            4,
+            StreamKind::Application,
+        )
+        .await;
+        let mut target_stream =
+            tokio::time::timeout(Duration::from_secs(5), target.incoming.recv())
+                .await
+                .expect("retry inbound timeout")
+                .expect("retry inbound stream");
+        write_test_stream(&source_stream, b"cancelled-request-id-reused").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), target_stream.incoming.recv())
+                .await
+                .expect("retry read timeout")
+                .expect("retry stream ended")
+                .expect("retry read failed"),
+            b"cancelled-request-id-reused",
+        );
+        close_test_stream(source_stream).await;
+        close_test_stream(target_stream).await;
+
         stop_test_endpoint(source).await;
         stop_test_endpoint(target).await;
         stop_test_endpoint(relay).await;
+        std::fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn transit_provider_can_be_bootstrapped_through_its_coordination_relay() {
+        let root =
+            std::env::temp_dir().join(format!("maka-peer-transit-bootstrap-{}", PeerId::random()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let coordination = start(test_endpoint_options(root.join("coordination.key")))
+            .expect("start coordination");
+        let coordination_address = coordination
+            .listen_addresses
+            .first()
+            .expect("coordination listen address")
+            .clone();
+
+        let provider_key = root.join("provider.key");
+        let source_key = root.join("source.key");
+        let provider_peer_id = ensure_identity(provider_key.clone())
+            .await
+            .expect("create provider identity");
+        let source_peer_id = ensure_identity(source_key.clone())
+            .await
+            .expect("create source identity");
+        configure_test_transit(
+            &coordination,
+            HashSet::from([provider_peer_id, source_peer_id]),
+        )
+        .await;
+
+        let mut provider_options = test_endpoint_options(provider_key);
+        provider_options.coordination_relays = vec![coordination_address.clone()];
+        let provider = start(provider_options).expect("start transit provider");
+        wait_for_test_coordination_route(&provider).await;
+
+        let source = start(test_endpoint_options(source_key)).expect("start source");
+        let mut target =
+            start(test_endpoint_options(root.join("target.key"))).expect("start target");
+        configure_test_transit(&provider, HashSet::from([source.peer_id, target.peer_id])).await;
+        let provider_address = provider
+            .listen_addresses
+            .first()
+            .expect("provider listen address")
+            .clone();
+        configure_test_transit_with_reservations(&target, HashSet::new(), vec![provider_address])
+            .await;
+        configure_test_transit_with_candidates(
+            &source,
+            HashSet::new(),
+            vec![TransitRelayCandidate {
+                peer_id: provider.peer_id,
+                addresses: Vec::new(),
+                coordination_relays: vec![coordination_address],
+            }],
+        )
+        .await;
+        wait_for_test_snapshot(&provider, |snapshot| snapshot.active_reservation_count == 2).await;
+
+        let source_stream = tokio::time::timeout(
+            Duration::from_secs(10),
+            begin_test_connect(
+                &source,
+                ConnectOptions {
+                    request_id: 1,
+                    peer_id: target.peer_id,
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: vec![provider.peer_id],
+                    deadline: Duration::from_secs(10),
+                },
+            )
+            .await,
+        )
+        .await
+        .expect("transit connect timeout")
+        .expect("transit connect response")
+        .expect("transit connect failed");
+        let mut target_stream =
+            tokio::time::timeout(Duration::from_secs(5), target.incoming.recv())
+                .await
+                .expect("transit inbound timeout")
+                .expect("transit inbound stream");
+        write_test_stream(&source_stream, b"bootstrapped-transit").await;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), target_stream.incoming.recv())
+                .await
+                .expect("transit read timeout")
+                .expect("transit stream ended")
+                .expect("transit read failed"),
+            b"bootstrapped-transit",
+        );
+
+        close_test_stream(source_stream).await;
+        close_test_stream(target_stream).await;
+        stop_test_endpoint(source).await;
+        stop_test_endpoint(target).await;
+        stop_test_endpoint(provider).await;
+        stop_test_endpoint(coordination).await;
         std::fs::remove_dir_all(root).expect("remove test root");
     }
 
@@ -2557,6 +3669,7 @@ mod tests {
             ],
             coordination_relays: Vec::new(),
             automatic_relay_discovery: false,
+            web_rtc_stun_urls: None,
         }
     }
 
@@ -2606,6 +3719,37 @@ mod tests {
             .expect("connect timeout")
             .expect("connect response")
             .expect("connect failed")
+    }
+
+    async fn connect_test_stream_through_transit(
+        endpoint: &StartedEndpoint,
+        peer_id: PeerId,
+        relay_peer_id: PeerId,
+        request_id: u32,
+        stream_kind: StreamKind,
+    ) -> PeerStream {
+        let (result, response) = oneshot::channel();
+        endpoint
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id,
+                    peer_id,
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: vec![relay_peer_id],
+                    deadline: Duration::from_secs(10),
+                },
+                stream_kind,
+                result,
+            })
+            .await
+            .expect("send transit connect");
+        tokio::time::timeout(Duration::from_secs(10), response)
+            .await
+            .expect("transit connect timeout")
+            .expect("transit connect response")
+            .expect("transit connect failed")
     }
 
     async fn write_test_stream(stream: &PeerStream, bytes: &[u8]) {
@@ -2659,12 +3803,43 @@ mod tests {
         allowed_peers: HashSet<PeerId>,
         reservation_relays: Vec<Multiaddr>,
     ) {
+        let reservation_relays = reservation_relays
+            .into_iter()
+            .map(|address| TransitRelayCandidate {
+                peer_id: transit_relay_peer_id(&address).expect("test relay peer id"),
+                addresses: vec![address],
+                coordination_relays: Vec::new(),
+            })
+            .collect();
+        configure_test_transit_with_candidates(endpoint, allowed_peers, reservation_relays).await;
+    }
+
+    async fn configure_test_transit_with_candidates(
+        endpoint: &StartedEndpoint,
+        allowed_peers: HashSet<PeerId>,
+        reservation_relays: Vec<TransitRelayCandidate>,
+    ) {
+        let approved_relays = reservation_relays
+            .iter()
+            .map(|candidate| candidate.peer_id)
+            .collect();
+        configure_test_transit_policy(endpoint, allowed_peers, approved_relays, reservation_relays)
+            .await;
+    }
+
+    async fn configure_test_transit_policy(
+        endpoint: &StartedEndpoint,
+        allowed_peers: HashSet<PeerId>,
+        approved_relays: HashSet<PeerId>,
+        reservation_relays: Vec<TransitRelayCandidate>,
+    ) {
         let (result, response) = oneshot::channel();
         endpoint
             .commands
             .send(EngineCommand::ConfigureTransit {
                 policy: TransitPolicy {
                     allowed_peers,
+                    approved_relays,
                     relays: reservation_relays,
                 },
                 result,
@@ -2672,6 +3847,24 @@ mod tests {
             .await
             .expect("send transit policy");
         response.await.expect("apply transit policy");
+    }
+
+    async fn wait_for_test_coordination_route(endpoint: &StartedEndpoint) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if endpoint
+                    .active_coordination_relays
+                    .read()
+                    .map(|routes| !routes.is_empty())
+                    .unwrap_or(false)
+                {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("coordination route timeout");
     }
 
     async fn wait_for_test_snapshot(
@@ -2761,6 +3954,49 @@ mod tests {
         assert_eq!(
             *snapshot.read().expect("read snapshot"),
             vec![accepted_address]
+        );
+    }
+
+    #[test]
+    fn active_coordination_routes_respect_the_shared_route_limit() {
+        let relays = (0..5)
+            .map(|relay_index| {
+                let peer_id = PeerId::random();
+                let reservation_addresses = (0..MAX_RELAY_ADDRESSES_PER_PEER)
+                    .map(|route_index| {
+                        format!(
+                            "/ip4/192.0.2.{}/tcp/{}/p2p/{peer_id}",
+                            relay_index + 1,
+                            4001 + route_index,
+                        )
+                        .parse()
+                        .expect("valid relay address")
+                    })
+                    .collect();
+                (
+                    peer_id,
+                    CoordinationRelay {
+                        reserve: true,
+                        reservation_accepted: true,
+                        reservation_addresses,
+                        ..CoordinationRelay::default()
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let snapshot = Arc::new(RwLock::new(Vec::new()));
+
+        publish_active_coordination_relays(&relays, &snapshot);
+
+        let routes = snapshot.read().expect("read snapshot");
+        assert_eq!(routes.len(), MAX_PUBLISHED_COORDINATION_RELAY_ADDRESSES);
+        assert_eq!(
+            routes
+                .iter()
+                .map(|route| coordination_relay_peer_id(route).expect("published relay identity"))
+                .collect::<HashSet<_>>()
+                .len(),
+            relays.len(),
         );
     }
 

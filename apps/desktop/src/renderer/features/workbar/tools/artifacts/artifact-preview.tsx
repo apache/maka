@@ -36,12 +36,12 @@
  *               fallback `<p>` instructing the user to open in Finder when
  *               the embed plugin is unavailable.
  *
- * Failure modes come back as a small `FailureCard` so the user
- * always sees a Chinese-language explanation of *why* the preview is empty
- * instead of a blank surface:
+ * Failure modes come back as a `Banner` so the user always sees a
+ * Chinese-language explanation of *why* the preview is empty instead of a
+ * blank surface. The reason maps straight onto Banner's own status:
  *
- *   - `not_found` / `read_failed` → destructive ("路径可能已被外部删除")
- *   - `not_allowed`               → destructive ("路径检查未通过")
+ *   - `not_found` / `read_failed` → error ("路径可能已被外部删除")
+ *   - `not_allowed`               → error ("路径检查未通过")
  *   - `too_large`                 → info, includes byte count + Finder hint
  *   - `deleted`                   → info ("此 artifact 已删除")
  *   - `unsupported_mime`          → info, binary only
@@ -348,30 +348,13 @@ function PreviewLoading(props: { label: string }) {
 }
 
 function TextFailureCard(props: { record: ArtifactDescriptor; reason: TextFailureReason; copy: ArtifactCopy }) {
-  const { tone, title, description } = failureCopyText(props.record, props.reason, props.copy);
-  return <FailureCard tone={tone} title={title} description={description} />;
+  const { status, title, description } = failureCopyText(props.record, props.reason, props.copy);
+  return <Banner status={status} role="status" title={title} description={description} />;
 }
 
 function BinaryFailureCard(props: { record: ArtifactDescriptor; reason: BinaryFailureReason; copy: ArtifactCopy }) {
-  const { tone, title, description } = failureCopyBinary(props.record, props.reason, props.copy);
-  return <FailureCard tone={tone} title={title} description={description} />;
-}
-
-function FailureCard(props: {
-  tone: 'destructive' | 'info';
-  title: string;
-  description: string;
-}) {
-  return (
-    <Banner
-      className="maka-artifact-preview-fail"
-      data-tone={props.tone}
-      status={props.tone === 'destructive' ? 'error' : 'info'}
-      role="status"
-      title={props.title}
-      description={props.description}
-    />
-  );
+  const { status, title, description } = failureCopyBinary(props.record, props.reason, props.copy);
+  return <Banner status={status} role="status" title={title} description={description} />;
 }
 
 // ---- failure-reason → copy -------------------------------------------------
@@ -380,7 +363,8 @@ type TextFailureReason = Extract<ArtifactTextReadResult, { ok: false }>['reason'
 type BinaryFailureReason = Extract<ArtifactBinaryReadResult, { ok: false }>['reason'];
 
 interface FailureCopy {
-  tone: 'destructive' | 'info';
+  /** Banner's own status vocabulary — no second name for the same two values. */
+  status: 'error' | 'info';
   title: string;
   description: string;
 }
@@ -390,22 +374,22 @@ function failureCopyText(record: ArtifactDescriptor, reason: TextFailureReason, 
     case 'not_found':
     case 'read_failed':
       return {
-        tone: 'destructive',
+        status: 'error',
         ...copy.preview.readFailed,
       };
     case 'not_allowed':
       return {
-        tone: 'destructive',
+        status: 'error',
         ...copy.preview.notAllowed,
       };
     case 'too_large':
       return {
-        tone: 'info',
+        status: 'info',
         ...copy.preview.tooLarge(record.sizeBytes),
       };
     case 'deleted':
       return {
-        tone: 'info',
+        status: 'info',
         ...copy.preview.deleted,
       };
   }
@@ -414,7 +398,7 @@ function failureCopyText(record: ArtifactDescriptor, reason: TextFailureReason, 
 function failureCopyBinary(record: ArtifactDescriptor, reason: BinaryFailureReason, copy: ArtifactCopy): FailureCopy {
   if (reason === 'unsupported_mime') {
     return {
-      tone: 'info',
+      status: 'info',
       ...copy.preview.unsupportedMime,
     };
   }
@@ -444,7 +428,7 @@ function useTextRead(
       .catch((error: unknown) => {
         if (disposed) return;
         // Map Desktop transport failures (bridge throw, channel closed) onto the
-        // contract enum so the FailureCard can render a consistent message
+        // contract enum so the failure Banner can render a consistent message
         // instead of leaking an Electron error string to the user.
         const message = error instanceof Error ? error.message : String(error);
         const reason: TextFailureReason = message.includes('not_allowed')
