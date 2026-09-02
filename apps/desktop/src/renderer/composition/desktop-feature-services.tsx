@@ -27,7 +27,6 @@ import { SessionNavigationServicesProvider } from '../features/session-navigatio
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
-import { ConversationServicesProvider } from '../features/conversation';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
 import { createDesktopModuleHubServices } from '../platform/desktop/create-module-hub-services';
@@ -37,13 +36,11 @@ import { createDesktopSessionNavigationServices } from '../platform/desktop/crea
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
-import { createDesktopConversationServices } from '../platform/desktop/create-conversation-services';
 
 export function createDesktopFeatureServices() {
   return {
     connectionSettings: createDesktopConnectionSettingsServices(),
     goal: createDesktopGoalServices(),
-    conversation: createDesktopConversationServices(),
     moduleHub: createDesktopModuleHubServices(),
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
