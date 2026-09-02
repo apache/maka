@@ -430,6 +430,20 @@ export const WRITE_STDIN_MINIMAL_EXAMPLES: readonly {
     },
   },
   {
+    label: 'mouse press',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'mouse', event: 'press', x: 0, y: 0, button: 'left' }],
+    },
+  },
+  {
+    label: 'mouse release',
+    payload: {
+      ref: WRITE_STDIN_EXAMPLE_REF,
+      actions: [{ type: 'mouse', event: 'release', x: 0, y: 0, button: 'left' }],
+    },
+  },
+  {
     label: 'mouse move',
     payload: {
       ref: WRITE_STDIN_EXAMPLE_REF,
@@ -445,6 +459,19 @@ export const WRITE_STDIN_MINIMAL_EXAMPLES: readonly {
   },
   { label: 'resize only', payload: { ref: WRITE_STDIN_EXAMPLE_REF, size: { cols: 80, rows: 24 } } },
 ];
+
+/**
+ * The concrete minimal example embedded in the WriteStdin tool description,
+ * derived from the pinned {@link WRITE_STDIN_MINIMAL_EXAMPLES} `key (named)`
+ * entry so the documented shape can never drift from what conformance tests
+ * exercise. The example ref id is templated to `<id>` for human readers.
+ */
+export const WRITE_STDIN_DESCRIPTION_EXAMPLE_JSON = JSON.stringify(
+  (
+    WRITE_STDIN_MINIMAL_EXAMPLES.find((example) => example.label === 'key (named)') ??
+    WRITE_STDIN_MINIMAL_EXAMPLES[0]
+  ).payload,
+).replace('sr_example', '<id>');
 
 /**
  * Build the two-layer WriteStdin schema pair as a single unit so the
@@ -619,7 +646,7 @@ export function buildWriteStdinTool(ptyControls: PtyControlWriter): MakaTool {
       `Named keys are ${TERMINAL_INPUT_NAMED_KEYS.join(', ')}. Use a printable ASCII key with ctrl or alt for chords such as Ctrl-B; use text for ordinary typing. ` +
       'Mouse coordinates are zero-based terminal cells and work only while the application has enabled SGR cell mouse reporting. ' +
       'Actions are written atomically in their listed order. Text is ordinary audited tool-call data, not a secure secret channel. ' +
-      'Minimal example: {"ref":"maka://runtime/background-tasks/<id>","actions":[{"type":"key","key":"enter"}]}. ' +
+      `Minimal example: ${WRITE_STDIN_DESCRIPTION_EXAMPLE_JSON}. ` +
       'The returned output is the terminal state at that cut, not output attributed to this input; use Read on the ref to observe later output.',
     parameters,
     permissionArgs: (input) => parseInput(input),

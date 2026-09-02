@@ -19,10 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { TERMINAL_MOUSE_EVENTS } from '@maka/core/terminal-input';
 import {
   buildLocalForegroundBashTool,
   buildManagedBashTool,
-  buildWriteStdinTool,
   createWriteStdinSchemas,
   shapeTerminalResult,
   WRITE_STDIN_EXAMPLE_REF,
@@ -283,43 +283,66 @@ describe('shapeTerminalResult sandbox denial projection', () => {
 describe('WriteStdin provider/strict contract conformance', () => {
   const { providerParameters, strictParameters } = createWriteStdinSchemas();
 
+  // Each example's first action, or undefined for a resize-only (action-less) example.
+  const firstActionOf = (payload: Readonly<Record<string, unknown>>) => {
+    const actions = payload.actions;
+    return Array.isArray(actions) ? (actions[0] as Record<string, unknown> | undefined) : undefined;
+  };
+
+  const acceptedByBothLayers = (
+    label: string,
+    payload: Readonly<Record<string, unknown>>,
+  ): boolean => {
+    const provider = providerParameters.safeParse(payload);
+    assert.ok(
+      provider.success,
+      `provider schema rejected the documented "${label}" example: ${
+        provider.success ? '' : provider.error.message
+      }`,
+    );
+    const strict = strictParameters.safeParse(payload);
+    assert.ok(
+      strict.success,
+      `strict validator rejected the documented "${label}" example: ${
+        strict.success ? '' : strict.error.message
+      }`,
+    );
+    return provider.success && strict.success;
+  };
+
   test('every documented minimal example is accepted by BOTH the provider and strict layers', () => {
-    assert.ok(WRITE_STDIN_MINIMAL_EXAMPLES.length >= 7, 'expected one example per action shape');
     for (const { label, payload } of WRITE_STDIN_MINIMAL_EXAMPLES) {
-      const provider = providerParameters.safeParse(payload);
-      assert.ok(
-        provider.success,
-        `provider schema rejected the documented "${label}" example: ${
-          provider.success ? '' : provider.error.message
-        }`,
-      );
-      const strict = strictParameters.safeParse(payload);
-      assert.ok(
-        strict.success,
-        `strict validator rejected the documented "${label}" example: ${
-          strict.success ? '' : strict.error.message
-        }`,
-      );
+      acceptedByBothLayers(label, payload);
     }
   });
 
-  test('the description advertises a ref/actions example the schemas actually accept', () => {
-    const controls = {
-      writeStdin: () => Promise.reject(new Error('not used')),
-      resize: () => Promise.reject(new Error('not used')),
-    } as unknown as Parameters<typeof buildWriteStdinTool>[0];
-    const tool = buildWriteStdinTool(controls);
-    const match = tool.description.match(/\{"ref":"[^"]+","actions":\[[^\]]+\]\}/);
-    assert.ok(match, `description is missing a concrete minimal example: ${tool.description}`);
-    const advertised = JSON.parse(match[0].replace('<id>', 'sr_example'));
-    assert.ok(
-      providerParameters.safeParse(advertised).success,
-      'the advertised example must pass the provider schema',
-    );
-    assert.ok(
-      strictParameters.safeParse(advertised).success,
-      'the advertised example must pass the strict validator',
-    );
+  test('every mouse event has a covering example that passes both layers', () => {
+    // Derives coverage from the source of truth: adding a new mouse event to
+    // TERMINAL_MOUSE_EVENTS fails here until a minimal example is pinned for it.
+    for (const event of TERMINAL_MOUSE_EVENTS) {
+      const covering = WRITE_STDIN_MINIMAL_EXAMPLES.filter(({ payload }) => {
+        const action = firstActionOf(payload);
+        return action?.type === 'mouse' && action?.event === event;
+      });
+      assert.ok(
+        covering.length >= 1,
+        `no minimal WriteStdin example covers the '${event}' mouse event`,
+      );
+      for (const { label, payload } of covering) {
+        acceptedByBothLayers(label, payload);
+      }
+    }
+  });
+
+  test('every action type has a covering example', () => {
+    // Same drift-proofing for the action `type` enum itself.
+    const actionTypes = ['text', 'key', 'mouse'] as const;
+    for (const type of actionTypes) {
+      const covered = WRITE_STDIN_MINIMAL_EXAMPLES.some(
+        ({ payload }) => firstActionOf(payload)?.type === type,
+      );
+      assert.ok(covered, `no minimal WriteStdin example covers the '${type}' action type`);
+    }
   });
 
   test('provider null/0/empty placeholders are tolerated and normalized away by the strict layer', () => {
