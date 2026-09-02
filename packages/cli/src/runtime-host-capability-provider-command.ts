@@ -21,7 +21,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
+import {
+  createCredentialMcpOAuthStorage,
+  formatMcpDiagnosticText,
+  McpClientManager,
+} from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import { normalizeMcpConfig } from '@maka/storage/mcp-config-store';
 import {
@@ -204,7 +208,10 @@ export function formatRuntimeHostCapabilityProviderReadyMessage(
     failures.length === 0
       ? ''
       : `; ${failures.length} ${failures.length === 1 ? 'server' : 'servers'} failed: ${failures
-          .map((status) => `${status.serverId} — ${status.error ?? status.state}`)
+          .map(
+            (status) =>
+              `${formatMcpDiagnosticText(status.serverId)} — ${status.error ?? status.state}`,
+          )
           .join('; ')}`;
   return `Runtime Host capability provider is connected (${manager.toolSnapshot().tools.length} MCP tools${failureSummary})\n`;
 }

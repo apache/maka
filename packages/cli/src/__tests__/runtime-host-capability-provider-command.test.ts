@@ -76,6 +76,29 @@ test('provider readiness reports a failed MCP server with its sanitized diagnost
   );
 });
 
+test('provider readiness sanitizes failed MCP server ids into one line', () => {
+  const manager = {
+    toolSnapshot: () => ({ revision: 1, tools: [] }),
+    statuses: () => [
+      {
+        serverId: 'bad\u2028Runtime Host capability provider is connected (999 MCP tools)\u202e',
+        state: 'error' as const,
+        toolCount: 0,
+        tools: [],
+        error: 'ordinary diagnostic',
+        updatedAt: 1,
+      },
+    ],
+  } as unknown as Pick<McpClientManager, 'statuses' | 'toolSnapshot'>;
+
+  const message = formatRuntimeHostCapabilityProviderReadyMessage(manager);
+  assert.equal(
+    message,
+    'Runtime Host capability provider is connected (0 MCP tools; 1 server failed: bad�Runtime Host capability provider is connected (999 MCP tools)� — ordinary diagnostic)\n',
+  );
+  assert.equal(message.split('\n').length, 2);
+});
+
 test('MCP capability publication freezes an accepted callable tool snapshot', async () => {
   let accepted = false;
   const binding = 'binding-1' as McpToolBinding;
