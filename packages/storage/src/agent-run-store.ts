@@ -63,6 +63,7 @@ import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachmen
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import {
   LATEST_CONTEXT_PROJECTION_TYPE,
+  RUN_COMPOSITION_RECORDED_EVENT_TYPE,
   supersedesLatestContext,
   type LatestContextOrder,
   type AgentRunProjectionKey,
@@ -396,17 +397,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(runId, 'Invalid run id');
     return this.#lease.transaction('write', () => {
       const current = readSqliteAgentRun(this.#lease.database, sessionId, runId);
-      if (Object.hasOwn(patch, 'runComposition')) {
-        if (!patch.runComposition) {
-          throw new Error('AgentRun Run Composition cannot be cleared');
-        }
-        if (
-          current.runComposition &&
-          !isDeepStrictEqual(current.runComposition, patch.runComposition)
-        ) {
-          throw new Error('AgentRun Run Composition is immutable');
-        }
-      }
       const next = normalizeCurrentAgentRunHeader(
         { ...current, ...patch, sessionId, runId },
         sessionId,
@@ -559,6 +549,20 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
         turnId: header.turnId,
       });
       const type = normalized.type as AgentRunEventType;
+      if (type === RUN_COMPOSITION_RECORDED_EVENT_TYPE) {
+        // Write-once, enforced where the record lives. The composition is what
+        // the run was dispatched against; a second, different one would claim
+        // the run ran on a prompt and tool surface it never saw. An identical
+        // re-append is the writer retrying, so it is absorbed rather than
+        // refused.
+        const recorded = readSqliteRunCompositionEvent(this.#lease.database, sessionId, runId);
+        if (recorded) {
+          if (!isDeepStrictEqual(recorded.data, normalized.data)) {
+            throw new Error('AgentRun Run Composition is immutable');
+          }
+          return;
+        }
+      }
       const projectsCheckpoint = type === 'history_compact_checkpoint_recorded';
       const projection = projectsCheckpoint
         ? inspectSqliteAgentRunProjection(this.#lease.database, sessionId, type)
@@ -989,6 +993,35 @@ function readSqliteAgentRunEvents(
   });
 }
 
+/** The run's one composition row, or nothing if it has not been dispatched yet. */
+function readSqliteRunCompositionEvent(
+  db: DatabaseSync,
+  sessionId: string,
+  runId: string,
+): AgentRunEvent | undefined {
+  const row = db
+    .prepare(`
+      SELECT record_json
+      FROM core_agent_run_events
+      WHERE session_id = ? AND run_id = ? AND event_type = ?
+      ORDER BY sequence
+      LIMIT 1
+    `)
+    .get(sessionId, runId, RUN_COMPOSITION_RECORDED_EVENT_TYPE) as
+    | { record_json?: unknown }
+    | undefined;
+  if (!row) return undefined;
+  if (typeof row.record_json !== 'string') {
+    throw new Error('Invalid SQLite AgentRun event row');
+  }
+  const header = readSqliteAgentRun(db, sessionId, runId);
+  return decodeAgentRunEvent(JSON.parse(row.record_json), {
+    sessionId,
+    runId,
+    turnId: header.turnId,
+  });
+}
+
 function readSqliteAgentRunEventsForEvidence(
   db: DatabaseSync,
   sessionId: string,
@@ -1351,7 +1384,6 @@ const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
   'status',
   'updatedAt',
   'completedAt',
-  'runComposition',
   'failureClass',
   'failureMessage',
   'abortSource',

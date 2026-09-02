@@ -23,7 +23,10 @@ import type {
   AgentRunStore,
   EmittedAgentRunEvent,
 } from '@maka/core/agent-run';
-import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
+import {
+  RUN_COMPOSITION_RECORDED_EVENT_TYPE,
+  runtimeInvocationOpeningFromRunHeader,
+} from '@maka/core/agent-run';
 import type {
   RuntimeEvent,
   RuntimeEventInvocationOpenedContent,
@@ -453,10 +456,18 @@ export class AgentRun {
     this.runComposition ??= normalized;
     if (this.runCompositionWrite) return this.runCompositionWrite;
     const write = this.enqueueRequiredRunStoreWrite('commit Run Composition', async () => {
-      await this.input.runStore?.updateRun(
+      await this.input.runStore?.appendEvent(
         this.sessionId,
         this.runId,
-        { runComposition: normalized },
+        {
+          type: RUN_COMPOSITION_RECORDED_EVENT_TYPE,
+          id: this.input.newId(),
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: this.input.now(),
+          data: { runComposition: normalized },
+        },
         { durable: this.requiresDurablePersistence() },
       );
     });

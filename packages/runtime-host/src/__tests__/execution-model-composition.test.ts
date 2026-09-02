@@ -41,6 +41,7 @@ import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import type { AgentRunHeader } from '@maka/core/agent-run';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
@@ -2233,10 +2234,14 @@ test('production Host executes and durably supervises an Agent Graph over a real
     );
     assert.equal(finish?.resultIds.length, 1);
     const rootRun = runs.find((run) => run.runId === initialTerminal.runId);
-    assert.equal(rootRun?.runComposition?.composerId, 'maka.interactive');
-    assert.equal(rootRun?.runComposition?.contextWindow, 32_768);
-    assert.match(rootRun?.runComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
-    assert.ok(rootRun?.runComposition?.toolNames.includes('view_agent_graph'));
+    assert.ok(rootRun);
+    const rootComposition = agentRunCompositionFromEvents(
+      await execution.agentRunStore.readEvents(session.id, rootRun.runId),
+    );
+    assert.equal(rootComposition?.composerId, 'maka.interactive');
+    assert.equal(rootComposition?.contextWindow, 32_768);
+    assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
+    assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
     const wakeRuns = runs.filter((run) => run.agentGraphWakeAttemptId !== undefined);
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => run.status === 'completed'));

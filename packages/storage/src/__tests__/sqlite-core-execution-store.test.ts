@@ -24,6 +24,8 @@ import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
+import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
   decodeModelCallAttempt,
@@ -559,11 +561,17 @@ describe('SQLite core execution stores', () => {
       try {
         await store.createRun(runHeader());
         const composition = runComposition('1');
-        await store.updateRun('session-1', 'run-1', { runComposition: composition });
-        await store.updateRun('session-1', 'run-1', { runComposition: composition });
-        assert.deepEqual((await store.readRun('session-1', 'run-1')).runComposition, composition);
+        await store.appendEvent('session-1', 'run-1', compositionEvent('event-1', composition));
+        await store.appendEvent('session-1', 'run-1', compositionEvent('event-2', composition));
+        const events = await store.readEvents('session-1', 'run-1');
+        assert.deepEqual(agentRunCompositionFromEvents(events), composition);
+        assert.equal(
+          events.filter((event) => event.type === 'run_composition_recorded').length,
+          1,
+          'an identical re-append is the writer retrying, not a second composition',
+        );
         await assert.rejects(
-          store.updateRun('session-1', 'run-1', { runComposition: runComposition('2') }),
+          store.appendEvent('session-1', 'run-1', compositionEvent('event-3', runComposition('2'))),
           /AgentRun Run Composition is immutable/u,
         );
       } finally {
@@ -730,7 +738,19 @@ function modelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallA
   };
 }
 
-function runComposition(seed: string): NonNullable<AgentRunHeader['runComposition']> {
+function compositionEvent(id: string, composition: RunCompositionSnapshot): EmittedAgentRunEvent {
+  return {
+    type: 'run_composition_recorded',
+    id,
+    runId: 'run-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    ts: 5,
+    data: { runComposition: composition },
+  };
+}
+
+function runComposition(seed: string): RunCompositionSnapshot {
   return {
     schemaVersion: 1,
     composerId: 'maka.interactive',

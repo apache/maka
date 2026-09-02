@@ -195,8 +195,6 @@ export interface AgentRunHeader {
   agentSwarmAuthorization?: AgentSwarmAuthorizationSource;
   /** Effective tool protocol for this run. Optional on legacy runs. */
   toolMode?: ToolMode;
-  /** Immutable composer-owned prompt and tool-surface snapshot committed before provider dispatch. */
-  runComposition?: RunCompositionSnapshot;
   createdAt: number;
   updatedAt: number;
   completedAt?: number;
@@ -439,6 +437,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
   'model_projection_transition_recorded',
+  'run_composition_recorded',
   'task_gate_decided',
   'abort_requested',
   'run_completed',
@@ -616,7 +615,6 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
     'orchestrationSource',
     'agentSwarmAuthorization',
     'toolMode',
-    'runComposition',
   ],
 );
 
@@ -686,7 +684,6 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
       Number(value.agentGraphWakeId !== undefined) <=
       1 &&
     (value.toolMode === undefined || isToolMode(value.toolMode)) &&
-    (value.runComposition === undefined || isRunCompositionSnapshot(value.runComposition)) &&
     isFiniteNumber(value.createdAt) &&
     isFiniteNumber(value.updatedAt) &&
     isOptionalString(value.invocationId) &&
@@ -719,13 +716,23 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
   return value as unknown as AgentRunHeader;
 }
 
-function isRunCompositionSnapshot(value: unknown): value is RunCompositionSnapshot {
-  try {
-    decodeRunCompositionSnapshot(value);
-    return true;
-  } catch {
-    return false;
+export const RUN_COMPOSITION_RECORDED_EVENT_TYPE = 'run_composition_recorded' as const;
+
+/**
+ * Read a run's composer snapshot back out of its ledger.
+ *
+ * The composition is written once, before provider dispatch, and the store
+ * refuses a second append that disagrees with the first. So the earliest
+ * matching row is the whole answer, and a reader never has to reduce a stream.
+ */
+export function agentRunCompositionFromEvents(
+  events: readonly AgentRunEvent[],
+): RunCompositionSnapshot | undefined {
+  for (const event of events) {
+    if (event.type !== RUN_COMPOSITION_RECORDED_EVENT_TYPE) continue;
+    return decodeRunCompositionSnapshot(event.data?.runComposition);
   }
+  return undefined;
 }
 
 function isAgentRunContinuationSource(value: unknown): value is AgentRunContinuationSource {
