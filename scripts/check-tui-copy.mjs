@@ -37,6 +37,7 @@ export const COVERED_FILES = [
   'packages/cli/src/runtime-host-onboarding.ts',
   'packages/cli/src/runtime-host-tui-command.ts',
   'packages/cli/src/tui-attention.ts',
+  'packages/cli/src/tui-copy-command.ts',
   'packages/cli/src/tui-shortcut-copy.ts',
   'packages/cli/src/pi-tui-layout.ts',
 ];
@@ -46,6 +47,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/runtime-host-tui-context.ts',
   'packages/cli/src/tui-ansi.ts',
   'packages/cli/src/tui-autocomplete-layout.ts',
+  'packages/cli/src/tui-clipboard.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
   'packages/cli/src/tui-mcp-control.ts',
