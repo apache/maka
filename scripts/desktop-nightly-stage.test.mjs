@@ -24,7 +24,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { parse, stringify } from 'yaml';
-import { writeDesktopNightlyInput } from './desktop-nightly-fixture.mjs';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { addDesktopNightlyAttestation, stageDesktopNightly } from './desktop-nightly.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 
@@ -35,7 +35,7 @@ test('staging creates only the exact GitHub Release assets', async (t) => {
   const output = join(root, 'output');
   const version = '0.2.0-dev.42.20260829';
   await mkdir(input);
-  await writeDesktopNightlyInput(input, version);
+  await writeDesktopReleaseInput(input, version, { nightly: true });
 
   await stageDesktopNightly({
     inputDirectory: input,

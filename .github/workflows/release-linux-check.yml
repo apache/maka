@@ -117,6 +117,9 @@ jobs:
       - name: Package the Linux AppImage and deb
         run: npm run package:linux
 
+      - name: Ensure xvfb
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
       # Opens both payloads: the AppImage must not carry the deb's
       # `package-type` marker, and the deb must carry it, declare an installable
       # package name and the architecture its filename claims, and satisfy the

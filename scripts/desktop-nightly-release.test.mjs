@@ -32,14 +32,14 @@ import {
   desktopNightlyReleaseAssetNames,
   stageDesktopNightly,
 } from './desktop-nightly.mjs';
-import { writeDesktopNightlyInput } from './desktop-nightly-fixture.mjs';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { productReleaseArtifactRecords } from './product-release-artifacts.mjs';
 
 async function stageRelease(root, version) {
   const input = join(root, 'input');
   const output = join(root, 'output');
   await mkdir(input);
-  await writeDesktopNightlyInput(input, version);
+  await writeDesktopReleaseInput(input, version, { nightly: true });
   await stageDesktopNightly({
     inputDirectory: input,
     outputDirectory: output,

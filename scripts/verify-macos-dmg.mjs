@@ -134,9 +134,14 @@ export async function verifyPackagedMacApp(
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
     workingDirectory = dirname(appPath),
     environment = process.env,
-    // Verification runs the packaged binaries, so it only ever inspects a build
-    // for the host it is running on.
+    // The architecture the DMG was chosen for, not the one this process happens
+    // to run as: `process.arch` under Rosetta, or on a runner packaging the
+    // other slice, would assert the wrong thing about the binary it opened.
     expectedArch = process.arch,
+    // Which channel the packaged client points at is the descriptor's to decide,
+    // so the caller that resolved the target passes it. Nothing but the release
+    // verifier can see a nightly descriptor.
+    channel = 'release',
   } = {},
 ) {
   const product = await readProductManifestIdentity();
@@ -160,9 +165,7 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
-  await assertPackagedUpdateConfiguration(resources, {
-    channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
-  });
+  await assertPackagedUpdateConfiguration(resources, { channel });
   await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
@@ -229,7 +232,11 @@ export async function verifyMacosDmg(
   }
 
   try {
-    await verifyApp(copiedApp, { workingDirectory: temporaryDirectory });
+    await verifyApp(copiedApp, {
+      workingDirectory: temporaryDirectory,
+      expectedArch: arch,
+      channel: target.nightly ? 'nightly' : 'release',
+    });
     // Which payloads a formal release publishes a `.sha256` beside is the
     // descriptor's to decide, the way `verify:linux` already reads it.
     const checksums = [];

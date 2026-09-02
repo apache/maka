@@ -24,7 +24,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 import { desktopReleaseTargets } from './desktop-release-targets.mjs';
-import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
+import {
+  mergeDesktopUpdateFeeds,
+  verifyDesktopUpdateArtifacts,
+} from './desktop-update-contract.mjs';
 import { assertElfArchitecture, verifyLinuxRelease } from './verify-linux.mjs';
 
 // The two `e_machine` values this project ships, from the ELF specification.
@@ -102,34 +105,52 @@ const FEED_VERSION = '9.9.9';
 
 /**
  * The shape `package:linux` leaves behind: two payloads from two
- * electron-builder runs, and one feed merged out of the feed each run wrote.
- * The payload bytes are written here and the digests taken from them, so a test
- * that drifts one field drifts it away from a feed that was otherwise exact.
+ * electron-builder runs, each run's own single-payload feed, and the merged feed
+ * `mergeDesktopUpdateFeeds` writes out of the two. The merge is the production
+ * one, so what is verified below is the merge and the verifier together — a
+ * hand-written merged document would only ever prove the verifier. The payload
+ * bytes are written here and the digests taken from them, so a test that drifts
+ * one field drifts it away from a feed that was otherwise exact.
  */
-async function stageLinuxRelease(name, { nightly = false, drift = (feed) => feed } = {}) {
+async function stageLinuxRelease(name, { nightly = false, drift } = {}) {
   const target = desktopReleaseTargets(FEED_VERSION, { nightly }).find(
     (entry) => entry.name === 'linux-x64',
   );
   const directory = join(workingDirectory, name);
   await mkdir(directory, { recursive: true });
-  const files = [];
+  const sourcePaths = [];
   for (const payload of target.advertised) {
     const bytes = Buffer.from(`${payload} payload bytes\n`);
     await writeFile(join(directory, payload), bytes);
-    files.push({
+    // Each electron-builder run rewrites the feed knowing only its own payload;
+    // `package:linux` moves the first aside under this suffix and merges it back.
+    const file = {
       url: payload,
       sha512: createHash('sha512').update(bytes).digest('base64'),
       size: bytes.length,
-    });
+    };
+    const sourcePath = join(directory, `${target.feed}.${sourcePaths.length}`);
+    await writeFile(
+      sourcePath,
+      feedDocument({
+        version: FEED_VERSION,
+        files: [file],
+        path: file.url,
+        sha512: file.sha512,
+        releaseDate: '2026-01-01T00:00:00.000Z',
+      }),
+      'utf8',
+    );
+    sourcePaths.push(sourcePath);
   }
-  const feed = drift({
-    version: FEED_VERSION,
-    files,
-    path: files[0].url,
-    sha512: files[0].sha512,
-    releaseDate: '2026-01-01T00:00:00.000Z',
-  });
-  await writeFile(join(directory, target.feed), feedDocument(feed), 'utf8');
+  const outputPath = join(directory, target.feed);
+  const merged = await mergeDesktopUpdateFeeds({ sourcePaths, outputPath });
+  await Promise.all(sourcePaths.map((path) => rm(path)));
+  // Drift is applied to what the merge produced, so each rejection below names a
+  // field of a real merged document rather than of a fabricated one.
+  if (drift) {
+    await writeFile(outputPath, feedDocument(drift(merged)), 'utf8');
+  }
   return { directory, target };
 }
 

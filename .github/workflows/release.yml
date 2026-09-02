@@ -289,9 +289,15 @@ jobs:
         if: matrix.platform == 'linux'
         run: npm run package:linux
 
+      - name: Ensure xvfb
+        if: matrix.platform == 'linux'
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      # `xvfb-run` because the verification launches the extracted AppImage's
+      # renderer over CDP, the way the macOS and Windows verifications do.
       - name: Verify the Linux release
         if: matrix.platform == 'linux'
-        run: npm run verify:linux -- "${{ matrix.arch }}"
+        run: xvfb-run -a npm run verify:linux -- "${{ matrix.arch }}"
 
       - name: Stage the exact product artifact group
         run: >-

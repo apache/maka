@@ -176,6 +176,21 @@ test('the publisher verifies exact GitHub identity and assets before publishing 
   );
 });
 
+test('the Nightly Linux verification runs under a virtual display', async () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail every Nightly at its slowest point.
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => typeof step.run === 'string' && step.run.includes('npm run verify:linux'));
+
+  assert.equal(steps.length, 1);
+  for (const step of steps) {
+    assert.match(step.run, /^xvfb-run\b/u, step.name);
+  }
+});
+
 test('Desktop Nightly has no Apache Nightlies transport or compatibility state', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
   assert.equal(workflow.jobs.publish.environment, 'nightly');

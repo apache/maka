@@ -131,6 +131,11 @@ export async function verifyPackagedWindowsApp(
     expectedVersion,
     artifactContract = 'current',
     environment = process.env,
+    // Which channel the packaged client points at is the descriptor's to decide,
+    // so the caller that resolved the target passes it. The installer-lifecycle
+    // and autoupdate verifications run on the formal release lanes alone, which
+    // have no nightly descriptor to resolve.
+    channel = 'release',
   } = {},
 ) {
   if (artifactContract !== 'current' && artifactContract !== 'upgrade-baseline') {
@@ -158,9 +163,7 @@ export async function verifyPackagedWindowsApp(
   // own commit: its update feed and dependency closure are the ones that were
   // right for it, not the ones this checkout expects.
   if (requiresCurrentContract) {
-    await assertPackagedUpdateConfiguration(resources, {
-      channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
-    });
+    await assertPackagedUpdateConfiguration(resources, { channel });
     await assertPackagedDependencyClosure(resources);
   }
 
@@ -318,7 +321,10 @@ export async function verifyWindowsX64Release(
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
 
   try {
-    await verifyApp(unpackedDirectory, { workingDirectory: temporaryDirectory });
+    await verifyApp(unpackedDirectory, {
+      workingDirectory: temporaryDirectory,
+      channel: target.nightly ? 'nightly' : 'release',
+    });
 
     step('checksumming the release artifacts');
     // Which payloads a formal release publishes a `.sha256` beside is the

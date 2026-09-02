@@ -21,19 +21,21 @@ import { createHash } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { stringify } from 'yaml';
-import { desktopNightlyTargets } from './desktop-nightly.mjs';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 
 /**
  * Builds what the packaging runners would have uploaded, so a test can exercise
  * staging and publication without producing real installers. The descriptor
- * names every file, blockmaps included, so this stays in step with it.
+ * names every file, blockmaps included, so this stays in step with it. Both
+ * channels stage the same shape, so both are built here; a formal release adds
+ * checksum sidecars, which only its own caller knows the contract for.
  */
-export async function writeDesktopNightlyInput(directory, version) {
+export async function writeDesktopReleaseInput(directory, version, { nightly = false } = {}) {
   await Promise.all(
-    desktopNightlyTargets(version).map(async (target) => {
+    desktopReleaseTargets(version, { nightly }).map(async (target) => {
       const files = [];
       for (const artifact of target.payloads) {
-        const bytes = Buffer.from(`${artifact} nightly bytes`);
+        const bytes = Buffer.from(`${artifact} bytes`);
         await writeFile(join(directory, artifact), bytes);
         if (!target.advertised.includes(artifact)) continue;
         files.push({

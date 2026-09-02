@@ -544,6 +544,21 @@ test('the packaged Windows gate triggers on the worker copy step it cannot impor
   );
 });
 
+test('the packaged Linux gate verifies under a virtual display', () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer over CDP. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail the lane at its slowest point.
+  const runs =
+    readWorkflow('release-linux-check.yml')
+      .replaceAll(/^[ \t]*#.*$/gmu, '')
+      .match(/^[ \t]*run: .*npm run verify:linux.*$/gmu) ?? [];
+
+  assert.equal(runs.length, 1);
+  for (const run of runs) {
+    assert.match(run, /run: xvfb-run\b/u, run);
+  }
+});
+
 test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
   for (const name of ['release-windows-check.yml', 'release.yml']) {
     assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);

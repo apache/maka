@@ -141,7 +141,10 @@ export async function verifyLinuxRelease(
   const debPath = resolve(target.payloadPath('.deb'));
   await access(appImagePath);
   await access(debPath);
-  const channel = environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release';
+  // The descriptor already resolved and validated the channel when it resolved
+  // the version; re-reading the environment here would let an unvalidated value
+  // name one channel while the artifacts it just named came from the other.
+  const channel = target.nightly ? 'nightly' : 'release';
   const workingDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
   const peerBinary = join('runtime-host-peer', 'maka_runtime_host_peer.node');
 

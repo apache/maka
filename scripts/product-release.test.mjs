@@ -27,9 +27,14 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import { parse as parseYaml } from 'yaml';
 import { resolveDesktopBuilderConfig } from '../apps/desktop/electron-builder.config.mjs';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
-import { mergeProductReleaseUpdateFeeds } from './product-release-artifacts.mjs';
+import {
+  mergeProductReleaseUpdateFeeds,
+  verifyProductReleaseArtifactDirectory,
+  verifyProductReleaseArtifactIntegrity,
+} from './product-release-artifacts.mjs';
 import {
   parseAsfSourceReferenceTag,
   readProductReleaseIdentity,
@@ -234,6 +239,69 @@ test('publication merges the per-architecture macOS feeds into the one clients r
   });
 });
 
+test('the release Linux verification runs under a virtual display', async () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail the whole release at its slowest point.
+  const workflow = parseYaml(
+    await readFile(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8'),
+  );
+  const steps = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => typeof step.run === 'string' && step.run.includes('npm run verify:linux'));
+
+  assert.equal(steps.length, 1);
+  for (const step of steps) {
+    assert.match(step.run, /^xvfb-run\b/u, step.name);
+  }
+});
+
+test('the publish chain turns every staged group into the exact release assets', async (t) => {
+  // `release.yml` has never run, so until this existed nothing had executed the
+  // publish job's merge and verify over the whole staged set — only the macOS
+  // feed merge above, against a hand-written identity. This builds what all six
+  // runners upload and runs the two steps in the order the job runs them.
+  const identity = await readProductReleaseIdentity();
+  const directory = await mkdtemp(join(tmpdir(), 'maka-release-assets-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  // The desktop payloads, their blockmaps and each runner's own feed; the
+  // checksum sidecars and the CLI archive are the rest of the staged set.
+  await writeDesktopReleaseInput(directory, identity.version);
+  const packaged = new Set(
+    desktopReleaseTargets(identity.version, { nightly: false }).flatMap((target) => [
+      ...target.payloads,
+      target.feed,
+    ]),
+  );
+  const staged = [...new Set(Object.values(identity.artifacts).flat())].sort();
+  for (const name of staged) {
+    if (packaged.has(name) || name.endsWith('.sha256')) continue;
+    await writeFile(join(directory, name), `${name} bytes`);
+  }
+  for (const name of staged.filter((entry) => entry.endsWith('.sha256'))) {
+    const artifact = name.slice(0, -'.sha256'.length);
+    const digest = createHash('sha256')
+      .update(await readFile(join(directory, artifact)))
+      .digest('hex');
+    await writeFile(join(directory, name), `${digest}  ${artifact}\n`);
+  }
+
+  assert.deepEqual(await verifyProductReleaseArtifactDirectory(directory, staged), staged);
+  const merged = await mergeProductReleaseUpdateFeeds(directory, identity);
+  assert.deepEqual(merged, ['latest-mac.yml']);
+  assert.deepEqual(
+    await verifyProductReleaseArtifactIntegrity(directory, identity),
+    identity.releaseAssets,
+  );
+  // What the publish job hands to the Draft is this directory, so nothing may
+  // remain in it that `releaseAssets` does not name.
+  assert.deepEqual(
+    await verifyProductReleaseArtifactDirectory(directory, identity.releaseAssets),
+    [...identity.releaseAssets].sort(),
+  );
+});
+
 test('the standalone launcher identifies its installed Eval bundle root', async (t) => {
   const archiveRoot = await mkdtemp(join(tmpdir(), 'maka-standalone-launcher-'));
   t.after(() => rm(archiveRoot, { recursive: true, force: true }));
@@ -407,11 +475,20 @@ test('platform package verifiers keep Git checks out of every artifact', async (
   assert.doesNotMatch(windowsSource, /requirePath\(join\(resources, ['"]git['"]/u);
   assert.match(
     windowsSource,
-    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{\s*channel: environment\.MAKA_DESKTOP_NIGHTLY_VERSION \? ['"]nightly['"] : ['"]release['"],\s*\}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}/u,
+    /if \(requiresCurrentContract\) \{\s*await assertPackagedUpdateConfiguration\(resources, \{ channel \}\);\s*await assertPackagedDependencyClosure\(resources\);\s*\}/u,
   );
 
   const macosSource = await readFile(join(repoRoot, 'scripts', 'verify-macos-dmg.mjs'), 'utf8');
   assert.doesNotMatch(macosSource, /requirePath\(join\(resources, ['"]git['"]/u);
+
+  // The channel is the release descriptor's, resolved once beside the artifact
+  // names. Reading the nightly environment variable a second time here would
+  // let an unvalidated value disagree with the payloads that were just named.
+  const linuxSource = await readFile(join(repoRoot, 'scripts', 'verify-linux.mjs'), 'utf8');
+  for (const source of [windowsSource, macosSource, linuxSource]) {
+    assert.doesNotMatch(source, /MAKA_DESKTOP_NIGHTLY_VERSION/u);
+    assert.match(source, /target\.nightly \? 'nightly' : 'release'/u);
+  }
 });
 
 test('the packaged-app probe rejects a mismatched Runtime Host setup package', async () => {
