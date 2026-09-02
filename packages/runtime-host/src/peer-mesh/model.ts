@@ -65,7 +65,6 @@ export interface SignedPeerMeshRosterV1 {
 }
 
 export interface PeerMeshAuthorityTarget {
-  readonly peerId: string;
   readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
@@ -135,12 +134,17 @@ export function validatePeerMeshAuthorityKeyPair(keys: PeerMeshAuthorityKeyPair)
       type: 'pkcs8',
     });
   } catch (error) {
-    throw new Error('Invalid Peer Mesh authority private key', { cause: error });
+    throw new Error('Invalid Peer Mesh authority private key', {
+      cause: error,
+    });
   }
   if (privateKey.asymmetricKeyType !== 'ed25519') {
     throw new Error('Peer Mesh authority key must be Ed25519');
   }
-  const derived = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
+  const derived = createPublicKey(privateKey).export({
+    format: 'der',
+    type: 'spki',
+  });
   if (derived.toString('base64url') !== keys.publicKey) {
     throw new Error('Peer Mesh authority private key does not match its public key');
   }
@@ -224,15 +228,9 @@ export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
 }
 
 export function decodeAuthorityTarget(value: unknown): PeerMeshAuthorityTarget {
-  const record = exactObject(value, 'Peer Mesh authority target', ['peerId', 'reachability']);
-  const peerId = token(record.peerId, 'peerId', 256);
-  const reachability = decodeSignedPeerReachabilityLease(record.reachability);
-  if (reachability.lease.peerId !== peerId) {
-    throw new Error('Peer Mesh authority reachability belongs to a different peer');
-  }
+  const record = exactObject(value, 'Peer Mesh authority target', ['reachability']);
   return Object.freeze({
-    peerId,
-    reachability,
+    reachability: decodeSignedPeerReachabilityLease(record.reachability),
   });
 }
 

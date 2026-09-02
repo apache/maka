@@ -143,7 +143,11 @@ test('authenticates three peers, consumes invitations once, and keeps authority 
         displayName,
       })),
       [
-        { peerId: 'peer-a', endpointKind: 'client', displayName: 'Alice Desktop' },
+        {
+          peerId: 'peer-a',
+          endpointKind: 'client',
+          displayName: 'Alice Desktop',
+        },
         { peerId: 'peer-b', endpointKind: 'host', displayName: 'Build Host' },
         { peerId: 'peer-c', endpointKind: 'host', displayName: undefined },
       ],
@@ -180,7 +184,10 @@ test('commits an offline leave locally and reconciles it after restart', async (
     peer: authorityPeer,
   });
   const memberRoot = join(root, 'member');
-  let member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+  });
   const serving = [authority.serve(), member.serve()];
   try {
     const mesh = await authority.create();
@@ -220,7 +227,10 @@ test('announces authority commits without coupling success to delivery', async (
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = [authority.serve(), member.serve()];
   try {
     const mesh = await authority.create();
@@ -353,7 +363,7 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
     await memberC.reconcile();
     authorityPeer.setReachable(false);
     await memberB.reconcile();
-    assert.equal(memberB.resolveRoutes('peer-c'), undefined);
+    assert.equal(memberB.resolveRoutes('peer-c').state, 'exhausted');
     assert.deepEqual(memberC.status()[0]?.roster.roster.members, ['peer-a', 'peer-c']);
     assert.deepEqual(memberC.resolveRoutes('peer-a')?.routeHints, [
       '/memory/peer-a-moved/p2p/peer-a',
@@ -386,7 +396,10 @@ test('repairs an existing membership with a fresh invitation after every locator
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = [authority.serve(), member.serve()];
   try {
     const meshId = (await authority.create()).roster.roster.meshId;
@@ -396,6 +409,11 @@ test('repairs an existing membership with a fresh invitation after every locator
     await authorityPeer.setRouteHints([]);
     await authority.reconcile();
     await member.reconcile();
+    assert.equal(
+      member.status()[0]?.memberRoutes.find(({ peerId }) => peerId === 'peer-a')?.state,
+      'reconnecting',
+    );
+    await member.prepareRoutes('peer-a', AbortSignal.timeout(4_000));
     assert.equal(
       member.status()[0]?.memberRoutes.find(({ peerId }) => peerId === 'peer-a')?.state,
       'needs_repair',
@@ -474,10 +492,24 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
   const memberBPeer = network.create('peer-b');
   const memberCPeer = network.create('peer-c');
   const memberDPeer = network.create('peer-d');
-  const authority = await openPeerMeshNode({ dataRoot: join(root, 'a'), peer: authorityPeer });
-  const memberB = await openPeerMeshNode({ dataRoot: join(root, 'b'), peer: memberBPeer });
-  const memberC = await openPeerMeshNode({ dataRoot: join(root, 'c'), peer: memberCPeer });
-  const memberD = await openPeerMeshNode({ dataRoot: join(root, 'd'), peer: memberDPeer });
+  await memberCPeer.setRouteHints([]);
+  await memberCPeer.setCoordinationRelays([]);
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'a'),
+    peer: authorityPeer,
+  });
+  const memberB = await openPeerMeshNode({
+    dataRoot: join(root, 'b'),
+    peer: memberBPeer,
+  });
+  const memberC = await openPeerMeshNode({
+    dataRoot: join(root, 'c'),
+    peer: memberCPeer,
+  });
+  const memberD = await openPeerMeshNode({
+    dataRoot: join(root, 'd'),
+    peer: memberDPeer,
+  });
   const serving = [authority.serve(), memberB.serve(), memberC.serve(), memberD.serve()];
   try {
     const meshId = (await authority.create()).roster.roster.meshId;
@@ -501,6 +533,7 @@ test('reconciles one selected Mesh into signed transit routes and native policy'
         coordinationRelays: ['/memory/relay/peer-a'],
       },
     ]);
+    assert.equal(memberB.resolveRoutes('peer-c').state, 'available');
     assert.deepEqual(memberB.resolveRoutes('peer-c')?.transitRelayPeerIds, ['peer-a']);
 
     await memberD.setTransitMesh(meshId);
@@ -585,7 +618,10 @@ test('reserves capacity for an offline leave until its authority obligation reti
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = authority.serve();
   try {
     const first = await authority.create();
@@ -663,11 +699,16 @@ test('retries a committed invitation redemption for the same authenticated peer'
     now: () => now,
   });
   const memberRoot = join(root, 'member');
-  let member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+  });
   let serving = authority.serve();
   try {
     const mesh = await authority.create();
-    const invitation = await authority.invite(mesh.roster.roster.meshId, { ttlMs: 1_000 });
+    const invitation = await authority.invite(mesh.roster.roster.meshId, {
+      ttlMs: 1_000,
+    });
     authorityPeer.failNextResponse();
 
     await assert.rejects(member.join(invitation));
@@ -722,13 +763,19 @@ test('cancels a recovered join while its authority is reconnecting', async () =>
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
-    const invitation = await authority.invite(mesh.roster.roster.meshId, { ttlMs: 1_000 });
+    const invitation = await authority.invite(mesh.roster.roster.meshId, {
+      ttlMs: 1_000,
+    });
     authorityPeer.failNextResponse();
     await assert.rejects(member.join(invitation));
     await member.close();
 
     now += 2_000;
-    member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer, now: () => now });
+    member = await openPeerMeshNode({
+      dataRoot: memberRoot,
+      peer: memberPeer,
+      now: () => now,
+    });
     const connection = memberPeer.stallNextConnection();
     const abort = new AbortController();
     const retry = member.join(invitation, abort.signal);
@@ -763,7 +810,10 @@ test('does not redeem a prepared join after explicit cancellation', async () => 
   });
   const memberRoot = join(root, 'cancelled');
   let cancelled: PeerMeshNode | undefined;
-  const joining = await openPeerMeshNode({ dataRoot: join(root, 'joining'), peer: joiningPeer });
+  const joining = await openPeerMeshNode({
+    dataRoot: join(root, 'joining'),
+    peer: joiningPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -787,7 +837,10 @@ test('does not redeem a prepared join after explicit cancellation', async () => 
       )}\n`,
       { mode: 0o600 },
     );
-    cancelled = await openPeerMeshNode({ dataRoot: memberRoot, peer: cancelledPeer });
+    cancelled = await openPeerMeshNode({
+      dataRoot: memberRoot,
+      peer: cancelledPeer,
+    });
 
     const connection = cancelledPeer.stallNextConnection();
     const reconciliation = cancelled.reconcile();
@@ -820,7 +873,10 @@ test('cancels a redemption stalled after the control connection opens', async ()
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -856,7 +912,10 @@ test('preserves an invitation when join is cancelled before redemption', async (
     dataRoot: join(root, 'cancelled'),
     peer: cancelledPeer,
   });
-  const joining = await openPeerMeshNode({ dataRoot: join(root, 'joining'), peer: joiningPeer });
+  const joining = await openPeerMeshNode({
+    dataRoot: join(root, 'joining'),
+    peer: joiningPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -888,7 +947,10 @@ test('rejoins a Mesh after completed leave or stale authority removal', async ()
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -924,7 +986,10 @@ test('turns a committed join into leave when cancellation arrives during transit
     dataRoot: join(root, 'authority'),
     peer: authorityPeer,
   });
-  const member = await openPeerMeshNode({ dataRoot: join(root, 'member'), peer: memberPeer });
+  const member = await openPeerMeshNode({
+    dataRoot: join(root, 'member'),
+    peer: memberPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -960,7 +1025,10 @@ test('preserves a committed join when its peer endpoint shuts down', async () =>
     peer: authorityPeer,
   });
   const memberRoot = join(root, 'member');
-  let member = await openPeerMeshNode({ dataRoot: memberRoot, peer: memberPeer });
+  let member = await openPeerMeshNode({
+    dataRoot: memberRoot,
+    peer: memberPeer,
+  });
   const serving = authority.serve();
   try {
     const mesh = await authority.create();
@@ -1335,6 +1403,7 @@ async function waitForRoutes(
     await delay(25);
   }
   assert.deepEqual(node.resolveRoutes(peerId), {
+    state: 'available',
     routeHints: expectedRouteHints,
     coordinationRelays: expectedCoordinationRelays,
     transitRelayPeerIds: [],

@@ -287,7 +287,7 @@ export function decodePeerMeshState(value: unknown, localPeerId: string): PeerMe
     });
   }
   const authority = decodeAuthorityTarget(record.authority);
-  if (!roster.roster.members.includes(authority.peerId)) {
+  if (!roster.roster.members.includes(authority.reachability.lease.peerId)) {
     throw new Error('Peer Mesh authority is not present in its roster');
   }
   return Object.freeze({

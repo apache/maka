@@ -43,14 +43,19 @@ export interface RuntimeHostPeerConnectInput {
 
 export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
 
+interface RuntimeHostPeerRouteCandidateSnapshot {
+  readonly routeHints: readonly string[];
+  readonly coordinationRelays: readonly string[];
+  readonly transitRelayPeerIds?: readonly string[];
+}
+
+export type RuntimeHostPeerRouteResolution =
+  | (RuntimeHostPeerRouteCandidateSnapshot & { readonly state: 'available' })
+  | (RuntimeHostPeerRouteCandidateSnapshot & { readonly state: 'recovering' })
+  | (RuntimeHostPeerRouteCandidateSnapshot & { readonly state: 'exhausted' });
+
 export interface RuntimeHostPeerRouteResolver {
-  resolveRoutes(peerId: string):
-    | {
-        readonly routeHints: readonly string[];
-        readonly coordinationRelays: readonly string[];
-        readonly transitRelayPeerIds?: readonly string[];
-      }
-    | undefined;
+  resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes?(peerId: string, signal: AbortSignal): Promise<void>;
 }
 

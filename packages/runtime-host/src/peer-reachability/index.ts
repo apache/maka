@@ -26,10 +26,13 @@ export {
   PEER_REACHABILITY_MAX_RECORD_BYTES,
   PEER_REACHABILITY_MAX_ROUTES_PER_CLASS,
   PEER_REACHABILITY_REFRESH_LEAD_MS,
+  isPeerReachabilityLeaseCurrent,
+  peerReachabilityLeaseReceipt,
   peerReachabilityLeaseSigningBytes,
   samePeerReachabilityRoutes,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityIdentity,
+  type PeerReachabilityLeaseReceipt,
   type PeerReachabilityLeaseV1,
   type SignedPeerReachabilityLeaseV1,
 } from './model.js';

@@ -121,11 +121,17 @@ module.exports = {
         resolveRoutes: (peerId) =>
           routesPrepared && peerId !== 'observed'
             ? {
+                state: 'available',
                 routeHints: ['/memory/discovered'],
                 coordinationRelays: ['/memory/relay'],
                 transitRelayPeerIds: ['transit-peer'],
               }
-            : undefined,
+            : {
+                state: 'recovering',
+                routeHints: [],
+                coordinationRelays: [],
+                transitRelayPeerIds: [],
+              },
       },
     });
     const native = await import(nativePath);
@@ -327,7 +333,10 @@ module.exports = {
     const native = await import(modulePath);
     assert.deepEqual(native.default.starts, [{ keyPath: 'unused', webRtcStunUrls: [] }]);
     assert.equal(
-      await ensureRuntimeHostPeerIdentity({ nativePath: modulePath, keyPath: 'unused' }),
+      await ensureRuntimeHostPeerIdentity({
+        nativePath: modulePath,
+        keyPath: 'unused',
+      }),
       'peer',
     );
   } finally {
