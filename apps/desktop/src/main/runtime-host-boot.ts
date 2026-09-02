@@ -197,7 +197,6 @@ import {
 } from './runtime-host-wsl-controller.js';
 import {
   createRuntimeHostSetupPackageResolver,
-  desktopRuntimeHostDevelopmentPeerTarget,
 } from "./runtime-host-setup-package.js";
 import {
   configureDesktopRuntimeHostPeerClient,
@@ -456,10 +455,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolve(
-    desktopRuntimeHostDevelopmentPeerTarget(),
-    signal,
-  ),
+  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolveForThisDesktop(signal),
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -566,9 +562,7 @@ const localRuntimeHostManagement = createDesktopRuntimeHostLocalManagement({
   remoteAccess: localRuntimeHostRemoteAccess,
   operator: localRuntimeHostOperator,
   rootPath: startupLocalStorageRoot.canonicalPath,
-  resolveUpdatePackage: () => runtimeHostSetupPackage.resolve(
-    desktopRuntimeHostDevelopmentPeerTarget(),
-  ),
+  resolveUpdatePackage: () => runtimeHostSetupPackage.resolveForThisDesktop(),
   currentHostEpoch: () =>
     runtimeHostManager?.current('local')?.candidate?.client.hostEpoch,
   awaitUpdatedConnection: async (previousHostEpoch, replacementExpected) => {
