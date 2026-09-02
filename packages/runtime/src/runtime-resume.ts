@@ -32,7 +32,7 @@ import type {
   RuntimeBoundaryCursorV1,
   RuntimeBoundaryDigest,
 } from '@maka/core/runtime-boundary';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import { runtimeInvocationOpeningFromRunHeader, type AgentRunHeader } from '@maka/core/agent-run';
 import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -495,11 +495,13 @@ export class RuntimeContinuationPlanner {
       currentWorkspaceIdentity: input.currentWorkspaceIdentity,
       backgroundOperationsSettled: input.backgroundOperationsSettled,
       availableToolNames: input.availableToolNames,
-      continuationIdentity: {
-        invocationId: this.deps.newId(),
-        runId: this.deps.newId(),
-        turnId: this.deps.newId(),
-      },
+      // One physical execution attempt, one identity. Run and invocation are
+      // the same value at every mint site so the opening fact can be joined
+      // either way while the two names are still being retired.
+      continuationIdentity: (() => {
+        const invocationId = this.deps.newId();
+        return { invocationId, runId: invocationId, turnId: this.deps.newId() };
+      })(),
       continuationClaimId: this.deps.newId(),
       continuationReplayPlan: replay.plan,
       ...(input.expectedRuntimeEventHighWater !== undefined
@@ -1532,7 +1534,11 @@ function continuationStartMatchesClaim(
       event.role === 'system' &&
       event.author === 'system' &&
       event.status === undefined &&
-      event.content === undefined &&
+      // Event 1 of a continuation target is also that invocation's opening fact.
+      isDeepStrictEqual(
+        event.content,
+        runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
+      ) &&
       event.actions &&
       actionShapeMatches &&
       runtimeProtocolMatches &&

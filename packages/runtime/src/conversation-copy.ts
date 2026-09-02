@@ -480,8 +480,12 @@ export async function cloneConversationRuntimeLedger(
     flattenedPlans,
     input.plan.inlineRuntimeEvents,
   );
+  // One physical execution attempt, one identity: a copied run and its copied
+  // invocation get the same fresh value rather than two independent ones.
   const runIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
-  const targetInvocationIds = new Map(flattenedPlans.map(({ run }) => [run.runId, input.newId()]));
+  const targetInvocationIds = new Map(
+    flattenedPlans.map(({ run }) => [run.runId, runIds.get(run.runId)!]),
+  );
   const invocationIds = new Map(
     flattenedPlans.flatMap(({ run }) =>
       run.invocationId ? [[run.invocationId, targetInvocationIds.get(run.runId)!] as const] : [],

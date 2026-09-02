@@ -425,7 +425,9 @@ function transcriptRunHeader(input: {
   const status = transcriptRunStatus(input.turn.status);
   return {
     runId: input.runId,
-    invocationId: `invocation-${input.runId}`,
+    // One physical execution attempt, one identity. A derived `invocation-`
+    // prefix bought nothing and made the two names look independent.
+    invocationId: input.runId,
     sessionId: input.header.id,
     turnId: input.turn.turnId,
     status,

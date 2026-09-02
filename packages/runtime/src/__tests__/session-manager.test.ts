@@ -3369,7 +3369,8 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
     assert.deepStrictEqual(compactCalls, [
       {
         turnId: 'turn-compact',
-        runtimeContextCount: 3,
+        // Opening fact, prompt, answer, terminal.
+        runtimeContextCount: 4,
         sourceRoutes: [
           {
             runId: sourceRun.runId,
@@ -4894,26 +4895,118 @@ describe('SessionManager permission mode updates', () => {
     const [run] = await runStore.listSessionRuns(session.id);
     if (!run) throw new Error('AgentRunStore run was not created');
     const runtimeEvents = await runtimeEventStore.readRuntimeEvents(session.id, run.runId);
-    assert.deepStrictEqual(backend?.sendInputs[0]?.headAnchorRuntimeEvent, runtimeEvents[0]);
+    assert.deepStrictEqual(backend?.sendInputs[0]?.headAnchorRuntimeEvent, runtimeEvents[1]);
     assert.deepStrictEqual(
       runtimeEvents.map((event) => event.runId),
-      [run.runId, run.runId, run.runId],
+      [run.runId, run.runId, run.runId, run.runId],
     );
     assert.deepStrictEqual(
       runtimeEvents.map((event) => event.sessionId),
-      [session.id, session.id, session.id],
+      [session.id, session.id, session.id, session.id],
     );
     assert.deepStrictEqual(
       runtimeEvents.map((event) => event.turnId),
-      ['turn-1', 'turn-1', 'turn-1'],
+      ['turn-1', 'turn-1', 'turn-1', 'turn-1'],
     );
     assert.deepStrictEqual(
       runtimeEvents.map((event) => event.role),
-      ['user', 'model', 'system'],
+      ['system', 'user', 'model', 'system'],
     );
-    assert.deepStrictEqual(runtimeEvents[0]?.content, { kind: 'text', text: 'hello' });
-    assert.deepStrictEqual(runtimeEvents[1]?.content, { kind: 'text', text: 'ok' });
-    assert.strictEqual(runtimeEvents[2]?.status, 'completed');
+    assert.strictEqual(runtimeEvents[0]?.content?.kind, 'invocation_opened');
+    assert.deepStrictEqual(runtimeEvents[1]?.content, { kind: 'text', text: 'hello' });
+    assert.deepStrictEqual(runtimeEvents[2]?.content, { kind: 'text', text: 'ok' });
+    assert.strictEqual(runtimeEvents[3]?.status, 'completed');
+  });
+
+  test('the invocation opening fact is durable before the run row and any dispatch', async () => {
+    const store = new MemorySessionStore();
+    const trace: string[] = [];
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event, options) => {
+        trace.push(
+          `runtime:${event.content?.kind ?? event.status ?? 'fact'}:durable=${options?.durable === true}`,
+        );
+      },
+      beforeAgentRunEventAppend: (_sessionId, _runId, event) => {
+        trace.push(`ledger:${event.type}`);
+      },
+    });
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', (ctx) => {
+      trace.push('backend:activated');
+      return new FinalTextTestBackend(ctx);
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(7_100),
+    });
+    const session = await manager.createSession(makeInput());
+    await collectSessionEvents(
+      manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' }),
+    );
+
+    const openingIndex = trace.findIndex((entry) => entry.startsWith('runtime:invocation_opened'));
+    assert.notStrictEqual(openingIndex, -1, 'the invocation must commit an opening fact');
+    assert.strictEqual(
+      trace.slice(0, openingIndex).some((entry) => entry.startsWith('runtime:')),
+      false,
+      'the opening fact must be the first RuntimeEvent of the invocation',
+    );
+    assert.ok(
+      openingIndex < trace.indexOf('ledger:run_created'),
+      'the opening fact must precede the operational run_created row',
+    );
+    assert.ok(
+      openingIndex < trace.findIndex((entry) => entry.startsWith('runtime:text')),
+      'the opening fact must precede the first model-visible event of the turn',
+    );
+  });
+
+  test('a rejected opening fact stops the turn before the backend can dispatch', async () => {
+    const store = new MemorySessionStore();
+    const sends: string[] = [];
+    const runStore = new MemoryAgentRunStore({
+      beforeRuntimeEventAppend: (_sessionId, _runId, event) => {
+        if (event.content?.kind === 'invocation_opened') {
+          throw new Error('opening fact store is unavailable');
+        }
+      },
+    });
+    const canonicalRuntimeEventStore: RuntimeEventStore = Object.assign(
+      Object.create(Object.getPrototypeOf(runStore) as object) as MemoryAgentRunStore,
+      runStore,
+      { durability: 'canonical' as const },
+    );
+    const backends = new BackendRegistry();
+    let backend: FinalTextTestBackend | undefined;
+    backends.register('ai-sdk', (ctx) => {
+      backend = new FinalTextTestBackend(ctx);
+      return backend;
+    });
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: canonicalRuntimeEventStore,
+      backends,
+      newId: nextId(),
+      now: nextNow(7_150),
+    });
+    const session = await manager.createSession(makeInput());
+    await assert.rejects(
+      collectSessionEvents(manager.sendMessage(session.id, { turnId: 'turn-1', text: 'hello' })),
+      /opening fact store is unavailable/,
+    );
+
+    assert.deepStrictEqual(
+      backend?.sendInputs ?? [],
+      [],
+      'no provider dispatch may happen without a durable opening fact',
+    );
+    assert.deepStrictEqual(sends, []);
   });
 
   test('snapshots mutable turn content before durable commit and backend dispatch', async () => {
@@ -5039,7 +5132,11 @@ describe('SessionManager permission mode updates', () => {
 
     const [run] = await runStore.listSessionRuns(session.id);
     if (!run) throw new Error('AgentRunStore run was not created');
-    const [storedUserEvent] = await durableEvents.readRuntimeEvents(session.id, run.runId);
+    const [openingFact, storedUserEvent] = await durableEvents.readRuntimeEvents(
+      session.id,
+      run.runId,
+    );
+    assert.strictEqual(openingFact?.content?.kind, 'invocation_opened');
     assert.deepStrictEqual(storedUserEvent?.content, {
       kind: 'text',
       text: 'inspect the attachment',
@@ -9375,7 +9472,7 @@ describe('SessionManager permission mode updates', () => {
     if (!secondInput) throw new Error('second backend input was not recorded');
     assert.deepStrictEqual(
       secondInput.runtimeContext?.map((event) => event.turnId),
-      ['turn-1', 'turn-1'],
+      ['turn-1', 'turn-1', 'turn-1'],
     );
     const turnState = secondInput.context.find(
       (message) => message.type === 'turn_state' && message.turnId === 'turn-1',
@@ -9467,7 +9564,7 @@ describe('SessionManager permission mode updates', () => {
     if (!secondInput) throw new Error('second backend input was not recorded');
     assert.deepStrictEqual(
       secondInput.runtimeContext?.map((event) => event.turnId),
-      ['turn-1', 'turn-1', 'turn-1'],
+      ['turn-1', 'turn-1', 'turn-1', 'turn-1'],
     );
     assert.strictEqual(
       secondInput.runtimeContext?.some((event) => event.turnId === 'child-turn'),

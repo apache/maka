@@ -249,6 +249,11 @@ export function projectRuntimeEventsToStoredMessages(
         case 'thinking':
           projected = projectThinking(event, state, messages) || projected;
           break;
+        case 'invocation_opened':
+          // The opening fact records route, configuration and lineage once per
+          // invocation. Every reader joins it by invocationId; it has no chat row.
+          projected = true;
+          break;
         case 'error':
           if (!isTerminalRuntimeEvent(event)) {
             diagnostic(

@@ -64,7 +64,11 @@ import {
 import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { decodePersistedAgentRunHeader, type AgentRunHeader } from '@maka/core/agent-run';
+import {
+  decodePersistedAgentRunHeader,
+  runtimeInvocationOpeningFromRunHeader,
+  type AgentRunHeader,
+} from '@maka/core/agent-run';
 import { markPersisted } from '@maka/core/persisted-value';
 import {
   scanToolLedger,
@@ -4023,7 +4027,12 @@ function assertContinuationStartEvent(
     event.role !== 'system' ||
     event.author !== 'system' ||
     event.status !== undefined ||
-    event.content !== undefined ||
+    // Event 1 of a continuation target is also that invocation's opening fact,
+    // and the claim's target header is what it must project from.
+    !isDeepStrictEqual(
+      event.content,
+      runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
+    ) ||
     !event.actions ||
     !validActionShape ||
     !validRuntimeProtocol ||

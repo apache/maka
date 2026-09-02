@@ -18,6 +18,7 @@
  */
 
 import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
+import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
 import {
   decodeRuntimeBoundaryCursor,
   type ContinuationClaimV1,
@@ -854,6 +855,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
             partial: false,
             role: 'system',
             author: 'system',
+            modelVisibility: 'hidden',
+            // The start event is event 1 of the target invocation, so it is
+            // also where that invocation's opening fact lives.
+            content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
             actions: {
               ...(continuationToolBoundaryProtocol
                 ? {

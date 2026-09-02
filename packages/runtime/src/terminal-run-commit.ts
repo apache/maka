@@ -385,6 +385,16 @@ function runtimeEventFailureClass(event: RuntimeEvent): string | undefined {
   return undefined;
 }
 
+/**
+ * The terminal event's own message is the only source of a run's failure text.
+ * The header copy was written from this same message, so preferring the header
+ * only let a stale projection outlive the fact that produced it.
+ */
+function runtimeEventFailureMessage(event: RuntimeEvent): string | undefined {
+  if (event.content?.kind !== 'error') return undefined;
+  return event.content.message.length > 0 ? event.content.message : undefined;
+}
+
 export function terminalRunStatusFromRuntimeEvent(
   event: RuntimeEvent,
 ): TerminalAgentRunStatus | undefined {
@@ -411,8 +421,8 @@ export function effectiveRunHeaderFromTerminalFact(
     ...(fact.runStatus === 'failed' && fact.failureClass
       ? { failureClass: fact.failureClass }
       : {}),
-    ...(fact.runStatus === 'failed' && run.failureMessage
-      ? { failureMessage: run.failureMessage }
+    ...(fact.runStatus === 'failed' && runtimeEventFailureMessage(fact.terminalEvent)
+      ? { failureMessage: runtimeEventFailureMessage(fact.terminalEvent)! }
       : {}),
     ...(fact.runStatus === 'cancelled' && fact.abortSource
       ? { abortSource: fact.abortSource }

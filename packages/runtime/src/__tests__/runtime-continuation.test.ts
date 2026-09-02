@@ -77,7 +77,8 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
     }),
   ];
   const sourcePrefix = immutablePrefix(sourceEvents);
-  const ids = ['invocation-2', 'run-2', 'turn-2', 'claim-2'];
+  // Run and invocation are one identity, so the planner mints three ids, not four.
+  const ids = ['invocation-2', 'turn-2', 'claim-2'];
   const planner = new RuntimeContinuationPlanner({
     readSourceRun: async () => runHeader('run-1'),
     readImmutableRuntimePrefix: async () => sourcePrefix,
@@ -99,7 +100,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   assert.deepEqual(plan.continuation, {
     sessionId: 'session-1',
     invocationId: 'invocation-2',
-    runId: 'run-2',
+    runId: 'invocation-2',
     turnId: 'turn-2',
     sourceInvocationId: 'invocation-1',
     sourceRunId: 'run-1',

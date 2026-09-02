@@ -41,7 +41,14 @@ import {
   isRecord,
 } from './record-schema.js';
 import type { AgentGraphIntentClaim } from './agent-graph-control.js';
-import { isToolMode, type ToolMode } from './tool-mode.js';
+import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from './tool-mode.js';
+import type {
+  RuntimeEventInvocationOpenedContent,
+  RuntimeInvocationLineage,
+  RuntimeInvocationOpenSource,
+  RuntimeInvocationRootAuthority,
+  RuntimeInvocationRoute,
+} from './runtime-event.js';
 import { decodeRunCompositionSnapshot, type RunCompositionSnapshot } from './run-composition.js';
 
 export const AGENT_RUN_STATUSES = [
@@ -837,4 +844,117 @@ export function isSessionInlineRun(run: {
     run.parentRunId === undefined ||
     (run.continuationSource !== undefined && run.agentId === undefined)
   );
+}
+
+/**
+ * Project one Run header onto its invocation opening fact.
+ *
+ * This is the single mapping from the old authority to the new one: the live
+ * writer and the storage backfill both go through it, so a header field can
+ * never be classified two different ways.
+ *
+ * Route provenance fails closed. A header with no Connection identity cannot
+ * prove which endpoint and credential owned the run, so it projects as
+ * `unknown` rather than as an authenticated route; its transcript and tool
+ * evidence stay readable either way.
+ *
+ * Throws when a root authority marker is present but incomplete — that is
+ * corruption, and inventing a root would be worse than refusing one.
+ */
+export function runtimeInvocationOpeningFromRunHeader(
+  header: AgentRunHeader,
+): RuntimeEventInvocationOpenedContent {
+  const lineage: RuntimeInvocationLineage = {
+    ...(header.parentRunId !== undefined ? { parentRunId: header.parentRunId } : {}),
+    ...(header.parentTurnId !== undefined ? { parentTurnId: header.parentTurnId } : {}),
+    ...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
+    ...(header.retriedFromTurnId !== undefined
+      ? { retriedFromTurnId: header.retriedFromTurnId }
+      : {}),
+    ...(header.regeneratedFromTurnId !== undefined
+      ? { regeneratedFromTurnId: header.regeneratedFromTurnId }
+      : {}),
+    ...(header.branchOfTurnId !== undefined ? { branchOfTurnId: header.branchOfTurnId } : {}),
+    ...(header.agentId !== undefined ? { agentId: header.agentId } : {}),
+    ...(header.agentName !== undefined ? { agentName: header.agentName } : {}),
+  };
+  return {
+    kind: 'invocation_opened',
+    protocol: 'invocation_opened_v1',
+    route: invocationRouteFromRunHeader(header),
+    configuration: {
+      cwd: header.cwd,
+      permissionMode: header.permissionMode,
+      collaborationMode: header.collaborationMode ?? 'agent',
+      orchestrationMode: header.orchestrationMode ?? 'default',
+      orchestrationSource: header.orchestrationSource ?? 'session',
+      toolMode: header.toolMode ?? DEFAULT_TOOL_MODE,
+      ...(header.agentSwarmAuthorization !== undefined
+        ? { agentSwarmAuthorization: header.agentSwarmAuthorization }
+        : {}),
+      ...(header.workspaceIdentity !== undefined
+        ? { workspaceIdentity: header.workspaceIdentity }
+        : {}),
+    },
+    root: invocationRootFromRunHeader(header),
+    source: invocationOpenSourceFromRunHeader(header),
+    ...(Object.keys(lineage).length > 0 ? { lineage } : {}),
+  };
+}
+
+function invocationRouteFromRunHeader(header: AgentRunHeader): RuntimeInvocationRoute {
+  if (header.llmConnectionId === undefined) {
+    return {
+      provenance: 'unknown',
+      backendKind: header.backendKind,
+      llmConnectionSlug: header.llmConnectionSlug,
+      modelId: header.modelId,
+    };
+  }
+  return {
+    provenance: 'runtime',
+    backendKind: header.backendKind,
+    llmConnectionId: header.llmConnectionId,
+    llmConnectionSlug: header.llmConnectionSlug,
+    modelId: header.modelId,
+    ...(header.providerStateIdentity !== undefined
+      ? { providerStateIdentity: header.providerStateIdentity }
+      : {}),
+  };
+}
+
+function invocationRootFromRunHeader(header: AgentRunHeader): RuntimeInvocationRootAuthority {
+  if (header.scheduledTaskId !== undefined) {
+    return { kind: 'scheduled_task', scheduledTaskId: header.scheduledTaskId };
+  }
+  if (header.goalId !== undefined) return { kind: 'goal', goalId: header.goalId };
+  if (header.legacyAutomationId !== undefined) {
+    return { kind: 'legacy_automation', legacyAutomationId: header.legacyAutomationId };
+  }
+  if (header.agentGraphWakeId !== undefined) {
+    if (header.agentGraphWakeAttemptId === undefined) {
+      throw new Error(`AgentRun ${header.runId} has a graph wake with no delivery attempt`);
+    }
+    return {
+      kind: 'agent_graph_supervisor_wake',
+      wakeId: header.agentGraphWakeId,
+      attemptId: header.agentGraphWakeAttemptId,
+    };
+  }
+  if (header.rootExecutionKind === 'context_compact') return { kind: 'context_compact' };
+  return { kind: 'user' };
+}
+
+function invocationOpenSourceFromRunHeader(header: AgentRunHeader): RuntimeInvocationOpenSource {
+  const source = header.continuationSource;
+  if (!source) return { kind: 'fresh' };
+  const v2 = 'protocol' in source ? source : undefined;
+  return {
+    kind: 'continuation',
+    sourceInvocationId: source.sourceInvocationId,
+    sourceRunId: source.sourceRunId,
+    sourceTurnId: source.sourceTurnId,
+    sourceRuntimeEventHighWater: source.sourceRuntimeEventHighWater,
+    ...(v2 ? { claimId: v2.claimId, boundaryDigest: v2.boundaryDigest } : {}),
+  };
 }

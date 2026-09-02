@@ -430,9 +430,23 @@ describe('host-managed agent graph coordinator', () => {
       assert.ok(wakeRun);
       assert.equal(wakeRun.agentGraphWakeId, graphWake.origin.wakeId);
       assert.equal(wakeRun.agentGraphWakeAttemptId, graphWake.origin.attemptId);
+      const wakeEvents = await runtimeEventStore.readImmutableRuntimeEvents(
+        rootSession.id,
+        wakeRun.runId,
+      );
+      assert.deepEqual(
+        wakeEvents[0]?.content?.kind === 'invocation_opened'
+          ? wakeEvents[0].content.root
+          : undefined,
+        {
+          kind: 'agent_graph_supervisor_wake',
+          wakeId: graphWake.origin.wakeId,
+          attemptId: graphWake.origin.attemptId,
+        },
+        'the opening fact must name the host authority that woke this invocation',
+      );
       assert.equal(
-        (await runtimeEventStore.readImmutableRuntimeEvents(rootSession.id, wakeRun.runId))[0]
-          ?.author,
+        wakeEvents[1]?.author,
         'host',
         'canonical provenance must distinguish the host-authored wake from human input',
       );

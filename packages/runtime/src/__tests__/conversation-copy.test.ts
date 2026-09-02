@@ -2227,9 +2227,10 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       /missing Artifact artifact-deleted/,
     );
     assert.deepEqual(await runStore.listSessionRuns('session-missing-artifact'), []);
+    // A copied run and its copied invocation share one fresh identity, so the
+    // copy mints one id here rather than two.
     const ids = [
       'run-target',
-      'invocation-target',
       'event-target-1',
       'event-target-2',
       'event-target-3',
@@ -2270,7 +2271,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     );
     const [targetRun] = await runStore.listSessionRuns('session-target');
     assert.equal(targetRun?.runId, 'run-target');
-    assert.equal(targetRun?.invocationId, 'invocation-target');
+    assert.equal(targetRun?.invocationId, 'run-target');
     assert.equal(targetRun?.status, 'completed');
     const targetEvents = await runtimeEventStore.readRuntimeEvents('session-target', 'run-target');
     assert.deepEqual(
@@ -2289,7 +2290,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         (event) =>
           event.sessionId === 'session-target' &&
           event.runId === 'run-target' &&
-          event.invocationId === 'invocation-target',
+          event.invocationId === 'run-target',
       ),
     );
     assert.equal(targetEvents[0]?.refs?.artifactId, 'artifact-target');
@@ -2301,7 +2302,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       copied.copiedMessages.find((message) => message.type === 'assistant')?.text,
       targetAttachmentText,
     );
-    assert.equal(targetEvents[1]?.refs?.sourceInvocationId, 'invocation-target');
+    assert.equal(targetEvents[1]?.refs?.sourceInvocationId, 'run-target');
     assert.deepEqual(
       targetEvents[1]?.content?.kind === 'function_call' ? targetEvents[1].content.args : undefined,
       sourceEvents[1]?.content?.kind === 'function_call' ? sourceEvents[1].content.args : undefined,

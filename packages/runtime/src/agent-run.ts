@@ -23,7 +23,12 @@ import type {
   AgentRunStore,
   EmittedAgentRunEvent,
 } from '@maka/core/agent-run';
-import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
+import type {
+  RuntimeEvent,
+  RuntimeEventInvocationOpenedContent,
+  ToolBoundaryProtocol,
+} from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
@@ -252,6 +257,8 @@ export class AgentRun {
   private terminalRunHeaderCommitted = false;
   private continuationActive = false;
   private providerStateIdentity: `sha256:${string}` | undefined;
+  private invocationOpening: RuntimeEventInvocationOpenedContent | undefined;
+  private invocationOpeningCommitted = false;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -831,7 +838,10 @@ export class AgentRun {
           ? { inlineReferences: input.inlineReferences }
           : {}),
       },
-      ...(this.toolBoundaryProtocol
+      // The marker belongs to the invocation's first event. Once an opening
+      // fact exists it holds the marker, and a second copy here would read as
+      // a stray marker to RecoveryResolver.
+      ...(this.toolBoundaryProtocol && !this.invocationOpeningCommitted
         ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
         : {}),
     };
@@ -1187,6 +1197,12 @@ export class AgentRun {
     ) {
       throw new Error('Claimed continuation target Run header no longer matches execution');
     }
+    this.invocationOpening = runtimeInvocationOpeningFromRunHeader(header);
+    // A continuation's opening fact rides its continuation-start event, which
+    // the store requires to be event 1 of the target invocation. Every other
+    // invocation opens with its own event, committed before the run row and
+    // before any provider or tool dispatch.
+    if (!continuation) await this.commitInvocationOpening(createdAt);
     try {
       const durable = this.requiresDurablePersistence();
       await this.input.runStore.createRun(header, { durable });
@@ -1217,6 +1233,44 @@ export class AgentRun {
       this.enqueueTraceWriteFailure(error);
       if (continuation) throw error;
     }
+  }
+
+  /**
+   * Make the invocation's opening fact durable before anything can dispatch.
+   *
+   * It is the invocation's first event, so it also carries the protocol marker
+   * RecoveryResolver reads off event one.
+   */
+  private async commitInvocationOpening(ts: number): Promise<void> {
+    const opening = this.invocationOpening;
+    if (!opening || this.invocationOpeningCommitted) return;
+    await this.recordRuntimeEvents(
+      [
+        {
+          id: this.input.newId(),
+          invocationId: this.invocationId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts,
+          partial: false,
+          role: 'system',
+          author: 'system',
+          modelVisibility: 'hidden',
+          content: opening,
+          ...(this.toolBoundaryProtocol
+            ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
+            : {}),
+        },
+      ],
+      { requireDurableWrite: this.requiresDurablePersistence() },
+    );
+    this.invocationOpeningCommitted = true;
+  }
+
+  /** The opening fact this invocation committed, for its continuation-start event. */
+  invocationOpeningFact(): RuntimeEventInvocationOpenedContent | undefined {
+    return this.invocationOpening;
   }
 
   private requiresDurablePersistence(): boolean {

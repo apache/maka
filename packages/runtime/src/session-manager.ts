@@ -100,7 +100,7 @@ import { decodeAgentGraphIntentClaim } from '@maka/core/agent-graph-control';
 import { executionBoundaryContains } from '@maka/core/sandbox-boundary';
 import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
-import { isSessionInlineRun } from '@maka/core/agent-run';
+import { isSessionInlineRun, runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type {
   AgentGraphIntentClaim,
@@ -4847,6 +4847,8 @@ function buildContinuationRepairStartEvent(claim: ContinuationClaimV1): RuntimeE
     partial: false,
     role: 'system',
     author: 'system',
+    modelVisibility: 'hidden',
+    content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
     actions: {
       continuationStart: {
         protocol: 'continuation_start_v2',

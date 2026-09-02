@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
+import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -2021,6 +2022,8 @@ function continuationStartEvent(
     partial: false,
     role: 'system',
     author: 'system',
+    modelVisibility: 'hidden',
+    content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
     actions: {
       ...(overrides.toolBoundaryProtocol
         ? { runtimeProtocol: { toolBoundary: overrides.toolBoundaryProtocol } }
