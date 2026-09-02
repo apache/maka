@@ -22,10 +22,12 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    - cron: '43 9 * * *'
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -63,7 +65,7 @@ jobs:
           # PR checks may predate later main changes, so the planning lane also
           # validates the exact merged delta. Dispatches and unavailable history
           # fail safe to every surface.
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" || "${{ github.event_name }}" == "schedule" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
             node scripts/ci-test-plan.mjs --full >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-test-plan.mjs --base "$BASE_SHA" --head "$HEAD_SHA" >> "$GITHUB_OUTPUT"
@@ -173,6 +175,10 @@ jobs:
       - name: Install dependencies
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      - name: Test Desktop e2e selection
+        if: steps.plan.outputs.e2e == 'true'
+        run: node --test scripts/desktop-e2e-test-selection.test.mjs
 
       - name: Check localized TUI copy boundaries
         if: steps.plan.outputs.code == 'true'
@@ -336,8 +342,23 @@ jobs:
 
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
+        env:
+          BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
+          spec_list="$RUNNER_TEMP/desktop-e2e-specs.txt"
+          if [[ "${{ steps.plan.outputs.full }}" == "true" ]]; then
+            node scripts/desktop-e2e-test-selection.mjs --full > "$spec_list"
+          else
+            node scripts/desktop-e2e-test-selection.mjs \
+              --base "$BASE_SHA" --head "$HEAD_SHA" > "$spec_list"
+          fi
+          mapfile -t specs < "$spec_list"
+          if (( ${#specs[@]} == 0 )); then
+            echo "No Desktop e2e spec is reachable from this change"
+            exit 0
+          fi
           display_base=90
           worker_count=4
           xvfb_pids=()
@@ -366,7 +387,7 @@ jobs:
           done
           MAKA_E2E_X_DISPLAY_BASE="$display_base" \
             npm exec -w @maka/desktop -- playwright test \
-              --config e2e/playwright.config.ts --workers="$worker_count"
+              --config e2e/playwright.config.ts --workers="$worker_count" "${specs[@]}"
 
       - name: Browser WebContentsView semantic smoke
         if: steps.plan.outputs.e2e == 'true'

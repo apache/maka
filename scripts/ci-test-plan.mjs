@@ -88,6 +88,7 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
   'scripts/windows-package-source-closure.test.mjs',
+  'scripts/workspace-source-closure.mjs',
   // Reads the filter that closure test compares against, and `check:release`
   // is the only gate that runs it against `release-windows-check.yml`.
   'scripts/workflow-pull-request-paths.mjs',
@@ -204,6 +205,11 @@ const E2E_DRIVING_SCRIPTS = new Set([
   'apps/desktop/scripts/browser-observe-act-smoke.mjs',
   'scripts/audit-alignment.mjs',
   'scripts/ax-tree-audit.mjs',
+  'scripts/desktop-e2e-test-selection.mjs',
+  'scripts/desktop-e2e-test-selection.test.mjs',
+  'scripts/electron-lifecycle.mjs',
+  'scripts/fixture-env.mjs',
+  'scripts/workspace-source-closure.mjs',
 ]);
 
 // Scripts / paths that can break the built Storybook catalog. Product stories
@@ -542,6 +548,7 @@ export function formatGitHubOutputs(plan) {
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
+    `full=${plan.full}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,

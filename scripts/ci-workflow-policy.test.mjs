@@ -85,11 +85,20 @@ test('planning runs first and every later step gates on its outputs', () => {
   );
 });
 
-test('core CI validates pull requests and the resulting main branch state', () => {
+test('core CI validates pull requests, the resulting main branch state, and a nightly full run', () => {
   const workflow = readWorkflow('ci.yml');
 
   assert.match(workflow, /pull_request:\n\s+branches: \[main\]/u);
   assert.match(workflow, /push:\n\s+branches: \[main\]/u);
+  assert.match(workflow, /schedule:\n\s+- cron:/u);
+  assert.match(
+    workflow,
+    /group: ci-\$\{\{ github\.workflow \}\}-\$\{\{ github\.event_name \}\}-\$\{\{ github\.ref \}\}/u,
+  );
+  assert.match(
+    workflow,
+    /github\.event_name \}\}" == "workflow_dispatch" \|\| "\$\{\{ github\.event_name \}\}" == "schedule"/u,
+  );
   assert.match(
     workflow,
     /BASE_SHA: \$\{\{ github\.event_name == 'push' && github\.event\.before \|\| github\.event\.pull_request\.base\.sha \}\}/u,
@@ -99,6 +108,18 @@ test('core CI validates pull requests and the resulting main branch state', () =
     /HEAD_SHA: \$\{\{ github\.event_name == 'push' && github\.sha \|\| github\.event\.pull_request\.head\.sha \}\}/u,
   );
   assert.match(workflow, /\[\[ "\$BASE_SHA" =~ \^0\+\$ \]\]/u);
+  assert.match(
+    workflow,
+    /if \[\[ "\$\{\{ steps\.plan\.outputs\.full \}\}" == "true" \]\]; then\n\s+node scripts\/desktop-e2e-test-selection\.mjs --full/u,
+  );
+  assert.match(
+    workflow,
+    /mapfile -t specs < "\$spec_list"\n\s+if \(\( \$\{#specs\[@\]\} == 0 \)\); then\n\s+echo "No Desktop e2e spec is reachable from this change"\n\s+exit 0\n\s+fi\n\s+display_base=90/u,
+  );
+  assert.match(
+    workflow,
+    /--config e2e\/playwright\.config\.ts --workers="\$worker_count" "\$\{specs\[@\]\}"/u,
+  );
 });
 
 test('core CI uses the Windows inventory package-script authority', () => {

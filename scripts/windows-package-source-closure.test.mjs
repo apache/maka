@@ -21,10 +21,10 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
-  collectWorkspaceSourceClosure,
   windowsPackageSourceEntrypoints,
   windowsReleasePatternCoversSource,
 } from './windows-package-source-closure.mjs';
+import { collectWorkspaceSourceClosure } from './workspace-source-closure.mjs';
 import { readPullRequestPathFilter } from './workflow-pull-request-paths.mjs';
 
 /**

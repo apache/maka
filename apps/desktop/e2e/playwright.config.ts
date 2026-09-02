@@ -43,6 +43,7 @@ export default defineConfig({
   testDir: '.',
   fullyParallel: true,
   workers: 1,
+  reporter: 'list',
   // CI publishes no Playwright report that consumes Git metadata. Disable its
   // best-effort shallow-history fetch, which otherwise waits on a fixed timeout.
   captureGitInfo: { commit: false, diff: false },
