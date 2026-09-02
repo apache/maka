@@ -34,8 +34,6 @@ import {
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
-import { PROMPT_RAIL_SESSION_ID } from '../src/main/e2e-fixture/seed-helpers';
-import { desktopSessionKey } from '../src/shared/runtime-host-identity';
 
 const DESKTOP_ROOT = process.cwd();
 const execFileAsync = promisify(execFile);
@@ -493,12 +491,6 @@ interface PromptRailWorker {
   app: ElectronApplication;
   page: Page;
   pristine: boolean;
-  sessionId: string;
-  throughSequence: number;
-  storage: {
-    local: Record<string, string>;
-    session: Record<string, string>;
-  };
   viewport: { width: number; height: number };
 }
 
@@ -519,20 +511,19 @@ async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
     worker.pristine = false;
     return;
   }
-  await worker.page.evaluate(async ({ sessionId, throughSequence }) => {
-    const transcript = await window.maka.transcripts.open(sessionId, () => undefined);
-    try {
-      await transcript.loadAround(throughSequence);
-    } finally {
-      await transcript.close();
-    }
-  }, { sessionId: worker.sessionId, throughSequence: worker.throughSequence });
-  await worker.page.evaluate(({ local, session }) => {
+  await worker.page.evaluate(async () => {
+    const controls = (
+      window as typeof window & {
+        makaE2eLatch?: {
+          releaseRendererObservations(): Promise<void>;
+        };
+      }
+    ).makaE2eLatch;
+    if (!controls) throw new Error('the isolated E2E controls are unavailable');
+    await controls.releaseRendererObservations();
     localStorage.clear();
     sessionStorage.clear();
-    for (const [key, value] of Object.entries(local)) localStorage.setItem(key, value);
-    for (const [key, value] of Object.entries(session)) sessionStorage.setItem(key, value);
-  }, worker.storage);
+  });
   await worker.page.setViewportSize(worker.viewport);
   await worker.page.reload();
   await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
@@ -697,27 +688,8 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
     }, async (page, { app }) => {
-      const hostId = await page.evaluate(async () =>
-        (await window.maka.runtimeHostProfiles.getSnapshot()).entries
-          .find(({ isDefault }) => isDefault)?.hostId);
-      if (!hostId) throw new Error('the prompt-rail fixture has no ready default Host');
-      const sessionId = desktopSessionKey({ hostId, sessionId: PROMPT_RAIL_SESSION_ID });
-      const throughSequence = await page.evaluate(async (selectedSessionId) =>
-        (await window.maka.sessions.listTurnLandmarks(selectedSessionId)).throughSequence,
-      sessionId);
-      if (throughSequence === null) throw new Error('the prompt-rail fixture has no transcript');
-      const storage = await page.evaluate(() => {
-        const snapshot = (source: Storage) => Object.fromEntries(
-          Array.from({ length: source.length }, (_, index) => {
-            const key = source.key(index);
-            if (key === null) throw new Error('browser storage changed while being read');
-            return [key, source.getItem(key) ?? ''];
-          }),
-        );
-        return { local: snapshot(localStorage), session: snapshot(sessionStorage) };
-      });
       const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
-      await use({ app, page, pristine: true, sessionId, throughSequence, storage, viewport });
+      await use({ app, page, pristine: true, viewport });
     });
   }, { scope: 'worker' }],
   // A multi-prompt transcript for the prompt anchor rail. Shown, because every

@@ -3729,6 +3729,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         invocableSkillsWaiters.set(sessionId, waiters);
       });
     },
+    releaseRendererObservations() {
+      return invokeActiveRuntimeHost<void>('sessions:e2e:release-renderer-observations');
+    },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);
     },

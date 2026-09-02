@@ -1035,6 +1035,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     completeComputerUseTurn,
+    enableE2eControls: isE2e,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
