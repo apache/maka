@@ -126,7 +126,11 @@ fact and removes the retired source from active linkage.
 Correction never replaces either Session's transcript authority.
 
 **Direct stop**: A user's explicit imperative to retire one active durable
-delegation. The initial deterministic implementation accepts exact display-name
+delegation. A delegation link ends only by supersession or a resolved stop, so a
+delegation whose work has finished is still linked; it is no longer a stop target,
+because there is nothing left in it to stop. Only work that could still be stopped
+makes a Session's stop target ambiguous, and execution state that cannot be read
+is never treated as finished. The initial deterministic implementation accepts exact display-name
 references behind the shared Session Resolver contract; exact-name syntax is not
 the long-term product boundary. Pronouns, pause/wait language, questions, advice,
 negation, unresolved or ambiguous targets, and model-supplied Session, Turn, Run,
@@ -162,7 +166,10 @@ created it, so a crash after cancellation but before resolution still replays
 `cancelled_pending` rather than degrading to `already_terminal`. Owning-root Stop
 likewise writes the direct-stop action identity into the exact root Turn's
 durable abort source. A retry recognizes only that matching proof; an earlier or
-concurrent manual Stop remains `already_terminal`. Stop admission holds the
+concurrent manual Stop remains `already_terminal`. Root registration is in-memory,
+so between a Host restart and execution recovery a running root looks inactive.
+`already_terminal` is an immutable observation, so only a durably terminal target
+snapshot may claim it; an unrecovered target is still resolving instead. Stop admission holds the
 Coordination Session and every currently active target Session lane
 while it rechecks current target identities and active links; a concurrent new
 delegation therefore cannot invalidate the one-target proof after the request

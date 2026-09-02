@@ -185,17 +185,22 @@ retired source from active linkage and makes later retries return the same termi
 outcome instead of displaying a stopped, unsuperseded link.
 
 Direct stop resolves its target through the shared Session Resolver and proposes
-only what that resolution produced: the opaque delegation identity, the Session
-it belongs to, and the active-delegation state the Action Policy resolved
-against. Display names are retrieval evidence on the proposal side and never
-appear in admission. The Action Gate revalidates those preconditions immediately
-before any effect — the assignment still exists, it still belongs to the proposed
-Session, and that Session's current active delegations are exactly the set the
-policy saw, which for stop must be the one delegation being stopped. A stale
-resolution therefore fails closed, while a rename between resolution and
-admission is correctly irrelevant. Trusted user text still has to carry a direct
-stop imperative, and the `user_stop` confirmation stays outside strategy output,
-so neither model output nor a display name can select what gets stopped.
+only what that resolution produced: the opaque delegation identity and the Session
+it belongs to. Display names are retrieval evidence on the proposal side and never
+appear in admission, and the proposal asserts no proof of its own — the Host makes
+those from durable state. The Action Gate revalidates immediately before any
+effect: the assignment still exists, it still belongs to the proposed Session, and
+no other delegation on that Session still holds work that could be stopped. A
+delegation link ends only by supersession or a resolved stop, so finished work
+stays linked while ceasing to be a competing stop target; execution state that
+cannot be read counts as competing, never as finished. Visibility is proved for
+the stopped delegation alone, because nothing retires a delegation whose Session
+was deleted and proving it over the whole active set would let one deleted Session
+block every stop. A stale resolution therefore fails closed, while a rename between
+resolution and admission is correctly irrelevant. Trusted user text still has to
+carry a direct stop imperative, and the `user_stop` confirmation stays outside
+strategy output, so neither model output nor a display name can select what gets
+stopped.
 
 Direct stop persists a distinct `delegation_stop_requested` claim before
 retirement and a `delegation_stop_resolved` observation afterward. The pending
