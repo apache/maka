@@ -941,6 +941,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     const now = this.#now();
     const stored = this.#store.read();
     const localPeerId = this.#peer.identity().peerId;
+    this.#pruneCompletedRecoverySweeps(stored, localPeerId);
     const sharedMeshIds = stored.meshes
       .filter(
         (state) =>
@@ -982,21 +983,34 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     this.#completedRecoverySweeps.delete(peerId);
     const localPeerId = this.#peer.identity().peerId;
     const stored = this.#store.read();
-    const visible = stored.meshes.some(
-      (mesh) =>
-        isActiveMembership(mesh, localPeerId) && mesh.roster.roster.members.includes(peerId),
-    );
-    if (!visible) {
-      this.#completedRecoverySweeps.add(peerId);
-      return;
-    }
+    const visible = this.#pruneCompletedRecoverySweeps(stored, localPeerId).has(peerId);
+    if (!visible) return;
     // A signed route can remain within its TTL after a peer restarted or
     // rotated Relay reservations. Every connection establishment therefore
     // asks the Mesh control plane for its newest record. Callers with a
     // self-contained invitation run this reconciliation in parallel with the
     // first dial; callers without usable routes wait for it.
     await this.reconcile(signal);
-    this.#completedRecoverySweeps.add(peerId);
+    if (this.#pruneCompletedRecoverySweeps().has(peerId)) {
+      this.#completedRecoverySweeps.add(peerId);
+    }
+  }
+
+  #pruneCompletedRecoverySweeps(
+    stored = this.#store.read(),
+    localPeerId = this.#peer.identity().peerId,
+  ): ReadonlySet<string> {
+    const visiblePeerIds = new Set<string>();
+    for (const state of stored.meshes) {
+      if (!isActiveMembership(state, localPeerId)) continue;
+      for (const memberPeerId of state.roster.roster.members) {
+        if (memberPeerId !== localPeerId) visiblePeerIds.add(memberPeerId);
+      }
+    }
+    for (const peerId of this.#completedRecoverySweeps) {
+      if (!visiblePeerIds.has(peerId)) this.#completedRecoverySweeps.delete(peerId);
+    }
+    return visiblePeerIds;
   }
 
   reconcile(signal?: AbortSignal): Promise<void> {
