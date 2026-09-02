@@ -23,9 +23,14 @@ import type {
   McpServerConfig,
   McpServerStatus,
 } from '@maka/core/mcp';
-import { isMcpStdioConfig, resolveMcpProtocolPreference } from '@maka/core/mcp';
+import { isMcpStdioConfig, isNonLoopbackCleartextHttp, resolveMcpProtocolPreference } from '@maka/core/mcp';
 import type { McpCopy } from './locales/mcp-copy.js';
 import { formatCommandLine, parseCommandLine } from './mcp-command-line.js';
+
+// Re-exported so the page keeps a single model import: the architecture
+// ratchet holds the legacy page's dependency count at its base footprint,
+// and the model already owns this path.
+export { formatCommandLine };
 
 export type McpEditorDraft = {
   id: string;
@@ -145,4 +150,112 @@ function formatMap(value?: Record<string, string>): string {
   return Object.entries(value ?? {})
     .map(([key, item]) => `${key}=${item}`)
     .join('\n');
+}
+
+// ── Editor draft validation ─────────────────────────────────────────────
+// Lives beside the draft model so the validated shape is derived from the
+// one McpEditorDraft declaration (a validation-local subset type had
+// drifted from it once already).
+
+/** The fields validation reads — a projection of the editor draft, never a
+ * second declaration of it. */
+export type McpEditorValidationDraft = Pick<
+  McpEditorDraft,
+  'id' | 'kind' | 'commandLine' | 'url' | 'headers'
+>;
+
+export type McpEditorValidationCode =
+  | 'required'
+  | 'invalid-url'
+  | 'insecure-url'
+  | 'url-credentials'
+  | 'unbalanced-quote'
+  | 'duplicate-id'
+  | 'oauth-authorization-conflict';
+export type McpEditorErrors = Partial<
+  Record<'id' | 'commandLine' | 'url' | 'headers', McpEditorValidationCode>
+>;
+
+/**
+ * Live-validation gate for the editor dialog: decides which of a fresh
+ * validation's errors may display while the user is still typing.
+ * Substantive errors always show; `required` shows only on a field that
+ * is already visibly flagged (a save attempt surfaced it), so editing
+ * keeps that verdict current without nagging fields the user has not
+ * reached — regardless of which field changed or whether the transport
+ * kind switched.
+ */
+export function liveEditorErrors(
+  validation: McpEditorErrors,
+  visible: McpEditorErrors,
+): McpEditorErrors {
+  const next: McpEditorErrors = {};
+  for (const [field, code] of Object.entries(validation) as Array<
+    [keyof McpEditorErrors, McpEditorValidationCode]
+  >) {
+    if (code !== 'required' || visible[field] !== undefined) {
+      next[field] = code;
+    }
+  }
+  return next;
+}
+
+export function validateMcpEditorDraft(
+  draft: McpEditorValidationDraft,
+  options: {
+    /** Server ids that would be silently overwritten by an upsert. Passed
+     * only in add mode — an edit legitimately writes over its own id. */
+    existingIds?: readonly string[];
+    /** Whether the draft carries an (invisible, opaquely round-tripped)
+     * oauth block. The store rejects an Authorization header alongside it;
+     * the dialog mirrors that rule as a field error instead of letting the
+     * save bounce off main as a raw untranslated toast. */
+    hasOAuth?: boolean;
+  } = {},
+): McpEditorErrors {
+  const errors: McpEditorErrors = {};
+  const id = draft.id.trim();
+  if (!id) errors.id = 'required';
+  else if (options.existingIds?.includes(id)) errors.id = 'duplicate-id';
+
+  if (draft.kind === 'stdio') {
+    const parsed = parseCommandLine(draft.commandLine);
+    if (!parsed.ok) {
+      errors.commandLine = 'unbalanced-quote';
+    } else if (!parsed.command.trim()) {
+      errors.commandLine = 'required';
+    }
+    return errors;
+  }
+
+  const value = draft.url.trim();
+  if (!value) {
+    errors.url = 'required';
+    return errors;
+  }
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      errors.url = 'invalid-url';
+    } else if (isNonLoopbackCleartextHttp(url)) {
+      // The store enforces the same shared rule; validating here puts the
+      // error on the URL field instead of an opaque save toast.
+      errors.url = 'insecure-url';
+    } else if (url.username || url.password) {
+      // Mirrors the store's embedded-credentials rejection for the same
+      // reason: live on the field, not a generic save-failure toast.
+      errors.url = 'url-credentials';
+    }
+  } catch {
+    errors.url = 'invalid-url';
+  }
+  if (
+    options.hasOAuth &&
+    draft.headers
+      .split(/\r?\n/u)
+      .some((line) => line.split('=')[0]?.trim().toLowerCase() === 'authorization')
+  ) {
+    errors.headers = 'oauth-authorization-conflict';
+  }
+  return errors;
 }

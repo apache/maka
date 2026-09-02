@@ -170,6 +170,12 @@ export function createFakeModuleHubServices(
     clipboard: {
       writeText: async () => undefined,
     },
+    mcpEditor: {
+      add: async () => notConfigured('mcpEditor.add'),
+      login: async () => notConfigured('mcpEditor.login'),
+      logout: async () => notConfigured('mcpEditor.logout'),
+      cancelLogin: async () => false,
+    },
     ...overrides,
   };
 }

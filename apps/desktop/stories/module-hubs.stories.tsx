@@ -35,10 +35,11 @@ import {
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
 import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
-import { ModuleHubHost } from '../src/renderer/features/module-hub/index';
-import { createFakeModuleHubHostModel } from '../src/renderer/features/module-hub/testing';
+import { ModuleHubHost, ModuleHubServicesProvider } from '../src/renderer/features/module-hub/index';
+import { createFakeModuleHubHostModel, createFakeModuleHubServices } from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
+import type { ModuleHubMcpEditorService } from '../src/renderer/features/module-hub';
 import { withScopedMakaBridge } from './maka-bridge';
 
 // Fidelity convention (#1433): every story below names the real app path
@@ -775,6 +776,15 @@ function ExtensionsSkillsSurface(props: {
 
 function ExtensionsMcpSurface() {
   const copy = getSharedUiCopy(useUiLocale()).moduleHubs.extensions;
+  // The app wires this port from the platform adapter over the real bridge;
+  // stories route it through the scoped story bridge so the same seam is
+  // exercised with the same fake data.
+  const mcpEditor: ModuleHubMcpEditorService = {
+    add: (serverId, config, host) => window.maka.mcp.add(serverId, config, host),
+    login: (serverId, host) => window.maka.mcp.login(serverId, host),
+    logout: (serverId, host) => window.maka.mcp.logout(serverId, host),
+    cancelLogin: (serverId, host) => window.maka.mcp.cancelLogin(serverId, host),
+  };
   return (
     <ModuleSurface agentsView="mcp">
       <McpPage
@@ -783,6 +793,7 @@ function ExtensionsMcpSurface() {
           subtitle: copy.description,
           badge: <ModuleHubSelector hub="extensions" value="mcp" onChange={() => {}} />,
         }}
+        mcpEditor={mcpEditor}
       />
     </ModuleSurface>
   );
@@ -875,7 +886,12 @@ function ModuleHubHostSurface(props: {
       : 'cron';
   return (
     <ModuleSurface agentsView={agentsView}>
-      <ModuleHubHost model={model} />
+      {/* The Host now consumes the feature services (the MCP page's editor
+          operations arrive as an injected port), so the production provider
+          wraps it here the way the composition root does in the app. */}
+      <ModuleHubServicesProvider services={createFakeModuleHubServices()}>
+        <ModuleHubHost model={model} />
+      </ModuleHubServicesProvider>
     </ModuleSurface>
   );
 }

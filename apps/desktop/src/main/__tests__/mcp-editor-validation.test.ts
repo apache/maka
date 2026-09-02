@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { liveEditorErrors, validateMcpEditorDraft } from '../../renderer/mcp-editor-validation.js';
+import { liveEditorErrors, validateMcpEditorDraft } from '../../renderer/mcp-page-model.js';
 
 describe('MCP editor validation', () => {
   it('reports substantive URL and command errors for live first-edit display', () => {

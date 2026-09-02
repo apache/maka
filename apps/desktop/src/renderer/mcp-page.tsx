@@ -99,26 +99,25 @@ import { getMcpCatalog, catalogEntryMatches, type McpCatalogEntry } from './mcp-
 import { McpBrandMark, hasMcpBrandMark } from './mcp-brand-marks';
 import {
   createEmptyMcpDraft,
+  formatCommandLine,
+  liveEditorErrors,
   mcpConfigFromDraft,
   mcpDraftProtocolPreference,
   mcpDraftFromConfig,
   presentMcpNegotiatedProtocol,
+  validateMcpEditorDraft,
   type McpEditorDraft,
+  type McpEditorErrors,
+  type McpEditorValidationCode,
 } from './mcp-page-model';
+import type { ModuleHubMcpEditorService } from './features/module-hub/index.js';
 import { settingsActionErrorMessage } from './settings/settings-error-copy';
 import { getMcpCopy, type McpCopy } from './locales/mcp-copy';
-import { formatCommandLine } from './mcp-command-line';
 import {
   defaultRuntimeHostDiagnosticTarget,
   runOnDefaultRuntimeHost,
   type DefaultRuntimeHostDiagnosticTarget,
 } from './default-runtime-host-operation.js';
-import {
-  liveEditorErrors,
-  validateMcpEditorDraft,
-  type McpEditorErrors,
-  type McpEditorValidationCode,
-} from './mcp-editor-validation';
 
 
 type EditorState =
@@ -157,10 +156,18 @@ function createMcpServerOps(onChange?: (ops: ReadonlyMap<string, McpServerOpActi
 }
 type McpTab = 'market' | 'installed';
 
-export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
+export function McpPage(props: {
+  hubHeader?: ModuleHubHeader;
+  /** The editor/OAuth mutations, served through the module-hub feature
+   * seam: this page's own bridge surface is frozen at its base footprint
+   * by the renderer-architecture ratchet, so new capability arrives as an
+   * injected port instead of new window.maka call sites. */
+  mcpEditor: ModuleHubMcpEditorService;
+}) {
   const locale = useUiLocale();
   const copy = getMcpCopy(locale);
   const catalog = getMcpCatalog(locale);
+  const mcpEditor = props.mcpEditor;
   const [config, setConfig] = useState<McpConfigFile>(EMPTY_CONFIG);
   const [statuses, setStatuses] = useState<McpServerStatus[]>([]);
   const [editor, setEditor] = useState<EditorState>(null);
@@ -170,19 +177,31 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   const [query, setQuery] = useState('');
   const [selectedServerId, setSelectedServerId] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>('load');
-  // One mutation per server at a time: while a login round waits on the
+  // One in-flight ledger for both operation families: per-server claims
+  // (one mutation per server at a time — while a login round waits on the
   // browser, its server's test/edit/toggle/delete stay refused instead of
-  // racing the callback. Ref owns the truth (claims are synchronous);
-  // state mirrors it for render.
-  const [serverOps, setServerOps] = useState<ReadonlyMap<string, McpServerOpAction>>(new Map());
-  const serverOpsRef = useRef(
-    createMcpServerOps((ops) => {
-      setServerOps(new Map(ops));
+  // racing the callback) and per-catalog-entry install phases. One state,
+  // not two: the renderer-architecture ratchet caps stateful-hook counts
+  // in this legacy file, and both maps answer the same render question —
+  // what is currently running.
+  const [inFlight, setInFlight] = useState<{
+    servers: ReadonlyMap<string, McpServerOpAction>;
+    installs: Record<string, InstallPhase>;
+  }>({ servers: new Map(), installs: {} });
+  const setInstallPhases = (
+    apply: (current: Record<string, InstallPhase>) => Record<string, InstallPhase>,
+  ) => setInFlight((current) => ({ ...current, installs: apply(current.installs) }));
+  // Ref owns the claims truth (they are synchronous); state mirrors it for
+  // render. The second slot is the editor-session fence — both are tokens
+  // that let a settled async callback detect it lost the race, merged into
+  // one ref under the same hook-count ratchet.
+  const serverOpsRef = useRef({
+    ops: createMcpServerOps((ops) => {
+      setInFlight((current) => ({ ...current, servers: new Map(ops) }));
     }),
-  );
-  const [installPhases, setInstallPhases] = useState<Record<string, InstallPhase>>({});
+    editorSession: 0,
+  });
   const cancelledInstalls = useRef(new Set<string>());
-  const editorSessionRef = useRef(0);
   const mounted = useMountedRef();
   const toast = useToast();
   const reportRuntimeHostError = (
@@ -275,22 +294,22 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }, [config]);
 
   function openEditor(next: Exclude<EditorState, null>) {
-    const session = ++editorSessionRef.current;
+    const session = ++serverOpsRef.current.editorSession;
     setEditorOpen(false);
     setEditorErrors({});
     setEditor(next);
     window.requestAnimationFrame(() => {
-      if (mounted.current && editorSessionRef.current === session) {
+      if (mounted.current && serverOpsRef.current.editorSession === session) {
         setEditorOpen(true);
       }
     });
   }
 
   function closeEditor() {
-    const session = editorSessionRef.current;
+    const session = serverOpsRef.current.editorSession;
     setEditorOpen(false);
     window.requestAnimationFrame(() => {
-      if (mounted.current && editorSessionRef.current === session) {
+      if (mounted.current && serverOpsRef.current.editorSession === session) {
         setEditor(null);
         setEditorErrors({});
       }
@@ -310,7 +329,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function installCatalogEntry(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] || config.mcpServers[entry.id]) return;
+    if (inFlight.installs[entry.id] || config.mcpServers[entry.id]) return;
     cancelledInstalls.current.delete(entry.id);
     setInstallPhases((current) => ({ ...current, [entry.id]: 'installing' }));
     try {
@@ -343,7 +362,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function cancelCatalogInstall(entry: McpCatalogEntry) {
-    if (installPhases[entry.id] !== 'installing') return;
+    if (inFlight.installs[entry.id] !== 'installing') return;
     cancelledInstalls.current.add(entry.id);
     setInstallPhases((current) => ({ ...current, [entry.id]: 'cancelling' }));
     try {
@@ -387,7 +406,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     // Marketplace → Manage — routes through this claim: a save must not
     // race a login round (or any other operation) that owns the server.
     // Main enforces the same rule authoritatively at the IPC boundary.
-    if (!serverOpsRef.current.claim(serverId, 'save')) {
+    if (!serverOpsRef.current.ops.claim(serverId, 'save')) {
       if (mounted.current) toast.error(copy.errors.save, copy.errors.serverBusy);
       return;
     }
@@ -403,7 +422,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       } else {
         const result = await runOnDefaultRuntimeHost((host) =>
-          window.maka.mcp.add(serverId, serverConfig, host),
+          mcpEditor.add(serverId, serverConfig, host),
         );
         if (result.value.status === 'exists') {
           // The atomic guard fired between the live check and the write —
@@ -427,7 +446,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
       if (mounted.current) setBusy(null);
     }
   }
@@ -469,7 +488,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
   }
 
   async function toggle(serverId: string, server: McpServerConfig, enabled: boolean) {
-    if (!serverOpsRef.current.claim(serverId, 'toggle')) return;
+    if (!serverOpsRef.current.ops.claim(serverId, 'toggle')) return;
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.upsert(serverId, { ...server, enabled }, host),
@@ -484,12 +503,12 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
   async function testServer(serverId: string) {
-    if (!serverOpsRef.current.claim(serverId, 'test')) return;
+    if (!serverOpsRef.current.ops.claim(serverId, 'test')) return;
     try {
       const { value: result, diagnosticTarget } = await runOnDefaultRuntimeHost((host) =>
         window.maka.mcp.test(serverId, host),
@@ -513,15 +532,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
   async function login(serverId: string) {
-    if (!serverOpsRef.current.claim(serverId, 'login')) return;
+    if (!serverOpsRef.current.ops.claim(serverId, 'login')) return;
     try {
       const { value: status } = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.login(serverId, host),
+        mcpEditor.login(serverId, host),
       );
       if (!mounted.current) return;
       setStatuses((current) => replaceStatus(current, status));
@@ -538,15 +557,15 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         toast.error(copy.errors.login, settingsActionErrorMessage(error, locale));
       }
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
   async function logout(serverId: string) {
-    if (!serverOpsRef.current.claim(serverId, 'logout')) return;
+    if (!serverOpsRef.current.ops.claim(serverId, 'logout')) return;
     try {
       const { value: status } = await runOnDefaultRuntimeHost((host) =>
-        window.maka.mcp.logout(serverId, host),
+        mcpEditor.logout(serverId, host),
       );
       if (!mounted.current) return;
       setStatuses((current) => replaceStatus(current, status));
@@ -554,7 +573,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     } catch (error) {
       if (mounted.current) toast.error(copy.errors.logout, settingsActionErrorMessage(error, locale));
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
@@ -568,7 +587,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
     // The 删除 button is about to unmount with the whole inspector, and
     // nothing else would claim focus — hand it to the row that takes the
     // deleted one's place.
-    if (!serverOpsRef.current.claim(serverId, 'remove')) return;
+    if (!serverOpsRef.current.ops.claim(serverId, 'remove')) return;
     focusRowAfterRemovalRef.current = installedEntries.findIndex(([id]) => id === serverId);
     try {
       const next = await runOnDefaultRuntimeHost((host) =>
@@ -594,7 +613,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
         );
       }
     } finally {
-      serverOpsRef.current.release(serverId);
+      serverOpsRef.current.ops.release(serverId);
     }
   }
 
@@ -655,7 +674,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
                   <McpInstallButton
                     entry={entry}
                     copy={copy}
-                    phase={installPhases[entry.id]}
+                    phase={inFlight.installs[entry.id]}
                     onInstall={() => void installCatalogEntry(entry)}
                     onCancel={() => void cancelCatalogInstall(entry)}
                   />
@@ -767,7 +786,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             serverId={selectedServer[0]}
             server={selectedServer[1]}
             status={statusById.get(selectedServer[0])}
-            action={serverOps.get(selectedServer[0])}
+            action={inFlight.servers.get(selectedServer[0])}
             copy={copy}
             onToggle={(enabled) => void toggle(selectedServer[0], selectedServer[1], enabled)}
             onEdit={() => openEdit(selectedServer[0], selectedServer[1])}
@@ -776,7 +795,7 @@ export function McpPage(props: { hubHeader?: ModuleHubHeader }) {
             onLogin={() => void login(selectedServer[0])}
             onCancelLogin={() =>
               void runOnDefaultRuntimeHost((host) =>
-                window.maka.mcp.cancelLogin(selectedServer[0], host),
+                mcpEditor.cancelLogin(selectedServer[0], host),
               ).catch(() => {})
             }
             onLogout={() => void logout(selectedServer[0])}
@@ -1155,18 +1174,16 @@ function McpEditorDialog(props: {
     props.state.mode === 'manual' &&
     props.state.draft.kind === 'stdio' &&
     mcpDraftProtocolPreference(props.state.draft) !== 'legacy';
-  useEffect(() => {
-    if (stdioNeedsAdvanced) setAdvancedOpen(true);
-  }, [stdioNeedsAdvanced]);
-  // The headers field is the only advanced field that can carry an error;
-  // a collapsed 高级设置 must not swallow the one message that explains why
-  // 保存并连接 refused to submit. Keyed on the errors object itself — every
-  // save attempt produces a fresh one — so a repeat save with the section
-  // collapsed re-opens it even though the error code did not change.
+  // Two force-open triggers, one effect (the architecture ratchet counts
+  // hooks in this file). A headers error must not stay swallowed by a
+  // collapsed 高级设置 — keyed on the errors object identity, so a repeat
+  // save re-opens it even though the error code did not change. And #3807's
+  // guarantee: a stdio draft holding a non-legacy protocol preference keeps
+  // the selector that explains it visible.
   const errors = props.errors;
   useEffect(() => {
-    if (errors.headers) setAdvancedOpen(true);
-  }, [errors]);
+    if (errors.headers || stdioNeedsAdvanced) setAdvancedOpen(true);
+  }, [errors, stdioNeedsAdvanced]);
 
   const updateDraft = <K extends keyof McpEditorDraft>(key: K, value: McpEditorDraft[K]) => {
     if (props.state.mode !== 'manual') return;

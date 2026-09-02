@@ -29,7 +29,7 @@ type DesktopModuleHubSettingsBridge = Partial<
 
 export type DesktopModuleHubBridge = Pick<
   MakaBridge,
-  'dailyReview' | 'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
+  'dailyReview' | 'mcp' | 'runtimeHostProfiles' | 'scheduledTasks' | 'skills'
 > & {
   /** Optional at runtime so a renderer can coexist with an older preload. */
   readonly settings?: DesktopModuleHubSettingsBridge;
@@ -149,6 +149,12 @@ export function createDesktopModuleHubServices(
         const clipboard = dependencies.clipboard ?? navigator.clipboard;
         return clipboard.writeText(text);
       },
+    },
+    mcpEditor: {
+      add: (serverId, config, host) => bridge.mcp.add(serverId, config, host),
+      login: (serverId, host) => bridge.mcp.login(serverId, host),
+      logout: (serverId, host) => bridge.mcp.logout(serverId, host),
+      cancelLogin: (serverId, host) => bridge.mcp.cancelLogin(serverId, host),
     },
   };
 }
