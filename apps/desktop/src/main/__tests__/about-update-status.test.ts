@@ -45,20 +45,9 @@ test('buildMode decides before updateChannel, whose dev value is a placeholder',
   assert.equal(facts.summary, '本地开发构建，不检查更新。');
 });
 
-test('a dev build reports why it never updates, whatever the updater says', () => {
-  assert.equal(
-    aboutUpdateStatusDetail(
-      { state: 'downloaded', currentVersion: '0.2.0', latestVersion: '0.2.1' },
-      copy,
-      { isDevBuild: true },
-    ),
-    copy.updateDevBuildHelp,
-  );
-});
-
 test('the nightly steady states each read as themselves', () => {
   const detail = (status: Parameters<typeof aboutUpdateStatusDetail>[0]) =>
-    aboutUpdateStatusDetail(status, copy, { isDevBuild: false });
+    aboutUpdateStatusDetail(status, copy);
 
   assert.equal(
     detail({

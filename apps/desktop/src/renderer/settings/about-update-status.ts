@@ -59,13 +59,17 @@ export function aboutChannelFacts(
   };
 }
 
-/** Map updater state to About-page detail copy (pure for unit tests). */
+/**
+ * Map updater state to About-page detail copy (pure for unit tests).
+ *
+ * There is no dev-build branch: a dev checkout renders no status line at all,
+ * so the "development builds do not check GitHub releases" sentence this used
+ * to return would only have restated the channel sentence above it.
+ */
 export function aboutUpdateStatusDetail(
   status: AppUpdateStatus | null,
   copy: AboutCopy,
-  options: { readonly isDevBuild: boolean },
 ): string {
-  if (options.isDevBuild) return copy.updateDevBuildHelp;
   if (!status || status.state === 'idle') return copy.updateIdle;
   if (status.state === 'checking') return copy.checkingForUpdates;
   if (status.state === 'not-available') return copy.updateNotAvailable;

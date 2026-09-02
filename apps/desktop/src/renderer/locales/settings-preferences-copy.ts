@@ -246,7 +246,6 @@ export type SettingsPreferencesCopy = {
     reportIssueLabel: string;
     checkForUpdates: string;
     checkingForUpdates: string;
-    updateDevBuildHelp: string;
     updateIdle: string;
     updateNotAvailable: string;
     updateAvailable: (version: string) => string;
@@ -350,13 +349,12 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
         release: '正式发布版，自动接收稳定更新。',
       },
       supportTitle: '支持',
-      copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台与近期脱敏日志；仅写入剪贴板，不会自动上传。',
+      copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
       reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
       keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
       privacyLabel: '隐私承诺', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
       checkForUpdates: '检查更新',
       checkingForUpdates: '检查中…',
-      updateDevBuildHelp: '本地开发版不检查 GitHub 发布更新。请使用正式安装包。',
       updateIdle: '尚未检查更新。',
       updateNotAvailable: '已是最新版本。',
       updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
@@ -412,13 +410,12 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
         release: 'The official release build. It receives stable updates automatically.',
       },
       supportTitle: 'Support',
-      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
+      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
       reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
       keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
       privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
       checkForUpdates: 'Check for updates',
       checkingForUpdates: 'Checking…',
-      updateDevBuildHelp: 'Development builds do not check GitHub releases. Use a packaged install.',
       updateIdle: 'No update check has run yet.',
       updateNotAvailable: 'You are on the latest version.',
       updateAvailable: (version) => `Version v${version} is available and will download shortly…`,

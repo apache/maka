@@ -855,14 +855,11 @@ const makaBridge = {
       electronVersion: '33.2.0',
       nodeVersion: '20.18.0',
       chromeVersion: '130.0.6723.59',
-      // #1363: was missing entirely — the About and Data pages' 工作区路径
-      // rows rendered an EMPTY value in every story. Deliberately long and
-      // deep so the mono value exercises its wrap contract.
+      // #1363: was missing entirely — the 数据 page's 工作区路径 row rendered
+      // an EMPTY value in every story. Deliberately long and deep so the mono
+      // value exercises its wrap contract.
       workspacePath:
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
-      // The prefix About collapses to `~`. Without it the story showed the
-      // absolute path, which is not what any user sees.
-      homePath: '/Users/storybook-fixture-user',
     }),
     openPath: async () => ({ ok: true as const, opened: '/Users/storybook' }),
     // The 外观 page mounts the app-icon picker as soon as it opens. Without

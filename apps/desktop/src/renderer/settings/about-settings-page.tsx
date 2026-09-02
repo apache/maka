@@ -173,7 +173,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       <SettingsSection variant="bare">
         <VStack gap={4}>
           <VStack gap={2}>
-            <HStack gap={2} vAlign="center" wrap="wrap">
+            <HStack gap={2} vAlign="center">
               <Heading level={2}>Maka</Heading>
               {/* Release installs carry no token: they are the default state,
                   and Astryx keeps colour for what departs from it. */}
@@ -188,21 +188,28 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
             </Text>
             <Text type="body">{channel.summary}</Text>
           </VStack>
-          {/* The status line says what the button would tell you, so it carries
+          {/* A dev checkout follows no feed, so it gets no status line at all:
+              its channel sentence above already says it does not update, and
+              the updater's own dev copy said the same thing a second time in
+              the next paragraph. The row exists only where it can act.
+
+              The status line says what the button would tell you, so it carries
               no label of its own. It wraps rather than crushes: at the 480px
               window floor the sentence needs the full width. */}
-          <HStack gap={3} justify="between" align="start" wrap="wrap">
-            <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy, { isDevBuild })}</Text>
-            <Button
-              variant="secondary"
-              size="sm"
-              isDisabled={checkingUpdate || isDevBuild}
-              onClick={() => void checkForUpdates()}
-              label={checkingUpdate || updateStatus?.state === 'checking'
-                ? copy.checkingForUpdates
-                : copy.checkForUpdates}
-            />
-          </HStack>
+          {isDevBuild ? null : (
+            <HStack gap={3} justify="between" wrap="wrap">
+              <Text type="body">{aboutUpdateStatusDetail(updateStatus, copy)}</Text>
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={checkingUpdate}
+                onClick={() => void checkForUpdates()}
+                label={checkingUpdate || updateStatus?.state === 'checking'
+                  ? copy.checkingForUpdates
+                  : copy.checkForUpdates}
+              />
+            </HStack>
+          )}
         </VStack>
       </SettingsSection>
     );
@@ -222,12 +229,16 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           label={copy.copyDiagnostics}
           description={copy.copyHelp}
           end={(
+            /* The verb on the face ("复制") is not a name; the row's label is.
+               `Item` puts the row label in a sibling element, so each control
+               carries its own aria-label instead of borrowing one. */
             <HStack gap={2} vAlign="center">
               <Button
                 variant="ghost"
                 size="sm"
                 isDisabled={copyingDiagnostics}
                 onClick={() => void copyDiagnostics()}
+                aria-label={copy.copyDiagnostics}
                 label={copyingDiagnostics ? copy.copying : copy.copyAction}
               />
               <Kbd keys="mod+shift+d" />
@@ -238,7 +249,12 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
           label={copy.reportIssueLabel}
           description={copy.reportIssueHelp}
           end={(
-            <Link href={ISSUE_TRACKER_URL} target="_blank" rel="noreferrer noopener">
+            <Link
+              href={ISSUE_TRACKER_URL}
+              target="_blank"
+              rel="noreferrer noopener"
+              aria-label={copy.reportIssueLabel}
+            >
               {copy.reportIssueOpen}
             </Link>
           )}
@@ -252,6 +268,7 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
                 variant="ghost"
                 size="sm"
                 onClick={props.onOpenKeyboardHelp}
+                aria-label={copy.keyboardShortcuts}
                 label={copy.keyboardShortcutsOpen}
               />
             )}
