@@ -203,17 +203,17 @@ export class ClientCapabilityInvocationBroker<
       onProgress,
       requestInteraction,
       (invocationId) => ({
-      kind: 'client.capability.call',
-      invocationId,
-      registrationId: registration.registrationId,
-      offerId: binding.offerId,
-      serverId: binding.descriptor.serverId,
-      toolName: binding.descriptor.name,
-      arguments: args,
-      sessionId: context.sessionId,
-      turnId: context.turnId,
-      toolCallId: context.toolCallId,
-      ...(binding.hostPathAccess === 'cwd' ? { cwd: context.cwd } : {}),
+        kind: 'client.capability.call',
+        invocationId,
+        registrationId: registration.registrationId,
+        offerId: binding.offerId,
+        serverId: binding.descriptor.serverId,
+        toolName: binding.descriptor.name,
+        arguments: args,
+        sessionId: context.sessionId,
+        turnId: context.turnId,
+        toolCallId: context.toolCallId,
+        ...(binding.hostPathAccess === 'cwd' ? { cwd: context.cwd } : {}),
       }),
     );
   }
@@ -617,8 +617,7 @@ export class ClientCapabilityInvocationBroker<
     request: InteractionFormInput,
   ): void {
     if (
-      (invocation.phase !== 'admitted' &&
-        invocation.phase !== 'delivering_interaction_result') ||
+      (invocation.phase !== 'admitted' && invocation.phase !== 'delivering_interaction_result') ||
       invocation.interaction
     ) {
       if (invocation.interaction) {

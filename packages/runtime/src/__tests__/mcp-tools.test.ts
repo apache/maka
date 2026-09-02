@@ -160,13 +160,16 @@ test('prepared MCP execution receives the Runtime-owned form callback after admi
   const [tool] = buildMcpTools(provider);
   assert.ok(tool?.prepareExecution);
   const controller = new AbortController();
-  const prepared = await tool.prepareExecution({}, {
-    sessionId: 'session',
-    turnId: 'turn',
-    cwd: '/workspace',
-    toolCallId: 'tool-call',
-    abortSignal: controller.signal,
-  });
+  const prepared = await tool.prepareExecution(
+    {},
+    {
+      sessionId: 'session',
+      turnId: 'turn',
+      cwd: '/workspace',
+      toolCallId: 'tool-call',
+      abortSignal: controller.signal,
+    },
+  );
   await prepared.execute({
     sessionId: 'session',
     turnId: 'turn',

@@ -1938,26 +1938,29 @@ test('close waits for nested Client Capability interaction cleanup', async () =>
   const snapshot = coordinator.snapshotForSession('session-a');
   assert.ok(snapshot);
   const call = Promise.resolve(
-    snapshot.tools[0]!.impl({}, {
-      sessionId: 'session-a',
-      turnId: 'turn-a',
-      cwd: '/tmp',
-      toolCallId: 'tool-call-a',
-      abortSignal: new AbortController().signal,
-      emitOutput: () => undefined,
-      requestUserForm: async (_form, options) => {
-        interactionStarted();
-        const signal = options?.cancellationSignal;
-        assert.ok(signal);
-        if (!signal.aborted) {
-          await new Promise<void>((resolve) =>
-            signal.addEventListener('abort', () => resolve(), { once: true }),
-          );
-        }
-        await cleanup;
-        throw signal.reason;
+    snapshot.tools[0]!.impl(
+      {},
+      {
+        sessionId: 'session-a',
+        turnId: 'turn-a',
+        cwd: '/tmp',
+        toolCallId: 'tool-call-a',
+        abortSignal: new AbortController().signal,
+        emitOutput: () => undefined,
+        requestUserForm: async (_form, options) => {
+          interactionStarted();
+          const signal = options?.cancellationSignal;
+          assert.ok(signal);
+          if (!signal.aborted) {
+            await new Promise<void>((resolve) =>
+              signal.addEventListener('abort', () => resolve(), { once: true }),
+            );
+          }
+          await cleanup;
+          throw signal.reason;
+        },
       },
-    }),
+    ),
   );
   void call.catch(() => undefined);
   await started;
