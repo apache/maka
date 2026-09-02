@@ -18,16 +18,24 @@
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
+import { isDeepStrictEqual } from 'node:util';
 import type { IpcMain } from 'electron';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
-import type {
-  ConnectionCatalogEntry,
-  CredentialLocator,
+import {
+  canonicalConnectionEffectiveBaseUrl,
+  connectionCredentialTarget,
+  type ConnectionCatalogEntry,
+  type ConnectionCredentialTarget,
+  type CredentialLocator,
+  type NetworkProxyCredentialTarget,
+  normalizeNetworkProxyCredentialTarget,
 } from '@maka/core/runtime-policy';
+import { networkProxyCredentialTarget } from '@maka/core/settings';
 import {
   applyConfigImport,
+  matchesCredentialConnection,
   type ConfigTransferDeps,
   type ExportedCredential,
 } from './config-transfer-service.js';
@@ -44,11 +52,16 @@ import {
   stripSettingsSecretsForExport,
 } from './settings-ipc-helpers.js';
 import {
+  runRuntimeHostSettingsExclusive,
+  type RuntimeHostSettingsModule,
+} from './runtime-host-settings-ipc-main.js';
+import {
   buildConfigBundle,
   isConfigCategory,
   parseConfigBundle,
   serializeConfigBundle,
   type ConfigCategory,
+  type ConfigBundle,
   type ConfigData,
   type ConnectionConflictStrategy,
 } from '@maka/storage/config-transfer';
@@ -58,11 +71,21 @@ interface RuntimeHostConfigIpcDeps {
   readonly client: DesktopRuntimeHostClient;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly appVersion: string;
-  readonly getSettings: () => Promise<AppSettings>;
-  readonly updateSettings: (
-    patch: UpdateAppSettingsInput,
-  ) => Promise<AppSettings>;
+  readonly settingsModule: RuntimeHostSettingsModule;
   readonly emitConnectionsChanged: () => void;
+}
+
+interface RuntimeHostConfigGatherDeps {
+  readonly client: DesktopRuntimeHostClient;
+  readonly appVersion: string;
+  readonly getSettings: () => Promise<AppSettings>;
+}
+
+interface RuntimeHostConfigTransferDeps {
+  readonly client: DesktopRuntimeHostClient;
+  readonly updateSettingsForConfigImport: (
+    patch: UpdateAppSettingsInput,
+  ) => Promise<{ skippedCredentials: number }>;
 }
 
 export function registerRuntimeHostConfigIpc(
@@ -75,7 +98,6 @@ export function registerRuntimeHostConfigIpc(
       if (categories.length === 0) {
         return { ok: false as const, reason: 'no_categories' as const };
       }
-      const bundle = await gatherRuntimeHostConfig(categories, deps);
       const today = new Date().toISOString().slice(0, 10);
       const result = await deps.mainWindowController.showSaveDialog({
         title: '导出 Maka 配置',
@@ -85,6 +107,15 @@ export function registerRuntimeHostConfigIpc(
       if (result.canceled || !result.filePath) {
         return { ok: false as const, reason: 'canceled' as const };
       }
+      const bundle = await runRuntimeHostSettingsExclusive(
+        deps.settingsModule,
+        (settings) =>
+          gatherRuntimeHostConfig(categories, {
+            client: deps.client,
+            appVersion: deps.appVersion,
+            getSettings: settings.get,
+          }),
+      );
       await writeFile(result.filePath, serializeConfigBundle(bundle), 'utf8');
       return {
         ok: true as const,
@@ -114,10 +145,29 @@ export function registerRuntimeHostConfigIpc(
           message: parsed.message,
         };
       }
-      const imported = await applyConfigImport(
-        parsed.bundle,
-        sanitizeStrategy(input?.strategy),
-        runtimeHostTransferDeps(deps),
+      let importBundle: ConfigBundle;
+      try {
+        importBundle = adaptRuntimeHostConfigImport(parsed.bundle);
+      } catch (error) {
+        return {
+          ok: false as const,
+          reason: 'malformed' as const,
+          message: error instanceof Error ? error.message : 'Invalid settings payload.',
+        };
+      }
+      const imported = await runRuntimeHostSettingsExclusive(
+        deps.settingsModule,
+        (settings) =>
+          applyConfigImport(
+            importBundle,
+            sanitizeStrategy(input?.strategy),
+            runtimeHostTransferDeps(
+              {
+                client: deps.client,
+                updateSettingsForConfigImport: settings.updateForConfigImport,
+              },
+            ),
+          ),
       );
       deps.emitConnectionsChanged();
       return {
@@ -131,18 +181,51 @@ export function registerRuntimeHostConfigIpc(
 
 export async function gatherRuntimeHostConfig(
   categories: readonly ConfigCategory[],
-  deps: RuntimeHostConfigIpcDeps,
+  deps: RuntimeHostConfigGatherDeps,
 ) {
   const selected = new Set(categories);
   const data: ConfigData = {};
-  const catalog =
-    selected.has('connections') || selected.has('credentials')
-      ? await deps.client.loadConnectionCatalog()
-      : undefined;
-  const locators = selected.has('credentials')
-    ? exportLocators(catalog?.connections ?? [])
-    : [];
-  const exported = await exportConfigurationCredentials(deps.client, locators);
+  let catalog = selected.has('connections') && !selected.has('credentials')
+    ? await deps.client.loadConnectionCatalog()
+    : undefined;
+  let exported: Awaited<ReturnType<typeof exportConfigurationCredentials>> = {
+    credentials: [],
+    connectionStale: false,
+    proxyTarget: undefined,
+  };
+  let settings: AppSettings | undefined;
+  if (selected.has('credentials')) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      catalog = await deps.client.loadConnectionCatalog();
+      exported = await exportConfigurationCredentials(
+        deps.client,
+        exportLocators(catalog.connections),
+      );
+      if (exported.connectionStale) {
+        if (attempt === 2) {
+          throw new Error('Connection targets kept changing while credentials were exported');
+        }
+        continue;
+      }
+      if (
+        selected.has('settings') &&
+        exported.proxyTarget &&
+        !isDeepStrictEqual(
+          exported.proxyTarget,
+          networkProxyCredentialTarget((settings = await deps.getSettings()).network.proxy),
+        )
+      ) {
+        if (attempt === 2) {
+          throw new Error('Proxy target kept changing while credentials were exported');
+        }
+        continue;
+      }
+      if (selected.has('settings') && !settings) settings = await deps.getSettings();
+      break;
+    }
+  } else if (selected.has('settings')) {
+    settings = await deps.getSettings();
+  }
   const secrets = new Map(
     exported.credentials.map((entry) => [locatorKey(entry.locator), entry.secret]),
   );
@@ -150,11 +233,17 @@ export async function gatherRuntimeHostConfig(
   if (selected.has('connections') && catalog) {
     data.connections = projectHostConnections(catalog);
   }
+  // Schema v1 stores the network-proxy password and Tavily key in the
+  // settings payload. Keep a credentials-only request lossless by making the
+  // dependency explicit in the generated bundle.
   if (selected.has('settings')) {
-    const settings = await deps.getSettings();
+    if (!settings) throw new Error('Settings snapshot was not gathered');
     data.settings = selected.has('credentials')
       ? restoreHostSettingsSecrets(settings, secrets)
       : stripSettingsSecretsForExport(settings);
+  } else if (selected.has('credentials')) {
+    const settingsSecrets = projectHostSettingsSecrets(exported.proxyTarget, secrets);
+    if (settingsSecrets) data.settings = settingsSecrets;
   }
   if (selected.has('credentials') && catalog) {
     data.credentials = connectionCredentials(catalog.connections, secrets);
@@ -167,23 +256,48 @@ export async function gatherRuntimeHostConfig(
 
 async function exportConfigurationCredentials(
   client: DesktopRuntimeHostClient,
-  locators: readonly CredentialLocator[],
+  requests: readonly CredentialExportRequest[],
 ) {
-  const credentials: Array<{ locator: CredentialLocator; secret: string }> = [];
-  for (const locator of locators) {
-    const exported = await client.exportConfigurationCredentials({ locator });
+  const credentials: Array<{
+    locator: CredentialLocator;
+    secret: string;
+    proxyTarget?: NetworkProxyCredentialTarget;
+  }> = [];
+  let proxyTarget: NetworkProxyCredentialTarget | undefined;
+  for (const request of requests) {
+    const exported = await client.exportConfigurationCredentials(request);
+    if (exported.connectionStale) {
+      return { credentials: [], connectionStale: true, proxyTarget: undefined };
+    }
     if (exported.credential) {
+      if (
+        exported.credential.locator.scope === 'network_proxy' &&
+        !exported.credential.proxyTarget
+      ) {
+        throw new Error('Runtime Host omitted the proxy credential target binding');
+      }
+      if (exported.credential.proxyTarget) {
+        proxyTarget = exported.credential.proxyTarget;
+      }
       credentials.push({
         locator: exported.credential.locator,
         secret: Buffer.from(exported.credential.secretBase64, 'base64').toString('utf8'),
+        ...(exported.credential.proxyTarget === undefined
+          ? {}
+          : { proxyTarget: exported.credential.proxyTarget }),
       });
     }
   }
-  return { credentials };
+  return { credentials, connectionStale: false, proxyTarget };
+}
+
+interface CredentialExportRequest {
+  readonly locator: CredentialLocator;
+  readonly expectedConnection?: ConnectionCredentialTarget;
 }
 
 function runtimeHostTransferDeps(
-  deps: RuntimeHostConfigIpcDeps,
+  deps: RuntimeHostConfigTransferDeps,
 ): ConfigTransferDeps {
   return {
     connectionStore: {
@@ -192,11 +306,13 @@ function runtimeHostTransferDeps(
       save: (connection) => saveConnection(deps.client, connection),
     },
     settingsStore: {
-      update: deps.updateSettings,
+      update: async (patch) => {
+        const result = await deps.updateSettingsForConfigImport(patch);
+        return { skippedCredentials: result.skippedCredentials };
+      },
     },
     credentialStore: {
-      setSecret: (slug, kind, value) =>
-        saveConnectionCredential(deps.client, slug, kind, value),
+      setSecret: (entry) => saveConnectionCredential(deps.client, entry),
     },
     writeMemory: (content) =>
       replaceRuntimeHostMemoryDocument(deps.client, content),
@@ -267,38 +383,35 @@ export async function saveConnection(
 
 async function saveConnectionCredential(
   client: DesktopRuntimeHostClient,
-  slug: string,
-  kind: string,
-  value: string,
-): Promise<void> {
+  entry: ExportedCredential,
+): Promise<boolean> {
   const catalog = await client.loadConnectionCatalog();
-  const connection = catalog.connections.find((item) => item.slug === slug);
-  if (!connection) throw new Error(`Imported Connection not found: ${slug}`);
+  const connection = catalog.connections.find((item) => item.slug === entry.slug);
+  if (!connection || !matchesCredentialConnection(entry.connection, connection)) return false;
   const locator =
-    kind === 'request_headers'
+    entry.kind === 'request_headers'
       ? ({
           scope: 'connection',
           connectionId: connection.connectionId,
           kind: 'request_headers',
         } as const)
       : connectionCredentialLocator(connection);
-  if (!locator || locator.kind !== kind) return;
+  if (!locator || locator.kind !== entry.kind) return false;
   const current = await client.queryCredential(locator);
   const saved = await client.setCredential({
     locator,
     expected: current?.configured
       ? { credentialId: current.credentialId, revision: current.revision }
       : null,
-    secret: value,
+    expectedConnection: connectionCredentialTarget(connection),
+    secret: entry.value,
   });
-  if (saved.kind !== 'committed') {
-    throw new Error(`Unable to save imported Connection credential: ${saved.kind}`);
-  }
+  return saved.kind === 'committed';
 }
 
 function exportLocators(
   connections: readonly ConnectionCatalogEntry[],
-): CredentialLocator[] {
+): CredentialExportRequest[] {
   return [
     ...connections.flatMap((connection) => {
       const locator = connectionCredentialLocator(connection);
@@ -307,10 +420,16 @@ function exportLocators(
         connectionId: connection.connectionId,
         kind: 'request_headers',
       } as const;
-      return locator ? [locator, requestHeaders] : [requestHeaders];
+      const expectedConnection = connectionCredentialTarget(connection);
+      return (locator ? [locator, requestHeaders] : [requestHeaders]).map(
+        (connectionLocator) => ({
+          locator: connectionLocator,
+          expectedConnection,
+        }),
+      );
     }),
-    { scope: 'network_proxy', kind: 'password' },
-    { scope: 'web_search', provider: 'tavily', kind: 'api_key' },
+    { locator: { scope: 'network_proxy', kind: 'password' } },
+    { locator: { scope: 'web_search', provider: 'tavily', kind: 'api_key' } },
   ];
 }
 
@@ -328,27 +447,54 @@ function connectionCredentials(
     } as const;
     const requestHeaders = secrets.get(locatorKey(requestHeadersLocator));
     return [
-      ...(locator && secret ? [{ slug: connection.slug, kind: locator.kind, value: secret }] : []),
+      ...(locator && secret
+        ? [{
+            slug: connection.slug,
+            kind: locator.kind,
+            value: secret,
+            connection: credentialConnectionBinding(connection),
+          }]
+        : []),
       ...(requestHeaders
-        ? [{ slug: connection.slug, kind: 'request_headers' as const, value: requestHeaders }]
+        ? [{
+            slug: connection.slug,
+            kind: 'request_headers' as const,
+            value: requestHeaders,
+            connection: credentialConnectionBinding(connection),
+          }]
         : []),
     ];
   });
 }
 
+function credentialConnectionBinding(
+  connection: ConnectionCatalogEntry,
+): NonNullable<ExportedCredential['connection']> {
+  return {
+    providerType: connection.providerType,
+    effectiveBaseUrl: canonicalConnectionEffectiveBaseUrl(connection),
+  };
+}
+
 function restoreHostSettingsSecrets(
   settings: AppSettings,
   secrets: ReadonlyMap<string, string>,
-): AppSettings {
+): Record<string, unknown> {
   const proxy = secrets.get(locatorKey({ scope: 'network_proxy', kind: 'password' })) ?? '';
   const webSearch =
     secrets.get(
       locatorKey({ scope: 'web_search', provider: 'tavily', kind: 'api_key' }),
     ) ?? '';
+  const {
+    passwordConfigured: _passwordConfigured,
+    ...proxySettings
+  } = settings.network.proxy as typeof settings.network.proxy & {
+    passwordConfigured?: boolean;
+  };
   return {
     ...settings,
     network: {
-      proxy: { ...settings.network.proxy, password: proxy },
+      proxy: { ...proxySettings, password: proxy },
     },
     webSearch: {
       ...settings.webSearch,
@@ -360,6 +506,130 @@ function restoreHostSettingsSecrets(
       },
     },
   };
+}
+
+function projectHostSettingsSecrets(
+  proxyTarget: NetworkProxyCredentialTarget | undefined,
+  secrets: ReadonlyMap<string, string>,
+): Record<string, unknown> | undefined {
+  const proxy = secrets.get(
+    locatorKey({ scope: 'network_proxy', kind: 'password' }),
+  );
+  const tavily = secrets.get(
+    locatorKey({ scope: 'web_search', provider: 'tavily', kind: 'api_key' }),
+  );
+  if (proxy === undefined && tavily === undefined) return undefined;
+
+  return {
+    ...(proxy === undefined || proxyTarget === undefined
+      ? {}
+      : {
+          network: {
+            proxy: {
+              password: proxy,
+              credentialTarget: proxyTarget,
+            },
+          },
+        }),
+    ...(tavily === undefined
+      ? {}
+      : {
+          webSearch: {
+            providers: {
+              tavily: { apiKey: tavily },
+            },
+          },
+        }),
+  };
+}
+
+/** Convert schema-v1 wire secrets into the write-only Runtime Host contract. */
+export function adaptRuntimeHostConfigImport(bundle: ConfigBundle): ConfigBundle {
+  const settings = bundle.data.settings;
+  if (!isRecord(settings)) return bundle;
+  const network = settings.network;
+  if (!isRecord(network) || !isRecord(network.proxy)) return bundle;
+
+  const wireProxy = network.proxy;
+  const credentialTarget = wireProxy.credentialTarget;
+  const passwordPresent = Object.prototype.hasOwnProperty.call(
+    wireProxy,
+    'password',
+  );
+  const password = wireProxy.password;
+  const includesCredentials = bundle.includedData.includes('credentials');
+  if (
+    includesCredentials &&
+    passwordPresent &&
+    typeof password !== 'string'
+  ) {
+    throw new Error('Proxy password in imported settings must be a string.');
+  }
+  if (
+    includesCredentials &&
+    typeof password === 'string' &&
+    password.length > 0 &&
+    wireProxy.authEnabled === false
+  ) {
+    throw new Error(
+      'Cannot import a proxy password while proxy authentication is disabled.',
+    );
+  }
+  if (
+    includesCredentials &&
+    typeof password === 'string' &&
+    password.length > 0 &&
+    credentialTarget === undefined
+  ) {
+    throw new Error('Proxy password import requires a target binding.');
+  }
+
+  const {
+    password: _password,
+    passwordConfigured: _passwordConfigured,
+    credential: _credential,
+    credentialTarget: _credentialTarget,
+    ...ordinaryProxy
+  } = wireProxy;
+  const proxy = {
+    ...ordinaryProxy,
+    ...(includesCredentials && passwordPresent
+      ? {
+          credential:
+            (password as string).length === 0
+              ? ({ kind: 'delete' } as const)
+              : ({
+                  kind: 'replace',
+                  secret: password as string,
+                  ...(credentialTarget === undefined
+                    ? {}
+                    : {
+                        expectedTarget: normalizeNetworkProxyCredentialTarget(
+                          credentialTarget,
+                        ),
+                      }),
+                } as const),
+        }
+      : {}),
+  };
+
+  return {
+    ...bundle,
+    data: {
+      ...bundle.data,
+      settings: {
+        ...settings,
+        network: {
+          ...network,
+          proxy,
+        },
+      },
+    },
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function connectionCredentialLocator(

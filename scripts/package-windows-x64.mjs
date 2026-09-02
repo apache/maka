@@ -18,16 +18,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, copyFile, mkdir, readFile, rm } from 'node:fs/promises';
+import { access, copyFile, mkdir, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
-const releaseDirectory = join(desktopRoot, 'release');
 // electron is declared by apps/desktop, so resolve its install directory from
 // there rather than assuming node_modules hoisted it to the repo root. This
 // pre-flight guard exists to catch a missing electron dist before packaging;
@@ -105,15 +104,11 @@ export async function packageWindowsX64({
     throw new Error('Release packaging requires a Windows x64 host.');
   }
 
-  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const exePath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.exe`);
-  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-win-x64.zip`);
-  const updateMetadataPath = join(
-    releaseDirectory,
-    buildVersion === manifest.version ? 'latest.yml' : 'dev.yml',
-  );
-  const unpackedDirectory = join(releaseDirectory, 'win-unpacked');
+  const target = await resolveDesktopReleaseTarget('windows-x64', { environment: env });
+  const exePath = target.payloadPath('.exe');
+  const zipPath = target.payloadPath('.zip');
+  const updateMetadataPath = join(target.releaseDirectory, target.feed);
+  const unpackedDirectory = join(target.releaseDirectory, 'win-unpacked');
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);
@@ -128,7 +123,7 @@ export async function packageWindowsX64({
   await makeDirectory(sandboxResourceDirectory, { recursive: true });
   await copy(sandboxBinaryPath, sandboxResourcePath);
   await run('npm', ['run', 'check:release']);
-  await remove(releaseDirectory, { recursive: true, force: true });
+  await remove(target.releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:windows-x64']);
   await assertFile(exePath);
   await assertFile(zipPath);

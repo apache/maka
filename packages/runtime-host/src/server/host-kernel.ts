@@ -825,6 +825,7 @@ export class RuntimeHostKernel {
   }
 
   #statusSnapshot(): HostStatusResult {
+    const peer = this.peerListeners[0];
     return {
       hostEpoch: this.hostEpoch,
       compositionId: this.compositionDescriptor.id,
@@ -833,6 +834,15 @@ export class RuntimeHostKernel {
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,
+      ...(peer
+        ? {
+            peerEndpoint: {
+              peerId: peer.peerId,
+              routeHints: peer.listenAddresses,
+              coordinationRelays: peer.coordinationRelays,
+            },
+          }
+        : {}),
     };
   }
 
@@ -846,6 +856,10 @@ export class RuntimeHostKernel {
   }
 
   #hasUpgradeBlockingActivity(): boolean {
+    // The request's own accepted transport is expected. Any other live
+    // connection arrived after discovery or remained attached and therefore
+    // requires explicit interruption authority before retirement.
+    if (this.#acceptedTransports.size > 1) return true;
     if (this.#activeCommandOperations > 1) return true;
     return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
   }

@@ -27,6 +27,7 @@ import {
   type RelayModelProfile,
   type RelayModelProfiles,
   type SessionCatalogItem,
+  type SessionCatalogRevision,
   type SkillCatalogWorkspaceContext,
   type SkillCatalogInvocableItem,
   type SkillCatalogInvocableTarget,
@@ -79,6 +80,27 @@ export class RuntimeHostCatalogReadError extends Error {
   ) {
     super(`Runtime Host ${catalog} catalog read failed: ${reason}`);
     this.name = 'RuntimeHostCatalogReadError';
+  }
+}
+
+export interface RuntimeHostSessionCatalogPageCursor {
+  readonly revision: SessionCatalogRevision;
+  readonly cursor: string;
+}
+
+export interface RuntimeHostSessionCatalogPage {
+  readonly revision: SessionCatalogRevision;
+  readonly sessions: readonly SessionCatalogItem[];
+  readonly nextCursor: RuntimeHostSessionCatalogPageCursor | null;
+}
+
+export class RuntimeHostSessionCatalogRevisionChangedError extends Error {
+  constructor(
+    readonly expectedRevision: SessionCatalogRevision,
+    readonly actualRevision: SessionCatalogRevision,
+  ) {
+    super('Runtime Host Session catalog revision changed');
+    this.name = 'RuntimeHostSessionCatalogRevisionChangedError';
   }
 }
 
@@ -187,24 +209,52 @@ export async function readRuntimeHostInvocableSkills(
 export async function readRuntimeHostSessions(
   connection: RuntimeHostCatalogConnection,
 ): Promise<SessionCatalogItem[]> {
+  const readPageOrRestart = async (
+    cursor?: RuntimeHostSessionCatalogPageCursor,
+  ): Promise<RuntimeHostSessionCatalogPage | null> => {
+    try {
+      return await readRuntimeHostSessionCatalogPage(connection, cursor);
+    } catch (error) {
+      if (error instanceof RuntimeHostSessionCatalogRevisionChangedError) return null;
+      throw error;
+    }
+  };
   const { pages } = await collectStablePages(
     'session',
-    async () => {
-      const result = await connection.request('session.catalog.query', {
-        kind: 'list_start',
-      });
-      return result.kind === 'page' ? result : null;
-    },
-    async (revision, cursor) => {
-      const result = await connection.request('session.catalog.query', {
-        kind: 'list_continue',
-        revision,
-        cursor,
-      });
-      return result.kind === 'page' ? result : null;
-    },
+    () => readPageOrRestart(),
+    (_revision, cursor) => readPageOrRestart(cursor),
   );
   return pages.flatMap((page) => page.sessions);
+}
+
+export async function readRuntimeHostSessionCatalogPage(
+  connection: RuntimeHostCatalogConnection,
+  cursor?: RuntimeHostSessionCatalogPageCursor,
+): Promise<RuntimeHostSessionCatalogPage> {
+  const result = await connection.request(
+    'session.catalog.query',
+    cursor
+      ? { kind: 'list_continue', revision: cursor.revision, cursor: cursor.cursor }
+      : { kind: 'list_start' },
+  );
+  if (result.kind === 'revision_changed') {
+    throw new RuntimeHostSessionCatalogRevisionChangedError(
+      result.expectedRevision,
+      result.actualRevision,
+    );
+  }
+  if (result.kind !== 'page' || (cursor && result.revision !== cursor.revision)) {
+    throw new RuntimeHostCatalogReadError('session', 'invalid_projection');
+  }
+  if (cursor && result.nextCursor === cursor.cursor) {
+    throw new RuntimeHostCatalogReadError('session', 'repeated_cursor');
+  }
+  return {
+    revision: result.revision,
+    sessions: result.sessions,
+    nextCursor:
+      result.nextCursor === null ? null : { revision: result.revision, cursor: result.nextCursor },
+  };
 }
 
 export async function readRuntimeHostProjects(
@@ -286,7 +336,11 @@ export async function readRuntimeHostResources(
 
 interface StableCatalogPage {
   readonly revision: string | number;
-  readonly nextCursor: string | ConnectionCatalogCursor | null;
+  readonly nextCursor:
+    | string
+    | ConnectionCatalogCursor
+    | RuntimeHostSessionCatalogPageCursor
+    | null;
 }
 
 async function collectStablePages<Page extends StableCatalogPage>(

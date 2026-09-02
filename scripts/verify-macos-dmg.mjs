@@ -33,7 +33,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
+import {
+  resolveDesktopBuildVersion,
+  resolveDesktopReleaseTarget,
+  resolveRuntimeHostSetupPackage,
+} from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -106,10 +110,12 @@ export async function smokePackagedFilesystemWorker(
   }
 }
 
-function assertSingleArchitecture(output, subject) {
+function assertSingleArchitecture(output, subject, expectedArch) {
   const architectures = output.trim().split(/\s+/).filter(Boolean);
-  if (architectures.length !== 1 || architectures[0] !== 'arm64') {
-    throw new Error(`${subject} must contain only arm64, found: ${architectures.join(', ')}`);
+  if (architectures.length !== 1 || architectures[0] !== expectedArch) {
+    throw new Error(
+      `${subject} must contain only ${expectedArch}, found: ${architectures.join(', ')}`,
+    );
   }
 }
 
@@ -128,6 +134,14 @@ export async function verifyPackagedMacApp(
     smokeFilesystemWorker = smokePackagedFilesystemWorker,
     workingDirectory = dirname(appPath),
     environment = process.env,
+    // The architecture the DMG was chosen for, not the one this process happens
+    // to run as: `process.arch` under Rosetta, or on a runner packaging the
+    // other slice, would assert the wrong thing about the binary it opened.
+    expectedArch = process.arch,
+    // Which channel the packaged client points at is the descriptor's to decide,
+    // so the caller that resolved the target passes it. Nothing but the release
+    // verifier can see a nightly descriptor.
+    channel = 'release',
   } = {},
 ) {
   const product = await readProductManifestIdentity();
@@ -151,13 +165,11 @@ export async function verifyPackagedMacApp(
 
   await requirePath(executable);
   await assertPackagedResources(resources, { requirePath, forbidPath });
-  await assertPackagedUpdateConfiguration(resources, {
-    channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
-  });
+  await assertPackagedUpdateConfiguration(resources, { channel });
   await assertPackagedDependencyClosure(resources);
 
   const executableArchitectures = await run('lipo', ['-archs', executable]);
-  assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable');
+  assertSingleArchitecture(executableArchitectures.stdout, 'Maka executable', expectedArch);
   await run('codesign', ['--verify', '--deep', '--strict', '--verbose=2', appPath]);
   await run('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath]);
   await run('xcrun', ['stapler', 'validate', appPath]);
@@ -177,18 +189,27 @@ export async function verifyPackagedMacApp(
   await smokeRenderer(executable, { workingDirectory });
 }
 
-export async function verifyMacosArm64Dmg(
-  inputPath,
-  { platform = process.platform, run = runCommandFromRepo, verifyApp = verifyPackagedMacApp } = {},
+export async function verifyMacosDmg(
+  arch,
+  {
+    platform = process.platform,
+    run = runCommandFromRepo,
+    verifyApp = verifyPackagedMacApp,
+    environment = process.env,
+    checksum = sha256File,
+  } = {},
 ) {
   if (platform !== 'darwin') {
     throw new Error('DMG verification requires macOS.');
   }
-  if (!inputPath) {
-    throw new Error('Usage: npm run verify:macos-arm64 -- <path-to-dmg>');
-  }
 
-  const dmgPath = resolve(inputPath);
+  // Named from the descriptor rather than handed in as a path, the way
+  // `verify:linux` already resolves its own payloads. The workflows used to
+  // spell this name out in YAML, which put a second authority on the artifact
+  // name beside the descriptor — and, unlike it, that copy was checked by
+  // nothing.
+  const target = await resolveDesktopReleaseTarget(`macos-${arch}`, { environment });
+  const dmgPath = resolve(target.payloadPath('.dmg'));
   await access(dmgPath);
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
   const mountpoint = join(temporaryDirectory, 'mounted');
@@ -211,18 +232,30 @@ export async function verifyMacosArm64Dmg(
   }
 
   try {
-    await verifyApp(copiedApp, { workingDirectory: temporaryDirectory });
-    const sha256 = await sha256File(dmgPath);
-    const checksumPath = `${dmgPath}.sha256`;
-    await writeFile(checksumPath, `${sha256}  ${basename(dmgPath)}\n`, 'utf8');
-    return { dmgPath, checksumPath, sha256 };
+    await verifyApp(copiedApp, {
+      workingDirectory: temporaryDirectory,
+      expectedArch: arch,
+      channel: target.nightly ? 'nightly' : 'release',
+    });
+    // Which payloads a formal release publishes a `.sha256` beside is the
+    // descriptor's to decide, the way `verify:linux` already reads it.
+    const checksums = [];
+    for (const path of target.checksumPaths()) {
+      const sha256 = await checksum(path);
+      const checksumPath = `${path}.sha256`;
+      await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
+      checksums.push({ path, checksumPath, sha256 });
+    }
+    return { dmgPath, checksums };
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyMacosArm64Dmg(process.argv[2]);
+  const result = await verifyMacosDmg(process.argv[2] ?? process.arch);
   console.log(`Verified ${result.dmgPath}`);
-  console.log(`SHA-256 ${result.sha256}`);
+  for (const { path, sha256 } of result.checksums) {
+    console.log(`SHA-256 ${sha256}  ${basename(path)}`);
+  }
 }

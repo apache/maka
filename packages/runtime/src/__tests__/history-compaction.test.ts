@@ -22,7 +22,6 @@ import { describe, test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   estimateNextRequestTokens,
-  exceedsContextWindow,
   exceedsHighWater,
   applyRuntimeEventHistoryCompact,
   planHistoryCompaction,
@@ -58,17 +57,14 @@ describe('context compaction trigger measurement', () => {
   });
 
   test('falls back to whole-projection char/4 on cold start (no usage)', () => {
-    assert.equal(
-      estimateNextRequestTokens({ appendedChars: 40, charsPerToken: 4, coldStartChars: 800 }),
-      200,
-    );
+    // Unanchored, the caller passes the whole payload as the delta against a
+    // zero baseline, so the same formula yields the cold-start estimate.
+    assert.equal(estimateNextRequestTokens({ appendedChars: 800, charsPerToken: 4 }), 200);
   });
 
-  test('high-water crosses at contextWindow minus reserve; hard cap at the window', () => {
+  test('high-water crosses at contextWindow minus reserve', () => {
     assert.equal(exceedsHighWater(100_000, 128_000, 16_384), false);
     assert.equal(exceedsHighWater(120_000, 128_000, 16_384), true);
-    assert.equal(exceedsContextWindow(120_000, 128_000), false);
-    assert.equal(exceedsContextWindow(130_000, 128_000), true);
   });
 });
 

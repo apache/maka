@@ -352,6 +352,59 @@ test('reconciles changed routes, propagates removal, and recovers the verified c
   }
 });
 
+test('publishes a changed local route promptly and refreshes a live cached peer route', {
+  timeout: 10_000,
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-route-liveness-'));
+  const network = new MemoryPeerNetwork();
+  const authorityPeer = network.create('peer-a');
+  const memberBPeer = network.create('peer-b');
+  const memberCPeer = network.create('peer-c');
+  const authority = await openPeerMeshNode({
+    dataRoot: join(root, 'authority'),
+    peer: authorityPeer,
+  });
+  const memberB = await openPeerMeshNode({
+    dataRoot: join(root, 'member-b'),
+    peer: memberBPeer,
+  });
+  const memberC = await openPeerMeshNode({
+    dataRoot: join(root, 'member-c'),
+    peer: memberCPeer,
+  });
+  // Keep the observer demand-driven so its explicit prepareRoutes() call,
+  // rather than a racing background reconciliation, owns the cache refresh.
+  const serving = [authority.serve(), memberB.serve()];
+  try {
+    const mesh = await authority.create();
+    await memberB.join(await authority.invite(mesh.roster.roster.meshId));
+    await memberC.join(await authority.invite(mesh.roster.roster.meshId));
+    await memberC.reconcile();
+    assert.deepEqual(memberC.resolveRoutes('peer-b')?.routeHints, ['/memory/peer-b/p2p/peer-b']);
+
+    const movedRoute = '/memory/peer-b-restarted/p2p/peer-b';
+    const movedRelay = '/memory/relay/peer-b-restarted';
+    memberBPeer.setRouteHints([movedRoute]);
+    memberBPeer.setCoordinationRelays([movedRelay]);
+    await waitForRoutes(authority, 'peer-b', [movedRoute], [movedRelay]);
+
+    assert.deepEqual(memberC.resolveRoutes('peer-b')?.routeHints, ['/memory/peer-b/p2p/peer-b']);
+    assert.deepEqual(memberC.resolveRoutes('peer-b')?.coordinationRelays, ['/memory/relay/peer-b']);
+    await memberC.prepareRoutes('peer-b', AbortSignal.timeout(4_000));
+    assert.deepEqual(memberC.resolveRoutes('peer-b')?.routeHints, [movedRoute]);
+    assert.deepEqual(memberC.resolveRoutes('peer-b')?.coordinationRelays, [movedRelay]);
+  } finally {
+    await Promise.allSettled([authority.close(), memberB.close(), memberC.close()]);
+    await Promise.allSettled([
+      authorityPeer.close(),
+      memberBPeer.close(),
+      memberCPeer.close(),
+      ...serving,
+    ]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('reconciles one selected Mesh into signed transit routes and native policy', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-peer-mesh-transit-'));
   const network = new MemoryPeerNetwork();
@@ -887,6 +940,7 @@ class MemoryPeerClient implements PeerMeshTransport {
   #responseDelayMs = 0;
   #reachable = true;
   #routeHints: readonly string[];
+  #coordinationRelays: readonly string[];
   #nextConnectionBarrier:
     | {
         readonly started: () => void;
@@ -916,18 +970,23 @@ class MemoryPeerClient implements PeerMeshTransport {
     private readonly peers: ReadonlyMap<string, MemoryPeerClient>,
   ) {
     this.#routeHints = [`/memory/${peerId}/p2p/${peerId}`];
+    this.#coordinationRelays = [`/memory/relay/${peerId}`];
   }
 
   identity() {
     return {
       peerId: this.peerId,
       listenAddresses: this.#routeHints,
-      coordinationRelays: [`/memory/relay/${this.peerId}`],
+      coordinationRelays: this.#coordinationRelays,
     } as const;
   }
 
   setRouteHints(routeHints: readonly string[]): void {
     this.#routeHints = [...routeHints];
+  }
+
+  setCoordinationRelays(coordinationRelays: readonly string[]): void {
+    this.#coordinationRelays = [...coordinationRelays];
   }
 
   setReachable(reachable: boolean): void {
@@ -1126,6 +1185,29 @@ async function waitForAbortable(task: Promise<void>, signal?: AbortSignal): Prom
   } finally {
     signal.removeEventListener('abort', onAbort);
   }
+}
+
+async function waitForRoutes(
+  node: PeerMeshNode,
+  peerId: string,
+  expectedRouteHints: readonly string[],
+  expectedCoordinationRelays: readonly string[],
+): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
+    const routes = node.resolveRoutes(peerId);
+    if (
+      JSON.stringify(routes?.routeHints) === JSON.stringify(expectedRouteHints) &&
+      JSON.stringify(routes?.coordinationRelays) === JSON.stringify(expectedCoordinationRelays)
+    )
+      return;
+    await delay(25);
+  }
+  assert.deepEqual(node.resolveRoutes(peerId), {
+    routeHints: expectedRouteHints,
+    coordinationRelays: expectedCoordinationRelays,
+    transitRelayPeerIds: [],
+  });
 }
 
 function memorySignature(peerId: string, payload: Buffer): Buffer {

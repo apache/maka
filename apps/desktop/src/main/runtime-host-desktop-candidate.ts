@@ -52,6 +52,7 @@ import {
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  type HostStatusResult,
   type WorkspaceTarget,
 } from "@maka/runtime-host/protocol";
 import type { AttachmentApprovalRegistry } from "./attachment-approval.js";
@@ -135,6 +136,7 @@ export interface DesktopRuntimeHostCandidateDeps {
   readonly completeComputerUseTurn: (
     sessionId: string,
   ) => void | Promise<void>;
+  readonly enableE2eControls?: boolean;
   readonly e2eInteractions?: RuntimeHostSessionExecutionIpcDeps["e2eInteractions"];
   readonly renderer?: {
     send(channel: string, scope: DesktopTargetScope, payload: unknown): void;
@@ -203,7 +205,9 @@ export interface DesktopRuntimeHostCandidateStartInput
   readonly onExit?: (details: CandidateExitDetails) => void;
   readonly candidateLaunchBarrier?: RuntimeHostCandidateLaunchBarrier;
   readonly peerClient?: RuntimeHostPeerClient;
+  readonly refreshPeerRoutes?: boolean;
   readonly onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly profileTarget?: {
     readonly profile: PersistedRuntimeHostProfile;
     readonly credential?: string;
@@ -437,9 +441,15 @@ async function startProfileDesktopRuntimeHostCandidate(
       : { handshakeTimeoutMs: input.handshakeTimeoutMs }),
     readyTimeoutMs: input.electionDeadlineMs ?? 45_000,
     ...(input.peerClient === undefined ? {} : { peerClient: input.peerClient }),
+    ...(input.refreshPeerRoutes === undefined
+      ? {}
+      : { refreshPeerRoutes: input.refreshPeerRoutes }),
     ...(input.onConnectionPhase === undefined
       ? {}
       : { onConnectionPhase: input.onConnectionPhase }),
+    ...(input.onHostStatus === undefined
+      ? {}
+      : { onHostStatus: input.onHostStatus }),
     ...(profileTarget.sshInteraction === undefined
       ? {}
       : { sshInteraction: profileTarget.sshInteraction }),
@@ -654,6 +664,7 @@ export async function createDesktopRuntimeHostCandidate(
         },
       },
       ipc,
+      deps.enableE2eControls === true,
     );
     if (target.access === 'session_guest') {
       const trackedSessionIds = sessionObservations.trackedSessionIds();

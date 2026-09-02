@@ -21,10 +21,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { MAX_READ_IMAGE_BYTES } from '@maka/core/attachments';
 import type { ContextOffloadLimits } from '@maka/core/context-offload';
 import { messageContentDigest, normalizeMessageContent } from '@maka/core/events';
-import {
-  describeChatConfigurationReason,
-  NO_REAL_CONNECTION_CODE,
-} from '@maka/core/connection-error-copy';
+import { NO_REAL_CONNECTION_CODE } from '@maka/core/connection-error-copy';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { generalizedErrorMessage } from '@maka/core/redaction';
 import { emptyPlanSessionState } from '@maka/core/plan';
@@ -77,14 +74,9 @@ import {
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import {
-  createArtifactAttachmentResourceReader,
-  createReadImageSnapshotter,
-} from '@maka/storage/artifact-stores';
-import {
-  isSessionNotFoundError,
-  SessionMetadataConflictError,
-} from '@maka/storage/execution-stores';
+import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
+import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
+import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
 import { createGitWorktreeChildExecutor } from '@maka/storage/git-worktree-child-executor';
 import { runWithStorageRootLease } from '@maka/storage/root-authority';
@@ -208,15 +200,16 @@ export interface ExecutionRuntimeHostComposition extends RuntimeHostComposition 
   readonly plugins: HostPluginPlatform;
 }
 
-const CONTEXT_OFFLOAD_READER_LIMITS: ContextOffloadLimits = Object.freeze({
+const GIBIBYTE = 1024 * 1024 * 1024;
+const CONTEXT_OFFLOAD_LIMITS: ContextOffloadLimits = Object.freeze({
   ownerMaxBytes: Object.freeze({
     read_image_snapshot: MAX_READ_IMAGE_BYTES,
     tool_result_archive: 0,
   }),
-  // This expand slice opens only the reader path. Zero quotas make accidental
-  // non-empty puts fail closed until the writer/lifecycle cutover lands.
-  sessionLogicalBytes: 0,
-  workspacePhysicalBytes: 0,
+  // Read images are bounded individually and logically per Session. Physical
+  // bytes are content-addressed across Sessions and bounded per workspace.
+  sessionLogicalBytes: GIBIBYTE,
+  workspacePhysicalBytes: 20 * GIBIBYTE,
 });
 
 export interface CreateExecutionRuntimeHostCompositionOptions {
@@ -245,7 +238,7 @@ export async function createExecutionRuntimeHostComposition(
   dependencies: ExecutionRuntimeHostCompositionDependencies = {},
 ): Promise<ExecutionRuntimeHostComposition> {
   const storage = await openStorageWriterComposition(context.owner.lease, {
-    contextOffloadLimits: CONTEXT_OFFLOAD_READER_LIMITS,
+    contextOffloadLimits: CONTEXT_OFFLOAD_LIMITS,
     afterRuntimePolicyOpened: async (stores) => {
       if (options.bootstrapRuntimePolicy !== false) {
         await ensureBootstrapRuntimePolicy({
@@ -261,7 +254,7 @@ export async function createExecutionRuntimeHostComposition(
   });
   if (storage.contextOffloadUnavailable) {
     console.error(
-      `[runtime-host] optional context-offload reader could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
+      `[runtime-host] optional context-offload Store could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
     );
   }
   const stores = storage.execution;
@@ -294,6 +287,28 @@ export async function createExecutionRuntimeHostComposition(
     const openedContextOffloadReader = openedContextOffloadStore
       ? createInteractiveContextOffloadReader(openedContextOffloadStore)
       : undefined;
+    const contextOffloadAuthority = openedContextOffloadStore
+      ? openedContextOffloadStore
+      : storage.contextOffloadUnavailable
+        ? {
+            copyReferences: async (): Promise<never> => {
+              throw new Error('Context-offload Store is unavailable during Session copy', {
+                cause: storage.contextOffloadUnavailable?.cause,
+              });
+            },
+            retireSession: async (_sessionId: string): Promise<never> => {
+              throw new Error('Context-offload Store is unavailable during Session retirement', {
+                cause: storage.contextOffloadUnavailable?.cause,
+              });
+            },
+            collectGarbage: async (): Promise<never> => {
+              throw new Error(
+                'Context-offload Store is unavailable during context garbage collection',
+                { cause: storage.contextOffloadUnavailable?.cause },
+              );
+            },
+          }
+        : undefined;
     const openedUsageStores = storage.usage;
     const openedShellRunStore = storage.shellRuns;
     const worktreeChildExecutor = createGitWorktreeChildExecutor({
@@ -309,7 +324,7 @@ export async function createExecutionRuntimeHostComposition(
     // local simulation, configure a real model and start a new one.
     backends.register('fake', () => {
       throw new Error(
-        `${NO_REAL_CONNECTION_CODE}:fake_backend: ${describeChatConfigurationReason('fake_backend')}`,
+        `${NO_REAL_CONNECTION_CODE}:fake_backend: Runtime Host cannot send on a retired local-simulation connection; configure a real model and start a new task`,
       );
     });
     const runtimePolicyActivation = new RuntimePolicyActivationGate();
@@ -403,7 +418,27 @@ export async function createExecutionRuntimeHostComposition(
       }),
       backgroundTasks: runtimeResources,
       ptyControls: runtimeResources,
-      snapshotImage: createReadImageSnapshotter(openedArtifactStore),
+      ...(openedContextOffloadStore
+        ? {
+            snapshotImage: async (input: {
+              readonly sessionId: string;
+              readonly ownerId: string;
+              readonly bytes: Uint8Array;
+              readonly mimeType: string;
+            }) =>
+              createReadImageSnapshotStore(openedContextOffloadStore, input.sessionId).snapshot({
+                ownerId: input.ownerId,
+                bytes: input.bytes,
+                mimeType: input.mimeType,
+              }),
+            releaseImageSnapshot: async (input: {
+              readonly sessionId: string;
+              readonly refId: string;
+            }) => {
+              await openedContextOffloadStore.releaseReference(input);
+            },
+          }
+        : {}),
       ...(sandboxManager ? { sandboxManager } : {}),
       ...(filesystemWorker ? { filesystemWorker } : {}),
     };
@@ -1548,6 +1583,7 @@ export async function createExecutionRuntimeHostComposition(
       stores,
       artifacts: openedArtifactStore,
       sessionTodo: sessionTodoStore,
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       manager,
       admission: sessionAdmission,
       continuity: continuityCoordinator,
@@ -1572,20 +1608,7 @@ export async function createExecutionRuntimeHostComposition(
       continuity: continuityCoordinator,
       artifacts: openedArtifactStore,
       sessionTodo: sessionTodoStore,
-      assertNoContextOffloadReferences: async (sessionIds) => {
-        if (!openedContextOffloadStore) {
-          throw new Error('Context-offload reader is unavailable during Session removal', {
-            cause: storage.contextOffloadUnavailable?.cause,
-          });
-        }
-        for (const sessionId of sessionIds) {
-          if ((await openedContextOffloadStore.usage(sessionId)).references > 0) {
-            throw new SessionMetadataConflictError(
-              'Session removal does not support Session context references yet',
-            );
-          }
-        }
-      },
+      ...(contextOffloadAuthority ? { contextOffload: contextOffloadAuthority } : {}),
       purgeOperationalState: async (sessionId) => {
         await stores.purgeConversationOperationalState(sessionId);
         await openedPlanStore.purgeSessionState(sessionId);

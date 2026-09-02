@@ -439,12 +439,13 @@ class FileRuntimeHostAccessAuthority implements RuntimeHostAccessAuthority {
     return {
       canRequestTurns:
         guest &&
+        input.sessionId !== undefined &&
         this.activeSessionGrant(principal.principalId, input.sessionId, 'session_turn_request') !==
           undefined,
       requests: this.#file.turnAccessRequests.filter(
         (request) =>
           (!guest || request.principalId === principal.principalId) &&
-          request.intent.sessionId === input.sessionId,
+          (input.sessionId === undefined || request.intent.sessionId === input.sessionId),
       ),
     };
   }

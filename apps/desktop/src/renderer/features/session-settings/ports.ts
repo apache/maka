@@ -17,20 +17,17 @@
  * under the License.
  */
 
-import { useState } from 'react';
+import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { OrchestrationMode } from '@maka/core/orchestration';
+import type { SessionSummary } from '@maka/core/session';
+import type { ChatDefaultPermissionMode } from '@maka/core/settings';
+import type { SessionModelTarget } from './session-model-configuration-intent.js';
 
-export interface SessionCollaborationDialogTarget {
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
-}
-
-export function useSessionCollaborationDialog() {
-  const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
-
-  return {
-    target,
-    open: setTarget,
-    close: () => setTarget(undefined),
-  };
+export interface SessionSettingsServices {
+  setModelConfiguration(
+    sessionId: string,
+    input: SessionModelTarget & { thinkingLevel: ThinkingLevel | null },
+  ): Promise<SessionSummary>;
+  setPermissionMode(sessionId: string, mode: ChatDefaultPermissionMode): Promise<SessionSummary>;
+  setOrchestrationMode(sessionId: string, mode: OrchestrationMode): Promise<SessionSummary>;
 }

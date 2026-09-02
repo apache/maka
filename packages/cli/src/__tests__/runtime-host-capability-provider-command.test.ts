@@ -23,7 +23,10 @@ import { test } from 'node:test';
 import type { McpToolBinding } from '@maka/core/mcp';
 import type { McpClientManager } from '@maka/mcp';
 import { createMcpCapabilityProvider as createPureMcpCapabilityProvider } from '../mcp-capability-provider.js';
-import { createMcpCapabilityProvider } from '../runtime-host-capability-provider-command.js';
+import {
+  createMcpCapabilityProvider,
+  formatRuntimeHostCapabilityProviderReadyMessage,
+} from '../runtime-host-capability-provider-command.js';
 
 test('TUI MCP control keeps its capability provider on the pure import boundary', async () => {
   const [tuiSource, providerSource] = await Promise.all([
@@ -35,6 +38,65 @@ test('TUI MCP control keeps its capability provider on the pure import boundary'
   assert.match(tuiSource, /from ['"]\.\/mcp-capability-provider\.js['"]/u);
   assert.doesNotMatch(tuiSource, /@maka\/runtime-host\/server/u);
   assert.doesNotMatch(providerSource, /@maka\/runtime-host\/server/u);
+});
+
+test('provider readiness reports a failed MCP server with its sanitized diagnostic', () => {
+  const manager = {
+    toolSnapshot: () => ({ revision: 1, tools: new Array(24).fill({}) }),
+    statuses: () => [
+      {
+        serverId: 'xcodebuildmcp',
+        state: 'connected' as const,
+        toolCount: 24,
+        tools: [],
+        updatedAt: 1,
+      },
+      {
+        serverId: 'missing-command',
+        state: 'error' as const,
+        toolCount: 0,
+        tools: [],
+        error:
+          'MCP server "missing-command" connection failed: spawn command-does-not-exist ENOENT',
+        updatedAt: 1,
+      },
+      {
+        serverId: 'remote-oauth',
+        state: 'needs-auth' as const,
+        toolCount: 0,
+        tools: [],
+        updatedAt: 1,
+      },
+    ],
+  } as unknown as Pick<McpClientManager, 'statuses' | 'toolSnapshot'>;
+
+  assert.equal(
+    formatRuntimeHostCapabilityProviderReadyMessage(manager),
+    'Runtime Host capability provider is connected (24 MCP tools; 2 servers failed: missing-command — MCP server "missing-command" connection failed: spawn command-does-not-exist ENOENT; remote-oauth — needs-auth)\n',
+  );
+});
+
+test('provider readiness sanitizes failed MCP server ids into one line', () => {
+  const manager = {
+    toolSnapshot: () => ({ revision: 1, tools: [] }),
+    statuses: () => [
+      {
+        serverId: 'bad\u2028Runtime Host capability provider is connected (999 MCP tools)\u202e',
+        state: 'error' as const,
+        toolCount: 0,
+        tools: [],
+        error: 'ordinary diagnostic',
+        updatedAt: 1,
+      },
+    ],
+  } as unknown as Pick<McpClientManager, 'statuses' | 'toolSnapshot'>;
+
+  const message = formatRuntimeHostCapabilityProviderReadyMessage(manager);
+  assert.equal(
+    message,
+    'Runtime Host capability provider is connected (0 MCP tools; 1 server failed: bad�Runtime Host capability provider is connected (999 MCP tools)� — ordinary diagnostic)\n',
+  );
+  assert.equal(message.split('\n').length, 2);
 });
 
 test('MCP capability publication freezes an accepted callable tool snapshot', async () => {

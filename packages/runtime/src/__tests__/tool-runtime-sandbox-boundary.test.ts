@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deferred, nextId } from '@maka/core/test-only/async-primitives';
+import { deferred, nextId, waitFor } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1077,10 +1077,22 @@ function header(cwd = process.cwd()): SessionHeader {
 async function waitForBoundaryRequest(
   events: SessionEvent[],
 ): Promise<Extract<SessionEvent, { type: 'sandbox_boundary_request' }>> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const event = events.find((candidate) => candidate.type === 'sandbox_boundary_request');
-    if (event?.type === 'sandbox_boundary_request') return event;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error('Sandbox boundary request was not emitted');
+  let event: Extract<SessionEvent, { type: 'sandbox_boundary_request' }> | undefined;
+  await waitFor(
+    () => {
+      const candidate = events.find((entry) => entry.type === 'sandbox_boundary_request');
+      if (candidate?.type === 'sandbox_boundary_request') {
+        event = candidate;
+        return true;
+      }
+      return false;
+    },
+    {
+      timeoutMs: 5_000,
+      pollMs: 10,
+      message: 'Sandbox boundary request was not emitted',
+    },
+  );
+  assert.ok(event);
+  return event;
 }

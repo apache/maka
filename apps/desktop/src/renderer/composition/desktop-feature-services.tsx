@@ -24,6 +24,7 @@ import { ModuleHubServicesProvider } from '../features/module-hub';
 import { RuntimeHostManagementServicesProvider } from '../features/runtime-host-management';
 import { SessionCollaborationServicesProvider } from '../features/session-collaboration';
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
+import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
@@ -32,6 +33,7 @@ import { createDesktopModuleHubServices } from '../platform/desktop/create-modul
 import { createDesktopRuntimeHostManagementServices } from '../platform/desktop/create-runtime-host-management-services';
 import { createDesktopSessionCollaborationServices } from '../platform/desktop/create-session-collaboration-services';
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
+import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 
@@ -43,6 +45,7 @@ export function createDesktopFeatureServices() {
     runtimeHostManagement: createDesktopRuntimeHostManagementServices(),
     sessionCollaboration: createDesktopSessionCollaborationServices(),
     sessionNavigation: createDesktopSessionNavigationServices(),
+    sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
     workbar: createDesktopWorkbarServices(),
   };
@@ -57,15 +60,17 @@ export function DesktopFeatureServicesProvider(props: {
       <RuntimeHostManagementServicesProvider services={props.services.runtimeHostManagement}>
         <SessionCollaborationServicesProvider services={props.services.sessionCollaboration}>
         <SessionNavigationServicesProvider services={props.services.sessionNavigation}>
-          <TaskEntryServicesProvider services={props.services.taskEntry}>
-            <ModuleHubServicesProvider services={props.services.moduleHub}>
-              <GoalServicesProvider services={props.services.goal}>
-                <WorkbarServicesProvider services={props.services.workbar}>
-                  {props.children}
-                </WorkbarServicesProvider>
-              </GoalServicesProvider>
-            </ModuleHubServicesProvider>
-          </TaskEntryServicesProvider>
+          <SessionSettingsServicesProvider services={props.services.sessionSettings}>
+            <TaskEntryServicesProvider services={props.services.taskEntry}>
+              <ModuleHubServicesProvider services={props.services.moduleHub}>
+                <GoalServicesProvider services={props.services.goal}>
+                  <WorkbarServicesProvider services={props.services.workbar}>
+                    {props.children}
+                  </WorkbarServicesProvider>
+                </GoalServicesProvider>
+              </ModuleHubServicesProvider>
+            </TaskEntryServicesProvider>
+          </SessionSettingsServicesProvider>
         </SessionNavigationServicesProvider>
         </SessionCollaborationServicesProvider>
       </RuntimeHostManagementServicesProvider>

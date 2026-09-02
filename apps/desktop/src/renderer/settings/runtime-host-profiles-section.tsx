@@ -57,9 +57,10 @@ import {
   RuntimeHostManagementDialog,
   type RuntimeHostManagementTarget,
 } from './runtime-host-management-dialog.js';
-import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
 import {
   PeerMeshPeerIdButton,
+  RuntimeHostAddComputerMenu,
+  RuntimeHostConnectionCodeDialog,
   RuntimeHostPairingRecoveryButton,
   RuntimeHostPeerMeshDialog,
   RuntimeHostProfileMoreMenu,
@@ -107,7 +108,7 @@ export function RuntimeHostProfilesSection(props: {
     Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.getSnapshot>>
   >();
   const [showAdd, setShowAdd] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState<'ssh' | 'wsl'>();
   const [showJoinSharedSession, setShowJoinSharedSession] = useState(false);
   const [managedTarget, setManagedTarget] = useState<RuntimeHostManagementTarget>();
   const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
@@ -116,7 +117,7 @@ export function RuntimeHostProfilesSection(props: {
     | {
         readonly mode: 'share';
         readonly connectionCode: string;
-        readonly openManagementOnClose?: true;
+        readonly managementTargetOnClose?: RuntimeHostManagementTarget;
       }
   >();
   const [peerMeshTarget, setPeerMeshTarget] = useState<{
@@ -271,7 +272,9 @@ export function RuntimeHostProfilesSection(props: {
         setConnectionCodeDialog({
           mode: 'share',
           connectionCode: result.connectionCode,
-          openManagementOnClose: true,
+          ...(localManagementTarget
+            ? { managementTargetOnClose: localManagementTarget }
+            : {}),
         });
       }
       if (!mountedRef.current) return;
@@ -498,34 +501,20 @@ export function RuntimeHostProfilesSection(props: {
         action={
           <HStack gap={2} align="center">
             <Button
-              variant="primary"
+              variant="secondary"
               size="sm"
-              label={copy.addComputer}
+              label={collaborationCopy.joinAction}
               isDisabled={switching}
-              onClick={() => {
-                setShowOnboarding(true);
-              }}
+              onClick={() => setShowJoinSharedSession(true)}
             />
-            <MoreMenu
-              label={copy.moreActions(copy.remoteTitle)}
-              size="sm"
-              items={[
-                {
-                  label: copy.useConnectionCode,
-                  isDisabled: switching,
-                  onClick: () => setConnectionCodeDialog({ mode: 'import' }),
-                },
-                {
-                  label: collaborationCopy.joinAction,
-                  isDisabled: switching,
-                  onClick: () => setShowJoinSharedSession(true),
-                },
-                {
-                  label: showAdd ? copy.cancel : copy.configureManually,
-                  isDisabled: switching,
-                  onClick: toggleAdd,
-                },
-              ]}
+            <RuntimeHostAddComputerMenu
+              copy={copy}
+              isDisabled={switching}
+              isManualConfigurationOpen={showAdd}
+              onUseConnectionCode={() => setConnectionCodeDialog({ mode: 'import' })}
+              onSetupSsh={() => setShowOnboarding('ssh')}
+              onSetupWsl={() => setShowOnboarding('wsl')}
+              onConfigureManually={toggleAdd}
             />
           </HStack>
         }
@@ -766,9 +755,11 @@ export function RuntimeHostProfilesSection(props: {
         )}
       </SettingsSection>
       <RuntimeHostOnboardingDialog
-        isOpen={showOnboarding}
+        key={showOnboarding ?? 'closed'}
+        isOpen={showOnboarding !== undefined}
+        initialTargetKind={showOnboarding ?? 'ssh'}
         onClose={() => {
-          setShowOnboarding(false);
+          setShowOnboarding(undefined);
           void reload();
         }}
         onRemoteHostAdded={props.onRemoteHostAdded}
@@ -787,6 +778,14 @@ export function RuntimeHostProfilesSection(props: {
             name: target.name,
           });
         }}
+        onConnectionCodeCreated={(target, connectionCode) => {
+          setManagedTarget(undefined);
+          setConnectionCodeDialog({
+            mode: 'share',
+            connectionCode,
+            managementTargetOnClose: target,
+          });
+        }}
       />
       {peerMeshTarget ? (
         <RuntimeHostPeerMeshDialog
@@ -801,6 +800,8 @@ export function RuntimeHostProfilesSection(props: {
       {connectionCodeDialog?.mode === 'import' ? (
         <RuntimeHostConnectionCodeDialog
           mode="import"
+          copy={copy}
+          errorMessage={(error) => settingsActionErrorMessage(error, locale)}
           onClose={() => setConnectionCodeDialog(undefined)}
           onImported={(profileId) => {
             props.onRemoteHostAdded(profileId);
@@ -810,13 +811,13 @@ export function RuntimeHostProfilesSection(props: {
       ) : connectionCodeDialog ? (
         <RuntimeHostConnectionCodeDialog
           mode="share"
+          copy={copy}
+          errorMessage={(error) => settingsActionErrorMessage(error, locale)}
           connectionCode={connectionCodeDialog.connectionCode}
           onClose={() => {
-            const openManagement = connectionCodeDialog.openManagementOnClose;
+            const managementTarget = connectionCodeDialog.managementTargetOnClose;
             setConnectionCodeDialog(undefined);
-            if (openManagement && localManagementTarget) {
-              setManagedTarget(localManagementTarget);
-            }
+            if (managementTarget) setManagedTarget(managementTarget);
           }}
         />
       ) : null}

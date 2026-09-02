@@ -22,19 +22,20 @@ import { defineConfig } from '@playwright/test';
 /**
  * Playwright config for the desktop Electron E2E suite.
  *
- * Each test launches a real Electron window backed by the deterministic fake
- * backend (MAKA_E2E=1) against its OWN throwaway userData dir (the fixture
- * mkdtemps one per test), so windows share no *state*. A Runtime Host-backed
- * window owns both Electron and an execution candidate process. Keep the
- * default at one worker: concurrent hidden windows throttle animation frames
- * and share OS focus, invalidating geometry and focus contracts. Developers
- * can still pass `--workers` explicitly for a subset that has neither concern.
+ * Most tests launch a real Electron window backed by the deterministic fake
+ * backend (MAKA_E2E=1) against their OWN throwaway userData dir. The read-only
+ * prompt-rail scenario instead keeps its Electron + Host composition warm for
+ * a worker and resets its Host range and renderer state per test. Keep the
+ * local default at one worker: concurrent windows share OS focus, invalidating
+ * geometry and focus contracts. Developers can still pass `--workers`
+ * explicitly for a subset that has neither concern.
  * Deliberately no test count here — the previous note carried a stale one that
  * outlived two rounds of pruning. `playwright test --list` is the only figure
  * that cannot rot.
  *
- * CI shards run on isolated X displays, so jobs still overlap without sharing
- * focus or a compositor. Local parallelism is opt-in for the same reason.
+ * CI gives every Playwright worker an isolated X display, so they overlap
+ * without sharing focus or a compositor. Local parallelism is opt-in for the
+ * same reason.
  *
  * Run from apps/desktop via `npm run e2e`, which builds the app first.
  */

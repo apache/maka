@@ -48,6 +48,95 @@ const OPTIONS: RuntimeHostSelectedUpdateCliOptions = {
 };
 
 describe('managed Runtime Host selected update', () => {
+  it('replaces an exact observed Host even when its package is already current', async () => {
+    const current = {
+      configRevision: 7,
+      deploymentRoot: '/managed',
+      root: { id: TARGET.rootId, path: TARGET.rootPath },
+      lifecycle: { mode: 'supervised', provider: 'test' },
+      launch: {
+        package: { kind: 'npm_registry', version: '2.0.0', integrity: INTEGRITY },
+      },
+    };
+    const status = {
+      schemaVersion: 1,
+      action: 'status',
+      service: {
+        manager: 'systemd_user',
+        installed: true,
+        enabled: true,
+        active: true,
+        state: 'running',
+        pid: 42,
+        lastExitCode: 0,
+        installedVersion: '2.0.0',
+        config: {
+          schemaVersion: 1,
+          managedDeploymentRoot: '/managed',
+          rootPath: TARGET.rootPath,
+          projectDirectoryRoots: [],
+          websocket: { host: '127.0.0.1', port: 7400, path: '/runtime-host' },
+          launch: { nodePath: process.execPath, cliPath: '/managed/current/dist/cli.js' },
+        },
+      },
+    };
+    const expectedHost = { hostEpoch: 'older-host', pid: 42 };
+    let output = '';
+    let managedReads = 0;
+    let pruned = false;
+    const exitCode = await runManagedRuntimeHostUpdateCli(
+      {
+        ...OPTIONS,
+        sourcePackageRoot: '/managed/current',
+        version: '2.0.0',
+        managedRootId: TARGET.rootId,
+        expectedHost,
+      },
+      {
+        withDeploymentLock: async (_root, operation) => operation(),
+        prepareDeployment: async () => assert.fail('current package must not be staged'),
+        prunePackages: async (config) => {
+          assert.equal(config.configRevision, 8);
+          pruned = true;
+        },
+        canonical: {
+          createLifecycleDeps: () => ({}) as never,
+          assertOperatorDeployment: async () => {},
+          recoverDeployment: async (_rootId, _deps, options) => {
+            assert.deepEqual(options?.expectedOwner, expectedHost);
+            return { kind: 'active', config: current } as never;
+          },
+          verifyProjection: async () => {},
+          assertOperatorConfig: () => {},
+          manageLifecycle: async () => {
+            managedReads += 1;
+            return status as never;
+          },
+          replaceLifecycle: async (input) => {
+            assert.equal(input.current, current);
+            assert.deepEqual(input.expectedOwner, expectedHost);
+            assert.equal(input.allowInterruptActiveTasks, false);
+            assert.equal(input.desired.configRevision, 8);
+            return { kind: 'replaced', config: input.desired };
+          },
+        },
+        writeOutput: (value) => {
+          output += value;
+        },
+      },
+    );
+
+    assert.equal(exitCode, 0);
+    assert.equal(managedReads, 2);
+    assert.equal(pruned, true);
+    assert.doesNotMatch(output, /"phase":"staging"/u);
+    const result = decodeRuntimeHostServiceManagementFrame(output.trim().split('\n').at(-1) ?? '');
+    assert.equal(
+      result?.kind === 'result' && result.action === 'update' ? result.update.kind : undefined,
+      'repaired',
+    );
+  });
+
   it('revalidates selection inside the deployment lock before reading service state', async () => {
     let lockHeld = false;
     let output = '';
@@ -255,6 +344,27 @@ describe('managed Runtime Host selected update', () => {
       0,
     );
     assert.deepEqual(updateInput?.expectedHost, { hostEpoch: 'older-host', pid: 42 });
+
+    const safeUpdates: RuntimeHostUpdateCliOptions[] = [];
+    assert.equal(
+      await runManagedRuntimeHostSelectedUpdateCli(
+        {
+          ...OPTIONS,
+          expectedHost: { hostEpoch: 'older-host', pid: 42 },
+        },
+        {
+          resolveSelection: async () => selection,
+          withPackage: async (_candidate, use) => use('/verified/package'),
+          update: async (input) => {
+            safeUpdates.push(input);
+            return 0;
+          },
+        },
+      ),
+      0,
+    );
+    assert.deepEqual(safeUpdates[0]?.expectedHost, { hostEpoch: 'older-host', pid: 42 });
+    assert.equal(safeUpdates[0]?.allowInterruptActiveTasks, undefined);
 
     const legacySelection = updateSelection({
       kind: 'manual_action',

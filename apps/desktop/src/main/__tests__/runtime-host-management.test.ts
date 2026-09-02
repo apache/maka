@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { RuntimeHostOperationError } from '@maka/runtime-host/client';
+import {
+  encodeRuntimeHostOwnerConnectionCode,
+  RuntimeHostOperationError,
+} from '@maka/runtime-host/client';
 import {
   RUNTIME_HOST_OPERATOR_PEER_RELAY_DISCOVERY_CAPABILITY,
   RUNTIME_HOST_OPERATOR_PEER_WEBRTC_STUN_CAPABILITY,
@@ -299,6 +302,17 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   const replacement = 'maka_rh_replacement-secret';
   let profileEnabled = true;
   let prepareCalls = 0;
+  let issuedConnectionCode = encodeRuntimeHostOwnerConnectionCode({
+    name: profile.name,
+    rootId: profile.rootId,
+    transport: {
+      kind: 'libp2p-direct',
+      peerId: '12D3KooWoffice',
+      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+      coordinationRelays: [],
+    },
+    credential: 'pending-credential',
+  });
   const currentFingerprint = runtimeHostAccessCredentialFingerprint('maka_rh_current-secret');
   const credentials = [
     accessCredential('current', principalId, currentFingerprint),
@@ -317,6 +331,11 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     },
     profiles: {
       ...unusedDirectPeerProfileDependencies(),
+      resolveManagedDirectPeerProfile: async () => ({
+        exists: true,
+        enabled: false,
+        peerId: '12D3KooWoffice',
+      }),
       resolveManagedService: async () => managedBinding(profile, service, 'active'),
       resolveManagedAccess: async () => ({
         ...managedBinding(profile, service, 'active'),
@@ -345,6 +364,15 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     runAccessManagement: async (input: DesktopRuntimeHostSshAccessInput) => {
       if (input.action === 'list') {
         return { schemaVersion: 1, kind: 'result', action: 'list', credentials };
+      }
+      if (input.action === 'connection-code') {
+        assert.equal(input.name, profile.name);
+        return {
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'connection-code',
+          connectionCode: issuedConnectionCode,
+        };
       }
       if (input.action === 'prepare') {
         prepareCalls += 1;
@@ -391,9 +419,46 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   });
 
   const list = handlers.get('runtime-host-management:list-credentials');
+  const connectionCode = handlers.get('runtime-host-management:create-connection-code');
   const rotate = handlers.get('runtime-host-management:rotate-credential');
   const revoke = handlers.get('runtime-host-management:revoke-credential');
-  assert.ok(list && rotate && revoke);
+  assert.ok(list && connectionCode && rotate && revoke);
+  assert.equal(await connectionCode({}, profile.id), issuedConnectionCode);
+  issuedConnectionCode = encodeRuntimeHostOwnerConnectionCode({
+    name: profile.name,
+    rootId: 'c'.repeat(64),
+    transport: {
+      kind: 'libp2p-direct',
+      peerId: '12D3KooWoffice',
+      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+      coordinationRelays: [],
+    },
+    credential: 'pending-credential',
+  });
+  await assert.rejects(
+    connectionCode({}, profile.id) as Promise<unknown>,
+    /different Host/u,
+  );
+  issuedConnectionCode = encodeRuntimeHostOwnerConnectionCode({
+    name: profile.name,
+    rootId: profile.rootId,
+    transport: {
+      kind: 'libp2p-direct',
+      peerId: '12D3KooWunexpected',
+      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+      coordinationRelays: [],
+    },
+    credential: 'pending-credential',
+  });
+  await assert.rejects(
+    connectionCode({}, profile.id) as Promise<unknown>,
+    /different Direct peer/u,
+  );
+  issuedConnectionCode = 'not-a-connection-code';
+  await assert.rejects(
+    connectionCode({}, profile.id) as Promise<unknown>,
+    /connection code is invalid/u,
+  );
   const initial = await list({}, profile.id);
   assert.equal((initial as { canRotate: boolean }).canRotate, true);
   assert.deepEqual(

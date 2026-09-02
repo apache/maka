@@ -115,6 +115,7 @@ function RecoveryFlow(props: {
     defaultConnection: CONNECTION.slug,
     newTaskKey: 'test-draft',
     activeSession: LEGACY_SESSION,
+    sessionHealthSession: LEGACY_SESSION,
     persistedComposerDefaults: null,
     usePersistedComposerDefaults: false,
     connectionSnapshotReady: props.snapshotReady,

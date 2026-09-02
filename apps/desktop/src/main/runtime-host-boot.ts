@@ -19,8 +19,8 @@
 
 import {
   app,
+  type BrowserWindow,
   clipboard,
-  dialog,
   ipcMain,
   nativeTheme,
   powerSaveBlocker,
@@ -81,6 +81,11 @@ import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js
 import { registerBrowserIpc } from "./browser-ipc-main.js";
 import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
+import {
+  isBrowserMessageBoxPresentationActive,
+  showBrowserMessageBox,
+  type BrowserMessageBoxAppearance,
+} from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
@@ -99,6 +104,7 @@ import {
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
+import { isDarkAppearance } from "./theme-source.js";
 import {
   readWithFallback,
   type ReconnectableReadIpcMain,
@@ -115,10 +121,12 @@ import {
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
 import {
+  defaultRuntimeHostRecoveryDialog,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
   showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
+import { getNativeDiagnosticDialogCopy } from "./native-diagnostic-dialog-copy.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
@@ -197,7 +205,6 @@ import {
 } from './runtime-host-wsl-controller.js';
 import {
   createRuntimeHostSetupPackageResolver,
-  desktopRuntimeHostDevelopmentPeerTarget,
 } from "./runtime-host-setup-package.js";
 import {
   configureDesktopRuntimeHostPeerClient,
@@ -219,9 +226,8 @@ import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
-  loadRuntimeHostSettings,
+  createRuntimeHostSettingsModule,
   registerRuntimeHostSettingsIpc,
-  updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
@@ -268,6 +274,9 @@ if (runtimeHostPeerConfiguration) {
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
       endpointKind: 'client',
+      onBackgroundReconcileError: (error) => {
+        console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+      },
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
     runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
@@ -330,21 +339,35 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   resolveRuntimeHost: resolveRuntimeHostDiagnostics,
   writeClipboard: (report) => clipboard.writeText(report),
 };
+let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
+let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
+  locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+  palette: "default",
+});
+
+async function showDesktopMessageBox(
+  options: MessageBoxOptions,
+  override?: Partial<BrowserMessageBoxAppearance>,
+): Promise<MessageBoxReturnValue> {
+  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override };
+  return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
+}
 
 function showStartupDiagnosticDialog(
   options: MessageBoxOptions,
   locale: ReturnType<typeof resolveSystemUiLocale>,
+  diagnosticDetails = options.detail,
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
-    showMessageBox: (next) => dialog.showMessageBox(next),
+    showMessageBox: (nextOptions) => showDesktopMessageBox(nextOptions, { locale }),
     copyDiagnostics: () =>
       copyDesktopDiagnosticReport(
         desktopDiagnostics,
         createDesktopStartupDiagnosticInput({
           title: options.title || options.message,
           description: options.message,
-          ...(options.detail ? { details: options.detail } : {}),
+          ...(diagnosticDetails ? { details: diagnosticDetails } : {}),
         }),
       ),
   });
@@ -376,6 +399,21 @@ const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
+resolveBrowserDialogAppearance = async () => {
+  try {
+    const settings = await settingsStore.get();
+    return {
+      locale: desktopLocale.observe(settings),
+      palette: settings.appearance.palette,
+      dark: isDarkAppearance(
+        e2eFixture?.theme ?? settings.appearance.theme,
+        nativeTheme.shouldUseDarkColors,
+      ),
+    };
+  } catch {
+    return { locale: desktopLocale.current(), palette: "default" };
+  }
+};
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
@@ -429,16 +467,24 @@ const mainWindowController = createMainWindowController({
       description: `Reason: ${details.reason}`,
       details: `Exit code: ${details.exitCode}`,
     });
-    const decision = await showMainRendererProcessGoneDialog({
-      locale: desktopLocale.current(),
-      copyDiagnostics: () =>
-        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
-      showMessageBox: (options) => dialog.showMessageBox(options),
-    });
-    if (decision === "relaunch") app.relaunch();
+    for (;;) {
+      const locale = await desktopLocale.resolve();
+      const decision = await showMainRendererProcessGoneDialog({
+        locale,
+        copyDiagnostics: () =>
+          copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
+        // showBrowserMessageBox attaches only to a visible, non-minimized
+        // parent. A pre-first-paint crash therefore gets a standalone window.
+        showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
+      });
+      if (decision !== "recover") break;
+      if (await mainWindowController.reloadMainRenderer()) return;
+      if (!mainWindowController.browserWindow()) break;
+    }
     app.quit();
   },
 });
+resolveBrowserDialogParent = () => mainWindowController.browserWindow();
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
@@ -456,10 +502,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolve(
-    desktopRuntimeHostDevelopmentPeerTarget(),
-    signal,
-  ),
+  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolveForThisDesktop(signal),
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -498,7 +541,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   catalog: runtimeHostProfileCatalog,
   credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target, sshInteraction) => {
+  enable: async (target, sshInteraction, onPeerEndpoint) => {
     if (target.profile.kind === 'local') {
       throw new Error('A resolved non-local Runtime Host profile is required');
     }
@@ -506,13 +549,20 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       throw new Error('A remote Runtime Host profile requires an access credential');
     }
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    await runtimeHostManager.enable({
-      profile: target.profile,
-      ...(target.credential ? { credential: target.credential } : {}),
-      ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
-        ? { sshInteraction }
-        : {}),
-    });
+    await runtimeHostManager.enable(
+      {
+        profile: target.profile,
+        ...(target.credential ? { credential: target.credential } : {}),
+        ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
+          ? { sshInteraction }
+          : {}),
+      },
+      onPeerEndpoint
+        ? (status) => {
+            if (status.peerEndpoint) onPeerEndpoint(status.peerEndpoint);
+          }
+        : undefined,
+    );
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
@@ -529,7 +579,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
 });
 const guestSessionMountService = createDesktopGuestSessionMountService({
   store: createGuestSessionMountStore(runtimeHostCredentialStore),
-  mount: async (target, signal, onConnectionPhase) => {
+  mount: async (target, signal, onConnectionPhase, onPeerEndpoint) => {
     if (target.profile.kind !== 'remote' || !target.credential) {
       throw new Error('A shared Session requires a remote Guest target');
     }
@@ -538,11 +588,14 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
       { profile: target.profile, credential: target.credential },
       signal,
       onConnectionPhase,
+      (status) => {
+        if (status.peerEndpoint) onPeerEndpoint?.(status.peerEndpoint);
+      },
     );
   },
-  finalizeAccess: async (mountId, signal) => {
+  finalizeAccess: async (mountId, signal, onAccessActivated) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
-    await runtimeHostManager.finalizeGuestAccess(mountId, signal);
+    await runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
   },
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;
@@ -566,9 +619,7 @@ const localRuntimeHostManagement = createDesktopRuntimeHostLocalManagement({
   remoteAccess: localRuntimeHostRemoteAccess,
   operator: localRuntimeHostOperator,
   rootPath: startupLocalStorageRoot.canonicalPath,
-  resolveUpdatePackage: () => runtimeHostSetupPackage.resolve(
-    desktopRuntimeHostDevelopmentPeerTarget(),
-  ),
+  resolveUpdatePackage: () => runtimeHostSetupPackage.resolveForThisDesktop(),
   currentHostEpoch: () =>
     runtimeHostManager?.current('local')?.candidate?.client.hostEpoch,
   awaitUpdatedConnection: async (previousHostEpoch, replacementExpected) => {
@@ -758,16 +809,20 @@ const clientSettingsTools = buildClientSettingsTools({
     return settings;
   },
   confirm: async (changes) => {
-    const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
-    const result = await dialog.showMessageBox({
-      type: "question",
-      message: copy.message,
-      detail: copy.detail,
-      buttons: copy.buttons,
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
+    const locale = await desktopLocale.resolve();
+    const copy = clientSettingsConfirmation(changes, locale);
+    const result = await showDesktopMessageBox(
+      {
+        type: "question",
+        message: copy.message,
+        detail: copy.detail,
+        buttons: copy.buttons,
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      },
+      { locale },
+    );
     return result.response === 0;
   },
 });
@@ -810,11 +865,12 @@ const updateService = createAppUpdateService({
   // the Sigstore verifier below.
   verifyDownloadedUpdate: updateTestFeed
     ? async () => {}
-    : ({ downloadedFile, version }) =>
+    : ({ downloadedFile, version, files }) =>
         verifyDownloadedUpdateAttestation({
           channel: desktopUpdateChannel,
           downloadedFile,
           version,
+          files,
           trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),
         }),
   prepareInstall: async (input) => {
@@ -981,6 +1037,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     completeComputerUseTurn,
+    enableE2eControls: isE2e,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
@@ -1125,9 +1182,10 @@ runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
       repairError: input.repairError,
       activeTasks: input.activeTasks,
     });
+    const locale = await desktopLocale.resolve();
     return showRuntimeHostStartupRecoveryDialog(input, {
-      locale: desktopLocale.current(),
-      showMessageBox: (options) => dialog.showMessageBox(options),
+      locale,
+      showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
       copyDiagnostics: () =>
         copyDesktopDiagnosticReport(
           desktopDiagnostics,
@@ -1379,29 +1437,29 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
-  const settingsIpcDeps = {
-    ipcMain: scopedIpc,
+  const runtimeHostSettings = createRuntimeHostSettingsModule({
     client,
     settingsStore,
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
     },
-  } satisfies Parameters<typeof registerRuntimeHostSettingsIpc>[0];
-  registerRuntimeHostSettingsIpc(settingsIpcDeps);
+  });
+  registerRuntimeHostSettingsIpc({
+    ipcMain: scopedIpc,
+    module: runtimeHostSettings,
+  });
   registerRuntimeHostConfigIpc({
     ipcMain: scopedIpc,
     client,
     mainWindowController,
     appVersion: app.getVersion(),
-    getSettings: () => loadRuntimeHostSettings(settingsIpcDeps),
-    updateSettings: (patch) =>
-      updateRuntimeHostSettings(settingsIpcDeps, patch),
+    settingsModule: runtimeHostSettings,
     emitConnectionsChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostPermissionsIpc({
     ipcMain: scopedIpc,
     client,
-    getSettings: () => loadRuntimeHostSettings(settingsIpcDeps),
+    getSettings: () => runtimeHostSettings.get(),
     listConnections: async () =>
       projectHostConnections(await client.loadConnectionCatalog()),
     botRegistry,
@@ -1440,7 +1498,7 @@ function registerHostClientIpc(
       return selectedDesktopWorkspaceTarget(target);
     },
     getDefaultPermissionMode: () =>
-      resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
+      resolveDefaultPermissionMode(() => runtimeHostSettings.get()),
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
@@ -1600,7 +1658,11 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
-  registerDesktopGuestSessionMountIpc(ipcMain, guestSessionMountService);
+  registerDesktopGuestSessionMountIpc(
+    ipcMain,
+    guestSessionMountService,
+    () => clipboard.readText(),
+  );
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,
@@ -1826,7 +1888,7 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin") app.quit();
+    if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
   quitCoordinator.focusOrCreateWindow();
@@ -1844,7 +1906,7 @@ async function prepareRuntimeHostDesktopQuit(): Promise<void> {
 
 async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
   const locale = await desktopLocale.resolve();
-  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale), { locale });
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
@@ -1912,26 +1974,20 @@ async function confirmDesktopStorageRootRepair(
   console.log(
     "[storage-root] root-identity conflict; parking at repair dialog",
   );
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+  const copy = getNativeDiagnosticDialogCopy(locale).storageRootRepair;
   const { response } = await showStartupDiagnosticDialog(
     {
       type: "warning",
-      title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
-      message: isChinese
-        ? "Maka 无法验证这个工作区。"
-        : "Maka cannot verify this workspace.",
-      detail: isChinese
-        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
-        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
-      buttons: isChinese
-        ? ["修复工作区", "退出"]
-        : ["Repair Workspace", "Exit"],
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail(workspaceRoot),
+      buttons: [copy.repair, copy.exit],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
     },
-    isChinese ? "zh" : "en",
+    locale,
   );
   return response === 0;
 }
@@ -1940,28 +1996,12 @@ async function promptForDefaultRuntimeHostRecovery(input: {
   readonly profileName: string;
   readonly error: Error;
 }): Promise<"retry" | "use_local" | "keep_offline"> {
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = await desktopLocale.resolve();
+  const dialogInput = defaultRuntimeHostRecoveryDialog({ ...input, locale });
   const { response } = await showStartupDiagnosticDialog(
-    {
-      type: "warning",
-      title: isChinese
-        ? "默认 Runtime Host 无法连接"
-        : "Default Runtime Host is unavailable",
-      message: isChinese
-        ? `无法连接 ${input.profileName}`
-        : `Could not connect to ${input.profileName}`,
-      detail: isChinese
-        ? `${input.error.message}\n\n你可以重试、改用 Local 作为默认 Host，或保持当前选择并稍后在设置中处理。`
-        : `${input.error.message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
-      buttons: isChinese
-        ? ["重试", "改用 Local", "保持离线"]
-        : ["Retry", "Use Local", "Keep Offline"],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-    },
-    isChinese ? "zh" : "en",
+    dialogInput.options,
+    locale,
+    dialogInput.diagnosticDetails,
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

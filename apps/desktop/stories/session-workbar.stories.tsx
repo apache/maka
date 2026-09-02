@@ -994,6 +994,7 @@ function Workbar(props: {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
+          confirmBypass={async () => true}
           quotes={quotes}
           sourceSession={
             props.sourceSession ??

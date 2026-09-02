@@ -46,10 +46,8 @@ import {
  * selected model's context window. This module is turn-agnostic and side-effect
  * free, and it only SHAPES: it selects the largest safe covered prefix and
  * builds the checkpoint + replacement projection, failing open when it cannot.
- * The safety-critical pass/terminate verdict is NOT issued here — the backend's
- * final-request estimate owner measures the actual outgoing (messages, tools)
- * payload after every shaping hook has run and decides `context_budget_exhausted`
- * there, so the verdict is always about the request that really goes out.
+ * Nothing here decides whether a request fits: that answer belongs to the
+ * provider, and a rejection is recovered from by compacting and retrying once.
  */
 
 export interface EstimateNextRequestTokensInput {
@@ -58,7 +56,8 @@ export interface EstimateNextRequestTokensInput {
    * input+output, because `appendedChars` is a delta against that request's
    * payload and already carries the step's freshly generated output.
    * Undefined on cold start or when the sample is unusable (no positive
-   * input count), which falls back to a whole-payload char estimate.
+   * input count); the baseline is then zero and `appendedChars` carries the
+   * whole payload.
    */
   priorUsageTokens?: number;
   /**
@@ -70,30 +69,22 @@ export interface EstimateNextRequestTokensInput {
   appendedChars: number;
   /** Estimate conversion; defaults to 4 chars/token. */
   charsPerToken?: number;
-  /** Whole-payload chars, used only when `priorUsageTokens` is undefined. */
-  coldStartChars?: number;
 }
 
 /**
- * Estimate the token size of the next provider request. Anchors on the last
- * step's real usage plus a signed char/4 payload delta for content the provider
- * has not yet counted (or no longer carries); cold-start (no usage) is a pure
- * char/4 estimate of the whole payload. This mirrors how surveyed peers avoid
- * pure character guessing.
+ * Estimate the token size of the next provider request: the last request's real
+ * usage plus a signed char/4 payload delta for content the provider has not yet
+ * counted (or no longer carries). Without a usable usage sample the caller
+ * passes the whole payload as the delta against a zero baseline, so this stays
+ * one formula. This mirrors how surveyed peers avoid pure character guessing.
  */
 export function estimateNextRequestTokens(input: EstimateNextRequestTokensInput): number {
   const charsPerToken = Math.max(1, input.charsPerToken ?? 4);
-  if (input.priorUsageTokens !== undefined && Number.isFinite(input.priorUsageTokens)) {
-    return Math.max(
-      0,
-      Math.max(0, Math.floor(input.priorUsageTokens)) +
-        estimateSignedChars(input.appendedChars, charsPerToken),
-    );
-  }
-  return Math.max(
-    0,
-    estimateSignedChars(input.coldStartChars ?? input.appendedChars, charsPerToken),
-  );
+  const prior =
+    input.priorUsageTokens !== undefined && Number.isFinite(input.priorUsageTokens)
+      ? Math.max(0, Math.floor(input.priorUsageTokens))
+      : 0;
+  return Math.max(0, prior + estimateSignedChars(input.appendedChars, charsPerToken));
 }
 
 /** Proactive threshold: the next request would cross `contextWindow - reserve`. */
@@ -104,11 +95,6 @@ export function exceedsHighWater(
 ): boolean {
   const highWater = Math.max(1, contextWindow - Math.max(0, reserveTokens));
   return estimatedTokens > highWater;
-}
-
-/** Hard cap: the estimate exceeds the raw context window even before the reserve. */
-export function exceedsContextWindow(estimatedTokens: number, contextWindow: number): boolean {
-  return estimatedTokens > contextWindow;
 }
 
 export interface SafePrefixOptions {
@@ -139,8 +125,8 @@ export type SafePrefixBoundary =
  *  - it leaves at least `reserveTailEvents` trailing events as the verbatim tail.
  *
  * Returns `no_safe_completed_span` when no such cut exists (e.g. the remaining
- * pool is a single atomic call/result pair), which the caller surfaces as an
- * explicit `context_budget_exhausted` outcome rather than a provider error.
+ * pool is a single atomic call/result pair); the caller then fails open and
+ * sends the request unchanged.
  */
 export function selectSafeCompactionPrefix(
   events: readonly RuntimeEvent[],
@@ -279,12 +265,8 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * Execute a triggered compaction command by deterministically folding the
  * largest safe prefix. Trigger policy is owned by callers; once this function
  * is called it always attempts the transaction. This plan is a pure shaper:
- * when it cannot fold a safe
- * completed prefix it FAILS OPEN (keep the raw projection + diagnostic) and
- * never terminates the turn itself. The two failure tiers — fail open under
- * the window, explicit `context_budget_exhausted` over it — are applied by the
- * backend's final-request estimate owner, which re-measures the actual outgoing
- * payload after all shaping (including this fold) has been applied.
+ * when it cannot fold a safe completed prefix it FAILS OPEN (keep the raw
+ * projection + diagnostic) and the request goes out unchanged.
  */
 export async function planHistoryCompaction(
   input: PlanHistoryCompactionInput,
@@ -429,7 +411,7 @@ export interface HistoryCompactionPolicy {
   enabled: boolean;
   checkpoint?: HistoryCompactCheckpoint;
   highWaterName?: string;
-  midTurn?: { enabled: true; reserveTokens?: number; reserveTailEvents?: number };
+  midTurn?: { enabled: true; reserveTokens?: number };
 }
 
 export interface HistoryCompactionReplayOptions {

@@ -19,12 +19,14 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { AppSettings } from '@maka/core/settings';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import type { CredentialKind } from '@maka/storage/credential-store';
 import { applyConfigImport, type ConfigTransferDeps } from '../config-transfer-service.js';
 
-function conn(slug: string): LlmConnection {
+function conn(
+  slug: string,
+  overrides: Partial<LlmConnection> = {},
+): LlmConnection {
   return {
     slug,
     name: slug,
@@ -33,6 +35,7 @@ function conn(slug: string): LlmConnection {
     enabled: true,
     createdAt: 1,
     updatedAt: 1,
+    ...overrides,
   };
 }
 
@@ -58,12 +61,13 @@ function makeDeps(overrides: Partial<ConfigTransferDeps> = {}): {
     settingsStore: {
       update: async (patch) => {
         updatedSettings.push(patch);
-        return patch as unknown as AppSettings;
+        return { skippedCredentials: 0 };
       },
     },
     credentialStore: {
-      setSecret: async (slug, kind, value) => {
+      setSecret: async ({ slug, kind, value }) => {
         setCreds.push({ slug, kind, value });
+        return true;
       },
     },
     writeMemory: async (content) => {
@@ -98,6 +102,28 @@ describe('config-transfer-service', () => {
     assert.deepEqual(setCreds, [{ slug: 'brand-new', kind: 'api_key', value: 'sk-imported' }]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
     assert.deepEqual(writtenMemory, ['# imported memory']);
+  });
+
+  it('reports a settings-carried proxy credential skipped by Host target binding', async () => {
+    const { deps } = makeDeps({
+      settingsStore: {
+        update: async () => ({ skippedCredentials: 1 }),
+      },
+    } as never);
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['settings', 'credentials'] as const,
+      data: {
+        settings: { network: { proxy: { credential: { kind: 'replace', secret: 'source' } } } },
+        credentials: [],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
   });
 
   it('restores the selection a backup states instead of re-enabling its default', async () => {
@@ -160,6 +186,149 @@ describe('config-transfer-service', () => {
     assert.deepEqual(setCreds, [{ slug: 'deepseek-main', kind: 'api_key', value: 'sk-new' }]);
     assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
   });
+
+  it('reports a Host-bound connection credential write that loses its target race', async () => {
+    const { deps, setCreds } = makeDeps({
+      credentialStore: {
+        setSecret: async () => false,
+      },
+    } as never);
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['connections', 'credentials'] as const,
+      data: {
+        connections: [conn('deepseek-main')],
+        credentials: [{ slug: 'deepseek-main', kind: 'api_key', value: 'source-secret' }],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'overwrite', deps);
+
+    assert.deepEqual(setCreds, []);
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
+  });
+
+  it('writes a credentials-only bundle to an existing connection', async () => {
+    const { deps, saved, setCreds } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['credentials'] as const,
+      data: {
+        credentials: [
+          {
+            slug: 'deepseek-main',
+            kind: 'api_key',
+            value: 'sk-restored',
+            connection: {
+              providerType: 'deepseek',
+              effectiveBaseUrl: 'https://api.deepseek.com',
+            },
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(saved, [], 'credentials-only import does not rewrite the connection');
+    assert.deepEqual(setCreds, [
+      { slug: 'deepseek-main', kind: 'api_key', value: 'sk-restored' },
+    ]);
+    assert.deepEqual(result.credentials, { applied: 1, skipped: 0 });
+  });
+
+  it('skips a credentials-only entry without a source connection binding', async () => {
+    const { deps, setCreds } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['credentials'] as const,
+      data: {
+        credentials: [
+          {
+            slug: 'deepseek-main',
+            kind: 'api_key',
+            value: 'sk-unbound-source',
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(setCreds, []);
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
+  });
+
+  it('skips a credentials-only entry when the target slug belongs to another provider', async () => {
+    const { deps, setCreds } = makeDeps();
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['credentials'] as const,
+      data: {
+        credentials: [
+          {
+            slug: 'deepseek-main',
+            kind: 'api_key',
+            value: 'sk-openai-source',
+            connection: {
+              providerType: 'openai',
+              effectiveBaseUrl: 'https://api.openai.com/v1',
+            },
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(setCreds, []);
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
+  });
+
+  it('skips a credentials-only entry when the target endpoint differs', async () => {
+    const target = conn('deepseek-main', {
+      baseUrl: 'https://target-relay.example/v1',
+    });
+    const { deps, setCreds } = makeDeps({
+      connectionStore: {
+        list: async () => [target],
+        save: async (connection) => connection,
+      },
+    });
+    const bundle = {
+      schemaVersion: 1,
+      exportedAt: '',
+      appVersion: '0.1.0',
+      includedData: ['credentials'] as const,
+      data: {
+        credentials: [
+          {
+            slug: 'deepseek-main',
+            kind: 'api_key',
+            value: 'sk-source-endpoint',
+            connection: {
+              providerType: 'deepseek',
+              effectiveBaseUrl: 'https://api.deepseek.com',
+            },
+          },
+        ],
+      },
+    };
+
+    const result = await applyConfigImport(bundle as any, 'skip', deps);
+
+    assert.deepEqual(setCreds, []);
+    assert.deepEqual(result.credentials, { applied: 0, skipped: 1 });
+  });
+
   it('restores the whole bundle when it carries a retained retired connection', async () => {
     // A backup taken before the retirement still lists the connection, and the
     // catalog refuses to create one. Before this was planned as skipped, the

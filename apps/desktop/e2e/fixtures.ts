@@ -487,7 +487,44 @@ async function withE2eWindow(
   }
 }
 
-export const test = base.extend<{
+interface PromptRailWorker {
+  app: ElectronApplication;
+  page: Page;
+  viewport: { width: number; height: number };
+}
+
+async function setPromptRailWindowVisible(
+  worker: PromptRailWorker,
+  visible: boolean,
+): Promise<void> {
+  await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
+    if (shouldShow) window.show();
+    else window.hide();
+  }, visible);
+}
+
+async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
+  await worker.page.evaluate(async () => {
+    const controls = (
+      window as typeof window & {
+        makaE2eLatch?: {
+          releaseRendererObservations(): Promise<void>;
+        };
+      }
+    ).makaE2eLatch;
+    if (!controls) throw new Error('the isolated E2E controls are unavailable');
+    await controls.releaseRendererObservations();
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+  await worker.page.setViewportSize(worker.viewport);
+  await worker.page.reload();
+  await worker.page.waitForSelector('[data-turn-id]', { timeout: 20_000 });
+}
+
+type E2eTestFixtures = {
   window: Page;
   onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
@@ -503,7 +540,30 @@ export const test = base.extend<{
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
   accessibilityNarrativeWindow: Page;
-}>({
+};
+
+type E2eWorkerFixtures = {
+  isolatedDisplay: void;
+  promptRailWorker: PromptRailWorker;
+};
+
+export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
+  isolatedDisplay: [async ({}, use, workerInfo) => {
+    const base = process.env.MAKA_E2E_X_DISPLAY_BASE;
+    if (base === undefined) {
+      await use();
+      return;
+    }
+    if (!/^\d+$/.test(base)) throw new Error(`Invalid E2E X display base: ${base}`);
+    const previous = process.env.DISPLAY;
+    process.env.DISPLAY = `:${Number(base) + workerInfo.parallelIndex}`;
+    try {
+      await use();
+    } finally {
+      if (previous === undefined) delete process.env.DISPLAY;
+      else process.env.DISPLAY = previous;
+    }
+  }, { scope: 'worker', auto: true }],
   directoryReferenceWindow: async ({}, use) => {
     await withE2eWindow(
       { seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh', showWindow: true },
@@ -565,8 +625,6 @@ export const test = base.extend<{
       e2eFixtureScenario: 'settings-bots-onboarding',
     }, use);
   },
-  // A real project with several sessions. Shown because the contract under
-  // test is native focus order across independently interactive row controls.
   // Seeded connection so the composer is ready, plus one registered Project so
   // the workspace picker under it has a second target to move to.
   newTaskTargetWindow: async ({}, use) => {
@@ -578,13 +636,16 @@ export const test = base.extend<{
       showWindow: true,
     }, use);
   },
+  // A real project with several sessions. Hidden: a shown key window receives
+  // the physical cursor's mouse-moved events, which cancel the delayed hover
+  // card mid-test. CDP input needs no visible window, and the focus-order
+  // test drives synthetic Tab that never reaches native focus either way.
   projectSidebarWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
       readinessSelector: '[data-maka-contract="search-modal"][open]',
       e2eFixtureScenario: 'sidebar-search-modal-open',
       locale: 'zh',
-      showWindow: true,
     }, use);
   },
   parentRemovalWindow: async ({}, use) => {
@@ -609,9 +670,10 @@ export const test = base.extend<{
       use,
     );
   },
-  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
-  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
-  promptRailWindow: async ({}, use) => {
+  // This scenario is read-only at the Host boundary. Keep its real Electron +
+  // Host composition warm for the worker, while the test-scoped wrapper below
+  // restores Host and renderer state between tests.
+  promptRailWorker: [async ({}, use) => {
     await withE2eWindow({
       seed: false,
       // A rendered turn, deliberately not the rail: Playwright treats a
@@ -621,7 +683,21 @@ export const test = base.extend<{
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
       showWindow: true,
-    }, use);
+    }, async (page, { app }) => {
+      const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
+      await use({ app, page, viewport });
+    });
+  }, { scope: 'worker' }],
+  // A multi-prompt transcript for the prompt anchor rail. Shown, because every
+  // assertion in prompt-rail.spec.ts is geometry the compositor has to settle.
+  promptRailWindow: async ({ promptRailWorker }, use) => {
+    await setPromptRailWindowVisible(promptRailWorker, true);
+    try {
+      await resetPromptRailWindow(promptRailWorker);
+      await use(promptRailWorker.page);
+    } finally {
+      await setPromptRailWindowVisible(promptRailWorker, false);
+    }
   },
   // A transcript larger than the bounded Desktop range. Clicking an unloaded
   // prompt exercises the real load-around path and its partial-history UI.

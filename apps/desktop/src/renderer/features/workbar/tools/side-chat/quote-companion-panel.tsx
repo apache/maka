@@ -68,6 +68,7 @@ export function QuoteCompanionPanel(props: {
   sourceSession: SessionSummary | undefined;
   /** Shared global choice list, only used to render the inherited model's label. */
   modelChoices: readonly ChatModelChoice[];
+  confirmBypass: () => Promise<boolean>;
   onQuotesConsumed: (snapshot: CompanionQuoteSnapshot) => void;
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
@@ -103,6 +104,7 @@ export function QuoteCompanionPanel(props: {
     modelChoices: props.modelChoices,
     locale,
     onQuotesConsumed: props.onQuotesConsumed,
+    confirmBypass: props.confirmBypass,
     onForkVisibilityChange: props.onForkVisibilityChange,
   });
   useEffect(() => {
@@ -301,7 +303,6 @@ export function QuoteCompanionPanel(props: {
               // (the companion has no independent picker; it inherits the source model).
               modelLabel={activeModelLabel}
               permissionMode={companion.permissionMode}
-              permissionModePending={companion.permissionModePending}
               permissionModeDisabledReason={
                 companion.streaming ? copy.permissionStreaming : undefined
               }

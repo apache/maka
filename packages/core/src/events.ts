@@ -1247,14 +1247,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
-    | 'max_tokens'
-    | 'context_budget_exhausted';
-  /**
-   * Detail for `stopReason: 'context_budget_exhausted'` — the runtime could not
-   * produce a provider-safe request even after mid-turn compaction. A first-class
-   * outcome, not a provider context-length error.
-   */
-  contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
+    | 'max_tokens';
   /** Durable result of an explicit context-compaction execution. */
   contextCompactionOutcome?: ContextCompactionOutcome;
 }
@@ -1264,32 +1257,14 @@ export type ContextCompactionOutcome =
   | { kind: 'unchanged'; reason: string }
   | { kind: 'failed'; reason: string };
 
-export const CONTEXT_BUDGET_EXHAUSTED_DETAILS = [
-  'no_safe_completed_span',
-  'summarizer_failed',
-  'malformed_summary_missing_section',
-  'malformed_summary_truncated',
-  'malformed_summary_too_small_for_fold',
-  'head_anchor_exceeds_capacity',
-] as const;
-
-export type ContextBudgetExhaustedDetail = (typeof CONTEXT_BUDGET_EXHAUSTED_DETAILS)[number];
-
-export function isContextBudgetExhaustedDetail(
-  value: unknown,
-): value is ContextBudgetExhaustedDetail {
-  return CONTEXT_BUDGET_EXHAUSTED_DETAILS.includes(value as ContextBudgetExhaustedDetail);
-}
-
 export type CompleteStopReason = CompleteEvent['stopReason'];
 
 /** Stable failure taxonomy for complete events that did not finish the turn. */
 export function failureClassFromCompleteStopReason(
   reason: CompleteStopReason,
-): 'runtime_error' | 'tool_step_cap_reached' | 'context_budget_exhausted' | undefined {
+): 'runtime_error' | 'tool_step_cap_reached' | undefined {
   if (reason === 'error') return 'runtime_error';
   if (reason === 'step_limit') return 'tool_step_cap_reached';
-  if (reason === 'context_budget_exhausted') return 'context_budget_exhausted';
   return undefined;
 }
 

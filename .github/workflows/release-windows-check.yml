@@ -142,9 +142,22 @@ jobs:
         run: npm run package:windows-x64
 
       - name: Verify the Windows release
+        run: npm run verify:windows-x64 -- x64
+
+      # Discovered, not spelled out: this lane builds one installer, and the name
+      # is the target descriptor's to decide. The installer steps below are
+      # handed a path rather than a target, so unlike `verify:windows-x64` they
+      # cannot resolve it themselves.
+      - name: Locate the packaged Windows installer
+        id: installer
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+          shopt -s nullglob
+          exes=(apps/desktop/release/*.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          echo "exe=${exes[0]}" >> "$GITHUB_OUTPUT"
 
       # The baseline is pinned by version, tag, asset name and SHA-256 in
       # `scripts/windows-upgrade-baseline.json`, so it is immutable and the
@@ -174,9 +187,8 @@ jobs:
       # does decide the outcome.
       - name: Exercise pinned-version upgrade and uninstall
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             "${{ steps.previous.outputs.exe }}"
 
       - name: Build the version-bumped autoupdate installer
@@ -184,9 +196,8 @@ jobs:
 
       - name: Verify automatic update end to end
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-autoupdate -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
       # Consumes only what this run built — the candidate installer and the
@@ -194,7 +205,6 @@ jobs:
       # `installer.nsh` Abort path still restores the previous installation.
       - name: Prove deterministic mid-install failure rollback
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer-rollback -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next

@@ -101,6 +101,7 @@ function WorkbarToolSurface(props: { kind: 'terminal' | 'browser' | 'files' }) {
           onPinTab={noop}
           onOpenLauncher={noop}
           onRequestOpenTab={noop}
+          confirmBypass={async () => true}
         />
       </div>
     </ToastProvider>

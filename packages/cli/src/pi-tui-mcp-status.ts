@@ -763,7 +763,7 @@ function actionNotice(
 }
 
 function resultCopy(locale: UiLocale, code: TuiMcpResultCode): string {
-  return MCP_STATUS_COPY[locale].editor.results[code] ?? code;
+  return MCP_STATUS_COPY[locale].editor.results[code];
 }
 
 function confirmAddDocument(draft: GuidedDraft, locale: UiLocale): string[] {

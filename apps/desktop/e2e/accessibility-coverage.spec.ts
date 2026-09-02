@@ -171,9 +171,9 @@ test('data-backed conversation exposes ordered todos and keyboard access to tool
   const modelSwitcher = page.getByRole('button', { name: '切换当前任务模型' });
   await tabTo(page, modelSwitcher, 'model picker');
   await page.keyboard.press('Enter');
-  await expect(page.getByRole('menuitem', { name: /glm-5\.1/ })).toBeVisible();
+  await expect(page.getByRole('menuitemradio', { name: /glm-5\.1/ })).toBeVisible();
   await assertAxHealth(cdp, 'conversation/model-picker');
-  const availableModel = page.getByRole('menuitem', { name: 'glm-4.5', exact: true });
+  const availableModel = page.getByRole('menuitemradio', { name: 'glm-4.5', exact: true });
   await expect(availableModel).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(modelSwitcher).toContainText('glm-4.5');

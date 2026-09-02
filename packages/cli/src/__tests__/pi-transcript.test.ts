@@ -139,7 +139,7 @@ describe('Maka Pi TUI transcript', () => {
     state.steering = ['s'.repeat(250)];
     state.followup = ['f'.repeat(250)];
 
-    const lines = renderMakaPiPendingQueue(state, 400);
+    const lines = renderMakaPiPendingQueue(state, 400, process.platform, 'en');
     for (const line of lines) {
       assert.doesNotMatch(line, /[\r\n]/, `pending-queue row must be a single row: ${line}`);
     }
@@ -151,7 +151,7 @@ describe('Maka Pi TUI transcript', () => {
     const state = createMakaPiTranscriptState();
     state.steering = ['Keep going'];
     const renderFor = (platform: NodeJS.Platform) =>
-      renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
+      renderMakaPiPendingQueue(state, 80, platform, 'en').map(stripAnsi);
 
     assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
     assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');

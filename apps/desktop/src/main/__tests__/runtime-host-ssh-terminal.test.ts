@@ -641,6 +641,41 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
+test('creates an owner connection code through the framed SSH operator channel', async () => {
+  const harness = createHarness('pending');
+  const connectionCode = 'maka-runtime-host:connect:v1:secret-code';
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'connection-code',
+    name: "Owner's Linux",
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(encodeRuntimeHostAccessManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'connection-code',
+    connectionCode,
+  }));
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(
+    result.kind === 'result' && result.action === 'connection-code'
+      ? result.connectionCode
+      : undefined,
+    connectionCode,
+  );
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /access.*connection-code/u);
+  assert.match(command, /--name/u);
+  assert.match(command, /Owner/u);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-code|MAKA_RUNTIME/u);
+  await harness.terminal.close();
+});
+
 test('requests adaptive-connectivity status only on the peer-management frame', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runPeerManagement({

@@ -19,7 +19,13 @@
 
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
-import { formatRendererErrorReport, RENDERER_ERROR_REPORT_MAX_BYTES } from '../../renderer/error-boundary.js';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  ErrorBoundaryFallback,
+  formatRendererErrorReport,
+  RENDERER_ERROR_REPORT_MAX_BYTES,
+} from '../../renderer/error-boundary.js';
 
 const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
 
@@ -54,4 +60,23 @@ test('bounds and redacts the browser-only renderer error report', () => {
   assert.match(report, /(?:<redacted>|\[redacted\])/);
   assert.doesNotMatch(report, /sk-(?:location|message|stack)secret123/);
   assert.match(report, /^Maka renderer error report/);
+});
+
+test('keeps raw exceptions out of the localized crash surface', () => {
+  for (const [locale, title] of [
+    ['zh', 'Maka 渲染层崩溃了'],
+    ['en', 'The Maka renderer crashed'],
+  ] as const) {
+    const markup = renderToStaticMarkup(
+      createElement(ErrorBoundaryFallback, {
+        copyState: 'idle',
+        locale,
+        onCopyReport() {},
+        onReset() {},
+        onReload() {},
+      }),
+    );
+    assert.match(markup, new RegExp(title));
+    assert.doesNotMatch(markup, /maka-error-stack|Error details|错误详情|component stack/i);
+  }
 });

@@ -56,7 +56,7 @@
      .settingsFeatureStatusIcon, same 36px box. */
   border-radius: var(--radius-plate);
   background: oklch(from var(--foreground) l c h / 0.05);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* Denied is the only state that re-tints the plate: granted is the expected
@@ -65,7 +65,7 @@
 /* Descendant, not child: Astryx's ListItem wraps startContent in its own
    span, so the plate is a grandchild of the row that carries data-state. */
 [data-state="denied"] .settingsOsPermissionIcon {
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
   color: var(--destructive);
 }
 

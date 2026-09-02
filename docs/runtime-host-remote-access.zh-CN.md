@@ -186,9 +186,13 @@ Local Host 和 State Root，将该 Host 交由操作系统服务管理，并在 
 peer listener。将一次性 connection code 提供给另一台 Desktop 即可连接。关闭远程访问只会停止
 Direct peer listener；移除后台服务后，Local Host 会重新由 Desktop 管理，所有数据均保留。
 
+也可在 Host 上运行 `maka runtime-host access connection-code [--name <显示名称>] [--root <路径>]`
+输出完整的一次性连接码。Direct peer 必须已开启。该码包含当前实时路由和一个待确认的 Owner
+credential，15 分钟后过期，且只能由一台 Desktop 使用。
+
 Credential 与 Profile 分开存储。Desktop 会让 Local 与每个已启用的 remote Host 独立保持连接，并允许指定一个默认 Host 来创建新 Session；已有 Session 仍使用自己的 Host。Remote connection 失败时仍会显示，但不会中断其他 Host。连接后从该 Host 已注册的 Project 中选择一个；Client 本地目录操作不可用。
 
-对于通过 SSH 管理的电脑，可从其**管理**操作查看已安装版本、服务状态、可用目录和近期日志，也可以启动、重启、修复或卸载服务。卸载会保留远端 State Root，且不会删除 Desktop Profile；移除 Profile 也不会卸载远端服务。手动配置的 direct connection 仍可正常使用，但需要在 Host 机器上管理服务。
+对于通过 SSH 管理的电脑，可从其**管理**操作新建连接码、查看已安装版本、服务状态、可用目录和近期日志，也可以启动、重启、修复或卸载服务。卸载会保留远端 State Root，且不会删除 Desktop Profile；移除 Profile 也不会卸载远端服务。手动配置的 direct connection 仍可正常使用，但需要在 Host 机器上管理服务。
 
 ## 连接 TUI 或 CLI
 

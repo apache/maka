@@ -22,6 +22,7 @@ import { getTrustedRoot } from '@sigstore/tuf';
 import { toSignedEntity, toTrustMaterial, Verifier } from '@sigstore/verify';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { basename } from 'node:path';
 
 const PRODUCT_REPOSITORY = 'apache/maka';
 const PRODUCT_RELEASE_WORKFLOW = '.github/workflows/release-cli-finalize.yml';
@@ -42,9 +43,16 @@ type AttestationStatement = {
   readonly subject?: unknown;
 };
 
+/** The shape `UpdateDownloadedEvent.files` shares with every update feed entry. */
+export type DownloadedUpdateFile = {
+  readonly url: string;
+};
+
 export type DownloadedUpdateAttestationInput = {
   readonly downloadedFile: string;
   readonly version: string;
+  /** Absent on a legacy feed that never listed its payloads. */
+  readonly files?: readonly DownloadedUpdateFile[];
 };
 
 export type DownloadedUpdateAttestationVerifier = (
@@ -53,9 +61,8 @@ export type DownloadedUpdateAttestationVerifier = (
 
 type VerifyDownloadedUpdateAttestationOptions = DownloadedUpdateAttestationInput & {
   readonly channel?: DesktopUpdateChannel;
-  readonly trustRootCacheDirectory: string;
   readonly platform?: NodeJS.Platform;
-  readonly arch?: string;
+  readonly trustRootCacheDirectory: string;
   readonly fetchBundle?: (url: string) => Promise<Uint8Array>;
   readonly verifyBundle?: (bundle: Bundle) => Promise<void>;
 };
@@ -82,14 +89,48 @@ function productWorkflowSigner(channel: DesktopUpdateChannel): RegExp {
   );
 }
 
-function exactDesktopUpdateArtifactName(
+function feedFileName(url: string): string {
+  return basename(url.split(/[?#]/u)[0] ?? '');
+}
+
+/**
+ * The desktop packages a platform installs, matched against what follows
+ * `Maka-<version>-`. Each entry names the platform and the package formats it
+ * accepts and deliberately says nothing about the architecture.
+ */
+const INSTALLABLE_UPDATE_PACKAGE: Partial<Record<NodeJS.Platform, RegExp>> = {
+  win32: /^win-.+\.exe$/u,
+  darwin: /^mac-.+\.zip$/u,
+  linux: /^linux-.+\.(?:AppImage|deb)$/u,
+};
+
+/**
+ * The payload the updater actually chose. electron-updater names the cached
+ * file after the basename of the feed entry it downloaded, so the download is
+ * identified by that name rather than by this process' architecture — which
+ * does not decide it: macOS serves the arm64 ZIP to an x64 build under Rosetta.
+ * The platform only decides the package format, never the architecture: one
+ * Linux tuple serves either the AppImage or the deb depending on how the
+ * running copy was installed.
+ */
+function downloadedUpdateArtifactName(
+  downloadedFile: string,
   version: string,
+  files: readonly DownloadedUpdateFile[] | undefined,
   platform: NodeJS.Platform,
-  arch: string,
 ): string {
-  if (platform === 'darwin' && arch === 'arm64') return `Maka-${version}-mac-arm64.zip`;
-  if (platform === 'win32' && arch === 'x64') return `Maka-${version}-win-x64.exe`;
-  throw new Error(`Automatic updates are unsupported on ${platform}/${arch}`);
+  const name = basename(downloadedFile);
+  if (!(files ?? []).some((file) => feedFileName(file.url) === name)) {
+    throw new Error('Downloaded update is not a payload the update feed offered');
+  }
+  const prefix = `Maka-${version}-`;
+  if (!name.startsWith(prefix)) {
+    throw new Error(`Downloaded update does not belong to version ${version}`);
+  }
+  if (!INSTALLABLE_UPDATE_PACKAGE[platform]?.test(name.slice(prefix.length))) {
+    throw new Error(`Downloaded update is not a desktop package ${platform} installs`);
+  }
+  return name;
 }
 
 function productReleaseAttestationName(version: string): string {
@@ -210,10 +251,11 @@ export async function verifyDownloadedUpdateAttestation(
   options: VerifyDownloadedUpdateAttestationOptions,
 ): Promise<void> {
   const version = options.version.trim().replace(/^v/iu, '');
-  const expectedName = exactDesktopUpdateArtifactName(
+  const expectedName = downloadedUpdateArtifactName(
+    options.downloadedFile,
     version,
+    options.files,
     options.platform ?? process.platform,
-    options.arch ?? process.arch,
   );
   const channel = options.channel ?? 'release';
   const [artifactSha256, bundleBytes] = await Promise.all([
