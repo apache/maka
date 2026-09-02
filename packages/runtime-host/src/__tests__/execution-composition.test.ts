@@ -99,6 +99,42 @@ test('WorkHub recovers a delivered root Stop from its durable cancelled Turn', a
   assert.equal(stopCalls, 0);
 });
 
+test('WorkHub never reports a still-running root as already terminal', async () => {
+  // The restart window: the execution is not registered in memory yet, so the
+  // root looks inactive while its durable snapshot is still running.
+  const outcome = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({ kind: 'idle' }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'running',
+      }),
+      stopRoot: async () => assert.fail('an unregistered root cannot be stopped'),
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.deepEqual(outcome, { outcome: 'recovering', targetTurnId: 'target-turn' });
+
+  // A durably terminal snapshot is still the proof `already_terminal` needs.
+  const settled = await stopOwnedWorkHubRoot(
+    {
+      readRootState: () => ({ kind: 'idle' }),
+      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
+        ...identity,
+        status: 'completed',
+        terminalEventId: 'terminal-complete',
+      }),
+      stopRoot: async () => assert.fail('a completed root cannot be stopped'),
+    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
+    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
+    'workhub-stop-action',
+  );
+
+  assert.deepEqual(settled, { outcome: 'already_terminal', targetTurnId: 'target-turn' });
+});
+
 test('WorkHub binds a fresh owning-root Stop to its action identity', async () => {
   let source: string | undefined;
   let actionId: string | undefined;

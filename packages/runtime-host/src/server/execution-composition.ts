@@ -74,6 +74,7 @@ import {
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
@@ -1358,12 +1359,16 @@ export async function createExecutionRuntimeHostComposition(
           if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
             return 'retired';
           }
-          const rootState = coordinator.readRootState(assignment.targetSessionId);
-          return rootState.kind === 'active' &&
-            rootState.turnId === disposition.turnId &&
-            rootState.runId === disposition.runId
-            ? 'not_retired'
-            : 'retired';
+          const identity = {
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          };
+          if (isActiveWorkHubRoot(coordinator, identity)) return 'not_retired';
+          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+          // root is not evidence that its work ended.
+          const snapshot = await coordinator.read(identity);
+          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
         retireDelegation: async (assignment, retirement) => {
           const disposition = await messages.cancelMessageIfPending(
@@ -2005,7 +2010,7 @@ export async function stopOwnedWorkHubRoot(
   identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
   actionId: string,
 ): Promise<{
-  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly outcome: 'stop_delivered' | 'already_terminal' | 'recovering';
   readonly targetTurnId: string;
 }> {
   if (isActiveWorkHubRoot(coordinator, identity)) {
@@ -2015,10 +2020,19 @@ export async function stopOwnedWorkHubRoot(
     });
   }
   const terminal = await coordinator.read(identity);
-  return terminal.status === 'cancelled' &&
+  if (
+    terminal.status === 'cancelled' &&
     terminal.abortSource === workHubDirectStopAbortSource(actionId)
-    ? { outcome: 'stop_delivered', targetTurnId: identity.turnId }
-    : { outcome: 'already_terminal', targetTurnId: identity.turnId };
+  ) {
+    return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+  }
+  // Registration is in-memory, so between Host restart and execution recovery
+  // this root looks inactive while it is still running. `already_terminal` is
+  // committed as an immutable fact, so only a durably terminal snapshot may
+  // claim it; anything else is still resolving.
+  return isHostedExecutionTerminal(terminal)
+    ? { outcome: 'already_terminal', targetTurnId: identity.turnId }
+    : { outcome: 'recovering', targetTurnId: identity.turnId };
 }
 
 /**
