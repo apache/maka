@@ -629,7 +629,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           proposal: {
             disposition: 'stop_work',
             stopsActionId: 'source-action',
-            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+            expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
         },
@@ -671,7 +671,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           proposal: {
             disposition: 'stop_work',
             stopsActionId: 'source-action',
-            expects: { targetSessionId: targetId, activeActionIds: ['source-action'] },
+            expects: { targetSessionId: targetId },
           },
           confirmation: { kind: 'user_stop' },
         },
@@ -772,7 +772,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           proposal: {
             disposition: 'stop_work',
             stopsActionId: 'source-action',
-            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+            expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
         },
@@ -867,7 +867,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           proposal: {
             disposition: 'stop_work',
             stopsActionId: 'source-action',
-            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+            expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
         },
@@ -898,7 +898,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       proposal: {
         disposition: 'stop_work' as const,
         stopsActionId: 'source-action',
-        expects: { targetSessionId: targetId, activeActionIds: ['source-action'] },
+        expects: { targetSessionId: targetId },
       },
       confirmation: { kind: 'user_stop' as const },
     });
@@ -1015,7 +1015,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       proposal: {
         disposition: 'stop_work' as const,
         stopsActionId: 'login-action',
-        expects: { targetSessionId: loginSessionId, activeActionIds: ['login-action'] },
+        expects: { targetSessionId: loginSessionId },
       },
       confirmation: { kind: 'user_stop' as const },
     });
@@ -1077,7 +1077,6 @@ describe('Host WorkHub Coordination coordinator', () => {
             stopsActionId: 'source-action',
             expects: {
               targetSessionId: targets.find((session) => session.name === 'Payments')!.id,
-              activeActionIds: ['source-action'],
             },
           },
           confirmation: { kind: 'user_stop' },

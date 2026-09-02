@@ -495,7 +495,7 @@ export function createWorkHubController(deps: {
             reason: stopDecision.reason,
           };
         }
-        const { target, stopsActionId, activeActionIds } = stopDecision;
+        const { target, stopsActionId } = stopDecision;
         const admitted = await coordination.act({
           actionId: input.requestId,
           userText: input.text,
@@ -505,7 +505,7 @@ export function createWorkHubController(deps: {
             // The proposal carries only opaque identities and the state the
             // policy resolved against. The Action Gate revalidates both, so a
             // resolution that went stale is refused rather than acted on.
-            expects: { targetSessionId: target.sessionId, activeActionIds },
+            expects: { targetSessionId: target.sessionId },
           },
           confirmation: { kind: 'user_stop' },
         });

@@ -92,7 +92,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+        expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_stop' },
     }),
@@ -102,7 +102,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+        expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_stop' },
     },
@@ -114,7 +114,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+        expects: { targetSessionId: 'payments' },
       },
     },
     {
@@ -123,7 +123,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+        expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_correction' },
     },
@@ -133,7 +133,7 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+        expects: { targetSessionId: 'payments' },
         targetSessionId: 'injected',
       },
       confirmation: { kind: 'user_stop' },
@@ -145,29 +145,14 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
       confirmation: { kind: 'user_stop' },
     },
+    // Preconditions are a closed shape: no room for a second, client-asserted proof.
     {
-      actionId: 'action-stop-unbounded-preconditions',
+      actionId: 'action-stop-extra-precondition',
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
-        expects: {
-          targetSessionId: 'payments',
-          activeActionIds: Array.from({ length: 33 }, (_unused, index) => `action-${index}`),
-        },
-      },
-      confirmation: { kind: 'user_stop' },
-    },
-    {
-      actionId: 'action-stop-duplicate-preconditions',
-      userText: 'Stop Payments',
-      proposal: {
-        disposition: 'stop_work',
-        stopsActionId: 'action-payments',
-        expects: {
-          targetSessionId: 'payments',
-          activeActionIds: ['action-payments', 'action-payments'],
-        },
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
       },
       confirmation: { kind: 'user_stop' },
     },

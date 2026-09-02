@@ -147,14 +147,12 @@ export type WorkHubCoordinationProposal =
     };
 
 export interface WorkHubCoordinationStopPreconditions {
-  /** Session the resolved delegation was proposed against. */
-  readonly targetSessionId: string;
   /**
-   * Every active WorkHub delegation the policy observed for that Session. Stop
-   * admits only a sole active delegation, so a concurrent delegation to the
-   * same Session invalidates the proposal rather than silently widening it.
+   * Session the resolved delegation was proposed against. Sole-active-delegation
+   * is proved by the Host from durable state under the admission lease, so the
+   * proposal states only what it resolved, never its own proof.
    */
-  readonly activeActionIds: readonly string[];
+  readonly targetSessionId: string;
 }
 
 export type WorkHubCoordinationDestructiveConfirmation =
@@ -637,25 +635,9 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
 function decodeWorkHubCoordinationStopPreconditions(
   value: unknown,
 ): WorkHubCoordinationStopPreconditions {
-  const expects = requireExactRecord(value, 'WorkHub stop preconditions', [
-    'targetSessionId',
-    'activeActionIds',
-  ]);
-  if (!Array.isArray(expects.activeActionIds)) {
-    throw invalidProtocolFrame('Invalid WorkHub stop preconditions');
-  }
-  if (expects.activeActionIds.length > WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS) {
-    throw invalidProtocolFrame('Too many WorkHub expected active delegations');
-  }
-  const activeActionIds = expects.activeActionIds.map((actionId) =>
-    requireEntityId(actionId, 'WorkHub expected active action id'),
-  );
-  if (new Set(activeActionIds).size !== activeActionIds.length) {
-    throw invalidProtocolFrame('Duplicate WorkHub expected active delegation');
-  }
+  const expects = requireExactRecord(value, 'WorkHub stop preconditions', ['targetSessionId']);
   return {
     targetSessionId: requireEntityId(expects.targetSessionId, 'WorkHub target Session id'),
-    activeActionIds,
   };
 }
 

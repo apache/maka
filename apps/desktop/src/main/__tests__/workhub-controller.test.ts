@@ -381,7 +381,7 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
     proposal: {
       disposition: 'stop_work',
       stopsActionId: 'action-1',
-      expects: { targetSessionId: 'payments', activeActionIds: ['action-1'] },
+      expects: { targetSessionId: 'payments' },
     },
     confirmation: { kind: 'user_stop' },
   }]);
