@@ -373,17 +373,17 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          test "$(gh api repos/apache/maka/actions/runs/33643012549 --jq .head_sha)" = 48b0408003edcf9594c38e2cb1bfc79beb4283b5
+          test "$(gh api repos/apache/maka/actions/runs/33653035636 --jq .head_sha)" = 45dd58023f4366750a33606b4ea3adca755856a5
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: windows-repro-*
           path: evidence
-          run-id: 33643012549
+          run-id: 33653035636
           github-token: ${{ github.token }}
 
       - name: Diagnose original bytes without rebuilding or executing them
-        run: node scripts/diagnose-windows-repro.mjs evidence > windows-repro-diagnosis.json
+        run: node scripts/diagnose-windows-archives.mjs evidence > windows-repro-diagnosis.json
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
