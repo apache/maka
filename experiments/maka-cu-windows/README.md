@@ -132,38 +132,33 @@ desktop has not been run here, so the spike is not a production go decision.
 
 ## Real-application matrix status
 
-The WPF fixture task artifact is `app-task-results.json`; the result separates
-`executionState` from `contractConformance`. Only verified actions count in
-execution success; unsupported Enter and focus-refused compatibility input are
-`executionState=blocked` while their typed safety contract is
-`contractConformance=pass`, and an unconfirmed mutation is
-`executionState=unknown`. The latest WPF artifact has eight tasks per helper:
-`5/8` pass, `2/8` blocked, and `1/8` unknown; all 16 task records conform to
-the safety contract. Three negative authorization checks per helper also pass.
-Enter is intentionally blocked (the click target is a
-Toggle-backed semantic click control because WPF Button Invoke was not exposed
-consistently by this desktop provider). The local Chrome artifact is
-`browser-task-results.json`: Chrome 152.0.7977.64 was launched with a fresh
-temporary profile. The C# helper saw no UIA Value/Invoke pattern; the Rust
-helper exposed only the click pattern. The overall Chromium matrix is
-therefore `blocked`, not pass (latest C# `0/5`, Rust `1/5` execution success;
-remaining tasks are blocked). The read-only
-probe found no LibreOffice executable. Calculator, Notepad, and Paint AppX
-packages were present, but no isolated WinUI/UWP task was launched in this
-step; they remain `blocked`. No existing profile or user document was opened
-  or modified.
+The WPF fixture task artifact is `app-task-results-final-v4.json`; the result
+separates `executionState` from `contractConformance`. Only verified actions
+count in execution success; typed Enter remains intentionally blocked and
+compatibility Enter remains `unknown` when there is no safe readback. The
+latest run has `6/8` execution pass and `8/8` contract pass for each helper;
+semantic set-text/click/select/toggle/scroll pass, and compatibility text is
+verified after clearing the fixture value first. No existing user document was
+opened or modified.
+
+The Chromium evidence is split by contract: `browser-results-navigation-complete-v1.json`
+has 6/6 observe, 6/6 compatibility-text, and 6/6 page-oracle navigation checks
+across three repetitions per helper; `browser-results-semantic-complete-v1.json`
+has 18/18 semantic set-value/scroll/click execution and contract passes. Enter
+is dispatched once and independently proven by the page oracle, but the helper
+side remains `unknown` (`readback_unavailable`), so it is not upgraded to
+`verified`. The read-only probe found no LibreOffice executable. Calculator,
+Notepad, and Paint AppX packages were present, but no isolated WinUI/UWP task
+was launched; Electron/LibreOffice/clean-machine coverage remains open.
 
 ### 2026-09-02 browser/security follow-up
 
-The browser harness now uses a loopback HTTP fixture, per-run marker, spawned
-Chrome PID/HWND identity evidence, independent page oracle, and records both
-default and `--force-renderer-accessibility` configurations for each helper.
-The measured matrix is 4 configurations / 20 tasks: `0/20` were dispatched
-because Chromium exposed only browser-shell UIA nodes (C# observed 9 nodes and
-Rust 38 shell nodes); all unexecuted tasks are explicitly
-`executionState=blocked`, `contractConformance=not_tested`. This is a provider
-capability/environment result, not a contract pass, and does not claim the
-complete #4318 matrix or clean-machine completion. `distributionReady=false`.
+The browser harness uses a loopback HTTP fixture, per-run marker, spawned Chrome
+PID/HWND identity evidence, independent page oracle, and records both default
+and `--force-renderer-accessibility` configurations. Earlier default-mode runs
+that exposed only browser-shell nodes remain historical blocked evidence; the
+complete-mode and semantic-mode artifacts above are the current controlled
+results. They do not claim clean-machine completion. `distributionReady=false`.
 
 The compatibility-input safety follow-up adds OS-random Rust authorization
 tokens, bounded/expired grant cleanup, final foreground/focus/identity checks,
