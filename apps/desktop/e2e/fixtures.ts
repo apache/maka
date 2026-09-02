@@ -484,7 +484,12 @@ async function withE2eWindow(
     try {
       if (app) await closeElectronApplication(app, 5_000);
     } finally {
-      await rm(userDataDir, { recursive: true, force: true });
+      await rm(userDataDir, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 100,
+      });
     }
   }
 }
