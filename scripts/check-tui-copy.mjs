@@ -48,6 +48,7 @@ export const EXCLUDED_TUI_FILES = [
   'packages/cli/src/tui-ansi.ts',
   'packages/cli/src/tui-autocomplete-layout.ts',
   'packages/cli/src/tui-clipboard.ts',
+  'packages/cli/src/tui-context-refresh.ts',
   'packages/cli/src/tui-copy-catalog.ts',
   'packages/cli/src/tui-diff.ts',
   'packages/cli/src/tui-mcp-control.ts',
