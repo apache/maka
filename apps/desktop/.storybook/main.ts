@@ -33,7 +33,11 @@ const STORYBOOK_NODE_CRYPTO_BOUNDARY = resolve(
 const config: StorybookConfig = {
   stories: [
     '../../../packages/ui/stories/**/*.stories.@(ts|tsx)',
-    resolve(REPO_ROOT, 'apps/desktop/stories/**/*.stories.@(ts|tsx)'),
+    // Config-relative glob (forward slashes) like the UI entry above. A
+    // `resolve(REPO_ROOT, ...)` absolute path produces backslashes on Windows,
+    // which glob matchers treat as escape characters, so no desktop story ever
+    // matches there.
+    '../stories/**/*.stories.@(ts|tsx)',
   ],
   framework: {
     name: '@storybook/react-vite',
