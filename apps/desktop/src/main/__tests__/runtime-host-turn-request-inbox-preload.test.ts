@@ -29,9 +29,10 @@ test('skips an Owner Host that explicitly lacks collaboration authority', () => 
   const scopes = selectRuntimeHostCollaborationScopes([
     { hostId: 'local', collaborationAuthority: false },
     { hostId: 'remote', collaborationAuthority: true },
+    { hostId: 'legacy' },
   ]);
 
-  assert.deepEqual(scopes.map(({ hostId }) => hostId), ['remote']);
+  assert.deepEqual(scopes.map(({ hostId }) => hostId), ['remote', 'legacy']);
 });
 
 test('keeps transiently unavailable collaboration inboxes retryable', async () => {

@@ -292,6 +292,15 @@ function runtimeHostMetadataFor(scope: DesktopTargetScope) {
   return runtimeHostMetadata.get(runtimeHostScopeKey(scope));
 }
 
+function markRuntimeHostCollaborationUnavailable(scope: DesktopTargetScope): void {
+  const metadata = runtimeHostMetadataFor(scope);
+  if (!metadata || metadata.collaborationAuthority === false) return;
+  runtimeHostMetadata.set(runtimeHostScopeKey(scope), {
+    ...metadata,
+    collaborationAuthority: false,
+  });
+}
+
 function observeRuntimeHostSessionScope(scope: DesktopTargetScope, sessionId: string): {
   readonly sessionId: string;
   readonly authorityAccepted: boolean;
@@ -379,6 +388,8 @@ function recordRuntimeHostIdentity(value: unknown): {
     typeof metadata.profileName !== 'string' ||
     !isRuntimeHostProfileKind(metadata.profileKind) ||
     (metadata.profileAccess !== 'owner' && metadata.profileAccess !== 'session_guest') ||
+    (metadata.collaborationAuthority !== undefined &&
+      typeof metadata.collaborationAuthority !== 'boolean') ||
     (metadata.readiness !== 'ready' && metadata.readiness !== 'reconnecting')
   ) {
     throw new Error('Desktop Runtime Host identity is invalid');
@@ -391,9 +402,9 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
     profileAccess: metadata.profileAccess,
-    ...(typeof metadata.collaborationAuthority === 'boolean'
-      ? { collaborationAuthority: metadata.collaborationAuthority }
-      : {}),
+    ...(metadata.collaborationAuthority === undefined
+      ? {}
+      : { collaborationAuthority: metadata.collaborationAuthority }),
   });
   return { scope, readiness: metadata.readiness };
 }
@@ -1488,7 +1499,8 @@ const makaBridge = {
           const result = await ipcRenderer.invoke(
             'session-collaboration:turn-request:query',
             scope,
-          ) as CollaborationTurnRequestQueryResult;
+          ) as CollaborationTurnRequestQueryResult & { authorityUnavailable?: true };
+          if (result.authorityUnavailable) markRuntimeHostCollaborationUnavailable(scope);
           return result.requests
             .filter((request) => request.state.kind === 'pending')
             .map((request): SessionTurnAccessRequest => ({
