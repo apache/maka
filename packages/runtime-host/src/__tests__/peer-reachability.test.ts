@@ -24,6 +24,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  isPeerReachabilityLeaseCurrent,
+  peerReachabilityLeaseReceipt,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityIdentity,
 } from '../peer-reachability/model.js';
@@ -124,6 +126,38 @@ test('peer reachability publisher persists the exact revision before exposing it
     assert.equal(second.current().lease.revision, 2);
     assert.deepEqual(second.current().lease.directRoutes, ['/memory/peer-a-new']);
     await second.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('peer reachability currentness cannot be extended by a wall-clock rollback', async () => {
+  const identity = new TestPeerIdentity('peer-a');
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-reachability-clock-'));
+  try {
+    const wallNow = 1_000_000;
+    const publisher = await openPeerReachabilityPublisher({
+      dataRoot: root,
+      peer: identity,
+      now: () => wallNow,
+    });
+    const signed = publisher.current();
+    const receipt = peerReachabilityLeaseReceipt({ signed, wallNow, monotonicNow: 100 });
+    assert.equal(isPeerReachabilityLeaseCurrent(signed, receipt, 100), true);
+    assert.equal(
+      isPeerReachabilityLeaseCurrent(signed, receipt, 100 + signed.lease.expiresAt - wallNow),
+      false,
+    );
+    assert.equal(
+      peerReachabilityLeaseReceipt({
+        signed,
+        wallNow: wallNow - 10 * 60_000,
+        monotonicNow: 200,
+        previous: receipt,
+      }),
+      receipt,
+    );
+    await publisher.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -820,12 +820,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
-    const peerResults = await Promise.allSettled(
-      this.#baseInput.peerClient ? [this.#baseInput.peerClient.close()] : [],
-    );
     this.#baseInput.candidateLaunchBarrier?.release();
     this.#ipcMain.close();
-    const failures = [...results, ...peerResults].filter(
+    const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
     if (failures.length > 0) {

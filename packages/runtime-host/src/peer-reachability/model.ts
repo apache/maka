@@ -46,6 +46,13 @@ export interface SignedPeerReachabilityLeaseV1 {
   readonly signature: string;
 }
 
+export interface PeerReachabilityLeaseReceipt {
+  readonly peerId: string;
+  readonly revision: number;
+  readonly signature: string;
+  readonly currentUntil: number;
+}
+
 export interface PeerReachabilityIdentity {
   identity(): Readonly<{
     peerId: string;
@@ -153,6 +160,47 @@ export function samePeerReachabilityRoutes(
   return (
     sameStrings(lease.directRoutes, identity.listenAddresses) &&
     sameStrings(lease.coordinationRoutes, identity.coordinationRelays)
+  );
+}
+
+export function peerReachabilityLeaseReceipt(input: {
+  readonly signed: SignedPeerReachabilityLeaseV1;
+  readonly wallNow: number;
+  readonly monotonicNow: number;
+  readonly previous?: PeerReachabilityLeaseReceipt;
+}): PeerReachabilityLeaseReceipt {
+  const { signed, previous } = input;
+  if (
+    previous?.peerId === signed.lease.peerId &&
+    previous.revision === signed.lease.revision &&
+    previous.signature === signed.signature
+  ) {
+    return previous;
+  }
+  if (!Number.isFinite(input.wallNow) || !Number.isFinite(input.monotonicNow)) {
+    throw new Error('Invalid peer reachability receipt clock');
+  }
+  const signedLifetime = signed.lease.expiresAt - signed.lease.issuedAt;
+  const wallRemaining = Math.max(0, signed.lease.expiresAt - input.wallNow);
+  return Object.freeze({
+    peerId: signed.lease.peerId,
+    revision: signed.lease.revision,
+    signature: signed.signature,
+    currentUntil: input.monotonicNow + Math.min(signedLifetime, wallRemaining),
+  });
+}
+
+export function isPeerReachabilityLeaseCurrent(
+  signed: SignedPeerReachabilityLeaseV1,
+  receipt: PeerReachabilityLeaseReceipt | undefined,
+  monotonicNow: number,
+): boolean {
+  return Boolean(
+    receipt &&
+      receipt.peerId === signed.lease.peerId &&
+      receipt.revision === signed.lease.revision &&
+      receipt.signature === signed.signature &&
+      receipt.currentUntil > monotonicNow,
   );
 }
 
