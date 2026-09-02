@@ -125,23 +125,30 @@ function feedFiles(names: readonly string[]): { url: string }[] {
   return names.map((name) => ({ url: name }));
 }
 
-test('download verification accepts a payload the release descriptor advertises', async (t) => {
+/** The platform that installs an advertised payload, by the name it carries. */
+function installingPlatform(name: string): NodeJS.Platform {
+  if (name.includes('-mac-')) return 'darwin';
+  if (name.includes('-win-')) return 'win32';
+  return 'linux';
+}
+
+test('download verification accepts every payload the release descriptor advertises', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-update-attestation-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
 
-  // The verifier only asks whether the download is in the feed and carries the
-  // version, so one advertised payload exercises the accept path for all of them.
-  const name = ADVERTISED_PAYLOADS[0];
-  const { downloadedFile, digest } = await stageDownload(directory, name);
-  await verifyDownloadedUpdateAttestation({
-    downloadedFile,
-    version: FIXTURE_VERSION,
-    // A feed lists sibling payloads too; only the downloaded one is verified.
-    files: feedFiles(ADVERTISED_PAYLOADS),
-    trustRootCacheDirectory: join(directory, 'trust'),
-    fetchBundle: async () => serializedBundle(name, digest),
-    verifyBundle: async () => {},
-  });
+  for (const name of ADVERTISED_PAYLOADS) {
+    const { downloadedFile, digest } = await stageDownload(directory, name);
+    await verifyDownloadedUpdateAttestation({
+      downloadedFile,
+      version: FIXTURE_VERSION,
+      platform: installingPlatform(name),
+      // A feed lists sibling payloads too; only the downloaded one is verified.
+      files: feedFiles(ADVERTISED_PAYLOADS),
+      trustRootCacheDirectory: join(directory, 'trust'),
+      fetchBundle: async () => serializedBundle(name, digest),
+      verifyBundle: async () => {},
+    });
+  }
 });
 
 test('download verification follows the chosen payload, not the running architecture', async (t) => {
@@ -155,6 +162,7 @@ test('download verification follows the chosen payload, not the running architec
   await verifyDownloadedUpdateAttestation({
     downloadedFile,
     version: FIXTURE_VERSION,
+    platform: 'darwin',
     files: feedFiles([name, `Maka-${FIXTURE_VERSION}-mac-x64.zip`]),
     trustRootCacheDirectory: join(directory, 'trust'),
     fetchBundle: async () => serializedBundle(name, digest),
@@ -170,6 +178,7 @@ test('download verification rejects a payload the feed, the version or the attes
   const options = {
     downloadedFile,
     version: FIXTURE_VERSION,
+    platform: 'darwin' as NodeJS.Platform,
     files: feedFiles([name]),
     trustRootCacheDirectory: join(directory, 'trust'),
     fetchBundle: async () => serializedBundle(name, digest),
@@ -182,6 +191,39 @@ test('download verification rejects a payload the feed, the version or the attes
       files: feedFiles([`Maka-${FIXTURE_VERSION}-win-x64.exe`]),
     }),
     /not a payload the update feed offered/u,
+  );
+
+  // A legacy feed lists no payloads at all, so nothing it served is verifiable.
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({ ...options, files: undefined }),
+    /not a payload the update feed offered/u,
+  );
+
+  // Same version, same extension, but not a desktop package: the CLI archive.
+  const cliArchive = await stageDownload(directory, `Maka-${FIXTURE_VERSION}-cli-mac-arm64.zip`);
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      downloadedFile: cliArchive.downloadedFile,
+      files: feedFiles([`Maka-${FIXTURE_VERSION}-cli-mac-arm64.zip`]),
+      fetchBundle: async () =>
+        serializedBundle(`Maka-${FIXTURE_VERSION}-cli-mac-arm64.zip`, cliArchive.digest),
+    }),
+    /not a desktop package darwin installs/u,
+  );
+
+  // Another platform's package, offered to a Windows build by a tampered feed.
+  const debian = await stageDownload(directory, `Maka-${FIXTURE_VERSION}-linux-amd64.deb`);
+  await assert.rejects(
+    verifyDownloadedUpdateAttestation({
+      ...options,
+      platform: 'win32',
+      downloadedFile: debian.downloadedFile,
+      files: feedFiles([`Maka-${FIXTURE_VERSION}-linux-amd64.deb`]),
+      fetchBundle: async () =>
+        serializedBundle(`Maka-${FIXTURE_VERSION}-linux-amd64.deb`, debian.digest),
+    }),
+    /not a desktop package win32 installs/u,
   );
 
   const stale = await stageDownload(directory, `Maka-1.2.2-mac-arm64.zip`);
@@ -227,6 +269,7 @@ test('nightly verification fetches provenance from the versioned GitHub Release 
     channel: 'nightly',
     downloadedFile,
     version,
+    platform: 'darwin',
     files: feedFiles([name]),
     trustRootCacheDirectory: join(directory, 'trust'),
     fetchBundle: async (url) => {

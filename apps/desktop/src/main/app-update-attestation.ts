@@ -51,7 +51,8 @@ export type DownloadedUpdateFile = {
 export type DownloadedUpdateAttestationInput = {
   readonly downloadedFile: string;
   readonly version: string;
-  readonly files: readonly DownloadedUpdateFile[];
+  /** Absent on a legacy feed that never listed its payloads. */
+  readonly files?: readonly DownloadedUpdateFile[];
 };
 
 export type DownloadedUpdateAttestationVerifier = (
@@ -60,6 +61,7 @@ export type DownloadedUpdateAttestationVerifier = (
 
 type VerifyDownloadedUpdateAttestationOptions = DownloadedUpdateAttestationInput & {
   readonly channel?: DesktopUpdateChannel;
+  readonly platform?: NodeJS.Platform;
   readonly trustRootCacheDirectory: string;
   readonly fetchBundle?: (url: string) => Promise<Uint8Array>;
   readonly verifyBundle?: (bundle: Bundle) => Promise<void>;
@@ -92,24 +94,41 @@ function feedFileName(url: string): string {
 }
 
 /**
+ * The desktop packages a platform installs, matched against what follows
+ * `Maka-<version>-`. Each entry names the platform and the package formats it
+ * accepts and deliberately says nothing about the architecture.
+ */
+const INSTALLABLE_UPDATE_PACKAGE: Partial<Record<NodeJS.Platform, RegExp>> = {
+  win32: /^win-.+\.exe$/u,
+  darwin: /^mac-.+\.zip$/u,
+  linux: /^linux-.+\.(?:AppImage|deb)$/u,
+};
+
+/**
  * The payload the updater actually chose. electron-updater names the cached
  * file after the basename of the feed entry it downloaded, so the download is
- * identified by that name rather than by this process' platform and
- * architecture — which do not decide it: macOS serves the arm64 ZIP to an x64
- * build under Rosetta, and one Linux tuple serves either the AppImage or the
- * deb depending on how the running copy was installed.
+ * identified by that name rather than by this process' architecture — which
+ * does not decide it: macOS serves the arm64 ZIP to an x64 build under Rosetta.
+ * The platform only decides the package format, never the architecture: one
+ * Linux tuple serves either the AppImage or the deb depending on how the
+ * running copy was installed.
  */
 function downloadedUpdateArtifactName(
   downloadedFile: string,
   version: string,
-  files: readonly DownloadedUpdateFile[],
+  files: readonly DownloadedUpdateFile[] | undefined,
+  platform: NodeJS.Platform,
 ): string {
   const name = basename(downloadedFile);
-  if (!files.some((file) => feedFileName(file.url) === name)) {
+  if (!(files ?? []).some((file) => feedFileName(file.url) === name)) {
     throw new Error('Downloaded update is not a payload the update feed offered');
   }
-  if (!name.startsWith(`Maka-${version}-`)) {
+  const prefix = `Maka-${version}-`;
+  if (!name.startsWith(prefix)) {
     throw new Error(`Downloaded update does not belong to version ${version}`);
+  }
+  if (!INSTALLABLE_UPDATE_PACKAGE[platform]?.test(name.slice(prefix.length))) {
+    throw new Error(`Downloaded update is not a desktop package ${platform} installs`);
   }
   return name;
 }
@@ -236,6 +255,7 @@ export async function verifyDownloadedUpdateAttestation(
     options.downloadedFile,
     version,
     options.files,
+    options.platform ?? process.platform,
   );
   const channel = options.channel ?? 'release';
   const [artifactSha256, bundleBytes] = await Promise.all([
