@@ -639,6 +639,38 @@ describe('ToolRuntime settlement', () => {
       'child-session',
     );
   });
+
+  it('precomputes exclusive-step admission in provider order', () => {
+    const normal = tool(async () => ({ ok: true }));
+    const exclusive: MakaTool = {
+      ...tool(async () => ({ ok: true })),
+      name: 'AskUserQuestion',
+      executionSemantics: 'exclusive_step',
+    };
+
+    assert.deepEqual(makeRuntime().admitToolCallBatch([exclusive, normal, normal], 'step-a'), [
+      { kind: 'admitted' },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool Read did not run: AskUserQuestion cannot share an assistant step with other tool calls. Send Read again in a later step.',
+      },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool Read did not run: AskUserQuestion cannot share an assistant step with other tool calls. Send Read again in a later step.',
+      },
+    ]);
+    assert.deepEqual(makeRuntime().admitToolCallBatch([normal, exclusive, normal], 'step-b'), [
+      { kind: 'admitted' },
+      {
+        kind: 'rejected',
+        reason:
+          'Tool AskUserQuestion did not run: it cannot share an assistant step with other tool calls. Send AskUserQuestion again in a step where it is the only call.',
+      },
+      { kind: 'admitted' },
+    ]);
+  });
 });
 
 function makeRuntime(

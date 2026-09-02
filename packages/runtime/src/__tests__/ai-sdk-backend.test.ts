@@ -94,6 +94,7 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { ToolAccesses } from '../tool-access.js';
 import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
@@ -11078,6 +11079,113 @@ describe('AiSdkBackend RunTrace', () => {
 });
 
 describe('AiSdkBackend tool execution', () => {
+  test('schedules one provider batch by declared resources without starving a queued writer', async () => {
+    const durable = durableTurnHarness('turn-resource-scheduler', 'schedule file work');
+    const gates = new Map(
+      ['reader-1', 'writer', 'reader-2', 'independent'].map((label) => [label, makeGate()]),
+    );
+    const started: string[] = [];
+    let providerCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          providerCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                ...[
+                  { label: 'reader-1', path: 'a.ts', operation: 'read' },
+                  { label: 'writer', path: 'a.ts', operation: 'write' },
+                  { label: 'reader-2', path: 'a.ts', operation: 'read' },
+                  { label: 'independent', path: 'b.ts', operation: 'write' },
+                ].map(
+                  ({ label, path, operation }): LanguageModelV4StreamPart => ({
+                    type: 'tool-call',
+                    toolCallId: label,
+                    toolName: 'ScheduledFile',
+                    input: JSON.stringify({ label, path, operation }),
+                  }),
+                ),
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'done' },
+                { type: 'text-delta', id: 'done', delta: 'done' },
+                { type: 'text-end', id: 'done' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const scheduledTool: MakaTool<{
+      label: string;
+      path: string;
+      operation: 'read' | 'write';
+    }> = {
+      name: 'ScheduledFile',
+      description: 'resource scheduler test tool',
+      parameters: z.object({
+        label: z.string(),
+        path: z.string(),
+        operation: z.enum(['read', 'write']),
+      }),
+      resolveAccesses: ({ path, operation }, context) =>
+        operation === 'read'
+          ? ToolAccesses.readFile(path, { cwd: context.cwd })
+          : ToolAccesses.writeFile(path, { cwd: context.cwd }),
+      impl: async ({ label }) => {
+        started.push(label);
+        await gates.get(label)!.promise;
+        return { label };
+      },
+    };
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [scheduledTool],
+      maxSteps: 3,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    const running = drainDurably(backend.send(durable.input()), durable);
+    await waitFor(() => started.length === 2);
+    assert.deepEqual(started, ['reader-1', 'independent']);
+    gates.get('reader-1')!.release();
+    await waitFor(() => started.includes('writer'));
+    assert.deepEqual(started, ['reader-1', 'independent', 'writer']);
+    gates.get('writer')!.release();
+    await waitFor(() => started.includes('reader-2'));
+    assert.deepEqual(started, ['reader-1', 'independent', 'writer', 'reader-2']);
+    gates.get('reader-2')!.release();
+    gates.get('independent')!.release();
+
+    const events = await running;
+    assert.equal(providerCalls, 2);
+    assert.equal(events.at(-1)?.type, 'complete');
+  });
+
   test('WebSearch telemetry never copies the user-derived query', async () => {
     const telemetry: Array<{ argsSummary?: string }> = [];
     const backend = createTestAiSdkBackend({

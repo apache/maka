@@ -93,6 +93,7 @@ import {
   sandboxBoundaryExpansionSchema,
   selectedBashBoundaryExpansion,
 } from './sandbox-boundary-declaration.js';
+import { ToolAccesses, type ToolResourceAccess } from './tool-access.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
 // near-instant; this only bounds a pathological hang now that the stream
@@ -333,6 +334,19 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
     parameters: openAiApplyPatchInputSchema,
     providerTool: { kind: 'openai-apply-patch' },
     executionFacts,
+    resolveAccesses: (input, ctx) => {
+      const operations =
+        typeof input === 'string'
+          ? parseCodexV4aPatch(input)
+          : input && typeof input === 'object' && 'operation' in input
+            ? [input.operation]
+            : undefined;
+      if (!operations) return ToolAccesses.all();
+      return operations.map(
+        (operation): ToolResourceAccess =>
+          ToolAccesses.writeFile(operation.path, { cwd: ctx.cwd })[0]!,
+      );
+    },
     impl: async (input, ctx) => {
       if (typeof input !== 'string') {
         return await filesystem.applyPatch({ operation: input.operation, ...filesystemCall(ctx) });
@@ -385,6 +399,10 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
             },
           }
         : {}),
+      resolveAccesses: (input, ctx) =>
+        input && typeof input === 'object' && 'path' in input && typeof input.path === 'string'
+          ? ToolAccesses.readFile(input.path, { cwd: ctx.cwd })
+          : ToolAccesses.all(),
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
         if ('ref' in input) {
@@ -459,6 +477,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         content: z.string(),
       }),
       executionFacts,
+      resolveAccesses: ({ path }, ctx) => ToolAccesses.writeFile(path, { cwd: ctx.cwd }),
       impl: async ({ path, content }, ctx) => {
         const result = await filesystem.execute({
           operation: { kind: 'write', path, content },
@@ -487,6 +506,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         new_string: z.string(),
       }),
       executionFacts,
+      resolveAccesses: ({ path }, ctx) => ToolAccesses.readWriteFile(path, { cwd: ctx.cwd }),
       impl: async ({ path, old_string, new_string }, ctx) => {
         const result = await filesystem.execute({
           operation: {
@@ -538,6 +558,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           .describe('Sort object keys lexicographically; default false.'),
       }),
       executionFacts,
+      resolveAccesses: ({ path }, ctx) => ToolAccesses.readWriteFile(path, { cwd: ctx.cwd }),
       impl: async ({ path, sort_keys }, ctx) => {
         const result = await filesystem.execute({
           operation: {
@@ -578,6 +599,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
           ),
       }),
       executionFacts,
+      resolveAccesses: ({ cwd }, ctx) => ToolAccesses.searchTree(cwd ?? '.', { cwd: ctx.cwd }),
       impl: async ({ pattern, cwd: relCwd }, ctx) => {
         const result = await filesystem.execute({
           operation: { kind: 'glob', path: relCwd ?? '.', pattern, limit: 200 },
@@ -602,6 +624,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         glob: z.string().optional(),
       }),
       executionFacts,
+      resolveAccesses: ({ path }, ctx) => ToolAccesses.searchTree(path ?? '.', { cwd: ctx.cwd }),
       impl: async ({ pattern, path, glob }, ctx) => {
         // Self-bound: ripgrep finishes in well under a second normally, but a
         // pathological tree (network mount, /proc, a FIFO) could hang it. The

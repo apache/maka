@@ -203,6 +203,8 @@ import { durableProjectionToToolResultOutput } from './durable-tool-result-proje
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { openAiChatReasoningFieldFromProviderOptions } from './openai-chat-reasoning-transport.js';
 import { RunTrace, type RunTraceRecorder } from './run-trace.js';
+import { settleToolCallBatch } from './tool-call-batch.js';
+import { ToolAccesses } from './tool-access.js';
 import { SandboxCommandError } from './sandbox/errors.js';
 import {
   REQUEST_SANDBOX_BOUNDARY_TOOL_NAME,
@@ -2824,59 +2826,105 @@ export class AiSdkBackend implements AgentBackend {
               await loadDurableTurnEvents();
             }
             const toolsByName = new Map(providerTools.map((tool) => [tool.name, tool]));
-            const settlementOutcomes = await Promise.allSettled(
-              returnedToolCalls.map(async (toolCall) => {
-                if (toolCall.providerExecuted) {
-                  throw new Error(
-                    `Provider-executed tool call "${toolCall.toolName}" is outside the main-agent tool loop`,
-                  );
-                }
-                const sandboxBoundaryAttempt = isProviderSandboxBoundaryAttempt(toolCall);
-                const deniedBoundaryRequest =
-                  toolRuntime.hasSandboxBoundaryDenial() &&
-                  toolCall.toolName.toLowerCase() === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME;
-                if (deniedBoundaryRequest) {
-                  toolRuntime.forceSandboxBoundaryFinalization();
-                }
-                const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
-                const requestedTool = blockedToolCall
-                  ? undefined
-                  : toolsByName.get(toolCall.toolName);
-                const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
-                if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
-                const unavailableError = sandboxBoundaryFinalizationStep
-                  ? 'Sandbox boundary finalization does not permit tool execution.'
-                  : deniedBoundaryRequest
-                    ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
-                    : 'returned tool is unavailable';
-                return await toolRuntime.settleToolCall({
-                  tool,
-                  turnId,
-                  stepId: providerStepId,
-                  toolCallId: toolCall.toolCallId,
-                  // Provider metadata is persisted verbatim into an immutable
-                  // RuntimeEvent, and a field the response did not carry
-                  // arrives as an explicit `undefined` — which JSON drops, so
-                  // the event no longer reads back as it was written and the
-                  // store refuses it. One refusal took every tool-calling turn
-                  // with it.
-                  ...(toolCall.providerOptions !== undefined
-                    ? {
-                        providerOptions: stripUndefinedDeep(toolCall.providerOptions),
-                      }
-                    : {}),
-                  input:
-                    requestedTool !== undefined
-                      ? toolCall.input
-                      : {
-                          tool: toolCall.toolName,
-                          error: unavailableError,
-                          ...(sandboxBoundaryAttempt ? { sandboxBoundaryAttempt: true } : {}),
-                        },
-                  abortSignal: turnAbortController.signal,
-                  eventSink: queue,
-                });
-              }),
+            const preparedToolCalls = returnedToolCalls.map((toolCall) => {
+              const sandboxBoundaryAttempt = isProviderSandboxBoundaryAttempt(toolCall);
+              const deniedBoundaryRequest =
+                toolRuntime.hasSandboxBoundaryDenial() &&
+                toolCall.toolName.toLowerCase() === REQUEST_SANDBOX_BOUNDARY_TOOL_NAME;
+              if (deniedBoundaryRequest) {
+                toolRuntime.forceSandboxBoundaryFinalization();
+              }
+              const blockedToolCall = sandboxBoundaryFinalizationStep || deniedBoundaryRequest;
+              const requestedTool = blockedToolCall
+                ? undefined
+                : toolsByName.get(toolCall.toolName);
+              const tool = requestedTool ?? toolsByName.get(INVALID_TOOL_NAME);
+              if (!tool) throw new Error('Runtime invalid-tool fallback is unavailable');
+              const unavailableError = sandboxBoundaryFinalizationStep
+                ? 'Sandbox boundary finalization does not permit tool execution.'
+                : deniedBoundaryRequest
+                  ? SANDBOX_BOUNDARY_DENIED_FOR_TURN
+                  : 'returned tool is unavailable';
+              return {
+                toolCall,
+                tool,
+                input:
+                  requestedTool !== undefined
+                    ? toolCall.input
+                    : {
+                        tool: toolCall.toolName,
+                        error: unavailableError,
+                        ...(sandboxBoundaryAttempt ? { sandboxBoundaryAttempt: true } : {}),
+                      },
+                syntheticWithoutEffect:
+                  blockedToolCall || requestedTool === undefined || toolCall.providerExecuted,
+              };
+            });
+            const admissionCandidates = preparedToolCalls.filter(
+              ({ toolCall }) => !toolCall.providerExecuted,
+            );
+            const candidateAdmissions = toolRuntime.admitToolCallBatch(
+              admissionCandidates.map(({ tool }) => tool),
+              providerStepId,
+            );
+            let admissionIndex = 0;
+            const admittedToolCalls = preparedToolCalls.map((prepared) => ({
+              ...prepared,
+              admission: prepared.toolCall.providerExecuted
+                ? ({ kind: 'admitted' } as const)
+                : candidateAdmissions[admissionIndex++]!,
+            }));
+            const settlementOutcomes = await settleToolCallBatch(
+              admittedToolCalls.map(
+                ({ toolCall, tool, input: executionInput, admission, syntheticWithoutEffect }) => ({
+                  id: toolCall.toolCallId,
+                  signal: turnAbortController.signal,
+                  resolveAccesses:
+                    syntheticWithoutEffect || admission.kind === 'rejected'
+                      ? () => ToolAccesses.none()
+                      : tool.resolveAccesses
+                        ? () =>
+                            tool.resolveAccesses!(executionInput as never, {
+                              sessionId: this.input.sessionId,
+                              ...(scope.runId ? { runId: scope.runId } : {}),
+                              turnId,
+                              cwd: this.input.header.cwd,
+                              permissionMode: this.input.header.permissionMode,
+                              toolCallId: toolCall.toolCallId,
+                              abortSignal: turnAbortController.signal,
+                            })
+                        : undefined,
+                  run: async () => {
+                    if (toolCall.providerExecuted) {
+                      throw new Error(
+                        `Provider-executed tool call "${toolCall.toolName}" is outside the main-agent tool loop`,
+                      );
+                    }
+                    return await toolRuntime.settleToolCall({
+                      tool,
+                      turnId,
+                      stepId: providerStepId,
+                      stepAdmission: admission,
+                      toolCallId: toolCall.toolCallId,
+                      // Provider metadata is persisted verbatim into an immutable
+                      // RuntimeEvent, and a field the response did not carry
+                      // arrives as an explicit `undefined` — which JSON drops, so
+                      // the event no longer reads back as it was written and the
+                      // store refuses it. One refusal took every tool-calling turn
+                      // with it.
+                      ...(toolCall.providerOptions !== undefined
+                        ? {
+                            providerOptions: stripUndefinedDeep(toolCall.providerOptions),
+                          }
+                        : {}),
+                      input: executionInput,
+                      abortSignal: turnAbortController.signal,
+                      eventSink: queue,
+                    });
+                  },
+                }),
+              ),
+              { cwd: this.input.header.cwd },
             );
             const rejectedSettlement = settlementOutcomes.find(
               (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
