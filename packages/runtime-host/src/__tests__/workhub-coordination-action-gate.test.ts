@@ -320,6 +320,20 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.assignments.length, 1);
   });
 
+  /**
+   * A stop proposal as the Action Policy produces it: opaque identities plus
+   * the active-delegation state it resolved against, never a display name.
+   */
+  const stopProposal = (
+    stopsActionId: string,
+    targetSessionId: string,
+    activeActionIds: readonly string[] = [stopsActionId],
+  ) => ({
+    disposition: 'stop_work' as const,
+    stopsActionId,
+    expects: { targetSessionId, activeActionIds },
+  });
+
   test('stops exactly one named durable delegation and replays its observed outcome', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     effects.assignmentRecords.set(
@@ -339,7 +353,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const input = {
       actionId: 'stop-action',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work' as const, stopsActionId: 'source-action' },
+      proposal: stopProposal('source-action', 'payments'),
       confirmation: { kind: 'user_stop' as const },
     };
 
@@ -358,7 +372,7 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.retirements.length, 1);
   });
 
-  test('rejects a named stop that does not identify one active durable delegation', async () => {
+  test('rejects a stop that does not identify one active durable delegation', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     for (const actionId of ['source-action', 'other-action']) {
       effects.assignmentRecords.set(
@@ -377,23 +391,30 @@ describe('WorkHub Coordination Action Gate', () => {
       );
     }
 
-    await assert.rejects(
-      new WorkHubCoordinationActionGate(effects).act(
-        {
-          actionId: 'stop-ambiguous-payments',
-          userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
-          confirmation: { kind: 'user_stop' },
-        },
-        CONTEXT,
-      ),
-      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
-    );
+    // A proposal that understates the Session's active work is stale, and one
+    // that states it honestly still fails: stop admits a sole delegation only.
+    for (const proposal of [
+      stopProposal('source-action', 'payments'),
+      stopProposal('source-action', 'payments', ['source-action', 'other-action']),
+    ]) {
+      await assert.rejects(
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: 'stop-ambiguous-payments',
+            userText: 'Stop Payments',
+            proposal,
+            confirmation: { kind: 'user_stop' },
+          },
+          CONTEXT,
+        ),
+        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+      );
+    }
     assert.equal(effects.stopRequests.size, 0);
     assert.equal(effects.retirements.length, 0);
   });
 
-  test('rejects stop authority from confirmation alone or a different named target', async () => {
+  test('rejects stop authority from confirmation alone or a stale precondition', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     effects.assignmentRecords.set(
       'source-action',
@@ -409,25 +430,47 @@ describe('WorkHub Coordination Action Gate', () => {
         'source-turn',
       ),
     );
+    // Action Intent still has to carry a direct stop imperative. It only says
+    // that the user asked to stop work; which work is the Resolver's answer and
+    // this Gate's revalidated precondition, so no text here selects a target.
     for (const userText of [
       'Stop it',
       'Pause Payments',
       'How do I stop Payments?',
       'Do not stop Payments',
-      'Stop Login',
     ]) {
       await assert.rejects(
         new WorkHubCoordinationActionGate(effects).act(
           {
             actionId: `stop-${userText}`,
             userText,
-            proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+            proposal: stopProposal('source-action', 'payments'),
             confirmation: { kind: 'user_stop' },
           },
           CONTEXT,
         ),
         (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
         userText,
+      );
+    }
+    // A precondition that disagrees with durable state fails closed, whether it
+    // names the wrong Session or an active delegation set that never held.
+    for (const proposal of [
+      stopProposal('source-action', 'login'),
+      stopProposal('source-action', 'payments', ['other-action']),
+      stopProposal('source-action', 'payments', []),
+    ]) {
+      await assert.rejects(
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: `stop-${proposal.expects.targetSessionId}-${proposal.expects.activeActionIds.join('+')}`,
+            userText: 'Stop Payments',
+            proposal,
+            confirmation: { kind: 'user_stop' },
+          },
+          CONTEXT,
+        ),
+        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
       );
     }
     assert.equal(effects.retirements.length, 0);
@@ -458,7 +501,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-shared',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+        proposal: stopProposal('source-action', 'payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -489,7 +532,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'stop-shared',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: stopProposal('source-action', 'payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -529,7 +572,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'reused-stop',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: stopProposal('source-action', 'payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -546,7 +589,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'reused-stop',
           userText: 'Stop Login',
-          proposal: { disposition: 'stop_work', stopsActionId: 'other-action' },
+          proposal: stopProposal('other-action', 'login'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -577,7 +620,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'crossing-action',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+        proposal: stopProposal('source-action', 'payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -628,7 +671,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-first',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+        proposal: stopProposal('source-action', 'payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -638,7 +681,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-second',
         userText: 'Stop Payments',
-        proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+        proposal: stopProposal('source-action', 'payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -669,7 +712,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const input = {
       actionId: 'stop-removed-target',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work' as const, stopsActionId: 'source-action' },
+      proposal: stopProposal('source-action', 'payments'),
       confirmation: { kind: 'user_stop' as const },
     };
     const unresolved = (error: unknown) =>
@@ -703,7 +746,7 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.stopResolutions.size, 1);
   });
 
-  test('binds a fresh stop to the current display name while replay keeps its durable name', async () => {
+  test('keeps display names as stop evidence rather than admission authority', async () => {
     const effects = fakeEffects([session('payments', { name: 'Renamed Payments' })]);
     effects.assignmentRecords.set(
       'source-action',
@@ -719,13 +762,19 @@ describe('WorkHub Coordination Action Gate', () => {
         'source-turn',
       ),
     );
+    // The reference the user typed is the Session's old name. Resolution is the
+    // Resolver's business; admission proves the opaque identity, so a rename
+    // between resolution and admission cannot invalidate the claim.
     const input = {
       actionId: 'stop-renamed',
-      userText: 'Stop Renamed Payments',
-      proposal: { disposition: 'stop_work' as const, stopsActionId: 'source-action' },
+      userText: 'Stop Old Payments',
+      proposal: stopProposal('source-action', 'payments'),
       confirmation: { kind: 'user_stop' as const },
     };
-    await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.equal(
+      (await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT)).disposition,
+      'stop_work',
+    );
     assert.equal(
       effects.stopRequests.get('delegation-source-action')?.targetSessionName,
       'Renamed Payments',
@@ -734,6 +783,10 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(
       (await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT)).disposition,
       'stop_work',
+    );
+    assert.equal(
+      effects.stopRequests.get('delegation-source-action')?.targetSessionName,
+      'Renamed Payments',
     );
   });
 

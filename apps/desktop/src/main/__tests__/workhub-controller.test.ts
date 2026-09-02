@@ -373,10 +373,16 @@ test('direct stop bypasses routing candidates and preserves a not_owned delegati
     outcome: 'not_owned',
     targetTurnId: 'shared-turn',
   });
+  // The proposal carries only opaque identities and the resolved active state.
+  // No display name reaches the Action Gate.
   assert.deepEqual(actions, [{
     actionId: 'stop-1',
     userText: 'Stop Payments',
-    proposal: { disposition: 'stop_work', stopsActionId: 'action-1' },
+    proposal: {
+      disposition: 'stop_work',
+      stopsActionId: 'action-1',
+      expects: { targetSessionId: 'payments', activeActionIds: ['action-1'] },
+    },
     confirmation: { kind: 'user_stop' },
   }]);
   assert.equal(candidateReads, 0);

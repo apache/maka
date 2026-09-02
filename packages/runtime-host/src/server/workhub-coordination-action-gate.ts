@@ -42,7 +42,6 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
-  workHubStopTargetsSession,
 } from '@maka/core/workhub-creation-intent';
 import type {
   WorkHubCoordinationActInput,
@@ -357,22 +356,16 @@ export class WorkHubCoordinationActionGate {
         );
       }
       const source = await this.#effects.readAssignment(proposal.stopsActionId);
-      if (!source) {
+      if (!source || source.targetSessionId !== proposal.expects.targetSessionId) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub can stop only the named durable delegation it owns',
+          'WorkHub can stop only the resolved durable delegation it owns',
         );
       }
       const stopFingerprint = stopActionFingerprint(input, source);
       await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
       const existing = await this.#effects.readStopRequest(source.delegationId);
       if (existing) {
-        if (!workHubStopTargetsSession(requestIntent, existing.targetSessionName)) {
-          throw new WorkHubActionGateFailure(
-            'action_conflict',
-            'WorkHub can stop only the named durable delegation it owns',
-          );
-        }
         if (existing.actionId !== input.actionId) {
           // `not_owned` deliberately leaves the delegation active, so the user
           // can and will try again with a fresh request. That later attempt has
@@ -397,27 +390,33 @@ export class WorkHubCoordinationActionGate {
           'WorkHub active delegation target is unavailable',
         );
       }
-      const matchingAssignments = activeAssignments.filter((assignment) =>
-        workHubStopTargetsSession(requestIntent, sessionNameById.get(assignment.targetSessionId)!),
-      );
-      if (
-        matchingAssignments.length !== 1 ||
-        matchingAssignments[0]?.actionId !== source.actionId ||
-        matchingAssignments[0]?.delegationId !== source.delegationId
-      ) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub stop target does not identify one active durable delegation',
-        );
-      }
       const currentTargetName = sessionNameById.get(source.targetSessionId);
       if (!currentTargetName) {
         throw new WorkHubActionGateFailure('action_conflict', 'WorkHub stop target is unavailable');
       }
-      if (!workHubStopTargetsSession(requestIntent, currentTargetName)) {
+      // Authority is the opaque delegation identity, never the display name the
+      // Resolver recalled it by. The Gate proves that identity is still the one
+      // active delegation of the Session the policy resolved, and that the
+      // policy's view of that Session has not changed underneath the proposal.
+      if (
+        !sameActiveDelegationSet(
+          activeAssignments,
+          source.targetSessionId,
+          proposal.expects.activeActionIds,
+        )
+      ) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
-          'WorkHub can stop only the named durable delegation it owns',
+          'WorkHub stop target active delegations changed during admission',
+        );
+      }
+      if (
+        proposal.expects.activeActionIds.length !== 1 ||
+        proposal.expects.activeActionIds[0] !== source.actionId
+      ) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub stop target does not identify one active durable delegation',
         );
       }
       if (await this.#effects.readSupersession(source.delegationId)) {
@@ -1051,6 +1050,24 @@ function replacementActionFingerprint(
         : {}),
     },
   });
+}
+
+/**
+ * Whether one Session's current active WorkHub delegations are exactly the set
+ * the Action Policy resolved against. Comparison is by opaque action identity
+ * and order-insensitive, so a rename cannot invalidate a proposal and a
+ * concurrent delegation to the same Session always does.
+ */
+function sameActiveDelegationSet(
+  activeAssignments: readonly WorkHubDelegationAssignedMessage[],
+  targetSessionId: string,
+  expectedActionIds: readonly string[],
+): boolean {
+  const current = activeAssignments
+    .filter((assignment) => assignment.targetSessionId === targetSessionId)
+    .map((assignment) => assignment.actionId);
+  const expected = new Set(expectedActionIds);
+  return current.length === expected.size && current.every((actionId) => expected.has(actionId));
 }
 
 function stopActionFingerprint(

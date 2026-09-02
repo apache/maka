@@ -89,13 +89,21 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
     decodeWorkHubCoordinationActInput({
       actionId: 'action-stop',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+      },
       confirmation: { kind: 'user_stop' },
     }),
     {
       actionId: 'action-stop',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+      },
       confirmation: { kind: 'user_stop' },
     },
   );
@@ -103,12 +111,20 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
     {
       actionId: 'action-stop-no-confirmation',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+      },
     },
     {
       actionId: 'action-stop-wrong-confirmation',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+      },
       confirmation: { kind: 'user_correction' },
     },
     {
@@ -117,7 +133,41 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       proposal: {
         disposition: 'stop_work',
         stopsActionId: 'action-payments',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
         targetSessionId: 'injected',
+      },
+      confirmation: { kind: 'user_stop' },
+    },
+    // Preconditions are part of the closed proposal shape, not an optional hint.
+    {
+      actionId: 'action-stop-missing-preconditions',
+      userText: 'Stop Payments',
+      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      confirmation: { kind: 'user_stop' },
+    },
+    {
+      actionId: 'action-stop-unbounded-preconditions',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: {
+          targetSessionId: 'payments',
+          activeActionIds: Array.from({ length: 33 }, (_unused, index) => `action-${index}`),
+        },
+      },
+      confirmation: { kind: 'user_stop' },
+    },
+    {
+      actionId: 'action-stop-duplicate-preconditions',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        stopsActionId: 'action-payments',
+        expects: {
+          targetSessionId: 'payments',
+          activeActionIds: ['action-payments', 'action-payments'],
+        },
       },
       confirmation: { kind: 'user_stop' },
     },

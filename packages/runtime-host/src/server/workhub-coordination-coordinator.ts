@@ -38,10 +38,6 @@ import {
   type WorkHubDelegationStopRequestedMessage,
   type WorkHubDelegationStopResolvedMessage,
 } from '@maka/core/session';
-import {
-  readWorkHubRequestIntent,
-  workHubStopTargetsSession,
-} from '@maka/core/workhub-creation-intent';
 import type { SessionAuthorityStore, SessionHeaderSnapshot } from '@maka/storage/session-store';
 import type {
   OperationOutcome,
@@ -295,8 +291,7 @@ export class HostWorkHubCoordinationCoordinator {
             'WorkHub delegation is already being replaced',
           );
         }
-        const intent = readWorkHubRequestIntent(input.userText);
-        const sessionNameById = new Map(headers.map((header) => [header.id, header.name]));
+        const visibleSessionIds = new Set(headers.map((header) => header.id));
         const activeAssignments = activeWorkHubAssignments(messages);
         if (
           activeAssignments.some(
@@ -309,22 +304,24 @@ export class HostWorkHubCoordinationCoordinator {
           );
         }
         if (
-          activeAssignments.some((assignment) => !sessionNameById.has(assignment.targetSessionId))
+          activeAssignments.some((assignment) => !visibleSessionIds.has(assignment.targetSessionId))
         ) {
           throw new WorkHubActionGateFailure(
             'action_conflict',
             'WorkHub active delegation target is unavailable',
           );
         }
-        const matching = activeAssignments.filter((assignment) =>
-          workHubStopTargetsSession(intent, sessionNameById.get(assignment.targetSessionId)!),
+        // Held lanes make this the last moment the one-target proof can change.
+        // It is proved from opaque delegation identity, so a concurrent rename
+        // is harmless while a concurrent delegation to the same Session is not.
+        const targetActive = activeAssignments.filter(
+          (assignment) => assignment.targetSessionId === input.targetSessionId,
         );
-        const currentName = sessionNameById.get(input.targetSessionId);
         if (
-          matching.length !== 1 ||
-          matching[0]?.actionId !== input.stopsActionId ||
-          matching[0]?.delegationId !== input.stopsDelegationId ||
-          currentName !== input.targetSessionName
+          !visibleSessionIds.has(input.targetSessionId) ||
+          targetActive.length !== 1 ||
+          targetActive[0]?.actionId !== input.stopsActionId ||
+          targetActive[0]?.delegationId !== input.stopsDelegationId
         ) {
           throw new WorkHubActionGateFailure(
             'action_conflict',

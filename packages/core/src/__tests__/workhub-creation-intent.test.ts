@@ -23,10 +23,18 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
-  workHubStopTargetsSession,
+  workHubSessionReferenceNamesSession,
+  type WorkHubRequestIntent,
 } from '../workhub-creation-intent.js';
 
 const intentFor = readWorkHubRequestIntent;
+/** The stop Action Policy's own sufficiency rule, kept out of the matcher. */
+const workHubStopTargetsSession = (intent: WorkHubRequestIntent, sessionName: string): boolean =>
+  Boolean(
+    intent.stop.imperative &&
+      intent.stop.target &&
+      workHubSessionReferenceNamesSession(intent.stop.target, sessionName),
+  );
 const affirmativeWorkHubExistingCorrectionTarget = (value: string) =>
   intentFor(value).correction.existingTarget;
 const affirmativeWorkHubNamedCreationTitle = (value: string) => {

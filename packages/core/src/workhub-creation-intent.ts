@@ -329,23 +329,6 @@ export function workHubSessionReferenceNamesSession(
   return stopTargetMatchesSession(reference, sessionName);
 }
 
-/**
- * Whether a parsed direct-stop command names exactly this Session.
- *
- * Only Runtime stop admission still derives a target this way. It moves onto
- * the resolved opaque identity next, and this predicate goes with it.
- */
-export function workHubStopTargetsSession(
-  intent: WorkHubRequestIntent,
-  sessionName: string,
-): boolean {
-  return Boolean(
-    intent.stop.imperative &&
-      intent.stop.target &&
-      workHubSessionReferenceNamesSession(intent.stop.target, sessionName),
-  );
-}
-
 /** Whether a parsed correction names exactly this Session. */
 export function workHubCorrectionTargetsSession(
   intent: WorkHubRequestIntent,

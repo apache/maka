@@ -583,6 +583,7 @@ describe('Host WorkHub Coordination coordinator', () => {
   test('persists direct-stop request and resolution before replaying after restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stop-'));
     let store = createSessionStore(root);
+    let targetId = '';
     try {
       const target = await store.create({
         cwd: root,
@@ -591,6 +592,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         model: 'test-model',
         permissionMode: 'ask',
       });
+      targetId = target.id;
       let retireCalls = 0;
       const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
@@ -624,7 +626,11 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: {
+            disposition: 'stop_work',
+            stopsActionId: 'source-action',
+            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+          },
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -662,7 +668,11 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: {
+            disposition: 'stop_work',
+            stopsActionId: 'source-action',
+            expects: { targetSessionId: targetId, activeActionIds: ['source-action'] },
+          },
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -677,7 +687,7 @@ describe('Host WorkHub Coordination coordinator', () => {
     }
   });
 
-  test('rechecks stop-name uniqueness after the advisory active-link read', async () => {
+  test('rechecks sole-delegation stop preconditions after the advisory active-link read', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stop-race-'));
     const store = createSessionStore(root);
     try {
@@ -759,7 +769,11 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-racing-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: {
+            disposition: 'stop_work',
+            stopsActionId: 'source-action',
+            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+          },
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -850,7 +864,11 @@ describe('Host WorkHub Coordination coordinator', () => {
         {
           actionId: 'stop-removed-target-action',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: {
+            disposition: 'stop_work',
+            stopsActionId: 'source-action',
+            expects: { targetSessionId: target.id, activeActionIds: ['source-action'] },
+          },
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -873,13 +891,17 @@ describe('Host WorkHub Coordination coordinator', () => {
   test('converges a committed stop after the target Session is removed and the Host restarts', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-stop-removed-'));
     let store = createSessionStore(root);
-    const stopInput = {
+    let targetId: string;
+    const stopInput = () => ({
       actionId: 'stop-action',
       userText: 'Stop Payments',
-      proposal: { disposition: 'stop_work' as const, stopsActionId: 'source-action' },
+      proposal: {
+        disposition: 'stop_work' as const,
+        stopsActionId: 'source-action',
+        expects: { targetSessionId: targetId, activeActionIds: ['source-action'] },
+      },
       confirmation: { kind: 'user_stop' as const },
-    };
-    let targetId: string;
+    });
     try {
       const target = await store.create({
         cwd: root,
@@ -940,7 +962,7 @@ describe('Host WorkHub Coordination coordinator', () => {
         ).ok,
         true,
       );
-      const crashed = await workhub.handlers['workhub.coordination.act'](stopInput, CONTEXT);
+      const crashed = await workhub.handlers['workhub.coordination.act'](stopInput(), CONTEXT);
       assert.equal(crashed.ok, false);
       const assignment = await store.readWorkHubAssignment('source-action');
       assert.ok(assignment);
@@ -962,7 +984,7 @@ describe('Host WorkHub Coordination coordinator', () => {
           return { outcome: 'recovering' };
         },
       });
-      const resolved = await restarted.handlers['workhub.coordination.act'](stopInput, CONTEXT);
+      const resolved = await restarted.handlers['workhub.coordination.act'](stopInput(), CONTEXT);
       assert.deepEqual(resolved, {
         ok: true,
         result: {
@@ -973,7 +995,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       });
       assert.equal(retireCalls, 1);
       assert.deepEqual(
-        await restarted.handlers['workhub.coordination.act'](stopInput, CONTEXT),
+        await restarted.handlers['workhub.coordination.act'](stopInput(), CONTEXT),
         resolved,
       );
       assert.equal(retireCalls, 1);
@@ -986,12 +1008,17 @@ describe('Host WorkHub Coordination coordinator', () => {
   test('keeps one durable action identity bound to one delegation across restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-workhub-action-claim-'));
     let store = createSessionStore(root);
-    const stopLogin = {
+    let loginSessionId = '';
+    const stopLogin = () => ({
       actionId: 'reused-stop',
       userText: 'Stop Login',
-      proposal: { disposition: 'stop_work' as const, stopsActionId: 'login-action' },
+      proposal: {
+        disposition: 'stop_work' as const,
+        stopsActionId: 'login-action',
+        expects: { targetSessionId: loginSessionId, activeActionIds: ['login-action'] },
+      },
       confirmation: { kind: 'user_stop' as const },
-    };
+    });
     let loginDelegationId: string | undefined;
     try {
       const targets: Array<{ id: string; name: string }> = [];
@@ -1039,12 +1066,20 @@ describe('Host WorkHub Coordination coordinator', () => {
           true,
         );
       }
+      loginSessionId = targets.find((session) => session.name === 'Login')!.id;
       loginDelegationId = (await store.readWorkHubAssignment('login-action'))?.delegationId;
       const recovering = await workhub.handlers['workhub.coordination.act'](
         {
           actionId: 'reused-stop',
           userText: 'Stop Payments',
-          proposal: { disposition: 'stop_work', stopsActionId: 'source-action' },
+          proposal: {
+            disposition: 'stop_work',
+            stopsActionId: 'source-action',
+            expects: {
+              targetSessionId: targets.find((session) => session.name === 'Payments')!.id,
+              activeActionIds: ['source-action'],
+            },
+          },
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -1060,7 +1095,7 @@ describe('Host WorkHub Coordination coordinator', () => {
       const restarted = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
         retireDelegation: async () => assert.fail('a reused action identity must not retire work'),
       });
-      const crossed = await restarted.handlers['workhub.coordination.act'](stopLogin, CONTEXT);
+      const crossed = await restarted.handlers['workhub.coordination.act'](stopLogin(), CONTEXT);
       assert.equal(crossed.ok, false);
       if (!crossed.ok) assert.equal(crossed.error.code, 'operation_conflict');
       assert.ok(loginDelegationId);
