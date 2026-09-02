@@ -23,11 +23,11 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { IpcMain } from 'electron';
 import {
-  consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import { REMOTE_OWNER_OPERATION_GRANTS, type HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostRegistration } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
@@ -982,25 +982,13 @@ async function issueConnectionCode(
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
-  const livePeer = await readLivePeer(client, peer);
-  const prepared = await client.request('access.credential.prepare', {
-    principalKind: 'remote_owner',
-    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-    operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
-    canPublishClientCapabilities: true,
-    canUseHostPaths: false,
-    bindClientInstance: true,
-  });
-  const credential = await consumeAccessCredentialDelivery(
+  return issueRuntimeHostOwnerConnectionCode({
     rootPath,
-    prepared.deliveryId,
-    prepared.credentialId,
-  );
-  return encodeRuntimeHostOwnerConnectionCode({
-    name: hostName(),
     rootId,
-    transport: { kind: 'libp2p-direct', ...livePeer },
-    credential,
+    name: hostName(),
+    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+    expectedPeerId: peer.peerId,
+    client,
   });
 }
 
@@ -1032,6 +1020,9 @@ async function hasSharedAccess(
     target,
   });
   if (response.kind === 'error') throw new Error(response.error.message);
+  if (response.action !== 'list') {
+    throw new Error('Runtime Host operator returned an unrelated access result');
+  }
   return response.credentials.some(
     (credential) =>
       credential.principalKind === 'remote_owner' &&

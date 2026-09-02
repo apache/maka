@@ -17,10 +17,12 @@
  * under the License.
  */
 
+import { hostname } from 'node:os';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
+  issueRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
@@ -87,6 +89,10 @@ export interface RuntimeHostAccessListOptions {
   readonly expectedRootId?: string;
 }
 
+export interface RuntimeHostAccessConnectionCodeOptions extends RuntimeHostAccessListOptions {
+  readonly name?: string;
+}
+
 export interface RuntimeHostAccessRevokeOptions extends RuntimeHostAccessListOptions {
   readonly credentialId: string;
   readonly currentCredentialFingerprint?: string;
@@ -137,6 +143,40 @@ export async function runRuntimeHostAccessListCli(
     if (!framed) throw error;
     writeAccessManagementError('list', error);
     return 1;
+  }
+}
+
+export async function runRuntimeHostAccessConnectionCodeCli(
+  options: RuntimeHostAccessConnectionCodeOptions,
+  framed = false,
+): Promise<number> {
+  let connection: Awaited<ReturnType<typeof connectLocalOwner>> | undefined;
+  try {
+    connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
+    const connectionCode = await issueRuntimeHostOwnerConnectionCode({
+      rootPath: options.rootPath,
+      rootId: connection.rootId,
+      name: options.name?.trim() || truncateUtf8(hostname(), 128) || 'Runtime Host',
+      principalId: 'cli-owner:connection-code',
+      client: connection,
+    });
+    process.stdout.write(
+      framed
+        ? encodeRuntimeHostAccessManagementFrame({
+            schemaVersion: 1,
+            kind: 'result',
+            action: 'connection-code',
+            connectionCode,
+          })
+        : `${connectionCode}\n`,
+    );
+    return 0;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('connection-code', error);
+    return 1;
+  } finally {
+    await connection?.close();
   }
 }
 

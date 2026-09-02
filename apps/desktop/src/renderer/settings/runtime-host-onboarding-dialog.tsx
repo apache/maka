@@ -36,18 +36,22 @@ import {
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
+  readonly initialTargetKind: 'ssh' | 'wsl';
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const isWindows = navigator.userAgent.includes('Windows');
   const revision = useRef(-1);
   const [snapshot, setSnapshot] = useState<DesktopRuntimeHostOnboardingSnapshot>({
     kind: 'idle',
     revision: 0,
   });
   const [name, setName] = useState('');
-  const [targetKind, setTargetKind] = useState<'ssh' | 'wsl'>('ssh');
+  const [targetKind, setTargetKind] = useState<'ssh' | 'wsl'>(
+    isWindows ? props.initialTargetKind : 'ssh',
+  );
   const [destination, setDestination] = useState('');
   const [distribution, setDistribution] = useState('');
   const [distributions, setDistributions] = useState<readonly string[]>([]);
@@ -74,7 +78,7 @@ export function RuntimeHostOnboardingDialog(props: {
   }, [props.isOpen]);
 
   useEffect(() => {
-    if (!props.isOpen || !navigator.userAgent.includes('Windows')) return;
+    if (!props.isOpen || !isWindows) return;
     let disposed = false;
     void window.maka.runtimeHostOnboarding.listWslDistributions().then((available) => {
       if (disposed) return;
@@ -82,7 +86,7 @@ export function RuntimeHostOnboardingDialog(props: {
       setDistribution((current) => current || available[0] || '');
     }, () => undefined);
     return () => { disposed = true; };
-  }, [props.isOpen]);
+  }, [isWindows, props.isOpen]);
 
   const running = snapshot.kind === 'running';
   const canStart =
@@ -144,7 +148,9 @@ export function RuntimeHostOnboardingDialog(props: {
         header={(
           <DialogHeader
             title={copy.setupTitle}
-            subtitle={copy.setupDescription}
+            subtitle={targetKind === 'wsl'
+              ? copy.setupWslDescription
+              : copy.setupSshDescription}
             onOpenChange={(open) => {
               if (!open) close();
             }}
@@ -172,7 +178,7 @@ export function RuntimeHostOnboardingDialog(props: {
                     isDisabled={running}
                     onChange={setName}
                   />
-                  {navigator.userAgent.includes('Windows') ? (
+                  {isWindows ? (
                     <SegmentedControl
                       label={copy.setupTarget}
                       value={targetKind}

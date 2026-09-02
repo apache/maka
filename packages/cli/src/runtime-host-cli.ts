@@ -288,6 +288,13 @@ export type RuntimeHostCliCommand =
       framed: boolean;
     }
   | {
+      kind: 'runtime-host-access-connection-code';
+      rootPath?: string;
+      expectedRootId?: string;
+      name?: string;
+      framed: boolean;
+    }
+  | {
       kind: 'runtime-host-access-revoke';
       rootPath?: string;
       expectedRootId?: string;
@@ -2239,11 +2246,17 @@ function projectRootValid(
 
 function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   const action = argv[0];
-  if (action !== 'list' && action !== 'issue' && action !== 'prepare' && action !== 'revoke') {
+  if (
+    action !== 'list' &&
+    action !== 'issue' &&
+    action !== 'prepare' &&
+    action !== 'revoke' &&
+    action !== 'connection-code'
+  ) {
     return error(
       action
         ? `Unexpected runtime-host access command: ${action}`
-        : 'runtime-host access requires list, issue, prepare, or revoke',
+        : 'runtime-host access requires connection-code, list, issue, prepare, or revoke',
     );
   }
   let rootPath: string | undefined;
@@ -2255,6 +2268,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   let credentialId: string | undefined;
   let capabilityOwnerCredentialId: string | undefined;
   let currentCredentialFingerprint: string | undefined;
+  let name: string | undefined;
   const operationGrants: string[] = [];
   let canPublishClientCapabilities = false;
   let canUseHostPaths = false;
@@ -2277,6 +2291,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     if (
       argument === '--root' ||
       argument === '--expected-root' ||
+      argument === '--name' ||
       argument === '--kind' ||
       argument === '--preset' ||
       argument === '--principal' ||
@@ -2289,6 +2304,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       if (typeof parsed !== 'string') return parsed;
       if (argument === '--root') rootPath = parsed;
       if (argument === '--expected-root') expectedRootId = parsed;
+      if (argument === '--name') name = parsed;
       if (argument === '--kind') {
         if (parsed !== 'remote-owner' && parsed !== 'capability-provider') {
           return error('--kind must be remote-owner or capability-provider');
@@ -2315,7 +2331,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   if (expectedRootId && !/^[a-f0-9]{64}$/u.test(expectedRootId)) {
     return error('--expected-root must be a Runtime Host root identity');
   }
-  if (action === 'list') {
+  if (action === 'connection-code') {
     if (
       principalId ||
       principalKindSpecified ||
@@ -2326,6 +2342,29 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       credentialId ||
       capabilityOwnerCredentialId ||
       currentCredentialFingerprint
+    ) {
+      return error('Credential management options are not valid for access connection-code');
+    }
+    return {
+      kind: 'runtime-host-access-connection-code',
+      ...(rootPath ? { rootPath } : {}),
+      ...(expectedRootId ? { expectedRootId } : {}),
+      ...(name ? { name } : {}),
+      framed,
+    };
+  }
+  if (action === 'list') {
+    if (
+      principalId ||
+      principalKindSpecified ||
+      operationGrants.length > 0 ||
+      canPublishClientCapabilities ||
+      canUseHostPaths ||
+      preset ||
+      credentialId ||
+      capabilityOwnerCredentialId ||
+      currentCredentialFingerprint ||
+      name
     ) {
       return error('Credential mutation options are not valid for access list');
     }
@@ -2350,7 +2389,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
       canUseHostPaths ||
       preset ||
       credentialId ||
-      capabilityOwnerCredentialId
+      capabilityOwnerCredentialId ||
+      name
     ) {
       return error('Credential issue options are not valid for access prepare');
     }
@@ -2364,7 +2404,7 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
   if (action === 'issue') {
     if (framed) return error('--framed is only valid for access management');
     if (!principalId) return error('--principal is required');
-    if (credentialId || currentCredentialFingerprint) {
+    if (credentialId || currentCredentialFingerprint || name) {
       return error('Credential target options are only valid for access revoke');
     }
     if (
@@ -2437,7 +2477,8 @@ function parseAccessCommand(argv: string[]): RuntimeHostCliCommand {
     operationGrants.length > 0 ||
     canPublishClientCapabilities ||
     canUseHostPaths ||
-    preset
+    preset ||
+    name
   ) {
     return error('Issue-only access options are not valid for revoke');
   }

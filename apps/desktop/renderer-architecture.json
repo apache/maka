@@ -171,7 +171,6 @@
     "src/renderer/settings/relay-profile-draft.ts",
     "src/renderer/settings/relay-thinking-bulk.ts",
     "src/renderer/settings/request-customization-editor.tsx",
-    "src/renderer/settings/runtime-host-connection-code-dialog.tsx",
     "src/renderer/settings/runtime-host-interaction-boundary.tsx",
     "src/renderer/settings/runtime-host-management-dialog.tsx",
     "src/renderer/settings/runtime-host-onboarding-dialog.tsx",
@@ -3723,30 +3722,6 @@
           "@maka/ui/icons": 1
         }
       },
-      "src/renderer/settings/runtime-host-connection-code-dialog.tsx": {
-        "bridgePaths": {
-          "window.maka.runtimeHostProfiles.importConnectionCode": 1
-        },
-        "environmentCapabilities": {
-          "navigator.clipboard.writeText": 1
-        },
-        "hookCalls": {
-          "useState": 2,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "../locales/settings-projects-copy.js": 1,
-          "./settings-error-copy.js": 1,
-          "@astryxdesign/core/Dialog": 1,
-          "@astryxdesign/core/Layout": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/settings/runtime-host-interaction-boundary.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -3788,13 +3763,12 @@
         "dependencyPaths": {
           "../../preload/bridge-contract.js": 1,
           "../../shared/runtime-host-project-directory-policy.js": 1,
+          "../features/runtime-host-management": 1,
           "../locales/settings-projects-copy.js": 1,
           "./runtime-host-project-directory-editor.js": 1,
           "./settings-error-copy.js": 1,
           "@astryxdesign/core/Dialog": 1,
           "@astryxdesign/core/Layout": 1,
-          "@astryxdesign/core/Switch": 1,
-          "@astryxdesign/core/Text": 1,
           "@astryxdesign/core/Tooltip": 1,
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1,
@@ -3812,7 +3786,7 @@
           "window.maka.runtimeHostOnboarding.subscribe": 1
         },
         "environmentCapabilities": {
-          "navigator.userAgent.includes": 2
+          "navigator.userAgent.includes": 1
         },
         "hookCalls": {
           "useEffect": 2,
@@ -3870,7 +3844,6 @@
           "../locales/session-collaboration-copy.js": 1,
           "../locales/settings-projects-copy.js": 1,
           "./password-input.js": 1,
-          "./runtime-host-connection-code-dialog.js": 1,
           "./runtime-host-management-dialog.js": 1,
           "./runtime-host-onboarding-dialog.js": 1,
           "./settings-error-copy.js": 1,

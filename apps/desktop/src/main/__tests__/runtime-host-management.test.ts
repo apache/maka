@@ -346,6 +346,15 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
       if (input.action === 'list') {
         return { schemaVersion: 1, kind: 'result', action: 'list', credentials };
       }
+      if (input.action === 'connection-code') {
+        assert.equal(input.name, profile.name);
+        return {
+          schemaVersion: 1,
+          kind: 'result',
+          action: 'connection-code',
+          connectionCode: 'maka-runtime-host:connect:v1:example',
+        };
+      }
       if (input.action === 'prepare') {
         prepareCalls += 1;
         assert.equal(input.currentCredentialFingerprint, currentFingerprint);
@@ -391,9 +400,14 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
   });
 
   const list = handlers.get('runtime-host-management:list-credentials');
+  const connectionCode = handlers.get('runtime-host-management:create-connection-code');
   const rotate = handlers.get('runtime-host-management:rotate-credential');
   const revoke = handlers.get('runtime-host-management:revoke-credential');
-  assert.ok(list && rotate && revoke);
+  assert.ok(list && connectionCode && rotate && revoke);
+  assert.equal(
+    await connectionCode({}, profile.id),
+    'maka-runtime-host:connect:v1:example',
+  );
   const initial = await list({}, profile.id);
   assert.equal((initial as { canRotate: boolean }).canRotate, true);
   assert.deepEqual(

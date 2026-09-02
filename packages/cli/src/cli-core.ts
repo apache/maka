@@ -155,6 +155,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access connection-code [--name <name>] [--root <path>]`,
     `  ${cliCommand} runtime-host access list`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
@@ -674,6 +675,19 @@ export async function runMakaCli(
         ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
         currentCredentialFingerprint: command.currentCredentialFingerprint,
       });
+    }
+    case 'runtime-host-access-connection-code': {
+      const { runRuntimeHostAccessConnectionCodeCli } = await import(
+        './runtime-host-access-command.js'
+      );
+      return runRuntimeHostAccessConnectionCodeCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+          ...(command.name ? { name: command.name } : {}),
+        },
+        command.framed,
+      );
     }
     case 'runtime-host-access-list': {
       const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');

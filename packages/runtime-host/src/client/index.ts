@@ -168,6 +168,8 @@ export { consumeAccessCredentialDelivery } from '../control/access-credential-de
 export {
   decodeRuntimeHostOwnerConnectionCode,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
+  type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';

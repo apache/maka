@@ -416,6 +416,30 @@ describe('Runtime Host operator commands', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'access',
+        'connection-code',
+        '--name',
+        'Office Host',
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-connection-code',
+        name: 'Office Host',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        framed: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['access', 'connection-code', '--principal', 'unexpected']).kind,
+      'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
         'revoke',
         '--credential',
         'credential-1',
