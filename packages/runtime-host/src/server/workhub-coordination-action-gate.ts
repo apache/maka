@@ -393,10 +393,19 @@ export class WorkHubCoordinationActionGate {
       // Authority is the opaque delegation identity, never the display name the
       // Resolver recalled it by. This is the advisory read; the coordinator
       // reproves it from durable state under the admission lease.
-      const targetActive = activeAssignments.filter(
-        (assignment) => assignment.targetSessionId === source.targetSessionId,
-      );
-      if (targetActive.length !== 1 || targetActive[0]?.actionId !== source.actionId) {
+      //
+      // A delegation link ends only by supersession or a resolved stop, so a
+      // delegation whose work already finished is still linked. It is not a
+      // competing stop target though — there is nothing left in it to stop —
+      // and counting it would make a Session that was delegated to twice
+      // permanently unstoppable once the first delegation completed.
+      if (!activeAssignments.some((assignment) => assignment.actionId === source.actionId)) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub stop target is no longer an active durable delegation',
+        );
+      }
+      if (await this.#hasCompetingWork(activeAssignments, source)) {
         throw new WorkHubActionGateFailure(
           'action_conflict',
           'WorkHub stop target does not identify one active durable delegation',
@@ -526,6 +535,26 @@ export class WorkHubCoordinationActionGate {
       delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
+  }
+
+  /**
+   * Whether any other delegation on the stop target's Session still holds work.
+   * A retirement read that cannot see the owner yet fails the stop closed
+   * rather than guessing that the other delegation is finished.
+   */
+  async #hasCompetingWork(
+    activeAssignments: readonly WorkHubDelegationAssignedMessage[],
+    source: WorkHubDelegationAssignedMessage,
+  ): Promise<boolean> {
+    const competitors = activeAssignments.filter(
+      (assignment) =>
+        assignment.targetSessionId === source.targetSessionId &&
+        assignment.delegationId !== source.delegationId,
+    );
+    for (const competitor of competitors) {
+      if ((await this.#effects.readDelegationRetirement(competitor)) !== 'retired') return true;
+    }
+    return false;
   }
 
   async #stop(

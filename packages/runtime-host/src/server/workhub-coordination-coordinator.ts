@@ -143,10 +143,12 @@ export class HostWorkHubCoordinationCoordinator {
   readonly #resolveCreateTarget: () => Promise<CoordinationCreateTarget>;
   readonly #requestDrain: () => void;
   readonly #actionGate: WorkHubCoordinationActionGate;
+  readonly #readDelegationRetirement: HostWorkHubCoordinationCoordinatorOptions['sessionActions']['readDelegationRetirement'];
 
   constructor(options: HostWorkHubCoordinationCoordinatorOptions) {
     this.#coordinationCwd = join(options.stateRoot, COORDINATION_CWD_DIRECTORY);
     this.#stores = options.stores;
+    this.#readDelegationRetirement = options.sessionActions.readDelegationRetirement;
     this.#admission = options.admission;
     this.#continuity = options.continuity;
     this.#executions = options.executions;
@@ -309,16 +311,28 @@ export class HostWorkHubCoordinationCoordinator {
         const targetActive = activeAssignments.filter(
           (assignment) => assignment.targetSessionId === input.targetSessionId,
         );
-        if (
-          !visibleSessionIds.has(input.targetSessionId) ||
-          targetActive.length !== 1 ||
-          targetActive[0]?.actionId !== input.stopsActionId ||
-          targetActive[0]?.delegationId !== input.stopsDelegationId
-        ) {
+        const source = targetActive.find(
+          (assignment) =>
+            assignment.actionId === input.stopsActionId &&
+            assignment.delegationId === input.stopsDelegationId,
+        );
+        if (!visibleSessionIds.has(input.targetSessionId) || !source) {
           throw new WorkHubActionGateFailure(
             'action_conflict',
             'WorkHub stop target does not identify one active durable delegation',
           );
+        }
+        // A delegation whose work already finished stays linked but competes
+        // for nothing; only work that could still be stopped makes the target
+        // ambiguous.
+        for (const competitor of targetActive) {
+          if (competitor.delegationId === source.delegationId) continue;
+          if ((await this.#readDelegationRetirement(competitor)) !== 'retired') {
+            throw new WorkHubActionGateFailure(
+              'action_conflict',
+              'WorkHub stop target does not identify one active durable delegation',
+            );
+          }
         }
       },
       unknownOutcomeMessage: 'WorkHub stop request outcome is unknown',

@@ -128,6 +128,13 @@ export interface WorkHubActiveDelegation {
   readonly sequence: number;
 }
 
+/** Target-owned execution states that leave a delegation with nothing to stop. */
+const SETTLED_DELEGATION_STATES: ReadonlySet<WorkHubDelegationExecutionState> = new Set([
+  'completed',
+  'failed',
+  'aborted',
+]);
+
 const WORKHUB_TIMELINE_TEXT_LIMIT = 600;
 
 export function boundedWorkHubTimelineText(value: string): string {
@@ -273,6 +280,18 @@ export function createWorkHubController(deps: {
   let focusReadVersion = 0;
   let pendingFocusReadVersion: number | undefined;
   const activeActionIdsBySessionId = new Map<string, string[]>();
+  /**
+   * A delegation link ends only by supersession or a resolved stop, so work
+   * that simply finished stays linked. It is no longer a stop target, though:
+   * counting it would make a Session delegated to twice look permanently
+   * ambiguous once the first delegation completed. Execution state is a
+   * read-only target-owned projection, so an unreadable one is never settled.
+   */
+  const settledActionIds = new Set<string>();
+  const stoppableActionIds = (sessionId: string): readonly string[] =>
+    (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
+      (actionId) => !settledActionIds.has(actionId),
+    );
   const removeActiveAction = (sessionId: string, actionId: string) => {
     const remaining = (activeActionIdsBySessionId.get(sessionId) ?? []).filter(
       (candidate) => candidate !== actionId,
@@ -378,9 +397,13 @@ export function createWorkHubController(deps: {
         handler(turns.map((turn) => {
           if (!turn.assignment) return turn;
           const next = feedbackByDelegationId.get(turn.assignment.delegationId);
-          return next
-            ? { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } }
-            : turn;
+          if (!next) return turn;
+          if (SETTLED_DELEGATION_STATES.has(next.state)) {
+            settledActionIds.add(turn.assignment.actionId);
+          } else {
+            settledActionIds.delete(turn.assignment.actionId);
+          }
+          return { ...turn, assignment: { ...turn.assignment, feedbackState: next.state } };
         }));
       };
 
@@ -481,7 +504,7 @@ export function createWorkHubController(deps: {
           projectName: session.projectName,
           sessionName: session.sessionName,
           updatedAt: session.updatedAt,
-          activeActionIds: activeActionIdsBySessionId.get(session.target.sessionId) ?? [],
+          activeActionIds: stoppableActionIds(session.target.sessionId),
         })),
       });
       if (stopDecision.kind !== 'not_requested') {

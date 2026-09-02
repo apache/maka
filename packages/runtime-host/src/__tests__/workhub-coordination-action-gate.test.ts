@@ -423,6 +423,78 @@ describe('WorkHub Coordination Action Gate', () => {
     );
   });
 
+  test('a finished delegation stops competing for the sole-delegation proof', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    for (const actionId of ['finished-action', 'live-action']) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'live-action' ? '6' : '7').repeat(64)}`,
+            targetSessionId: 'payments',
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: `Work from ${actionId}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    // The link outlives the work, so the completed delegation is still active.
+    const settled = new Set(['delegation-finished-action']);
+    effects.readDelegationRetirement = async (assignment) =>
+      settled.has(assignment.delegationId) ? 'retired' : 'not_retired';
+
+    const stopped = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-live',
+        userText: 'Stop Payments',
+        proposal: stopProposal('live-action', 'payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+    assert.equal(stopped.disposition, 'stop_work');
+
+  });
+
+  test('a competitor the Host cannot resolve yet fails the stop closed', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    for (const actionId of ['unreadable-action', 'live-action']) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'live-action' ? '6' : '7').repeat(64)}`,
+            targetSessionId: 'payments',
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: `Work from ${actionId}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    // Unreadable is not the same as finished, so it still blocks the proof.
+    effects.readDelegationRetirement = async () => 'recovering';
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-unresolved-competitor',
+          userText: 'Stop Payments',
+          proposal: stopProposal('live-action', 'payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.stopRequests.size, 0);
+  });
+
   test('rejects a stop that does not identify one active durable delegation', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     for (const actionId of ['source-action', 'other-action']) {
@@ -2607,10 +2679,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       stopResolutions.set(request.stopsDelegationId, resolved);
       return resolved;
     },
-    async readDelegationRetirement(assignment: WorkHubDelegationAssignedMessage) {
+    async readDelegationRetirement(
+      assignment: WorkHubDelegationAssignedMessage,
+    ): Promise<'not_retired' | 'retired' | 'recovering'> {
       return this.retirements.some((retired) => retired.delegationId === assignment.delegationId)
-        ? ('retired' as const)
-        : ('not_retired' as const);
+        ? 'retired'
+        : 'not_retired';
     },
     async retireDelegation(
       assignment: WorkHubDelegationAssignedMessage,
