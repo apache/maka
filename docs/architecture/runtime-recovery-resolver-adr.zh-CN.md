@@ -92,12 +92,13 @@ Planner、CLI、UI 和未来 reconciler 不得各自组合事实。它们只消�
 | response 存在但对应 call 不存在 | corruption |
 | dispatch/response 的 operation、tool call、tool name 或执行身份冲突 | corruption |
 | 同一 operation 出现多个不一致 dispatch 或 response | corruption |
+| call（含 dispatch 后无 response）且 operation 已带 recovery decision fact | 以 recovery bundle 结算：disposition 为 completed 则 completed（reason `recovery_bundle_completed`），否则 parked 并沿用 fact 的 reasonCode；fact 本身损坏按 corruption 处理 |
 
 Resolver 必须 fail-closed：未知组合不能退化成自动重试。Phase 3 恢复写入者经原子 recovery bundle 事务提交 `actions.toolRecovery` decision fact（`maka.tool.recovery_decision`，protocol `tool_recovery_v1`）；后续 reconcile 结果同样追加事件，不回写历史事实。
 
 ### 5. Journal 是可重建投影，不是第二份账本
 
-Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可达的集合（现为 `prepared | outcome_committed | recovery_completed | recovery_parked`）。未来新状态若需要查询表示，先定义对应 RuntimeEvent，再扩展 projector。
+Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可达的集合（现为 `prepared | reconcile_observed | outcome_committed | recovery_completed | recovery_parked`，与 `ToolJournalState` 联合一致，其中 `reconcile_observed` 由 reconcile 追加事件写入）。未来新状态若需要查询表示，先定义对应 RuntimeEvent，再扩展 projector。
 
 新协议的重建验收标准：清空 `tool_journal_events` 与 `tool_operations` 后，从 RuntimeEvent 投影得到相同 operation identity、dispatch/result event refs、recovery mode 与 current state。
 
