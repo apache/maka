@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   createRequestCompositionSnapshot,
+  COMPOSITION_MAX_TOOLS,
   decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
   REQUEST_COMPOSITION_SCHEMA_VERSION,
@@ -79,6 +80,45 @@ test('Request Composition snapshots canonicalize complete model-visible tool sur
   );
   assert.throws(() =>
     decodeRequestCompositionSnapshot({ ...snapshot, toolNames: ['Read', 'Read'] }),
+  );
+});
+
+test('Request Composition applies one fail-closed bound to names and schemas', () => {
+  const toolNames = Array.from(
+    { length: COMPOSITION_MAX_TOOLS },
+    (_, index) => `tool-${index.toString().padStart(3, '0')}`,
+  );
+  const toolSchemas = toolNames.map((name) => ({
+    name,
+    description: name,
+    inputSchema: { type: 'object' },
+  }));
+  const valid = {
+    schemaVersion: REQUEST_COMPOSITION_SCHEMA_VERSION,
+    compositionId: 'composition-bounded',
+    step: 0,
+    reason: 'initial',
+    sourceRevisions: [],
+    systemPromptHash: hash('1'),
+    toolCatalogHash: hash('2'),
+    toolAvailabilityHash: hash('3'),
+    providerOptionsHash: hash('4'),
+    toolNames,
+    toolSchemas,
+  } as const;
+
+  assert.equal(decodeRequestCompositionSnapshot(valid).toolNames.length, COMPOSITION_MAX_TOOLS);
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({ ...valid, toolNames: [...toolNames, 'tool-overflow'] }),
+  );
+  assert.throws(() =>
+    decodeRequestCompositionSnapshot({
+      ...valid,
+      toolSchemas: [
+        ...toolSchemas,
+        { name: 'tool-overflow', description: 'overflow', inputSchema: { type: 'object' } },
+      ],
+    }),
   );
 });
 

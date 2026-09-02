@@ -21,6 +21,11 @@ import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
 export const RUN_COMPOSITION_SCHEMA_VERSION = 1 as const;
 export const REQUEST_COMPOSITION_SCHEMA_VERSION = 1 as const;
+// Composition evidence is exact: reject an over-bound provider surface rather
+// than silently truncating the resolved snapshot.
+export const COMPOSITION_MAX_TOOLS = 256;
+export const COMPOSITION_MAX_TOOL_NAME_LENGTH = 128;
+export const REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH = 16_384;
 
 export interface RunCompositionSourceRevision {
   readonly id: string;
@@ -232,24 +237,29 @@ function canonicalSourceRevisions(value: unknown): value is RunCompositionSource
 }
 
 function canonicalToolNames(value: unknown): value is string[] {
-  if (!Array.isArray(value) || value.length > 256) return false;
+  if (!Array.isArray(value) || value.length > COMPOSITION_MAX_TOOLS) return false;
   let previous: string | undefined;
   for (const name of value) {
-    if (!boundedString(name, 128) || (previous !== undefined && previous >= name)) return false;
+    if (
+      !boundedString(name, COMPOSITION_MAX_TOOL_NAME_LENGTH) ||
+      (previous !== undefined && previous >= name)
+    ) {
+      return false;
+    }
     previous = name;
   }
   return true;
 }
 
 function canonicalToolSchemas(value: unknown): value is RequestCompositionToolSchema[] {
-  if (!Array.isArray(value) || value.length > 512) return false;
+  if (!Array.isArray(value) || value.length > COMPOSITION_MAX_TOOLS) return false;
   let previous: string | undefined;
   for (const schema of value) {
     if (
       !isRecord(schema) ||
       !hasExactShape(schema, REQUEST_COMPOSITION_TOOL_SCHEMA_SHAPE) ||
-      !boundedString(schema.name, 256) ||
-      !boundedString(schema.description, 16_384) ||
+      !boundedString(schema.name, COMPOSITION_MAX_TOOL_NAME_LENGTH) ||
+      !boundedString(schema.description, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH) ||
       !isRecord(schema.inputSchema) ||
       (schema.providerTool !== undefined && !isRecord(schema.providerTool)) ||
       (previous !== undefined && previous >= schema.name)

@@ -27,6 +27,7 @@ import type {
   McpToolSnapshot,
 } from '@maka/core/mcp';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
@@ -103,9 +104,7 @@ export function buildMcpTools(
     names.set(name, identity);
     return {
       name,
-      description:
-        descriptor.description?.trim() ||
-        `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`,
+      description: mcpToolDescription(descriptor),
       displayName: descriptor.annotations?.title?.trim() || descriptor.name,
       activityKind: options.activityKindForDescriptor?.(descriptor) ?? 'tool',
       // MCP annotations are advisory provider claims, not a security boundary.
@@ -176,6 +175,13 @@ export function buildMcpTools(
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),
     } satisfies MakaTool;
   });
+}
+
+function mcpToolDescription(descriptor: McpToolDescriptor): string {
+  const description =
+    descriptor.description?.trim() ||
+    `MCP tool ${descriptor.name} provided by ${descriptor.serverId}`;
+  return description.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH);
 }
 
 export function mcpProxyToolName(serverId: string, toolName: string): string {

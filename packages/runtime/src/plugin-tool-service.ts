@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { Service, type Context } from './plugin-kernel.js';
 import {
   MakaPluginRuntimeError,
@@ -220,9 +221,14 @@ function validateTool(tool: MakaTool): void {
   ) {
     throw new TypeError('Tool requires a valid name');
   }
-  if (typeof tool.description !== 'string' || typeof tool.impl !== 'function') {
+  if (
+    typeof tool.description !== 'string' ||
+    tool.description.length === 0 ||
+    tool.description.length > REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH ||
+    typeof tool.impl !== 'function'
+  ) {
     throw new TypeError(
-      `Tool ${JSON.stringify(tool.name)} requires a description and implementation`,
+      `Tool ${JSON.stringify(tool.name)} requires a description of at most ${REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH} characters and an implementation`,
     );
   }
   if (tool.parameters === undefined) {

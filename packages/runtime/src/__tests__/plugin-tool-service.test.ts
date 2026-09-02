@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { Context } from '../plugin-kernel.js';
 import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
@@ -156,6 +157,32 @@ test('desktop-ui and Host-owned Tool conflicts fail closed', async () => {
   );
   await loader.create('profile', { id: 'host-conflict-entry', packageId: 'plugin-package' });
   assert.throws(() => tools.resolve('alpha', [tool('Read', 'host')]), /Host-owned Tool/u);
+  await loader.close();
+});
+
+test('Plugin Tool descriptions satisfy the Request Composition bound', async () => {
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install({
+    packageId: 'oversized-description-package',
+    host: (ctx) => {
+      ctx.tools.register({
+        ...tool('oversized', 'unused'),
+        description: 'x'.repeat(REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH + 1),
+      });
+    },
+  });
+
+  await assert.rejects(
+    () =>
+      loader.create('profile', {
+        id: 'oversized-description-entry',
+        packageId: 'oversized-description-package',
+      }),
+    /description of at most 16384 characters/u,
+  );
+  assert.deepEqual(tools.inspect(), []);
   await loader.close();
 });
 
