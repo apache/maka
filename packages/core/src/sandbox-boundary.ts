@@ -504,11 +504,7 @@ export function projectSandboxBoundaryNegotiation(
 
 function isBoundaryAuthorityCall(toolName: string, args: unknown): boolean {
   if (toolName === 'request_sandbox_boundary') return true;
-  if (
-    toolName === 'invalid' &&
-    isRecord(args) &&
-    args.sandboxBoundaryAttempt === true
-  ) {
+  if (toolName === 'invalid' && isRecord(args) && args.sandboxBoundaryAttempt === true) {
     return true;
   }
   if (toolName !== 'Bash' || !isRecord(args)) return false;
