@@ -71,7 +71,10 @@ export async function readCanonicalTurnSnapshot(
       const failureMessage =
         fact.terminalEvent.content?.kind === 'error'
           ? truncateUtf8(
-              redactSecrets(fact.terminalEvent.content.message),
+              redactSecrets(
+                providerFailureSummaryFromRuntimeEvent(fact.terminalEvent) ??
+                  fact.terminalEvent.content.message,
+              ),
               TURN_FAILURE_MESSAGE_MAX_BYTES,
               '…',
             )
@@ -121,6 +124,14 @@ async function hasPendingInteraction(
   );
 }
 
+function providerFailureSummaryFromRuntimeEvent(
+  event: import('@maka/core/runtime-event').RuntimeEvent,
+): string | undefined {
+  const details = event.content?.kind === 'error' ? event.content.details : undefined;
+  if (!details || Array.isArray(details)) return undefined;
+  const summary = details.providerSummary;
+  return typeof summary === 'string' && summary.length > 0 ? summary : undefined;
+}
 function readContextCompactionOutcome(value: unknown): ContextCompactionOutcome | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const outcome = value as Record<string, unknown>;

@@ -1636,6 +1636,36 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
+  test('carries the bounded provider summary into the durable failed turn', () => {
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-provider-failed',
+          ts: ts + 9,
+          status: 'failed',
+          content: {
+            kind: 'error',
+            reason: 'rate_limit',
+            message: 'Rate limit exceeded',
+            details: {
+              providerSummary: `provider says api_key=sk-live-secret ${'x'.repeat(1_000)}`,
+            },
+          },
+          actions: { endInvocation: true },
+        }),
+      ],
+      {
+        invocations: [endedAs('failed', 'rate_limit')],
+      },
+    );
+
+    const state = out.messages.find((message) => message.type === 'turn_state');
+    assert.equal(state?.type, 'turn_state');
+    assert.equal(state?.errorClass, 'rate_limit');
+    assert.equal(state?.failureMessage?.includes('sk-live-secret'), false);
+    assert.ok(Buffer.byteLength(state?.failureMessage ?? '', 'utf8') <= 256);
+  });
+
   test('tool step cap terminal fact projects a persistent system notice', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [

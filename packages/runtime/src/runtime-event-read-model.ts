@@ -22,6 +22,8 @@ import type { AssistantStepContentKind, StoredMessage, TurnStatus } from '@maka/
 import type { RuntimeEvent, RuntimeEventStatus } from '@maka/core/runtime-event';
 import type { ToolActivityKind, ToolResultContent } from '@maka/core/events';
 import { markPersisted } from '@maka/core/persisted-value';
+import { truncateUtf8 } from '@maka/core/diagnostic-log';
+import { redactSecrets } from '@maka/core/redaction';
 import {
   SANDBOX_BOUNDARY_REQUEST_STATUSES,
   validateSandboxBoundaryExpansion,
@@ -46,6 +48,7 @@ const SETTLED_SANDBOX_BOUNDARY_STATUSES: readonly SettledSandboxBoundaryStatus[]
   SANDBOX_BOUNDARY_REQUEST_STATUSES.filter(
     (status): status is SettledSandboxBoundaryStatus => status !== 'pending',
   );
+const TURN_FAILURE_MESSAGE_MAX_BYTES = 256;
 import type { CanonicalPermissionOutcomeRecord } from './interaction-authority.js';
 import { isArchivedToolResultPlaceholder } from './tool-result-archive.js';
 
@@ -1172,6 +1175,7 @@ function projectTerminalTurnState(
   }
   const abortSource = status === 'aborted' ? abortSourceFromRuntime(event) : undefined;
   const failureClass = status === 'failed' ? failureClassFromRuntimeEvent(event) : undefined;
+  const failureMessage = status === 'failed' ? failureMessageFromRuntimeEvent(event) : undefined;
   const partialOutputRetained = messages.some(
     (message) =>
       message.turnId === event.turnId &&
@@ -1194,6 +1198,7 @@ function projectTerminalTurnState(
     ...(status === 'aborted' ? { abortedAt: event.ts } : {}),
     ...(abortSource ? { abortSource } : {}),
     ...(status === 'failed' ? { errorClass: failureClass ?? 'unknown' } : {}),
+    ...(failureMessage ? { failureMessage } : {}),
     partialOutputRetained,
   });
   if (failureClass === 'tool_step_cap_reached') {
@@ -1209,6 +1214,17 @@ function projectTerminalTurnState(
   // observation to make. Repeating it here would only turn a transcript row that
   // already reads `unknown` into an unreadable Session.
   return true;
+}
+
+function failureMessageFromRuntimeEvent(event: RuntimeEvent): string | undefined {
+  const content = event.content;
+  if (content?.kind !== 'error' || !content.details || Array.isArray(content.details)) {
+    return undefined;
+  }
+  const summary = content.details.providerSummary;
+  return typeof summary === 'string' && summary.length > 0
+    ? truncateUtf8(redactSecrets(summary), TURN_FAILURE_MESSAGE_MAX_BYTES, '…')
+    : undefined;
 }
 
 function attachPendingThinking(
@@ -1606,6 +1622,7 @@ function semanticMessage(message: StoredMessage): unknown {
         abortedAt: message.abortedAt,
         abortSource: message.abortSource,
         errorClass: message.errorClass,
+        failureMessage: message.failureMessage,
         partialOutputRetained: message.partialOutputRetained,
       };
     case 'system_note':

@@ -139,7 +139,7 @@ interface ProviderFailureSummary {
   code?: string;
 }
 
-const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
+export const PROVIDER_FAILURE_SUMMARY_MAX_BYTES = 2 * 1024;
 const PROVIDER_FAILURE_FIELD_MAX_BYTES = 256;
 
 const MAX_SAFE_TIMER_DELAY_MS = 2_147_483_647;

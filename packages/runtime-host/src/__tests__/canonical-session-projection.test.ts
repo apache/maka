@@ -385,6 +385,9 @@ test('projects a failed Turn message from the canonical terminal event', async (
         recoverable: false,
         code: 'provider_error',
         message: 'canonical provider failure api_key=sk-test-secret-value',
+        details: {
+          providerSummary: 'provider rejected model (code=provider_error, requestId=req-123)',
+        },
       },
       context,
       memory,
@@ -415,7 +418,7 @@ test('projects a failed Turn message from the canonical terminal event', async (
     if (canonical?.rootTurn?.status === 'failed') {
       assert.equal(
         canonical.rootTurn.failureMessage,
-        'canonical provider failure api_key=[redacted]',
+        'provider rejected model (code=provider_error, requestId=req-123)',
       );
     }
   });

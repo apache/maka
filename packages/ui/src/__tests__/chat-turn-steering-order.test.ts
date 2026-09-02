@@ -71,3 +71,31 @@ test('renders steering where it arrived in the assistant timeline', () => {
     assert.equal(visibleText.split(text).length - 1, 1, `${text} should render exactly once`);
   }
 });
+
+test('renders provider failure detail collapsed beneath the classified banner', () => {
+  const turn: TurnViewModel = {
+    turnId: 'turn-provider-failure',
+    status: 'failed',
+    partialOutputRetained: false,
+    user: { id: 'user', role: 'user', text: 'request', ts: 1 },
+    tools: [],
+    notes: [],
+    startedAt: 1,
+    timeline: [{ kind: 'text', text: 'partial output', messageId: 'assistant', ts: 2 }],
+  };
+  const markup = renderToStaticMarkup(
+    createElement(LocaleProvider, {
+      locale: 'en',
+      children: createElement(TurnView, {
+        turn,
+        failedReasonLabel: 'Rate limit exceeded',
+        failedDiagnostic: '429 rate limit (code=rate_limit_exceeded, requestId=req-123)',
+      }),
+    }),
+  );
+  assert.match(markup, /<details[^>]*maka-turn-failed-diagnostic/);
+  assert.match(markup, /<summary>Provider response details<\/summary>/);
+  assert.match(markup, /429 rate limit/);
+  assert.doesNotMatch(markup, /<details[^>]*open/);
+  assert.ok(markup.indexOf('Rate limit exceeded') < markup.indexOf('429 rate limit'));
+});

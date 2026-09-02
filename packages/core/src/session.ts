@@ -935,6 +935,8 @@ export interface TurnStateMessage {
   /** Diagnostic source for user/renderer-triggered aborts, e.g. renderer.stop_button. */
   abortSource?: string;
   errorClass?: string;
+  /** Bounded provider response summary for a failed turn. */
+  failureMessage?: string;
   partialOutputRetained: boolean;
 }
 
@@ -1144,6 +1146,8 @@ export interface TurnRecord {
   abortedAt?: number;
   abortSource?: string;
   errorClass?: string;
+  /** Bounded provider response summary for a failed turn. */
+  failureMessage?: string;
   partialOutputRetained: boolean;
 }
 
@@ -1256,6 +1260,7 @@ const TURN_STATE_MESSAGE_SHAPE = defineObjectShape<TurnStateMessage>()(
     'abortedAt',
     'abortSource',
     'errorClass',
+    'failureMessage',
   ],
 );
 const WORKHUB_DELEGATION_ASSIGNED_MESSAGE_SHAPE =
@@ -1547,7 +1552,8 @@ function decodeMessage(
         isOptionalString(message.parentSessionId) &&
         (message.abortedAt === undefined || isFiniteNumber(message.abortedAt)) &&
         isOptionalString(message.abortSource) &&
-        isOptionalString(message.errorClass)
+        isOptionalString(message.errorClass) &&
+        isOptionalString(message.failureMessage)
       )
         return message as unknown as TurnStateMessage;
       break;
@@ -1841,6 +1847,7 @@ export function deriveTurnRecords(messages: readonly StoredMessage[]): TurnRecor
         ...(latestState.abortedAt !== undefined ? { abortedAt: latestState.abortedAt } : {}),
         ...(latestState.abortSource ? { abortSource: latestState.abortSource } : {}),
         ...(latestState.errorClass ? { errorClass: latestState.errorClass } : {}),
+        ...(latestState.failureMessage ? { failureMessage: latestState.failureMessage } : {}),
         partialOutputRetained: latestState.partialOutputRetained || partialOutputRetained,
       };
     }
