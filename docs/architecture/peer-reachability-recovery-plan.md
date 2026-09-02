@@ -310,6 +310,8 @@ charter. Their evidence is adjudicated into this ledger:
 | R7-S2 | simplification | confirmed | The cross-layer `waitForRoutes` option was removed. Application attempts intrinsically accept live route updates until their deadline; Mesh control either uses explicit candidates, reuses an already eligible direct connection, or fails immediately. |
 | R8-S1 | simplification | confirmed | The Mesh receipt cache no longer mirrors the publisher's local receipt or retains an unconsumed pending-authority receipt. Its sole authority class is now active remote roster members. |
 | R8-C1 | correctness | confirmed | Peer-keyed recovery state now has collection-level bounds. Authenticated route receipts are globally horizon-pruned and LRU-bounded with active observers preferred, while completed Mesh sweeps are retained only for currently visible remote roster members. |
+| R9-C1 | correctness | confirmed | Each Mesh synchronization page revalidates the target against the current active roster both before dialing and after asynchronous route preparation, immediately before emitting local reachability. A queued worker therefore cannot disclose refreshed locators to a member removed from its original roster snapshot. |
+| R9-C2 | correctness | confirmed | A fenced native connection attempt now records WebRTC signaling attempts per current relay PeerId and keeps at most one active upgrade. Failure retires only that relay attempt; a newly introduced relay can be tried within the same immutable request and deadline without retrying failed candidates or creating a second connection authority. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a

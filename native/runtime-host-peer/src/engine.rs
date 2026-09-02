@@ -263,7 +263,8 @@ struct PendingConnect {
     transit_after: Instant,
     next_route_attempt: Instant,
     retry_coordination: bool,
-    webrtc_attempted: bool,
+    webrtc_attempted_relays: HashSet<PeerId>,
+    webrtc_active_relay: Option<PeerId>,
     cancellation: CancellationToken,
 }
 
@@ -491,6 +492,7 @@ struct OutgoingWebRtcUpgrade {
     request_id: u32,
     attempt_id: ConnectAttemptId,
     peer_id: PeerId,
+    relay_peer_id: PeerId,
     result: Result<WebRtcConnection, String>,
 }
 
@@ -849,7 +851,8 @@ async fn run_endpoint_async(
                         transit_after,
                         next_route_attempt: Instant::now(),
                         retry_coordination,
-                        webrtc_attempted: false,
+                        webrtc_attempted_relays: HashSet::new(),
+                        webrtc_active_relay: None,
                         cancellation: CancellationToken::new(),
                     });
                     retry_connect_routes(
@@ -1195,7 +1198,7 @@ async fn run_endpoint_async(
                     continue;
                 }
                 waiter.opening.take();
-                if waiter.webrtc_attempted {
+                if !waiter.webrtc_attempted_relays.is_empty() {
                     webrtc_debug(format_args!(
                         "application stream result peer={} request={} success={}",
                         waiter.peer_id,
@@ -1304,7 +1307,7 @@ async fn run_endpoint_async(
                             request_id,
                         ));
                         waiter.rejected_connections.insert(connection_id);
-                        if waiter.dials.remove(&connection_id).is_some() {
+                        if remove_pending_dial(&mut waiter, connection_id).is_some() {
                             direct.retiring_connections.insert(connection_id);
                             let _ = swarm.close_connection(connection_id);
                         }
@@ -1713,6 +1716,7 @@ fn update_connect_candidates(
         .collect::<HashSet<_>>();
     let transit_changed = waiter.transit_relay_peers != next_transit;
     waiter.transit_relay_peers = next_transit;
+    retain_current_webrtc_relay_attempts(waiter);
     let changed = direct_changed || coordination_changed || transit_changed;
     if changed {
         waiter.next_route_attempt = Instant::now();
@@ -1817,29 +1821,31 @@ fn start_pending_webrtc_upgrades(
         let Some(waiter) = pending.get_mut(&request_id) else {
             continue;
         };
-        if waiter.stream_kind != StreamKind::Application || waiter.webrtc_attempted {
+        if waiter.stream_kind != StreamKind::Application || waiter.webrtc_active_relay.is_some() {
             continue;
         }
-        let relay_peers = waiter
-            .coordination_relay_peers
-            .iter()
-            .copied()
-            .chain(waiter.transit_relay_peers.iter().copied())
-            .collect::<HashSet<_>>();
-        if !signaling_control.has_relayed_connection_via(
-            waiter.peer_id,
-            retiring_connections,
-            &relay_peers,
-        ) {
+        let Some(relay_peer_id) = next_webrtc_relay_peer(
+            &waiter.coordination_relay_peers,
+            &waiter.transit_relay_peers,
+            &waiter.webrtc_attempted_relays,
+            |relay_peer_id| {
+                signaling_control.has_relayed_connection_via(
+                    waiter.peer_id,
+                    retiring_connections,
+                    &HashSet::from([relay_peer_id]),
+                )
+            },
+        ) else {
             continue;
-        }
+        };
 
-        waiter.webrtc_attempted = true;
+        begin_webrtc_relay_attempt(waiter, relay_peer_id);
         let attempt_id = waiter.attempt_id;
         let peer_id = waiter.peer_id;
         let cancellation = waiter.cancellation.clone();
         let excluded_connections = retiring_connections.clone();
         let stun_urls = stun_urls.to_vec();
+        let relay_peers = HashSet::from([relay_peer_id]);
         let mut signaling_control = signaling_control.clone();
         upgrades.spawn(async move {
             let signaling = tokio::select! {
@@ -1848,6 +1854,7 @@ fn start_pending_webrtc_upgrades(
                         request_id,
                         attempt_id,
                         peer_id,
+                        relay_peer_id,
                         result: Err("WebRTC direct upgrade was cancelled".to_owned()),
                     };
                 }
@@ -1879,9 +1886,52 @@ fn start_pending_webrtc_upgrades(
                 request_id,
                 attempt_id,
                 peer_id,
+                relay_peer_id,
                 result,
             }
         });
+    }
+}
+
+fn next_webrtc_relay_peer(
+    coordination_relay_peers: &[PeerId],
+    transit_relay_peers: &HashSet<PeerId>,
+    attempted_relays: &HashSet<PeerId>,
+    mut is_available: impl FnMut(PeerId) -> bool,
+) -> Option<PeerId> {
+    let mut considered = HashSet::new();
+    coordination_relay_peers
+        .iter()
+        .copied()
+        .chain(transit_relay_peers.iter().copied())
+        .find(|relay_peer_id| {
+            considered.insert(*relay_peer_id)
+                && !attempted_relays.contains(relay_peer_id)
+                && is_available(*relay_peer_id)
+        })
+}
+
+fn retain_current_webrtc_relay_attempts(waiter: &mut PendingConnect) {
+    let current = waiter
+        .coordination_relay_peers
+        .iter()
+        .copied()
+        .chain(waiter.transit_relay_peers.iter().copied())
+        .collect::<HashSet<_>>();
+    waiter
+        .webrtc_attempted_relays
+        .retain(|relay_peer_id| current.contains(relay_peer_id));
+}
+
+fn begin_webrtc_relay_attempt(waiter: &mut PendingConnect, relay_peer_id: PeerId) {
+    debug_assert!(waiter.webrtc_active_relay.is_none());
+    waiter.webrtc_attempted_relays.insert(relay_peer_id);
+    waiter.webrtc_active_relay = Some(relay_peer_id);
+}
+
+fn finish_webrtc_relay_attempt(waiter: &mut PendingConnect, relay_peer_id: PeerId) {
+    if waiter.webrtc_active_relay == Some(relay_peer_id) {
+        waiter.webrtc_active_relay = None;
     }
 }
 
@@ -1895,12 +1945,14 @@ fn complete_outgoing_webrtc_upgrade(
         request_id,
         attempt_id,
         peer_id,
+        relay_peer_id,
         result,
     } = completed;
-    let current = direct
-        .pending
-        .get(&request_id)
-        .is_some_and(|waiter| waiter.attempt_id == attempt_id && waiter.peer_id == peer_id);
+    let current = direct.pending.get(&request_id).is_some_and(|waiter| {
+        waiter.attempt_id == attempt_id
+            && waiter.peer_id == peer_id
+            && waiter.webrtc_active_relay == Some(relay_peer_id)
+    });
     if !current {
         if let Ok(connection) = result {
             connection.close_in_background();
@@ -1910,9 +1962,15 @@ fn complete_outgoing_webrtc_upgrade(
     let connection = match result {
         Ok(connection) => connection,
         Err(error) => {
+            finish_webrtc_relay_attempt(
+                direct
+                    .pending
+                    .get_mut(&request_id)
+                    .expect("current WebRTC upgrade has a pending connect"),
+                relay_peer_id,
+            );
             webrtc_debug(format_args!(
-                "outbound upgrade to {} failed: {error}",
-                peer_id,
+                "outbound upgrade to {peer_id} via {relay_peer_id} failed: {error}",
             ));
             return;
         }
@@ -1920,9 +1978,15 @@ fn complete_outgoing_webrtc_upgrade(
     let address = match transport.register_outbound(peer_id, connection) {
         Ok(address) => address,
         Err(error) => {
+            finish_webrtc_relay_attempt(
+                direct
+                    .pending
+                    .get_mut(&request_id)
+                    .expect("current WebRTC upgrade has a pending connect"),
+                relay_peer_id,
+            );
             webrtc_debug(format_args!(
-                "could not register outbound upgrade to {}: {error}",
-                peer_id,
+                "could not register outbound upgrade to {peer_id} via {relay_peer_id}: {error}",
             ));
             return;
         }
@@ -1943,6 +2007,13 @@ fn complete_outgoing_webrtc_upgrade(
             peer_id, request_id,
         ));
     } else {
+        finish_webrtc_relay_attempt(
+            direct
+                .pending
+                .get_mut(&request_id)
+                .expect("current WebRTC upgrade has a pending connect"),
+            relay_peer_id,
+        );
         transport.discard_outbound(peer_id);
     }
 }
@@ -1992,7 +2063,7 @@ fn maybe_open_peer_stream(
     };
     let attempt_id = waiter.attempt_id;
     let cancellation = waiter.cancellation.clone();
-    if stream_kind == StreamKind::Application && waiter.webrtc_attempted {
+    if stream_kind == StreamKind::Application && !waiter.webrtc_attempted_relays.is_empty() {
         webrtc_debug(format_args!(
             "opening application stream peer={peer_id} request={request_id} connection={connection_id}"
         ));
@@ -2111,7 +2182,7 @@ fn handle_swarm_event(
         } => {
             direct.retiring_connections.remove(&connection_id);
             for connect in direct.pending.values_mut() {
-                connect.dials.remove(&connection_id);
+                remove_pending_dial(connect, connection_id);
                 connect.rejected_connections.remove(&connection_id);
                 if connect
                     .opening
@@ -2165,7 +2236,7 @@ fn handle_swarm_event(
             discovery_debug(format_args!("outgoing connection failed: {error}"));
             direct.retiring_connections.remove(&connection_id);
             for connect in direct.pending.values_mut() {
-                connect.dials.remove(&connection_id);
+                remove_pending_dial(connect, connection_id);
                 connect.rejected_connections.remove(&connection_id);
                 if connect
                     .opening
@@ -2469,6 +2540,7 @@ fn reconcile_pending_transit_connects(
         waiter
             .transit_relay_peers
             .retain(|peer| !revoked_relays.contains(peer));
+        retain_current_webrtc_relay_attempts(waiter);
         if let Some(opening) = waiter.opening.take() {
             opening.task.abort();
         }
@@ -2516,10 +2588,21 @@ fn retire_pending_dials_by_origin(
         .filter_map(|(connection_id, current)| (*current == origin).then_some(*connection_id))
         .collect::<Vec<_>>();
     for connection_id in connections {
-        waiter.dials.remove(&connection_id);
+        remove_pending_dial(waiter, connection_id);
         retiring.insert(connection_id);
         let _ = swarm.close_connection(connection_id);
     }
+}
+
+fn remove_pending_dial(
+    waiter: &mut PendingConnect,
+    connection_id: ConnectionId,
+) -> Option<DialOrigin> {
+    let origin = waiter.dials.remove(&connection_id);
+    if origin == Some(DialOrigin::WebRtc) {
+        waiter.webrtc_active_relay = None;
+    }
+    origin
 }
 
 fn fail_pending_connect(
@@ -3513,7 +3596,8 @@ mod tests {
                 transit_after: now,
                 next_route_attempt: now,
                 retry_coordination: false,
-                webrtc_attempted: false,
+                webrtc_attempted_relays: HashSet::new(),
+                webrtc_active_relay: None,
                 cancellation: CancellationToken::new(),
             },
         );
@@ -3523,6 +3607,56 @@ mod tests {
             Some(PendingAttemptAdmission::Expired(_))
         ));
         assert!(direct.pending.is_empty());
+    }
+
+    #[test]
+    fn failed_webrtc_upgrade_can_use_a_new_relay_on_the_same_connect_attempt() {
+        let now = Instant::now();
+        let first_relay = PeerId::random();
+        let second_relay = PeerId::random();
+        let attempt_id = ConnectAttemptId(9);
+        let (result, _response) = oneshot::channel();
+        let mut waiter = PendingConnect {
+            attempt_id,
+            peer_id: PeerId::random(),
+            result,
+            stream_kind: StreamKind::Application,
+            deadline: now + Duration::from_secs(30),
+            opening: None,
+            rejected_connections: HashSet::new(),
+            dials: HashMap::new(),
+            direct_routes: Vec::new(),
+            coordination_relays: Vec::new(),
+            coordination_relay_peers: vec![first_relay],
+            transit_relay_peers: HashSet::new(),
+            transit_after: now,
+            next_route_attempt: now,
+            retry_coordination: false,
+            webrtc_attempted_relays: HashSet::new(),
+            webrtc_active_relay: None,
+            cancellation: CancellationToken::new(),
+        };
+
+        let selected = next_webrtc_relay_peer(
+            &waiter.coordination_relay_peers,
+            &waiter.transit_relay_peers,
+            &waiter.webrtc_attempted_relays,
+            |_| true,
+        );
+        assert_eq!(selected, Some(first_relay));
+        begin_webrtc_relay_attempt(&mut waiter, first_relay);
+        finish_webrtc_relay_attempt(&mut waiter, first_relay);
+
+        waiter.coordination_relay_peers = vec![first_relay, second_relay];
+        retain_current_webrtc_relay_attempts(&mut waiter);
+        let selected = next_webrtc_relay_peer(
+            &waiter.coordination_relay_peers,
+            &waiter.transit_relay_peers,
+            &waiter.webrtc_attempted_relays,
+            |_| true,
+        );
+        assert_eq!(selected, Some(second_relay));
+        assert!(waiter.attempt_id == attempt_id);
     }
 
     #[tokio::test]
