@@ -29,7 +29,6 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { Kbd } from '@astryxdesign/core/Kbd';
-import { Sparkles } from '@maka/ui/icons';
 import { Banner, Button, useMountedRef, useToast, useUiLocale } from '@maka/ui';
 import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
 import { SettingsPage, SettingsRow, SettingsSection } from './settings-section.js';
@@ -174,19 +173,13 @@ export function AboutSettingsPage(props: { onOpenKeyboardHelp?(): void }) {
       <SettingsSection variant="bare">
         <VStack gap={4}>
           <VStack gap={2}>
-            <HStack gap={4} vAlign="center">
-              <span className="settingsAboutLogo" aria-hidden="true">
-                {/* 64% of the 48px plate, matching .providerLogo's fill */}
-                <Sparkles size={30} />
-              </span>
-              <HStack gap={2} vAlign="center" wrap="wrap">
-                <Heading level={2}>Maka</Heading>
-                {/* Release installs carry no token: they are the default state,
-                    and Astryx keeps colour for what departs from it. */}
-                {channel.token ? (
-                  <Token size="sm" label={channel.token.label} color={channel.token.color} />
-                ) : null}
-              </HStack>
+            <HStack gap={2} vAlign="center" wrap="wrap">
+              <Heading level={2}>Maka</Heading>
+              {/* Release installs carry no token: they are the default state,
+                  and Astryx keeps colour for what departs from it. */}
+              {channel.token ? (
+                <Token size="sm" label={channel.token.label} color={channel.token.color} />
+              ) : null}
             </HStack>
             <Text type="supporting" color="secondary">
               {info.buildCommit
