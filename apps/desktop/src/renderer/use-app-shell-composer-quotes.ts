@@ -18,7 +18,7 @@
  */
 
 /** Compatibility entry point; quote state now belongs to Conversation. */
-import { useComposerQuotes } from './features/conversation/index.js';
+import { useComposerQuotes } from './features/conversation/controller/use-composer-quotes.js';
 
 export { useComposerQuotes };
 export const useAppShellComposerQuotes: typeof useComposerQuotes = useComposerQuotes;
