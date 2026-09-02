@@ -64,6 +64,10 @@ type CommandCopy = {
   label: string;
   group: string;
   hint?: string;
+  platformHint?: {
+    apple: string;
+    other: string;
+  };
 };
 
 const STATIC_COMMAND_KEYWORDS: Record<StaticCommandId, readonly string[]> = {
@@ -401,13 +405,9 @@ type ShellCopy = {
     copyFailed: string;
     copyReport: string;
     title: string;
-    descriptionBeforeRetry: string;
+    description: string;
     retry: string;
-    descriptionBeforeReload: string;
     reload: string;
-    descriptionAfterReload: string;
-    errorDetails: string;
-    componentStack: string;
     clipboardFailure: string;
   };
   commandPalette: {
@@ -557,7 +557,7 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   'action:new-chat': { label: '新建任务', hint: '开始新的任务', group: '操作' },
   'action:side-chat': {
     label: '打开侧边对话',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: '操作',
   },
   'action:new-deep-research': {
@@ -570,7 +570,11 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
     hint: '打开定时任务表单',
     group: '操作',
   },
-  'action:open-settings': { label: '打开设置', hint: '⌘,', group: '操作' },
+  'action:open-settings': {
+    label: '打开设置',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
+    group: '操作',
+  },
   'action:keyboard-help': { label: '查看键盘快捷键', hint: '?', group: '操作' },
   'theme:light': { label: '主题 · 浅色', group: '主题' },
   'theme:dark': { label: '主题 · 深色', group: '主题' },
@@ -622,7 +626,10 @@ const ZH_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: '复制诊断信息',
-    hint: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+    platformHint: {
+      apple: '⇧⌘D · 脱敏日志 · 仅写入剪贴板',
+      other: 'Ctrl+Shift+D · 脱敏日志 · 仅写入剪贴板',
+    },
     group: '诊断',
   },
   'diag:test-network-proxy': {
@@ -645,7 +652,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:side-chat': {
     label: 'Open side chat',
-    hint: '⌥⌘S',
+    platformHint: { apple: '⌥⌘S', other: 'Ctrl+Alt+S' },
     group: 'Actions',
   },
   'action:new-deep-research': {
@@ -660,7 +667,7 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'action:open-settings': {
     label: 'Open Settings',
-    hint: '⌘,',
+    platformHint: { apple: '⌘,', other: 'Ctrl+,' },
     group: 'Actions',
   },
   'action:keyboard-help': {
@@ -718,7 +725,10 @@ const EN_STATIC_COMMANDS: Record<StaticCommandId, CommandCopy> = {
   },
   'diag:copy-diagnostics': {
     label: 'Copy diagnostics',
-    hint: '⇧⌘D · Redacted logs · clipboard only',
+    platformHint: {
+      apple: '⇧⌘D · Redacted logs · clipboard only',
+      other: 'Ctrl+Shift+D · Redacted logs · clipboard only',
+    },
     group: 'Diagnostics',
   },
   'diag:test-network-proxy': {
@@ -1099,14 +1109,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: '复制失败',
       copyReport: '复制诊断信息',
       title: 'Maka 渲染层崩溃了',
-      descriptionBeforeRetry: '已捕获一次未处理的 React 异常。下面是错误摘要；点',
+      description:
+        '已捕获一次未处理的 React 异常。可以重试以清除这次崩溃，或重新加载整个窗口。需要交接时先复制诊断信息。',
       retry: '重试',
-      descriptionBeforeReload: '清掉这次崩溃，',
       reload: '重新加载',
-      descriptionAfterReload: '会刷新整个窗口。需要交接时先复制诊断信息。',
-      errorDetails: '错误详情',
-      componentStack: '组件栈',
-      clipboardFailure: '剪贴板不可用或被系统拒绝；可以手动选择上面的错误摘要。',
+      clipboardFailure: '剪贴板不可用或被系统拒绝，请稍后重试。',
     },
     commandPalette: {
       label: '命令面板',
@@ -1647,14 +1654,11 @@ const SHELL_COPY_BY_LOCALE = {
       copyFailed: 'Copy failed',
       copyReport: 'Copy diagnostics',
       title: 'The Maka renderer crashed',
-      descriptionBeforeRetry: 'An unhandled React error was caught. The summary is below. Choose',
+      description:
+        'An unhandled React error was caught. Try again to clear this crash, or reload to refresh the entire window. Copy the diagnostics before handing off the issue.',
       retry: 'Try again',
-      descriptionBeforeReload: 'to clear this crash, or',
       reload: 'Reload',
-      descriptionAfterReload: 'to refresh the entire window. Copy the diagnostics before handing off the issue.',
-      errorDetails: 'Error details',
-      componentStack: 'Component stack',
-      clipboardFailure: 'The clipboard is unavailable or was denied. You can select the error summary above manually.',
+      clipboardFailure: 'The clipboard is unavailable or was denied. Try again later.',
     },
     commandPalette: {
       label: 'Command palette',

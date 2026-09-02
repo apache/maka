@@ -57,6 +57,7 @@
     "release:cli:qualify-state-root": "node scripts/qualify-released-cli-state-root.mjs",
     "release:cli:eval": "node scripts/release-cli-eval-package.mjs",
     "check:app-shell-hooks": "node scripts/check-app-shell-hooks.mjs",
+    "check:tui-copy": "node scripts/check-tui-copy.mjs",
     "check:asf-headers": "node scripts/asf-license-headers.mjs check",
     "write:asf-headers": "node scripts/asf-license-headers.mjs write",
     "release:asf:source": "node scripts/asf-source-release.mjs create",

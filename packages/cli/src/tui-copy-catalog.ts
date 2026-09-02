@@ -619,11 +619,12 @@ export const TUI_COPY_RESOURCES = {
   'session-actions': {
     en: {
       foreignScanFailed: 'Could not read external conversations: {detail}',
-      newSessionFailed: 'Could not start a new session. Try again shortly.',
+      newSessionFailed:
+        'Could not start a new session: a local command could not be stopped. Press Ctrl+C to stop it, then try again.',
     },
     zh: {
       foreignScanFailed: '读取外部对话失败：{detail}',
-      newSessionFailed: '无法开始新会话，请稍后重试。',
+      newSessionFailed: '无法开始新会话：无法停止本地命令。请按 Ctrl+C 停止命令后重试。',
     },
   },
   'pending-queue': {

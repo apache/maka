@@ -674,6 +674,7 @@ describe('Runtime Host maka run adapter', () => {
     const prepareStarted = deferred<void>();
     const fixture = runFixture({
       graph: true,
+      strictTurnStopInput: true,
       prepareGate: prepareGate.promise,
       onPrepareStarted: () => prepareStarted.resolve(),
     });
@@ -870,6 +871,7 @@ function runFixture(input: {
   onGraphStop?: () => void;
   initialMessages?: StoredMessage[];
   finalMessages?: StoredMessage[];
+  strictTurnStopInput?: boolean;
 }) {
   const switches: string[] = [];
   const moves: string[] = [];
@@ -1010,6 +1012,13 @@ function runFixture(input: {
         return { rootSessionId: requestInput.rootSessionId, graphId: 'graph-1' };
       }
       if (operation === 'turn.stop') {
+        if (input.strictTurnStopInput) {
+          const allowed = new Set(['sessionId', 'turnId', 'runId']);
+          const unexpected = Object.keys(requestInput).filter((key) => !allowed.has(key));
+          if (unexpected.length > 0) {
+            throw new Error(`Unknown turn.stop input field: ${unexpected.join(', ')}`);
+          }
+        }
         exactTurnStops.push({
           sessionId: String(requestInput.sessionId),
           turnId: String(requestInput.turnId),

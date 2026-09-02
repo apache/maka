@@ -108,7 +108,7 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
   color: var(--destructive-text);
   white-space: pre-wrap;
 }

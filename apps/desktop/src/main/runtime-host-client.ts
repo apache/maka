@@ -356,6 +356,11 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeConfigurationChanges(listener);
   }
 
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConnectionCatalogChanges(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeProjectCatalogChanges(listener);

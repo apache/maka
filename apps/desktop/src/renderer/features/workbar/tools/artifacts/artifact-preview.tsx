@@ -364,8 +364,6 @@ function FailureCard(props: {
 }) {
   return (
     <Banner
-      className="maka-artifact-preview-fail"
-      data-tone={props.tone}
       status={props.tone === 'destructive' ? 'error' : 'info'}
       role="status"
       title={props.title}

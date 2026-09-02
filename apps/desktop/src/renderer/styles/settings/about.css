@@ -43,14 +43,11 @@
   place-items: center;
   /* Square icon plate — ratio-governed, see --radius-plate. */
   border-radius: var(--radius-plate);
-  /* Deliberately NOT migrated to the T4 status-wash family: this is a brand
-     icon plate, not a status surface, so no `--{status}-wash` applies. The
-     other candidate, `--accent-wash`, is not a like-for-like swap either — it
-     is an OPAQUE tint with lightness pinned to 0.96, whereas this is a 10%
-     alpha over whatever the plate sits on. Swapping constructions would change
-     how the mark reads against the card rather than just its alpha, so the
-     glyph and its plate stay coupled here until someone judges the mark
-     itself. */
+  /* Deliberately NOT one of the `--color-*-muted` tints: this is a brand icon
+     plate, not a tinted status surface, so §8's one-rung rule does not reach
+     it. Same construction as those tints now (alpha over whatever the plate
+     sits on) but a quieter rung, because the plate carries a mark rather than
+     a message and 0.24 would compete with the glyph. */
   background: oklch(from var(--brand-deep) l c h / 0.10);
   color: var(--brand-deep);
 }

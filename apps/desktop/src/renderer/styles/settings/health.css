@@ -49,7 +49,7 @@
   }
 
 .settingsHealthSummaryLine [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 .settingsHealthSummaryLine [data-tone="destructive"] {
@@ -103,7 +103,7 @@
   }
 
 .settingsHealthSignalMeta [data-tone="warning"] {
-    color: var(--warning-text, var(--info-text));
+    color: var(--warning-text);
   }
 
 

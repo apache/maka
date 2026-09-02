@@ -42,7 +42,11 @@ jobs:
   # Renaming it would leave that check unreported on every open pull request
   # until the rename merged, and nothing could merge while it was unreported.
   test:
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. The two resolve to the same image, but only
+    # the alias makes this required context wait at the tail, and the steps
+    # below already assume this image. `ci-workflow-policy.test.mjs` holds the
+    # rule for every lane.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -167,6 +171,12 @@ jobs:
       - name: Install dependencies
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      - name: Check localized TUI copy boundaries
+        if: needs.plan.outputs.code == 'true'
+        run: |
+          npm run check:tui-copy
+          node --test scripts/check-tui-copy.test.mjs
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter

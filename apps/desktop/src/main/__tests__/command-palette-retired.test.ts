@@ -84,3 +84,33 @@ test('a stale in-memory default pointing at a retired connection is not testable
   const ids = commandIds([retired, connection()], retired.slug);
   assert.ok(!ids.includes('diag:test-default'));
 });
+
+for (const locale of ['en', 'zh'] as const) {
+  test(`${locale} static shortcut hints preserve both platform variants`, () => {
+    const commands = buildCommandList({
+      locale,
+      activeSessionId: 'session-1',
+      themePref: 'auto',
+      connections: [],
+      defaultSlug: null,
+      onNewChat: () => {},
+      onOpenSideChat: () => {},
+      onOpenSettings: () => {},
+      onOpenSettingsSection: () => {},
+      onOpenShortcuts: () => {},
+      onSetTheme: () => {},
+      onCopyDiagnostics: () => {},
+    });
+    const byId = new Map(commands.map((command) => [command.id, command]));
+    assert.deepEqual(byId.get('action:side-chat')?.platformHint, {
+      apple: '⌥⌘S',
+      other: 'Ctrl+Alt+S',
+    });
+    assert.deepEqual(byId.get('action:open-settings')?.platformHint, {
+      apple: '⌘,',
+      other: 'Ctrl+,',
+    });
+    assert.equal(byId.get('diag:copy-diagnostics')?.platformHint?.other, 'Ctrl+Shift+D · ' +
+      (locale === 'zh' ? '脱敏日志 · 仅写入剪贴板' : 'Redacted logs · clipboard only'));
+  });
+}

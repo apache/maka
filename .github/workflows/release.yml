@@ -34,7 +34,7 @@ concurrency:
 
 jobs:
   release-identity:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       version: ${{ steps.identity.outputs.version }}
@@ -364,7 +364,7 @@ jobs:
     # One draft release carries both platforms, so it is created once, after
     # every platform has been packaged and verified.
     needs: [release-identity, desktop, cli-macos-arm64]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write

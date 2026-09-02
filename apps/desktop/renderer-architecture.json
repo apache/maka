@@ -429,13 +429,13 @@
         "dependencyPaths": {
           "../preload/diagnostics-contract.js": 1,
           "./app-shell-copy.js": 1,
+          "./application/contracts/session-start-mode.js": 1,
           "./command-palette-commands.js": 1,
           "./command-palette-types.js": 1,
           "./conversation-markdown.js": 1,
           "./default-runtime-host-operation.js": 1,
           "./locales/settings-test-result-copy.js": 1,
           "./locales/shell-copy.js": 1,
-          "@maka/core/deep-research": 1,
           "@maka/core/llm-connections": 1,
           "@maka/core/permission": 1,
           "@maka/core/session": 1,
@@ -754,10 +754,10 @@
         ],
         "dependencyPaths": {
           "../preload/bridge-contract.js": 1,
+          "./application/contracts/session-start-mode.js": 1,
           "./locales/shell-copy.js": 1,
           "./model-connection-errors.js": 1,
           "./session-workspace-errors.js": 1,
-          "@maka/core/deep-research": 1,
           "@maka/core/ui-locale": 1,
           "@maka/ui": 1
         },

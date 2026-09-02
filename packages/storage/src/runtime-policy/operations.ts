@@ -89,7 +89,13 @@ export type ResolveNetworkProxyExecutionResult =
       readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
     };
 
-export type ResolveWebFetchExecutionResult =
+/**
+ * Admission for a Host request that goes out over plain HTTP rather than to a
+ * configured model provider: the WebFetch tool, the models.dev catalog
+ * refresh. Privacy mode refuses it outright, and a configured proxy is
+ * mandatory rather than best effort.
+ */
+export type ResolveHostOutboundExecutionResult =
   | { readonly kind: 'privacy_mode' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
@@ -359,7 +365,7 @@ export interface RuntimePolicyOperationCoordinator {
   resolveWebSearchExecution(
     input?: ResolveWebSearchExecutionInput,
   ): Promise<ResolveWebSearchExecutionResult>;
-  resolveWebFetchExecution(): Promise<ResolveWebFetchExecutionResult>;
+  resolveHostOutboundExecution(): Promise<ResolveHostOutboundExecutionResult>;
   resolveNetworkProxyExecution(
     input?: ResolveNetworkProxyExecutionInput,
   ): Promise<ResolveNetworkProxyExecutionResult>;
