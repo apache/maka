@@ -481,8 +481,7 @@ export function createWorkHubController(deps: {
           projectName: session.projectName,
           sessionName: session.sessionName,
           updatedAt: session.updatedAt,
-          activeDelegations:
-            activeActionIdsBySessionId.get(session.target.sessionId)?.length ?? 0,
+          activeActionIds: activeActionIdsBySessionId.get(session.target.sessionId) ?? [],
         })),
       });
       if (stopDecision.kind !== 'not_requested') {
@@ -496,19 +495,20 @@ export function createWorkHubController(deps: {
             reason: stopDecision.reason,
           };
         }
-        const target = stopDecision.target;
-        const sourceActionId = activeActionIdsBySessionId.get(target.sessionId)![0]!;
+        const { target, stopsActionId } = stopDecision;
         const admitted = await coordination.act({
           actionId: input.requestId,
+          // The proposal carries the opaque delegation identity the Session
+          // Resolver produced, never the display name it was recalled by.
           userText: input.text,
-          proposal: { disposition: 'stop_work', stopsActionId: sourceActionId },
+          proposal: { disposition: 'stop_work', stopsActionId },
           confirmation: { kind: 'user_stop' },
         });
         if (admitted.disposition !== 'stop_work') {
           throw new Error('WorkHub Action Gate returned an unexpected disposition');
         }
         if (admitted.outcome !== 'not_owned') {
-          removeActiveAction(target.sessionId, sourceActionId);
+          removeActiveAction(target.sessionId, stopsActionId);
         }
         return {
           kind: 'stop',

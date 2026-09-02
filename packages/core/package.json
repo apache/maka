@@ -78,6 +78,7 @@
     "./daily-review": "./dist/daily-review.js",
     "./work-board": "./dist/work-board.js",
     "./workhub-creation-intent": "./dist/workhub-creation-intent.js",
+    "./workhub-session-resolver": "./dist/workhub-session-resolver.js",
     "./deep-research": "./dist/deep-research.js",
     "./session-start-mode": "./dist/session-start-mode.js",
     "./long-term-memory": "./dist/long-term-memory.js",

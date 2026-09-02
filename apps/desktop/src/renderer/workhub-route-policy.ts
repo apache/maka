@@ -18,10 +18,11 @@
  */
 
 import {
+  createExactNameSessionResolver,
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
-  workHubStopTargetsSession,
   type WorkHubRequestIntent,
+  type WorkHubSessionResolver,
 } from './application/contracts/workhub-request-intent.js';
 
 interface WorkHubRouteTarget {
@@ -59,9 +60,10 @@ export type WorkHubRouteDecision =
   | { kind: 'discussion' }
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
-/** An existing WorkHub identity together with how much active work it owns. */
+/** An existing WorkHub identity together with the active work it owns. */
 export interface WorkHubStoppableSession extends WorkHubRoutableSession {
-  activeDelegations: number;
+  /** Opaque action identities of this Session's active WorkHub delegations. */
+  activeActionIds: readonly string[];
 }
 
 export type WorkHubStopClarificationReason =
@@ -82,7 +84,14 @@ export type WorkHubStopClarificationReason =
 export type WorkHubStopRouteDecision =
   | { kind: 'not_requested' }
   | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
-  | { kind: 'target'; target: WorkHubRouteTarget };
+  | {
+      kind: 'target';
+      target: WorkHubRouteTarget;
+      /** The one active delegation the policy resolved, by opaque identity. */
+      stopsActionId: string;
+      /** The active delegation state the Action Gate must revalidate. */
+      activeActionIds: readonly string[];
+    };
 
 export interface WorkHubRoutePolicy {
   resolveStop(input: {
@@ -131,37 +140,72 @@ const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
  * It owns only transient inference context. Session identity, transcript,
  * execution state, and recovery continue to come from the Session port.
  */
-export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
-  return createWorkHubRoutePolicyVisit();
+export function createWorkHubRoutePolicy(
+  sessionResolver: WorkHubSessionResolver = createExactNameSessionResolver(),
+): WorkHubRoutePolicy {
+  return createWorkHubRoutePolicyVisit(sessionResolver);
 }
 
-function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
+function createWorkHubRoutePolicyVisit(
+  sessionResolver: WorkHubSessionResolver,
+): WorkHubRoutePolicy {
   let currentFocus: WorkHubRouteTarget | undefined;
   let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
+    // The stop Action Policy. Action Intent says only that the user issued a
+    // stop imperative and what work it refers to; the shared Session Resolver
+    // recalls which visible Sessions that reference names; this policy decides
+    // whether the resolution is sufficient for a destructive action.
+    //
     // Direct stop is a narrow claim over WorkHub's own active delegations, not
-    // a filter over every sentence that begins with "stop". Text that names no
-    // WorkHub identity — "Stop using the deprecated API" — is ordinary work and
-    // falls through to routing; an unsafe or anaphoric target still fails
-    // closed, and a named identity that is not uniquely stoppable says why.
+    // a filter over every sentence that begins with "stop". A reference that
+    // recalls no WorkHub identity — "Stop using the deprecated API" — is
+    // ordinary work and falls through to routing; an unsafe or anaphoric
+    // reference still fails closed, and a resolved Session that is not uniquely
+    // stoppable says why.
     resolveStop({ text, sessions }) {
       const intent = readWorkHubRequestIntent(text);
       if (!intent.stop.cue) return { kind: 'not_requested' };
-      if (!intent.stop.imperative) {
+      const reference = intent.stop.imperative ? intent.stop.target : undefined;
+      if (!reference) {
         return { kind: 'clarification', reason: 'stop_target_required' };
       }
-      const named = sessions.filter((session) =>
-        workHubStopTargetsSession(intent, session.sessionName));
-      if (named.length === 0) return { kind: 'not_requested' };
-      if (named.length > 1) return { kind: 'clarification', reason: 'stop_target_ambiguous' };
-      const target = named[0]!;
-      if (target.activeDelegations === 1) return { kind: 'target', target: target.target };
+      const sessionByRef = new Map(
+        sessions.map((session) => [session.target.sessionId, session]),
+      );
+      const resolution = sessionResolver.resolve({
+        reference: { text: reference },
+        sessions: sessions.map((session) => ({
+          ref: session.target.sessionId,
+          sessionName: session.sessionName,
+          projectName: session.projectName,
+          updatedAt: session.updatedAt,
+        })),
+      });
+      if (resolution.kind === 'none') return { kind: 'not_requested' };
+      if (resolution.kind === 'ambiguous') {
+        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
+      }
+      // Stop admits one candidate only. A ranked resolver may return several;
+      // this action never picks a winner from a ranking it cannot justify.
+      if (resolution.candidates.length > 1) {
+        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
+      }
+      const resolved = sessionByRef.get(resolution.candidates[0].ref);
+      if (!resolved) return { kind: 'not_requested' };
+      const [stopsActionId, ...furtherActive] = resolved.activeActionIds;
+      if (!stopsActionId) {
+        return { kind: 'clarification', reason: 'stop_target_not_active' };
+      }
+      if (furtherActive.length > 0) {
+        return { kind: 'clarification', reason: 'stop_target_not_unique' };
+      }
       return {
-        kind: 'clarification',
-        reason: target.activeDelegations === 0
-          ? 'stop_target_not_active'
-          : 'stop_target_not_unique',
+        kind: 'target',
+        target: resolved.target,
+        stopsActionId,
+        activeActionIds: resolved.activeActionIds,
       };
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
@@ -322,7 +366,7 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
       }
     },
     newVisit() {
-      return createWorkHubRoutePolicyVisit();
+      return createWorkHubRoutePolicyVisit(sessionResolver);
     },
     rememberTarget(target) {
       if (currentFocus?.sessionId === target.sessionId) return;

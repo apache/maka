@@ -315,7 +315,26 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
   };
 }
 
-/** Whether a parsed direct-stop command names exactly this Session. */
+/**
+ * Whether trusted reference text names exactly this Session.
+ *
+ * This is the matching rule behind the temporary exact-name Session Resolver.
+ * It answers a retrieval question only: naming a Session grants no authority
+ * over it, and the Action Gate revalidates the resolved opaque identity.
+ */
+export function workHubSessionReferenceNamesSession(
+  reference: string,
+  sessionName: string,
+): boolean {
+  return stopTargetMatchesSession(reference, sessionName);
+}
+
+/**
+ * Whether a parsed direct-stop command names exactly this Session.
+ *
+ * Only Runtime stop admission still derives a target this way. It moves onto
+ * the resolved opaque identity next, and this predicate goes with it.
+ */
 export function workHubStopTargetsSession(
   intent: WorkHubRequestIntent,
   sessionName: string,
@@ -323,7 +342,7 @@ export function workHubStopTargetsSession(
   return Boolean(
     intent.stop.imperative &&
       intent.stop.target &&
-      stopTargetMatchesSession(intent.stop.target, sessionName),
+      workHubSessionReferenceNamesSession(intent.stop.target, sessionName),
   );
 }
 
