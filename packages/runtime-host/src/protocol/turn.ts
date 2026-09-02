@@ -792,6 +792,7 @@ function requireProviderRetryReason(value: unknown): ProviderRetryReason {
     value === 'provider_unavailable' ||
     value === 'rate_limit' ||
     value === 'timeout' ||
+    value === 'incomplete_stream' ||
     value === 'unknown'
   ) {
     return value;

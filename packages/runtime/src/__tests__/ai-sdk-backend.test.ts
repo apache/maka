@@ -23,7 +23,12 @@ import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
-import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
+import type {
+  ModelFailure,
+  ModelMessage,
+  ModelStreamEvent,
+  ModelStreamResult,
+} from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
 import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
@@ -7310,6 +7315,323 @@ describe('AiSdkBackend usage telemetry', () => {
       false,
     );
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('retries an output-free protocol-incomplete stream once with a distinct reason', async () => {
+    const durable = durableTurnHarness('turn-incomplete-retry', 'finish the report');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          calls === 1
+            ? [{ type: 'stream-start', warnings: [] }, incompleteStreamErrorPart()]
+            : [
+                { type: 'stream-start', warnings: [] },
+                { type: 'text-start', id: 'text-1' },
+                { type: 'text-delta', id: 'text-1', delta: 'Recovered' },
+                { type: 'text-end', id: 'text-1' },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'stop', raw: 'stop' },
+                  usage: emptyUsage(),
+                },
+              ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(calls, 2);
+    assert.deepEqual(
+      events
+        .filter((event) => event.type === 'provider_retry')
+        .map(({ phase, attempt, maxAttempts, reason }) => ({
+          phase,
+          attempt,
+          maxAttempts,
+          reason,
+        })),
+      [
+        { phase: 'scheduled', attempt: 2, maxAttempts: 2, reason: 'incomplete_stream' },
+        { phase: 'started', attempt: 2, maxAttempts: 2, reason: 'incomplete_stream' },
+      ],
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('stops after one protocol-incomplete stream recovery and preserves the provider error', async () => {
+    const durable = durableTurnHarness('turn-incomplete-exhausted', 'finish the report');
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [{ type: 'stream-start', warnings: [] }, incompleteStreamErrorPart()],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+    const error = events.find(
+      (event): event is Extract<SessionEvent, { type: 'error' }> => event.type === 'error',
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.filter((event) => event.type === 'provider_retry' && event.phase === 'scheduled')
+        .length,
+      1,
+    );
+    assert.equal(error?.code, 'invalid_request_error');
+    assert.match(error?.message ?? '', /stream closed before response\.completed/);
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'error');
+  });
+
+  test('fails closed on protocol-incomplete streams after observable output or a step boundary', async () => {
+    const cases: Array<{ name: string; events: ModelStreamEvent[] }> = [
+      { name: 'text', events: [{ kind: 'text', text: 'partial answer' }] },
+      { name: 'thinking', events: [{ kind: 'thinking', text: 'partial thought' }] },
+      { name: 'tool activity', events: [{ kind: 'provider-tool-input' }] },
+      {
+        name: 'continuation metadata',
+        events: [{ kind: 'text-end', providerOptions: { openai: { itemId: 'item-1' } } }],
+      },
+      { name: 'completed step', events: [{ kind: 'step-finish', finishReason: 'stop' }] },
+    ];
+
+    for (const candidate of cases) {
+      let calls = 0;
+      const backend = createTestAiSdkBackend({
+        sessionId: 'session-1',
+        header: header(),
+        appendMessage: async () => {},
+        connection: connection(),
+        apiKey: 'sk-test',
+        modelId: 'mock-model-id',
+        modelFactory: () => completionModel(),
+        tools: [],
+        newId: idGenerator(),
+        now: monotonicClock(),
+        providerRetrySleep: async () => {},
+      });
+      const failure = incompleteStreamFailure();
+      (
+        backend as unknown as {
+          modelAdapter: { startStream: () => Promise<ModelStreamResult> };
+        }
+      ).modelAdapter.startStream = async () => {
+        calls += 1;
+        return {
+          events: (async function* () {
+            for (const event of candidate.events) yield event;
+            yield { kind: 'error' as const, failure };
+          })(),
+          outcome: Promise.resolve({
+            kind: 'terminal-failure',
+            failure,
+            request: { messages: [] },
+            continuation: 'none',
+          }),
+        };
+      };
+
+      const events: SessionEvent[] = [];
+      for await (const event of backend.send({
+        turnId: `turn-${candidate.name}`,
+        text: 'hi',
+        context: [],
+      })) {
+        events.push(event);
+      }
+
+      assert.equal(calls, 1, candidate.name);
+      assert.equal(
+        events.some((event) => event.type === 'provider_retry'),
+        false,
+        candidate.name,
+      );
+      assert.equal(
+        events.find((event) => event.type === 'complete')?.stopReason,
+        'error',
+        candidate.name,
+      );
+    }
+  });
+
+  test('retries a post-tool protocol-incomplete stream without re-running the durable tool', async () => {
+    const durable = durableTurnHarness('turn-incomplete-after-tool', 'read notes');
+    let providerCalls = 0;
+    let toolCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        providerCalls += 1;
+        const chunks: LanguageModelV4StreamPart[] =
+          providerCalls === 1
+            ? [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'tool-call',
+                  toolCallId: 'read-1',
+                  toolName: 'Read',
+                  input: JSON.stringify({ path: 'notes.md' }),
+                },
+                {
+                  type: 'finish',
+                  finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                  usage: emptyUsage(),
+                },
+              ]
+            : providerCalls === 2
+              ? [{ type: 'stream-start', warnings: [] }, incompleteStreamErrorPart()]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'text-start', id: 'text-final' },
+                  { type: 'text-delta', id: 'text-final', delta: 'done' },
+                  { type: 'text-end', id: 'text-final' },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ];
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [
+        {
+          name: 'Read',
+          description: 'Read notes',
+          parameters: z.object({ path: z.string() }),
+          impl: async () => {
+            toolCalls += 1;
+            return 'notes contents';
+          },
+        },
+      ],
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async () => {},
+    });
+
+    const events = await drainDurably(backend.send(durable.input()), durable);
+
+    assert.equal(providerCalls, 3);
+    assert.equal(toolCalls, 1);
+    assert.equal(events.filter((event) => event.type === 'tool_result').length, 1);
+    assert.equal(
+      durable.ledger.filter((event) => event.content?.kind === 'function_response').length,
+      1,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
+  test('Stop aborts the turn while protocol-incomplete recovery is waiting', async () => {
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [{ type: 'stream-start', warnings: [] }, incompleteStreamErrorPart()],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      providerRetrySleep: async (_delayMs, signal) =>
+        await new Promise<void>((_resolve, reject) => {
+          const abort = () =>
+            reject(signal.reason ?? Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          if (signal.aborted) abort();
+          else signal.addEventListener('abort', abort, { once: true });
+        }),
+    });
+
+    const events: SessionEvent[] = [];
+    for await (const event of backend.send({ turnId: 'turn-1', text: 'hi', context: [] })) {
+      events.push(event);
+      if (event.type === 'provider_retry' && event.phase === 'scheduled') {
+        await backend.stop('user_stop');
+      }
+    }
+
+    assert.equal(calls, 1);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry' && event.phase === 'started'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'user_stop');
   });
 
   test('classifies an exhausted output-free truncated stream as provider unavailable', async () => {
@@ -15657,6 +15979,29 @@ function emptyUsage() {
   return {
     inputTokens: { total: 0, noCache: 0, cacheRead: 0, cacheWrite: 0 },
     outputTokens: { total: 0, text: 0, reasoning: 0 },
+  };
+}
+
+function incompleteStreamErrorPart(): LanguageModelV4StreamPart {
+  return {
+    type: 'error',
+    error: {
+      code: 'invalid_request_error',
+      message:
+        'stream error: stream disconnected before completion: stream closed before response.completed',
+    },
+  };
+}
+
+function incompleteStreamFailure(): ModelFailure & { recoveryReason: 'incomplete_stream' } {
+  return {
+    type: 'model_failure',
+    kind: 'unknown',
+    message:
+      'stream error: stream disconnected before completion: stream closed before response.completed (code=invalid_request_error)',
+    retryable: false,
+    code: 'invalid_request_error',
+    recoveryReason: 'incomplete_stream',
   };
 }
 

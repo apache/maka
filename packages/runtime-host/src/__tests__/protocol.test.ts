@@ -60,9 +60,33 @@ import {
   TURN_MESSAGE_QUOTE_TEXT_MAX_LENGTH,
   TURN_FAILURE_MESSAGE_MAX_BYTES,
   decodeMessageContent,
+  decodeTurnProviderRetry,
   TURN_SKILL_ID_MAX_COUNT,
   TURN_SKILL_ID_MAX_LENGTH,
 } from '../protocol/turn.js';
+
+test('decodes the protocol-incomplete stream retry reason', () => {
+  assert.deepEqual(
+    decodeTurnProviderRetry({
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 1_000,
+      reason: 'incomplete_stream',
+    }),
+    {
+      phase: 'scheduled',
+      attempt: 2,
+      maxAttempts: 2,
+      delayMs: 1_000,
+      reason: 'incomplete_stream',
+    },
+  );
+});
+
+test('publishes a new compatibility epoch for protocol-incomplete retry progress', () => {
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 109);
+});
 
 describe('Runtime Host bootstrap protocol', () => {
   test('accepts only authenticated-listener registration endpoints on IPv4 loopback', () => {

@@ -349,6 +349,8 @@ export interface ModelFailure {
   /** Provider-requested delay for the next physical attempt, in milliseconds. */
   retryAfterMs?: number;
   code?: string;
+  /** Narrow Runtime-owned recovery path that remains separate from transport retryability. */
+  recoveryReason?: 'incomplete_stream';
 }
 
 /**

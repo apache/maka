@@ -275,6 +275,70 @@ describe('Provider error classification', () => {
     });
   });
 
+  test('marks a protocol-incomplete stream for bounded recovery without widening retryability', () => {
+    const message =
+      'stream error: stream disconnected before completion: stream closed before response.completed';
+    const typedCause = Object.assign(new Error('provider stream failed'), {
+      name: 'AI_APICallError',
+      cause: { code: 'invalid_request_error', message },
+    });
+    const typedMetadata = providerRetryMetadata(typedCause) as ReturnType<
+      typeof providerRetryMetadata
+    > & { recoveryReason?: string };
+
+    assert.deepEqual(typedMetadata, {
+      retryable: false,
+      recoveryReason: 'incomplete_stream',
+    });
+    assert.deepEqual(providerFailureDiagnostic(typedCause), {
+      errorClass: 'Other',
+      providerCode: 'invalid_request_error',
+      retryable: false,
+    });
+
+    const textFallback = providerRetryMetadata(new Error(message)) as ReturnType<
+      typeof providerRetryMetadata
+    > & { recoveryReason?: string };
+    assert.deepEqual(textFallback, {
+      retryable: false,
+      recoveryReason: 'incomplete_stream',
+    });
+  });
+
+  test('requires both protocol-incomplete stream phrases for text fallback recovery', () => {
+    for (const message of [
+      'stream disconnected before completion',
+      'stream closed before response.completed',
+      'stream disconnected after response.completed',
+    ]) {
+      assert.deepEqual(providerRetryMetadata(new Error(message)), { retryable: false }, message);
+    }
+  });
+
+  test('does not let text fallback override a contradictory structured provider code', () => {
+    const message =
+      'stream disconnected before completion: stream closed before response.completed';
+
+    assert.deepEqual(providerRetryMetadata({ code: 'insufficient_quota', message }), {
+      retryable: false,
+    });
+    assert.deepEqual(providerRetryMetadata({ type: 'authentication_error', message }), {
+      retryable: false,
+    });
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(new Error(message), { cause: { code: 'insufficient_quota' } }),
+      ),
+      { retryable: false },
+    );
+    assert.deepEqual(
+      providerRetryMetadata(
+        Object.assign(new Error(message), { cause: { type: 'authentication_error' } }),
+      ),
+      { retryable: false },
+    );
+  });
+
   test('retries an AI SDK transport failure without an HTTP response', () => {
     const failure = Object.assign(
       new Error(

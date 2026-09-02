@@ -1991,12 +1991,6 @@ export class AiSdkTurn {
             const settledWatchdogTimeout = consumeWatchdogTimeout();
             providerOutcome = await result.outcome;
             const incompleteStreamTerminal = providerOutcome.kind === 'truncated';
-            const incompleteStreamHasNoObservableOutput =
-              incompleteStreamTerminal &&
-              !attemptSawText &&
-              !attemptSawThinking &&
-              !attemptSawToolActivity &&
-              !attemptSawContinuationMetadata;
             const attemptFailure =
               settledWatchdogTimeout?.error ??
               (providerOutcome.kind === 'completed' ? undefined : providerOutcome.failure);
@@ -2116,12 +2110,17 @@ export class AiSdkTurn {
                 };
                 await this.deps.backend.appendMessage(note).catch(() => {});
               }
+              const protocolIncompleteStreamFailure =
+                failure.recoveryReason === 'incomplete_stream';
+              const incompleteStreamHasNoObservableOutput =
+                (incompleteStreamTerminal || protocolIncompleteStreamFailure) &&
+                attemptHasNoObservableOutput();
               const idleWatchdogRecovery =
                 settledWatchdogTimeout?.phase === 'idle' &&
                 idleWatchdogRetryCount < MAX_IDLE_WATCHDOG_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking();
               const incompleteStreamRecovery =
-                incompleteStreamTerminal &&
+                (incompleteStreamTerminal || protocolIncompleteStreamFailure) &&
                 incompleteStreamRetryCount < MAX_INCOMPLETE_STREAM_RETRIES_PER_STEP &&
                 incompleteStreamHasNoObservableOutput;
               // Same seal-and-retry contract as the watchdog path, entered when
@@ -2136,8 +2135,9 @@ export class AiSdkTurn {
                 sealedThinkingRetryCount < MAX_SEALED_THINKING_RETRIES_PER_STEP &&
                 attemptCanRecoverWithSealedThinking() &&
                 !attemptHasNoObservableOutput();
+              const ordinaryProviderRetry = failure.retryable && !protocolIncompleteStreamFailure;
               if (
-                (failure.retryable || idleWatchdogRecovery || incompleteStreamRecovery) &&
+                (ordinaryProviderRetry || idleWatchdogRecovery || incompleteStreamRecovery) &&
                 failure.kind !== 'context_overflow' &&
                 providerAttempt < MAX_PROVIDER_ATTEMPTS_PER_STEP &&
                 stepBudgetRemains &&
@@ -2165,7 +2165,10 @@ export class AiSdkTurn {
                   idleWatchdogRecovery || incompleteStreamRecovery || sealedThinkingRecovery
                     ? nextAttempt
                     : MAX_PROVIDER_ATTEMPTS_PER_STEP;
-                const reason = providerRetryReason(failure.kind);
+                const reason: ProviderRetryReason =
+                  protocolIncompleteStreamFailure && incompleteStreamRecovery
+                    ? 'incomplete_stream'
+                    : providerRetryReason(failure.kind);
                 queue.push({
                   type: 'provider_retry',
                   id: this.deps.newId(),

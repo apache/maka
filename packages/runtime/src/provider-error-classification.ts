@@ -123,6 +123,7 @@ interface ProviderErrorFacts {
 export interface ProviderRetryMetadata {
   retryable: boolean;
   retryAfterMs?: number;
+  recoveryReason?: 'incomplete_stream';
 }
 
 /** Bounded, allowlisted provider failure facts safe for durable telemetry. */
@@ -215,6 +216,36 @@ function parseRetryAfterMs(headers: Record<string, string>): number | null | und
   return Math.ceil(delayMs);
 }
 
+const INCOMPLETE_STREAM_PHRASES = [
+  'stream disconnected before completion',
+  'stream closed before response.completed',
+] as const;
+
+function incompleteStreamRecoveryReason(error: unknown): 'incomplete_stream' | undefined {
+  let current: unknown = providerErrorTarget(error);
+  let typedMatch = false;
+  let textFallback = false;
+  let sawStructuredEvidence = false;
+  const seen = new Set<unknown>();
+  for (let depth = 0; depth < 5 && current !== undefined && !seen.has(current); depth += 1) {
+    seen.add(current);
+    const facts = normalizeProviderError(current);
+    if (facts) {
+      const codes = [facts.evidence.code.toLowerCase(), ...facts.evidence.structuredCodes].filter(
+        Boolean,
+      );
+      sawStructuredEvidence ||= codes.length > 0;
+      if (INCOMPLETE_STREAM_PHRASES.every((phrase) => facts.evidence.text.includes(phrase))) {
+        typedMatch ||= codes.includes('invalid_request_error');
+        if (codes.length === 0) textFallback = true;
+      }
+    }
+    const record = objectRecord(current);
+    current = record ? safeField(record, 'cause') : undefined;
+  }
+  return typedMatch || (textFallback && !sawStructuredEvidence) ? 'incomplete_stream' : undefined;
+}
+
 /**
  * Normalizes provider retry facts without leaking SDK error objects or raw
  * response headers across the ModelAdapter boundary.
@@ -223,11 +254,16 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   const facts = normalizeProviderError(error);
   if (!facts) return { retryable: false };
   const { evidence } = facts;
+  const recoveryReason = incompleteStreamRecoveryReason(error);
+  const withRecoveryReason = (metadata: ProviderRetryMetadata): ProviderRetryMetadata =>
+    recoveryReason ? { ...metadata, recoveryReason } : metadata;
 
-  if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) return { retryable: true };
+  if (RUNTIME_RETRYABLE_ERROR_CODES.has(evidence.code)) {
+    return withRecoveryReason({ retryable: true });
+  }
   // The Codex transport already spent its complete 2/10/30-second budget.
   // Do not let the outer model loop restart that same transport budget.
-  if (isTrustedCodexEdgeRejection(facts)) return { retryable: false };
+  if (isTrustedCodexEdgeRejection(facts)) return withRecoveryReason({ retryable: false });
 
   const status = Number(evidence.statusCode || evidence.code);
   const errorClass = classifyProviderFacts(facts);
@@ -235,14 +271,16 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
   if (errorClass === 'ProviderCapacity') {
     // Capacity is transient even when the provider sends a malformed delay;
     // fall back to the adapter's bounded local backoff in that case.
-    return {
+    return withRecoveryReason({
       retryable: true,
       ...(retryAfterMs !== undefined && retryAfterMs !== null ? { retryAfterMs } : {}),
-    };
+    });
   }
   if (errorClass === 'RateLimit' || status === 429) {
-    if (retryAfterMs === undefined || retryAfterMs === null) return { retryable: false };
-    return { retryable: true, retryAfterMs };
+    if (retryAfterMs === undefined || retryAfterMs === null) {
+      return withRecoveryReason({ retryable: false });
+    }
+    return withRecoveryReason({ retryable: true, retryAfterMs });
   }
   const retryable =
     errorClass === 'Network' ||
@@ -250,12 +288,12 @@ export function providerRetryMetadata(error: unknown): ProviderRetryMetadata {
     status === 408 ||
     status === 409 ||
     (status >= 500 && status <= 599);
-  if (!retryable) return { retryable: false };
-  if (retryAfterMs === null) return { retryable: false };
-  return {
+  if (!retryable) return withRecoveryReason({ retryable: false });
+  if (retryAfterMs === null) return withRecoveryReason({ retryable: false });
+  return withRecoveryReason({
     retryable: true,
     ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-  };
+  });
 }
 
 /** Collects `code`/`type` strings from a payload and from its `error` wrapper. */
