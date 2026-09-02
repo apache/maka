@@ -18,10 +18,13 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after, before } from 'node:test';
+import { desktopReleaseTargets } from './desktop-release-targets.mjs';
+import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 import { assertElfArchitecture, verifyLinuxRelease } from './verify-linux.mjs';
 
 // The two `e_machine` values this project ships, from the ELF specification.
@@ -93,6 +96,137 @@ test('the architecture assertion refuses to read a big-endian header', async () 
     () => assertElfArchitecture(path, 'x64'),
     /is not a little-endian ELF binary/u,
   );
+});
+
+const FEED_VERSION = '9.9.9';
+
+/**
+ * The shape `package:linux` leaves behind: two payloads from two
+ * electron-builder runs, and one feed merged out of the feed each run wrote.
+ * The payload bytes are written here and the digests taken from them, so a test
+ * that drifts one field drifts it away from a feed that was otherwise exact.
+ */
+async function stageLinuxRelease(name, { nightly = false, drift = (feed) => feed } = {}) {
+  const target = desktopReleaseTargets(FEED_VERSION, { nightly }).find(
+    (entry) => entry.name === 'linux-x64',
+  );
+  const directory = join(workingDirectory, name);
+  await mkdir(directory, { recursive: true });
+  const files = [];
+  for (const payload of target.advertised) {
+    const bytes = Buffer.from(`${payload} payload bytes\n`);
+    await writeFile(join(directory, payload), bytes);
+    files.push({
+      url: payload,
+      sha512: createHash('sha512').update(bytes).digest('base64'),
+      size: bytes.length,
+    });
+  }
+  const feed = drift({
+    version: FEED_VERSION,
+    files,
+    path: files[0].url,
+    sha512: files[0].sha512,
+    releaseDate: '2026-01-01T00:00:00.000Z',
+  });
+  await writeFile(join(directory, target.feed), feedDocument(feed), 'utf8');
+  return { directory, target };
+}
+
+/** electron-builder's feed layout, written by hand so this suite stays on node builtins. */
+function feedDocument(feed) {
+  const lines = [`version: ${feed.version}`, 'files:'];
+  for (const file of feed.files) {
+    lines.push(`  - url: ${file.url}`, `    sha512: ${file.sha512}`, `    size: ${file.size}`);
+  }
+  lines.push(`path: ${feed.path}`, `sha512: ${feed.sha512}`, `releaseDate: '${feed.releaseDate}'`);
+  return `${lines.join('\n')}\n`;
+}
+
+function verifyStagedFeed({ directory, target }) {
+  return verifyDesktopUpdateArtifacts({
+    directory,
+    metadataName: target.feed,
+    version: FEED_VERSION,
+    artifactNames: target.advertised,
+  });
+}
+
+/**
+ * The verifier reads the merged feed before it writes a checksum, so a rejected
+ * release leaves nothing behind that says its bytes were certified.
+ */
+async function assertNoChecksumsWritten(directory) {
+  const entries = await readdir(directory);
+  assert.deepEqual(
+    entries.filter((entry) => entry.endsWith('.sha256')),
+    [],
+  );
+}
+
+test('the merged Linux feed offers both distributables', async () => {
+  // The AppImage and the deb are built by separate electron-builder runs, the
+  // second of which overwrites the first's feed; only the merge puts both in
+  // one document, and until this ran nothing opened the merged bytes before
+  // publication.
+  const staged = await stageLinuxRelease('merged');
+  const { metadata } = await verifyStagedFeed(staged);
+  assert.deepEqual(
+    metadata.files.map((file) => file.url).sort(),
+    [...staged.target.advertised].sort(),
+  );
+});
+
+test('the Nightly merged feed is read under its own name', async () => {
+  // The Nightly publishes the same two payloads through `dev-linux.yml`, so a
+  // verifier that only ever looked for `latest-linux.yml` would check nothing
+  // there.
+  const staged = await stageLinuxRelease('merged-nightly', { nightly: true });
+  assert.equal(staged.target.feed, 'dev-linux.yml');
+  await verifyStagedFeed(staged);
+});
+
+test('a merged feed that lost a payload is rejected', async () => {
+  // The exact damage the merge can do: the deb's own feed contributes nothing
+  // and the AppImage's document survives alone, offering deb users no update.
+  const staged = await stageLinuxRelease('dropped-payload', {
+    drift: (feed) => ({ ...feed, files: feed.files.slice(0, 1) }),
+  });
+  await assert.rejects(() => verifyStagedFeed(staged), /advertises \[/u);
+  await assertNoChecksumsWritten(staged.directory);
+});
+
+test('a merged feed whose digest belongs to another payload is rejected', async () => {
+  // `path` and the top-level `sha512` are the primary payload's identity; the
+  // merge keeps the first document's, so pointing `path` at the other file
+  // leaves an updater verifying the deb against the AppImage's digest.
+  const staged = await stageLinuxRelease('mismatched-primary', {
+    drift: (feed) => ({ ...feed, path: feed.files[1].url }),
+  });
+  await assert.rejects(() => verifyStagedFeed(staged), /inconsistent payload identity/u);
+  await assertNoChecksumsWritten(staged.directory);
+});
+
+test('a merged feed carrying a stale digest is rejected', async () => {
+  const staged = await stageLinuxRelease('stale-digest', {
+    drift: (feed) => ({
+      ...feed,
+      files: [feed.files[0], { ...feed.files[1], sha512: createHash('sha512').digest('base64') }],
+    }),
+  });
+  await assert.rejects(() => verifyStagedFeed(staged), /sha512 does not match/u);
+  await assertNoChecksumsWritten(staged.directory);
+});
+
+test('a merged feed carrying a stale size is rejected', async () => {
+  const staged = await stageLinuxRelease('stale-size', {
+    drift: (feed) => ({
+      ...feed,
+      files: [feed.files[0], { ...feed.files[1], size: feed.files[1].size + 1 }],
+    }),
+  });
+  await assert.rejects(() => verifyStagedFeed(staged), /records .* size/u);
+  await assertNoChecksumsWritten(staged.directory);
 });
 
 test('Linux verification refuses to run anywhere else', async () => {

@@ -23,7 +23,10 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
 import { desktopReleaseTargets } from './desktop-release-targets.mjs';
-import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
+import {
+  assertPackagedUpdateConfiguration,
+  verifyDesktopUpdateArtifacts,
+} from './desktop-update-contract.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -79,6 +82,9 @@ async function linuxDistributables(arch, environment) {
       target.payloads.find((name) => name.endsWith('.deb')),
     ),
     checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
+    version,
+    feed: target.feed,
+    advertised: target.advertised,
   };
 }
 
@@ -222,6 +228,18 @@ export async function verifyLinuxRelease(
     // start — a missing shared library, or a sandbox the host will not grant.
     await requirePath(join(squashfsRoot, 'AppRun'));
     await smokeRenderer(join(squashfsRoot, 'AppRun'), { workingDirectory });
+
+    // Linux is the one platform whose update feed this repository assembles
+    // itself: `package:linux` runs electron-builder twice and merges the two
+    // feeds, so the merged bytes are the only ones no build step ever wrote as
+    // a whole. Reading them here, against the payloads just verified, is what
+    // keeps a dropped entry or a stale digest from surviving until publication.
+    await verifyDesktopUpdateArtifacts({
+      directory: releaseDirectory,
+      metadataName: distributables.feed,
+      version: distributables.version,
+      artifactNames: distributables.advertised,
+    });
 
     // A formal release publishes a checksum beside each distributable, the way
     // the Windows verification does for its installer and archive. Each one is
