@@ -19,6 +19,17 @@
 
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 
+export interface RuntimeHostCollaborationScope {
+  readonly collaborationAuthority?: boolean;
+}
+
+/** Hosts with an explicit negative capability cannot answer collaboration queries. */
+export function selectRuntimeHostCollaborationScopes<T extends RuntimeHostCollaborationScope>(
+  scopes: readonly T[],
+): T[] {
+  return scopes.filter((scope) => scope.collaborationAuthority !== false);
+}
+
 export async function collectAvailablePendingTurnRequests(
   queries: readonly Promise<readonly SessionTurnAccessRequest[]>[],
 ): Promise<SessionTurnAccessRequest[]> {

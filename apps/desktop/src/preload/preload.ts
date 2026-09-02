@@ -129,7 +129,10 @@ import {
   resolveRuntimeHostSessionCatalog,
   type RuntimeHostSessionCatalogCoverage,
 } from './runtime-host-session-catalog.js';
-import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
+import {
+  collectAvailablePendingTurnRequests,
+  selectRuntimeHostCollaborationScopes,
+} from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
@@ -270,6 +273,7 @@ const runtimeHostMetadata = new Map<
     readonly profileName: string;
     readonly profileKind: RuntimeHostProfileKind;
     readonly profileAccess: 'owner' | 'session_guest';
+    readonly collaborationAuthority?: boolean;
   }
 >();
 const runtimeHostSessionProfiles = new Map<string, string>();
@@ -337,6 +341,9 @@ ipcRenderer.on(
         profileName: change.profileName,
         profileKind: change.profileKind,
         profileAccess: change.profileAccess,
+        ...(typeof change.collaborationAuthority === 'boolean'
+          ? { collaborationAuthority: change.collaborationAuthority }
+          : {}),
       });
       if (change.isDefault) activeRuntimeHost = nextScope;
     } else if (change.isDefault) {
@@ -364,6 +371,7 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName?: unknown;
     profileKind?: unknown;
     profileAccess?: unknown;
+    collaborationAuthority?: unknown;
     readiness?: unknown;
   };
   if (
@@ -383,6 +391,9 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
     profileAccess: metadata.profileAccess,
+    ...(typeof metadata.collaborationAuthority === 'boolean'
+      ? { collaborationAuthority: metadata.collaborationAuthority }
+      : {}),
   });
   return { scope, readiness: metadata.readiness };
 }
@@ -1464,9 +1475,14 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const scopes = (await runtimeHostScopeList()).filter(
-        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
-      );
+      const scopes = selectRuntimeHostCollaborationScopes(
+        (await runtimeHostScopeList()).flatMap((scope) => {
+          const metadata = runtimeHostMetadataFor(scope);
+          return metadata?.profileAccess === 'owner'
+            ? [{ scope, collaborationAuthority: metadata.collaborationAuthority }]
+            : [];
+        }),
+      ).map(({ scope }) => scope);
       return collectAvailablePendingTurnRequests(
         scopes.map(async (scope) => {
           const result = await ipcRenderer.invoke(

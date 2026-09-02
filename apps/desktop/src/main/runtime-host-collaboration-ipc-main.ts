@@ -19,6 +19,7 @@
 
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
+import type { CollaborationTurnRequestQueryResult } from '@maka/runtime-host/protocol';
 import {
   encodeDesktopCollaborationInvitation,
   type DesktopCollaborationConnectionTarget,
@@ -101,7 +102,11 @@ export function registerRuntimeHostCollaborationIpc(
         return await client.queryCollaborationTurnRequests(requestedSessionId);
       } catch (error) {
         if (requestedSessionId === undefined && isCollaborationInboxUnavailable(error)) {
-          return { canRequestTurns: false, requests: [] };
+          return {
+            canRequestTurns: false,
+            requests: [],
+            authorityUnavailable: true,
+          } satisfies CollaborationTurnRequestQueryResult & { authorityUnavailable: true };
         }
         throw error;
       }

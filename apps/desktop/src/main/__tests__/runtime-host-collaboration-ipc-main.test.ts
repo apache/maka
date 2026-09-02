@@ -190,6 +190,7 @@ test('treats an unavailable collaboration authority as an empty background inbox
   assert.deepEqual(await query({} as Parameters<IpcHandler>[0]), {
     canRequestTurns: false,
     requests: [],
+    authorityUnavailable: true,
   });
   await assert.rejects(
     query({} as Parameters<IpcHandler>[0], 'session-1'),
