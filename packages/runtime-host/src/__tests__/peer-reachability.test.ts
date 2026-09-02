@@ -163,6 +163,43 @@ test('peer reachability currentness cannot be extended by a wall-clock rollback'
   }
 });
 
+test('publisher replaces future leases and renews them on monotonic time across restart', async () => {
+  const identity = new TestPeerIdentity('peer-a');
+  const root = await mkdtemp(join(tmpdir(), 'maka-peer-reachability-publisher-clock-'));
+  let wallNow = 1_000_000;
+  let monotonicNow = 100;
+  try {
+    const first = await openPeerReachabilityPublisher({
+      dataRoot: root,
+      peer: identity,
+      now: () => wallNow,
+      monotonicNow: () => monotonicNow,
+    });
+    assert.equal(first.current().lease.revision, 1);
+
+    wallNow = 400_000;
+    assert.equal((await first.refresh()).lease.revision, 2);
+    assert.equal(first.current().lease.issuedAt, wallNow);
+    await first.close();
+
+    wallNow = 100_000;
+    const second = await openPeerReachabilityPublisher({
+      dataRoot: root,
+      peer: identity,
+      now: () => wallNow,
+      monotonicNow: () => monotonicNow,
+    });
+    assert.equal(second.current().lease.revision, 3);
+    assert.equal(second.current().lease.issuedAt, wallNow);
+
+    monotonicNow += 4 * 60_000;
+    assert.equal((await second.refresh()).lease.revision, 4);
+    await second.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 class TestPeerIdentity implements PeerReachabilityIdentity {
   readonly #publicKey: KeyObject;
   readonly #privateKey: KeyObject;

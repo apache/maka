@@ -19,19 +19,24 @@
 
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import {
   acquireFileLifetimeOwner,
   type FileLifetimeOwner,
 } from '@maka/storage/file-lifetime-owner';
 import {
+  authenticateSignedPeerReachabilityLease,
   canonicalPeerReachabilityLease,
   decodeSignedPeerReachabilityLease,
+  isPeerReachabilityLeaseCurrent,
   PEER_REACHABILITY_LEASE_TTL_MS,
   PEER_REACHABILITY_REFRESH_LEAD_MS,
+  peerReachabilityLeaseReceipt,
   peerReachabilityLeaseSigningBytes,
   samePeerReachabilityRoutes,
   verifySignedPeerReachabilityLease,
   type PeerReachabilityIdentity,
+  type PeerReachabilityLeaseReceipt,
   type SignedPeerReachabilityLeaseV1,
 } from './model.js';
 
@@ -54,17 +59,20 @@ export async function openPeerReachabilityPublisher(input: {
   readonly dataRoot: string;
   readonly peer: PeerReachabilityIdentity;
   readonly now?: () => number;
+  readonly monotonicNow?: () => number;
 }): Promise<PeerReachabilityPublisher> {
   await mkdir(input.dataRoot, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') await chmod(input.dataRoot, 0o700);
   const owner = await acquireFileLifetimeOwner(join(input.dataRoot, OWNER_FILE));
   try {
     const now = input.now ?? Date.now;
-    const current = await readState(join(input.dataRoot, STATE_FILE), input.peer, now());
+    const monotonicNow = input.monotonicNow ?? performance.now.bind(performance);
+    const current = await readState(join(input.dataRoot, STATE_FILE), input.peer);
     const publisher = new PeerReachabilityPublisherImpl(
       join(input.dataRoot, STATE_FILE),
       input.peer,
       now,
+      monotonicNow,
       owner,
       current,
     );
@@ -78,6 +86,7 @@ export async function openPeerReachabilityPublisher(input: {
 
 class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
   #current: SignedPeerReachabilityLeaseV1 | undefined;
+  #receipt: PeerReachabilityLeaseReceipt | undefined;
   #tail = Promise.resolve();
   #failure: Error | undefined;
   #closed = false;
@@ -87,10 +96,18 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     private readonly path: string,
     private readonly peer: PeerReachabilityIdentity,
     private readonly now: () => number,
+    private readonly monotonicNow: () => number,
     private readonly owner: FileLifetimeOwner,
     current: SignedPeerReachabilityLeaseV1 | undefined,
   ) {
     this.#current = current;
+    if (current) {
+      this.#receipt = peerReachabilityLeaseReceipt({
+        signed: current,
+        wallNow: this.now(),
+        monotonicNow: this.monotonicNow(),
+      });
+    }
   }
 
   current(): SignedPeerReachabilityLeaseV1 {
@@ -105,10 +122,17 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
       this.#assertOpen();
       const identity = this.peer.identity();
       const now = this.now();
+      const monotonicNow = this.monotonicNow();
       if (
         this.#current &&
         this.#current.lease.peerId === identity.peerId &&
+        this.#current.lease.issuedAt <= now &&
         this.#current.lease.expiresAt > now + PEER_REACHABILITY_REFRESH_LEAD_MS &&
+        isPeerReachabilityLeaseCurrent(
+          this.#current,
+          this.#receipt,
+          monotonicNow + PEER_REACHABILITY_REFRESH_LEAD_MS,
+        ) &&
         samePeerReachabilityRoutes(this.#current.lease, identity)
       ) {
         return this.#current;
@@ -132,10 +156,10 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
       this.verify(signed, identity.peerId);
       try {
         await writeState(this.path, identity.peerId, signed);
-        this.#current = signed;
+        this.#adopt(signed, now, monotonicNow);
       } catch (error) {
         if (error instanceof PeerReachabilityPostCommitError) {
-          this.#current = signed;
+          this.#adopt(signed, now, monotonicNow);
           this.#failure = error;
           throw error;
         }
@@ -180,12 +204,16 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     if (this.#closed) throw new Error('Peer reachability publisher is closed');
     if (this.#failure) throw this.#failure;
   }
+
+  #adopt(signed: SignedPeerReachabilityLeaseV1, wallNow: number, monotonicNow: number): void {
+    this.#current = signed;
+    this.#receipt = peerReachabilityLeaseReceipt({ signed, wallNow, monotonicNow });
+  }
 }
 
 async function readState(
   path: string,
   peer: PeerReachabilityIdentity,
-  now: number,
 ): Promise<SignedPeerReachabilityLeaseV1 | undefined> {
   try {
     const stat = await lstat(path);
@@ -205,12 +233,10 @@ async function readState(
     ) {
       throw new Error('Peer reachability state belongs to a different peer identity');
     }
-    return verifySignedPeerReachabilityLease({
+    return authenticateSignedPeerReachabilityLease({
       value: record.current,
       expectedPeerId: record.localPeerId,
-      now,
       verifyIdentity: peer.verifyIdentity.bind(peer),
-      allowExpired: true,
     });
   } catch (error) {
     if (isNodeError(error, 'ENOENT')) return undefined;

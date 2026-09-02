@@ -118,15 +118,24 @@ export function verifySignedPeerReachabilityLease(input: {
   readonly verifyIdentity: PeerReachabilityIdentity['verifyIdentity'];
   readonly allowExpired?: boolean;
 }): SignedPeerReachabilityLeaseV1 {
-  const signed = decodeSignedPeerReachabilityLease(input.value);
-  if (signed.lease.peerId !== input.expectedPeerId) {
-    throw new Error('Peer reachability lease belongs to a different peer');
-  }
+  const signed = authenticateSignedPeerReachabilityLease(input);
   if (signed.lease.issuedAt > input.now + PEER_REACHABILITY_MAX_CLOCK_SKEW_MS) {
     throw new Error('Peer reachability lease was issued too far in the future');
   }
   if (!input.allowExpired && signed.lease.expiresAt <= input.now) {
     throw new Error('Peer reachability lease has expired');
+  }
+  return signed;
+}
+
+export function authenticateSignedPeerReachabilityLease(input: {
+  readonly value: unknown;
+  readonly expectedPeerId: string;
+  readonly verifyIdentity: PeerReachabilityIdentity['verifyIdentity'];
+}): SignedPeerReachabilityLeaseV1 {
+  const signed = decodeSignedPeerReachabilityLease(input.value);
+  if (signed.lease.peerId !== input.expectedPeerId) {
+    throw new Error('Peer reachability lease belongs to a different peer');
   }
   if (
     !input.verifyIdentity(signed.lease.peerId, peerReachabilityLeaseSigningBytes(signed.lease), {

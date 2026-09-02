@@ -65,7 +65,6 @@ export function startRuntimeHostPeerListener(
     options.reachability,
     options.accessAuthority,
     options.accept,
-    false,
   );
 }
 
@@ -74,9 +73,8 @@ export function createRuntimeHostPeerListener(
   reachability: PeerReachabilityPublisher,
   accessAuthority: RuntimeHostAccessAuthority,
   accept: (connection: RuntimeHostListenerConnection) => void,
-  ownsClient = false,
 ): RuntimeHostPeerListenerContract {
-  return new RuntimeHostPeerListener(client, reachability, accessAuthority, accept, ownsClient);
+  return new RuntimeHostPeerListener(client, reachability, accessAuthority, accept);
 }
 
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
@@ -84,9 +82,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly endpoint: string;
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
-  readonly #client: RuntimeHostPeerClient;
   readonly #reachability: PeerReachabilityPublisher;
-  readonly #ownsClient: boolean;
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
   readonly #transports = new Set<FramedByteStreamTransport>();
@@ -104,15 +100,12 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     reachability: PeerReachabilityPublisher,
     accessAuthority: RuntimeHostAccessAuthority,
     accept: (connection: RuntimeHostListenerConnection) => void,
-    ownsClient: boolean,
   ) {
     const identity = client.identity();
     this.endpoint = identity.peerId;
     this.peerId = identity.peerId;
     this.listenAddresses = Object.freeze([...identity.listenAddresses]);
-    this.#client = client;
     this.#reachability = reachability;
-    this.#ownsClient = ownsClient;
     this.#accessAuthority = accessAuthority;
     this.#accept = accept;
     const captureFailure = (error: unknown) => {
@@ -142,7 +135,6 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
       for (const transport of this.#transports) transport.abort();
       this.#serveLifetime.abort();
       await this.#serving;
-      if (this.#ownsClient) await this.#client.close();
       if (this.#acceptFailure) throw this.#acceptFailure;
     })();
     return this.#cleanupTask;
