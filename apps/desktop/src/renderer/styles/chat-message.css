@@ -143,7 +143,33 @@
 ),
 .maka-processing-sequence > * {
   content-visibility: auto;
+  /* First-paint intrinsic-size ESTIMATE for scroll-anchor stability, not a
+     fixed height: `auto <n>px` still grows to the block's real size after
+     paint. 96px is the single-line answer baseline; tall multi-line blocks
+     override it below. */
   contain-intrinsic-block-size: auto 96px;
+}
+
+/* Reasoning runs and tool/activity cards (the latter wrap terminal
+   stdout/stderr output — see .maka-tool-output-chunk in tool-activity.tsx) are
+   routinely multi-line: dozens of lines, hundreds of px, not 96. A 96px
+   placeholder therefore guarantees a large scrollHeight correction the moment
+   the reader scrolls up to one of these skipped blocks, which the
+   live-tail-release layer then has to compensate for. Give them a
+   representative first-paint intrinsic-size ESTIMATE instead, so Chromium's
+   native overflow-anchor can absorb most of that correction. 320px is a
+   defensible middle-ground for a multi-line tool/reasoning block (roughly a
+   dozen-plus lines of output plus card chrome) — still an ESTIMATE, not a
+   clamp: `auto 320px` continues to grow to the real measured size after paint,
+   so it cannot regress correctness, only reduce the worst-case correction
+   magnitude versus the 96px placeholder. */
+.maka-assistant-answer-content > :is(
+  .maka-processing-sequence,
+  .maka-deep-thinking,
+  .maka-tool-activity-card
+),
+.maka-processing-sequence > * {
+  contain-intrinsic-block-size: auto 320px;
 }
 
 /* Expanded activity headers stay reachable while their own detail is being
