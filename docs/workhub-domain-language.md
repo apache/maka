@@ -133,8 +133,13 @@ negation, unresolved or ambiguous targets, and model-supplied Session, Turn, Run
 or Message identities grant no Stop authority. A future ranked resolver may recall
 a Session from other permitted evidence, but the Action Policy must still require a
 sufficiently resolved active WorkHub delegation and the Action Gate must revalidate
-its stable identity. WorkHub first records
-`delegation_stop_requested`, resolves the named source action to its durable
+its stable identity. The stop proposal therefore carries opaque identities and the
+expected active-delegation state the policy resolved against, never a display name;
+the Action Gate readmits it only while the assignment still belongs to that Session
+and that Session's active delegations are still exactly the one being stopped.
+A rename between resolution and admission is irrelevant, and a stale resolution
+fails closed. WorkHub first records
+`delegation_stop_requested`, resolves the source action to its durable
 delegation, and lets the target Session's Message authority observe one of four
 outcomes: `cancelled_pending`, `stop_delivered`, `already_terminal`, or `not_owned`.
 It then records the neutral `delegation_stop_resolved` fact. `stop_delivered` means
@@ -142,10 +147,11 @@ the exact owning root accepted the Stop operation; the UI says that WorkHub aske
 it to stop rather than inventing an execution result. `not_owned` means the
 Message was consumed by a shared or user-owned Turn; WorkHub does not stop that
 Turn, preserves the active link, and navigates the user to the owning Session.
-A stop cue that names no existing WorkHub Session is ordinary work — `Stop using
-the deprecated API` is a task, not a destructive command — and routes normally. A
-named Session that is not uniquely stoppable, and an unsafe or anaphoric target,
-each fail closed with the reason they failed rather than an unanswerable prompt.
+A stop reference that recalls no existing WorkHub Session is ordinary work — `Stop
+using the deprecated API` is a task, not a destructive command — and routes
+normally. An ambiguous recall, a resolved Session that is not uniquely stoppable,
+and an unsafe or anaphoric reference each fail closed with the reason they failed
+rather than an unanswerable prompt.
 An unresolved direct-stop claim and a replacement claim are mutually exclusive;
 the first durable destructive claim wins. A `not_owned` resolution releases that
 exclusion so a later explicit route correction can proceed, and because it leaves
@@ -158,9 +164,9 @@ likewise writes the direct-stop action identity into the exact root Turn's
 durable abort source. A retry recognizes only that matching proof; an earlier or
 concurrent manual Stop remains `already_terminal`. Stop admission holds the
 Coordination Session and every currently active target Session lane
-while it rechecks current target identities and active links; a concurrent rename
-or new delegation therefore cannot invalidate the one-target proof before the
-request record commits. Removing the target Session destroys the Message proof a
+while it rechecks current target identities and active links; a concurrent new
+delegation therefore cannot invalidate the one-target proof after the request
+record commits. Removing the target Session destroys the Message proof a
 committed claim still needs; the removal tombstone outlives that Session and
 resolves the claim as `already_terminal`, while a target that is merely
 unreadable, or one that never existed here, stays unresolved.

@@ -184,6 +184,19 @@ waiting after the destructive retirement boundary, Coordination appends a
 retired source from active linkage and makes later retries return the same terminal
 outcome instead of displaying a stopped, unsuperseded link.
 
+Direct stop resolves its target through the shared Session Resolver and proposes
+only what that resolution produced: the opaque delegation identity, the Session
+it belongs to, and the active-delegation state the Action Policy resolved
+against. Display names are retrieval evidence on the proposal side and never
+appear in admission. The Action Gate revalidates those preconditions immediately
+before any effect — the assignment still exists, it still belongs to the proposed
+Session, and that Session's current active delegations are exactly the set the
+policy saw, which for stop must be the one delegation being stopped. A stale
+resolution therefore fails closed, while a rename between resolution and
+admission is correctly irrelevant. Trusted user text still has to carry a direct
+stop imperative, and the `user_stop` confirmation stays outside strategy output,
+so neither model output nor a display name can select what gets stopped.
+
 Direct stop persists a distinct `delegation_stop_requested` claim before
 retirement and a `delegation_stop_resolved` observation afterward. The pending
 cancellation tombstone retains the destructive action identity, preserving
@@ -191,12 +204,12 @@ cancellation tombstone retains the destructive action identity, preserving
 owning-root Stop uses an action-derived abort source on the exact target Turn,
 so recovery cannot mistake a normal Session stop for WorkHub delivery. Its
 admission holds the Coordination Session together with every active target
-Session lane while re-reading the active links and current display names. A
-concurrent assignment or rename must therefore settle before the uniqueness
-proof, wait until after the stop claim, or cause admission to fail closed.
-Only a confirmed direct stop records that provenance: a route correction
-retiring the same owning root carries its own cancellation claim but keeps the
-neutral Stop source, so replay cannot read a correction as a delivered stop.
+Session lane while re-reading the active links. A concurrent assignment must
+therefore settle before the sole-delegation proof, wait until after the stop
+claim, or cause admission to fail closed. Only a confirmed direct stop records
+that provenance: a route correction retiring the same owning root carries its own
+cancellation claim but keeps the neutral Stop source, so replay cannot read a
+correction as a delivered stop.
 
 Every durable WorkHub record is keyed by what it is about — an assignment by its
 action, a stop or replacement by its delegation — so no single record can see an
@@ -232,11 +245,14 @@ lets the stop reach a terminal resolution.
   that transcript; target lifecycle projection and the hybrid first-response
   contract are implemented as rebuildable reads. Linked correction, exact
   target-owned pending cancellation/Turn Stop, atomic supersession, and retry-based
-  replacement recovery and explicit named direct-stop are implemented. Direct
+  replacement recovery and direct stop are implemented. Direct
   stop uses durable `delegation_stop_requested` / `delegation_stop_resolved`
   facts, exact Message ownership, and first-claim-wins arbitration with
-  replacement. Pause, resume, and pronoun-based stop controls remain later
-  work.
+  replacement. Its target comes from the shared Session Resolver port, whose
+  first implementation is a temporary exact-name baseline; replacing it changes
+  recall only, because admission revalidates opaque identity and expected state
+  rather than any display name. Pause, resume, and pronoun-based stop controls
+  remain later work.
 
 Reevaluate the per-Host decision if supported workflows require one WorkHub
 conversation to coordinate ordinary Sessions on multiple Runtime Hosts, or if Host

@@ -237,9 +237,23 @@ execution.
 - Put the current exact-name behavior behind a temporary deterministic
   implementation.
 - Make direct stop consume the resolved opaque Session/delegation identity.
+- Move stop admission off display names: the proposal carries the opaque
+  delegation identity plus the expected active-delegation state, and the Action
+  Gate revalidates that state instead of re-deriving a name match from user text.
 - Keep durable stop execution, replay, ownership, and arbitration unchanged.
 - Avoid documenting exact-name stop grammar as the long-term product contract.
 - Record follow-up removal criteria for the temporary resolver.
+
+Admission by expected state rather than by name is what makes the port real: a
+ranked resolver can change how a Session is recalled without touching the durable
+stop protocol, and a rename between resolution and admission stops being able to
+invalidate a claim. The Gate no longer proves that user text names the target, so
+that binding now rests where it belongs — the stop proposal is produced by trusted
+policy, never by strategy output, and `user_stop` confirmation stays outside the
+proposal a model can influence.
+
+Correction still resolves its own target and moves onto the port under item 2,
+together with continue, inspect, and resume.
 
 The temporary resolver can be removed when all target-bearing WorkHub actions use
 the shared contract, the replacement resolver passes the common evaluation, and
