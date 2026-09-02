@@ -283,7 +283,7 @@ describe("assistant reply selection", () => {
     assert.equal(turn ? finalAssistantReplyText(turn) : undefined, "The search is complete.");
   });
 
-  test("measures terminal duration to the recorded turn state after tool work", () => {
+  test("keeps turn duration anchored to the latest assistant message", () => {
     const [turn] = materializeTurns([
       originalUser,
       {
@@ -321,7 +321,7 @@ describe("assistant reply selection", () => {
       },
     ]);
 
-    assert.equal(turn?.durationMs, 120_000);
+    assert.equal(turn?.durationMs, 1);
   });
 });
 

@@ -10436,6 +10436,89 @@ describe('AiSdkBackend RunTrace', () => {
     assert.equal(typeof failureTrace?.data?.redactedErrorStackSha256, 'string');
   });
 
+  test('retries an idle watchdog timeout after an unstarted Responses text item', async () => {
+    const timers = manualWatchdogTimer();
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            stream: hangingProviderStream(
+              [
+                { type: 'stream-start', warnings: [] },
+                {
+                  type: 'text-start',
+                  id: 'text-1',
+                  providerMetadata: {
+                    openai: { itemId: 'message-item-1', phase: 'commentary' },
+                  },
+                },
+              ],
+              options.abortSignal,
+            ),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: 'stream-start', warnings: [] },
+              { type: 'text-start', id: 'text-2' },
+              { type: 'text-delta', id: 'text-2', delta: 'recovered' },
+              { type: 'text-end', id: 'text-2' },
+              {
+                type: 'finish',
+                finishReason: { unified: 'stop', raw: 'stop' },
+                usage: emptyUsage(),
+              },
+            ],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: {
+        ...connection(),
+        slug: 'openai',
+        providerType: 'openai',
+        models: [{ id: 'gpt-5.6', apiProtocol: 'openai-responses' }],
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5.6',
+      modelFactory: () => model,
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      streamWatchdogTimer: timers.clock,
+      providerRetrySleep: async () => {},
+    });
+
+    const events: SessionEvent[] = [];
+    const eventsPromise = collectEvents(
+      backend.send({ turnId: 'turn-1', text: 'hi', context: [] }),
+      events,
+    );
+    await waitFor(() => calls === 1 && timers.armCount() >= 3);
+    timers.fire();
+    await eventsPromise;
+
+    assert.equal(calls, 2);
+    assert.equal(
+      events.some((event) => event.type === 'provider_retry' && event.phase === 'started'),
+      true,
+    );
+    assert.equal(
+      events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+  });
+
   test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;
@@ -15283,6 +15366,7 @@ describe('AiSdkBackend steering durability and identity', () => {
       (message): message is AssistantMessage => message.type === 'assistant',
     );
     assert.equal(assistant?.text, 'OneTwo');
+    assert.equal(assistant?.contentOrder, undefined);
     assert.deepEqual(assistant?.providerOptions, {
       openai: {
         annotations: [

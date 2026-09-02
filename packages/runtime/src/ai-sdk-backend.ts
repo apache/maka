@@ -165,6 +165,7 @@ import {
 import { buildProviderOptions } from './model-factory.js';
 import { persistedOpenAiResponsesStepMessages } from './openai-responses-continuation.js';
 import type { OpenAiResponsesTransportState } from './openai-responses-websocket.js';
+import { nonCanonicalContentOrder } from './runtime-event-read-model.js';
 import {
   composeRequestProjection,
   type DispatchRequestShape,
@@ -1488,6 +1489,7 @@ export class AiSdkBackend implements AgentBackend {
       }
       const stepId = currentStepMessageId;
       const thinkingText = stepThinkingParts.map((part) => part.text).join('');
+      const contentOrder = nonCanonicalContentOrder(stepContentOrder);
       const msg: AssistantMessage = {
         type: 'assistant',
         id: stepId,
@@ -1497,7 +1499,7 @@ export class AiSdkBackend implements AgentBackend {
         ...(stepTextProviderOptions !== undefined
           ? { providerOptions: stepTextProviderOptions }
           : {}),
-        ...(stepContentOrder.length > 0 ? { contentOrder: stepContentOrder } : {}),
+        ...(contentOrder ? { contentOrder } : {}),
         modelId: this.input.modelId,
         ...(hasThinking
           ? {
@@ -2208,7 +2210,6 @@ export class AiSdkBackend implements AgentBackend {
                 }
                 stepTextPartStartOffset = stepText.length;
                 if (nextProviderOptions !== undefined) {
-                  attemptSawContinuationMetadata = true;
                   stepTextProviderOptions = mergeTextProviderOptions(
                     stepTextProviderOptions,
                     nextProviderOptions,

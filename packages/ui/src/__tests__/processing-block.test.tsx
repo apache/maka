@@ -141,7 +141,7 @@ test('folds completed reasoning and tool activity into one collapsed work log', 
 
   assert.match(markup, /准备检查 package\.json 的 name 字段/);
   assert.match(markup, /data-processing="block"/);
-  assert.match(markup, /用时 4 分钟 33 秒/);
+  assert.match(markup, /用时 4m 33s/);
   assert.match(markup, /读取 1 个文件/);
   assert.match(markup, /package name 是 maka/);
 
@@ -162,7 +162,7 @@ test('folds completed reasoning and tool activity into one collapsed work log', 
   assert.ok(workLogHeader.querySelector('.maka-work-log-icon'));
   assert.equal(
     workLogHeader.querySelector('.maka-work-log-label')?.textContent,
-    '用时 4 分钟 33 秒',
+    '用时 4m 33s',
   );
   assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
   assert.equal(processingHeader.getAttribute('aria-expanded'), 'false');
@@ -174,15 +174,30 @@ test('keeps live work expanded, then collapses it once when the final answer app
   const { container, root } = domRoot();
 
   await renderTurn(root, fixtureTurn(workTimeline(false)), true);
-  const processingHeader = container.querySelector(
+  const runningWorkLog = container.querySelector('.maka-work-log');
+  const runningWorkLogContent = container.querySelector('.maka-work-log-content');
+  const runningWorkLogHeader = container.querySelector<HTMLButtonElement>(
+    '.maka-work-log > .astryx-collapsible-trigger',
+  );
+  const processingHeader = container.querySelector<HTMLButtonElement>(
     '.maka-processing-block > .astryx-collapsible-trigger',
   );
+  assert.ok(runningWorkLog);
+  assert.ok(runningWorkLogContent);
+  assert.ok(runningWorkLogHeader);
   assert.ok(processingHeader);
-  assert.equal(
-    container.querySelector('.maka-work-log > .astryx-collapsible-trigger'),
-    null,
-  );
+  assert.equal(runningWorkLog.getAttribute('data-collapsed'), 'false');
+  assert.equal(runningWorkLogHeader.getAttribute('aria-disabled'), 'true');
   assert.equal(processingHeader.getAttribute('aria-expanded'), 'true');
+  let activeElement: Element | null = processingHeader;
+  Object.defineProperty(document, 'activeElement', {
+    configurable: true,
+    get: () => activeElement,
+  });
+  runningWorkLogHeader.focus = () => {
+    activeElement = runningWorkLogHeader;
+  };
+  assert.equal(document.activeElement?.isSameNode(processingHeader), true);
 
   await renderTurn(root, {
     ...fixtureTurn(workTimeline(true, false)),
@@ -196,7 +211,19 @@ test('keeps live work expanded, then collapses it once when the final answer app
   );
   assert.ok(workLogHeader);
   assert.ok(settledProcessingHeader);
+  assert.equal(workLogHeader.closest('.maka-work-log')?.isSameNode(runningWorkLog), true);
+  assert.equal(
+    container.querySelector('.maka-work-log-content')?.isSameNode(runningWorkLogContent),
+    true,
+  );
+  assert.equal(workLogHeader.isSameNode(runningWorkLogHeader), true);
+  assert.equal(workLogHeader.getAttribute('aria-disabled'), null);
   assert.equal(workLogHeader.getAttribute('aria-expanded'), 'false');
+  assert.equal(
+    document.activeElement?.isSameNode(workLogHeader),
+    true,
+    'focus moves to the disclosure that now owns the collapsed work',
+  );
   assert.equal(settledProcessingHeader.getAttribute('aria-expanded'), 'false');
 
   await act(() => workLogHeader.dispatchEvent(new window.Event('click', { bubbles: true })));
@@ -247,8 +274,10 @@ test('keeps a steered segment expanded while its tool is still running', async (
   await renderTurn(root, turn, true);
 
   assert.equal(
-    container.querySelector('.maka-work-log > .astryx-collapsible-trigger'),
-    null,
+    container
+      .querySelector('.maka-work-log > .astryx-collapsible-trigger')
+      ?.getAttribute('aria-disabled'),
+    'true',
   );
   assert.equal(
     container
@@ -299,7 +328,7 @@ test('shows the turn duration only on the final assistant segment', () => {
     }),
   );
 
-  assert.equal(markup.match(/用时 10 秒/g)?.length, 1);
+  assert.equal(markup.match(/用时 10s/g)?.length, 1);
   assert.match(markup, />工作记录</);
 });
 

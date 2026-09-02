@@ -317,7 +317,7 @@ test('uses human conversation context instead of raw ids in action names', async
   );
 });
 
-test('disables Copy when progress text is not a final reply', async () => {
+test('renders the Copy availability derived by the turn presentation', async () => {
   const { container, root } = domRoot();
   const progressOnly = {
     ...turnWith([
@@ -347,7 +347,7 @@ test('disables Copy when progress text is not a final reply', async () => {
       <LocaleProvider locale="en">
         <TurnView
           turn={progressOnly}
-          footerActions={[{ id: 'copy', label: 'Copy', enabled: true }]}
+          footerActions={[{ id: 'copy', label: 'Copy', enabled: false }]}
         />
       </LocaleProvider>,
     );

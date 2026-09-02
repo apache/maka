@@ -818,12 +818,6 @@ export function materializeTurns(
       toolItemByUseId,
     );
     turn.tools = timelineTools(turn.timeline);
-    const terminalState = turnMessages.findLast(
-      (message) => message.type === "turn_state" && message.status !== "running",
-    );
-    if (terminalState && terminalState.ts >= turn.startedAt) {
-      turn.durationMs = terminalState.ts - turn.startedAt;
-    }
   }
 
   return order.map((turnId) => byId.get(turnId)!);

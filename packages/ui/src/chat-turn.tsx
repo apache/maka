@@ -926,7 +926,7 @@ function TurnFooterActions(props: {
   context: string;
   onAction?: (actionId: TurnFooterActionMeta['id']) => void;
   /** Assistant text used by the inline copy action. */
-  assistantText?: string;
+  assistantText: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const [copyPhase, setCopyPhase] = useState<ClipboardCopyPhase | null>(null);
@@ -957,7 +957,7 @@ function TurnFooterActions(props: {
   }
 
   async function copyAssistantText() {
-    if (!props.assistantText || copyPendingRef.current) return;
+    if (copyPendingRef.current) return;
     copyPendingRef.current = true;
     clearCopyResetTimer();
     setCopyPhase('pending');
@@ -972,9 +972,7 @@ function TurnFooterActions(props: {
   }
 
   async function handleClick(action: TurnFooterActionMeta) {
-    const enabled =
-      action.enabled && (action.id !== 'copy' || Boolean(props.assistantText));
-    if (!enabled) return;
+    if (!action.enabled) return;
     if (action.id === 'copy') {
       await copyAssistantText();
       return;
@@ -993,8 +991,6 @@ function TurnFooterActions(props: {
             // Keep the action label under pending (a11y); do not swap to spinner-only.
             const isPending = action.tooltip === copy.processing;
             const isCopyAction = action.id === 'copy';
-            const isEnabled =
-              action.enabled && (!isCopyAction || Boolean(props.assistantText));
             const copyIsPending = isCopyAction && copyPhase === 'pending';
             const copyFeedbackLabel = copyPhase === 'pending'
               ? `${copy.copying}…`
@@ -1025,7 +1021,7 @@ function TurnFooterActions(props: {
                 data-action={action.id}
                 data-pending={isActionPending || undefined}
                 data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                isDisabled={!isEnabled || copyIsPending}
+                isDisabled={!action.enabled || copyIsPending}
                 aria-busy={isActionPending || undefined}
                 onClick={() => void handleClick(action)}
               />
@@ -1329,13 +1325,6 @@ function TurnTimelineEntry(props: {
   );
 }
 
-function formatWorkLogDuration(durationMs: number, locale: 'en' | 'zh'): string {
-  if (locale === 'en') return formatTurnDuration(durationMs);
-  const seconds = Math.floor(Math.max(0, durationMs) / 1_000);
-  if (seconds < 60) return `${seconds} 秒`;
-  return `${Math.floor(seconds / 60)} 分钟 ${seconds % 60} 秒`;
-}
-
 function TurnWorkLog(props: {
   children: ReactNode;
   collapsed: boolean;
@@ -1372,22 +1361,16 @@ function TurnWorkLog(props: {
   const label =
     durationMs === undefined
       ? copy.workLog
-      : copy.workLogDuration(formatWorkLogDuration(durationMs, locale));
-
-  if (!props.collapsed) {
-    return (
-      <div className="maka-work-log" data-work-log="true">
-        <div className="maka-work-log-content">{props.children}</div>
-      </div>
-    );
-  }
+      : copy.workLogDuration(formatTurnDuration(durationMs));
 
   return (
     <Collapsible
       ref={rootRef}
       className="maka-work-log"
       data-work-log="true"
+      data-collapsed={props.collapsed ? 'true' : 'false'}
       isOpen={expanded}
+      isDisabled={!props.collapsed}
       onOpenChange={setExpanded}
       trigger={(
         <span className="maka-work-log-trigger">

@@ -120,9 +120,8 @@
   min-width: 0;
 }
 
-.maka-work-log:not(.astryx-collapsible),
-.maka-work-log:not(.astryx-collapsible) .maka-work-log-content {
-  display: contents;
+.maka-work-log[data-collapsed='false'] > .astryx-collapsible-trigger {
+  display: none;
 }
 
 .maka-work-log > .astryx-collapsible-trigger {

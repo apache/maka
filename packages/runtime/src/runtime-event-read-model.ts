@@ -687,7 +687,7 @@ export function projectRuntimeEventUserMessage(
   };
 }
 
-function nonCanonicalContentOrder(
+export function nonCanonicalContentOrder(
   order: readonly AssistantStepContentKind[] | undefined,
 ): AssistantStepContentKind[] | undefined {
   if (!order?.length) return undefined;

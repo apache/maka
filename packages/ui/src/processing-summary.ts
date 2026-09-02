@@ -22,6 +22,7 @@ import { isInFlightToolStatus } from '@maka/core/tool-result-status';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ToolActivityItem } from './materialize.js';
 import type { FoldedTimelineChild } from './timeline-fold.js';
+import { getConversationCopy } from './conversation-copy.js';
 import { redactSecrets } from './redact.js';
 import { formatUserVisibleToolText } from './tool-activity/preview-utils.js';
 
@@ -56,7 +57,6 @@ const PROCESSING_SUMMARY_COPY = {
       browser: '正在操作浏览器',
       tool: '正在调用工具',
     },
-    fallback: '工作记录',
   },
   en: {
     kind: {
@@ -88,7 +88,6 @@ const PROCESSING_SUMMARY_COPY = {
       browser: 'Using the browser',
       tool: 'Calling a tool',
     },
-    fallback: 'Work log',
   },
 } satisfies Record<UiLocale, {
   kind: Record<ToolActivityKind, (count: number) => string>;
@@ -98,7 +97,6 @@ const PROCESSING_SUMMARY_COPY = {
   thinking: string;
   running(activity: string): string;
   runningKind: Record<ToolActivityKind, string>;
-  fallback: string;
 }>;
 
 export function processingTools(
@@ -136,7 +134,7 @@ export function summarizeProcessing(
         .find((item) => isInFlightToolStatus(item.status));
       if (!active) continue;
       const intent = redactSecrets(formatUserVisibleToolText(active.intent ?? '', locale));
-      return intent ? copy.running(intent) : copy.runningKind[activityKindForTool(active)];
+      return intent ? copy.running(intent) : copy.runningKind[active.activityKind ?? 'tool'];
     }
   }
 
@@ -146,7 +144,7 @@ export function summarizeProcessing(
   let failed = 0;
   let interrupted = 0;
   for (const tool of tools) {
-    const kind = activityKindForTool(tool);
+    const kind = tool.activityKind ?? 'tool';
     if (!counts.has(kind)) order.push(kind);
     counts.set(kind, (counts.get(kind) ?? 0) + 1);
     if (tool.status === 'errored') failed += 1;
@@ -155,40 +153,7 @@ export function summarizeProcessing(
   const parts = order.map((kind) => copy.kind[kind](counts.get(kind) ?? 0));
   if (failed > 0) parts.push(copy.failed(failed));
   if (interrupted > 0) parts.push(copy.interrupted(interrupted));
-  return parts.length > 0 ? copy.join(parts) : copy.fallback;
-}
-
-function activityKindForTool(item: ToolActivityItem): ToolActivityKind {
-  if (item.activityKind) return item.activityKind;
-  const name = item.toolName.toLowerCase();
-  if (name.startsWith('browser_')) return 'browser';
-  switch (name) {
-    case 'read':
-    case 'list':
-      return 'read';
-    case 'glob':
-    case 'grep':
-      return 'search';
-    case 'websearch':
-    case 'web_search':
-      return 'websearch';
-    case 'webfetch':
-    case 'web_fetch':
-      return 'webfetch';
-    case 'write':
-    case 'edit':
-    case 'multiedit':
-    case 'apply_patch':
-      return 'edit';
-    case 'bash':
-    case 'shell':
-    case 'stopbackgroundtask':
-    case 'stop_background_task':
-      return 'command';
-    case 'exploreagent':
-    case 'explore_agent':
-      return 'explore';
-    default:
-      return 'tool';
-  }
+  return parts.length > 0
+    ? copy.join(parts)
+    : getConversationCopy(locale).messages.workLog;
 }
