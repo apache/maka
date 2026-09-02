@@ -511,6 +511,19 @@ test('normalizes extended model facts used by the runtime host catalog', () => {
   });
 });
 
+test('carries the video and pdf modalities models.dev declares', () => {
+  const modalities = {
+    input: ['text', 'image', 'video'],
+    output: ['text', 'pdf', 'video'],
+  };
+  const result = normalizeConnectionModelDiscoveryResult({
+    models: [{ id: 'custom-model', modalities }],
+    source: 'fetched',
+    fetchedAt: 42,
+  });
+  assert.deepEqual(result.models[0], { id: 'custom-model', modalities });
+});
+
 test('rejects sparse model modality arrays', () => {
   assert.throws(
     () =>

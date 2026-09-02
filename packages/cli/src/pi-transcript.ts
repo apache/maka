@@ -1925,6 +1925,8 @@ export function renderMakaPiPendingQueue(
   }
   const copy = TUI_PENDING_QUEUE_COPY[locale];
   const safeWidth = Math.max(1, width);
+  const steering = state.steering;
+  const followup = state.followup;
   const lines: string[] = [];
   // Staged images render beside the pending queues: they belong to the same
   // "about to be submitted" surface, and the strip is separate from the
@@ -1935,12 +1937,12 @@ export function renderMakaPiPendingQueue(
   if (state.stagedImages.length > 0) {
     lines.push(fitLine(ansi.dim(renderTuiShortcutCopy(copy.detachHint, platform)), safeWidth));
   }
-  for (const text of state.steering) {
+  for (const text of steering) {
     lines.push(
       fitLine(`${ansi.accent(copy.steeringLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
   }
-  for (const text of state.followup) {
+  for (const text of followup) {
     lines.push(
       fitLine(`${ansi.dim(copy.queuedLabel)} ${ansi.dim(firstLinePreview(text))}`, safeWidth),
     );
