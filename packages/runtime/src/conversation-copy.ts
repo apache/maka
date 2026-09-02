@@ -871,17 +871,7 @@ function cloneAgentRunEvent(
   }
 
   let data = event.data;
-  if (event.type === 'provider_request_captured') {
-    data = rewriteProviderRequestCapture(event, ids.eventId, references, providerTraceIds);
-  } else if (event.type === 'provider_request_attempt_recorded') {
-    data = rewriteProviderRequestAttempt(
-      event,
-      ids.eventId,
-      references,
-      operationalEventIds,
-      providerTraceIds,
-    );
-  } else if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
+  if (event.type === MODEL_CALL_ATTEMPT_EVENT_TYPE) {
     data = rewriteModelCallAttempt(
       event,
       { sessionId: ids.sessionId, runId: ids.runId, attemptId: ids.eventId },
@@ -1049,46 +1039,6 @@ function cloneModelProjectionTransition(
   return transition;
 }
 
-function rewriteProviderRequestCapture(
-  event: AgentRunEvent,
-  eventId: string,
-  references: ConversationCopyReferenceMap,
-  providerTraceIds: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  const data = providerRequestCapture(event);
-  return {
-    ...data,
-    traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
-    captureId: eventId,
-    artifactId: rewriteOwnedArtifactId(data.artifactId, references),
-  };
-}
-
-function rewriteProviderRequestAttempt(
-  event: AgentRunEvent,
-  eventId: string,
-  references: ConversationCopyReferenceMap,
-  operationalEventIds: ReadonlyMap<string, string>,
-  providerTraceIds: ReadonlyMap<string, string>,
-): Record<string, unknown> {
-  const data = providerRequestAttempt(event);
-  return {
-    ...data,
-    traceId: requiredMappedId(providerTraceIds, data.traceId, 'provider trace'),
-    attemptId: eventId,
-    ...(data.captureId !== undefined && data.captureArtifactId !== undefined
-      ? {
-          captureId: requiredMappedId(
-            operationalEventIds,
-            data.captureId,
-            'provider request capture',
-          ),
-          captureArtifactId: rewriteOwnedArtifactId(data.captureArtifactId, references),
-        }
-      : {}),
-  };
-}
-
 function rewriteModelCallAttempt(
   event: AgentRunEvent,
   ids: {
@@ -1203,6 +1153,16 @@ function rewriteOwnedId(sourceId: string, ids: ReadonlyMap<string, string>, kind
   return requiredMappedId(ids, sourceId, kind);
 }
 
+const PROVIDER_TRACE_BEARING_EVENT_TYPES: ReadonlySet<string> = new Set([
+  MODEL_CALL_ATTEMPT_EVENT_TYPE,
+  'provider_request_captured',
+  'provider_request_attempt_recorded',
+]);
+
+function isProviderTraceBearingEventType(type: string): boolean {
+  return PROVIDER_TRACE_BEARING_EVENT_TYPES.has(type);
+}
+
 function providerTraceIdMap(
   plans: readonly { readonly operationalEvents: readonly AgentRunEvent[] }[],
   newId: () => string,
@@ -1210,13 +1170,11 @@ function providerTraceIdMap(
   const result = new Map<string, string>();
   for (const { operationalEvents } of plans) {
     for (const event of operationalEvents) {
-      if (
-        event.type !== 'provider_request_captured' &&
-        event.type !== 'provider_request_attempt_recorded' &&
-        event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE
-      ) {
-        continue;
-      }
+      // Harvest from retired writers too. Their rows are not copied, but a
+      // copied RuntimeEvent may still point at a trace only they recorded, and
+      // carrying the source's trace id into the target would be worse than
+      // pointing at a fresh one nothing describes.
+      if (!isProviderTraceBearingEventType(event.type)) continue;
       const traceId = event.data?.traceId;
       if (typeof traceId === 'string' && !result.has(traceId)) result.set(traceId, newId());
     }
@@ -1231,7 +1189,11 @@ function logicalModelCallIdMap(
   const result = new Map<string, string>();
   for (const { operationalEvents } of plans) {
     for (const event of operationalEvents) {
-      if (event.type !== MODEL_CALL_ATTEMPT_EVENT_TYPE) continue;
+      // Harvest from retired writers too. Their rows are not copied, but a
+      // copied RuntimeEvent may still point at a trace only they recorded, and
+      // carrying the source's trace id into the target would be worse than
+      // pointing at a fresh one nothing describes.
+      if (!isProviderTraceBearingEventType(event.type)) continue;
       const logicalCallId = event.data?.logicalCallId;
       if (typeof logicalCallId === 'string' && !result.has(logicalCallId)) {
         result.set(logicalCallId, newId());

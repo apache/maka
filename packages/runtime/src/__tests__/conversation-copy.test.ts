@@ -1631,77 +1631,6 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
   }
 });
 
-test('conversation copy validates operational events before persisting target ledgers', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-copy-preflight-'));
-  try {
-    const runStore = createSqliteAgentRunStore(root);
-    const runtimeEventStore = createWorkspaceRuntimeStore(root);
-    await runStore.createRun(
-      agentRunHeader({
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      }),
-    );
-    for (const event of [
-      runtimeEvent({
-        id: 'event-user',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'copy this turn' },
-      }),
-      runtimeEvent({
-        id: 'event-terminal',
-        ts: 2,
-        status: 'completed',
-      }),
-    ]) {
-      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
-    }
-    await runStore.appendEvent('session-source', 'run-source', {
-      type: 'provider_request_captured',
-      id: 'capture-source',
-      runId: 'run-source',
-      sessionId: 'session-source',
-      turnId: 'turn-1',
-      ts: 1.5,
-      data: {
-        traceId: 'trace-source',
-        captureId: 'wrong-capture-id',
-        artifactId: 'artifact-source',
-      },
-    });
-    const source = await new RuntimeReadModel({
-      runStore,
-      runtimeEventStore,
-    }).getSessionView('session-source');
-
-    await assert.rejects(
-      async () =>
-        cloneConversationRuntimeLedger({
-          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-          copiedMessages: source.messages,
-          referenceMap: {
-            mode: 'exact',
-            linkedChildren: { mode: 'reject' },
-            sourceSessionId: 'session-source',
-            targetSessionId: 'session-target',
-            artifactIds: new Map([['artifact-source', 'artifact-target']]),
-            relativePaths: new Map(),
-          },
-          runStore,
-          runtimeEventStore,
-          newId: () => crypto.randomUUID(),
-        }),
-      /Cannot copy invalid provider request capture capture-source/,
-    );
-    assert.deepEqual(await runStore.listSessionRuns('session-target'), []);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
 test('conversation copy rewrites the nested identity of a model call attempt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-model-call-copy-'));
   try {
@@ -2076,7 +2005,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         segments: [],
         artifactId: 'artifact-source',
       },
-    });
+    } as unknown as EmittedAgentRunEvent);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'provider_request_attempt_recorded',
       id: 'attempt-source',
@@ -2102,7 +2031,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         status: 'completed',
         latencyMs: 0.5,
       },
-    });
+    } as unknown as EmittedAgentRunEvent);
     await runStore.appendEvent('session-source', 'run-source', {
       type: 'provider_request_attempt_recorded',
       id: 'attempt-without-capture-source',
@@ -2126,7 +2055,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         status: 'completed',
         latencyMs: 0.05,
       },
-    });
+    } as unknown as EmittedAgentRunEvent);
     // A legacy event from the retired active-full writer is treated like any
     // other event this build cannot emit and is therefore not copied.
     await runStore.appendEvent('session-source', 'run-source', {
@@ -2325,42 +2254,18 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       'artifact-target-deleted',
     ]);
     const targetOperationalEvents = await runStore.readEvents('session-target', 'run-target');
+    // The retired provider-request writers are treated like any other type this
+    // build cannot emit: their rows are not carried into the target.
     assert.deepEqual(
       targetOperationalEvents.map((event) => event.type),
-      [
-        'provider_request_captured',
-        'provider_request_attempt_recorded',
-        'provider_request_attempt_recorded',
-        'history_compact_checkpoint_recorded',
-        'run_completed',
-      ],
+      ['history_compact_checkpoint_recorded', 'run_completed'],
     );
-    const targetCapture = targetOperationalEvents.find(
-      (event) => event.type === 'provider_request_captured',
-    );
-    const targetAttempt = targetOperationalEvents.find(
-      (event) =>
-        event.type === 'provider_request_attempt_recorded' && event.data?.providerId === 'provider',
-    );
-    const targetAttemptWithoutCapture = targetOperationalEvents.find(
-      (event) =>
-        event.type === 'provider_request_attempt_recorded' &&
-        event.data?.providerId === 'provider-without-capture',
-    );
-    assert.ok(targetCapture);
-    assert.ok(targetAttempt);
-    assert.ok(targetAttemptWithoutCapture);
-    assert.equal(targetCapture.data?.captureId, targetCapture.id);
-    assert.equal(targetCapture.data?.artifactId, 'artifact-target');
-    assert.notEqual(targetCapture.data?.traceId, 'provider-trace-source');
-    assert.equal(targetAttempt.data?.attemptId, targetAttempt.id);
-    assert.equal(targetAttempt.data?.captureId, targetCapture.id);
-    assert.equal(targetAttempt.data?.captureArtifactId, 'artifact-target');
-    assert.equal(targetAttempt.data?.traceId, targetCapture.data?.traceId);
-    assert.equal(targetAttemptWithoutCapture.data?.captureId, undefined);
-    assert.equal(targetAttemptWithoutCapture.data?.captureArtifactId, undefined);
-    assert.equal(targetEvents[1]?.refs?.providerRequestTraceId, targetCapture.data?.traceId);
-    assert.equal(targetEvents[1]?.refs?.traceEventId, targetCapture.id);
+    // A copied RuntimeEvent still points somewhere new, though. Carrying the
+    // source's trace identity into the target is the thing the copy exists to
+    // prevent, whether or not the record naming that trace came along.
+    assert.notEqual(targetEvents[1]?.refs?.providerRequestTraceId, 'provider-trace-source');
+    assert.ok(targetEvents[1]?.refs?.providerRequestTraceId);
+    assert.equal(targetEvents[1]?.refs?.traceEventId, undefined);
     assert.doesNotMatch(JSON.stringify(targetOperationalEvents), /OPAQUE_SOURCE_COMPACTION_STATE/);
     const projectedCheckpoint = await runStore.readEventProjection?.(
       'session-target',

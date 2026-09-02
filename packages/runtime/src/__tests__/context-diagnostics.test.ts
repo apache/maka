@@ -1074,6 +1074,8 @@ function attemptEvent(
   segments: Array<Record<string, unknown>> = [],
 ): EmittedAgentRunEvent {
   const turnId = `turn-${runId}`;
+  // A row from a retired writer. This build cannot emit the type; the diagnostic
+  // reader still has to read what older builds persisted.
   return {
     type: 'provider_request_attempt_recorded',
     id: attemptId,
@@ -1101,7 +1103,7 @@ function attemptEvent(
       latencyMs: 1,
       ...(inputTokens === undefined ? {} : { inputTokens }),
     },
-  };
+  } as unknown as EmittedAgentRunEvent;
 }
 
 /**
