@@ -17,10 +17,22 @@
  * under the License.
  */
 
-export { SessionCollaborationServicesProvider } from './services-context';
-export { useSessionCollaborationDialog } from './controller/use-session-collaboration-dialog';
-export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog';
-export { SessionTurnRequestApprovalForSession } from './ui/session-turn-request-approval';
-export { SessionTurnRequestBadge } from './ui/session-turn-request-badge';
-export { SessionTurnRequestInboxProvider } from './turn-request-inbox-context';
-export type { SessionCollaborationServices } from './ports';
+import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
+
+export async function collectAvailablePendingTurnRequests(
+  queries: readonly Promise<readonly SessionTurnAccessRequest[]>[],
+): Promise<SessionTurnAccessRequest[]> {
+  const results = await Promise.allSettled(queries);
+  const available = results.flatMap(
+    (result) => result.status === 'fulfilled' ? [result.value] : [],
+  );
+  if (queries.length > 0 && available.length === 0) {
+    throw new AggregateError(
+      results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
+      'Every Runtime Host collaboration inbox request failed',
+    );
+  }
+  return available
+    .flat()
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+}

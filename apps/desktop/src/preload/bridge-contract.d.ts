@@ -345,7 +345,14 @@ export type DesktopSessionCollaborationCancelResult = SessionCollaborationCancel
 export type DesktopSessionCollaborationPrepareResult =
   | {
       readonly kind: 'prepared';
-      readonly invitation: CollaborationInvitationPrepareResult;
+      readonly invitation: CollaborationInvitationPrepareResult & {
+        readonly connectivity:
+          | {
+              readonly kind: 'peer';
+              readonly coordinationRelayCount: number;
+            }
+          | { readonly kind: 'configured' };
+      };
     }
   | { readonly kind: 'insecure_confirmation_required' };
 
@@ -749,6 +756,8 @@ export interface MakaBridge {
       readonly operationId: string;
     }, onProgress?: (phase: DesktopSessionCollaborationImportPhase) => void): Promise<DesktopSessionCollaborationImportResult>;
     cancelImport(operationId: string): Promise<DesktopSessionCollaborationCancelResult>;
+    /** Reads only after the user invokes the invitation paste action. */
+    readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
     removeMount(mountId: string): Promise<void>;
     requestTurn(
@@ -756,6 +765,8 @@ export interface MakaBridge {
       input: { readonly turnId: string; readonly text: string },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
+    /** Pending Owner decisions across every connected Owner Runtime Host. */
+    getPendingTurnRequests(): Promise<readonly SessionTurnAccessRequest[]>;
     acknowledgeTurnRequest(
       sessionId: string,
       requestId: string,

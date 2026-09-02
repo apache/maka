@@ -76,6 +76,7 @@ const ROUTE_PAGE_SIZE = 8;
 const RECONCILE_CONCURRENCY = 4;
 const RECONCILE_DEADLINE_MS = 60 * 1_000;
 const RECONCILE_INTERVAL_MS = 30 * 1_000;
+const LOCAL_ROUTE_OBSERVATION_INTERVAL_MS = 1_000;
 
 interface RedeemInvitationRequest {
   readonly kind: 'redeem-invitation';
@@ -224,6 +225,7 @@ export async function openPeerMeshNode(input: {
   readonly peer: PeerMeshTransport;
   readonly endpointKind?: 'client' | 'host';
   readonly now?: () => number;
+  readonly onBackgroundReconcileError?: (error: unknown) => void;
 }): Promise<PeerMeshNode> {
   const store = await openPeerMeshStateStore(input.dataRoot, input.peer.identity().peerId);
   const node = new PeerMeshNodeImpl({ ...input, store });
@@ -241,6 +243,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #peer: PeerMeshTransport;
   readonly #endpointKind: 'client' | 'host' | undefined;
   readonly #now: () => number;
+  readonly #onBackgroundReconcileError: ((error: unknown) => void) | undefined;
   readonly #activeControlStreams = new Set<RuntimeHostPeerNativeStream>();
   readonly #lifetime = new AbortController();
   #admissionTail = Promise.resolve();
@@ -256,11 +259,13 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     readonly peer: PeerMeshTransport;
     readonly endpointKind?: 'client' | 'host';
     readonly now?: () => number;
+    readonly onBackgroundReconcileError?: (error: unknown) => void;
   }) {
     this.#store = input.store;
     this.#peer = input.peer;
     this.#endpointKind = input.endpointKind;
     this.#now = input.now ?? Date.now;
+    this.#onBackgroundReconcileError = input.onBackgroundReconcileError;
   }
 
   async initialize(): Promise<void> {
@@ -848,11 +853,11 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         isActiveMembership(mesh, localPeerId) && mesh.roster.roster.members.includes(peerId),
     );
     if (!visible) return;
-    if (
-      stored.routes.some(({ route }) => route.peerId === peerId && route.expiresAt > this.#now())
-    ) {
-      return;
-    }
+    // A signed route can remain within its TTL after a peer restarted or
+    // rotated Relay reservations. Every connection establishment therefore
+    // asks the Mesh control plane for its newest record. Callers with a
+    // self-contained invitation run this reconciliation in parallel with the
+    // first dial; callers without usable routes wait for it.
     await this.reconcile(signal);
   }
 
@@ -910,10 +915,45 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #runReconciliation(signal: AbortSignal): Promise<void> {
+    let failureReported = false;
     while (!signal.aborted) {
-      await this.reconcile(signal).catch(() => undefined);
-      await delay(RECONCILE_INTERVAL_MS, undefined, { signal }).catch(() => undefined);
+      try {
+        await this.reconcile(signal);
+        failureReported = false;
+      } catch (error) {
+        if (!signal.aborted && !failureReported) {
+          failureReported = true;
+          try {
+            this.#onBackgroundReconcileError?.(error);
+          } catch {
+            // Diagnostics cannot control Peer Mesh reconciliation.
+          }
+        }
+      }
+      await this.#waitForReconciliationTrigger(signal).catch(() => undefined);
     }
+  }
+
+  async #waitForReconciliationTrigger(signal: AbortSignal): Promise<void> {
+    let remainingMs = RECONCILE_INTERVAL_MS;
+    while (!signal.aborted && remainingMs > 0) {
+      const waitMs = Math.min(LOCAL_ROUTE_OBSERVATION_INTERVAL_MS, remainingMs);
+      await delay(waitMs, undefined, { signal });
+      if (this.#localRouteRequiresRefresh()) return;
+      remainingMs -= waitMs;
+    }
+  }
+
+  #localRouteRequiresRefresh(): boolean {
+    const identity = this.#peer.identity();
+    const current = this.#store.read();
+    if (!current.meshes.some((state) => isActiveMembership(state, identity.peerId))) {
+      return false;
+    }
+    const existing = current.routes
+      .filter(({ route }) => route.peerId === identity.peerId)
+      .sort((left, right) => right.route.sequence - left.route.sequence)[0];
+    return !isCurrentLocalRoute(existing, identity, current, this.#endpointKind, this.#now());
   }
 
   async #reconcile(signal?: AbortSignal): Promise<void> {
@@ -1157,15 +1197,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       const existing = current.routes
         .filter(({ route }) => route.peerId === identity.peerId)
         .sort((left, right) => right.route.sequence - left.route.sequence)[0];
-      if (
-        existing &&
-        existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
-        sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
-        sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays) &&
-        existing.route.endpointKind === this.#endpointKind &&
-        existing.route.displayName === (current.displayName ?? undefined) &&
-        existing.route.transitMeshId === current.transitMeshId
-      ) {
+      if (isCurrentLocalRoute(existing, identity, current, this.#endpointKind, now)) {
         return { state: current, result: existing };
       }
       const route = await this.#signLocalRoute(current);
@@ -2122,6 +2154,24 @@ function responseRoutes(
 
 function sameAddresses(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((address, index) => address === right[index]);
+}
+
+function isCurrentLocalRoute(
+  existing: SignedPeerMeshRouteRecordV1 | undefined,
+  identity: ReturnType<PeerMeshTransport['identity']>,
+  current: Pick<PeerMeshStoredStateV1, 'displayName' | 'transitMeshId'>,
+  endpointKind: 'client' | 'host' | undefined,
+  now: number,
+): existing is SignedPeerMeshRouteRecordV1 {
+  return Boolean(
+    existing &&
+      existing.route.expiresAt > now + ROUTE_REFRESH_LEAD_MS &&
+      sameAddresses(existing.route.routeHints, identity.listenAddresses) &&
+      sameAddresses(existing.route.coordinationRelays, identity.coordinationRelays) &&
+      existing.route.endpointKind === endpointKind &&
+      existing.route.displayName === (current.displayName ?? undefined) &&
+      existing.route.transitMeshId === current.transitMeshId,
+  );
 }
 
 function mergeAddresses(

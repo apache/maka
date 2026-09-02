@@ -109,8 +109,8 @@ import {
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import { SessionTurnRequestComposer } from './session-turn-request-composer.js';
+import * as SessionCollaboration from './features/session-collaboration';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
-import { useSessionCollaborationDialog } from './use-session-collaboration-dialog';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
@@ -242,6 +242,7 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
+const { useSessionCollaborationDialog } = SessionCollaboration;
 type FirstSendObservationWaiter = {
   promise: Promise<void>;
   resolve: () => void;
@@ -646,6 +647,7 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
+  const sessionCollaborationCopy = getSessionCollaborationCopy(uiLocale);
   const previousInterruptionCopy =
     getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
@@ -830,13 +832,6 @@ function AppShellContent({
   const activeMessageQueue = activeId ? messageQueueBySession[activeId] : undefined;
   const activeMessageSubmitting = transientMessages.length > 0;
   const activeDesktopSession = activeSession;
-  function openSessionSharing(session: DesktopSessionSummary): void {
-    sharedSessionDialog.open({
-      sessionId: session.id,
-      sessionName: session.name,
-      requiresRemoteAccess: session.profileKind === 'local',
-    });
-  }
   // The shell's reading of the active live turn: streaming/settled flags, the
   // in-flight tool signal, and the #646 turn-wait cues, all derived from the
   // semantic snapshot rather than the projection (#1985).
@@ -1654,7 +1649,7 @@ function AppShellContent({
     newSessionPermissionMode: newTaskPermissionMode,
   };
 
-  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.target !== undefined;
+  const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.isOpen;
   const shellObscured = hasModalOpen || settingsOpen;
   const contextCompactionPresentation = useMemo(
     () =>
@@ -2732,6 +2727,12 @@ function AppShellContent({
       reportError={showSessionError}
     >
     <ComposerMentionsProvider {...composerMentionsSurface}>
+    <SessionCollaboration.SessionTurnRequestInboxProvider
+      sessions={sessions}
+      toast={toastApi}
+      onOpenSession={openSession}
+      copy={sessionCollaborationCopy}
+    >
     <div
       className="appFrame agents-layout-root"
       data-agents-page
@@ -2813,7 +2814,7 @@ function AppShellContent({
                     ? undefined
                     : {
                         label: getSessionCollaborationCopy(uiLocale).shareAction,
-                        onClick: () => void openSessionSharing(activeDesktopSession),
+                        onClick: () => sharedSessionDialog.openSession(activeDesktopSession),
                       }
                 }
                 onRenameSession={(name) => {
@@ -2861,6 +2862,7 @@ function AppShellContent({
             projects={localProjects}
             streamingSessionIds={streamingSessionIds}
             staleSessionIds={staleSessionIds}
+            SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
             ports={sessionNavigationPorts}
             commandsRef={sessionNavigationCommandsRef}
             onExitWorkHub={exitWorkHub}
@@ -2929,6 +2931,11 @@ function AppShellContent({
                 hidden={navSelection.section !== 'sessions'}
                 composer={
                   <>
+                    {!sharedSessionActive && activeId ? (
+                      <SessionCollaboration.SessionTurnRequestApprovalForSession
+                        sessionId={activeId}
+                      />
+                    ) : null}
                     {!sharedSessionActive && navSelection.section === 'sessions' &&
                     activeId &&
                     activeSessionForView &&
@@ -3274,21 +3281,11 @@ function AppShellContent({
       <Goals.GoalHost />
       <TaskEntryHost model={taskEntry.host} />
       <RuntimeHostSshTerminalDialog />
-      {sharedSessionDialog.target ? (
-        <SessionCollaborationDialog
-          mode="share"
-          sessionId={sharedSessionDialog.target.sessionId}
-          sessionName={sharedSessionDialog.target.sessionName}
-          requiresRemoteAccess={sharedSessionDialog.target.requiresRemoteAccess}
-          onEnableRemoteAccess={() => {
-            const copy = getSessionCollaborationCopy(uiLocale);
-            sharedSessionDialog.close();
-            toastApi.info(copy.enableRemoteAccessTitle, copy.enableRemoteAccessBody);
-            openSettingsSection('projects');
-          }}
-          onClose={sharedSessionDialog.close}
-        />
-      ) : null}
+      <SessionCollaborationDialog
+        target={sharedSessionDialog.target}
+        onOpenRemoteAccessSettings={() => openSettingsSection('projects')}
+        onClose={sharedSessionDialog.close}
+      />
 
       <AppShellOverlays
         settingsOpen={settingsOpen}
@@ -3338,6 +3335,7 @@ function AppShellContent({
         onSelectedRuntimeHostProfileIdChange={setSettingsProfileId}
       />
     </div>
+    </SessionCollaboration.SessionTurnRequestInboxProvider>
     </ComposerMentionsProvider>
     </Goals.GoalProvider>
   );

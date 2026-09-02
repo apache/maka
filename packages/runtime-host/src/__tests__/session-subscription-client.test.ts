@@ -55,6 +55,7 @@ import {
   type SessionTranscriptFragment,
   type SessionTranscriptPage,
   type HostFrame,
+  type HostStatusResult,
   type RequestFrame,
   type SubscriptionFrame,
 } from '../protocol/index.js';
@@ -1275,9 +1276,48 @@ test('close stops transcript pagination after the in-flight page', async () => {
   assert.equal(pageRequests, 1);
 });
 
+test('probes an otherwise idle accepted Runtime Host connection', { timeout: 2_000 }, async () => {
+  const probed = deferred<void>();
+  const observed = deferred<HostStatusResult>();
+  await withProtocolPeer(
+    async (transport, hostEpoch, rootId) => {
+      const hello = decodeClientFrame(await transport.read(1_000));
+      assert.ok('kind' in hello && hello.kind === 'hello');
+      await writeProtocolFrame(transport, {
+        kind: 'accepted',
+        rootId,
+        hostEpoch,
+        connectionId: 'connection-idle-liveness',
+        selectedProtocol: RUNTIME_HOST_PROTOCOL_VERSION,
+        compatibilityEpoch: RUNTIME_HOST_COMPATIBILITY_EPOCH,
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+      });
+      await answerStatus(transport, hostEpoch);
+    },
+    async () => {
+      const status = await observed.promise;
+      assert.equal(status.state, 'ready');
+      assert.equal(status.compositionId, 'maka.interactive');
+      await probed.promise;
+    },
+    {
+      livenessIntervalMs: 20,
+      onLivenessProbe: probed.resolve,
+      onHostStatus: observed.resolve,
+    },
+  );
+});
+
 async function withProtocolPeer(
   serve: (transport: FramedTransport, hostEpoch: string, rootId: string) => Promise<void>,
   run: (connection: RuntimeHostConnection) => Promise<void>,
+  connectionOptions: {
+    readonly livenessIntervalMs?: number;
+    readonly onLivenessProbe?: () => void;
+    readonly onHostStatus?: (status: HostStatusResult) => void;
+  } = {},
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-subscription-'));
   const capability = await resolveStorageRoot({
@@ -1318,6 +1358,7 @@ async function withProtocolPeer(
     const connected = await connectRuntimeHost({
       rootPath: join(base, 'root'),
       protocol: PROTOCOL,
+      ...connectionOptions,
     });
     assert.equal(connected.kind, 'connected');
     if (connected.kind !== 'connected') return;

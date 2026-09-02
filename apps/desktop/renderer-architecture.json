@@ -234,7 +234,6 @@
     "src/renderer/use-new-task-choice.ts",
     "src/renderer/use-onboarding-snapshot.ts",
     "src/renderer/use-project-context.ts",
-    "src/renderer/use-session-collaboration-dialog.ts",
     "src/renderer/use-session-setting-intent.ts",
     "src/renderer/use-settings-modal.ts",
     "src/renderer/use-shell-appearance.ts",
@@ -985,6 +984,7 @@
           "./error-boundary": 1,
           "./features/goals": 1,
           "./features/module-hub": 1,
+          "./features/session-collaboration": 1,
           "./features/session-navigation": 1,
           "./features/task-entry": 1,
           "./features/workbar": 1,
@@ -1020,7 +1020,6 @@
           "./use-new-task-choice": 1,
           "./use-onboarding-snapshot": 1,
           "./use-project-context": 1,
-          "./use-session-collaboration-dialog": 1,
           "./use-session-setting-intent": 1,
           "./use-settings-modal": 1,
           "./use-shell-appearance": 1,
@@ -1058,7 +1057,7 @@
           "react": 1
         },
         "importSpecifiers": 186,
-        "nonTriviaTokens": 15825
+        "nonTriviaTokens": 15800
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -4924,19 +4923,6 @@
           "@maka/core/project": 1,
           "@maka/core/ui-locale": 1,
           "@maka/runtime-host/profile-kind": 1,
-          "react": 1
-        }
-      },
-      "src/renderer/use-session-collaboration-dialog.ts": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {
-          "useState": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
           "react": 1
         }
       },

@@ -835,6 +835,11 @@
   gap: var(--space-4);
 }
 
+.sessionCollaborationInvitationAction {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .sessionCollaborationDisclosure {
   display: flex;
   flex-direction: column;

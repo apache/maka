@@ -84,6 +84,7 @@ import {
   type MemoryQueryInput,
   type MemoryQueryResult,
   type GoalControlAction,
+  type HostStatusResult,
   type GoalProjection,
   type OperationInput,
   type OperationOutput,
@@ -295,6 +296,10 @@ export class DesktopRuntimeHostClient {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
   }
 
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
+  }
+
   finalizeAccessCredential(
     timeoutMs?: number,
   ): Promise<OperationOutput<'access.credential.finalize'>> {
@@ -331,8 +336,11 @@ export class DesktopRuntimeHostClient {
     return this.request('collaboration.turn-request.create', { intent });
   }
 
-  queryCollaborationTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult> {
-    return this.request('collaboration.turn-request.query', { sessionId });
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
   }
 
   acknowledgeCollaborationTurnRequest(

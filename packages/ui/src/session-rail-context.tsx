@@ -52,6 +52,7 @@ export interface SessionRailData {
   groups?: ReadonlyArray<SessionHistoryGroup>;
   groupVariant: SessionViewMode;
   sessionMeta?(session: SessionSummary): string | undefined;
+  sessionBadge?(session: SessionSummary): ReactNode;
   onSelectSession(sessionId: string): void;
   rowActions?: SessionRowActions;
   projectActions?: ProjectRowActions;

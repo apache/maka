@@ -584,6 +584,54 @@ dialog:modal {
   background: var(--background);
 }
 
+.sessionTurnRequestApproval {
+  display: grid;
+  gap: var(--space-1);
+  width: 100%;
+  max-width: 36rem;
+  margin-inline: auto;
+  padding: var(--space-2) var(--space-3) 0;
+  box-sizing: border-box;
+  background: var(--background);
+}
+
+.sessionTurnRequestApprovalBanner {
+  min-width: 0;
+}
+
+.sessionTurnRequestApprovalIntent {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.sessionTurnRequestApprovalDetails {
+  width: min(32rem, calc(100vw - 2rem));
+  max-height: min(16rem, 50vh);
+  overflow: auto;
+  white-space: pre-wrap;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  user-select: text;
+}
+
+.sessionTurnRequestApprovalActions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sessionTurnRequestApprovalMore {
+  color: var(--foreground-secondary);
+  font: var(--typography-caption);
+  text-align: end;
+}
+
 .sessionTurnRequestComposer {
   padding: var(--space-3);
 }

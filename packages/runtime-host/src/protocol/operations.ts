@@ -71,6 +71,7 @@ export type {
   HostDiagnosticsResult,
   HostActivitySnapshot,
   HostLifecycleState,
+  HostPeerEndpoint,
   HostStatusInput,
   HostStatusResult,
   HostUpgradePrepareInput,

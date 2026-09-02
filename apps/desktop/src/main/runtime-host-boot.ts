@@ -276,6 +276,9 @@ if (runtimeHostPeerConfiguration) {
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
       endpointKind: 'client',
+      onBackgroundReconcileError: (error) => {
+        console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+      },
     });
     runtimeHostPeerClient = runtimeHostPeerOwner.client;
     runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
@@ -574,7 +577,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
 });
 const guestSessionMountService = createDesktopGuestSessionMountService({
   store: createGuestSessionMountStore(runtimeHostCredentialStore),
-  mount: async (target, signal, onConnectionPhase) => {
+  mount: async (target, signal, onConnectionPhase, onPeerEndpoint) => {
     if (target.profile.kind !== 'remote' || !target.credential) {
       throw new Error('A shared Session requires a remote Guest target');
     }
@@ -583,6 +586,9 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
       { profile: target.profile, credential: target.credential },
       signal,
       onConnectionPhase,
+      (status) => {
+        if (status.peerEndpoint) onPeerEndpoint?.(status.peerEndpoint);
+      },
     );
   },
   finalizeAccess: async (mountId, signal) => {
@@ -1650,7 +1656,11 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
-  registerDesktopGuestSessionMountIpc(ipcMain, guestSessionMountService);
+  registerDesktopGuestSessionMountIpc(
+    ipcMain,
+    guestSessionMountService,
+    () => clipboard.readText(),
+  );
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,

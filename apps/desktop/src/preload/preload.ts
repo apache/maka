@@ -121,9 +121,10 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
 import {
-  collectRuntimeHostSessionCatalogs,
   collectRuntimeHostSessionCatalogsWithCoverage,
+  resolveRuntimeHostSessionCatalog,
 } from './runtime-host-session-catalog.js';
+import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
@@ -222,6 +223,8 @@ import {
   type OperationInput,
   type OperationOutcome,
   type OperationOutput,
+  type CollaborationTurnRequestQueryResult,
+  type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
@@ -260,6 +263,7 @@ const runtimeHostMetadata = new Map<
   }
 >();
 const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
+let lastDesktopSessionCatalog: DesktopSessionSummary[] = [];
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
@@ -894,19 +898,15 @@ async function listDesktopSessions(
     ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
-  const scopes = await runtimeHostScopeList();
-  const sessions = await collectRuntimeHostSessionCatalogs(
-    scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke(
-        'sessions:list',
-        scope,
-        filter,
-      ) as SessionCatalogSummary[];
-      return sessions.map((session) => projectSessionCatalogSummary(scope, session));
-    }),
+  lastDesktopSessionCatalog = await resolveRuntimeHostSessionCatalog(
+    lastDesktopSessionCatalog,
+    listDesktopSessionsWithCoverage(),
+    () => [...runtimeHostMetadata.values()].map(({ profileId }) => profileId),
+    // Unknown Guest coverage cannot suppress healthy Owner catalogs or prove
+    // that a previously observed Guest mount was removed.
+    listKnownGuestMountProfileIds(),
   );
-  recordSessionCatalogScopes(sessions);
-  return sessions;
+  return lastDesktopSessionCatalog;
 }
 
 async function listDesktopSessionsWithCoverage(): Promise<{
@@ -929,6 +929,24 @@ async function listDesktopSessionsWithCoverage(): Promise<{
   );
   recordSessionCatalogScopes(catalog.sessions);
   return catalog;
+}
+
+async function listKnownGuestMountProfileIds(): Promise<string[]> {
+  const mounts: unknown = await ipcRenderer.invoke('session-collaboration:mount:list');
+  if (!Array.isArray(mounts)) {
+    throw new Error('Desktop shared Session mounts are unavailable');
+  }
+  return mounts.map((mount) => {
+    if (
+      !mount ||
+      typeof mount !== 'object' ||
+      !('mountId' in mount) ||
+      typeof mount.mountId !== 'string'
+    ) {
+      throw new Error('Desktop shared Session mount is invalid');
+    }
+    return mount.mountId;
+  });
 }
 
 async function createDesktopSessionOnScope(
@@ -1305,6 +1323,9 @@ const makaBridge = {
     cancelImport(operationId) {
       return ipcRenderer.invoke('session-collaboration:import:cancel', operationId);
     },
+    readInvitationClipboard() {
+      return ipcRenderer.invoke('session-collaboration:invitation:read-clipboard');
+    },
     listMounts() {
       return ipcRenderer.invoke('session-collaboration:mount:list');
     },
@@ -1329,6 +1350,28 @@ const makaBridge = {
         'session-collaboration:turn-request:query',
         session.scope,
         session.sessionId,
+      );
+    },
+    async getPendingTurnRequests() {
+      const scopes = (await runtimeHostScopeList()).filter(
+        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+      );
+      return collectAvailablePendingTurnRequests(
+        scopes.map(async (scope) => {
+          const result = await ipcRenderer.invoke(
+            'session-collaboration:turn-request:query',
+            scope,
+          ) as CollaborationTurnRequestQueryResult;
+          return result.requests
+            .filter((request) => request.state.kind === 'pending')
+            .map((request): SessionTurnAccessRequest => ({
+              ...request,
+              intent: {
+                ...request.intent,
+                sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
+              },
+            }));
+        }),
       );
     },
     async acknowledgeTurnRequest(sessionId, requestId) {

@@ -120,6 +120,10 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
       .catch(captureFailure);
   }
 
+  get coordinationRelays(): readonly string[] {
+    return this.#client.identity().coordinationRelays;
+  }
+
   closeAdmission(): Promise<void> {
     this.#closeAdmissionTask ??= (async () => {
       this.#admitting = false;
