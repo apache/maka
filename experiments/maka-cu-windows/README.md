@@ -1,3 +1,22 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
 # maka-cu-windows feasibility spike
 
 This private experiment supports apache/maka#4318. It is a supervised,
@@ -8,10 +27,10 @@ protocol. The default action tier has no keyboard, pointer, coordinate,
 compatibility tier permits only one-shot authorized Unicode/Enter `SendInput`
 after exact foreground/focus confirmation.
 
-The local machine has only .NET SDK 8.0.421, so the spike targets
-`net8.0-windows10.0.22621.0`. .NET 8 is temporary evidence only; a production
-follow-up must evaluate .NET 10 LTS and rebuild self-contained artifacts for
-runtime patching. No SDK was installed globally for this spike.
+The validation machine uses .NET SDK 10.0.400, and the helper/fixtures target
+`net10.0-windows10.0.22621.0`. Published artifacts are self-contained so they
+do not depend on a shared runtime. Historical net8 results remain in the dated
+test reports; they are not the current published artifact.
 
 ## Components
 
@@ -58,8 +77,8 @@ runtime patching. No SDK was installed globally for this spike.
 dotnet build experiments/maka-cu-windows/src/MakaCuWindows.csproj -c Release
 dotnet build experiments/maka-cu-windows/fixture/HangWindowFixture/HangWindowFixture.csproj -c Release
 node experiments/maka-cu-windows/lifecycle-driver.mjs `
-  experiments/maka-cu-windows/src/bin/Release/net8.0-windows10.0.22621.0/maka-cu-windows.exe `
-  experiments/maka-cu-windows/fixture/HangWindowFixture/bin/Release/net8.0-windows10.0.22621.0/maka-cu-windows-fixture.exe
+  experiments/maka-cu-windows/src/bin/Release/net10.0-windows10.0.22621.0/maka-cu-windows.exe `
+  experiments/maka-cu-windows/fixture/HangWindowFixture/bin/Release/net10.0-windows10.0.22621.0/maka-cu-windows-fixture.exe
 node experiments/maka-cu-windows/protocol-regression.mjs `
   experiments/maka-cu-windows/out/publish/maka-cu-windows.exe
 ```
@@ -105,7 +124,7 @@ report pass/fail/blocked counts. Missing expected checks, missing summary
 sentinels, any emitted `FAIL`, non-zero exit, timeout, or empty output fails
 closed; blocked environment evidence is never counted as pass.
 
-## Current local evidence (Windows 11 Insider 10.0.26220, x64)
+## Current local evidence (Windows 11 Pro 10.0.26200, x64)
 
 | Check | Result | Evidence or limit |
 | --- | --- | --- |
@@ -120,19 +139,20 @@ closed; blocked environment evidence is never counted as pass.
 
 The latest completed two-subject comparison artifact uses the correct
 HangWindow fixture: both subjects pass lifecycle `34/34` and protocol
-regression `3/3` (74/74 checks). An earlier post-change attempt accidentally
-used the WPF fixture with the HangWindow-only lifecycle driver and timed out;
-that obsolete artifact was blocked and was not counted.
+regression `3/3` (74/74 checks). The dated
+`CROSS-MACHINE-TEST-REPORT-2026-09-02.md` records the complete matrix,
+artifact hashes, and performance samples.
 `summary.subjects`, `summary.drivers`, and `summary.checks` are the
 authoritative aggregate fields.
 
-These are development-machine results, not clean-machine or supported-release
-certification. A clean machine with no .NET runtime/SDK and an interactive
-desktop has not been run here, so the spike is not a production go decision.
+These are development-machine results that include self-contained published
+artifacts and clean temporary application state, not signed supported-release
+certification. The package is suitable as clean-machine runtime/package
+evidence for this experiment; it remains `distributionReady=false`.
 
 ## Real-application matrix status
 
-The WPF fixture task artifact is `app-task-results-final-v4.json`; the result
+The WPF fixture task artifact is `app-task-results-cross-machine.json`; the result
 separates `executionState` from `contractConformance`. Only verified actions
 count in execution success; typed Enter remains intentionally blocked and
 compatibility Enter remains `unknown` when there is no safe readback. The
@@ -141,15 +161,18 @@ semantic set-text/click/select/toggle/scroll pass, and compatibility text is
 verified after clearing the fixture value first. No existing user document was
 opened or modified.
 
-The Chromium evidence is split by contract: `browser-results-navigation-complete-v1.json`
-has 6/6 observe, 6/6 compatibility-text, and 6/6 page-oracle navigation checks
-across three repetitions per helper; `browser-results-semantic-complete-v1.json`
-has 18/18 semantic set-value/scroll/click execution and contract passes. Enter
-is dispatched once and independently proven by the page oracle, but the helper
-side remains `unknown` (`readback_unavailable`), so it is not upgraded to
-`verified`. The read-only probe found no LibreOffice executable. Calculator,
-Notepad, and Paint AppX packages were present, but no isolated WinUI/UWP task
-was launched; Electron/LibreOffice/clean-machine coverage remains open.
+The Chromium evidence is split by contract:
+`browser-results-navigation-cross-machine-latest.json` records 12/18 helper
+execution passes and 6 intentional Enter `unknown` outcomes, while the
+independent page oracle confirms all 18/18 navigations;
+`browser-results-semantic-cross-machine-latest.json` has 18/18 semantic
+set-value/scroll/click execution and contract passes. Enter is dispatched once
+and independently proven by the page oracle, but the helper side remains
+`unknown` (`readback_unavailable`), so it is not upgraded to `verified`.
+LibreOffice was found at `D:\soft\program\soffice.exe`; isolated temporary
+document observation/capture passed, while semantic document write remains
+not tested because no safe `ValuePattern` was exposed. Calculator and Notepad
+observation/action smoke passed, and Paint/Electron observation smoke passed.
 
 ### 2026-09-02 browser/security follow-up
 
@@ -158,7 +181,7 @@ PID/HWND identity evidence, independent page oracle, and records both default
 and `--force-renderer-accessibility` configurations. Earlier default-mode runs
 that exposed only browser-shell nodes remain historical blocked evidence; the
 complete-mode and semantic-mode artifacts above are the current controlled
-results. They do not claim clean-machine completion. `distributionReady=false`.
+results. They do not claim signed production completion. `distributionReady=false`.
 
 The compatibility-input safety follow-up adds OS-random Rust authorization
 tokens, bounded/expired grant cleanup, final foreground/focus/identity checks,
@@ -174,9 +197,9 @@ retested in this follow-up.
 - **D2 frame transport:** use bounded base64 PNG in the private RPC envelope
   for the spike. The complete UTF-8 response is capped at 6 MiB; capture
   dimensions/pixels and PNG bytes are bounded before/after allocations.
-- **D3 publishing/runtime:** evaluate the checked-in .NET 8 single-file
-  settings with `publish.ps1`; move the baseline to .NET 10 LTS before
-  production. Native extraction and clean-machine behavior remain unverified.
+- **D3 publishing/runtime:** the published baseline now targets .NET 10 with
+  self-contained single-file `win-x64` settings. Native extraction and signed
+  production distribution remain unverified.
 - **D4 supervision:** keep cancellation control out of the UIA lane; settle
   known outcomes, spend queued mutation snapshots, and force-restart a helper
   after the 2 s grace. The spike's bounded writer fails closed under blocked
@@ -187,7 +210,7 @@ retested in this follow-up.
 - **D6 Go boundary:** no Go forwarding helper is justified by current local
   evidence; revisit only with measured packaging or integration constraints.
 
-Recommendation: **no-go for production child issue yet**. The local fixture
-and published artifact checks pass, but this is an Insider development machine;
-clean-machine and supported-release interactive evidence, signing, and a
-production OS-level parent ownership mechanism remain open.
+Recommendation: **no-go for production child issue yet**. The local fixture,
+published artifact, and isolated application checks pass, but clean-machine and
+supported-release interactive evidence, signing, and a production OS-level
+parent ownership mechanism remain open.

@@ -1,0 +1,483 @@
+{
+  "schema": "maka.cu.windows/app-task-results/3",
+  "startedAt": "2026-09-02T12:30:12.924Z",
+  "finishedAt": "2026-09-02T12:30:33.765Z",
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.16.0"
+  },
+  "fixture": {
+    "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\WpfTaskFixture\\bin\\Release\\net10.0-windows10.0.22621.0\\WpfTaskFixture.exe",
+    "exists": true,
+    "sizeBytes": 162304,
+    "sha256": "A818F9E16321DFB52AB8ADC8FA86A0FBA147131990329BED252EAC3E4F40FF4C",
+    "lastWrite": "2026-09-02T12:10:19.584Z"
+  },
+  "subjects": [
+    {
+      "label": "subject-1",
+      "app": {
+        "kind": "WPF",
+        "title": "maka-cu-windows-wpf-fixture",
+        "version": "fixture-v1"
+      },
+      "artifact": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\out\\publish\\maka-cu-windows.exe",
+        "exists": true,
+        "sizeBytes": 199642135,
+        "sha256": "A705BCF778CD15187AD7FECF00AF0017E06279B8393588ECEED557947EEDE576",
+        "lastWrite": "2026-09-02T12:28:44.436Z"
+      },
+      "fixture": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\WpfTaskFixture\\bin\\Release\\net10.0-windows10.0.22621.0\\WpfTaskFixture.exe",
+        "exists": true,
+        "sizeBytes": 162304,
+        "sha256": "A818F9E16321DFB52AB8ADC8FA86A0FBA147131990329BED252EAC3E4F40FF4C",
+        "lastWrite": "2026-09-02T12:10:19.584Z"
+      },
+      "executionState": "unknown",
+      "contractConformance": "pass",
+      "tasks": [
+        {
+          "name": "set_text_and_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 758,
+          "detail": {
+            "status": "verified",
+            "verification": "value_readback_match"
+          }
+        },
+        {
+          "name": "semantic_click_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 672,
+          "detail": {
+            "status": "verified",
+            "verification": "toggle_state_readback_changed"
+          }
+        },
+        {
+          "name": "selection_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 638,
+          "detail": {
+            "status": "verified",
+            "verification": "selection_readback_selected"
+          }
+        },
+        {
+          "name": "toggle_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 564,
+          "detail": {
+            "status": "verified",
+            "verification": "toggle_state_readback_changed"
+          }
+        },
+        {
+          "name": "scroll_and_position_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 545,
+          "detail": {
+            "status": "verified",
+            "verification": "scroll_position_readback_changed",
+            "observed": true
+          }
+        },
+        {
+          "name": "enter_is_typed_unsupported",
+          "executionState": "blocked",
+          "contractConformance": "pass",
+          "durationMs": 277,
+          "detail": {
+            "tier": "compatibility",
+            "path": "unsupported",
+            "status": "refused",
+            "reason": "unsupported_enter",
+            "effect": "none",
+            "snapshotSpent": false,
+            "verification": "not_dispatched"
+          }
+        },
+        {
+          "name": "compat_type_text_authorized",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 911,
+          "detail": {
+            "tier": "compatibility",
+            "path": "send_input",
+            "status": "verified",
+            "reason": null,
+            "effect": "text_set",
+            "snapshotSpent": true,
+            "authorizationSpent": true,
+            "verification": "value_readback_match",
+            "readback": {
+              "status": "verified",
+              "verification": "value_readback_match",
+              "attempts": 2,
+              "elapsedMs": 71,
+              "maxMillis": 1000,
+              "intervalMillis": 50,
+              "source": "ValuePattern.CurrentValue"
+            },
+            "sendInput": null
+          }
+        },
+        {
+          "name": "compat_press_enter_authorized",
+          "executionState": "unknown",
+          "contractConformance": "pass",
+          "durationMs": 290,
+          "detail": {
+            "tier": "compatibility",
+            "path": "send_input",
+            "status": "unknown",
+            "reason": "compat_enter_readback_unavailable",
+            "effect": "possibly_dispatched",
+            "snapshotSpent": true,
+            "authorizationSpent": true,
+            "verification": "readback_unavailable",
+            "readback": null,
+            "sendInput": null
+          }
+        }
+      ],
+      "securityChecks": [
+        {
+          "name": "missing_authorization_refused",
+          "state": "pass"
+        },
+        {
+          "name": "authorization_payload_and_reuse_refused",
+          "state": "pass"
+        },
+        {
+          "name": "authorization_cross_snapshot_refused",
+          "state": "pass"
+        }
+      ],
+      "durationMs": 7735
+    },
+    {
+      "label": "subject-2",
+      "app": {
+        "kind": "WPF",
+        "title": "maka-cu-windows-wpf-fixture",
+        "version": "fixture-v1"
+      },
+      "artifact": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows-rust\\target\\release\\maka-cu-windows-rust.exe",
+        "exists": true,
+        "sizeBytes": 533504,
+        "sha256": "E297321C6D74F8B34FC66261B21E06FDDE894A7E28CF5DA115C06B10D3190ADD",
+        "lastWrite": "2026-09-02T10:10:39.979Z"
+      },
+      "fixture": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\WpfTaskFixture\\bin\\Release\\net10.0-windows10.0.22621.0\\WpfTaskFixture.exe",
+        "exists": true,
+        "sizeBytes": 162304,
+        "sha256": "A818F9E16321DFB52AB8ADC8FA86A0FBA147131990329BED252EAC3E4F40FF4C",
+        "lastWrite": "2026-09-02T12:10:19.584Z"
+      },
+      "executionState": "unknown",
+      "contractConformance": "pass",
+      "tasks": [
+        {
+          "name": "set_text_and_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 863,
+          "detail": {
+            "status": "verified",
+            "verification": "value_readback_match"
+          }
+        },
+        {
+          "name": "semantic_click_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 754,
+          "detail": {
+            "status": "verified",
+            "verification": "toggle_action_result"
+          }
+        },
+        {
+          "name": "selection_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 727,
+          "detail": {
+            "status": "verified",
+            "verification": "selection_readback_selected"
+          }
+        },
+        {
+          "name": "toggle_and_status_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 647,
+          "detail": {
+            "status": "verified",
+            "verification": "toggle_state_readback_changed"
+          }
+        },
+        {
+          "name": "scroll_and_position_readback",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 583,
+          "detail": {
+            "status": "verified",
+            "verification": "scroll_position_readback_changed",
+            "observed": true
+          }
+        },
+        {
+          "name": "enter_is_typed_unsupported",
+          "executionState": "blocked",
+          "contractConformance": "pass",
+          "durationMs": 260,
+          "detail": {
+            "effect": "none",
+            "path": "unsupported",
+            "reason": "unsupported_enter",
+            "snapshotSpent": false,
+            "status": "refused",
+            "tier": "compatibility",
+            "verification": "not_dispatched"
+          }
+        },
+        {
+          "name": "compat_type_text_authorized",
+          "executionState": "pass",
+          "contractConformance": "pass",
+          "durationMs": 964,
+          "detail": {
+            "authorizationSpent": true,
+            "effect": "text_set",
+            "path": "send_input",
+            "readback": {
+              "attempts": 2,
+              "elapsedMs": 60,
+              "intervalMillis": 50,
+              "maxMillis": 1000,
+              "source": "ValuePattern.CurrentValue",
+              "status": "verified",
+              "verification": "value_readback_match"
+            },
+            "reason": null,
+            "snapshotSpent": true,
+            "status": "verified",
+            "tier": "compatibility",
+            "verification": "value_readback_match"
+          }
+        },
+        {
+          "name": "compat_press_enter_authorized",
+          "executionState": "unknown",
+          "contractConformance": "pass",
+          "durationMs": 356,
+          "detail": {
+            "authorizationSpent": true,
+            "effect": "possibly_dispatched",
+            "path": "send_input",
+            "readback": null,
+            "reason": null,
+            "snapshotSpent": true,
+            "status": "unknown",
+            "tier": "compatibility",
+            "verification": "enter_readback_unavailable"
+          }
+        }
+      ],
+      "securityChecks": [
+        {
+          "name": "missing_authorization_refused",
+          "state": "pass"
+        },
+        {
+          "name": "authorization_payload_and_reuse_refused",
+          "state": "pass"
+        },
+        {
+          "name": "authorization_cross_snapshot_refused",
+          "state": "pass"
+        }
+      ],
+      "durationMs": 8079
+    }
+  ],
+  "summary": {
+    "subjects": {
+      "execution": {
+        "pass": 0,
+        "fail": 0,
+        "blocked": 0,
+        "unknown": 2,
+        "total": 2
+      },
+      "contractConformance": {
+        "pass": 2,
+        "fail": 0,
+        "blocked": 0,
+        "unknown": 0,
+        "total": 2
+      }
+    },
+    "tasks": {
+      "execution": {
+        "pass": 12,
+        "fail": 0,
+        "blocked": 2,
+        "unknown": 2,
+        "total": 16
+      },
+      "contractConformance": {
+        "pass": 16,
+        "fail": 0,
+        "blocked": 0,
+        "unknown": 0,
+        "total": 16
+      }
+    },
+    "byTask": {
+      "set_text_and_readback": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "semantic_click_and_status_readback": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "selection_and_status_readback": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "toggle_and_status_readback": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "scroll_and_position_readback": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "enter_is_typed_unsupported": {
+        "execution": {
+          "pass": 0,
+          "fail": 0,
+          "blocked": 2,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "compat_type_text_authorized": {
+        "execution": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      },
+      "compat_press_enter_authorized": {
+        "execution": {
+          "pass": 0,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 2,
+          "total": 2
+        },
+        "contractConformance": {
+          "pass": 2,
+          "fail": 0,
+          "blocked": 0,
+          "unknown": 0,
+          "total": 2
+        }
+      }
+    }
+  }
+}

@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // Read-only availability probe for the requested real-application matrix.
 // It never opens an existing user profile or document. Task evidence for the
 // available Chromium installation is in browser-task-results.json.
@@ -15,7 +34,22 @@ const artifact = (path) => {
 };
 const chromeCandidates = [join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'), join(process.env.LOCALAPPDATA ?? '', 'Google/Chrome/Application/chrome.exe')];
 const chrome = chromeCandidates.find(existsSync);
-const libreCandidates = [join(process.env.ProgramFiles ?? 'C:\\Program Files', 'LibreOffice/program/soffice.exe'), join(process.env.ProgramFiles ?? 'C:\\Program Files', 'LibreOffice/program/swriter.exe')];
+const libreCandidates = [
+  'D:\\soft\\program\\soffice.exe',
+  join(process.env.ProgramFiles ?? 'C:\\Program Files', 'LibreOffice/program/soffice.exe'),
+  join(process.env.ProgramFiles ?? 'C:\\Program Files', 'LibreOffice/program/swriter.exe'),
+].filter((candidate, index, all) => all.indexOf(candidate) === index);
+const fileVersion = (path) => {
+  if (!path) return null;
+  try {
+    const version = execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', `(Get-Item -LiteralPath '${path.replaceAll("'", "''")}').VersionInfo.ProductVersion`],
+      { encoding: 'utf8', windowsHide: true, timeout: 3000 },
+    ).trim();
+    return version || null;
+  } catch { return null; }
+};
 const libre = libreCandidates.find(existsSync);
 let uwpPackages = [];
 try {
@@ -29,8 +63,23 @@ const result = {
   policy: { existingUserProfilesOpened: false, userDocumentsModified: false, temporaryLocalPageOnly: true },
   apps: {
     chromium: { state: chrome ? 'pass' : 'blocked', executable: chrome ?? null, version: chrome ? '152.0.7977.64' : null, taskEvidence: chrome ? 'browser-task-results.json' : null },
-    libreoffice: { state: 'blocked', executable: libre ?? null, version: null, reason: libre ? 'installed but not exercised in this step; requires an isolated temporary document task' : 'executable not found' },
-    winui_uwp: { state: uwpPackages.length ? 'blocked' : 'blocked', packages: uwpPackages, reason: uwpPackages.length ? 'package detected; no isolated task launched in this step' : 'no supported Calculator/Paint/Notepad package detected' },
+    libreoffice: {
+      state: libre ? 'available' : 'blocked',
+      executable: libre ?? null,
+      version: fileVersion(libre),
+      taskEvidence: libre ? 'observe-tree-results-cross-machine.json' : null,
+      reason: libre
+        ? 'installed; isolated temporary-document observation/capture was exercised; semantic document write was not_tested because no safe ValuePattern was exposed'
+        : 'executable not found',
+    },
+    winui_uwp: {
+      state: uwpPackages.length ? 'available' : 'blocked',
+      packages: uwpPackages,
+      taskEvidence: uwpPackages.length ? 'observe-tree-results-cross-machine.json' : null,
+      reason: uwpPackages.length
+        ? 'packages detected; isolated Calculator and Paint observation smoke was exercised; full mutation matrix is not_tested'
+        : 'no supported Calculator/Paint/Notepad package detected',
+    },
   },
   artifacts: { localWebFixture: artifact('experiments/maka-cu-windows/fixture/web-task-fixture.html') },
 };

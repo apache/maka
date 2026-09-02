@@ -1,3 +1,22 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 // SPDX-License-Identifier: Apache-2.0
 //
 // WGC capture interop for the spike helper (check 4): target-window capture
@@ -32,7 +51,7 @@ static class WgcCapture
     const long MAX_CAPTURE_PIXELS = 16_000_000;
     const int MAX_PNG_BYTES = 4 * 1024 * 1024;
     static readonly uint[] FeatureLevels = { 0xb100, 0xb000, 0xa100, 0xa000, 0x9300 }; // 11_1..9_3
-    // Not readonly: passed by ref to QueryInterface/CreateForWindow (CS0199).
+    // Not readonly: passed by ref to the CreateForWindow interop call.
     static Guid IID_IDXGIDevice = new("54ec77fa-1377-44e6-8c32-88fd5f44c84c");
     static Guid IID_ID3D11Texture2D = new("6f15aaf2-d208-4e89-9ab4-489535d34f9c");
     static Guid IID_IDirect3DDxgiInterfaceAccess = new("a9b3d012-3df2-4ee3-b8d1-8695f457d3c1");
@@ -85,7 +104,7 @@ static class WgcCapture
         try
         {
             // 2. IDXGIDevice -> WinRT IDirect3DDevice (documented interop)
-            hr = Marshal.QueryInterface(devicePtr, ref IID_IDXGIDevice, out var dxgiPtr);
+            hr = Marshal.QueryInterface(devicePtr, in IID_IDXGIDevice, out var dxgiPtr);
             Trace($"qi_dxgi hr=0x{hr:X8} ptr=0x{dxgiPtr.ToInt64():X}");
             if (hr != 0) return (Unavailable($"dxgi_device_qi_failed hr=0x{hr:X8}"), null);
             try
