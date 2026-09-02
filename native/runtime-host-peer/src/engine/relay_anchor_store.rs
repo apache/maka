@@ -21,7 +21,7 @@ use std::{collections::HashSet, path::PathBuf};
 
 use libp2p::{Multiaddr, PeerId};
 use serde_json::{Map, Value, json};
-use tokio::{io::AsyncWriteExt as _, sync::mpsc, task::JoinHandle};
+use tokio::{io::AsyncWriteExt as _, sync::watch, task::JoinHandle};
 
 use super::{PeerError, coordination_relay_peer_id, supported_relay_address};
 
@@ -37,7 +37,7 @@ pub(super) struct RelayAnchor {
 
 pub(super) struct RelayAnchorHistory {
     anchors: Vec<RelayAnchor>,
-    updates: Option<mpsc::UnboundedSender<Vec<RelayAnchor>>>,
+    updates: Option<watch::Sender<Option<Vec<RelayAnchor>>>>,
     writer: Option<JoinHandle<()>>,
 }
 
@@ -63,9 +63,14 @@ impl RelayAnchorHistory {
                 writer: None,
             };
         };
-        let (updates, mut receiver) = mpsc::unbounded_channel::<Vec<RelayAnchor>>();
+        // History is a snapshot, not a journal. Coalesce churn into one pending
+        // latest value so slow storage cannot create an unbounded write queue.
+        let (updates, mut receiver) = watch::channel::<Option<Vec<RelayAnchor>>>(None);
         let writer = tokio::spawn(async move {
-            while let Some(anchors) = receiver.recv().await {
+            while receiver.changed().await.is_ok() {
+                let Some(anchors) = receiver.borrow_and_update().clone() else {
+                    continue;
+                };
                 if let Err(error) = write(&path, local_peer_id, &anchors).await {
                     eprintln!(
                         "[peer-relay-anchor] could not persist history: {}: {}",
@@ -121,7 +126,7 @@ impl RelayAnchorHistory {
         }
         self.anchors.truncate(MAX_ANCHOR_PEERS);
         if let Some(updates) = &self.updates {
-            let _ = updates.send(self.anchors.clone());
+            updates.send_replace(Some(self.anchors.clone()));
         }
     }
 

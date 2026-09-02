@@ -67,9 +67,7 @@ export async function openRuntimeHostPeerEndpointOwner(input: {
     client = createRuntimeHostPeerClient({
       nativePath: input.nativePath,
       keyPath: input.keyPath,
-      ...(input.automaticRelayDiscovery === true
-        ? { relayAnchorPath: join(input.dataRoot, 'relay-anchors.json') }
-        : {}),
+      relayAnchorPath: join(input.dataRoot, 'relay-anchors.json'),
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
