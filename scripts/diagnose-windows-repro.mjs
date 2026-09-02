@@ -49,8 +49,9 @@ function replaceEqualLength(bytes, needle, replacement) {
 function normalizeCheckout(bytes, sample) {
   const result = Buffer.from(bytes);
   let replacements = 0;
+  const checkout = `D:\\a\\maka\\maka\\sample-${sample}`;
   for (const encoding of ['utf8', 'utf16le']) {
-    for (const token of [`sample-${sample}`, `SAMPLE-${sample.toUpperCase()}`]) {
+    for (const token of [checkout, checkout.toUpperCase()]) {
       replacements += replaceEqualLength(
         result,
         Buffer.from(token, encoding),

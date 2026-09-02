@@ -82,6 +82,15 @@ test('does not hide differing machine instructions behind PE metadata normalizat
   assert.equal(result.sections.find((section) => section.name === '.text').rawEqual, false);
 });
 
+test('does not rewrite sample labels inside otherwise identical program contents', () => {
+  const a = pe('a', 1);
+  const b = pe('b', 2);
+  for (const bytes of [a, b]) bytes.write('sample-a sample-b SAMPLE-A SAMPLE-B', 0x220);
+  const result = comparePe(a, b);
+  assert.equal(result.metadataAndPathsEqual, true);
+  assert.equal(result.remainingDifferences.count, 0);
+});
+
 test('identifies an exact embedded ASAR hash difference separately from other metadata', () => {
   const a = pe('a', 1);
   const b = pe('b', 2);
