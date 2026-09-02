@@ -275,7 +275,13 @@ charter. Their evidence is adjudicated into this ledger:
 
 | ID | Source | Decision | Evidence or resolution |
 | --- | --- | --- | --- |
-| — | — | open | No findings recorded yet |
+| R1-C1 | correctness | confirmed | Route resolution now distinguishes `available`, bounded `recovering`, and `exhausted`; Mesh presentation, native waiting, direct profiles, and Session startup consume the same state. |
+| R1-C2 | correctness | confirmed | Runtime lease freshness uses a local monotonic receipt deadline capped by the signed lifetime; wall-clock rollback cannot extend current truth in-process. |
+| R1-C3 | correctness | confirmed | The strict Peer Mesh wire/storage replacement advances the compatibility epoch to 98. |
+| R1-C4 | correctness | confirmed | Windows recovery source closure follows the new reachability owner and publisher instead of the removed Mesh owner path. |
+| R1-S1 | simplification | confirmed | The endpoint owner is the sole peer-client lifetime authority; Desktop no longer closes the same client a second time. |
+| R1-S2 | simplification | confirmed | Route resolution has one lifecycle: clients start unattached and Mesh explicitly attaches and detaches the resolver. Constructor/factory injection was removed. |
+| R1-S3 | simplification | confirmed | Mesh authority targets derive identity from the verified signed lease instead of carrying a second peer-id field. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
