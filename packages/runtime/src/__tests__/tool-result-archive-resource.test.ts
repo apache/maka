@@ -448,6 +448,26 @@ describe('ArchiveRead retrieval ergonomics', () => {
     assert.equal(match.snippet, 'İA');
   });
 
+  test('search folds Greek final sigma across case in original coordinates', async () => {
+    // "ΟΔΟΣ" ends in a capital sigma whose lowercase form is the contextual
+    // final sigma "ς", not the medial "σ". Case-insensitive search must fold the
+    // complete string (so a lowercase final-sigma pattern still matches) and must
+    // report offsets in the original text coordinate space. A per-code-point or
+    // text-lowercasing implementation regresses this: it either misses the match
+    // or reports a shifted offset whose follow-up read returns empty content.
+    const { ref, reader } = textFixture('ΟΔΟΣ');
+    const result = (await readToolResultArchiveResource(reader, 'session-1', {
+      ref,
+      operation: 'search',
+      pattern: 'οδος',
+    })) as Record<string, unknown>;
+    const matches = result.matches as Array<Record<string, unknown>>;
+
+    assert.equal(result.matchCount, 1);
+    assert.equal(matches[0]!.offset, 0);
+    assert.equal(matches[0]!.snippet, 'ΟΔΟΣ');
+  });
+
   test('search never resumes before a requested mid-surrogate offset', async () => {
     const { ref, reader } = textFixture('a😀b😀z');
     const result = (await readToolResultArchiveResource(reader, 'session-1', {
