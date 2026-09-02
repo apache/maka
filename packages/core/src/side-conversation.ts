@@ -78,9 +78,10 @@ export interface SideConversationModelMessage {
   content: unknown;
 }
 
-export function applySideConversationUserMessageBoundary<
-  T extends SideConversationModelMessage,
->(messages: readonly T[], input: { inheritedPrefixLength: number; labels?: readonly string[] }): T[] {
+export function applySideConversationUserMessageBoundary<T extends SideConversationModelMessage>(
+  messages: readonly T[],
+  input: { inheritedPrefixLength: number; labels?: readonly string[] },
+): T[] {
   if (!isSideConversationSession(input.labels)) {
     return [...messages];
   }
@@ -93,7 +94,9 @@ export function applySideConversationUserMessageBoundary<
     if (message?.role !== 'user') {
       continue;
     }
-    if (userContentIncludesSideConversationBoundary(message.content as SideConversationUserContent)) {
+    if (
+      userContentIncludesSideConversationBoundary(message.content as SideConversationUserContent)
+    ) {
       return [...messages];
     }
     const next = [...messages];
