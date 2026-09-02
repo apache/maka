@@ -78,6 +78,27 @@ function skillListsEqual(
   });
 }
 
+function conversationSessionListsEqual(
+  current: readonly ConversationSession[],
+  next: readonly ConversationSession[],
+): boolean {
+  if (current.length !== next.length) return false;
+  return current.every((session, index) => {
+    const other = next[index];
+    return (
+      other !== undefined &&
+      session.id === other.id &&
+      session.runtimeHostId === other.runtimeHostId &&
+      session.name === other.name &&
+      session.status === other.status &&
+      session.lastMessageAt === other.lastMessageAt &&
+      session.lastMessagePreview === other.lastMessagePreview &&
+      session.isArchived === other.isArchived &&
+      session.shared === other.shared
+    );
+  });
+}
+
 function useConversationMentions(surface: ComposerMentionsSurface): ComposerMentions {
   const services = useConversationServices();
   const locale = useUiLocale();
@@ -113,9 +134,15 @@ function useConversationMentions(surface: ComposerMentionsSurface): ComposerMent
     let cancelled = false;
     const refreshSessions = () => {
       void services.sessions.list().then((next) => {
-        if (!cancelled) setSessions(next);
+        if (!cancelled) {
+          setSessions((previous) =>
+            conversationSessionListsEqual(previous, next) ? previous : next,
+          );
+        }
       }).catch(() => {
-        if (!cancelled) setSessions([]);
+        if (!cancelled) {
+          setSessions((previous) => (previous.length === 0 ? previous : []));
+        }
       });
     };
     refreshSessions();
