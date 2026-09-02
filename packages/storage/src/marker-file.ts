@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { link, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { readStableBoundedFile, type StableBoundedFileHandle } from './stable-storage.js';
+import { readStableBoundedFile, syncDirectory, type StableBoundedFileHandle } from './stable-storage.js';
 
 export interface MarkerFileHandle extends StableBoundedFileHandle {
   writeFile(data: string, encoding: 'utf8'): Promise<void>;
@@ -104,7 +104,7 @@ export async function publishMarkerFile(
       await rename(tempPath, markerPath);
       tempCreated = false;
     }
-    await syncDirectory(input.root, deps);
+    await syncDirectory(input.root);
     return 'published';
   } finally {
     if (tempCreated) await unlinkIfPresent(tempPath);
@@ -116,16 +116,6 @@ async function unlinkIfPresent(path: string): Promise<void> {
     await unlink(path);
   } catch (error) {
     if (!isNodeError(error, 'ENOENT')) throw error;
-  }
-}
-
-async function syncDirectory(path: string, deps: MarkerFileDependencies): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await deps.open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 

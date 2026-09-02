@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { withFileUpdateLock } from './file-update-lock.js';
+import { syncDirectory } from './stable-storage.js';
 
 /**
  * Pure-Node credential store. Shared by the desktop app and any
@@ -277,16 +278,6 @@ async function writeSecretFileAtomic(path: string, contents: string): Promise<vo
   } catch (error) {
     await rm(tempPath, { force: true });
     throw error;
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 

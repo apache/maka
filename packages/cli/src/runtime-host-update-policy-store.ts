@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import {
   isProductReleaseVersion,
   type RuntimeHostManagedUpdatePolicy,
@@ -154,15 +155,6 @@ export async function writeRuntimeHostManagedUpdatePolicy(
     );
   } finally {
     await rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  const directory = await open(path, 'r');
-  try {
-    await directory.sync();
-  } finally {
-    await directory.close();
   }
 }
 

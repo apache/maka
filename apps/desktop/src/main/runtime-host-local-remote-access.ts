@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { open, readFile, rename, rm } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import type { IpcMain } from 'electron';
 import {
   consumeAccessCredentialDelivery,
@@ -1227,16 +1228,6 @@ async function writeDocument(path: string, value: object): Promise<void> {
     await syncDirectory(dirname(path));
   } finally {
     await rm(temporaryPath, { force: true });
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 

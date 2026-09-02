@@ -20,6 +20,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, open, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import {
   BUNDLED_SKILL_CATALOG,
   buildStarterSkillTemplate,
@@ -1899,16 +1900,6 @@ async function durableWriteState(
       'Skill state could not be persisted',
       { cause: error },
     );
-  }
-}
-
-async function syncDirectory(directory: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(directory, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
   }
 }
 

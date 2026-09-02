@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, lstat, open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { syncDirectory as syncStorageDirectory } from '@maka/storage/stable-storage';
 import { decodeHostRegistration, type HostRegistration } from '../protocol/index.js';
 
 export const RUNTIME_HOST_REGISTRATION_FILE = 'registration.json';
@@ -116,14 +117,7 @@ export async function removeHostRegistration(
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r').catch(() => undefined);
-  if (!handle) return;
-  try {
-    await handle.sync().catch(() => undefined);
-  } finally {
-    await handle.close();
-  }
+  await syncStorageDirectory(path).catch(() => undefined);
 }
 
 function isNodeError(error: unknown, code: string): boolean {
