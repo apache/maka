@@ -19,7 +19,17 @@
 
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, it } from 'node:test';
@@ -2766,11 +2776,18 @@ describe('renderer architecture checker fixtures', () => {
       cwd: repoRoot,
       encoding: 'utf8',
     });
+    const strictWithoutBase = spawnSync(process.execPath, [checker, '--strict-base'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
 
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /usage: check-renderer-architecture/u);
     assert.notEqual(invalid.status, 0);
     assert.match(invalid.stderr, /base ref does not resolve to a commit/u);
+    assert.notEqual(strictWithoutBase.status, 0);
+    assert.match(strictWithoutBase.stderr, /--strict-base requires --base <commit>/u);
+    assert.match(strictWithoutBase.stderr, /usage: check-renderer-architecture/u);
   });
 });
 
@@ -3183,5 +3200,310 @@ describe('validated copy catalog dependencies', () => {
         assert.deepEqual(violationsFor(desktopRoot, currentConfig), []);
       },
     );
+  });
+});
+
+// These fixtures exercise the CLI end to end against a real git history: the
+// ratchet must re-derive the base commit's debt from the base *tree* (#4249),
+// `--strict-base` must refuse the silent fallback that wedged CI in #4250, and
+// a checker change must still be measured by the base commit's checker.
+describe('renderer architecture base-tree derivation (git fixtures)', () => {
+  const checkerPath = fileURLToPath(new URL('./check-renderer-architecture.mjs', import.meta.url));
+  const realNodeModules = fileURLToPath(new URL('../../../node_modules', import.meta.url));
+  const LEGACY_WIDGET_PATH = 'src/renderer/legacy-widget.ts';
+  const LEGACY_PANEL_PATH = 'src/renderer/legacy-panel.ts';
+  const LEGACY_CLASSIFICATION = ".filter((path) => zoneFor(path).kind === 'legacy')";
+
+  function fixtureEnvironment(scratch) {
+    // Keep the fixture repository independent of the developer's git setup
+    // (signing, hooks, templates) and of any hook-provided git context.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+    env.GIT_CONFIG_GLOBAL = join(scratch, 'gitconfig');
+    env.GIT_CONFIG_NOSYSTEM = '1';
+    return env;
+  }
+
+  // The base worktree is materialized under the OS temp directory; pointing
+  // every temp-dir variable at a missing directory makes that step fail
+  // deterministically on every platform without touching git itself.
+  function brokenTempDirectory(scratch) {
+    const missing = join(scratch, 'missing-tmpdir');
+    return { TEMP: missing, TMP: missing, TMPDIR: missing };
+  }
+
+  async function writeFixtureFiles(root, files) {
+    for (const [path, source] of Object.entries(files)) {
+      const absolutePath = join(root, path);
+      await mkdir(dirname(absolutePath), { recursive: true });
+      await writeFile(absolutePath, source, 'utf8');
+    }
+  }
+
+  async function withGitFixture(run) {
+    // The checker only runs its CLI when process.argv[1] is its own real
+    // path, so resolve the (possibly symlinked) temp directory up front.
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), 'maka-renderer-architecture-git-')));
+    const repoRoot = join(scratch, 'repo');
+    const desktopRoot = join(repoRoot, 'apps', 'desktop');
+    const nodeModulesLink = join(repoRoot, 'node_modules');
+    const env = fixtureEnvironment(scratch);
+    const git = (...args) => {
+      const result = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8', env });
+      assert.equal(result.status, 0, `git ${args.join(' ')} failed:\n${result.stderr}`);
+      return result.stdout.trim();
+    };
+    const fixture = {
+      desktopRoot,
+      ledgerPath: join(desktopRoot, 'renderer-architecture.json'),
+      scratch,
+      scriptPath: join(desktopRoot, 'scripts', 'check-renderer-architecture.mjs'),
+      commit(message) {
+        git('add', '--all');
+        git('commit', '--quiet', '--no-verify', '--message', message);
+        return git('rev-parse', 'HEAD');
+      },
+      runChecker(args, extraEnv = {}) {
+        return spawnSync(process.execPath, [fixture.scriptPath, ...args], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          env: { ...env, ...extraEnv },
+        });
+      },
+      writeFiles: (files) => writeFixtureFiles(desktopRoot, files),
+      // Regenerates the ledger with the checker committed in the fixture, so a
+      // patched checker produces exactly the ledger its own rules accept.
+      async writeLedger(seed = rendererEntrySeedConfig()) {
+        await writeFile(fixture.ledgerPath, `${JSON.stringify(seed, null, 2)}\n`, 'utf8');
+        const result = fixture.runChecker(['--write']);
+        assert.equal(result.status, 0, `ledger generation failed:\n${result.stdout}\n${result.stderr}`);
+        return JSON.parse(await readFile(fixture.ledgerPath, 'utf8'));
+      },
+    };
+    try {
+      await mkdir(join(desktopRoot, 'scripts'), { recursive: true });
+      await writeFile(join(scratch, 'gitconfig'), '', 'utf8');
+      await copyFile(checkerPath, fixture.scriptPath);
+      await symlink(realNodeModules, nodeModulesLink, 'junction');
+      await writeFile(join(repoRoot, '.gitignore'), 'node_modules\n', 'utf8');
+      await fixture.writeFiles(
+        rendererEntryContractFiles({
+          [LEGACY_WIDGET_PATH]: 'export const legacyWidget = 1;\n',
+          [LEGACY_PANEL_PATH]: 'export const legacyPanel = 1;\n',
+        }),
+      );
+      git('-c', 'init.defaultBranch=main', 'init', '--quiet');
+      git('config', 'user.name', 'Renderer Architecture Fixture');
+      git('config', 'user.email', 'renderer-architecture@example.invalid');
+      git('config', 'commit.gpgsign', 'false');
+      return await run(fixture);
+    } finally {
+      // Drop the node_modules link explicitly so no cleanup path can ever
+      // recurse into the real dependency tree.
+      try {
+        await unlink(nodeModulesLink);
+      } catch {
+        // The link was never created.
+      }
+      await rm(scratch, { force: true, recursive: true });
+    }
+  }
+
+  function assertPassed(result, base, label) {
+    assert.equal(result.status, 0, `${label}:\n${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`passed against ${base}`, 'u'));
+    assert.doesNotMatch(result.stderr, /falling back to the committed base ledger/u);
+  }
+
+  it('passes when the head commit holds equal or lower debt than the derived base tree', async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+      await fixture.writeFiles({ [LEGACY_WIDGET_PATH]: 'export const legacyWidget = 2;\n' });
+      await rm(join(fixture.desktopRoot, LEGACY_PANEL_PATH));
+      const headLedger = await fixture.writeLedger();
+      assert.deepEqual(headLedger.legacyRendererFiles, [LEGACY_WIDGET_PATH, RENDERER_ENTRY_PATH]);
+      fixture.commit('edit one legacy file and retire another');
+
+      for (const args of [['--base', base], ['--base', base, '--strict-base']]) {
+        const result = fixture.runChecker(args);
+        assertPassed(result, base, args.join(' '));
+        // The checker is unchanged between the commits, so no cross-check ran.
+        assert.doesNotMatch(`${result.stdout}${result.stderr}`, /cross-check/u);
+      }
+    });
+  });
+
+  it('rejects a new unclassified legacy renderer file relative to the derived base tree', async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+      await fixture.writeFiles({ 'src/renderer/legacy-drawer.ts': 'export const legacyDrawer = 1;\n' });
+      await fixture.writeLedger();
+      fixture.commit('add legacy debt');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(result.status, 0);
+      assert.match(
+        result.stderr,
+        /^- src\/renderer\/legacy-drawer\.ts: new unclassified renderer source files are forbidden/mu,
+      );
+      assert.doesNotMatch(result.stderr, /falling back to the committed base ledger/u);
+    });
+  });
+
+  it('does not wedge on a base ledger that under-reports its own tree (#4250)', async () => {
+    await withGitFixture(async (fixture) => {
+      // The base ledger only knows one legacy file while the base *tree*
+      // already carries a second one.
+      await rm(join(fixture.desktopRoot, LEGACY_PANEL_PATH));
+      await fixture.writeLedger();
+      await fixture.writeFiles({ [LEGACY_PANEL_PATH]: 'export const legacyPanel = 1;\n' });
+      const base = fixture.commit('base whose ledger under-reports its tree');
+      const baseLedger = JSON.parse(await readFile(fixture.ledgerPath, 'utf8'));
+      assert.deepEqual(baseLedger.legacyRendererFiles, [LEGACY_WIDGET_PATH, RENDERER_ENTRY_PATH]);
+
+      // Head merely records the debt the base tree already had.
+      const headLedger = await fixture.writeLedger();
+      assert.deepEqual(headLedger.legacyRendererFiles, [
+        LEGACY_PANEL_PATH,
+        LEGACY_WIDGET_PATH,
+        RENDERER_ENTRY_PATH,
+      ]);
+      fixture.commit('record the already-present debt');
+
+      assertPassed(fixture.runChecker(['--base', base, '--strict-base']), base, 'derived base tree');
+
+      // Trusting the committed base ledger instead is exactly the wedge: the
+      // faithful correction reads as brand-new debt.
+      const fallback = fixture.runChecker(['--base', base], brokenTempDirectory(fixture.scratch));
+      assert.notEqual(fallback.status, 0);
+      assert.match(fallback.stderr, /falling back to the committed base ledger/u);
+      assert.match(
+        fallback.stderr,
+        /^- src\/renderer\/legacy-panel\.ts: new unclassified renderer source files are forbidden/mu,
+      );
+    });
+  });
+
+  it('fails loudly under --strict-base when the base tree cannot be materialized', async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+      await fixture.writeFiles({ [LEGACY_WIDGET_PATH]: 'export const legacyWidget = 2;\n' });
+      fixture.commit('head');
+      const brokenTemp = brokenTempDirectory(fixture.scratch);
+
+      const lenient = fixture.runChecker(['--base', base], brokenTemp);
+      assert.equal(lenient.status, 0, `lenient:\n${lenient.stdout}\n${lenient.stderr}`);
+      assert.match(
+        lenient.stderr,
+        /could not derive base tree debt at .*; falling back to the committed base ledger/u,
+      );
+
+      const strict = fixture.runChecker(['--base', base, '--strict-base'], brokenTemp);
+      assert.notEqual(strict.status, 0);
+      assert.match(
+        strict.stderr,
+        /could not derive base tree debt at .*--strict-base forbids falling back to the committed base ledger/u,
+      );
+      assert.doesNotMatch(strict.stdout, /passed/u);
+    });
+  });
+
+  it('cross-checks a weakened checker against the base commit checker', async () => {
+    await withGitFixture(async (fixture) => {
+      await fixture.writeLedger();
+      const base = fixture.commit('base');
+
+      // Weaken the measurement: the head checker stops classifying anything under
+      // src/renderer/widgets/ as legacy, in both the generator and the ledger
+      // validation. The head ledger, the head snapshot check, and the plain
+      // ratchet (which re-derives the base with the SAME weakened rules) all agree.
+      const original = await readFile(fixture.scriptPath, 'utf8');
+      assert.equal(
+        original.split(LEGACY_CLASSIFICATION).length - 1,
+        2,
+        'the legacy classification filter moved; update this fixture',
+      );
+      await writeFile(
+        fixture.scriptPath,
+        original.replaceAll(
+          LEGACY_CLASSIFICATION,
+          ".filter((path) => zoneFor(path).kind === 'legacy' && !path.includes('/widgets/'))",
+        ),
+        'utf8',
+      );
+      await fixture.writeFiles({ 'src/renderer/widgets/legacy-widget-panel.ts': 'export const hidden = 1;\n' });
+      const headLedger = await fixture.writeLedger();
+      assert.deepEqual(headLedger.legacyRendererFiles, [
+        LEGACY_PANEL_PATH,
+        LEGACY_WIDGET_PATH,
+        RENDERER_ENTRY_PATH,
+      ]);
+      fixture.commit('weaken the checker and add the debt it no longer sees');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stdout, /differs from .*; cross-checked debt under the base checker/u);
+      assert.match(
+        result.stderr,
+        /^- base-checker cross-check: src\/renderer\/widgets\/legacy-widget-panel\.ts: new unclassified renderer source files are forbidden/mu,
+      );
+      // Every reported violation comes from the cross-check: the weakened
+      // checker alone was satisfied on both sides of the ratchet.
+      const reported = result.stderr.split('\n').filter((line) => line.startsWith('- '));
+      assert.ok(reported.length > 0, result.stderr);
+      assert.ok(
+        reported.every((line) => line.startsWith('- base-checker cross-check: ')),
+        result.stderr,
+      );
+      assert.doesNotMatch(result.stderr, /falling back|cross-check skipped/u);
+    });
+  });
+
+  it('skips the cross-check with a notice when the base checker predates generateArchitectureConfig', async () => {
+    await withGitFixture(async (fixture) => {
+      const original = await readFile(fixture.scriptPath, 'utf8');
+      const exported = 'export function generateArchitectureConfig(';
+      assert.equal(original.split(exported).length - 1, 1);
+      await writeFile(fixture.scriptPath, original.replace(exported, 'function generateArchitectureConfig('), 'utf8');
+      await fixture.writeLedger();
+      const base = fixture.commit('base whose checker has no generator export');
+      await writeFile(fixture.scriptPath, original, 'utf8');
+      fixture.commit('restore the export');
+
+      const result = fixture.runChecker(['--base', base, '--strict-base']);
+      assertPassed(result, base, 'older base checker');
+      assert.match(result.stdout, /does not export generateArchitectureConfig; skipping the base-checker cross-check/u);
+    });
+  });
+
+  it('treats a base checker that cannot be imported as a failure only under --strict-base', async () => {
+    await withGitFixture(async (fixture) => {
+      const original = await readFile(fixture.scriptPath, 'utf8');
+      await writeFile(fixture.scriptPath, `import './missing-base-checker-dependency.mjs';\n${original}`, 'utf8');
+      // The broken checker cannot generate its own ledger; the in-process
+      // generator applies the same rules.
+      await writeFile(
+        fixture.ledgerPath,
+        `${JSON.stringify(generateArchitectureConfig(fixture.desktopRoot, rendererEntrySeedConfig()), null, 2)}\n`,
+        'utf8',
+      );
+      const base = fixture.commit('base whose checker cannot be imported');
+      await writeFile(fixture.scriptPath, original, 'utf8');
+      fixture.commit('restore the checker');
+
+      const lenient = fixture.runChecker(['--base', base]);
+      assertPassed(lenient, base, 'lenient');
+      assert.match(lenient.stderr, /base-checker cross-check skipped; the base checker could not be imported/u);
+
+      const strict = fixture.runChecker(['--base', base, '--strict-base']);
+      assert.notEqual(strict.status, 0);
+      assert.match(
+        strict.stderr,
+        /the base checker could not be imported at .*--strict-base forbids skipping the cross-check/u,
+      );
+      assert.doesNotMatch(strict.stdout, /passed/u);
+    });
   });
 });
