@@ -19,7 +19,7 @@
 
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
 
-export const RUN_COMPOSITION_SCHEMA_VERSION = 2 as const;
+export const RUN_COMPOSITION_SCHEMA_VERSION = 1 as const;
 export const REQUEST_COMPOSITION_SCHEMA_VERSION = 1 as const;
 
 export interface RunCompositionSourceRevision {
@@ -31,7 +31,12 @@ export interface RunCompositionSnapshot {
   readonly schemaVersion: typeof RUN_COMPOSITION_SCHEMA_VERSION;
   readonly composerId: string;
   readonly composerRevision: string;
+  readonly sourceRevisions: readonly RunCompositionSourceRevision[];
+  readonly baseSystemPromptHash: `sha256:${string}`;
+  readonly toolCatalogHash: `sha256:${string}`;
+  readonly toolAvailabilityHash: `sha256:${string}`;
   readonly baseProviderOptionsHash: `sha256:${string}`;
+  readonly toolNames: readonly string[];
   readonly contextWindow: number | null;
 }
 
@@ -62,7 +67,18 @@ export interface RequestCompositionSnapshot {
 }
 
 const RUN_COMPOSITION_SHAPE = defineObjectShape<RunCompositionSnapshot>()(
-  ['schemaVersion', 'composerId', 'composerRevision', 'baseProviderOptionsHash', 'contextWindow'],
+  [
+    'schemaVersion',
+    'composerId',
+    'composerRevision',
+    'sourceRevisions',
+    'baseSystemPromptHash',
+    'toolCatalogHash',
+    'toolAvailabilityHash',
+    'baseProviderOptionsHash',
+    'toolNames',
+    'contextWindow',
+  ],
   [],
 );
 const REQUEST_COMPOSITION_SHAPE = defineObjectShape<RequestCompositionSnapshot>()(
@@ -101,12 +117,23 @@ export function decodeRunCompositionSnapshot(value: unknown): RunCompositionSnap
     value.schemaVersion === RUN_COMPOSITION_SCHEMA_VERSION &&
     boundedMatchingString(value.composerId, ID_PATTERN, 128) &&
     boundedString(value.composerRevision, 128) &&
+    canonicalSourceRevisions(value.sourceRevisions) &&
+    hash(value.baseSystemPromptHash) &&
+    hash(value.toolCatalogHash) &&
+    hash(value.toolAvailabilityHash) &&
     hash(value.baseProviderOptionsHash) &&
+    canonicalToolNames(value.toolNames) &&
     (value.contextWindow === null ||
       (Number.isSafeInteger(value.contextWindow) && (value.contextWindow as number) > 0));
   if (!valid) throw new Error('Invalid Run Composition snapshot schema');
   return Object.freeze({
     ...(value as unknown as RunCompositionSnapshot),
+    sourceRevisions: Object.freeze(
+      (value.sourceRevisions as RunCompositionSourceRevision[]).map((source) =>
+        Object.freeze({ ...source }),
+      ),
+    ),
+    toolNames: Object.freeze([...(value.toolNames as string[])]),
   });
 }
 
@@ -118,6 +145,10 @@ export function createRunCompositionSnapshot(
   return decodeRunCompositionSnapshot({
     schemaVersion: RUN_COMPOSITION_SCHEMA_VERSION,
     ...input,
+    sourceRevisions: [...input.sourceRevisions].sort((left, right) =>
+      compareExactString(left.id, right.id),
+    ),
+    toolNames: [...input.toolNames].sort(compareExactString),
   });
 }
 

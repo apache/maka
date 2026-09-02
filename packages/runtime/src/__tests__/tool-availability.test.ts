@@ -187,6 +187,28 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(traces[0]?.activated, ['docs_edit']);
   });
 
+  test('a same-name replacement does not inherit the retired contribution activation', async () => {
+    const first = tool('plugin_weather', 'first generation');
+    const active = new Map<string, MakaTool>();
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'weather' }, ctx);
+    assert.equal(active.get('plugin_weather'), first);
+
+    const replacement = tool('plugin_weather', 'second generation');
+    const next = new ToolAvailabilityRuntime(
+      [replacement],
+      { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.has('plugin_weather'), false);
+    assert.equal(next.activeTools.includes('plugin_weather'), false);
+  });
+
   test('ordinary result is thin and contains no complete schemas', async () => {
     const connector = searchTool(runtime().prepare(new Map()));
     const output = await connector.impl({ query: 'browser click' }, ctx);

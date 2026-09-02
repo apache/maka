@@ -72,6 +72,19 @@ test('the composer resolves scoped Tool additions without rebuilding the backend
   );
 });
 
+test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
+  const composer = createFixtureComposer({
+    toolProfile: 'headless-coding-v1',
+    resolveAdditionalTools: () => [tool('Read'), tool('plugin_only')],
+  });
+
+  assert.equal(
+    composer.resolveTools?.().some(({ name }) => name === 'plugin_only'),
+    false,
+  );
+  assert.equal(composer.resolveTools?.().filter(({ name }) => name === 'Read').length, 1);
+});
+
 function tool(name: string): MakaTool {
   return {
     name,

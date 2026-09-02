@@ -250,6 +250,12 @@ export class ToolAvailabilityRuntime {
     const allTools = [...this.tools, connector];
     const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
+    // Activation belongs to an exact Tool contribution, not merely its name.
+    // A dynamically replaced registration gets a new immutable Tool object;
+    // drop the old activation so the successor must be searched explicitly.
+    for (const [name, activatedTool] of activeTools) {
+      if (this.toolsByName.get(name) !== activatedTool) activeTools.delete(name);
+    }
     const requiredNames = [...requiredToolNames].filter((name) => knownNames.has(name));
     const step = { active: new Set<string>() };
     const computeActive = (): string[] => {

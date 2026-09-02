@@ -32,6 +32,7 @@ import type {
 } from '@maka/core/run-composition';
 import {
   createRequestCompositionSnapshot,
+  decodeRequestCompositionSnapshot,
   decodeRunCompositionSnapshot,
 } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
@@ -75,6 +76,7 @@ import type { RunTraceEvent } from './run-trace.js';
 import type { StopSessionInput } from './session-manager.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 import { projectRuntimeEventsToStoredMessages } from './runtime-event-read-model.js';
+import { stableHash } from './request-shape.js';
 import {
   buildPriorRuntimeContext as buildPriorRuntimeContextProjection,
   type PriorRuntimeContext,
@@ -250,6 +252,8 @@ export class AgentRun {
   private runComposition: RunCompositionSnapshot | undefined;
   private runCompositionWrite: Promise<void> | undefined;
   private requestComposition: RequestCompositionSnapshot | undefined;
+  private requestCompositionIndex: Map<string, RequestCompositionSnapshot> | undefined;
+  private requestCompositionIndexRead: Promise<void> | undefined;
   private failureClass: string | undefined;
   private failureMessage: string | undefined;
   private lastTs = 0;
@@ -473,16 +477,19 @@ export class AgentRun {
     if (!this.input.runStore) {
       throw new Error('AgentRun store is not configured');
     }
-    if (!this.runStoreAvailable) throw new Error('AgentRun store is unavailable');
+    await this.loadRequestCompositionIndex();
     const snapshot = createRequestCompositionSnapshot(
       input,
-      this.requestComposition ? 'change' : 'initial',
+      this.requestCompositionIndex?.size ? 'change' : 'initial',
     );
-    if (
-      this.requestComposition &&
-      sameRequestCompositionSurface(this.requestComposition, snapshot)
-    ) {
-      return this.requestComposition.compositionId;
+    const surfaceHash = requestCompositionSurfaceHash(snapshot);
+    const existing = this.requestCompositionIndex?.get(surfaceHash);
+    if (existing) {
+      if (!sameRequestCompositionSurface(existing, snapshot)) {
+        throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+      }
+      this.requestComposition = existing;
+      return existing.compositionId;
     }
     await this.enqueueRequiredRunStoreWrite('append request composition', async () => {
       await this.input.runStore?.appendEvent(
@@ -501,7 +508,35 @@ export class AgentRun {
       );
     });
     this.requestComposition = snapshot;
+    this.requestCompositionIndex?.set(surfaceHash, snapshot);
     return snapshot.compositionId;
+  }
+
+  private async loadRequestCompositionIndex(): Promise<void> {
+    if (this.requestCompositionIndex) return;
+    if (this.requestCompositionIndexRead) return await this.requestCompositionIndexRead;
+    const read = (async (): Promise<void> => {
+      const index = new Map<string, RequestCompositionSnapshot>();
+      const events = await this.input.runStore?.readEvents(this.sessionId, this.runId);
+      for (const event of events ?? []) {
+        if (event.type !== 'request_composition_resolved') continue;
+        const snapshot = decodeRequestCompositionSnapshot(event.data?.snapshot);
+        const surfaceHash = requestCompositionSurfaceHash(snapshot);
+        const existing = index.get(surfaceHash);
+        if (existing && !sameRequestCompositionSurface(existing, snapshot)) {
+          throw new Error(`Request Composition surface hash collision: ${surfaceHash}`);
+        }
+        index.set(surfaceHash, existing ?? snapshot);
+        this.requestComposition = snapshot;
+      }
+      this.requestCompositionIndex = index;
+    })();
+    this.requestCompositionIndexRead = read;
+    try {
+      await read;
+    } finally {
+      if (this.requestCompositionIndexRead === read) this.requestCompositionIndexRead = undefined;
+    }
   }
 
   /**
@@ -1944,6 +1979,17 @@ function sameRequestCompositionSurface(
     ...candidateSurface
   } = candidate;
   return isDeepStrictEqual(currentSurface, candidateSurface);
+}
+
+function requestCompositionSurfaceHash(snapshot: RequestCompositionSnapshot): string {
+  const {
+    schemaVersion: _schemaVersion,
+    compositionId: _compositionId,
+    step: _step,
+    reason: _reason,
+    ...surface
+  } = snapshot;
+  return stableHash(surface);
 }
 
 async function appendUserMessageOnce(

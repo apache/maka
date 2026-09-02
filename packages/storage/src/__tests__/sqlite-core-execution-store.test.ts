@@ -732,10 +732,18 @@ function modelCallAttempt(overrides: Partial<ModelCallAttempt> = {}): ModelCallA
 
 function runComposition(seed: string): NonNullable<AgentRunHeader['runComposition']> {
   return {
-    schemaVersion: 2,
+    schemaVersion: 1,
     composerId: 'maka.interactive',
     composerRevision: '1',
+    sourceRevisions: [
+      { id: 'runtime-policy', revision: '1' },
+      { id: 'skill-catalog', revision: 'skills-1' },
+    ],
+    baseSystemPromptHash: hash(seed),
+    toolCatalogHash: hash(seed),
+    toolAvailabilityHash: hash(seed),
     baseProviderOptionsHash: hash(seed),
+    toolNames: ['Read'],
     contextWindow: 128_000,
   };
 }

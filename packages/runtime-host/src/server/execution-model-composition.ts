@@ -41,7 +41,8 @@ import {
   type ProxiedFetchProxy,
   type ProxiedFetchTransport,
 } from '@maka/runtime/network/scoped-fetch-transport';
-import { stableHash } from '@maka/runtime/request-shape';
+import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
+import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   type BackendFactoryContext,
@@ -329,17 +330,32 @@ async function buildHostAiSdkBackend(
   const recordRequestComposition = input.context.recordRequestComposition;
   const resolveModelTools = (): readonly MakaTool[] =>
     modelComposition.resolveTools?.() ?? modelComposition.tools;
+  const runCompositionCommits = new Map<string, Promise<void>>();
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
-        await recordRunComposition(
-          context.runId,
-          createRunCompositionSnapshot({
-            composerId: modelComposition.composerId,
-            composerRevision: modelComposition.composerRevision,
-            baseProviderOptionsHash: stableHash(providerOptions),
-            contextWindow: contextWindow ?? null,
-          }),
-        );
+        let commit = runCompositionCommits.get(context.runId);
+        if (!commit) {
+          commit = (async (): Promise<void> => {
+            const resolved = await resolveRunPrompt(context);
+            const tools = resolveModelTools();
+            await recordRunComposition(
+              context.runId,
+              createRunCompositionSnapshot({
+                composerId: modelComposition.composerId,
+                composerRevision: modelComposition.composerRevision,
+                sourceRevisions: resolved.sourceRevisions,
+                baseSystemPromptHash: stableHash(resolved.text ?? ''),
+                toolCatalogHash: toolCatalogHash(tools),
+                toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
+                baseProviderOptionsHash: stableHash(providerOptions),
+                toolNames: tools.map(({ name }) => name),
+                contextWindow: contextWindow ?? null,
+              }),
+            );
+          })();
+          runCompositionCommits.set(context.runId, commit);
+        }
+        await commit;
       }
     : undefined;
   const planProjectionImage = createReadImageSnapshotPlanner(

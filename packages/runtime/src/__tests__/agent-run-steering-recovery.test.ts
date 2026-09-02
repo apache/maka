@@ -154,10 +154,53 @@ test('records changed request surfaces append-only and reuses unchanged epochs',
         },
       ],
     });
+    const returnedId = await run.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-4',
+      step: 3,
+    });
 
     assert.equal(firstId, 'composition-1');
     assert.equal(reusedId, 'composition-1');
     assert.equal(changedId, 'composition-3');
+    assert.equal(returnedId, 'composition-1');
+
+    const resumed = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'resume request composition' },
+      runId,
+      runStore,
+      runtimeEventStore,
+      store,
+      newId: () => `resumed-${++id}`,
+      now: () => 20 + id,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const resumedId = await resumed.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-5',
+      step: 4,
+      toolCatalogHash: digest('5'),
+      toolNames: ['enable_inventory', 'inventory_quote'],
+      toolSchemas: [
+        ...base.toolSchemas,
+        {
+          name: 'inventory_quote',
+          description: 'quote inventory',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    });
+    assert.equal(resumedId, 'composition-3');
     const snapshots = (await runStore.readEvents(session.id, runId))
       .filter((event) => event.type === 'request_composition_resolved')
       .map((event) => decodeRequestCompositionSnapshot(event.data?.snapshot));

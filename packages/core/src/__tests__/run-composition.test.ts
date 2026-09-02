@@ -27,18 +27,27 @@ import {
   RUN_COMPOSITION_SCHEMA_VERSION,
 } from '../run-composition.js';
 
-test('Run Composition snapshots contain only immutable bootstrap facts', () => {
+test('Run Composition snapshots retain the persisted v1 bootstrap shape', () => {
   const valid = {
     schemaVersion: RUN_COMPOSITION_SCHEMA_VERSION,
     composerId: 'maka.interactive',
     composerRevision: '1',
+    sourceRevisions: [{ id: 'skill-catalog', revision: 'skills-0' }],
+    baseSystemPromptHash: hash('1'),
+    toolCatalogHash: hash('2'),
+    toolAvailabilityHash: hash('3'),
     baseProviderOptionsHash: hash('4'),
+    toolNames: ['Read'],
     contextWindow: null,
   };
 
+  assert.equal(decodeRunCompositionSnapshot(valid).schemaVersion, 1);
+
   for (const candidate of [
-    { ...valid, baseProviderOptionsHash: 'sha256:short' },
-    { ...valid, toolNames: ['Read'] },
+    { ...valid, schemaVersion: 2 },
+    { ...valid, baseSystemPromptHash: 'sha256:short' },
+    { ...valid, toolNames: ['Write', 'Read'] },
+    { ...valid, toolNames: ['Read', 'Read'] },
   ]) {
     assert.throws(() => decodeRunCompositionSnapshot(candidate));
   }

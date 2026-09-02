@@ -136,7 +136,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const hasToolCeiling = input.boundTools !== undefined || input.toolProfile !== undefined;
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
   const resolveTools = (): readonly MakaTool[] => {
-    const additionalTools = input.boundTools ? [] : (input.resolveAdditionalTools?.() ?? []);
+    const additionalTools = hasToolCeiling ? [] : (input.resolveAdditionalTools?.() ?? []);
     const defaultTools = input.boundTools
       ? input.boundTools
       : buildDefaultHostTools(
