@@ -67,9 +67,9 @@ module.exports = {
     stats.starts += 1;
     return {
       peerId: 'client',
-      listenAddresses: [],
-      activeCoordinationRelays: [],
+      reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
       transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
+      watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
@@ -303,9 +303,9 @@ module.exports = {
     starts.push(options);
     return ({
     peerId: 'peer',
-    listenAddresses: [],
-    activeCoordinationRelays: [],
+    reachabilitySnapshot: { generation: 0, listenAddresses: [], activeCoordinationRelays: [] },
     transitSnapshot: { allowedPeerCount: 0, activeReservationCount: 0, activeCircuitCount: 0, maxReservationCount: 32, maxCircuitCount: 8, maxCircuitsPerPeer: 2, maxCircuitDurationSeconds: 7_200, maxCircuitBytes: 256 * 1024 * 1024 },
+    watchReachability: async () => ({ generation: 0, listenAddresses: [], activeCoordinationRelays: [] }),
     connect: async () => stream,
     connectMeshControl: async () => stream,
     configureTransit: async () => {},

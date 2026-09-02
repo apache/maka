@@ -25,6 +25,7 @@ import {
   verifyRuntimeHostPeerIdentity,
   type RuntimeHostPeerIdentityProof,
   type RuntimeHostPeerNativeEndpoint,
+  type RuntimeHostPeerNativeReachabilitySnapshot,
   type RuntimeHostPeerNativeStream,
   type RuntimeHostPeerTransitRelayCandidate,
   type RuntimeHostPeerTransitSnapshot,
@@ -54,6 +55,11 @@ export interface RuntimeHostPeerRouteResolver {
 }
 
 export interface RuntimeHostPeerClient {
+  reachability(): RuntimeHostPeerNativeReachabilitySnapshot;
+  watchReachability(
+    afterGeneration: number,
+    timeoutMs: number,
+  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
   identity(): Readonly<{
     peerId: string;
     listenAddresses: readonly string[];
@@ -96,6 +102,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
   environment: NodeJS.ProcessEnv = process.env,
   options: {
     readonly listenAddresses?: readonly string[];
+    readonly relayAnchorPath?: string;
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
     readonly webRtcStunUrls?: readonly string[];
@@ -116,6 +123,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
 export function createRuntimeHostPeerClient(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly relayAnchorPath?: string;
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
@@ -129,6 +137,7 @@ export function createRuntimeHostPeerClient(input: {
 class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #nativePath: string;
   readonly #keyPath: string;
+  readonly #relayAnchorPath: string | undefined;
   readonly #expectedPeerId: string | undefined;
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
@@ -156,6 +165,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   constructor(input: {
     readonly nativePath: string;
     readonly keyPath: string;
+    readonly relayAnchorPath?: string;
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
@@ -165,6 +175,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   }) {
     this.#nativePath = input.nativePath;
     this.#keyPath = input.keyPath;
+    this.#relayAnchorPath = input.relayAnchorPath;
     this.#expectedPeerId = input.expectedPeerId;
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
@@ -179,12 +190,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     listenAddresses: readonly string[];
     coordinationRelays: readonly string[];
   }> {
-    const endpoint = this.#requireEndpoint();
+    const endpoint = this.reachability();
     return Object.freeze({
-      peerId: endpoint.peerId,
+      peerId: this.#requireEndpoint().peerId,
       listenAddresses: Object.freeze([...endpoint.listenAddresses]),
       coordinationRelays: Object.freeze([...endpoint.activeCoordinationRelays]),
     });
+  }
+
+  reachability(): RuntimeHostPeerNativeReachabilitySnapshot {
+    return freezeReachability(this.#requireEndpoint().reachabilitySnapshot);
+  }
+
+  async watchReachability(
+    afterGeneration: number,
+    timeoutMs: number,
+  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot> {
+    try {
+      return freezeReachability(
+        await this.#requireEndpoint().watchReachability(afterGeneration, timeoutMs),
+      );
+    } catch (error) {
+      throw normalizePeerError(error);
+    }
   }
 
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof> {
@@ -427,6 +455,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: this.#nativePath,
       keyPath: this.#keyPath,
+      ...(this.#relayAnchorPath ? { relayAnchorPath: this.#relayAnchorPath } : {}),
       ...(this.#expectedPeerId ? { expectedPeerId: this.#expectedPeerId } : {}),
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
@@ -553,6 +582,16 @@ function mergeAddresses(
   secondary: readonly string[] | undefined,
 ): readonly string[] {
   return mergeValues(primary, secondary, 32);
+}
+
+function freezeReachability(
+  snapshot: RuntimeHostPeerNativeReachabilitySnapshot,
+): RuntimeHostPeerNativeReachabilitySnapshot {
+  return Object.freeze({
+    generation: snapshot.generation,
+    listenAddresses: Object.freeze([...snapshot.listenAddresses]),
+    activeCoordinationRelays: Object.freeze([...snapshot.activeCoordinationRelays]),
+  });
 }
 
 function mergeValues(

@@ -73,9 +73,12 @@ export interface RuntimeHostPeerIdentityProof {
 
 export interface RuntimeHostPeerNativeEndpoint {
   readonly peerId: string;
-  readonly listenAddresses: readonly string[];
-  readonly activeCoordinationRelays: readonly string[];
+  readonly reachabilitySnapshot: RuntimeHostPeerNativeReachabilitySnapshot;
   readonly transitSnapshot: RuntimeHostPeerTransitSnapshot;
+  watchReachability(
+    afterGeneration: number,
+    timeoutMs: number,
+  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
   connect(options: {
     readonly requestId: number;
     readonly peerId: string;
@@ -101,6 +104,12 @@ export interface RuntimeHostPeerNativeEndpoint {
   accept(): Promise<RuntimeHostPeerNativeStream | null>;
   acceptMeshControl(): Promise<RuntimeHostPeerNativeStream | null>;
   close(): Promise<void>;
+}
+
+export interface RuntimeHostPeerNativeReachabilitySnapshot {
+  readonly generation: number;
+  readonly listenAddresses: readonly string[];
+  readonly activeCoordinationRelays: readonly string[];
 }
 
 export interface RuntimeHostPeerTransitSnapshot {
@@ -135,6 +144,7 @@ interface RuntimeHostPeerNativeModule {
   ): boolean;
   startPeerEndpoint(options: {
     readonly keyPath: string;
+    readonly relayAnchorPath?: string;
     readonly expectedPeerId?: string;
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
@@ -207,6 +217,7 @@ export async function ensureRuntimeHostPeerIdentity(input: {
 export function startRuntimeHostPeerEndpoint(input: {
   readonly nativePath: string;
   readonly keyPath: string;
+  readonly relayAnchorPath?: string;
   readonly expectedPeerId?: string;
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
@@ -216,6 +227,7 @@ export function startRuntimeHostPeerEndpoint(input: {
   try {
     const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
       keyPath: input.keyPath,
+      ...(input.relayAnchorPath ? { relayAnchorPath: input.relayAnchorPath } : {}),
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
@@ -485,12 +497,8 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     value !== null &&
     'peerId' in value &&
     isPeerId(value.peerId) &&
-    'listenAddresses' in value &&
-    Array.isArray(value.listenAddresses) &&
-    value.listenAddresses.every((address) => typeof address === 'string') &&
-    'activeCoordinationRelays' in value &&
-    Array.isArray(value.activeCoordinationRelays) &&
-    value.activeCoordinationRelays.every((address) => typeof address === 'string') &&
+    'reachabilitySnapshot' in value &&
+    isPeerReachabilitySnapshot(value.reachabilitySnapshot) &&
     'transitSnapshot' in value &&
     isPeerTransitSnapshot(value.transitSnapshot) &&
     'connect' in value &&
@@ -499,6 +507,8 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     typeof value.connectMeshControl === 'function' &&
     'configureTransit' in value &&
     typeof value.configureTransit === 'function' &&
+    'watchReachability' in value &&
+    typeof value.watchReachability === 'function' &&
     'cancelConnect' in value &&
     typeof value.cancelConnect === 'function' &&
     'accept' in value &&
@@ -507,6 +517,23 @@ function isPeerNativeEndpoint(value: unknown): value is RuntimeHostPeerNativeEnd
     typeof value.acceptMeshControl === 'function' &&
     'close' in value &&
     typeof value.close === 'function'
+  );
+}
+
+function isPeerReachabilitySnapshot(
+  value: unknown,
+): value is RuntimeHostPeerNativeReachabilitySnapshot {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'generation' in value &&
+    isCount(value.generation) &&
+    'listenAddresses' in value &&
+    Array.isArray(value.listenAddresses) &&
+    value.listenAddresses.every((address) => typeof address === 'string') &&
+    'activeCoordinationRelays' in value &&
+    Array.isArray(value.activeCoordinationRelays) &&
+    value.activeCoordinationRelays.every((address) => typeof address === 'string')
   );
 }
 

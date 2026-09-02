@@ -29,13 +29,14 @@ import {
   type RuntimeHostPeerClient,
   type RuntimeHostPeerRouteResolver,
 } from '../client/peer-client.js';
+import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
   openPeerReachabilityPublisher,
   PeerReachabilityPostCommitError,
   type PeerReachabilityPublisher,
 } from './publisher.js';
 
-const REACHABILITY_OBSERVATION_INTERVAL_MS = 1_000;
+const REACHABILITY_WATCH_TIMEOUT_MS = 60_000;
 const REACHABILITY_RETRY_INTERVAL_MS = 5_000;
 
 export interface RuntimeHostPeerEndpointOwner {
@@ -66,6 +67,9 @@ export async function openRuntimeHostPeerEndpointOwner(input: {
     client = createRuntimeHostPeerClient({
       nativePath: input.nativePath,
       keyPath: input.keyPath,
+      ...(input.automaticRelayDiscovery === true
+        ? { relayAnchorPath: join(input.dataRoot, 'relay-anchors.json') }
+        : {}),
       ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
       ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
       ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
@@ -91,6 +95,7 @@ export async function openRuntimeHostPeerEndpointOwner(input: {
   const ownedReachability = reachability;
   const lifetime = new AbortController();
   const maintenance = maintainReachability(
+    ownedClient,
     ownedReachability,
     lifetime.signal,
     input.onBackgroundReachabilityError,
@@ -115,9 +120,9 @@ async function closeEndpointOwner(
   maintenance: Promise<void>,
 ): Promise<void> {
   const errors: unknown[] = [];
+  await client.close().catch((error: unknown) => errors.push(error));
   await maintenance.catch((error: unknown) => errors.push(error));
   await reachability.close().catch((error: unknown) => errors.push(error));
-  await client.close().catch((error: unknown) => errors.push(error));
   await rootOwner.close().catch((error: unknown) => errors.push(error));
   if (errors.length === 1) throw errors[0];
   if (errors.length > 1) {
@@ -126,17 +131,25 @@ async function closeEndpointOwner(
 }
 
 async function maintainReachability(
+  client: RuntimeHostPeerClient,
   publisher: PeerReachabilityPublisher,
   signal: AbortSignal,
   onError: ((error: unknown) => void) | undefined,
 ): Promise<void> {
+  let generation = client.reachability().generation;
   while (!signal.aborted) {
     try {
-      await delay(REACHABILITY_OBSERVATION_INTERVAL_MS, undefined, { signal });
       await publisher.refresh();
+      const observed = await client.watchReachability(generation, REACHABILITY_WATCH_TIMEOUT_MS);
+      generation = observed.generation;
     } catch (error) {
       if (signal.aborted) return;
-      if (error instanceof PeerReachabilityPostCommitError) throw error;
+      if (
+        error instanceof PeerReachabilityPostCommitError ||
+        error instanceof RuntimeHostPermanentReconnectError
+      ) {
+        throw error;
+      }
       try {
         onError?.(error);
       } catch {

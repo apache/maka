@@ -23,6 +23,7 @@ mod webrtc_direct;
 
 pub use bindings::{
     ConfigurePeerTransitOptions, ConnectPeerOptions, PeerEndpoint, PeerIdentitySignature,
-    PeerStream, PeerTransitRelayCandidate, PeerTransitSnapshot, StartPeerEndpointOptions,
-    ensure_peer_identity, sign_peer_identity, start_peer_endpoint, verify_peer_identity,
+    PeerReachabilitySnapshot, PeerStream, PeerTransitRelayCandidate, PeerTransitSnapshot,
+    StartPeerEndpointOptions, ensure_peer_identity, sign_peer_identity, start_peer_endpoint,
+    verify_peer_identity,
 };

@@ -184,7 +184,14 @@ test('projects newly accepted coordination relays from the running peer endpoint
 });
 
 function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient {
+  const reachability = {
+    generation: 0,
+    listenAddresses: [],
+    activeCoordinationRelays: [],
+  } as const;
   return {
+    reachability: () => reachability,
+    watchReachability: async () => reachability,
     identity: () => ({ peerId: 'peer', listenAddresses: [], coordinationRelays: [] }),
     signIdentity: async () => {
       throw new Error('not used');
