@@ -4,6 +4,7 @@ apps/desktop/src/renderer/app-shell-detail-panel.tsx
 apps/desktop/src/renderer/app-shell-overlays.tsx
 apps/desktop/src/renderer/app-shell.tsx
 apps/desktop/src/renderer/app.tsx
+apps/desktop/src/renderer/application/contracts/feature-services.tsx
 apps/desktop/src/renderer/cascade-layers.css
 apps/desktop/src/renderer/chat-composer-region.tsx
 apps/desktop/src/renderer/chat-message-surface.tsx

@@ -27,19 +27,6 @@ export function createDesktopSessionNavigationServices(
   bridge: DesktopSessionNavigationBridge = window.maka,
 ): SessionNavigationServices {
   return {
-    sessions: {
-      list: () => bridge.sessions.list(),
-      setFlagged: (sessionId, flagged, options) =>
-        bridge.sessions.setFlagged(sessionId, flagged, options),
-      archive: (sessionId, options) =>
-        bridge.sessions.archive(sessionId, options),
-      unarchive: (sessionId, options) =>
-        bridge.sessions.unarchive(sessionId, options),
-      rename: (sessionId, name, options) =>
-        bridge.sessions.rename(sessionId, name, options),
-      remove: (sessionId, options) =>
-        bridge.sessions.remove(sessionId, options),
-      previewRemoval: (sessionId) => bridge.sessions.previewRemoval(sessionId),
-    },
+    sessions: bridge.sessions,
   };
 }

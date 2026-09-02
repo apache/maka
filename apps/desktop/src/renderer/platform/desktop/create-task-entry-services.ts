@@ -27,12 +27,6 @@ export function createDesktopTaskEntryServices(
   bridge: DesktopTaskEntryBridge = window.maka,
 ): TaskEntryServices {
   return {
-    catalog: {
-      getCatalog: () => bridge.newTasks.getCatalog(),
-      subscribeChanges: (handler) => bridge.newTasks.subscribeChanges(handler),
-      addProject: (host) => bridge.newTasks.addProject(host),
-      relinkProject: (host, projectId) =>
-        bridge.newTasks.relinkProject(host, projectId),
-    },
+    catalog: bridge.newTasks,
   };
 }
