@@ -21,10 +21,6 @@ import { chmod, lstat, mkdir, open, readFile, rename, unlink } from 'node:fs/pro
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import {
-  acquireFileLifetimeOwner,
-  type FileLifetimeOwner,
-} from '@maka/storage/file-lifetime-owner';
-import {
   authenticateSignedPeerReachabilityLease,
   canonicalPeerReachabilityLease,
   decodeSignedPeerReachabilityLease,
@@ -41,17 +37,11 @@ import {
 } from './model.js';
 
 const STATE_FILE = 'peer-reachability.json';
-const OWNER_FILE = 'peer-reachability.owner';
 const MAX_STATE_BYTES = 64 * 1_024;
 
 export interface PeerReachabilityPublisher {
   current(): SignedPeerReachabilityLeaseV1;
   refresh(): Promise<SignedPeerReachabilityLeaseV1>;
-  verify(
-    value: unknown,
-    expectedPeerId: string,
-    options?: { readonly allowExpired?: boolean },
-  ): SignedPeerReachabilityLeaseV1;
   close(): Promise<void>;
 }
 
@@ -63,25 +53,18 @@ export async function openPeerReachabilityPublisher(input: {
 }): Promise<PeerReachabilityPublisher> {
   await mkdir(input.dataRoot, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') await chmod(input.dataRoot, 0o700);
-  const owner = await acquireFileLifetimeOwner(join(input.dataRoot, OWNER_FILE));
-  try {
-    const now = input.now ?? Date.now;
-    const monotonicNow = input.monotonicNow ?? performance.now.bind(performance);
-    const current = await readState(join(input.dataRoot, STATE_FILE), input.peer);
-    const publisher = new PeerReachabilityPublisherImpl(
-      join(input.dataRoot, STATE_FILE),
-      input.peer,
-      now,
-      monotonicNow,
-      owner,
-      current,
-    );
-    await publisher.refresh();
-    return publisher;
-  } catch (error) {
-    await owner.close().catch(() => undefined);
-    throw error;
-  }
+  const now = input.now ?? Date.now;
+  const monotonicNow = input.monotonicNow ?? performance.now.bind(performance);
+  const current = await readState(join(input.dataRoot, STATE_FILE), input.peer);
+  const publisher = new PeerReachabilityPublisherImpl(
+    join(input.dataRoot, STATE_FILE),
+    input.peer,
+    now,
+    monotonicNow,
+    current,
+  );
+  await publisher.refresh();
+  return publisher;
 }
 
 class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
@@ -97,7 +80,6 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     private readonly peer: PeerReachabilityIdentity,
     private readonly now: () => number,
     private readonly monotonicNow: () => number,
-    private readonly owner: FileLifetimeOwner,
     current: SignedPeerReachabilityLeaseV1 | undefined,
   ) {
     this.#current = current;
@@ -153,7 +135,12 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
         publicKey: identityProof.publicKey.toString('base64url'),
         signature: identityProof.signature.toString('base64url'),
       });
-      this.verify(signed, identity.peerId);
+      verifySignedPeerReachabilityLease({
+        value: signed,
+        expectedPeerId: identity.peerId,
+        now,
+        verifyIdentity: this.peer.verifyIdentity.bind(this.peer),
+      });
       try {
         await writeState(this.path, signed);
         this.#adopt(signed, now, monotonicNow);
@@ -174,21 +161,6 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     return task;
   }
 
-  verify(
-    value: unknown,
-    expectedPeerId: string,
-    options: { readonly allowExpired?: boolean } = {},
-  ): SignedPeerReachabilityLeaseV1 {
-    this.#assertOpen();
-    return verifySignedPeerReachabilityLease({
-      value,
-      expectedPeerId,
-      now: this.now(),
-      verifyIdentity: this.peer.verifyIdentity.bind(this.peer),
-      ...(options.allowExpired === undefined ? {} : { allowExpired: options.allowExpired }),
-    });
-  }
-
   close(): Promise<void> {
     this.#closeTask ??= this.#close();
     return this.#closeTask;
@@ -197,7 +169,6 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
   async #close(): Promise<void> {
     this.#closed = true;
     await this.#tail;
-    await this.owner.close();
   }
 
   #assertOpen(): void {

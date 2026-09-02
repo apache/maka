@@ -33,7 +33,6 @@ export {
   type SignedPeerReachabilityLeaseV1,
 } from './model.js';
 export {
-  openPeerReachabilityPublisher,
   PeerReachabilityPersistenceError,
   PeerReachabilityPostCommitError,
   type PeerReachabilityPublisher,
