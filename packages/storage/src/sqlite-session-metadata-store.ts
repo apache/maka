@@ -93,6 +93,7 @@ import {
   type StoredMessage,
   type SubagentSessionParent,
   type WorkHubDelegationAssignedMessage,
+  type WorkHubDelegationSupersededMessage,
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
   decodeCanonicalMessage,
@@ -226,6 +227,7 @@ export interface SqliteWorkHubMessageAssignmentRequest {
   readonly assignment: WorkHubDelegationAssignedMessage;
   readonly admission: PendingMessageAdmission;
   readonly projection: SessionCatalogMessageProjection;
+  readonly supersession?: WorkHubDelegationSupersededMessage;
   readonly create?: {
     readonly header: SessionHeader;
     readonly requestFingerprint: string;
@@ -280,6 +282,7 @@ interface MessageAdmissionRow {
   readonly queue_order?: unknown;
   readonly admitted_at?: unknown;
   readonly submitted_intent_json?: unknown;
+  readonly skill_invocation_json?: unknown;
 }
 
 function decodeMessageAdmissionRow(
@@ -292,6 +295,7 @@ function decodeMessageAdmissionRow(
     typeof row.message_id !== 'string' ||
     (row.origin_json !== null && typeof row.origin_json !== 'string') ||
     typeof row.content_json !== 'string' ||
+    typeof row.skill_invocation_json !== 'string' ||
     typeof row.submitted_content_digest !== 'string' ||
     (row.submitted_placement !== 'current_turn' && row.submitted_placement !== 'next_turn') ||
     (row.placement !== 'current_turn' && row.placement !== 'next_turn') ||
@@ -320,6 +324,9 @@ function decodeMessageAdmissionRow(
     ...(typeof row.submitted_intent_json === 'string'
       ? { submittedIntent: normalizeSubmittedTurnIntent(JSON.parse(row.submitted_intent_json)) }
       : {}),
+    skillInvocation: JSON.parse(
+      row.skill_invocation_json,
+    ) as PendingMessageAdmission['skillInvocation'],
     admittedAt: row.admitted_at,
   });
 }
@@ -1632,7 +1639,7 @@ export class SqliteSessionMetadataStore {
         `
         SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
           submitted_placement, placement, disposition, queue_order, admitted_at,
-          submitted_intent_json
+          submitted_intent_json, skill_invocation_json
         FROM message_admissions
         WHERE session_id = ? AND message_id = ?
       `,
@@ -1668,8 +1675,8 @@ export class SqliteSessionMetadataStore {
           INSERT INTO message_admissions(
             session_id, turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            submitted_intent_json, skill_invocation_json
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
       )
       .run(
@@ -1686,6 +1693,7 @@ export class SqliteSessionMetadataStore {
         orderRow.next_order,
         stored.admittedAt,
         stored.submittedIntent ? JSON.stringify(stored.submittedIntent) : null,
+        JSON.stringify(stored.skillInvocation),
       );
   }
 
@@ -1694,6 +1702,12 @@ export class SqliteSessionMetadataStore {
   ): Promise<SqliteWorkHubMessageAssignmentResult> {
     const assignmentJson = JSON.stringify(request.assignment);
     const assignment = decodeCanonicalMessage(JSON.parse(assignmentJson) as unknown);
+    const supersessionJson = request.supersession
+      ? JSON.stringify(request.supersession)
+      : undefined;
+    const supersession = supersessionJson
+      ? decodeCanonicalMessage(JSON.parse(supersessionJson) as unknown)
+      : undefined;
     const admission = normalizePendingMessageAdmission(request.admission);
     const suffix = createHash('sha256')
       .update(request.assignment.actionId)
@@ -1718,6 +1732,28 @@ export class SqliteSessionMetadataStore {
       admission.disposition !== 'steering'
     ) {
       throw new SessionMetadataConflictError('Invalid WorkHub assignment identity');
+    }
+    if (
+      (assignment.replacesActionId === undefined) !==
+        (assignment.replacesDelegationId === undefined) ||
+      (assignment.replacesDelegationId === undefined) !== (supersession === undefined) ||
+      (supersession !== undefined &&
+        (supersession.type !== 'workhub_coordination' ||
+          supersession.kind !== 'delegation_superseded' ||
+          supersession.actionId !== assignment.actionId ||
+          supersession.actionFingerprint !== assignment.actionFingerprint ||
+          supersession.coordinationTurnId !== assignment.coordinationTurnId ||
+          supersession.turnId !== assignment.coordinationTurnId ||
+          supersession.supersededActionId !== assignment.replacesActionId ||
+          supersession.supersededDelegationId !== assignment.replacesDelegationId ||
+          supersession.replacementDelegationId !== assignment.delegationId ||
+          supersession.id !==
+            `whx_${createHash('sha256')
+              .update(supersession.supersededDelegationId)
+              .digest('hex')
+              .slice(0, 48)}`))
+    ) {
+      throw new SessionMetadataConflictError('Invalid WorkHub supersession identity');
     }
     const create = request.create
       ? {
@@ -1769,6 +1805,42 @@ export class SqliteSessionMetadataStore {
         };
       }
 
+      if (supersession && assignment.replacesActionId && assignment.replacesDelegationId) {
+        const replacedSuffix = createHash('sha256')
+          .update(assignment.replacesActionId)
+          .digest('hex')
+          .slice(0, 48);
+        const replaced = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `wha_${replacedSuffix}`,
+        );
+        if (
+          replaced?.type !== 'workhub_coordination' ||
+          replaced.kind !== 'delegation_assigned' ||
+          replaced.delegationId !== assignment.replacesDelegationId
+        ) {
+          throw new SessionMetadataConflictError('WorkHub supersession source is unavailable');
+        }
+        const abortSuffix = createHash('sha256')
+          .update(assignment.replacesDelegationId)
+          .digest('hex')
+          .slice(0, 48);
+        const existingAbort = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          `whb_${abortSuffix}`,
+        );
+        if (existingAbort) {
+          throw new SessionMetadataConflictError('WorkHub delegation replacement is aborted');
+        }
+        const existingSupersession = this.readMessageByIdSync(
+          WORKHUB_COORDINATION_SESSION_ID,
+          supersession.id,
+        );
+        if (existingSupersession) {
+          throw new SessionMetadataConflictError('WorkHub delegation is already superseded');
+        }
+      }
+
       let targetCreated = false;
       if (create) {
         const probe = this.probeStableSessionCreateSync(
@@ -1802,8 +1874,21 @@ export class SqliteSessionMetadataStore {
       if (target.header.status === 'waiting_for_user') {
         throw new SessionMetadataConflictError('WorkHub target Session is waiting for user input');
       }
+      let committedAssignment = assignment;
+      let committedAssignmentJson = assignmentJson;
       if (target.header.name !== assignment.targetSessionName) {
-        throw new SessionMetadataConflictError('WorkHub target display identity changed');
+        if (
+          assignment.disposition !== 'delegate_existing' ||
+          assignment.replacesDelegationId === undefined
+        ) {
+          throw new SessionMetadataConflictError('WorkHub target display identity changed');
+        }
+        // A durable replacement owns the target Session id before retiring the
+        // source. Canonicalize its display-only name at the same transaction
+        // boundary that validates the target so a concurrent rename cannot
+        // strand the already-retired delegation.
+        committedAssignment = { ...assignment, targetSessionName: target.header.name };
+        committedAssignmentJson = JSON.stringify(committedAssignment);
       }
       if (this.readMessageAdmissionSync(admission.sessionId, admission.messageId)) {
         throw new SessionMetadataConflictError(
@@ -1827,10 +1912,15 @@ export class SqliteSessionMetadataStore {
       this.insertSessionMessagesSync(
         WORKHUB_COORDINATION_SESSION_ID,
         sequenceRow.last_sequence + 1,
-        [{ message: assignment, json: assignmentJson }],
+        [
+          { message: committedAssignment, json: committedAssignmentJson },
+          ...(supersession && supersessionJson
+            ? [{ message: supersession, json: supersessionJson }]
+            : []),
+        ],
       );
       this.updateCatalogProjectionSync(WORKHUB_COORDINATION_SESSION_ID, request.projection, false);
-      return { kind: 'assigned' as const, targetCreated, assignment };
+      return { kind: 'assigned' as const, targetCreated, assignment: committedAssignment };
     });
   }
 
@@ -1847,7 +1937,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -1880,7 +1970,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ?
           ORDER BY queue_order, sequence
@@ -1961,7 +2051,7 @@ export class SqliteSessionMetadataStore {
             `
             SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
               submitted_placement, placement, disposition, queue_order, admitted_at,
-              submitted_intent_json
+              submitted_intent_json, skill_invocation_json
             FROM message_admissions
             WHERE session_id = ? AND message_id = ?
           `,
@@ -2215,7 +2305,7 @@ export class SqliteSessionMetadataStore {
           `
           SELECT turn_id, run_id, message_id, origin_json, content_json, submitted_content_digest,
             submitted_placement, placement, disposition, queue_order, admitted_at,
-            submitted_intent_json
+            submitted_intent_json, skill_invocation_json
           FROM message_admissions
           WHERE session_id = ? AND message_id = ?
         `,
@@ -2236,7 +2326,8 @@ export class SqliteSessionMetadataStore {
         .prepare(
           `
           UPDATE message_admissions
-          SET content_json = ?, submitted_content_digest = ?, placement = ?, disposition = ?
+          SET content_json = ?, submitted_content_digest = ?, placement = ?, disposition = ?,
+            skill_invocation_json = ?
           WHERE session_id = ? AND message_id = ?
         `,
         )
@@ -2245,6 +2336,7 @@ export class SqliteSessionMetadataStore {
           stored.submittedContentDigest,
           stored.placement,
           stored.disposition,
+          JSON.stringify(stored.skillInvocation),
           stored.sessionId,
           stored.messageId,
         );
@@ -6830,6 +6922,8 @@ function sameWorkHubAssignmentRequest(
       disposition: existing.disposition,
       userText: existing.userText,
       create: existing.create,
+      replacesActionId: existing.replacesActionId,
+      replacesDelegationId: existing.replacesDelegationId,
     },
     {
       actionId: requested.actionId,
@@ -6839,6 +6933,8 @@ function sameWorkHubAssignmentRequest(
       disposition: requested.disposition,
       userText: requested.userText,
       create: requested.create,
+      replacesActionId: requested.replacesActionId,
+      replacesDelegationId: requested.replacesDelegationId,
     },
   );
 }

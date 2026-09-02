@@ -17,48 +17,72 @@
  * under the License.
  */
 
-import type { DesktopRuntimeHostRef } from '../../preload/bridge-contract.js';
-import type { ConnectionsBridge } from './provider-panel-shared.js';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow.js';
+import type {
+  DesktopOAuthLoginTarget,
+  DesktopRuntimeHostRef,
+  MakaBridge,
+} from '../../preload/bridge-contract.js';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow.js';
 
-export type RuntimeHostSettingsConnectionsBridge = ConnectionsBridge & {
-  setDefaultModel(input: { slug: string; model: string } | null): Promise<void>;
-};
+type RuntimeHostOAuthBridge = MakaBridge['openAiCodex'] | MakaBridge['xaiOAuth'];
 
-export function runtimeHostConnectionsBridge(
+export function runtimeHostOAuthAuthorizationBridge(
+  bridge: RuntimeHostOAuthBridge,
   host: DesktopRuntimeHostRef,
-): RuntimeHostSettingsConnectionsBridge {
+  target: DesktopOAuthLoginTarget,
+): OAuthAuthorizationFlowBridge {
   return {
-    getSnapshot: () => window.maka.connections.getSnapshot(undefined, host),
-    setDefault: (slug) => window.maka.connections.setDefault(slug, host),
-    setDefaultModel: (input) => window.maka.connections.setDefaultModel(input, host),
-    create: (input) => window.maka.connections.create(input, host),
-    update: (slug, patch) => window.maka.connections.update(slug, patch, host),
-    delete: (slug) => window.maka.connections.delete(slug, host),
-    test: (slug, options) => window.maka.connections.test(slug, options, host),
-    fetchModels: (slug) => window.maka.connections.fetchModels(slug, host),
-    hasSecret: (slug) => window.maka.connections.hasSecret(slug, host),
-    getRequestHeaders: (slug) => window.maka.connections.getRequestHeaders(slug, host),
-    setRequestHeaders: (slug, headers) =>
-      window.maka.connections.setRequestHeaders(slug, headers, host),
-    subscribeEvents: (handler) =>
-      window.maka.connections.subscribeEvents(handler, host),
+    getAuthUrl: () => bridge.getAuthUrl(host, target),
+    openAuthUrl: (authRequestId) => bridge.openAuthUrl(authRequestId, host),
+    completeAuthorization: (authRequestId) => bridge.completeAuthorization(authRequestId, host),
+    cancelAuthorization: (authRequestId) => bridge.cancelAuthorization(authRequestId, host),
   };
 }
 
-export function runtimeHostOAuthLoginBridge(
-  bridge: typeof window.maka.openAiCodex | typeof window.maka.xaiOAuth,
+export function runtimeHostOAuthAccountBridge(
+  bridge: RuntimeHostOAuthBridge,
   host: DesktopRuntimeHostRef,
-): OAuthLoginFlowBridge {
+  connectionId: string,
+): OAuthAccountFlowBridge {
   return {
-    getAuthUrl: () =>
-      bridge.getAuthUrl(host) as ReturnType<OAuthLoginFlowBridge['getAuthUrl']>,
-    openAuthUrl: (authRequestId) => bridge.openAuthUrl(authRequestId, host),
-    completeAuthorization: (authRequestId) =>
-      bridge.completeAuthorization(authRequestId, host),
-    cancelAuthorization: (authRequestId) =>
-      bridge.cancelAuthorization(authRequestId, host),
-    getAccountState: () => bridge.getAccountState(host),
-    logout: () => bridge.logout(host),
+    getAccountState: async () => requireOAuthAccountState(
+      await bridge.getAccountState(host, connectionId),
+    ),
+    logout: () => bridge.logout(host, connectionId),
+  };
+}
+
+function requireOAuthAccountState(value: unknown): unknown {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'ok' in value &&
+    value.ok === false &&
+    'message' in value &&
+    typeof value.message === 'string'
+  ) {
+    throw new Error(value.message);
+  }
+  return value;
+}
+
+export function runtimeHostOAuthExistingLoginBridges(
+  bridge: RuntimeHostOAuthBridge,
+  host: DesktopRuntimeHostRef,
+  connectionId: string,
+): {
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
+} {
+  return {
+    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
+      bridge,
+      host,
+      { kind: 'existing', connectionId },
+    ),
+    accountBridge: runtimeHostOAuthAccountBridge(bridge, host, connectionId),
   };
 }

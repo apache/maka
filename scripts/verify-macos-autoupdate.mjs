@@ -30,6 +30,7 @@ import {
   startDesktopUpdateFeed,
   verifyDesktopUpdateArtifacts,
 } from './desktop-update-contract.mjs';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
 import {
   evaluateInRenderer,
   findRendererTarget,
@@ -120,11 +121,11 @@ async function stopProcess(processId) {
 
 /** check → download → Squirrel.Mac replacement → automatic relaunch → smoke. */
 export async function verifyMacosAutoupdate(
-  candidateInput,
   nextDirectoryInput,
   {
     platform = process.platform,
     arch = process.arch,
+    environment = process.env,
     run = runCommand,
     makeTemporaryDirectory = () => mkdtemp(join(tmpdir(), 'maka-macos-autoupdate-')),
     smokeRenderer = smokePackagedRenderer,
@@ -133,13 +134,15 @@ export async function verifyMacosAutoupdate(
   if (platform !== 'darwin' || arch !== 'arm64') {
     throw new Error('macOS auto-update verification requires an Apple Silicon macOS host.');
   }
-  if (!candidateInput || !nextDirectoryInput) {
-    throw new Error(
-      'Usage: npm run verify:macos-autoupdate -- <candidate-zip> <next-release-directory>',
-    );
+  if (!nextDirectoryInput) {
+    throw new Error('Usage: npm run verify:macos-autoupdate -- <next-release-directory>');
   }
 
-  const candidateZip = resolve(candidateInput);
+  // The candidate is the archive this runner just packaged, so the descriptor
+  // names it here the way `verify:macos` names its DMG, rather than the workflow
+  // spelling it out a second time.
+  const candidate = await resolveDesktopReleaseTarget(`macos-${arch}`, { environment });
+  const candidateZip = resolve(candidate.payloadPath('.zip'));
   const nextDirectory = resolve(nextDirectoryInput);
   await access(candidateZip);
   const metadata = parseYaml(await readFile(join(nextDirectory, 'latest-mac.yml'), 'utf8'));
@@ -152,7 +155,7 @@ export async function verifyMacosAutoupdate(
     directory: nextDirectory,
     metadataName: 'latest-mac.yml',
     version: nextVersion,
-    artifactName: nextZipName,
+    artifactNames: [nextZipName],
   });
 
   const temporaryDirectory = await makeTemporaryDirectory();
@@ -326,5 +329,5 @@ export async function verifyMacosAutoupdate(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await verifyMacosAutoupdate(process.argv[2], process.argv[3]);
+  await verifyMacosAutoupdate(process.argv[2]);
 }

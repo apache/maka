@@ -24,6 +24,8 @@ import { ensureSidebarExpanded, expect, test } from './fixtures';
 
 const PERF_ENABLED = process.env.MAKA_TRANSCRIPT_PERF === '1';
 const STRESS_ENABLED = process.env.MAKA_TRANSCRIPT_STRESS === '1';
+const performanceTest = PERF_ENABLED ? test : test.skip;
+const stressTest = STRESS_ENABLED ? test : test.skip;
 const SCROLLER = '[data-chat-scroll-container="true"]';
 
 interface BrowserCounters {
@@ -250,10 +252,9 @@ async function measureSessionSwitch(page: Page): Promise<number> {
   return performance.now() - start;
 }
 
-test('LoAF capability is explicit when Chromium cannot measure it', async ({
+performanceTest('LoAF capability is explicit when Chromium cannot measure it', async ({
   promptRailWindow: page,
 }) => {
-  test.skip(!PERF_ENABLED, 'manual same-build CDP A/B harness');
   await page.evaluate(() => {
     Object.defineProperty(PerformanceObserver, 'supportedEntryTypes', {
       configurable: true,
@@ -265,8 +266,7 @@ test('LoAF capability is explicit when Chromium cannot measure it', async ({
   expect(frames.loafSupported).toBe(false);
 });
 
-test('warm native transcript scroll metrics', async ({ promptRailWindow: page }) => {
-  test.skip(!PERF_ENABLED, 'manual same-build CDP A/B harness');
+performanceTest('warm native transcript scroll metrics', async ({ promptRailWindow: page }) => {
   test.setTimeout(90_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
@@ -323,10 +323,9 @@ test('warm native transcript scroll metrics', async ({ promptRailWindow: page })
   console.log(`TRANSCRIPT_PERF ${JSON.stringify(result)}`);
 });
 
-test('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
+stressTest('600+ Turn repeated paging keeps the active range on a memory plateau', async ({
   promptRailWindow: page,
 }) => {
-  test.skip(!STRESS_ENABLED, 'manual 600+ Turn stress harness');
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1_000, height: 700 });
   const cdp = await page.context().newCDPSession(page);

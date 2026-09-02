@@ -29,12 +29,16 @@ use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
 use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 
-use crate::engine::{self, EngineCommand, PeerError, StreamCommand};
+use crate::engine::{
+    self, DirectTransport, EngineCommand, PeerConnectionPath, PeerError, StreamCommand,
+};
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
 const MAX_TRANSIT_PEERS: usize = 64;
 const MAX_TRANSIT_RELAY_ADDRESSES: usize = 256;
+const MAX_WEBRTC_STUN_URLS: usize = 8;
+const MAX_WEBRTC_STUN_URL_BYTES: usize = 512;
 
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
@@ -43,6 +47,7 @@ pub struct StartPeerEndpointOptions {
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
     pub automatic_relay_discovery: Option<bool>,
+    pub web_rtc_stun_urls: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -58,6 +63,7 @@ pub struct ConnectPeerOptions {
 #[napi(object)]
 pub struct ConfigurePeerTransitOptions {
     pub allowed_peer_ids: Vec<String>,
+    pub approved_relay_peer_ids: Vec<String>,
     pub relay_candidates: Vec<PeerTransitRelayCandidate>,
 }
 
@@ -141,13 +147,17 @@ impl PeerEndpoint {
     #[napi]
     pub async fn configure_transit(&self, options: ConfigurePeerTransitOptions) -> Result<()> {
         let allowed_peers = parse_peer_ids(options.allowed_peer_ids)?;
+        let approved_relays = parse_peer_ids(options.approved_relay_peer_ids)?;
         let relays = parse_transit_relay_candidates(options.relay_candidates)?;
         let trusted_relays = relays
             .iter()
             .map(|candidate| candidate.peer_id)
             .collect::<HashSet<_>>();
         let local_peer_id = parse_peer_id(&self.peer_id)?;
-        if allowed_peers.contains(&local_peer_id) || trusted_relays.contains(&local_peer_id) {
+        if allowed_peers.contains(&local_peer_id)
+            || approved_relays.contains(&local_peer_id)
+            || trusted_relays.contains(&local_peer_id)
+        {
             return Err(Error::new(
                 Status::InvalidArg,
                 "peer endpoint cannot configure itself as a transit peer",
@@ -158,6 +168,7 @@ impl PeerEndpoint {
             .send(EngineCommand::ConfigureTransit {
                 policy: engine::TransitPolicy {
                     allowed_peers,
+                    approved_relays,
                     relays,
                 },
                 result: result_tx,
@@ -301,9 +312,18 @@ impl Drop for PeerEndpoint {
 #[napi]
 pub struct PeerStream {
     peer_id: String,
+    path: PeerStreamPath,
     incoming: Arc<AsyncMutex<IncomingStreamReceiver>>,
     commands: mpsc::Sender<StreamCommand>,
     abort: watch::Sender<bool>,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct PeerStreamPath {
+    pub kind: String,
+    pub transport: Option<String>,
+    pub relay_peer_id: Option<String>,
 }
 
 #[napi]
@@ -311,6 +331,11 @@ impl PeerStream {
     #[napi(getter)]
     pub fn peer_id(&self) -> String {
         self.peer_id.clone()
+    }
+
+    #[napi(getter)]
+    pub fn path(&self) -> PeerStreamPath {
+        self.path.clone()
     }
 
     #[napi]
@@ -375,6 +400,10 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
             "coordination relay",
         )?,
         automatic_relay_discovery: options.automatic_relay_discovery.unwrap_or(false),
+        web_rtc_stun_urls: options
+            .web_rtc_stun_urls
+            .map(parse_webrtc_stun_urls)
+            .transpose()?,
     })
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
@@ -437,10 +466,34 @@ pub fn verify_peer_identity(
 fn wrap_stream(stream: engine::PeerStream) -> Result<PeerStream> {
     Ok(PeerStream {
         peer_id: stream.peer_id.to_string(),
+        path: peer_stream_path(stream.path),
         incoming: Arc::new(AsyncMutex::new(stream.incoming)),
         commands: stream.commands,
         abort: stream.abort,
     })
+}
+
+fn peer_stream_path(path: PeerConnectionPath) -> PeerStreamPath {
+    match path {
+        PeerConnectionPath::Direct(transport) => PeerStreamPath {
+            kind: "direct".to_owned(),
+            transport: Some(
+                match transport {
+                    DirectTransport::Quic => "quic",
+                    DirectTransport::Tcp => "tcp",
+                    DirectTransport::WebRtc => "webrtc",
+                    DirectTransport::Other => "other",
+                }
+                .to_owned(),
+            ),
+            relay_peer_id: None,
+        },
+        PeerConnectionPath::Transit { relay_peer_id } => PeerStreamPath {
+            kind: "transit".to_owned(),
+            transport: None,
+            relay_peer_id: Some(relay_peer_id.to_string()),
+        },
+    }
 }
 
 fn parse_peer_id(value: &str) -> Result<PeerId> {
@@ -458,6 +511,27 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
             })
         })
         .collect()
+}
+
+fn parse_webrtc_stun_urls(values: Vec<String>) -> Result<Vec<String>> {
+    if values.len() > MAX_WEBRTC_STUN_URLS {
+        return Err(Error::new(
+            Status::InvalidArg,
+            "WebRTC cannot use more than 8 STUN URLs",
+        ));
+    }
+    for value in &values {
+        if value.len() > MAX_WEBRTC_STUN_URL_BYTES
+            || !value.starts_with("stun:")
+            || value.chars().any(char::is_whitespace)
+        {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "WebRTC STUN URL must use the stun: scheme and contain no whitespace",
+            ));
+        }
+    }
+    Ok(values)
 }
 
 fn parse_transit_relay_candidates(
@@ -592,5 +666,14 @@ mod tests {
             relays[0].coordination_relays,
             vec![coordination.parse().expect("coordination multiaddr")],
         );
+    }
+
+    #[test]
+    fn webrtc_configuration_accepts_explicit_host_only_ice_and_rejects_turn() {
+        assert_eq!(
+            parse_webrtc_stun_urls(Vec::new()).expect("host-only ICE"),
+            Vec::<String>::new()
+        );
+        assert!(parse_webrtc_stun_urls(vec!["turn:relay.example:3478".to_owned()]).is_err());
     }
 }

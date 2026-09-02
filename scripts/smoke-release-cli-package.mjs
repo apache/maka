@@ -172,13 +172,31 @@ async function validateInstalledProduct(root) {
   await smokeNativeFileLock(packageRoot, root);
   await smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root });
 
+  // These flows own separate roots and each proves the packaged Host's idle
+  // retirement. Start both before awaiting so the same 30-second grace window
+  // is observed once in wall-clock time rather than twice in series.
   logStep('checking the interactive TUI setup path');
-  await smokeInteractiveTui({
+  const interactiveTui = smokeInteractiveTui({
     packageRoot,
     cliEntrypoint,
     ptySpawn,
     root: join(root, 'first-run'),
   });
+
+  logStep('checking a filesystem-backed controlled model turn');
+  const controlledRun = smokeControlledRun({
+    packageRoot,
+    cliEntrypoint,
+    root: join(root, 'controlled-run'),
+  });
+  const smokeResults = await Promise.allSettled([interactiveTui, controlledRun]);
+  const smokeFailures = smokeResults.flatMap((result) =>
+    result.status === 'rejected' ? [result.reason] : [],
+  );
+  if (smokeFailures.length === 1) throw smokeFailures[0];
+  if (smokeFailures.length > 1) {
+    throw new AggregateError(smokeFailures, 'Installed CLI product flows both failed');
+  }
 
   logStep('checking the managed Runtime Host lifecycle');
   await smokeRuntimeHostService({
@@ -186,13 +204,6 @@ async function validateInstalledProduct(root) {
     cliEntrypoint,
     ptySpawn,
     root: join(root, 'runtime-host-service'),
-  });
-
-  logStep('checking a filesystem-backed controlled model turn');
-  await smokeControlledRun({
-    packageRoot,
-    cliEntrypoint,
-    root: join(root, 'controlled-run'),
   });
 
   console.log(

@@ -19,7 +19,13 @@
 
 import {
   decodeCredentialLocator,
+  decodeConnectionCredentialTarget,
+  decodeConnectionVersionBasis,
+  normalizeNetworkProxyCredentialTarget,
   REQUEST_HEADERS_MAX_BYTES,
+  type ConnectionCredentialTarget,
+  type ConnectionVersionBasis,
+  type NetworkProxyCredentialTarget,
   type CredentialLocator,
 } from '@maka/core/runtime-policy';
 import {
@@ -43,13 +49,19 @@ const ERRORS = [
 
 export interface ConfigurationCredentialExportInput {
   readonly locator: CredentialLocator;
+  readonly expectedConnection?: ConnectionCredentialTarget;
 }
 
 export interface ConfigurationCredentialExportResult {
   readonly credential: {
     readonly locator: CredentialLocator;
     readonly secretBase64: string;
+    readonly proxyTarget?: NetworkProxyCredentialTarget;
   } | null;
+  readonly connectionStale?: {
+    readonly expected: ConnectionVersionBasis;
+    readonly actual: ConnectionVersionBasis | null;
+  };
 }
 
 export const CONFIGURATION_OPERATION_SPECS = {
@@ -69,24 +81,62 @@ export const CONFIGURATION_OPERATION_SPECS = {
 function decodeConfigurationCredentialExportInput(
   value: unknown,
 ): ConfigurationCredentialExportInput {
-  const input = requireExactRecord(value, 'configuration credential export input', ['locator']);
-  return { locator: decodeLocator(input.locator) };
+  const input = requireShapedRecord(
+    value,
+    'configuration credential export input',
+    ['locator'],
+    ['expectedConnection'],
+  );
+  const locator = decodeLocator(input.locator);
+  const expectedConnection =
+    input.expectedConnection === undefined
+      ? undefined
+      : decodeDomainValue(() => decodeConnectionCredentialTarget(input.expectedConnection));
+  if (expectedConnection && locator.scope !== 'connection') {
+    throw invalidProtocolFrame('Only connection credential exports accept a target basis');
+  }
+  return {
+    locator,
+    ...(expectedConnection === undefined ? {} : { expectedConnection }),
+  };
 }
 
 function decodeConfigurationCredentialExportResult(
   value: unknown,
 ): ConfigurationCredentialExportResult {
-  const result = requireExactRecord(value, 'configuration credential export result', [
-    'credential',
-  ]);
-  if (result.credential === null) return { credential: null };
+  const result = requireShapedRecord(
+    value,
+    'configuration credential export result',
+    ['credential'],
+    ['connectionStale'],
+  );
+  const connectionStale =
+    result.connectionStale === undefined
+      ? undefined
+      : decodeConnectionStale(result.connectionStale);
+  if (connectionStale && result.credential !== null) {
+    throw invalidProtocolFrame('A stale connection export must not include credential material');
+  }
+  if (result.credential === null) {
+    return {
+      credential: null,
+      ...(connectionStale === undefined ? {} : { connectionStale }),
+    };
+  }
   const entry = requireShapedRecord(
     result.credential,
     'exported configuration credential',
     ['locator', 'secretBase64'],
-    [],
+    ['proxyTarget'],
   );
   const locator = decodeLocator(entry.locator);
+  const proxyTarget =
+    entry.proxyTarget === undefined
+      ? undefined
+      : decodeDomainValue(() => normalizeNetworkProxyCredentialTarget(entry.proxyTarget));
+  if (proxyTarget && locator.scope !== 'network_proxy') {
+    throw invalidProtocolFrame('Only proxy credentials may carry a proxy target');
+  }
   const maxBytes =
     locator.scope === 'connection' && locator.kind === 'request_headers'
       ? REQUEST_HEADERS_MAX_BYTES
@@ -95,10 +145,37 @@ function decodeConfigurationCredentialExportResult(
     credential: {
       locator,
       secretBase64: decodeCredentialSecretBase64(entry.secretBase64, maxBytes),
+      ...(proxyTarget === undefined ? {} : { proxyTarget }),
     },
+    ...(connectionStale === undefined ? {} : { connectionStale }),
   };
   requireEncodedByteLimit(decoded, 'configuration credential export result', RESULT_MAX_BYTES);
   return decoded;
+}
+
+function decodeConnectionStale(value: unknown): {
+  expected: ConnectionVersionBasis;
+  actual: ConnectionVersionBasis | null;
+} {
+  const stale = requireExactRecord(value, 'configuration credential stale connection', [
+    'expected',
+    'actual',
+  ]);
+  return {
+    expected: decodeDomainValue(() => decodeConnectionVersionBasis(stale.expected)),
+    actual:
+      stale.actual === null
+        ? null
+        : decodeDomainValue(() => decodeConnectionVersionBasis(stale.actual)),
+  };
+}
+
+function decodeDomainValue<T>(decode: () => T): T {
+  try {
+    return decode();
+  } catch {
+    throw invalidProtocolFrame('Invalid configuration credential connection basis');
+  }
 }
 
 function decodeCredentialSecretBase64(value: unknown, maxBytes: number): string {

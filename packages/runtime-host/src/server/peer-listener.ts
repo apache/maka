@@ -43,6 +43,7 @@ export interface RuntimeHostPeerListenerConfiguration {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
 }
 
 export type RuntimeHostPeerListenerEndpointOptions =
@@ -117,6 +118,10 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     this.#serving = client
       .serveApplication((stream) => this.#acceptStream(stream), this.#serveLifetime.signal)
       .catch(captureFailure);
+  }
+
+  get coordinationRelays(): readonly string[] {
+    return this.#client.identity().coordinationRelays;
   }
 
   closeAdmission(): Promise<void> {

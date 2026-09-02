@@ -160,6 +160,10 @@ interface RuntimeHostKernelCommonOptions {
   listenerSetFactory?: RuntimeHostListenerSetFactory;
   accessAuthority?: RuntimeHostAccessAuthority;
   peerMesh?: PeerMeshNode;
+  /** Ephemeral launch gate used until a supervised Candidate durably commits. */
+  initialClientAdmission?: {
+    isClientAdmitted(clientInstanceId: string): boolean;
+  };
 }
 
 export type RuntimeHostLifecycleMode = 'ephemeral' | 'service';
@@ -470,6 +474,18 @@ export class RuntimeHostKernel {
   ): Promise<HostHandshakeResult> {
     const admittedState = await this.#readAdmissionState();
     if (!admittedState) {
+      return {
+        kind: 'draining',
+        hostEpoch: this.hostEpoch,
+        compositionId: this.compositionDescriptor.id,
+        compositionRevision: this.compositionDescriptor.revision,
+      };
+    }
+    const initialClientAdmission = this.#options.initialClientAdmission;
+    if (
+      initialClientAdmission &&
+      !initialClientAdmission.isClientAdmitted(hello.clientInstanceId)
+    ) {
       return {
         kind: 'draining',
         hostEpoch: this.hostEpoch,
@@ -809,6 +825,7 @@ export class RuntimeHostKernel {
   }
 
   #statusSnapshot(): HostStatusResult {
+    const peer = this.peerListeners[0];
     return {
       hostEpoch: this.hostEpoch,
       compositionId: this.compositionDescriptor.id,
@@ -817,6 +834,15 @@ export class RuntimeHostKernel {
       connections: this.#acceptedTransports.size,
       activeOperations: this.#activeOperations,
       activeResidencies: this.#residencies.activeCount,
+      ...(peer
+        ? {
+            peerEndpoint: {
+              peerId: peer.peerId,
+              routeHints: peer.listenAddresses,
+              coordinationRelays: peer.coordinationRelays,
+            },
+          }
+        : {}),
     };
   }
 
@@ -830,6 +856,10 @@ export class RuntimeHostKernel {
   }
 
   #hasUpgradeBlockingActivity(): boolean {
+    // The request's own accepted transport is expected. Any other live
+    // connection arrived after discovery or remained attached and therefore
+    // requires explicit interruption authority before retirement.
+    if (this.#acceptedTransports.size > 1) return true;
     if (this.#activeCommandOperations > 1) return true;
     return this.#residencies.snapshot().some(({ label }) => label !== 'process-retention');
   }

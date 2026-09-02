@@ -46,11 +46,13 @@ on:
       - 'scripts/package-windows-autoupdate-next.mjs'
       # The Abort-path rollback hook ships inside the installer itself.
       - 'apps/desktop/build/installer.nsh'
-      # The packaged updater's feed behavior — and the boot wiring that hands
-      # MAKA_UPDATE_TEST_FEED to it — is only observable on this path.
+      # The packaged updater's feed behavior is only observable on this path.
+      # The boot wiring that hands MAKA_UPDATE_TEST_FEED to it is not here:
+      # that is a few lines, `scripts/update-test-feed-wiring.test.mjs` asserts
+      # them on every change for free, and naming the file made a 1900-line
+      # module the single largest source of runs on this 25-minute lane.
       - 'apps/desktop/src/main/app-update-service.ts'
       - 'apps/desktop/src/main/main-window.ts'
-      - 'apps/desktop/src/main/runtime-host-boot.ts'
       - 'packages/runtime-host/src/client/connect-or-spawn.ts'
       - 'packages/runtime-host/src/client/launcher.ts'
       - 'apps/desktop/src/main/windows-maximize-renderer-sync.ts'
@@ -94,13 +96,22 @@ on:
       - 'apps/desktop/resources/licenses/cargo/THIRD_PARTY_NOTICES.txt'
       - '.github/workflows/release.yml'
       - '.github/workflows/release-windows-check.yml'
+  # The list above is a pre-filter, not this lane's import closure, so a
+  # transitive edit it cannot match would otherwise first be observed on release
+  # day. Same pairing as the other two Windows lanes.
+  schedule:
+    - cron: '17 5 * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Keyed on the pull request number rather than the ref, because `github.ref` is
+# refs/heads/main for the nightly and for a dispatch alike: one shared group
+# would let a dispatch queue behind the nightly and then be discarded while
+# still pending. Same fix the other two Windows lanes already carry.
 concurrency:
-  group: release-windows-check-${{ github.ref }}
+  group: release-windows-check-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -131,9 +142,35 @@ jobs:
         run: npm run package:windows-x64
 
       - name: Verify the Windows release
+        run: npm run verify:windows-x64 -- x64
+
+      # Discovered, not spelled out: this lane builds one installer, and the name
+      # is the target descriptor's to decide. The installer steps below are
+      # handed a path rather than a target, so unlike `verify:windows-x64` they
+      # cannot resolve it themselves.
+      - name: Locate the packaged Windows installer
+        id: installer
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
-          npm run verify:windows-x64 -- "apps/desktop/release/Maka-${version}-win-x64.exe"
+          shopt -s nullglob
+          exes=(apps/desktop/release/*.exe)
+          if [[ ${#exes[@]} -ne 1 ]]; then
+            echo "Expected exactly one Windows installer, found ${#exes[@]}" >&2
+            exit 1
+          fi
+          echo "exe=${exes[0]}" >> "$GITHUB_OUTPUT"
+
+      # The baseline is pinned by version, tag, asset name and SHA-256 in
+      # `scripts/windows-upgrade-baseline.json`, so it is immutable and the
+      # cache key is that file. Downloading it is this lane's most frequent
+      # failure — 14 of 36 across 300 runs, always on branches that could not
+      # have caused it, each false red costing another 25-minute Windows
+      # runner. A hit skips the network; the step below re-verifies the
+      # checksum either way, so a corrupt entry still fails loudly.
+      - name: Restore the pinned Windows upgrade baseline
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: artifacts/windows-upgrade-baseline
+          key: windows-upgrade-baseline-${{ hashFiles('scripts/windows-upgrade-baseline.json') }}
 
       - name: Download and verify the pinned Windows upgrade baseline
         id: previous
@@ -145,11 +182,13 @@ jobs:
             "$version" artifacts/windows-upgrade-baseline)"
           echo "exe=$previous_exe" >> "$GITHUB_OUTPUT"
 
+      # The pinned release is only one input here. The other is the installer
+      # this run just built, which this step installs over it, so a pull request
+      # does decide the outcome.
       - name: Exercise pinned-version upgrade and uninstall
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             "${{ steps.previous.outputs.exe }}"
 
       - name: Build the version-bumped autoupdate installer
@@ -157,14 +196,15 @@ jobs:
 
       - name: Verify automatic update end to end
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-autoupdate -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
 
+      # Consumes only what this run built — the candidate installer and the
+      # version-bumped one — so it is the pull request's own evidence that the
+      # `installer.nsh` Abort path still restores the previous installation.
       - name: Prove deterministic mid-install failure rollback
         run: |
-          version="$(node -p "require('./apps/desktop/package.json').version")"
           npm run verify:windows-installer-rollback -- \
-            "apps/desktop/release/Maka-${version}-win-x64.exe" \
+            "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next

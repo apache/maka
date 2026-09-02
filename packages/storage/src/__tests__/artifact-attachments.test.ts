@@ -28,9 +28,13 @@ import { type StorageRef } from '@maka/core/events';
 import {
   createArtifactAttachmentResourceReader,
   createAttachmentByteReader,
+  createReadImageSnapshotPlanner,
   createReadImageSnapshotter,
 } from '../artifact-attachments.js';
-import { createSqliteArtifactStore as createArtifactStore } from '../artifact-store.js';
+import {
+  createSqliteArtifactStoreWriteAuthority,
+  type ArtifactAuthorityStore,
+} from '../artifact-store.js';
 
 const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -220,6 +224,121 @@ describe('artifact attachment authority', () => {
       assert.deepEqual(await store.list('session-1'), []);
     });
   });
+
+  test('snapshotter reuses one content-addressed artifact for the same turn image', async () => {
+    await withStore(async (store) => {
+      const snapshot = createReadImageSnapshotter(store);
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: Uint8Array.from([1, 2, 3]),
+        mimeType: 'image/png',
+      };
+
+      const first = await snapshot(input);
+      const repeated = await snapshot(input);
+
+      assert.deepEqual(repeated, first);
+      assert.equal((await store.list('session-1')).length, 1);
+    });
+  });
+
+  test('keeps a durable projection image live when a user requests deletion', async () => {
+    await withStore(async (store) => {
+      const ref = await createReadImageSnapshotter(store)({
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: png,
+        mimeType: 'image/png',
+      });
+
+      assert.deepEqual(await store.deleteUserArtifactInSession('session-1', ref.relativePath), {
+        kind: 'protected',
+      });
+      assert.deepEqual(await store.readBinary(ref.relativePath), {
+        ok: true,
+        base64: Buffer.from(png).toString('base64'),
+        mimeType: 'image/png',
+      });
+    });
+  });
+
+  test('planner derives the final ref without publishing before commit', async () => {
+    await withStore(async (store) => {
+      const bytes = png.slice();
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes,
+        mimeType: 'image/png',
+      };
+      const plan = createReadImageSnapshotPlanner(store)(input);
+
+      assert.deepEqual(await store.list('session-1'), []);
+      bytes[0] = 0;
+      input.name = 'mutated after prepare';
+      await Promise.all([plan.persist(), plan.persist()]);
+      const published = await store.list('session-1');
+      assert.deepEqual(
+        published.map((artifact) => artifact.id),
+        [plan.ref.relativePath],
+      );
+      assert.equal(published[0]?.name, 'Tool Result image');
+      assert.deepEqual(await store.readBinary(plan.ref.relativePath), {
+        ok: true,
+        base64: Buffer.from(png).toString('base64'),
+        mimeType: 'image/png',
+      });
+    });
+  });
+  test('retraction reclaims only what the retracting plan published', async () => {
+    await withStore(async (store) => {
+      const input = {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        name: 'Tool Result image',
+        bytes: png.slice(),
+        mimeType: 'image/png',
+      };
+      const deleted: string[] = [];
+      // The id is derived from the bytes, so a second projection for the same
+      // image in the same Turn gets the first one's record back. Retracting the
+      // second must not delete the artifact the first one committed.
+      const owned = {
+        create: (createInput: Parameters<typeof store.create>[0]) => store.create(createInput),
+        createOwned: async (createInput: Parameters<typeof store.create>[0]) => {
+          const existing = createInput.id
+            ? await store.getInSession(createInput.sessionId, createInput.id)
+            : undefined;
+          const record = await store.create(createInput);
+          return { record, publishedByThisCall: !existing?.record };
+        },
+      };
+      const planner = createReadImageSnapshotPlanner(owned, async (_sessionId, artifactId) => {
+        deleted.push(artifactId);
+        await store.delete(artifactId);
+      });
+
+      const first = planner(input);
+      await first.persist();
+      const second = planner(input);
+      await second.persist();
+      assert.equal(second.ref.relativePath, first.ref.relativePath);
+
+      await second.retract();
+
+      assert.deepEqual(deleted, []);
+      assert.equal((await store.readBinary(first.ref.relativePath)).ok, true);
+
+      await first.retract();
+
+      assert.deepEqual(deleted, [first.ref.relativePath]);
+      assert.equal((await store.readBinary(first.ref.relativePath)).ok, false);
+    });
+  });
 });
 
 function sessionFileRef(relativePath: string, sessionId = 'session-1'): StorageRef {
@@ -230,15 +349,15 @@ function sessionContextRef(refId: string, sessionId = 'session-1'): StorageRef {
   return { kind: 'session_context', sessionId, refId };
 }
 
-async function withStore(
-  run: (store: ReturnType<typeof createArtifactStore>) => Promise<void>,
-): Promise<void> {
+async function withStore(run: (store: ArtifactAuthorityStore) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-artifact-attachment-'));
-  const store = createArtifactStore(root);
+  const authority = createSqliteArtifactStoreWriteAuthority(root);
   try {
+    await authority.recover();
+    const { store } = authority;
     await run(store);
   } finally {
-    store.close?.();
+    authority.close();
     await rm(root, { recursive: true, force: true });
   }
 }

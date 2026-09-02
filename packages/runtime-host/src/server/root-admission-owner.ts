@@ -30,6 +30,7 @@ import type {
   RootTurnAdmissionStore,
   RootTurnSourceMessage,
 } from '@maka/storage/execution-stores';
+import { submittedTurnIntentsEqual } from '@maka/storage/execution-stores';
 
 type OwnedAdmitRootTurnInput = Omit<AdmitRootTurnInput, 'previousRootTurnId'>;
 type Immutable<T> = T extends (...args: never[]) => unknown
@@ -135,6 +136,10 @@ function sameRootAdmission(left: RootTurnAdmission, right: RootTurnAdmission): b
         source.disposition === other.disposition &&
         isDeepStrictEqual(source.origin, other.origin) &&
         source.submittedContentDigest === other.submittedContentDigest &&
+        (source.submittedPlacement ?? source.placement) ===
+          (other.submittedPlacement ?? other.placement) &&
+        submittedTurnIntentsEqual(source.submittedIntent, other.submittedIntent) &&
+        isDeepStrictEqual(source.skillInvocation, other.skillInvocation) &&
         messageContentsEqual(source.content, other.content)
       );
     }) &&
@@ -172,6 +177,8 @@ function snapshotMessageContent(content: MessageContent): MessageContent {
     Object.freeze(attachment);
   }
   if (snapshot.attachments) Object.freeze(snapshot.attachments);
+  for (const reference of snapshot.directoryReferences ?? []) Object.freeze(reference);
+  if (snapshot.directoryReferences) Object.freeze(snapshot.directoryReferences);
   for (const quote of snapshot.quotes ?? []) Object.freeze(quote);
   if (snapshot.quotes) Object.freeze(snapshot.quotes);
   return Object.freeze(snapshot);

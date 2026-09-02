@@ -28,9 +28,33 @@ const CHUNK_BYTES: usize = 64 * 1024;
 
 pub struct PeerStream {
     pub peer_id: PeerId,
+    pub path: PeerConnectionPath,
     pub incoming: mpsc::Receiver<Result<Vec<u8>, PeerError>>,
     pub commands: mpsc::Sender<StreamCommand>,
     pub abort: watch::Sender<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectTransport {
+    Quic,
+    Tcp,
+    WebRtc,
+    Other,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PeerConnectionPath {
+    Direct(DirectTransport),
+    Transit { relay_peer_id: PeerId },
+}
+
+impl PeerConnectionPath {
+    pub(super) fn relay_peer_id(&self) -> Option<PeerId> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Transit { relay_peer_id } => Some(*relay_peer_id),
+        }
+    }
 }
 
 pub enum StreamCommand {
@@ -45,6 +69,7 @@ pub enum StreamCommand {
 
 pub(super) fn spawn_stream(
     peer_id: PeerId,
+    path: PeerConnectionPath,
     stream: libp2p::swarm::Stream,
     completion: Option<(StreamCompletion, mpsc::Sender<CompletedStream>)>,
 ) -> PeerStream {
@@ -74,7 +99,11 @@ pub(super) fn spawn_stream(
                                 "peer_stream_aborted",
                                 "peer stream was aborted",
                             )),
-                            outcome = writer.write_all(&bytes) => outcome.map_err(|error| {
+                            outcome = async {
+                                writer.write_all(&bytes).await?;
+                                // Framed transports may buffer a complete write until flush.
+                                writer.flush().await
+                            } => outcome.map_err(|error| {
                                 PeerError::new("peer_native_failed", error.to_string())
                             }),
                         };
@@ -137,6 +166,7 @@ pub(super) fn spawn_stream(
     });
     PeerStream {
         peer_id,
+        path,
         incoming: incoming_rx,
         commands: command_tx,
         abort: abort_tx,

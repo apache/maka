@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { decodeToolStepProgress, type SessionEvent } from '@maka/core/events';
@@ -106,9 +107,4 @@ function testConnection(): LlmConnection {
     createdAt: 1,
     updatedAt: 1,
   };
-}
-
-function nextId(): () => string {
-  let id = 0;
-  return () => `id-${++id}`;
 }

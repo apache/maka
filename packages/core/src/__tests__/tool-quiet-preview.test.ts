@@ -145,14 +145,13 @@ describe('projectToolArgsPreview', () => {
     assert.ok(JSON.stringify(preview).length <= 2048);
   });
 
-  it('excludes Task Ledger tools until their durable semantic projection owns identity', () => {
-    assert.equal(projectToolArgsPreview('task_create', { tasks: [{ subject: 'one' }] }), undefined);
+  it('never previews an uncommitted Todo replacement as current state', () => {
     assert.equal(
-      projectToolArgsPreview('task_update', { id: 'T1', status: 'completed' }),
+      projectToolArgsPreview('todo_write', {
+        todos: [{ content: 'one', status: 'pending' }],
+      }),
       undefined,
     );
-    assert.equal(projectToolArgsPreview('task_list', { status: 'pending' }), undefined);
-    assert.equal(projectToolArgsPreview('task_get', { id: 'T1' }), undefined);
   });
 
   it('does not accept forged question payloads from third-party tools', () => {

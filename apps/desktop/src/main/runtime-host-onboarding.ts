@@ -45,7 +45,10 @@ type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapsh
 export function createDesktopRuntimeHostOnboarding(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly clientInstanceId: string;
-  readonly profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnable' | 'addAndEnableVerified'>;
+  readonly profiles: Pick<
+    DesktopRuntimeHostProfileService,
+    'addManagedEnvironmentAndEnable' | 'addAndEnableVerified'
+  >;
   readonly runSetup: (
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
@@ -63,7 +66,13 @@ export function createDesktopRuntimeHostOnboarding(input: {
     input: DesktopRuntimeHostWslSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
     onComplete: () => void,
-  ) => Promise<{ readonly rootId: string; readonly operatorPath: string }>;
+  ) => Promise<{
+    readonly rootId: string;
+    readonly rootPath: string;
+    readonly serviceId: string;
+    readonly deploymentId: string;
+    readonly operatorPath: string;
+  }>;
   readonly listWslDistributions: () => Promise<readonly string[]>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
   readonly setupPackageMode: 'published' | 'development';
@@ -261,18 +270,25 @@ export function createDesktopRuntimeHostOnboarding(input: {
     );
     beginCommit();
     const profileId = `environment-${randomUUID()}`;
-    const connected = await input.profiles.addAndEnable({
-      profile: {
-        id: profileId,
-        name: request.name?.trim() || request.distribution,
-        kind: 'environment',
-        provider: { kind: 'wsl', distribution: request.distribution },
-        rootId: complete.rootId,
-        operatorPath: complete.operatorPath,
+    const profile = {
+      id: profileId,
+      name: request.name?.trim() || request.distribution,
+      kind: 'environment' as const,
+      provider: { kind: 'wsl' as const, distribution: request.distribution },
+      rootId: complete.rootId,
+      operatorPath: complete.operatorPath,
+    };
+    const connected = await input.profiles.addManagedEnvironmentAndEnable({
+      profile,
+      managedService: {
+        deployment: {
+          id: complete.serviceId,
+          rootPath: complete.rootPath,
+          deploymentId: complete.deploymentId,
+        },
       },
     });
-    if (connected.kind === 'unavailable') throw new Error(connected.message);
-    return publish({ kind: 'complete', profileId });
+    return publish({ kind: 'complete', profileId: connected.profileId });
   };
 
   const channels = [

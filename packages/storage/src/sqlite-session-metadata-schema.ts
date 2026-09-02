@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 35;
+export const SQLITE_SESSION_METADATA_SCHEMA_VERSION = 37;
 export const SQLITE_SESSION_MESSAGE_CHUNK_BYTES = 64 * 1024;
 export const SQLITE_SESSION_MESSAGE_CHUNK_MARKER = '{"$maka":"session-message-chunks-v1"}';
 
@@ -1228,6 +1228,23 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
   [
     35,
     `
+    ALTER TABLE message_admissions
+      ADD COLUMN skill_invocation_json TEXT NOT NULL
+      DEFAULT '{"loaded":[],"failed":[],"receipts":[]}';
+  `,
+  ],
+  [
+    36,
+    `
+    -- WorkHub replacement intent and atomic supersession records require the
+    -- schema-v2 canonical message decoder. Prevent older builds from opening
+    -- a profile after either record has been committed.
+    SELECT 1;
+  `,
+  ],
+  [
+    37,
+    `
     ALTER TABLE message_admissions ADD COLUMN origin_json TEXT;
   `,
   ],
@@ -1298,9 +1315,16 @@ export function migrateSqliteSessionMetadataDatabase(
       if (version >= 33 && !hasColumn(db, 'message_admissions', 'submitted_intent_json')) {
         db.exec(MIGRATIONS.get(32)!);
       }
+      // The Session mailbox development branch used version 35 for origin
+      // before main assigned it to Skill receipts. Converge that deployed
+      // shape before advancing through the newer main migrations.
+      if (version >= 36 && !hasColumn(db, 'message_admissions', 'skill_invocation_json')) {
+        db.exec(MIGRATIONS.get(35)!);
+      }
       const columnAlreadyPresent =
         (version === 32 && hasColumn(db, 'message_admissions', 'submitted_intent_json')) ||
-        (version === 35 && hasColumn(db, 'message_admissions', 'origin_json'));
+        (version === 35 && hasColumn(db, 'message_admissions', 'skill_invocation_json')) ||
+        (version === 37 && hasColumn(db, 'message_admissions', 'origin_json'));
       if (!columnAlreadyPresent) {
         db.exec(sql);
       }

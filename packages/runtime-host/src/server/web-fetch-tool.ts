@@ -29,7 +29,7 @@ import type { RuntimePolicyOperationCoordinator } from '@maka/storage/runtime-po
 import { toRuntimePolicyProxy } from './runtime-policy-proxy.js';
 
 interface HostWebFetchServiceInput {
-  readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveWebFetchExecution'>;
+  readonly policy: Pick<RuntimePolicyOperationCoordinator, 'resolveHostOutboundExecution'>;
   readonly createFetchTransport?: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
 }
 
@@ -45,7 +45,7 @@ export function createHostWebFetchService(input: HostWebFetchServiceInput): Host
   const createFetchTransport = input.createFetchTransport ?? createProxiedFetchTransport;
   return {
     fetch: async ({ url, sessionId, abortSignal }) => {
-      const resolved = await input.policy.resolveWebFetchExecution();
+      const resolved = await input.policy.resolveHostOutboundExecution();
       if (resolved.kind === 'privacy_mode') {
         throw new Error('WebFetch is disabled while privacy mode is active.');
       }

@@ -26,12 +26,13 @@ import {
 } from './connection-name-draft.js';
 import {
   type ConnectionTestResult,
-  type LlmConnection,
+  type IdentifiedLlmConnection,
   type ModelInfo,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, connectionEnabledModelIds } from '@maka/core/llm-connections';
-import { buildConnectionModelCatalogEntries } from '@maka/core/model-catalog';
+import { PROVIDER_REGISTRY, connectionEnabledModelIds } from '@maka/core/llm-connections';
+import { modelRowsEqual, resolveDraftConnectionModelCatalog } from '@maka/core/model-catalog';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import {
   normalizeRelayModelProfiles,
@@ -45,24 +46,29 @@ import {
   providerSupportsModelDiscovery,
 } from '@maka/core/llm-connections';
 import { useMountedRef, useToast, useUiLocale } from '@maka/ui';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import { relayProfileDraftReseedPlan, relayProfileDraftSeed } from './relay-profile-draft';
 import { applyBulkThinkingLevel, relayProfileWithThinkingLevels } from './relay-thinking-bulk';
 import { useKeyedActionGuard } from './use-action-guard';
-import type { OAuthLoginFlowBridge } from './use-oauth-login-flow';
+import type {
+  OAuthAccountFlowBridge,
+  OAuthAuthorizationFlowBridge,
+} from './use-oauth-login-flow';
 import {
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import {
   useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
-import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
+import {
+  runtimeHostOAuthExistingLoginBridges,
+} from './runtime-host-settings-bridge.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -70,7 +76,8 @@ import { runtimeHostOAuthLoginBridge } from './runtime-host-settings-bridge.js';
 // here; plain API-key providers return null so the notice falls back to
 // prose instead of rendering a dead button.
 export interface OAuthLoginService {
-  bridge: OAuthLoginFlowBridge;
+  authorizationBridge: OAuthAuthorizationFlowBridge;
+  accountBridge: OAuthAccountFlowBridge;
   display: { name: string; shortName: string };
   // Codex's device-authorization page requires the user to type the code the
   // flow surfaces as `stateHint` — the verification URL does not embed it, so
@@ -82,18 +89,28 @@ export interface OAuthLoginService {
 export function oauthLoginServiceFor(
   providerType: ProviderType,
   host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+  connectionId: string,
+  connectionLabel?: string,
 ): OAuthLoginService | null {
   switch (providerType) {
     case 'openai-codex':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.openAiCodex, host),
-        display: { name: 'OpenAI Codex', shortName: 'Codex' },
+        ...runtimeHostOAuthExistingLoginBridges(
+          window.maka.openAiCodex,
+          host,
+          connectionId,
+        ),
+        display: { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
         showsDeviceCode: true,
       };
     case 'xai-oauth':
       return {
-        bridge: runtimeHostOAuthLoginBridge(window.maka.xaiOAuth, host),
-        display: { name: 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        ...runtimeHostOAuthExistingLoginBridges(
+          window.maka.xaiOAuth,
+          host,
+          connectionId,
+        ),
+        display: { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
         showsDeviceCode: false,
       };
     default:
@@ -103,7 +120,7 @@ export function oauthLoginServiceFor(
 
 export interface ConnectionDetailProps {
   bridge: ConnectionsBridge;
-  connection: LlmConnection;
+  connection: ProjectedLlmConnection;
   isDefault: boolean;
   onChanged(): Promise<void>;
   onDeleted(): Promise<void>;
@@ -122,7 +139,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const connectionIdentity = {
+    connectionId: connection.connectionId,
+    slug: connection.slug,
+  } as const;
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const [apiKey, setApiKey] = useState('');
   const [hasSecret, setHasSecret] = useState<CredentialPresenceStatus>(
     defaults.authKind === 'none' ? true : 'loading',
@@ -158,8 +179,13 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   // connections" — an instruction whose only destination is the retirement
   // notice itself.
   const retired = isRetiredProvider(connection.providerType);
-  const oauthLoginService = needsOAuth && !retired
-    ? oauthLoginServiceFor(connection.providerType, host)
+  const oauthLoginService = needsOAuth && !retired && connection.connectionId
+    ? oauthLoginServiceFor(
+        connection.providerType,
+        host,
+        connection.connectionId,
+        `${connection.name} · ${connection.slug}`,
+      )
     : null;
   const usesGitHubCopilotLogin = connection.providerType === 'github-copilot';
   const supportsRemoteDiscovery = providerSupportsModelDiscovery(connection.providerType);
@@ -223,7 +249,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     setHasSecret('loading');
     void props.bridge
-      .hasSecret(connection.slug)
+      .hasSecret(connectionIdentity)
       .then((next) => {
         if (isConnectionDetailCurrent(lifecycle)) setHasSecret(next);
       })
@@ -235,7 +261,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
           providerPanelActionErrorMessage(error, locale),
         );
       });
-  }, [props.bridge, connection.slug, probesCredential, reportHostError]);
+  }, [props.bridge, connection.connectionId, connection.slug, probesCredential, reportHostError]);
 
   useEffect(() => {
     const nextSnapshot = connectionDetailSnapshot(connection, defaults.baseUrl);
@@ -281,18 +307,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(connectionEnabledModelIds(connection));
   }, [connection.defaultModel, connection.enabledModelIds, connection.slug]);
 
-  // Picker entries come from the same catalog merge path as Chat and Daily
-  // Review, but use the local unsaved editor draft for model/default changes.
-  const modelChoices = buildConnectionModelCatalogEntries({
-    connection: {
-      slug: connection.slug,
-      providerType: connection.providerType,
-      defaultModel: connection.defaultModel,
-      enabledModelIds,
-      models: modelSource === 'fetched' || models.length > 0 ? models : undefined,
-      modelSource,
-      modelsFetchedAt: connection.modelsFetchedAt,
-    },
+  // Reads `connection.catalogEntries` while the editor still shows what was
+  // committed, and resolves locally only once the draft diverges — the one
+  // client-side resolution left on a saved connection. The rule itself lives
+  // beside the resolver it guards, in `@maka/core/model-catalog`.
+  const modelChoices = resolveDraftConnectionModelCatalog(connection, {
+    models,
+    modelSource,
+    enabledModelIds,
   });
 
   /**
@@ -313,14 +335,14 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     let saved = false;
     try {
       await props.bridge.update(
-        connection.slug,
+        connectionIdentity,
         field === 'key' ? { apiKey } : field === 'name' ? { name: draftName } : { baseUrl },
       );
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       const wroteNewKey = field === 'key' && apiKey.length > 0;
       if (wroteNewKey) setApiKey('');
-      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connection.slug) : true;
+      const nextHasSecret = probesCredential ? await props.bridge.hasSecret(connectionIdentity) : true;
       if (!isConnectionDetailCurrent(lifecycle)) return true;
       setHasSecret(nextHasSecret);
       await props.onChanged();
@@ -374,7 +396,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, { enabledModelIds: next });
+      await props.bridge.update(connectionIdentity, { enabledModelIds: next });
       saved = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onChanged();
@@ -545,7 +567,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // Send the whole table — the update contract is whole-table replace —
       // after the write-path sanitizer so a hand-assembled draft degrades the
       // same way a saved document would.
-      await props.bridge.update(connection.slug, {
+      await props.bridge.update(connectionIdentity, {
         relayModelProfiles: draftedRelayProfiles ?? null,
       });
       if (!isConnectionDetailCurrent(lifecycle)) return true;
@@ -597,7 +619,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     setEnabledModelIds(next);
     let saved = false;
     try {
-      await props.bridge.update(connection.slug, {
+      await props.bridge.update(connectionIdentity, {
         enabledModelIds: next,
         relayModelProfiles: { ...(savedRelayProfiles ?? {}), [modelId]: { contextWindow } },
       });
@@ -642,7 +664,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // to a field this page no longer owns, which is '' once the user enables
       // no models. Left unset, a zero-model connection still verifies its
       // credential against a fallback instead of failing with 'No model to test'.
-      const result: ConnectionTestResult = await props.bridge.test(connection.slug);
+      const result: ConnectionTestResult = await props.bridge.test(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       if (result.ok) {
         // The backend probes the enabled models first, then the provider
@@ -652,8 +674,11 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
         // took — and hides that their chosen model is currently down. Name both
         // facts instead.
         const testedId = result.modelTested;
+        // The resolved entries, not the draft rows: a provider with no
+        // model-list endpoint stores bare ids, so naming the tested model from
+        // `models` printed a raw id next to the picker's resolved name.
         const modelLabel = (id: string): string =>
-          models.find((model) => model.id === id)?.displayName ?? id;
+          modelChoices.find((entry) => entry.id === id)?.displayName?.trim() || id;
         // Inline the `testedId !== undefined` check so it narrows `testedId` to
         // string for `modelLabel(testedId)` below.
         if (
@@ -707,7 +732,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
       // Backend returns a `ModelDiscoveryResult` envelope and rejects empty or
       // malformed catalogs before persistence. Trust its explicit source
       // instead of reconstructing cache provenance in the renderer.
-      const result = await props.bridge.fetchModels(connection.slug);
+      const result = await props.bridge.fetchModels(connectionIdentity);
       fetched = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setModels(result.models);
@@ -747,7 +772,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     if (!releaseDelete) return;
     const lifecycle = connectionDetailLifecycleRef.current;
     setDeleting(true);
-    const usesOAuth = PROVIDER_DEFAULTS[connection.providerType].authKind === 'oauth_token';
+    const usesOAuth = PROVIDER_REGISTRY[connection.providerType].authKind === 'oauth_token';
     const ok = await toast.confirm({
       title: copy.deleteConnectionTitle(connection.name),
       description: copy.deleteDescription(props.isDefault, usesOAuth),
@@ -763,7 +788,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
     }
     let deleted = false;
     try {
-      await props.bridge.delete(connection.slug);
+      await props.bridge.delete(connectionIdentity);
       deleted = true;
       if (!isConnectionDetailCurrent(lifecycle)) return;
       await props.onDeleted();
@@ -785,7 +810,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   async function refreshAfterRelogin() {
     const lifecycle = connectionDetailLifecycleRef.current;
     try {
-      const nextHasSecret = await props.bridge.hasSecret(connection.slug);
+      const nextHasSecret = await props.bridge.hasSecret(connectionIdentity);
       if (!isConnectionDetailCurrent(lifecycle)) return;
       setHasSecret(nextHasSecret);
     } catch (error) {
@@ -858,7 +883,7 @@ type ConnectionDetailSnapshot = {
 };
 
 function connectionDetailSnapshot(
-  connection: LlmConnection,
+  connection: IdentifiedLlmConnection,
   defaultBaseUrl: string | undefined,
 ): ConnectionDetailSnapshot {
   return {
@@ -877,27 +902,12 @@ function connectionDetailDraftMatchesSnapshot(
   },
   snapshot: ConnectionDetailSnapshot,
 ): boolean {
+  // Core's comparison, not a second one: the two answers drive the same
+  // editor, and the local copy compared a different field set — a refetch that
+  // changed only a display name read as "in sync" here and "diverged" there.
   return draft.baseUrl === snapshot.baseUrl &&
     draft.modelSource === snapshot.modelSource &&
-    modelListsEqual(draft.models, snapshot.models);
-}
-
-function modelListsEqual(left: ModelInfo[], right: ModelInfo[]): boolean {
-  if (left.length !== right.length) return false;
-  for (let index = 0; index < left.length; index += 1) {
-    const leftModel = left[index];
-    const rightModel = right[index];
-    if (leftModel.id !== rightModel.id) return false;
-    if (leftModel.contextWindow !== rightModel.contextWindow) return false;
-    if (leftModel.maxOutputTokens !== rightModel.maxOutputTokens) return false;
-    if (leftModel.capabilities?.chat !== rightModel.capabilities?.chat) return false;
-    if (leftModel.capabilities?.vision !== rightModel.capabilities?.vision) return false;
-    if (leftModel.capabilities?.reasoning !== rightModel.capabilities?.reasoning) return false;
-    if (leftModel.capabilities?.functionCalling !== rightModel.capabilities?.functionCalling) return false;
-    if (leftModel.capabilities?.parallelToolCalls !== rightModel.capabilities?.parallelToolCalls) return false;
-    if (leftModel.capabilities?.imageGeneration !== rightModel.capabilities?.imageGeneration) return false;
-  }
-  return true;
+    modelRowsEqual(draft.models, snapshot.models);
 }
 
 function modelIdListsEqual(left: string[], right: string[]): boolean {

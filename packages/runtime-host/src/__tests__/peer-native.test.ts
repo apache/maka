@@ -51,6 +51,7 @@ let finishMeshAccept;
 const pending = new Map();
 const stats = { starts: 0, closes: 0, requests: [], cancellations: [] };
 let missFirstCancellation = true;
+let selfContainedRoutesPrepared = false;
 const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
 module.exports = {
   stats,
@@ -72,12 +73,15 @@ module.exports = {
       connect: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
         if (peerId === 'unreachable') return Promise.reject(Object.assign(new Error('transit_unavailable: no approved route'), { code: 'GenericFailure' }));
-        if (peerId === 'ready' || peerId === 'fallback') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'fallback' || peerId === 'observed' || (peerId === 'self-contained' && selfContainedRoutesPrepared)) return Promise.resolve(stream);
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       connectMeshControl: ({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds }) => {
         stats.requests.push({ requestId, peerId, routeHints, coordinationRelays, transitRelayPeerIds });
-        if (peerId === 'ready') return Promise.resolve(stream);
+        if (peerId === 'ready' || peerId === 'self-contained') {
+          if (peerId === 'self-contained') selfContainedRoutesPrepared = true;
+          return Promise.resolve(stream);
+        }
         return new Promise((resolve, reject) => pending.set(requestId, { resolve, reject }));
       },
       configureTransit: async () => {},
@@ -100,16 +104,22 @@ module.exports = {
 `,
     );
     let routesPrepared = false;
-    const client = createRuntimeHostPeerClient({
+    const preparedPeerIds: string[] = [];
+    let client!: ReturnType<typeof createRuntimeHostPeerClient>;
+    client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
       routeResolver: {
         prepareRoutes: async (peerId) => {
+          preparedPeerIds.push(peerId);
           routesPrepared = true;
           if (peerId === 'fallback') throw new Error('Mesh refresh failed');
+          if (peerId === 'self-contained') {
+            await client.connectMeshControl(peerConnectInput(peerId));
+          }
         },
-        resolveRoutes: () =>
-          routesPrepared
+        resolveRoutes: (peerId) =>
+          routesPrepared && peerId !== 'observed'
             ? {
                 routeHints: ['/memory/discovered'],
                 coordinationRelays: ['/memory/relay'],
@@ -119,10 +129,14 @@ module.exports = {
       },
     });
     const native = await import(nativePath);
+    const phases: string[] = [];
     const abort = new AbortController();
-    const pending = client.connect(peerConnectInput('pending'), abort.signal);
+    const pending = client.connect(peerConnectInput('pending'), abort.signal, (phase) => {
+      phases.push(phase);
+    });
     await waitForRequestCount(native.default.stats, 1);
     assert.equal(routesPrepared, true);
+    assert.deepEqual(phases, ['discovering', 'connecting']);
     abort.abort();
     await assert.rejects(pending, /aborted/u);
 
@@ -146,6 +160,22 @@ module.exports = {
     await client.connect(peerConnectInput('fallback'));
     await assert.rejects(client.connect(peerConnectInput('unreachable')), (failure: unknown) => {
       return failure instanceof RuntimeHostPeerError && failure.code === 'transit_unavailable';
+    });
+    const selfContained = client.connect({
+      ...peerConnectInput('self-contained'),
+      coordinationRelays: ['/memory/explicit-relay'],
+    });
+    await selfContained;
+    assert.equal(preparedPeerIds.includes('self-contained'), true);
+    client.observeAuthenticatedRoutes({
+      peerId: 'observed',
+      routeHints: ['/memory/fresh'],
+      coordinationRelays: ['/memory/fresh-relay'],
+    });
+    await client.connect({
+      ...peerConnectInput('observed'),
+      routeHints: ['/memory/stale'],
+      coordinationRelays: ['/memory/stale-relay'],
     });
     assert.deepEqual(native.default.stats, {
       starts: 1,
@@ -193,6 +223,27 @@ module.exports = {
           coordinationRelays: ['/memory/relay'],
           transitRelayPeerIds: ['transit-peer'],
         },
+        {
+          requestId: 7,
+          peerId: 'self-contained',
+          routeHints: ['/memory/1'],
+          coordinationRelays: [],
+          transitRelayPeerIds: [],
+        },
+        {
+          requestId: 8,
+          peerId: 'self-contained',
+          routeHints: ['/memory/discovered', '/memory/1'],
+          coordinationRelays: ['/memory/relay', '/memory/explicit-relay'],
+          transitRelayPeerIds: ['transit-peer'],
+        },
+        {
+          requestId: 9,
+          peerId: 'observed',
+          routeHints: ['/memory/fresh', '/memory/stale'],
+          coordinationRelays: ['/memory/fresh-relay', '/memory/stale-relay'],
+          transitRelayPeerIds: [],
+        },
       ],
       cancellations: [1, 1],
     });
@@ -234,11 +285,15 @@ test('rejects an incomplete endpoint API and loads a compatible relative native 
     await writeFile(
       modulePath,
       `const stream = { read: async () => null, write: async () => {}, close: async () => {}, abort: () => {} };
+const starts = [];
 module.exports = {
+  starts,
   ensurePeerIdentity: async () => 'peer',
   signPeerIdentity: async () => ({ publicKey: Buffer.from('public'), signature: Buffer.from('signature') }),
   verifyPeerIdentity: () => true,
-  startPeerEndpoint: () => ({
+  startPeerEndpoint: (options) => {
+    starts.push(options);
+    return ({
     peerId: 'peer',
     listenAddresses: [],
     activeCoordinationRelays: [],
@@ -250,15 +305,19 @@ module.exports = {
     accept: async () => null,
     acceptMeshControl: async () => null,
     close: async () => {},
-  }),
+  });
+  },
 };
 `,
     );
     const endpoint = startRuntimeHostPeerEndpoint({
       nativePath: relative(process.cwd(), modulePath),
       keyPath: 'unused',
+      webRtcStunUrls: [],
     });
     assert.equal(endpoint.peerId, 'peer');
+    const native = await import(modulePath);
+    assert.deepEqual(native.default.starts, [{ keyPath: 'unused', webRtcStunUrls: [] }]);
     assert.equal(
       await ensureRuntimeHostPeerIdentity({ nativePath: modulePath, keyPath: 'unused' }),
       'peer',

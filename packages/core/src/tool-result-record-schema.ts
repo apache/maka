@@ -246,7 +246,8 @@ function isNonShellToolResultContent(value: unknown): value is ToolResultContent
         isFiniteNumber(value.originalEstimatedTokens) &&
         isFiniteNumber(value.originalBytes) &&
         isFiniteNumber(value.rewriteVersion) &&
-        value.reason === 'stale_tool_result_pruned_before_compact'
+        (value.reason === 'stale_tool_result_pruned_before_compact' ||
+          value.reason === 'active_current_turn_tool_result_pruned_before_next_step')
       );
     case 'image':
       return (

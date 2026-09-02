@@ -37,27 +37,47 @@ import {
 const ACCESS_FILE_SCHEMA_VERSION = 4;
 const PRE_CAPABILITY_OWNER_ACCESS_FILE_SCHEMA_VERSION = 3;
 const ACCESS_FILE_MAX_BYTES = 512 * 1024;
-const LEGACY_TRANSCRIPT_QUERY_GRANT = 'session.transcript.query';
-const TRANSCRIPT_QUERY_REPLACEMENT_GRANTS = [
-  'session.transcript.page',
-  'session.transcript.overlay.release',
-] as const satisfies readonly OperationKey[];
-const TURN_QUERY_GRANT = 'session.turns.query';
-const TURN_QUERY_REPLACEMENT_GRANTS = [
-  TURN_QUERY_GRANT,
-  'session.turn_landmarks.query',
-] as const satisfies readonly OperationKey[];
-// Operations that left the protocol entirely. A previously issued access file
-// may still grant them; the grant is released on decode — there is nothing to
-// migrate it to — because failing the whole file would keep the Host from
-// starting over a capability it could not serve anyway.
-const RETIRED_OPERATION_GRANTS = new Set([
+// What a stored grant means to the current protocol. The access file is the
+// Host's own record of what it already granted, written by a build that may be
+// several releases old, and no peer is present to negotiate a version. An entry
+// here is the only thing that rewrites that record: `replace` carries the
+// stored authority to the operations that succeeded it, `release` drops it
+// because nothing did. A stored grant naming no entry is kept verbatim — see
+// `migratePersistedGrants`.
+type PersistedGrantMigration =
+  | {
+      readonly kind: 'replace';
+      // Non-empty by construction: a migration that names no successor is a
+      // release, and has to say so.
+      readonly successors: readonly [OperationKey, ...OperationKey[]];
+    }
+  | { readonly kind: 'release' };
+
+const PERSISTED_GRANT_MIGRATIONS: ReadonlyMap<string, PersistedGrantMigration> = new Map<
+  string,
+  PersistedGrantMigration
+>([
+  // The transcript query split into paging and its overlay release.
+  [
+    'session.transcript.query',
+    {
+      kind: 'replace',
+      successors: ['session.transcript.page', 'session.transcript.overlay.release'],
+    },
+  ],
+  // The Turn query kept its name and gained a separate landmark query beside it.
+  [
+    'session.turns.query',
+    { kind: 'replace', successors: ['session.turns.query', 'session.turn_landmarks.query'] },
+  ],
+  // TaskLedger became SessionTodo; the query carried its authority over.
+  ['task.ledger.query', { kind: 'replace', successors: ['session.todo.query'] }],
   // Retired with the Claude subscription provider, whose client identity the
   // usage report required.
-  'oauth.account.usage.fetch',
+  ['oauth.account.usage.fetch', { kind: 'release' }],
   // Retired with the second execution-inspection contract; no shipped surface
-  // called execution.inspect.resolve, so a stored grant is released on decode.
-  'execution.inspect.resolve',
+  // called execution.inspect.resolve.
+  ['execution.inspect.resolve', { kind: 'release' }],
 ]);
 
 export const ACCESS_FILE_NAME = 'runtime-host-access.json';
@@ -76,13 +96,27 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'session.transcript.overlay.release',
 ] as const satisfies readonly OperationKey[]);
 
+// A Client Capability provider serves exactly this much and nothing else. It
+// sits beside the Session Guest list because both are principal policy that
+// `effectiveOperationGrants` re-applies on every decode: what a principal may
+// hold is decided by the running build, never by what its record happens to say.
+export const CAPABILITY_PROVIDER_OPERATION_GRANTS = Object.freeze([
+  'host.status',
+  'client.capability.replace',
+  'client.capability.unregister',
+] as const satisfies readonly OperationKey[]);
+
 export interface StoredAccessCredential {
   readonly credentialId: string;
   readonly credentialHash: string;
   readonly principalId: string;
   readonly principalKind: AccessCredentialPrincipalKind;
   readonly status: 'pending' | 'active' | 'revoked';
-  readonly operationGrants: readonly OperationKey[];
+  // What this credential was granted, as the file records it. Kept verbatim
+  // across versions the current build does not share a vocabulary with, so it
+  // is a `string[]`, not an `OperationKey[]`. What the credential may actually
+  // exercise is derived by `effectiveOperationGrants` and never written back.
+  readonly grants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
   readonly capabilityOwner?: ClientCapabilityOwnerIdentity;
@@ -140,6 +174,46 @@ export function createAccessCredentialFile(
 
 export function issuedAccessGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
   return validateIssuedGrants([...new Set<OperationKey>(['host.status', ...grants])]);
+}
+
+// What the running build lets this credential exercise. Derived from the record
+// on every decode and never persisted: a grant the current protocol does not
+// define, or that the current policy for this principal no longer allows, is
+// absent here while staying in the record. Dropping it from the record instead
+// would make an unrelated later write erase it for good (#4420).
+export function effectiveOperationGrants(
+  credential: StoredAccessCredential,
+): readonly OperationKey[] {
+  // A Session Guest holds whatever the guest policy grants now. Its record was
+  // never authoritative — issuance writes the policy list wholesale.
+  if (credential.principalKind === 'session_guest') return SESSION_GUEST_OPERATION_GRANTS;
+  const permitted =
+    credential.principalKind === 'capability_provider'
+      ? new Set<string>(CAPABILITY_PROVIDER_OPERATION_GRANTS)
+      : undefined;
+  return Object.freeze(
+    credential.grants.filter(
+      (grant): grant is OperationKey =>
+        Object.hasOwn(HOST_OPERATION_SPECS, grant) &&
+        operationAllowsRemoteOwner(grant as OperationKey) &&
+        (permitted === undefined || permitted.has(grant)),
+    ),
+  );
+}
+
+// Stored grants this build can neither serve nor account for: absent from the
+// protocol and named by no migration entry. A rename that ships without its
+// entry leaves its old key here, which is what the released forward roll
+// asserts against — the record survives, so the omission is recoverable, but it
+// is still an omission.
+export function unresolvedPersistedGrants(file: AccessCredentialFile): readonly string[] {
+  const unresolved = new Set<string>();
+  for (const credential of file.credentials) {
+    for (const grant of credential.grants) {
+      if (!Object.hasOwn(HOST_OPERATION_SPECS, grant)) unresolved.add(grant);
+    }
+  }
+  return Object.freeze([...unresolved].sort());
 }
 
 export function assertAccessCredentialFileCapacity(file: AccessCredentialFile): void {
@@ -224,8 +298,40 @@ export async function writeAccessCredentialFile(
   }
 }
 
+// The on-disk shape, stated once. The record's field is `grants` in memory and
+// `operationGrants` on disk, and only what this function names is written — so
+// a field added to the runtime type cannot reach the file by accident, and the
+// key an older build reads keeps its published name.
+function encodeAccessCredentialFile(file: AccessCredentialFile): unknown {
+  return {
+    schemaVersion: file.schemaVersion,
+    credentials: file.credentials.map((credential) => ({
+      credentialId: credential.credentialId,
+      credentialHash: credential.credentialHash,
+      principalId: credential.principalId,
+      principalKind: credential.principalKind,
+      status: credential.status,
+      operationGrants: credential.grants,
+      canPublishClientCapabilities: credential.canPublishClientCapabilities,
+      canUseHostPaths: credential.canUseHostPaths,
+      ...(credential.capabilityOwner ? { capabilityOwner: credential.capabilityOwner } : {}),
+      createdAt: credential.createdAt,
+      ...(credential.bindClientInstanceOnFinalize === true
+        ? { bindClientInstanceOnFinalize: true }
+        : {}),
+      ...(credential.clientInstanceId === undefined
+        ? {}
+        : { clientInstanceId: credential.clientInstanceId }),
+      ...(credential.expiresAt === undefined ? {} : { expiresAt: credential.expiresAt }),
+      ...(credential.revokedAt === undefined ? {} : { revokedAt: credential.revokedAt }),
+    })),
+    sessionGrants: file.sessionGrants,
+    turnAccessRequests: file.turnAccessRequests,
+  };
+}
+
 function serializeAccessCredentialFile(file: AccessCredentialFile): string {
-  const contents = `${JSON.stringify(file, null, 2)}\n`;
+  const contents = `${JSON.stringify(encodeAccessCredentialFile(file), null, 2)}\n`;
   if (Buffer.byteLength(contents) > ACCESS_FILE_MAX_BYTES) {
     throw new RuntimeHostAccessCapacityError();
   }
@@ -316,29 +422,14 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     throw new Error('Invalid status');
   }
   if (!Array.isArray(value.operationGrants)) throw new Error('Invalid operationGrants');
-  const storedOperationGrants = value.operationGrants.map((grant) =>
+  const storedGrants = value.operationGrants.map((grant) =>
     requireStoredString(grant, 'operationGrant'),
   );
-  if (new Set(storedOperationGrants).size !== storedOperationGrants.length) {
+  if (new Set(storedGrants).size !== storedGrants.length) {
     throw new Error('Duplicate Runtime Host access operation grant');
   }
-  const migratedOperationGrants = validateStoredGrants(
-    migrateStoredOperationGrants(storedOperationGrants),
-  );
-  if (
-    principalKind === 'session_guest' &&
-    migratedOperationGrants.some(
-      (grant) => !(SESSION_GUEST_OPERATION_GRANTS as readonly OperationKey[]).includes(grant),
-    )
-  ) {
-    throw new Error('Session Guest credential has an invalid operation grant');
-  }
-  const operationGrants = Object.freeze(
-    principalKind === 'session_guest'
-      ? [...SESSION_GUEST_OPERATION_GRANTS]
-      : migratedOperationGrants.filter(operationAllowsRemoteOwner),
-  );
-  if (!operationGrants.includes('host.status')) {
+  const grants = migratePersistedGrants(storedGrants);
+  if (!grants.includes('host.status')) {
     throw new Error('Runtime Host access credential lacks its liveness grant');
   }
   if (
@@ -390,7 +481,7 @@ function decodeStoredCredential(value: unknown): StoredAccessCredential {
     principalId,
     principalKind,
     status: value.status,
-    operationGrants,
+    grants,
     canPublishClientCapabilities: value.canPublishClientCapabilities,
     canUseHostPaths: value.canUseHostPaths,
     ...(capabilityOwner ? { capabilityOwner } : {}),
@@ -440,37 +531,43 @@ function decodeCapabilityOwner(value: unknown): ClientCapabilityOwnerIdentity | 
   return Object.freeze({ principalId, clientInstanceId });
 }
 
-function migrateStoredOperationGrants(grants: readonly string[]): readonly string[] {
+// Rewrites the record, and only where a migration entry says to. A stored grant
+// naming no entry is carried through unchanged, whether or not this build knows
+// it: an older build must not erase a key a newer one wrote, and a newer build
+// must not erase a key whose migration entry was forgotten. Both erasures are
+// permanent, because the next unrelated mutation rewrites the whole file.
+function migratePersistedGrants(grants: readonly string[]): readonly string[] {
   const migrated: string[] = [];
   const seen = new Set<string>();
   for (const stored of grants) {
-    const replacements = RETIRED_OPERATION_GRANTS.has(stored)
-      ? []
-      : stored === LEGACY_TRANSCRIPT_QUERY_GRANT
-        ? TRANSCRIPT_QUERY_REPLACEMENT_GRANTS
-        : stored === TURN_QUERY_GRANT
-          ? TURN_QUERY_REPLACEMENT_GRANTS
-          : [stored];
-    for (const replacement of replacements) {
-      if (seen.has(replacement)) continue;
-      seen.add(replacement);
-      migrated.push(replacement);
+    const migration = PERSISTED_GRANT_MIGRATIONS.get(stored);
+    const successors: readonly string[] = migration
+      ? migration.kind === 'replace'
+        ? migration.successors
+        : []
+      : [stored];
+    for (const successor of successors) {
+      if (seen.has(successor)) continue;
+      seen.add(successor);
+      migrated.push(successor);
     }
   }
-  return migrated;
+  return Object.freeze(migrated);
 }
 
-function validateStoredGrants(grants: readonly string[]): readonly OperationKey[] {
+// The issuance gate. Nothing the current protocol does not define may enter the
+// record through this Host; what a predecessor already wrote is the decoder's
+// problem, not this one's.
+function assertCurrentOperations(grants: readonly OperationKey[]): void {
   for (const grant of grants) {
     if (!Object.hasOwn(HOST_OPERATION_SPECS, grant)) {
       throw new RuntimeHostAccessInputError(`Unknown Runtime Host operation grant: ${grant}`);
     }
   }
-  return Object.freeze([...grants] as OperationKey[]);
 }
 
 function validateIssuedGrants(grants: readonly OperationKey[]): readonly OperationKey[] {
-  validateStoredGrants(grants);
+  assertCurrentOperations(grants);
   for (const grant of grants) {
     if (!operationAllowsRemoteOwner(grant)) {
       throw new RuntimeHostAccessInputError(`Runtime Host operation ${grant} is local-owner only`);

@@ -41,6 +41,8 @@ export function useChatScroll(input: {
   sessionId?: string;
   messages: readonly StoredMessage[];
   target?: { turnId: string; nonce: number };
+  restoreTarget?: { turnId: string; unavailable?: boolean };
+  onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
   hasOlderHistory?: boolean;
   onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
@@ -51,6 +53,31 @@ export function useChatScroll(input: {
   loadEarlierRef.current = input.onLoadEarlierHistory;
   const canLoadEarlier = input.onLoadEarlierHistory !== undefined;
   const handledTarget = useRef<string | null>(null);
+  const anchorChangeRef = useRef(input.onReadingAnchorChange);
+  anchorChangeRef.current = input.onReadingAnchorChange;
+  const reportReadingAnchor = useRef<(() => void) | undefined>(undefined);
+  const reportedAnchor = useRef<{ sessionId?: string; turnId?: string } | undefined>(undefined);
+  const activation = useRef<{ sessionId?: string; restoreTurnId?: string } | undefined>(undefined);
+  if (activation.current?.sessionId !== input.sessionId) {
+    handledTarget.current = null;
+    activation.current = {
+      sessionId: input.sessionId,
+      restoreTurnId: input.restoreTarget?.turnId,
+    };
+  }
+  const restoreUnavailable =
+    input.restoreTarget?.turnId === activation.current?.restoreTurnId
+    && input.restoreTarget?.unavailable === true;
+  const commandTarget = useRef<string | null>(null);
+  commandTarget.current = input.target?.turnId
+    ? `search:${input.sessionId ?? ''}:${input.target.turnId}:${input.target.nonce}`
+    : activation.current?.restoreTurnId
+      ? restoreCommandKey(
+          input.sessionId,
+          activation.current.restoreTurnId,
+          restoreUnavailable,
+        )
+      : null;
 
   // A passive effect, not a layout one: the scroller is Astryx's layout root,
   // an ancestor, and React attaches a parent's ref after its children's layout
@@ -58,12 +85,48 @@ export function useChatScroll(input: {
   // which lands after passive effects, so this is still installed in time.
   useEffect(() => authority.attach(input.scrollRef.current), [authority, input.scrollRef]);
 
-  // A new conversation arrives at its tail. Nothing special positions it: the
-  // pin is set here and the first fill is growth like any other, so it takes
-  // the one path instead of a first-fill path of its own.
+  // A new conversation either resumes a semantic reading position or arrives
+  // at its tail. Releasing before an async fill is essential: an empty
+  // transcript clamps every pixel offset to zero, but it cannot erase a Turn
+  // identity.
   useEffect(() => {
-    authority.pinToTail();
+    if (activation.current?.restoreTurnId) authority.releasePin();
+    else authority.pinToTail();
   }, [input.sessionId]);
+
+  useEffect(() => {
+    const report = (): void => {
+      const snapshot = authority.getSnapshot();
+      // A release is part of both navigation commands. Until the command has
+      // actually landed, neither an intermediate bounded range nor an empty
+      // one says anything new about where the reader intended to be.
+      if (commandTarget.current && handledTarget.current !== commandTarget.current) return;
+      const turnId = snapshot.pinned
+        ? undefined
+        : firstVisibleTurnId(input.scrollRef.current);
+      // An empty bounded range has no new reading position. In particular,
+      // releasing the pin before a remembered range loads must not erase the
+      // Turn that caused that range to be requested.
+      if (!snapshot.pinned && !turnId) return;
+      const previous = reportedAnchor.current;
+      if (
+        previous !== undefined &&
+        previous.sessionId === input.sessionId &&
+        previous.turnId === turnId
+      ) return;
+      reportedAnchor.current = { sessionId: input.sessionId, turnId };
+      anchorChangeRef.current?.(turnId);
+    };
+    reportReadingAnchor.current = report;
+    report();
+    const stopWatchingPolicy = authority.subscribe(report);
+    const stopWatchingReader = authority.subscribeToReaderScroll(report);
+    return () => {
+      if (reportReadingAnchor.current === report) reportReadingAnchor.current = undefined;
+      stopWatchingPolicy();
+      stopWatchingReader();
+    };
+  }, [authority, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
     const root = input.scrollRef.current;
@@ -72,17 +135,14 @@ export function useChatScroll(input: {
     // request while one is in flight, and asking for history the reader
     // already has is idempotent anyway.
     const requestEarlier = (): void => {
-      const rootTop = root.getBoundingClientRect().top;
-      const anchor = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
-        (turn) => turn.getBoundingClientRect().bottom > rootTop,
-      );
+      const anchorTurnId = firstVisibleTurnId(root);
       // The browser anchors the reader against everything that lands above
       // them, with one exception: it declines while the scroller sits at zero,
       // which is exactly where a wheel asks for history. One pixel is the whole
       // fix — measured in Chromium, an insert of 501px above the reader moves
       // `scrollTop` by 501 at an offset of 1 and by 0 at an offset of 0.
       if (root.scrollTop < 1) root.scrollTop = 1;
-      void Promise.resolve(loadEarlierRef.current?.(anchor?.dataset.turnId)).catch(() => undefined);
+      void Promise.resolve(loadEarlierRef.current?.(anchorTurnId)).catch(() => undefined);
     };
     /** Close enough to the start that the reader is about to reach it. */
     const nearStart = (): boolean =>
@@ -121,40 +181,92 @@ export function useChatScroll(input: {
   }, [authority, input.hasOlderHistory, canLoadEarlier, input.scrollRef, input.sessionId]);
 
   useEffect(() => {
-    const target = input.target;
-    if (!target?.turnId) return;
+    const explicitTarget = input.target?.turnId
+      ? { kind: 'search' as const, turnId: input.target.turnId, nonce: input.target.nonce }
+      : undefined;
+    const restoreTurnId = activation.current?.restoreTurnId;
+    const target = explicitTarget ?? (restoreTurnId
+      ? {
+          kind: 'restore' as const,
+          turnId: restoreTurnId,
+          unavailable: restoreUnavailable,
+        }
+      : undefined);
+    if (!target) return;
+    if (explicitTarget) activation.current = { sessionId: input.sessionId };
     // This effect re-runs on every transcript update so a target that arrives
     // before its turn still lands. It stops for good once the turn is on
     // screen — repeating the release afterwards would take the tail away from
     // a reader who had already scrolled back to it.
-    const chosen = `${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`;
+    const chosen = target.kind === 'search'
+      ? `search:${input.sessionId ?? ''}:${target.turnId}:${target.nonce}`
+      : restoreCommandKey(input.sessionId, target.turnId, target.unavailable);
     if (handledTarget.current === chosen) return;
     authority.releasePin();
     const frame = window.requestAnimationFrame(() => {
       const root = input.scrollRef.current;
       if (!root) return;
       const element = root.querySelector(`[data-turn-id="${CSS.escape(target.turnId)}"]`);
-      if (!element || !('scrollIntoView' in element)) return;
+      if (!element || !('scrollIntoView' in element)) {
+        if (target.kind !== 'restore' || !target.unavailable) return;
+        handledTarget.current = chosen;
+        activation.current = { sessionId: input.sessionId };
+        if (!firstVisibleTurnId(root)) authority.pinToTail();
+        reportReadingAnchor.current?.();
+        return;
+      }
       handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
-      targetElement.setAttribute('tabindex', '-1');
       targetElement.scrollIntoView({
-        behavior: input.behavior,
-        block: 'center',
+        behavior: target.kind === 'search' ? input.behavior : 'auto',
+        block: target.kind === 'search' ? 'center' : 'start',
       });
+      // A command can land at the browser's existing offset and therefore
+      // produce no scroll event. Reuse the authority-backed reporter so that
+      // switching away still retains the position the command established.
+      reportReadingAnchor.current?.();
+      if (target.kind === 'restore') return;
+      targetElement.setAttribute('tabindex', '-1');
       targetElement.focus({ preventScroll: true });
       setHighlightedTurnId(target.turnId);
     });
-    const clear = window.setTimeout(() => {
-      setHighlightedTurnId((current) => (current === target.turnId ? null : current));
-    }, 2200);
+    const clear = target.kind === 'search'
+      ? window.setTimeout(() => {
+          setHighlightedTurnId((current) => (current === target.turnId ? null : current));
+        }, 2200)
+      : undefined;
     return () => {
       window.cancelAnimationFrame(frame);
-      window.clearTimeout(clear);
+      if (clear !== undefined) window.clearTimeout(clear);
     };
-  }, [input.target?.turnId, input.target?.nonce, input.behavior, input.sessionId, input.messages, input.scrollRef]);
+  }, [
+    input.target?.turnId,
+    input.target?.nonce,
+    input.restoreTarget?.turnId,
+    input.restoreTarget?.unavailable,
+    input.behavior,
+    input.sessionId,
+    input.messages,
+    input.scrollRef,
+  ]);
 
   return {
     highlightedTurnId,
   };
+}
+
+function firstVisibleTurnId(root: HTMLElement | null): string | undefined {
+  if (!root) return undefined;
+  const rootTop = root.getBoundingClientRect().top;
+  return [...root.querySelectorAll<HTMLElement>('[data-turn-id]')]
+    .find((turn) => turn.getBoundingClientRect().bottom > rootTop)
+    ?.dataset.turnId;
+}
+
+function restoreCommandKey(
+  sessionId: string | undefined,
+  turnId: string,
+  unavailable: boolean,
+): string {
+  return `restore:${sessionId ?? ''}:${turnId}:${unavailable ? 'unavailable' : 'pending'}`;
 }

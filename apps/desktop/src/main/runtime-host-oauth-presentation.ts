@@ -37,7 +37,7 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
   constructor(private readonly openSystemBrowser: (url: string) => Promise<void>) {}
 
   expect(attemptId: string): OAuthPresentationExpectation {
-    this.#pending?.reject(new Error('Another OAuth presentation replaced this attempt'));
+    if (this.#pending) throw new Error('Another OAuth login is already in progress');
     let resolvePresented!: (presentation: OAuthExternalPresentation) => void;
     let rejectPresented!: (reason?: unknown) => void;
     let presentedSettled = false;
@@ -45,9 +45,8 @@ export class RuntimeHostOAuthPresentation implements OAuthPresentationBackend {
       resolvePresented = accept;
       rejectPresented = decline;
     });
-    // If a later expect() supersedes this one before waitForPresentation
-    // attaches, Node would log UnhandledPromiseRejection. Keep a no-op
-    // handler; real waiters still observe the same rejection.
+    // The timeout can fire before waitForPresentation attaches. Keep a no-op
+    // handler; the real waiter still observes the same rejection.
     void presented.catch(() => undefined);
     const timer = setTimeout(() => {
       if (this.#pending?.attemptId !== attemptId) return;

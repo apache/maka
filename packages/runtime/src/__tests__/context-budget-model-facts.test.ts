@@ -58,3 +58,22 @@ test('a relay user declaration remains ahead of runtime and static model facts',
 
   assert.equal(resolveSelectedModelContextWindow(connection, undefined), 32_000);
 });
+
+test('a model-facts context window is the authoritative user declaration', () => {
+  const connection = {
+    slug: 'relay',
+    providerType: 'openai-compatible' as const,
+    defaultModel: 'relay-model',
+    models: [
+      {
+        id: 'relay-model',
+        contextWindow: 200_000,
+        inputLimit: 200_000,
+        factOverriddenFields: ['contextWindow', 'inputLimit'] as const,
+      },
+    ],
+    relayModelProfiles: { 'relay-model': { contextWindow: 8_192 } },
+  };
+
+  assert.equal(resolveSelectedModelContextWindow(connection, undefined), 200_000);
+});

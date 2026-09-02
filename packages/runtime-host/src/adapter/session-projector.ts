@@ -483,9 +483,6 @@ export class RuntimeHostSessionProjector {
         recoverable: false,
         reason: root.failureClass,
         message: root.failureMessage ?? `Turn failed: ${root.failureClass}`,
-        ...(root.contextBudgetExhaustedDetail
-          ? { details: { contextBudgetExhaustedDetail: root.contextBudgetExhaustedDetail } }
-          : {}),
       });
     } else {
       events.push({
@@ -574,6 +571,16 @@ export function projectRuntimeHostInteractionRequest(
         ...base,
         justification: interaction.request.justification,
         expansion: interaction.request.expansion,
+      },
+    ];
+  }
+  if (interaction.request.kind === 'client_capability') {
+    return [
+      {
+        type: 'client_capability_request',
+        ...base,
+        capability: interaction.request.target.capability,
+        scope: structuredClone(interaction.request.target.scope),
       },
     ];
   }

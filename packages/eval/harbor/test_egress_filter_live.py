@@ -165,6 +165,23 @@ def docker_image_present(image: str) -> bool:
 
 def finish_memory_bio_handshake(tls, incoming, outgoing, sock, timeout_s: float) -> str:
     deadline = time.monotonic() + timeout_s
+
+    def recv_within_deadline() -> bytes:
+        # One slow segment must not run on the socket's own timeout clock.
+        # Under CI load a recv that outlives the caller's settimeout() fails
+        # even when the handshake deadline still has budget, which is what
+        # made the fragmented handshake flaky (#4240). Wait at most until
+        # the deadline, then restore whatever the caller configured.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise AssertionError("fragmented TLS handshake did not complete")
+        previous = sock.gettimeout()
+        sock.settimeout(remaining)
+        try:
+            return sock.recv(16 * 1024)
+        finally:
+            sock.settimeout(previous)
+
     while time.monotonic() < deadline:
         try:
             tls.do_handshake()
@@ -175,7 +192,7 @@ def finish_memory_bio_handshake(tls, incoming, outgoing, sock, timeout_s: float)
             pending = outgoing.read()
             if pending:
                 sock.sendall(pending)
-            response = sock.recv(16 * 1024)
+            response = recv_within_deadline()
             if not response:
                 raise AssertionError("proxy closed during the fragmented TLS handshake")
             incoming.write(response)
@@ -217,6 +234,12 @@ class MemoryBioHandshakeDriverTest(unittest.TestCase):
                 return "TLSv1.3"
 
         class FakeSocket:
+            def gettimeout(self):
+                return 10.0
+
+            def settimeout(self, _value):
+                pass
+
             def sendall(self, data):
                 events.append(("send", data))
 
@@ -237,6 +260,55 @@ class MemoryBioHandshakeDriverTest(unittest.TestCase):
                 ("write", b"server-finished"),
             ],
         )
+
+    def test_recv_waits_until_the_deadline_not_an_independent_socket_clock(self) -> None:
+        timeouts = []
+
+        class FakeTls:
+            calls = 0
+
+            def do_handshake(self):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise ssl.SSLWantReadError()
+
+            def version(self):
+                return "TLSv1.3"
+
+        class FakeIncoming:
+            def write(self, _data):
+                pass
+
+        class FakeOutgoing:
+            def read(self):
+                return b""
+
+        class FakeSocket:
+            def gettimeout(self):
+                return 10.0
+
+            def settimeout(self, value):
+                timeouts.append(value)
+
+            def recv(self, _size):
+                return b"segment"
+
+        result = finish_memory_bio_handshake(
+            FakeTls(), FakeIncoming(), FakeOutgoing(), FakeSocket(), timeout_s=20
+        )
+
+        self.assertEqual(result, "TLSv1.3")
+        # Two fragmented reads happened; each was bounded by the remaining
+        # handshake deadline rather than the caller's 10s socket timeout,
+        # and the caller's timeout was restored after every recv.
+        bounded = timeouts[0::2]
+        restores = timeouts[1::2]
+        self.assertEqual(len(bounded), 2)
+        self.assertEqual(restores, [10.0, 10.0])
+        for value in bounded:
+            self.assertGreater(value, 0)
+            self.assertLessEqual(value, 20)
+        self.assertLessEqual(bounded[1], bounded[0])
 
 
 @unittest.skipUnless(

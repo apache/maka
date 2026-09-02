@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ActiveInteractionRequestEvent } from '@maka/core/events';
+import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
 
 export type ComposerInteraction = ActiveInteractionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;
@@ -55,6 +55,29 @@ export function dequeueInteractionByToolUseId(
 export function clearInteractions(queues: InteractionQueues, sessionId: string): InteractionQueues {
   if (!queues[sessionId]?.length) return queues;
   return { ...queues, [sessionId]: [] };
+}
+
+export function reduceInteractionQueues(
+  queues: InteractionQueues,
+  sessionId: string,
+  event: SessionEvent,
+): InteractionQueues {
+  switch (event.type) {
+    case 'sandbox_boundary_request':
+    case 'client_capability_request':
+    case 'user_question_request':
+      return enqueueInteraction(queues, sessionId, event);
+    case 'sandbox_boundary_decision_ack':
+    case 'client_capability_decision_ack':
+    case 'user_question_answer_ack':
+      return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
+    case 'tool_result':
+      return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);
+    case 'error':
+      return clearInteractions(queues, sessionId);
+    default:
+      return queues;
+  }
 }
 
 /**

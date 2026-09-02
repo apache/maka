@@ -71,6 +71,7 @@ import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { AstryxLocaleProvider } from './astryx-i18n.js';
 import { InlineReferenceText } from './inline-reference.js';
+import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
@@ -155,6 +156,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   ts?: number;
   attachments?: readonly AttachmentRef[];
   quotes?: readonly QuoteRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   inlineReferences?: readonly InlineReference[];
   sessionMailbox?: ChatItem['sessionMailbox'];
   /** When set on a user message, show an edit affordance that starts a revision draft. */
@@ -233,6 +235,13 @@ const UserMessageBody = memo(function UserMessageBody(props: {
           ))}
         </HStack>
       ) : null}
+      {props.directoryReferences?.length ? (
+        <HStack gap={1} wrap="wrap" maxWidth="100%">
+          {props.directoryReferences.map((reference, index) => (
+            <DirectoryReferenceChip key={index} reference={reference} />
+          ))}
+        </HStack>
+      ) : null}
       {props.quotes && props.quotes.length > 0 ? (
         <div className="maka-user-quotes">
           {props.quotes.map((quote, index) => (
@@ -304,6 +313,7 @@ export function TransientUserMessage(props: {
           ts={message.ts}
           attachments={message.attachments}
           quotes={message.quotes}
+          directoryReferences={message.directoryReferences}
           inlineReferences={message.inlineReferences}
         />
       </LocalizedChatMessage>
@@ -583,6 +593,7 @@ export const TurnView = memo(function TurnView(props: {
             ts={turn.user.ts}
             attachments={turn.user.attachments}
             quotes={turn.user.quotes}
+            directoryReferences={turn.user.directoryReferences}
             inlineReferences={turn.user.inlineReferences}
             sessionMailbox={turn.user.sessionMailbox}
             onEditUserMessage={
@@ -590,11 +601,12 @@ export const TurnView = memo(function TurnView(props: {
                 ? () => props.onEditUserMessage?.(turn.turnId)
                 : undefined
             }
-            // A revision restages neither attachments nor quotes, so a turn
-            // carrying either can't be edited without silently dropping the
-            // reference the answer was grounded in.
+            // A revision restages neither attachments, directory references,
+            // nor quotes, so a turn carrying any of them can't be edited
+            // without silently dropping context the answer was grounded in.
             editDisabled={
               (turn.user.attachments?.length ?? 0) > 0 ||
+              (turn.user.directoryReferences?.length ?? 0) > 0 ||
               (turn.user.quotes?.length ?? 0) > 0 ||
               props.editUserMessageTransformed === true ||
               props.editUserMessageDisabled === true ||
@@ -604,11 +616,13 @@ export const TurnView = memo(function TurnView(props: {
             editDisabledReason={
               (turn.user.attachments?.length ?? 0) > 0
                 ? copy.editMessageDisabledAttachments
-                : (turn.user.quotes?.length ?? 0) > 0
-                  ? copy.editMessageDisabledQuotes
-                  : props.editUserMessageTransformed
-                    ? copy.editMessageDisabledTransformedText
-                    : copy.editMessageDisabledRunning
+                : (turn.user.directoryReferences?.length ?? 0) > 0
+                  ? copy.editMessageDisabledDirectoryReferences
+                  : (turn.user.quotes?.length ?? 0) > 0
+                    ? copy.editMessageDisabledQuotes
+                    : props.editUserMessageTransformed
+                      ? copy.editMessageDisabledTransformedText
+                      : copy.editMessageDisabledRunning
             }
           />
 
@@ -639,6 +653,7 @@ export const TurnView = memo(function TurnView(props: {
                 ts={message.ts}
                 attachments={message.attachments}
                 quotes={message.quotes}
+                directoryReferences={message.directoryReferences}
                 inlineReferences={message.inlineReferences}
                 sessionMailbox={message.sessionMailbox}
               />

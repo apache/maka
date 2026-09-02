@@ -39,6 +39,8 @@ export interface RuntimeHostPeerConnectInput {
   readonly directDeadlineMs: number;
 }
 
+export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
+
 export interface RuntimeHostPeerRouteResolver {
   resolveRoutes(peerId: string):
     | {
@@ -61,11 +63,18 @@ export interface RuntimeHostPeerClient {
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
+  observeAuthenticatedRoutes(input: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  }): void;
   connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream>;
   connectMeshControl(
     input: RuntimeHostPeerConnectInput,
@@ -88,6 +97,7 @@ export function createRuntimeHostPeerClientFromEnvironment(
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
@@ -109,6 +119,7 @@ export function createRuntimeHostPeerClient(input: {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
   readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
@@ -121,7 +132,15 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   readonly #listenAddresses: readonly string[] | undefined;
   readonly #coordinationRelays: readonly string[] | undefined;
   readonly #automaticRelayDiscovery: boolean;
+  readonly #webRtcStunUrls: readonly string[] | undefined;
   readonly #routeResolver: RuntimeHostPeerRouteResolver | undefined;
+  readonly #authenticatedRoutes = new Map<
+    string,
+    Readonly<{
+      routeHints: readonly string[];
+      coordinationRelays: readonly string[];
+    }>
+  >();
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
   #meshDraining: Promise<void> | undefined;
@@ -140,6 +159,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
     readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
@@ -148,6 +168,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#listenAddresses = input.listenAddresses;
     this.#coordinationRelays = input.coordinationRelays;
     this.#automaticRelayDiscovery = input.automaticRelayDiscovery ?? false;
+    this.#webRtcStunUrls =
+      input.webRtcStunUrls === undefined ? undefined : [...input.webRtcStunUrls];
     this.#routeResolver = input.routeResolver;
   }
 
@@ -190,6 +212,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void> {
     return this.#requireEndpoint()
@@ -199,11 +222,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       });
   }
 
+  observeAuthenticatedRoutes(input: {
+    readonly peerId: string;
+    readonly routeHints: readonly string[];
+    readonly coordinationRelays: readonly string[];
+  }): void {
+    if (input.routeHints.length === 0 && input.coordinationRelays.length === 0) return;
+    this.#authenticatedRoutes.set(
+      input.peerId,
+      Object.freeze({
+        routeHints: Object.freeze([...input.routeHints]),
+        coordinationRelays: Object.freeze([...input.coordinationRelays]),
+      }),
+    );
+  }
+
   async connect(
     input: RuntimeHostPeerConnectInput,
     signal?: AbortSignal,
+    onPhase?: (phase: RuntimeHostPeerConnectionPhase) => void,
   ): Promise<RuntimeHostPeerNativeStream> {
+    notifyPhase(onPhase, 'discovering');
     await this.#prepareRoutes(input, signal);
+    notifyPhase(onPhase, 'connecting');
     return this.#connect(input, signal, 'application');
   }
 
@@ -323,13 +364,18 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     const requestId = this.#allocateRequestId();
     const discovered =
       kind === 'application' ? this.#routeResolver?.resolveRoutes(input.peerId) : undefined;
+    const authenticated =
+      kind === 'application' ? this.#authenticatedRoutes.get(input.peerId) : undefined;
     const connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
       ...input,
-      routeHints: mergeAddresses(discovered?.routeHints ?? [], input.routeHints),
-      coordinationRelays: mergeAddresses(
-        discovered?.coordinationRelays ?? [],
-        input.coordinationRelays,
-      ),
+      routeHints: mergeAddresses(discovered?.routeHints ?? [], [
+        ...(authenticated?.routeHints ?? []),
+        ...input.routeHints,
+      ]),
+      coordinationRelays: mergeAddresses(discovered?.coordinationRelays ?? [], [
+        ...(authenticated?.coordinationRelays ?? []),
+        ...(input.coordinationRelays ?? []),
+      ]),
       transitRelayPeerIds: mergeValues(
         discovered?.transitRelayPeerIds ?? [],
         input.transitRelayPeerIds,
@@ -382,6 +428,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       ...(this.#listenAddresses ? { listenAddresses: this.#listenAddresses } : {}),
       ...(this.#coordinationRelays ? { coordinationRelays: this.#coordinationRelays } : {}),
       automaticRelayDiscovery: this.#automaticRelayDiscovery,
+      ...(this.#webRtcStunUrls === undefined ? {} : { webRtcStunUrls: this.#webRtcStunUrls }),
     });
     this.#endpoint = endpoint;
     this.#draining = this.#drainInbound(endpoint);
@@ -469,6 +516,17 @@ interface InboundConsumer {
   readonly onStream: (stream: RuntimeHostPeerNativeStream) => void;
   readonly resolve: () => void;
   readonly reject: (error: Error) => void;
+}
+
+function notifyPhase(
+  observer: ((phase: RuntimeHostPeerConnectionPhase) => void) | undefined,
+  phase: RuntimeHostPeerConnectionPhase,
+): void {
+  try {
+    observer?.(phase);
+  } catch {
+    // Connection progress is diagnostic state and cannot control the connection.
+  }
 }
 
 function waitForPeerConnectTurn(previous: Promise<void>, signal?: AbortSignal): Promise<void> {

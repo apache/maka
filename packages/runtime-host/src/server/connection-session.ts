@@ -358,6 +358,10 @@ export class RuntimeHostConnectionSession {
           this.#options.connection.authority,
           'runtime.policy.query',
         ),
+        connectionCatalog: hasRuntimeHostOperationGrant(
+          this.#options.connection.authority,
+          'connection.catalog.query',
+        ),
         projectCatalog: hasRuntimeHostOperationGrant(
           this.#options.connection.authority,
           'project.catalog.query',

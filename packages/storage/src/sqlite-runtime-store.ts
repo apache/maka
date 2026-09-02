@@ -2799,6 +2799,13 @@ export class SqliteRuntimeStore
     const dispatchEvent = dispatchJson
       ? decodeRuntimeEvent(JSON.parse(dispatchJson) as unknown)
       : undefined;
+    if (
+      dispatchEvent?.actions?.toolDispatch?.resultProjectionVersion === 1 &&
+      input.runtimeEvent.content?.kind === 'function_response' &&
+      input.runtimeEvent.content.modelProjection === undefined
+    ) {
+      throw new Error('Projected Tool Result T2 requires its durable model projection');
+    }
     if (dispatchEvent?.actions?.toolDispatch?.managedMutation) {
       const reservation = this.db
         .prepare(`

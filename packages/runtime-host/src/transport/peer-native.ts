@@ -49,11 +49,22 @@ export class RuntimeHostPeerError extends Error {
 
 export interface RuntimeHostPeerNativeStream {
   readonly peerId: string;
+  readonly path?: RuntimeHostPeerConnectionPath;
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
   close(): Promise<void>;
   abort(): void;
 }
+
+export type RuntimeHostPeerConnectionPath =
+  | {
+      readonly kind: 'direct';
+      readonly transport: 'quic' | 'tcp' | 'webrtc' | 'other';
+    }
+  | {
+      readonly kind: 'transit';
+      readonly relayPeerId: string;
+    };
 
 export interface RuntimeHostPeerIdentityProof {
   readonly publicKey: Buffer;
@@ -83,6 +94,7 @@ export interface RuntimeHostPeerNativeEndpoint {
   }): Promise<RuntimeHostPeerNativeStream>;
   configureTransit(options: {
     readonly allowedPeerIds: readonly string[];
+    readonly approvedRelayPeerIds: readonly string[];
     readonly relayCandidates: readonly RuntimeHostPeerTransitRelayCandidate[];
   }): Promise<void>;
   cancelConnect(requestId: number): Promise<boolean>;
@@ -127,6 +139,7 @@ interface RuntimeHostPeerNativeModule {
     readonly listenAddresses?: readonly string[];
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
   }): unknown;
 }
 
@@ -198,6 +211,7 @@ export function startRuntimeHostPeerEndpoint(input: {
   readonly listenAddresses?: readonly string[];
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
+  readonly webRtcStunUrls?: readonly string[];
 }): RuntimeHostPeerNativeEndpoint {
   try {
     const endpoint = loadNativeModule(input.nativePath).startPeerEndpoint({
@@ -208,6 +222,7 @@ export function startRuntimeHostPeerEndpoint(input: {
       ...(input.automaticRelayDiscovery === undefined
         ? {}
         : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
+      ...(input.webRtcStunUrls === undefined ? {} : { webRtcStunUrls: input.webRtcStunUrls }),
     });
     if (!isPeerNativeEndpoint(endpoint)) {
       throw new RuntimeHostPeerError(

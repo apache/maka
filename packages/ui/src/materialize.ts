@@ -63,6 +63,8 @@ export interface ChatItem {
   ts?: number;
   /** User-message attachments projected from StoredMessage; absent on assistant/system rows. */
   attachments?: AttachmentRef[];
+  /** Host-bound directory references projected from StoredMessage; user rows only. */
+  directoryReferences?: import('@maka/core/events').DirectoryReference[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
@@ -1124,6 +1126,7 @@ function chatItemFromContent(
     ...(content.quotes && content.quotes.length > 0
       ? { quotes: content.quotes }
       : {}),
+    ...(content.directoryReferences ? { directoryReferences: content.directoryReferences } : {}),
     ...(content.inlineReferences !== undefined
       ? { inlineReferences: content.inlineReferences }
       : {}),

@@ -19,10 +19,14 @@
 
 export { RuntimeHostPeerMeshDialog } from './ui/runtime-host-peer-mesh-dialog';
 export { PeerMeshPeerIdButton } from './ui/peer-mesh-peer-id-button';
+export { RuntimeHostAddComputerMenu } from './ui/runtime-host-add-computer-menu';
+export { RuntimeHostConnectionCodeButton } from './ui/runtime-host-connection-code-button';
+export { RuntimeHostConnectionCodeDialog } from './ui/runtime-host-connection-code-dialog';
 export {
   RuntimeHostPairingRecoveryButton,
   RuntimeHostProfileMoreMenu,
 } from './ui/runtime-host-profile-pairing-actions';
 export type { RuntimeHostPairingActionCopy } from './ui/runtime-host-profile-pairing-actions';
 export { RuntimeHostManagementServicesProvider } from './services-context';
+export { PeerMeshOperationOutcomeUnknownError } from './ports';
 export type { RuntimeHostManagementServices } from './ports';

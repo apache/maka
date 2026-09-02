@@ -76,6 +76,11 @@ test('publication verifies live asset digests before one Stable/Latest mutation'
       sourceCommit,
       exe,
       artifacts: { test: names },
+      releaseAssets: names,
+      updateFeeds: [
+        { name: 'latest-mac.yml', advertised: [macZip] },
+        { name: 'latest.yml', advertised: [exe] },
+      ],
     },
     repository: 'apache/maka',
     runId: '123',

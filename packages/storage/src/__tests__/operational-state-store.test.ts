@@ -996,13 +996,13 @@ test('rejects a nonempty database with no operational registry', async () => {
     'missing-registry',
     (database) =>
       database.exec(
-        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_task_ledger_events',
+        'DROP TABLE operational_schema_migrations; DROP TABLE workflow_session_todo_documents',
       ),
     /registry is missing from a nonempty database/,
     (database) =>
       assert.equal(
         database
-          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_task_ledger_events'")
+          .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_session_todo_documents'")
           .get(),
         undefined,
       ),

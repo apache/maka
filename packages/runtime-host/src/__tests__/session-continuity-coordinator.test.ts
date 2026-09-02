@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { setImmediate as delayImmediate } from 'node:timers/promises';
 import test from 'node:test';
@@ -44,6 +45,7 @@ import type { SessionContinuityFrameSink } from '../server/session-continuity-se
 import type { SessionTranscriptReader } from '../server/session-transcript-reader.js';
 import { ClientSessionSubscription } from '../client/session-subscription.js';
 import { transcriptReader } from './fixtures/session-transcript-reader.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const HOST_EPOCH = 'host-epoch';
 const SESSION_ID = 'session-1';
@@ -711,8 +713,8 @@ test('coalesces typed domain invalidations without publishing continuity project
   const opened = await open(coordinator, 'connection-1');
   connection.activate(opened.subscriptionId);
 
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
-  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'task');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
+  coordinator.enqueueSessionDomainChanged(SESSION_ID, 'todo');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'plan');
   coordinator.enqueueSessionDomainChanged(SESSION_ID, 'usage');
   await waitFor(() => sink.frames.length === 3);
@@ -724,7 +726,7 @@ test('coalesces typed domain invalidations without publishing continuity project
         : frame.kind,
     ),
     [
-      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'task' },
+      { kind: 'subscription.session_domain_changed', sequence: 1, domain: 'todo' },
       { kind: 'subscription.session_domain_changed', sequence: 2, domain: 'plan' },
       { kind: 'subscription.session_domain_changed', sequence: 3, domain: 'usage' },
     ],
@@ -2579,21 +2581,9 @@ function assistantMessage(text: string): Extract<StoredMessage, { type: 'assista
     modelId: 'test-model',
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await delayImmediate();
-  }
-  throw new Error('Timed out waiting for continuity state');
+  await pollFor(predicate, {
+    attempts: 100,
+    message: 'Timed out waiting for continuity state',
+  });
 }

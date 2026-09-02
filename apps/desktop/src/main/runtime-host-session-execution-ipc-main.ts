@@ -44,6 +44,7 @@ import {
   normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
+  normalizeClientCapabilityResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
@@ -180,6 +181,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     | 'loadTranscriptBefore'
     | 'observe'
     | 'openTranscript'
+    | 'releaseTarget'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -188,6 +190,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
 export function registerRuntimeHostSessionObservationIpc(
   deps: RuntimeHostSessionObservationIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
+  enableE2eControls = false,
 ): void {
   handleReconnectableRead(
     ipcMain,
@@ -223,6 +226,11 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
+  if (enableE2eControls) {
+    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
+      deps.observations.releaseTarget(event.sender.id),
+    );
+  }
 }
 
 /**
@@ -389,6 +397,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -421,7 +430,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: submitted.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: submitted.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: submitted.skillInvocation,
         };
       }
       // The sending surface believed this Session idle; nudge it to refresh so
@@ -434,7 +443,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(sideConversation ? { messageId } : {}),
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: submitted.skillInvocation,
       };
     },
   );
@@ -510,6 +519,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -536,7 +546,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: result.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: result.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: result.skillInvocation,
         };
       }
       // The submitting surface believed this Session idle when it steered;
@@ -547,7 +557,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         disposition: result.disposition,
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: result.skillInvocation,
       };
     },
   );
@@ -669,6 +679,22 @@ export function registerRuntimeHostSessionExecutionIpc(
         sessionId,
         interactionId: response.requestId,
         answer: { kind: "question", answers: response.answers },
+      });
+      deps.observer.publishInteractionAnswer(answered, pending);
+    },
+  );
+  ipcMain.handle(
+    "sessions:respondToClientCapability",
+    async (_event, sessionId: string, input: unknown) => {
+      const response = normalizeClientCapabilityResponse(input);
+      const pending = await requireInteraction(deps.observer, sessionId, response.requestId);
+      if (pending.request.kind !== "client_capability") {
+        throw new Error("Interaction is not a Client Capability request");
+      }
+      const answered = await deps.client.answerInteraction({
+        sessionId,
+        interactionId: response.requestId,
+        answer: { kind: "client_capability", decision: response.decision },
       });
       deps.observer.publishInteractionAnswer(answered, pending);
     },

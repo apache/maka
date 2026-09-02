@@ -191,7 +191,7 @@
   font: var(--maka-text-supporting);
   min-width: 0;
   overflow: hidden;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   text-overflow: ellipsis;
   white-space: nowrap;
 }

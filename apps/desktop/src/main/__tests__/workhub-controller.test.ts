@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import type { WorkHubCoordinationActInput } from '@maka/runtime-host/protocol';
 import {
   createWorkHubController as createGatedWorkHubController,
   WORKHUB_ROUTING_STRATEGY_ID,
@@ -27,6 +28,10 @@ import {
   type WorkHubSessionPort,
   type WorkHubCoordinationTurn,
 } from '../../renderer/workhub-controller.js';
+import {
+  createWorkHubRoutePolicy,
+  workHubNewSessionName,
+} from '../../renderer/workhub-route-policy.js';
 
 const appShellUrl = [
   new URL('../../renderer/app-shell.tsx', import.meta.url),
@@ -153,6 +158,33 @@ function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
             ...(admitted.steered ? { steered: true as const } : {}),
           };
         }
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            const created = await sessions.create({ name: input.proposal.target.title });
+            const admitted = await sessions.submit(created.target, input.userText, input.actionId);
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: created.target.sessionId,
+              targetTurnId: admitted.turnId,
+              ...(admitted.steered ? { steered: true as const } : {}),
+            };
+          }
+          const replacementTarget = candidateByRef.get(input.proposal.target.candidateRef);
+          if (!replacementTarget) throw new Error('unknown test replacement candidate');
+          const admitted = await sessions.submit(
+            replacementTarget.target,
+            input.userText,
+            input.actionId,
+          );
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId: replacementTarget.target.sessionId,
+            targetTurnId: admitted.turnId,
+            ...(admitted.steered ? { steered: true as const } : {}),
+          };
+        }
         const target = candidateByRef.get(input.proposal.candidateRef);
         if (!target) throw new Error('unknown test candidate');
         const admitted = await sessions.submit(target.target, input.userText, input.actionId);
@@ -174,12 +206,14 @@ function coordinationAssignmentTurn(): WorkHubCoordinationTurn {
     text: 'Continue payments',
     state: 'completed',
     assignment: {
+      actionId: 'action-1',
       delegationId: 'delegation-1',
       targetSessionId: 'payment',
       targetSessionName: 'Payments',
       targetMessageId: 'payment-message',
       targetTurnId: 'payment-turn',
       feedbackState: 'accepted',
+      linkState: 'active',
     },
     updatedAt: 10,
   };
@@ -203,7 +237,11 @@ test('conversation acknowledges a durable assignment before projecting target ex
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([assignment]);
+        handler([assignment], [{
+          actionId: assignment.assignment!.actionId,
+          targetSessionId: assignment.assignment!.targetSessionId,
+          sequence: 0,
+        }]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -247,7 +285,12 @@ test('conversation feedback never lets an older refresh overwrite newer target s
     sessions,
     coordination: {
       open: async (handler) => {
-        handler([coordinationAssignmentTurn()]);
+        const assignment = coordinationAssignmentTurn();
+        handler([assignment], [{
+          actionId: assignment.assignment!.actionId,
+          targetSessionId: assignment.assignment!.targetSessionId,
+          sequence: 0,
+        }]);
         return { close: async () => undefined };
       },
       record: async (input) => ({ turnId: input.turnId }),
@@ -1428,7 +1471,7 @@ test('production retry reaches durable Action Gate replay while target is waitin
   assert.equal(actions.length, 1);
 });
 
-test('production defers destructive correction until persistent delegation exists', async () => {
+test('production sends an explicit correction as a linked replacement', async () => {
   const actions: unknown[] = [];
   const sessions = port([session('source'), session('target')]);
   const controller = createGatedWorkHubController({
@@ -1465,21 +1508,40 @@ test('production defers destructive correction until persistent delegation exist
       }),
       act: async (input) => {
         actions.push(input);
-        throw new Error('incomplete correction must not reach the Action Gate');
+        return {
+          disposition: 'replace',
+          replacementDisposition: 'delegate_existing',
+          targetSessionId: 'target',
+          targetTurnId: 'replacement-turn',
+        };
       },
     },
   });
 
-  await assert.rejects(
-    controller.submit({
-      requestId: 'deferred-correction',
-      text: 'No, use target instead',
-      explicitTarget: { sessionId: 'target' },
-      correction: { from: { sessionId: 'source' }, turnId: 'source-turn' },
-    }),
-    /linked correction requires persistent delegation support/u,
-  );
-  assert.deepEqual(actions, []);
+  const result = await controller.submit({
+    requestId: 'linked-correction',
+    text: 'No, use target instead',
+    explicitTarget: { sessionId: 'target' },
+    correction: { from: { sessionId: 'source' }, sourceActionId: 'source-action' },
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.deepEqual(actions, [
+    {
+      actionId: 'linked-correction',
+      userText: 'No, use target instead',
+      candidateSetId: `sha256:${'d'.repeat(64)}`,
+      confirmation: { kind: 'user_correction' },
+      proposal: {
+        disposition: 'replace',
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing',
+          candidateRef: 'candidate-target',
+        },
+      },
+    },
+  ]);
 });
 
 const PRODUCTION_CORRECTION_CREATION_CASES = [
@@ -1497,8 +1559,8 @@ const PRODUCTION_CORRECTION_CREATION_CASES = [
   ['production-correction-with-alternate-cue-zh', '不对，创建一个新会话叫Login'],
 ] as const;
 
-test('production natural-language correction fails closed before a second delegation', async () => {
-  const actions: unknown[] = [];
+test('production natural-language corrections retain the prior delegation link', async () => {
+  const actions: WorkHubCoordinationActInput[] = [];
   const sessions = port([
     session('login', {
       sessionName: '登录稳定性',
@@ -1544,10 +1606,30 @@ test('production natural-language correction fails closed before a second delega
       candidates: async () => ({ candidateSetId, candidates }),
       act: async (input) => {
         actions.push(input);
+        if (input.proposal.disposition === 'replace') {
+          if (input.proposal.target.disposition === 'create_new') {
+            return {
+              disposition: 'replace',
+              replacementDisposition: 'create_new',
+              targetSessionId: `created-${input.actionId}`,
+              targetTurnId: `turn-${input.actionId}`,
+            };
+          }
+          return {
+            disposition: 'replace',
+            replacementDisposition: 'delegate_existing',
+            targetSessionId: input.proposal.target.candidateRef === 'candidate-login'
+              ? 'login'
+              : 'payment',
+            targetTurnId: 'runtime-login-turn',
+          };
+        }
+        if (input.proposal.disposition !== 'delegate_existing') {
+          throw new Error('unexpected test disposition');
+        }
         return {
           disposition: 'delegate_existing',
-          targetSessionId: input.proposal.disposition === 'delegate_existing' &&
-              input.proposal.candidateRef === 'candidate-login'
+          targetSessionId: input.proposal.candidateRef === 'candidate-login'
             ? 'login'
             : 'payment',
           targetTurnId: input.actionId === 'production-wrong-payment'
@@ -1563,30 +1645,37 @@ test('production natural-language correction fails closed before a second delega
     text: '继续这个工作，补充验收项',
   });
 
-  await assert.rejects(
-    controller.submit({
-      requestId: 'production-natural-correction',
-      text: '不是这个，换成登录那个，补充刷新令牌失败判定',
-    }),
-    /linked correction requires persistent delegation support/u,
+  const corrected = await controller.submit({
+    requestId: 'production-natural-correction',
+    text: '不是这个，换成登录稳定性，补充刷新令牌失败判定',
+  });
+  assert.equal(corrected.kind, 'submitted');
+
+  const [creationRequestId, creationText] = PRODUCTION_CORRECTION_CREATION_CASES[0];
+  assert.equal(
+    (await controller.submit({ requestId: creationRequestId, text: creationText })).kind,
+    'submitted',
   );
 
-  for (const [requestId, text] of PRODUCTION_CORRECTION_CREATION_CASES) {
-    await assert.rejects(
-      controller.submit({ requestId, text }),
-      /linked correction requires persistent delegation support/u,
-    );
-  }
-
-  assert.deepEqual(actions, [{
-    actionId: 'production-wrong-payment',
-    userText: '继续这个工作，补充验收项',
+  assert.equal(actions.length, 3);
+  assert.deepEqual(actions[1], {
+    actionId: 'production-natural-correction',
+    userText: '不是这个，换成登录稳定性，补充刷新令牌失败判定',
     candidateSetId,
+    confirmation: { kind: 'user_correction' },
     proposal: {
-      disposition: 'delegate_existing',
-      candidateRef: 'candidate-payment',
+      disposition: 'replace',
+      replacesActionId: 'production-wrong-payment',
+      target: {
+        disposition: 'delegate_existing',
+        candidateRef: 'candidate-login',
+      },
     },
-  }]);
+  });
+  assert.deepEqual(
+    actions.slice(2).map((action) => action.proposal.disposition),
+    ['replace'],
+  );
 });
 
 test('production correction-shaped creation stays create_new without an existing focus', async () => {
@@ -1815,6 +1904,119 @@ test('English explicit creation extracts the requested Session name', async () =
   assert.deepEqual(created, ['Parser Cleanup']);
 });
 
+test('Chinese explicit creation strips Session naming introducers', () => {
+  assert.deepEqual(
+    [
+      '创建一个新的 Session，名为登录稳定性',
+      '新建工作叫支付回调幂等性',
+      '开一个任务命名为消息恢复',
+      '不对，请创建一个新的 Session 标题为登录稳定性',
+      '错了，新建一个会话名称为支付任务',
+      '不对，不要创建一个新会话叫登录；而是创建一个新会话叫支付。',
+    ].map((text) => workHubNewSessionName(text)),
+    ['登录稳定性', '支付回调幂等性', '消息恢复', '登录稳定性', '支付任务', '支付'],
+  );
+  assert.equal(
+    workHubNewSessionName(
+      'No, create a new Session called Payments, and add documentation containing the example new Session called Fraud.',
+    ),
+    'Payments',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Payments'), 'U.S. Payments');
+  assert.equal(workHubNewSessionName('Create a new Session called Dr. Login'), 'Dr. Login');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Payments'),
+    'Acme Inc. Payments',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called No. 5 Login'), 'No. 5 Login');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Ph.D. Research'),
+    'Ph.D. Research',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called App. Fix login'), 'App');
+  assert.equal(workHubNewSessionName('Create a new Session called Fix. Add documentation.'), 'Fix');
+  assert.equal(workHubNewSessionName('Create a new Session called Go. Then add tests.'), 'Go');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Fix login.'), 'U.S');
+  assert.equal(workHubNewSessionName('Create a new Session called Ph.D. Fix login.'), 'Ph.D');
+  assert.equal(workHubNewSessionName('Create a new Session called No. Fix login.'), 'No');
+  assert.equal(workHubNewSessionName('Create a new Session called St. Fix login.'), 'St');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Then fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Please fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Please then fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Then, please fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Finally fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Acme Inc. Afterwards fix login.'),
+    'Acme Inc',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Can you fix login?'), 'U.S');
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Next, fix login.'), 'U.S');
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Also fix login.'), 'U.S');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. Immediately fix login.'),
+    'U.S',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. Proceed to fix login.'),
+    'U.S',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. At that point fix login.'),
+    'U.S',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called U.S. Daily Fix'), 'U.S. Daily Fix');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. Monthly Update'),
+    'U.S. Monthly Update',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. Monthly update'),
+    'U.S. Monthly update',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called U.S. customer update'),
+    'U.S. customer update',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Ph.D. Could you fix login?'),
+    'Ph.D',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called Ph.D. Now fix login.'), 'Ph.D');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Ph.D. Finally fix login.'),
+    'Ph.D',
+  );
+  assert.equal(workHubNewSessionName('Create a new Session called Ph.D. 接下来修复登录。'), 'Ph.D');
+  assert.equal(workHubNewSessionName('Create a new Session called Ph.D. 最后修复登录。'), 'Ph.D');
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Ph.D. Friendly Fix'),
+    'Ph.D. Friendly Fix',
+  );
+  assert.equal(
+    workHubNewSessionName('Create a new Session called Ph.D. Friendly fix'),
+    'Ph.D. Friendly fix',
+  );
+});
+
 test('English routing boilerplate does not make an old analysis look related', async () => {
   const created: string[] = [];
   const sessions = port([
@@ -1860,6 +2062,808 @@ test('negated and deliberative creation language never creates a Session', async
   assert.equal(negated.kind, 'discussion');
   assert.equal(deliberative.kind, 'discussion');
   assert.deepEqual(created, []);
+});
+
+test('polite executable questions and file-level constraints still create new work', () => {
+  const cases = [
+    'Can you fix login stability?',
+    'Can you please fix login?',
+    'Could you implement payment retry?',
+    'Could you kindly implement payment retry?',
+    'If retries fail, can you fix login?',
+    'If retries fail can you fix login?',
+    'If retries fail then can you fix login?',
+    'When retries fail, can you fix login?',
+    'If retries fail then fix login?',
+    'When retries fail, fix login?',
+    'When retries fail fix login?',
+    '如果重试失败就请修复登录？',
+    'Fix login, but leave documentation unchanged',
+    'Fix login, but hold API behavior constant',
+    'Fix login, but wait for tests before merging',
+    'Create a new Session called App. Fix login',
+    'Create a new Session called Fix. Add documentation.',
+    'Create a new Session called Go. Then add tests.',
+    'Create a new Session called Acme Inc. Fix login.',
+    'Create a new Session called U.S. Fix login.',
+    'Create a new Session called Ph.D. Fix login.',
+    'Create a new Session called No. Fix login.',
+    'Create a new Session called St. Fix login.',
+    'Create a new Session called Acme Inc. Then fix login.',
+    'Create a new Session called Acme Inc. Please fix login.',
+    'Create a new Session called U.S. Can you fix login?',
+    'Create a new Session called Ph.D. Could you fix login?',
+    'Explain the issue, then fix login',
+    'Tell me the cause and fix login',
+    'Tell me the options and fix login',
+    'Recommend options and fix login',
+    'Can you fix login, but leave documentation unchanged?',
+    'Please try to reproduce and fix login',
+    'Try to reproduce and fix login',
+    'Work to diagnose and fix login',
+    'Explain that issue and fix login',
+    'Update the label to How can I help?',
+    'Fix copy to say What should I do?',
+    'Implement an FAQ answering How can I recover?',
+    'Update the prompt to How can I help?',
+    'Fix the heading to What should I do?',
+    'Update the tooltip to Where can I find files?',
+    'Update the message to Why did this fail?',
+    'Investigate and fix login',
+    'Analyze and fix login',
+    'Debug and fix login',
+    'Review and update docs',
+    'First investigate, then fix login',
+    'Assess and fix login',
+    'Examine and fix login',
+    '调查并修复登录',
+    '先分析，然后修复登录',
+    'Investigate the issue and fix both login and logout.',
+    'Review the failure and fix the affected user accounts.',
+    'Analyze the suite and update the generated docs.',
+    '先分析，然后修复已经失败的测试。',
+    'Investigate and fix login stability.',
+    'Review and update API docs.',
+    'Analyze and fix payment retry logic.',
+    'Audit and update generated API docs.',
+    'Investigate issue and fix login for mobile.',
+    'Assess logs and update docs for operators.',
+    'Review issue and fix login in production.',
+    'Discuss the approach, then implement retry',
+    'Consider the options, but fix login now',
+    '请修复支付回调重复投递？',
+    'Fix how login errors are reported',
+    'Update how retries are calculated',
+    '请修复用户不知道怎么登录的问题',
+    '请实现如何恢复失败任务的逻辑',
+    'Create a new Session to fix how login errors are reported',
+    'Implement docs to explain how retries work',
+    'Update the guide to discuss why login fails',
+    '修复帮助页以解释如何恢复失败任务',
+    'Fix login stability, but do not create any files',
+    '修复登录稳定性，但不要创建任何文件',
+    'Create a new Session for login, but do not create files',
+    'If retries fail, fix login',
+    'If tests fail, fix login.',
+    'If needed fix login.',
+    'If necessary implement retries.',
+    'When ready fix login.',
+    'If possible fix login.',
+    'If required fix login.',
+    'If safe fix login.',
+    'If appropriate implement retries.',
+    'When convenient update docs.',
+    'When available fix login.',
+    'When feasible fix login.',
+    'If desired fix login.',
+    'If applicable fix login.',
+    'When practical update docs.',
+    'If advisable implement retries.',
+    'If permitted fix login.',
+    'When complete update docs.',
+    'If urgent fix login.',
+    'When sensible implement retries.',
+    'If needed, implement payment retry',
+  ];
+  for (const text of cases) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'new_session',
+      text,
+    );
+  }
+});
+
+test('advisory how-to ambiguity asks for a direct instruction', () => {
+  for (const text of [
+    'Explain how to fix login, then update the docs.',
+    'Tell me how to diagnose login, and fix the bug.',
+    '解释如何修复登录，然后更新文档。',
+    'Explain how to diagnose login; then fix it.',
+    'Explain how to diagnose and reproduce login, then fix it.',
+    'Explain how to diagnose the text "do not fix", then update docs.',
+    'Explain how to diagnose the text `do not fix`, then update docs.',
+    'Explain how to diagnose the text (do not fix), then update docs.',
+    'Show me how to diagnose login, then fix it.',
+    'Walk me through how to diagnose login, then fix it.',
+    '教我如何诊断登录，然后修复它。',
+  ]) {
+    assert.deepEqual(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }),
+      { kind: 'clarification', options: [], reason: 'ambiguous_command' },
+      text,
+    );
+  }
+});
+
+test('advisory ambiguity overrides explicit, exact-name, and recent-focus routing', () => {
+  const login = session('login', { sessionName: 'Login' });
+  const text = 'Explain how to diagnose Login, then fix it.';
+  const expected = { kind: 'clarification', options: [], reason: 'ambiguous_command' };
+
+  assert.deepEqual(
+    createWorkHubRoutePolicy().resolve({
+      text,
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+      explicitTarget: login.target,
+    }),
+    expected,
+  );
+  assert.deepEqual(
+    createWorkHubRoutePolicy().resolve({
+      text,
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+    }),
+    expected,
+  );
+
+  const focusedPolicy = createWorkHubRoutePolicy();
+  focusedPolicy.rememberTarget(login.target);
+  assert.deepEqual(
+    focusedPolicy.resolve({
+      text: 'Explain how to diagnose this, then fix it.',
+      sessions: [login],
+      originPromptBySessionId: new Map(),
+    }),
+    expected,
+  );
+});
+
+test('literal negator targets still create new work', () => {
+  for (const text of [
+    "Create a new Session for parsing don't",
+    "Fix parsing of don't",
+    'Update the button label to do not',
+    '修改按钮文案为不要了',
+    "Create a new Session for parsing contractions, e.g. don't",
+    'Fix parsing examples, i.e. do not',
+    "Create a new Session for parsing contractions, e.g., don't",
+    'Fix parsing examples, i.e., do not',
+    'Update the button label to:\ndo not',
+    "Fix parser support for this token:\ndon't",
+    "Fix parser for these literals:\ndon't\ndo not",
+    '修改按钮文案为：\n不要了',
+    "Create a new Session for parsing this token:\ndon't",
+    "Create a new Session to test cases\n1. don't",
+    "Fix parser for cases\n1. don't",
+    "Create a new Session to test this code\n    don't",
+    "Fix parser for this code\n\tdon't",
+    "Create a new Session to test list items\n- don't",
+    "Fix parser for list items\n- don't",
+    "Update parser examples:\n- do\n- don't",
+    "Update parser examples:\n1. do\n2. don't",
+    "Update parser examples:\n    do\n    don't",
+    "Create a new Session for parser examples:\n- do\n- don't",
+    "Create a new Session to test parser\n*Examples:*\n- don't",
+    "Create a new Session to test parser\n_Examples:_\n- don't",
+    'Create a new Session to update copy\n帮我修改按钮文案为：\n不要了',
+    '请帮我修改按钮文案为：\n不要了',
+    "Fix parser support for foo-don't",
+    "Create a new Session for parsing foo-don't",
+  ]) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'new_session',
+      text,
+    );
+  }
+});
+
+test('withdrawing the requested action keeps the input in WorkHub', () => {
+  for (const text of [
+    "Fix login stability, actually don't fix it",
+    "Fix login stability — actually, don't",
+    '修复登录稳定性，还是别了',
+    "Fix login, logout, etc. Don't.",
+    "Fix login\nDon't.",
+    '修复登录稳定性\n还是别了',
+    "Fix login stability - don't",
+    '修复登录稳定性 - 还是别了',
+    "Fix parser tokens:\ndon't\n\nactually, don't",
+    "Fix login\nCorrection:\ndon't",
+    '修复登录\n更正：\n还是别了',
+    "Fix login\nWait:\ndon't",
+    '修复登录\n不对：\n还是别了',
+    "Fix login\nCorrection note:\n- don't",
+    '修复登录\n想了想：\n    还是别了',
+    "Fix login\nIn that case:\ndon't",
+    "Fix login\nFor example:\ndon't",
+    "Fix login\nIn this test case:\ndon't",
+    "Fix login\nParser in this case:\ndon't",
+    "Fix login\nWith this config value:\ndon't",
+    "Create a new Session for login\nConfig in this case:\ndon't",
+    "Create a new Session for login\nTesting, for example:\ndon't",
+    "Fix login stability, but don't fix it",
+    "Fix login stability, but don't do that",
+    "Fix login stability, but don't implement it",
+    "Implement login stability, but don't fix it",
+    "Fix login stability, actually don't fix login stability",
+    'Fix login stability, but do not fix login stability',
+    'Fix login stability and do not fix login stability',
+    "Fix login stability then don't fix login stability",
+    'Fix login stability and please do not fix login stability',
+    "Fix login stability then kindly don't fix login stability",
+    'Fix login stability and could you please not fix login stability',
+    '修复登录稳定性，不过不要修复它',
+    '修复登录稳定性，但不要修改它',
+    '修复登录稳定性，不过不要修复登录稳定性',
+    '修复登录稳定性并且不要修复登录稳定性',
+    '修复登录稳定性然后请不要修复登录稳定性',
+    '修复登录稳定性然后麻烦你不要修复登录稳定性',
+    '修复登录稳定性然后真的不要修复登录稳定性',
+    'Fix login stability and just do not fix login stability',
+    "Fix login stability and simply don't fix login stability",
+    '修复登录稳定性然后千万不要修复登录稳定性',
+    'Do not create a new Session to fix login stability',
+    '不要创建一个新的 Session 来修复登录稳定性',
+    'Do not create a new Session. Fix login stability',
+  ]) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'discussion',
+      text,
+    );
+  }
+});
+
+test('a later affirmative clause creates work after withdrawing an earlier action', () => {
+  for (const text of [
+    "Fix login, but don't do that; instead implement payment retry",
+    '修复登录，但不要这样做；而是实现支付重试',
+    "Fix login, but don't do that. Implement payment retry",
+    "Create a new Session for login, but don't do that; instead implement payment retry",
+    '创建一个新的 Session 处理登录，不过不要这样做；而是实现支付重试',
+    'Fix login and do not fix login documentation',
+    'Fix checkout, but do not fix checkout tests',
+    '修复登录，但不要修复登录文档',
+    'Update API documentation, but do not update API',
+    'Fix checkout tests, but do not fix checkout',
+    '修复登录文档，但不要修复登录',
+  ]) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'new_session',
+      text,
+    );
+  }
+});
+
+test('a correction with a negated creation tail never proposes a new Session', () => {
+  const login = session('login', { sessionName: 'Login 登录稳定性', updatedAt: 20 });
+  const payment = session('payment', { sessionName: 'Payment 支付稳定性', updatedAt: 30 });
+  const cases = [
+    '不是这个，换成登录稳定性，不要创建新会话',
+    'Wrong session; switch to Login; do not create a new session',
+    'Wrong session; switch to Login without creating a new session',
+    '不是这个，而是不要真的创建一个新的 Session',
+    'Wrong session; do not actually create a new Session',
+    '不是这个，而是不要在没有我确认的情况下创建一个新的 Session',
+    'Wrong session; do not under any circumstances whatsoever ever create a new session',
+    'Wrong session; create a note and do not ever create a new session',
+    '不是这个，而是请勿创建一个新的 Session',
+    '我不想创建一个新的 Session',
+    '我不打算创建一个新的 Session',
+    '我不是要创建一个新的 Session，只是讨论',
+    '我并非要创建一个新的 Session，只是讨论',
+    '不是想创建一个新的 Session，只是问问',
+    '我不是让你创建一个新的 Session，只是讨论',
+    '我不是说要创建一个新的 Session，只是讨论',
+    '并非让你创建一个新的 Session，只是讨论',
+    '我没让你创建一个新的 Session，只是讨论',
+    '我没有让你创建一个新的 Session，只是讨论',
+    '我不希望你创建一个新的 Session，只是讨论',
+    '我不是请你创建一个新的 Session，只是讨论',
+    '我没说要创建一个新的 Session，只是讨论',
+    '我没有说要创建一个新的 Session，只是讨论',
+    '我没有打算创建一个新的 Session，只是讨论',
+    '我没准备创建一个新的 Session，只是讨论',
+    'Please refuse to create a new Session',
+    'I decline to create a new Session; just discuss',
+    '我未打算创建一个新的 Session，只是讨论',
+    'I will not create a new session',
+    'not create a new session; just discuss',
+    'Under no circumstances create a new session',
+    'Create a new Session; do not create a new Session',
+    '创建一个新的 Session；不要创建一个新的 Session',
+    "Create a new Session, but don't create it",
+    "Create a new Session for login — actually, don't",
+    '创建一个新的 Session 处理登录，还是别了',
+    "Create a new Session to fix login, logout, etc. Don't.",
+    "Create a new Session for login\nDon't.",
+    "Create a new Session for login - don't",
+    "Create a new Session for parser tokens:\ndon't\n\nactually, don't",
+    "Create a new Session for login\nCorrection:\ndon't",
+    "Create a new Session for login\nFinal correction:\ndon't",
+    "Create a new Session for login\nCorrection:\n- don't",
+    "Create a new Session for login\nCorrection:\n1. don't",
+    "Create a new Session for login\nCorrection:\n    don't",
+    '创建一个新的 Session 处理登录\n更正：\n- 还是别了',
+    "Create a new Session for login\nCorrection note:\n- don't",
+    "Create a new Session for login\nOn second thought:\n1. don't",
+    '创建一个新的 Session 处理登录\n想了想：\n    还是别了',
+    "Create a new Session for login\n## Correction:\n- don't",
+    "Create a new Session for login\n**Correction:**\n- don't",
+    '创建一个新的 Session 处理登录\n## 更正：\n- 还是别了',
+    "Create a new Session for login\nChange to:\n- don't",
+    "Create a new Session for login\nUpdate to:\ndon't",
+    "Create a new Session for login\nCorrection to:\n1. don't",
+    '创建一个新的 Session 处理登录\n改为：\n- 还是别了',
+    "Create a new Session for login\nIn any case:\ndon't",
+    "Create a new Session for parser examples:\n- do\n    \n- don't",
+    "Create a new Session for parser examples:\n1. do\n\t\n2. don't",
+    "Create a new Session for login\nFor this parser case:\ndon't",
+    "Create a new Session, but don't create one after all",
+    '创建一个新的 Session，不过不要创建它',
+    '不是这个，而是创建一个新的 Session；不要创建一个新的 Session',
+    'Wrong session; don’t ever create a new session',
+    'Wrong session; do not, under any circumstances, create a new session',
+    '不是这个，而是创建一个新的 Session；不过不要这样做',
+    'No examples create a new Session.',
+    'This note says no, create a new Session called Payments',
+    "No, create a new Session for login but don't",
+    'No, please explain how to create a new Session',
+    'No, tell me how to create a new Session',
+    '不对，请解释如何创建一个新的 Session',
+    '错了，请告诉我怎么创建一个新的 Session',
+  ];
+
+  for (const text of cases) {
+    const policy = createWorkHubRoutePolicy();
+    policy.rememberTarget(payment.target);
+    const decision = policy.resolve({
+      text,
+      sessions: [login, payment],
+      originPromptBySessionId: new Map(),
+    });
+
+    assert.notEqual(decision.kind, 'new_session', text);
+  }
+});
+
+test('a pronoun correction uses the shared affirmative target span', () => {
+  const source = session('source', { sessionName: 'Source', updatedAt: 30 });
+  const payments = session('payments', { sessionName: 'Payments', updatedAt: 20 });
+  const policy = createWorkHubRoutePolicy();
+  policy.rememberTarget(source.target);
+
+  assert.deepEqual(
+    policy.resolve({
+      text: 'Not this session; move it to Payments',
+      sessions: [source, payments],
+      originPromptBySessionId: new Map(),
+    }),
+    {
+      kind: 'target',
+      target: payments.target,
+      evidence: 'route_correction',
+      correctedFrom: source.target,
+    },
+  );
+});
+
+test('correction routing preserves quoted and punctuated Session identities', () => {
+  const source = session('source', { sessionName: 'Source', updatedAt: 30 });
+  for (const [text, target] of [
+    ['No, use "Payments"', session('payments', { sessionName: 'Payments', updatedAt: 20 })],
+    [
+      'No, use Research and Development',
+      session('research', { sessionName: 'Research and Development', updatedAt: 20 }),
+    ],
+    [
+      'No, use Payments, Retry',
+      session('payment-retry', { sessionName: 'Payments, Retry', updatedAt: 20 }),
+    ],
+    ['不是这个，换成“支付任务”', session('payment', { sessionName: '支付任务', updatedAt: 20 })],
+  ] as const) {
+    const policy = createWorkHubRoutePolicy();
+    policy.rememberTarget(source.target);
+    const decision = policy.resolve({
+      text,
+      sessions: [source, target],
+      originPromptBySessionId: new Map(),
+    });
+    assert.equal(decision.kind, 'target', text);
+    assert.equal(decision.kind === 'target' ? decision.target.sessionId : undefined, target.target.sessionId);
+    assert.equal(decision.kind === 'target' ? decision.evidence : undefined, 'route_correction');
+  }
+});
+
+test('a negated existing-target correction never proposes destructive replacement', () => {
+  const login = session('login', { sessionName: 'Login 登录稳定性', updatedAt: 20 });
+  const payment = session('payment', { sessionName: 'Payment 支付任务', updatedAt: 30 });
+  for (const text of [
+    "Not this session; don't move it to Login",
+    '不是这个会话，但不要转到登录稳定性',
+    "Not this session; move to Login, but I don't want to move anymore",
+    '不是这个会话，转到登录稳定性，不过我不想转了',
+    'No examples use Login.',
+    'This note says no, use Login',
+    "No, use Login but don't",
+    "No, use Login and actually don't",
+    "No, use Login and don't want to move it",
+    "No, use Login and don't proceed",
+    "No, use Login and don't go ahead with that",
+    'No, use Login, forget it',
+    'No, use Login, on second thought leave it',
+    '不是这个会话，转到登录稳定性然后不想转了',
+    '不是这个会话，转到登录稳定性然后不要继续',
+    '不是这个会话，转到登录稳定性，当我没说',
+    '不是这个会话，转到登录稳定性，还是维持原样',
+    'No, use Login, fix payments. Forget it',
+    'No, use Login — on second thought leave it',
+    '不是这个会话，转到登录稳定性，修复支付。当我没说',
+  ]) {
+    const policy = createWorkHubRoutePolicy();
+    policy.rememberTarget(payment.target);
+    const decision = policy.resolve({
+      text,
+      sessions: [login, payment],
+      originPromptBySessionId: new Map(),
+    });
+    assert.notEqual(decision.kind, 'new_session', text);
+    if (decision.kind === 'target') {
+      assert.equal(decision.target.sessionId, payment.target.sessionId, text);
+      assert.notEqual(decision.evidence, 'route_correction', text);
+      assert.equal(decision.correctedFrom, undefined, text);
+    }
+  }
+});
+
+test('indirect questions containing action words stay in WorkHub', () => {
+  for (const text of [
+    '我想知道如何修复登录问题',
+    '我们应该如何修复登录问题',
+    'Please explain how to fix login',
+    'Tell me how to fix login',
+    'I would like to understand how to fix login',
+    '麻烦解释如何修复登录问题',
+    '请告诉我如何修复登录问题',
+    'Show me how to fix login',
+    'Could you walk me through how to fix login',
+    'What steps should I take to fix login',
+    '教我怎么修复登录问题',
+    '给我讲讲如何修复登录问题',
+    'Can you tell me if we should fix login?',
+    'Could you evaluate if we should implement payment retry?',
+    '请告诉我该不该修复登录问题？',
+    '请告诉我应不应该实现支付重试？',
+    'Can you give me steps to fix login',
+    'Please give me a way to fix login',
+    'Could you outline the steps to fix login',
+    '告诉我修复登录的步骤',
+    '给我一个修复登录的方法',
+    'Can you tell me: should I fix login?',
+    'Can you recommend I fix login?',
+    '请告诉我：我应该修复登录吗？',
+    '请告诉我应否修复登录？',
+    'Can you tell me if I need to fix login',
+    'Could you tell me if I must implement retry',
+    'I need to know if I need to fix login',
+    '请告诉我我应否修复登录',
+    'Can you fix login, or should we wait?',
+    'Can you fix login? Actually, should we?',
+    'Can you fix login, or should we wait',
+    'Can you fix login. Actually, should we',
+    '请修复登录，还是应该先等等？',
+    '请修复登录，还是应该先等等',
+    'Can you fix login, or leave it for now?',
+    '请修复登录，还是等等吧？',
+    'Fix login. Maybe we should wait',
+    'Fix login. On second thought, maybe wait',
+    'Can you tell me if it is necessary to fix login',
+    'Explain when to fix login',
+    'Tell me in which cases to fix login',
+    '请告诉我在什么情况下修复登录',
+    'Fix login, but maybe we should wait',
+    'Fix login; perhaps we should wait',
+    '请修复登录，不过也许应该等等',
+    'Fix login. Actually, I am not sure.',
+    'Fix login. Do you think we should?',
+    "Fix login. On second thought, I'm not sure",
+    '请修复登录。我不确定。',
+    'Can you recommend I fix login',
+    'Could you suggest I implement retry',
+    'Explain the circumstances in which to fix login',
+    'Tell me the best time to fix login',
+    'When should I fix login?',
+    'When do we fix login?',
+    '如果什么时候修复登录？',
+    'If unsure whether to fix login?',
+    'When in doubt, ask whether to fix login?',
+    'If it is unclear how to implement retry?',
+    'When is it appropriate to fix login?',
+    '如果适合修复登录？',
+    'Fix login. Is that wise?',
+    'Fix login, cancel this task.',
+    'Fix login, I take that back.',
+    'Create a new Session for Payments; cancel the creation.',
+    'Create a new Session for Payments. Cancel the new session.',
+    '创建一个新会话用于支付然后停止创建。',
+    'Fix login, cancel this job.',
+    'Fix login, withdraw the request.',
+    'Fix login, retract that.',
+    'Fix login, forget the request.',
+    'Create a new Session for Payments; cancel my request.',
+    'Create a new Session for Payments; withdraw that request.',
+    'Create a new Session for Payments. Revoke that request.',
+    'When might we fix login?',
+    'When may we fix login?',
+    'When will we fix login?',
+    'If it makes sense to fix login?',
+    '如果现在修复登录合适吗？',
+    'Fix login. Are we sure?',
+    'Fix login. Are you sure?',
+    'Fix login. Are they sure?',
+    'Fix login. Should we really?',
+    'Fix login, cancel the current task.',
+    'Fix login, rescind my request.',
+    'Fix login, drop this task.',
+    'Fix login. Please cancel the task.',
+    'Fix login. I want to cancel the task.',
+    'Fix login. Could you cancel the task?',
+    "Fix login. Let's cancel the task.",
+    'Fix login. I would prefer to cancel the task.',
+    'Fix login. Please do not proceed with the task.',
+    'Fix login. I do not wish to proceed.',
+    'When should the service fix login?',
+    'When will Alice fix login?',
+    'When will the patch fix login?',
+    'When must the service fix login?',
+    'When ought we fix login?',
+    'If you think we should fix login?',
+    'If you believe we ought to implement retry?',
+    'If it is advisable to fix login?',
+    'If I wanted you to fix login, what would happen?',
+    'If I asked you to fix login, how would you approach it?',
+    'If the plan were to fix login, would that be wise?',
+    'If I asked you to fix login?',
+    'If I wanted you to fix login?',
+    'If the plan were to fix login?',
+    'If I wanted you to fix login what would happen?',
+    'If I asked you to fix login how would you approach it?',
+    'If the plan were to fix login would that be wise?',
+    '如果现在修复登录可以吗？',
+    '如果现在修复登录可行吗？',
+    '如果我让你修复登录会怎样？',
+    'Fix login. Do you agree?',
+    'Fix login. Are you certain?',
+    'Fix login. Do you still want that?',
+    'Fix login — do you agree?',
+    'Fix login: are you sure?',
+    'Fix login, okay?',
+    'Fix login, sound good?',
+    'Fix login, maybe?',
+    'Fix login, perhaps?',
+    'Fix login, not sure?',
+    'Fix login, any concerns?',
+    '修复登录，没问题吧？',
+    'Could you suggest ways to monitor and fix login',
+    'Explain techniques that diagnose and fix login errors.',
+    'Discuss approaches that prevent and fix login errors.',
+    'Explain the steps to diagnose and fix login.',
+    'Explain strategies that diagnose and fix login.',
+    'Recommend patterns that detect and fix login.',
+    'Could you suggest practical options to monitor and fix login',
+    'Tell me possible solutions to identify and fix login',
+    'Describe techniques that diagnose and fix login.',
+    'Analyze strategies that diagnose and fix login.',
+    'Explain a process where we diagnose and fix login.',
+    'Describe a framework that diagnoses and fix login.',
+    'Outline a workflow that detects and fix login.',
+    'Summarize a proposal where we diagnose and fix login.',
+    'Compare tools that detect and fix login.',
+    'I plan to fix login myself.',
+    'The team will fix login.',
+    'Suppose we fix login.',
+    'If we fix login, users will be happier.',
+    'When we fix login, users will be happier.',
+    '如果我们修复登录，用户会更满意。',
+    'If the team can fix login, users will be happier.',
+    'If Alice can fix login, users will be happier.',
+    '如果团队能修复登录，用户会更满意。',
+    'Should we fix login and then update docs?',
+    'Can we diagnose login and then fix it?',
+    'What if we fix login and then update docs?',
+    'Maybe investigate and fix login.',
+    'Perhaps review and update docs.',
+    'Potentially debug and fix login.',
+    'Our goal is to investigate and fix login.',
+    'The requirement is to investigate and fix login.',
+    'The service must diagnose and fix login.',
+    'Should we diagnose, then fix login?',
+    'How should we fix login, then update docs?',
+    'Explain how to fix login and then update docs.',
+    'Tell me how to diagnose and then fix login.',
+    'Can you explain how to diagnose login and then fix it?',
+    'Explain whether we should diagnose then fix login.',
+    'Discuss whether to diagnose then fix login.',
+    'Tell me how we should diagnose then fix login.',
+    'Explain how to diagnose, fix, and test login.',
+    'Recommend ways to diagnose, fix, and test login.',
+    'Explain how to diagnose login, fix it, and update docs.',
+    'Explain whether we should diagnose, then fix login.',
+    'Explain the workflow: diagnose, then fix login.',
+    'Discuss the sequence: diagnose, then fix login.',
+    'Review notes and fix status are attached.',
+    'Audit results and fix plans are attached.',
+    'Research findings and fix recommendations are attached.',
+    'Explain how to diagnose login; then fix it. Is that wise?',
+    'Explain how to diagnose login, then fix it—but is that wise?',
+    'Explain how to diagnose the text "login, then fix it".',
+    'Explain how to diagnose a phrase saying "login; then fix it".',
+    'Explain how to diagnose login, and test results are attached.',
+    'Explain how to diagnose login; then test results are available.',
+    'Audit findings and fix recommendations both matter.',
+    'Research findings and fix recommendations changed yesterday.',
+    '分析报告并修复建议已经附上。',
+    '调查结果并修复建议都很重要。',
+    'Explain how to diagnose the text `login, then fix it`.',
+    'Explain how to diagnose the sequence (login, then fix it).',
+    'Explain how to diagnose login; then fix it, any concerns?',
+    'Explain how to diagnose login; then fix it, do you agree?',
+    'Audit findings and fix recommendations matter.',
+    'Review notes and fix status matters.',
+    'Research findings and fix recommendations changed.',
+    'Explain how to diagnose login; then test results matter.',
+    'Explain how to diagnose login; then test coverage improved.',
+    'Explain how to diagnose login; then update metrics increased.',
+    'Explain how to diagnose the text "login, then fix it.',
+    'Explain how to diagnose the text `login, then fix it.',
+    'Explain how to diagnose the sequence (login (primary), then fix it).',
+    'Explain how to diagnose the sequence [login, then fix it].',
+  ]) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'discussion',
+      text,
+    );
+  }
+});
+
+test('a fuzzy correction target never becomes destructive routing authority', () => {
+  const source = session('source', { sessionName: 'Source', updatedAt: 30 });
+  const paymentCallback = session('payment-callback', {
+    sessionName: '支付回调',
+    updatedAt: 20,
+  });
+  const policy = createWorkHubRoutePolicy();
+  policy.rememberTarget(source.target);
+
+  const decision = policy.resolve({
+    text: '不是这个，换成支付页面',
+    sessions: [source, paymentCallback],
+    originPromptBySessionId: new Map(),
+  });
+
+  assert.notEqual(decision.kind, 'new_session');
+  if (decision.kind === 'target') {
+    assert.equal(decision.target.sessionId, source.target.sessionId);
+    assert.notEqual(decision.evidence, 'route_correction');
+    assert.equal(decision.correctedFrom, undefined);
+  }
+});
+
+test('a candidate name cannot absorb unquoted withdrawal semantics', () => {
+  const source = session('source', { sessionName: 'Source', updatedAt: 30 });
+  for (const [text, sessionName] of [
+    ["No, use Payments and don't proceed", "Payments and don't proceed"],
+    ['不是这个，转到支付任务然后不要继续', '支付任务然后不要继续'],
+    ['No, use Payments and stop.', 'Payments and stop'],
+    ['不是这个，转到支付任务然后停止。', '支付任务然后停止'],
+    ['No, use Payments and abort.', 'Payments and abort'],
+    ['No, use Payments and cancel.', 'Payments and cancel'],
+    ['No, use Payments and stop now.', 'Payments and stop now'],
+    ['No, use Payments and halt this.', 'Payments and halt this'],
+    ['No, use Payments and ABORT.', 'Payments and ABORT'],
+    ['No, use Payments but abort.', 'Payments but abort'],
+    ['No, use Payments; stop now.', 'Payments; stop now'],
+    ['No, use Payments. Abort.', 'Payments. Abort'],
+    ['No, use Payments, cancel.', 'Payments, cancel'],
+    ['不是这个，转到支付任务然后作罢。', '支付任务然后作罢'],
+    ['不是这个，转到支付任务然后停止执行。', '支付任务然后停止执行'],
+    ['不是这个，转到支付任务但是作罢。', '支付任务但是作罢'],
+    ['不是这个，转到支付任务。作罢。', '支付任务。作罢'],
+    ['No, use Payments. I changed my mind.', 'Payments. I changed my mind'],
+    [
+      'No, use Payments. On second thought, keep it here.',
+      'Payments. On second thought, keep it here',
+    ],
+    ['不是这个，转到支付任务。我改主意了。', '支付任务。我改主意了'],
+  ] as const) {
+    const candidate = session('candidate', { sessionName, updatedAt: 20 });
+    const policy = createWorkHubRoutePolicy();
+    policy.rememberTarget(source.target);
+    const decision = policy.resolve({
+      text,
+      sessions: [source, candidate],
+      originPromptBySessionId: new Map(),
+    });
+    assert.notEqual(decision.kind === 'target' ? decision.evidence : undefined, 'route_correction');
+  }
+});
+
+test('malformed or unbound creation naming stays in WorkHub discussion', () => {
+  for (const text of [
+    'Create a new Session called "Payments',
+    '创建一个新会话叫“支付任务',
+    "No, don't create a new session called Login; instead create a new session for Payments",
+    "Create a new Session called Payments and don't proceed.",
+    '创建一个新会话叫支付任务然后不要继续。',
+    'Create a new Session called Payments and stop.',
+    'Create a new Session called Payments and abort.',
+    'Create a new Session called Payments and cancel.',
+    'Create a new Session called Payments and stop now.',
+    'Create a new Session called Payments and halt this operation immediately.',
+    'Create a new Session called Payments and ABORT.',
+    'Create a new Session called Payments but abort.',
+    'Create a new Session called Payments; stop now.',
+    'Create a new Session called Payments. Abort.',
+    'Create a new Session called Payments, cancel.',
+    '创建一个新会话叫支付任务然后作罢。',
+    '创建一个新会话叫支付任务然后停止执行。',
+    '创建一个新会话叫支付任务但是作罢。',
+    '创建一个新会话叫支付任务。作罢。',
+    'No, create a new Session called Payments. Example: create a new Session called Fraud.',
+    'Create a new Session called Payments.Example: create a new Session called Fraud',
+    'Create a new Session called App. Example: create a new Session called Fraud',
+    'No, create a new Session called Payments. Fix login, cancel this task.',
+  ]) {
+    assert.equal(
+      createWorkHubRoutePolicy().resolve({
+        text,
+        sessions: [],
+        originPromptBySessionId: new Map(),
+      }).kind,
+      'discussion',
+      text,
+    );
+  }
 });
 
 test('subscribe exposes Session invalidations without inventing WorkHub state', () => {

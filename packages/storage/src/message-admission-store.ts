@@ -25,6 +25,10 @@ import {
 } from '@maka/core/events';
 import { decodeTurnOrigin, type TurnOrigin } from '@maka/core/turn-origin';
 import {
+  decodeSkillInvocationResult,
+  type SkillInvocationResult,
+} from '@maka/core/skill-invocation';
+import {
   normalizeSubmittedTurnIntent,
   submittedTurnIntentsEqual,
   type SubmittedTurnIntent,
@@ -52,6 +56,8 @@ export interface PendingMessageAdmission {
    * same submit reads as a different one.
    */
   readonly submittedIntent?: SubmittedTurnIntent;
+  /** The Skill resolution answer returned for this admitted Message. */
+  readonly skillInvocation: SkillInvocationResult;
   readonly admittedAt: number;
 }
 
@@ -134,6 +140,7 @@ export function normalizePendingMessageAdmission(
     ...(admission.submittedIntent
       ? { submittedIntent: normalizeSubmittedTurnIntent(admission.submittedIntent) }
       : {}),
+    skillInvocation: decodeSkillInvocationResult(admission.skillInvocation),
   });
   if (!/^sha256:[a-f0-9]{64}$/u.test(normalized.submittedContentDigest)) {
     throw new Error('Invalid pending Message submitted content digest');
@@ -189,6 +196,7 @@ export function samePendingMessageAdmission(
     a.disposition === b.disposition &&
     a.admittedAt === b.admittedAt &&
     submittedTurnIntentsEqual(a.submittedIntent, b.submittedIntent) &&
+    isDeepStrictEqual(a.skillInvocation, b.skillInvocation) &&
     isDeepStrictEqual(a.content, b.content)
   );
 }

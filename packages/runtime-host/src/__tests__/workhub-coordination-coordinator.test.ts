@@ -529,7 +529,10 @@ describe('Host WorkHub Coordination coordinator', () => {
       });
       assert.deepEqual(
         (await store.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID))
-          .filter((message) => message.type === 'workhub_coordination')
+          .filter(
+            (message) =>
+              message.type === 'workhub_coordination' && message.kind === 'delegation_assigned',
+          )
           .map(({ kind, actionId, targetSessionId }) => ({ kind, actionId, targetSessionId })),
         [
           {
@@ -711,9 +714,9 @@ function coordinator(
     hasRootTurnAdmission: async () => false,
   },
   admission: SessionAdmissionGate = new SessionAdmissionGate(),
-  sessionActions: Pick<WorkHubActionGateEffects, 'assign'> = {
-    assign: async ({ targetSessionId }) => ({ turnId: `turn-${targetSessionId}` }),
-  },
+  sessionActions: Partial<
+    Pick<WorkHubActionGateEffects, 'assign' | 'readDelegationRetirement' | 'retireDelegation'>
+  > = {},
 ) {
   return new HostWorkHubCoordinationCoordinator({
     stateRoot: root,
@@ -721,7 +724,12 @@ function coordinator(
     admission,
     continuity: { refreshCanonical: async () => undefined },
     executions,
-    sessionActions,
+    sessionActions: {
+      assign: async ({ targetSessionId }) => ({ turnId: `turn-${targetSessionId}` }),
+      readDelegationRetirement: async () => 'not_retired',
+      retireDelegation: async () => undefined,
+      ...sessionActions,
+    },
     resolveCreateTarget:
       resolveCreateTarget ??
       (async () => ({
@@ -772,6 +780,7 @@ async function persistTestAssignment(
       submittedPlacement: 'current_turn',
       placement: 'current_turn',
       disposition: 'steering',
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
       admittedAt: Date.now(),
     },
   });

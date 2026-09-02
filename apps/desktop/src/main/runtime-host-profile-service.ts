@@ -23,6 +23,8 @@ import { dirname, join } from "node:path";
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
+  decodeEnvironmentRuntimeHostProfile,
+  decodeRemoteRuntimeHostProfile,
   decodeRuntimeHostOwnerConnectionCode,
   LOCAL_RUNTIME_HOST_PROFILE,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
@@ -31,13 +33,14 @@ import {
   RuntimeHostRemoteCompatibilityError,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  type EnvironmentRuntimeHostProfile,
   type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
 import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
-import { decodeCollaborationInvitationCode } from '@maka/runtime-host/protocol';
+import type { HostPeerEndpoint } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
@@ -46,7 +49,6 @@ import type {
   DesktopRuntimeHostProfileEntry,
   DesktopRuntimeHostProfileSnapshot,
   DesktopRuntimeHostConnectionCodeImportResult,
-  DesktopSessionCollaborationImportResult,
 } from "../preload/bridge-contract.js";
 import {
   RuntimeHostPairingFinalizationInterruptedError,
@@ -63,12 +65,15 @@ import {
 import {
   createDesktopRuntimeHostManagedServiceStore,
   findDesktopRuntimeHostManagedServiceBinding,
+  isDesktopRuntimeHostManagedSshProfile,
+  isDesktopRuntimeHostManagedSshServiceBinding,
   sameDesktopRuntimeHostManagedServiceBinding,
-  type DesktopRuntimeHostManagedServiceTarget,
   type DesktopRuntimeHostManagedServiceBinding,
+  type DesktopRuntimeHostManagedSshServiceBinding,
+  type DesktopRuntimeHostManagedSshServiceTarget,
+  type DesktopRuntimeHostManagedWslServiceTarget,
   type DesktopRuntimeHostManagedServiceStore,
 } from "./runtime-host-managed-services.js";
-import { decodeDesktopCollaborationInvitation } from './runtime-host-collaboration-invitation.js';
 import type { DesktopCollaborationConnectionTarget } from './runtime-host-collaboration-invitation.js';
 
 const PREFERENCES_SCHEMA_VERSION = 2;
@@ -95,18 +100,18 @@ export interface DesktopRuntimeHostProfileService {
   addAndEnable(
     input: DesktopRuntimeHostProfileAddInput,
   ): Promise<DesktopRuntimeHostProfileAddResult>;
+  addManagedEnvironmentAndEnable(input: {
+    readonly profile: EnvironmentRuntimeHostProfile;
+    readonly managedService: DesktopRuntimeHostManagedWslServiceTarget;
+  }): Promise<{ readonly profileId: string }>;
   addAndEnableVerified(
     input: {
       readonly profile: RemoteRuntimeHostProfile;
       readonly credential: string;
-      readonly managedService?: DesktopRuntimeHostManagedServiceTarget;
+      readonly managedService?: DesktopRuntimeHostManagedSshServiceTarget;
     },
   ): Promise<{ readonly profileId: string }>;
   importConnectionCode(code: string): Promise<DesktopRuntimeHostConnectionCodeImportResult>;
-  importCollaborationInvitation(
-    code: string,
-    allowInsecure: boolean,
-  ): Promise<DesktopSessionCollaborationImportResult>;
   resolveManagedService(
     profileId: string,
   ): Promise<DesktopRuntimeHostManagedServiceBinding | undefined>;
@@ -120,6 +125,7 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedDirectPeerProfile(profileId: string): Promise<{
     readonly exists: boolean;
     readonly enabled: boolean;
+    readonly peerId?: string;
   }>;
   upsertManagedDirectPeerProfile(
     profileId: string,
@@ -130,13 +136,13 @@ export interface DesktopRuntimeHostProfileService {
     },
   ): Promise<void>;
   removeManagedDirectPeerProfile(profileId: string): Promise<void>;
-  clearManagedServiceBinding(expected: DesktopRuntimeHostManagedServiceBinding): Promise<void>;
+  clearManagedServiceBinding(expected: DesktopRuntimeHostManagedSshServiceBinding): Promise<void>;
   markManagedServiceUninstalling(
-    expected: DesktopRuntimeHostManagedServiceBinding,
-  ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+    expected: DesktopRuntimeHostManagedSshServiceBinding,
+  ): Promise<DesktopRuntimeHostManagedSshServiceBinding>;
   markManagedServiceCleanupPending(
-    expected: DesktopRuntimeHostManagedServiceBinding,
-  ): Promise<DesktopRuntimeHostManagedServiceBinding>;
+    expected: DesktopRuntimeHostManagedSshServiceBinding,
+  ): Promise<DesktopRuntimeHostManagedSshServiceBinding>;
   rotateManagedCredential(
     expected: DesktopRuntimeHostManagedAccess,
     credential: string,
@@ -150,11 +156,13 @@ export interface DesktopRuntimeHostProfileService {
   remove(profileId: string): Promise<DesktopRuntimeHostProfileSnapshot>;
 }
 
-export interface DesktopRuntimeHostManagedAccess
-  extends DesktopRuntimeHostManagedServiceBinding {
+export type DesktopRuntimeHostManagedAccess = Extract<
+  DesktopRuntimeHostManagedServiceBinding,
+  { readonly control: { readonly kind: 'ssh_operator' } }
+> & {
   readonly credentialFingerprint: string;
   readonly enabled: boolean;
-}
+};
 
 export async function resolveDesktopRuntimeHostStartup(
   clientDataRoot: string,
@@ -215,6 +223,25 @@ export async function resolveDesktopRuntimeHostStartup(
       unavailable,
     };
   }
+  const obsoleteProfileIds = new Set(
+    document.profiles.flatMap((profile) =>
+      profile.kind === 'remote' && profile.access === 'session_guest' ? [profile.id] : [],
+    ),
+  );
+  if (obsoleteProfileIds.size > 0) {
+    await recoverAbandonedProfileLock(join(clientDataRoot, PROFILE_FILE));
+  }
+  for (const profileId of obsoleteProfileIds) await catalog.remove(profileId);
+  if (obsoleteProfileIds.size > 0) document = await catalog.read();
+  if (!pairingReadFailure) {
+    const retained = pairingIntents.filter(
+      (intent) => intent.target.profile.access !== 'session_guest',
+    );
+    if (retained.length !== pairingIntents.length) {
+      await writeDesktopRuntimeHostPairingIntents(credentialStore, retained);
+      pairingIntents = retained;
+    }
+  }
   const profileIds = new Set(document.profiles.map((profile) => profile.id));
   const defaultProfile = document.profiles.find(
     (profile) => profile.id === preferences.defaultProfileId,
@@ -270,6 +297,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   readonly enable: (
     target: ResolvedRuntimeHostProfile,
     sshInteraction: "terminal" | "batch",
+    onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
@@ -366,7 +394,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           : unavailable.get(profile.id);
         return {
           profile,
-          ...(profile.kind === "remote" &&
+          ...(profile.kind !== "local" &&
           findDesktopRuntimeHostManagedServiceBinding(managedDocument, profile)
             ? { managedService: true as const }
             : {}),
@@ -375,7 +403,12 @@ export function createDesktopRuntimeHostProfileService(input: {
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
           ...(state?.readiness === "ready"
-            ? { hostId: state.candidate.client.hostId }
+            ? {
+                hostId: state.candidate.client.hostId,
+                ...(state.candidate.client.peerPath
+                  ? { peerPath: state.candidate.client.peerPath }
+                  : {}),
+              }
             : state && "hostId" in state && state.hostId
               ? { hostId: state.hostId }
               : {}),
@@ -458,7 +491,9 @@ export function createDesktopRuntimeHostProfileService(input: {
   ): Promise<void> => {
     try {
       const activationTarget = await resolveActivationTarget(target);
-      await input.enable(activationTarget, sshInteraction);
+      const routeObserver = createAuthenticatedPeerRouteObserver(catalog, activationTarget);
+      await input.enable(activationTarget, sshInteraction, routeObserver?.observe);
+      await routeObserver?.flush();
       const current = await catalog.resolve(activationTarget.profile.id).catch(() => undefined);
       if (!current || !sameResolvedRuntimeHostProfileTarget(current, activationTarget)) {
         await input.disable(activationTarget.profile.id);
@@ -688,19 +723,22 @@ export function createDesktopRuntimeHostProfileService(input: {
     value: {
       readonly profile: RemoteRuntimeHostProfile;
       readonly credential: string;
-      readonly managedService?: DesktopRuntimeHostManagedServiceTarget;
+      readonly managedService?: DesktopRuntimeHostManagedSshServiceTarget;
     },
   ): Promise<{ readonly profileId: string }> => {
     requireSaveInput(value);
+    if (value.profile.access === 'session_guest') {
+      return Promise.reject(
+        new Error('Session Guest access must be retained as a shared Session mount'),
+      );
+    }
     return mutateProfiles(async () => {
       const currentDocument = await catalog.read();
-      const existing = value.profile.access === 'session_guest'
-        ? undefined
-        : currentDocument.profiles.find((profile) =>
-            profile.kind === 'remote' &&
-            profile.rootId === value.profile.rootId &&
-            sameRemoteRuntimeHostProfileTarget(profile, value.profile),
-          );
+      const existing = currentDocument.profiles.find((profile) =>
+        profile.kind === 'remote' &&
+        profile.rootId === value.profile.rootId &&
+        sameRemoteRuntimeHostProfileTarget(profile, value.profile),
+      );
       const previousTarget = existing ? await catalog.resolve(existing.id) : undefined;
       const profile = existing ? { ...value.profile, id: existing.id } : value.profile;
       const target = { profile, credential: value.credential } as const;
@@ -714,6 +752,9 @@ export function createDesktopRuntimeHostProfileService(input: {
       await beginPairingIntent(intent);
       try {
         if (value.managedService) {
+          if (!isDesktopRuntimeHostManagedSshProfile(profile)) {
+            throw new Error('A managed Runtime Host service requires SSH');
+          }
           await managedServices.save(profile, value.managedService);
         }
         if (previousTarget) {
@@ -743,14 +784,11 @@ export function createDesktopRuntimeHostProfileService(input: {
     addAndEnable(value) {
       requireSaveInput(value);
       return mutateProfiles(async () => {
-        if (value.profile.kind === 'remote' && value.credential === undefined) {
-          throw new Error("A Runtime Host access credential is required");
-        }
-        if (value.profile.kind === 'environment' && value.credential !== undefined) {
-          throw new Error('A WSL environment does not accept an access credential');
-        }
-        const document = await catalog.create(value.profile, value.credential);
-        const profile = document.profiles.find((candidate) => candidate.id === value.profile.id);
+        const requestedProfile = decodeRemoteRuntimeHostProfile(value.profile);
+        const document = await catalog.create(requestedProfile, value.credential);
+        const profile = document.profiles.find(
+          (candidate) => candidate.id === requestedProfile.id,
+        );
         if (!profile) throw new Error("Runtime Host profile creation did not persist");
         const target: ResolvedRuntimeHostProfile = {
           profile,
@@ -766,6 +804,34 @@ export function createDesktopRuntimeHostProfileService(input: {
         return error
           ? { kind: "unavailable", snapshot: await snapshot(), message: error.message }
           : { kind: "connected", snapshot: await snapshot() };
+      });
+    },
+    addManagedEnvironmentAndEnable(value) {
+      const requestedProfile = decodeEnvironmentRuntimeHostProfile(value.profile);
+      return mutateProfiles(async () => {
+        const currentDocument = await catalog.read();
+        const existing = currentDocument.profiles.find(
+          (candidate): candidate is EnvironmentRuntimeHostProfile =>
+            candidate.kind === "environment" &&
+            sameResolvedRuntimeHostProfileTarget(
+              { profile: candidate },
+              { profile: requestedProfile },
+            ),
+        );
+        const profile = existing ?? requestedProfile;
+        if (!existing) {
+          const document = await catalog.create(profile);
+          const persisted = document.profiles.find(
+            (candidate) => candidate.id === profile.id,
+          );
+          if (!persisted || persisted.kind !== "environment") {
+            throw new Error("Runtime Host profile creation did not persist");
+          }
+        }
+        await managedServices.save(profile, value.managedService);
+        const error = await enable(profile.id);
+        if (error) throw error;
+        return { profileId: profile.id };
       });
     },
     addAndEnableVerified,
@@ -790,43 +856,6 @@ export function createDesktopRuntimeHostProfileService(input: {
         return { kind: 'connected', profileId: result.profileId };
       } catch (error) {
         return { kind: 'error', reason: connectionCodeImportFailure(error) };
-      }
-    },
-    async importCollaborationInvitation(code, allowInsecure) {
-      let bundle;
-      let invitation;
-      try {
-        bundle = decodeDesktopCollaborationInvitation(code);
-        invitation = decodeCollaborationInvitationCode(bundle.invitationCode);
-      } catch {
-        return { kind: 'error', reason: 'invalid_code' };
-      }
-      if (bundle.target.transport.kind === 'plaintext' && !allowInsecure) {
-        return { kind: 'error', reason: 'insecure_confirmation_required' };
-      }
-      const profileId = `shared-${randomUUID()}`;
-      try {
-        await addAndEnableVerified({
-          profile: {
-            id: profileId,
-            name: `${bundle.target.name} · Shared`,
-            kind: 'remote',
-            rootId: invitation.rootId,
-            transport: bundle.target.transport,
-            access: 'session_guest',
-          },
-          credential: invitation.credential,
-        });
-        return { kind: 'connected' };
-      } catch (error) {
-        if (pairingIntents.has(profileId)) {
-          return { kind: 'pairing_pending', profileId };
-        }
-        return {
-          kind: 'error',
-          reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
-          message: asError(error).message,
-        };
       }
     },
     rotateManagedCredential(expected, credential) {
@@ -884,7 +913,6 @@ export function createDesktopRuntimeHostProfileService(input: {
           (candidate) => candidate.id === profileId,
         );
         if (!profile) return undefined;
-        if (profile.kind !== 'remote') return undefined;
         const binding = findDesktopRuntimeHostManagedServiceBinding(
           await managedServices.read(),
           profile,
@@ -897,23 +925,49 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profile.kind !== 'remote') {
           throw new Error('This Runtime Host does not expose a shareable peer endpoint');
         }
-        if (profile.transport.kind !== 'ssh') {
+        if (profile.transport.kind !== 'ssh' && profile.transport.kind !== 'libp2p-direct') {
           return { name: profile.name, transport: profile.transport };
         }
-        const direct = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
-        );
-        if (
-          !direct ||
-          direct.kind !== 'remote' ||
-          direct.rootId !== profile.rootId ||
-          direct.transport.kind !== 'libp2p-direct'
-        ) {
+        let configuredPeerId: string | undefined;
+        if (profile.transport.kind === 'libp2p-direct') {
+          configuredPeerId = profile.transport.peerId;
+        } else {
+          const direct = (await catalog.read()).profiles.find(
+            (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
+          );
+          if (
+            direct?.kind === 'remote' &&
+            direct.rootId === profile.rootId &&
+            direct.transport.kind === 'libp2p-direct'
+          ) {
+            configuredPeerId = direct.transport.peerId;
+          }
+        }
+        if (!configuredPeerId) {
           throw new Error(
             'Enable Direct peer access for this Runtime Host before sharing its Sessions',
           );
         }
-        return { name: profile.name, transport: direct.transport };
+        const active = input.states().find((state) => state.target.profile.id === profile.id);
+        if (!active || active.readiness !== 'ready') {
+          throw new Error('Connect this Runtime Host before sharing its Sessions');
+        }
+        const endpoint = (await active.candidate.client.status()).peerEndpoint;
+        if (!endpoint) {
+          throw new Error('Runtime Host Direct peer is not available');
+        }
+        if (configuredPeerId !== endpoint.peerId) {
+          throw new Error('Runtime Host Direct peer identity changed');
+        }
+        return {
+          name: profile.name,
+          transport: {
+            kind: 'libp2p-direct' as const,
+            peerId: endpoint.peerId,
+            routeHints: endpoint.routeHints,
+            coordinationRelays: endpoint.coordinationRelays,
+          },
+        };
       });
     },
     resolveManagedAccess(profileId) {
@@ -930,13 +984,12 @@ export function createDesktopRuntimeHostProfileService(input: {
           await managedServices.read(),
           resolved.profile,
         );
-        return binding
-          ? {
-              ...binding,
-              credentialFingerprint: runtimeHostAccessCredentialFingerprint(resolved.credential),
-              enabled: preferences.enabledRemoteProfileIds.includes(profileId),
-            }
-          : undefined;
+        if (!binding || !isDesktopRuntimeHostManagedSshServiceBinding(binding)) return undefined;
+        return {
+          ...binding,
+          credentialFingerprint: runtimeHostAccessCredentialFingerprint(resolved.credential),
+          enabled: preferences.enabledRemoteProfileIds.includes(profileId),
+        };
       });
     },
     assertPairingComplete(profileId) {
@@ -945,9 +998,15 @@ export function createDesktopRuntimeHostProfileService(input: {
     resolveManagedDirectPeerProfile(profileId) {
       return mutate(async () => {
         const peerProfileId = managedDirectPeerProfileId(profileId);
+        const profile = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === peerProfileId,
+        );
         return {
-          exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
+          exists: profile !== undefined,
           enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
+          ...(profile?.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
+            ? { peerId: profile.transport.peerId }
+            : {}),
         };
       });
     },
@@ -1047,8 +1106,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         );
         if (
           !current ||
-          current.kind !== 'remote' ||
-          !sameRemoteRuntimeHostProfileTarget(current, expected.profile)
+          !sameResolvedRuntimeHostProfileTarget(
+            { profile: current },
+            { profile: expected.profile },
+          )
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
         }
@@ -1075,8 +1136,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         );
         if (
           !current ||
-          current.kind !== 'remote' ||
-          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !sameResolvedRuntimeHostProfileTarget(
+            { profile: current },
+            { profile: expected.profile },
+          ) ||
           !(await managedServices.markCleanupPendingIfCurrent(expected))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
@@ -1092,8 +1155,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         );
         if (
           !current ||
-          current.kind !== 'remote' ||
-          !sameRemoteRuntimeHostProfileTarget(current, expected.profile) ||
+          !sameResolvedRuntimeHostProfileTarget(
+            { profile: current },
+            { profile: expected.profile },
+          ) ||
           !(await managedServices.removeCleanupPendingIfCurrent(expected))
         ) {
           throw new Error('Runtime Host managed service binding changed during uninstall');
@@ -1199,7 +1264,10 @@ export function createDesktopRuntimeHostProfileService(input: {
           throw new Error('Enable this Runtime Host before reconnecting it');
         }
         const target = await catalog.resolve(profileId);
-        if (target.profile.kind !== 'remote' || target.profile.rootId !== expectedRootId) {
+        if (
+          target.profile.kind === 'local' ||
+          target.profile.rootId !== expectedRootId
+        ) {
           throw new Error('Runtime Host profile changed before it could reconnect');
         }
         await input.disable(profileId);
@@ -1213,12 +1281,6 @@ export function createDesktopRuntimeHostProfileService(input: {
           !preferences.enabledRemoteProfileIds.includes(profileId)
         ) {
           throw new Error("Enable a Runtime Host before making it the default");
-        }
-        if (profileId !== LOCAL_RUNTIME_HOST_PROFILE.id) {
-          const target = await catalog.resolve(profileId);
-          if (target.profile.kind === 'remote' && target.profile.access === 'session_guest') {
-            throw new Error('A shared Session connection cannot be the default Runtime Host');
-          }
         }
         const next = { ...preferences, defaultProfileId: profileId };
         await persist(next);
@@ -1252,25 +1314,84 @@ export function createDesktopRuntimeHostProfileService(input: {
         ) {
           throw new Error('Disable and remove the Direct peer profile before removing its SSH profile');
         }
-        const managedBinding = profile.kind === 'remote'
-          ? findDesktopRuntimeHostManagedServiceBinding(await managedServices.read(), profile)
-          : undefined;
+        const managedBinding = findDesktopRuntimeHostManagedServiceBinding(
+          await managedServices.read(),
+          profile,
+        );
         if (managedBinding && managedBinding.state !== 'active') {
           throw new Error('Finish uninstalling this Runtime Host service before removing it');
         }
-        await catalog.remove(profileId);
         if (managedBinding) {
-          await managedServices
-            .removeIfCurrent(managedBinding)
-            .catch((error) =>
-              console.error("[runtime-host] removed Profile left stale service metadata:", error),
+          if (!(await managedServices.removeIfCurrent(managedBinding))) {
+            throw new Error(
+              "Runtime Host managed service binding changed before its profile could be removed",
             );
+          }
         }
+        await catalog.remove(profileId);
         unavailable.delete(profileId);
         return snapshot();
       });
     },
   };
+}
+
+interface AuthenticatedPeerRouteObserver {
+  readonly observe: (endpoint: HostPeerEndpoint) => void;
+  readonly flush: () => Promise<void>;
+}
+
+function createAuthenticatedPeerRouteObserver(
+  catalog: RuntimeHostProfileCatalog,
+  target: ResolvedRuntimeHostProfile,
+): AuthenticatedPeerRouteObserver | undefined {
+  if (
+    target.profile.kind !== 'remote' ||
+    target.profile.transport.kind !== 'libp2p-direct' ||
+    !target.profileIncarnationId
+  ) return undefined;
+  const expectedPeerId = target.profile.transport.peerId;
+  const incarnation = {
+    profile: target.profile,
+    profileIncarnationId: target.profileIncarnationId,
+  } as const;
+  let pending = Promise.resolve();
+  const observe = (endpoint: HostPeerEndpoint): void => {
+    if (
+      endpoint.peerId !== expectedPeerId ||
+      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
+    ) return;
+    pending = pending
+      .then(async () => {
+        await catalog.updateRemoteProfileIfCurrent(incarnation, (current) => {
+          if (current.transport.kind !== 'libp2p-direct') return current;
+          if (
+            sameStrings(current.transport.routeHints, endpoint.routeHints) &&
+            sameStrings(current.transport.coordinationRelays, endpoint.coordinationRelays)
+          ) return current;
+          return {
+            ...current,
+            transport: {
+              kind: 'libp2p-direct',
+              peerId: expectedPeerId,
+              routeHints: endpoint.routeHints,
+              coordinationRelays: endpoint.coordinationRelays,
+            },
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `[runtime-host] authenticated routes for profile ${target.profile.id} could not be saved:`,
+          asError(error),
+        );
+      });
+  };
+  return { observe, flush: () => pending };
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function managedDirectPeerProfileId(sourceProfileId: string): string {
@@ -1316,6 +1437,12 @@ function assertRootIsNotEnabled(
   );
   const duplicateState = states.find((state) => {
     if (state.target.profile.id === target.profile.id) return false;
+    if (
+      state.target.profile.kind === 'remote' &&
+      state.target.profile.access === 'session_guest'
+    ) {
+      return false;
+    }
     const stateRootId = state.target.profile.kind !== 'local'
       ? state.target.profile.rootId
       : state.readiness === "ready"
@@ -1326,7 +1453,7 @@ function assertRootIsNotEnabled(
     return stateRootId === rootId;
   });
   const duplicate = duplicateProfile ?? duplicateState?.target.profile;
-  if (duplicate && !(isSessionGuestProfile(target.profile) && isSessionGuestProfile(duplicate))) {
+  if (duplicate) {
     throw new Error(
       `Runtime Host profile "${duplicate.name}" is already connected to this computer; disable it before adding another connection`,
     );
@@ -1352,12 +1479,6 @@ async function recoverAbandonedProfileLock(profilePath: string): Promise<void> {
   await rmdir(lockPath).catch((error: unknown) => {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   });
-}
-
-function isSessionGuestProfile(
-  profile: ResolvedRuntimeHostProfile['profile'],
-): boolean {
-  return profile.kind === 'remote' && profile.access === 'session_guest';
 }
 
 async function persistIfCurrentTarget(
@@ -1400,7 +1521,6 @@ export function registerDesktopRuntimeHostProfileIpc(
     "runtime-host-profiles:remove",
     "runtime-host-profiles:resolve-pairing-recovery",
     "runtime-host-profiles:discard-pairing",
-    'session-collaboration:import',
   ] as const;
   ipcMain.handle(channels[0], () => service.getSnapshot());
   ipcMain.handle(channels[1], (_event, value: DesktopRuntimeHostProfileAddInput) =>
@@ -1417,9 +1537,6 @@ export function registerDesktopRuntimeHostProfileIpc(
   );
   ipcMain.handle(channels[7], (_event, profileId: string) =>
     service.discardPairing(profileId),
-  );
-  ipcMain.handle(channels[8], (_event, code: string, allowInsecure: boolean) =>
-    service.importCollaborationInvitation(code, allowInsecure),
   );
   return () => {
     for (const channel of channels) ipcMain.removeHandler(channel);
@@ -1461,14 +1578,9 @@ function errorCode(error: unknown): string | undefined {
   return typeof error.code === 'string' ? error.code : undefined;
 }
 
-function isPeerPathUnavailable(error: unknown): boolean {
-  const code = errorCode(error);
-  return code === 'direct_path_unavailable' || code === 'transit_unavailable';
-}
-
 function requireSaveInput(value: unknown): asserts value is {
-  readonly profile: PersistedRuntimeHostProfile;
-  readonly credential?: string;
+  readonly profile: RemoteRuntimeHostProfile;
+  readonly credential: string;
 } {
   if (typeof value !== "object" || value === null || !("profile" in value)) {
     throw new Error("Runtime Host profile input is invalid");
@@ -1482,10 +1594,9 @@ function requireSaveInput(value: unknown): asserts value is {
     throw new Error("Runtime Host profile input is invalid");
   }
   if (
-    "credential" in value &&
-    value.credential !== undefined &&
-    (typeof value.credential !== "string" ||
-      Buffer.byteLength(value.credential, "utf8") > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES)
+    !("credential" in value) ||
+    typeof value.credential !== "string" ||
+    Buffer.byteLength(value.credential, "utf8") > RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES
   ) {
     throw new Error("Runtime Host credential input is invalid");
   }
