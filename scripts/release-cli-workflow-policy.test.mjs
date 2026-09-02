@@ -252,6 +252,34 @@ test('finalize preserves npm evidence and owns the single product publication bo
   assert.doesNotMatch(workflow.slice(workflow.indexOf('\n  publish:')), /\$\{\{ inputs\./u);
 });
 
+test('finalize consumes the normalized release assets the publish job hands off', () => {
+  // The runner uploads still carry the per-architecture macOS feeds that the
+  // Release publish job merges into the one feed clients read. Reassembling
+  // them here would attest and check a set the release never carries, so
+  // Finalize takes the single artifact holding the verified published bytes.
+  const finalize = readWorkflow('release-cli-finalize.yml');
+  const steps = workflowSteps(finalize);
+  const download = namedStep(steps, 'Download the exact verified Release run artifacts');
+  const [, artifact] =
+    /\n\s+name: (\S+)-\$\{\{ needs\.inspect\.outputs\.release_run_attempt \}\}/u.exec(download);
+  assert.doesNotMatch(download, /pattern:|merge-multiple:/u);
+  assert.match(
+    readWorkflow('release.yml'),
+    new RegExp(
+      `\\n\\s+name: ${artifact}-\\$\\{\\{ github\\.run_attempt \\}\\}\\n\\s+path: release-assets\\n`,
+      'u',
+    ),
+  );
+
+  // Everything downstream reads the one directory that download populates.
+  const attest = steps.find((step) => step.includes('uses: actions/attest@'));
+  assert.match(attest, /subject-path: \$\{\{ runner\.temp \}\}\/product-release\/\*/u);
+  const preflight = namedStep(steps, 'Verify the exact publication input');
+  assert.match(preflight, /"\$RUNNER_TEMP\/product-release"/u);
+  const verify = namedStep(steps, 'Verify the issued provenance');
+  assert.match(verify, /find "\$RUNNER_TEMP\/product-release"/u);
+});
+
 test('release workflows select npm from the root packageManager authority', () => {
   for (const name of [
     'cli-package-validation.yml',

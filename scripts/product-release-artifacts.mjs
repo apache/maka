@@ -379,7 +379,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`Verified immutable product release evidence for ${tag}`);
   } else if (command === 'list' && args.length === 0) {
     const identity = await readProductReleaseIdentity();
-    console.log(JSON.stringify(identity.artifacts, null, 2));
+    console.log(JSON.stringify(identity.releaseAssets, null, 2));
   } else {
     throw new Error(
       'usage: product-release-artifacts.mjs <list|stage|merge-feeds|verify|record|inspect-record> ...',

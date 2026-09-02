@@ -32,6 +32,7 @@ import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 import { mergeProductReleaseUpdateFeeds } from './product-release-artifacts.mjs';
 import {
   parseAsfSourceReferenceTag,
+  readProductReleaseIdentity,
   resolveProductManifestIdentity,
   resolveProductReleaseIdentity,
 } from './product-release-identity.mjs';
@@ -162,6 +163,22 @@ test('one root version defines every product artifact from one source commit', (
     [...staged].filter((name) => !published.has(name)).toSorted(),
     [...consumed].toSorted(),
   );
+});
+
+test('the manifest operators compare the Draft against is the published set', async () => {
+  // The release checklist reads this list against the Draft's assets, so it has
+  // to name what publication carries, not the per-architecture groups the
+  // runners stage and the publish job merges away.
+  const [{ stdout }, identity] = await Promise.all([
+    execFileAsync(
+      process.execPath,
+      [join(repoRoot, 'scripts/product-release-artifacts.mjs'), 'list'],
+      { cwd: repoRoot },
+    ),
+    readProductReleaseIdentity(),
+  ]);
+
+  assert.deepEqual(JSON.parse(stdout), identity.releaseAssets);
 });
 
 test('publication merges the per-architecture macOS feeds into the one clients read', async (t) => {
@@ -853,6 +870,27 @@ test('one product workflow gates one draft release on every required artifact', 
   ).run;
   assert.match(verifyArtifacts, /product-release-artifacts\.mjs verify release-assets/u);
   assert.doesNotMatch(verifyArtifacts, /required=\(|Maka-\*|latest\*\.yml/u);
+  // Finalize publishes and attests these bytes, so the merged, verified
+  // directory is handed on under a name the publish job's own `release-*`
+  // download cannot pick the per-architecture feeds back out of.
+  const assetsUpload = jobs.publish.steps.find(
+    (step) => step.name === 'Upload the verified release assets',
+  );
+  assert.equal(assetsUpload.with.name, 'product-release-assets-${{ github.run_attempt }}');
+  assert.equal(assetsUpload.with.path, 'release-assets');
+  assert.equal(assetsUpload.with['if-no-files-found'], 'error');
+  assert.equal(assetsUpload.with['retention-days'], 30);
+  assert.ok(
+    publishStepNames.indexOf('Verify the exact product artifact manifest') <
+      publishStepNames.indexOf('Upload the verified release assets'),
+  );
+  const rawDownload = jobs.publish.steps.find((step) =>
+    String(step.uses).startsWith('actions/download-artifact@'),
+  );
+  assert.doesNotMatch(
+    assetsUpload.with.name,
+    new RegExp(`^${rawDownload.with.pattern.split('*')[0]}`, 'u'),
+  );
   // A workflow matrix cannot be generated from the target descriptor, so it is
   // held to it here instead of being a second list that can drift.
   const matrix = jobs.desktop.strategy.matrix.include;

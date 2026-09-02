@@ -89,8 +89,8 @@ bytes and expected filename are not covered by that protected workflow identity.
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
    reference in its notes, is not marked as a GitHub prerelease or Latest while it remains a Draft,
-   and contains exactly the manifest
-   reported by `node scripts/product-release-artifacts.mjs list`. The manifest covers both Desktop
+   and contains exactly the release asset names
+   reported by `node scripts/product-release-artifacts.mjs list`. That list covers all three Desktop
    platforms and update metadata, the standalone CLI/TUI, and their required checksums.
 7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
@@ -101,7 +101,7 @@ bytes and expected filename are not covered by that protected workflow identity.
    entitlements must retain the required hardened-runtime capabilities and omit
    `com.apple.security.get-task-allow`, as required by Apple's
    [notarization guidance](https://developer.apple.com/documentation/security/resolving-common-notarization-issues).
-9. Inspect both Desktop resource trees and confirm `git/`, `bundled-git.json`, `licenses/git/`, and
+9. Inspect every Desktop resource tree and confirm `git/`, `bundled-git.json`, `licenses/git/`, and
    `licenses/dugite/` are absent.
 
 If the publish job created the product tag or Draft but failed before every asset was uploaded,

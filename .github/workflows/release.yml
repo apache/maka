@@ -471,6 +471,19 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      # The runner uploads still carry the per-architecture feeds this job
+      # merged away. Finalize must publish and attest the published set, so it
+      # is handed these normalized bytes rather than the raw runner groups. The
+      # name deliberately avoids the `release-*` glob this job downloads.
+      - name: Upload the verified release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: product-release-assets-${{ github.run_attempt }}
+          path: release-assets
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
       - name: Revalidate the live ASF source reference
         env:
           SOURCE_COMMIT: ${{ needs.release-identity.outputs.source_commit }}
