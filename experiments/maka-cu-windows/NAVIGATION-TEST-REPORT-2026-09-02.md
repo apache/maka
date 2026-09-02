@@ -207,6 +207,20 @@ contract 均为 **18/18 pass**，没有 unknown、fail 或 blocked。
 click 和页面 Enter 导航均已重复验证；Enter helper 侧仍按合同保留 unknown。下一阶段
 应转向真实应用矩阵，而不是继续在 fixture 上改 oracle。
 
+## 生命周期/显式 HWND 复核（2026-09-02 追加）
+
+重新构建最终 C# 与 Rust release 后，C# `lifecycle-driver.mjs` 的 C4/C5a/C5b/C5c/C6、
+窗口重建（ID）和父进程退出（PD）共 **0 failures**；Rust `rust-driver.mjs` 在同一
+WinForms fixture 上的握手、observe、WGC capture、语义动作、取消、shutdown 和重启
+快照失效检查也全部通过。
+
+探针第一次出现“Rust observe returned elements=0”，原因不是 Rust 把空树当成功，而是
+测试进程传入了旧 fixture 的 HWND；本机同时残留多个同名 fixture，`MainWindowHandle`
+在进程重启/窗口重建后不能作为长期缓存身份。改为从 Rust `list_windows` 重新枚举，按
+标题和 PID 核对当前 HWND 后，协议检查完整通过。后续测试必须把 HWND 当作一次性选择：
+每次动作前沿用快照中的 HWND/PID/进程启动时间/windowGeneration，并在需要时重新枚举；
+不能仅按标题或复用旧窗口句柄。
+
 ## WPF 桌面任务复测
 
 `app-task-results-final-v1.json` 使用最终 C# / Rust release 构建运行 WPF fixture：
