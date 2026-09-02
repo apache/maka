@@ -295,11 +295,11 @@ pub enum StreamKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum DialOrigin {
+enum DialOrigin {
     Direct,
     Coordination,
     Transit,
-    WebRtc,
+    WebRtc(WebRtcRelayAttempt),
 }
 
 struct StartedConnect {
@@ -1729,7 +1729,11 @@ fn update_connect_candidates(
         .collect::<HashSet<_>>();
     let transit_changed = waiter.transit_relay_peers != next_transit;
     waiter.transit_relay_peers = next_transit;
-    retain_current_webrtc_relay_attempts(waiter);
+    let retired_webrtc_dials =
+        retain_current_webrtc_relay_attempts(waiter, &mut direct.retiring_connections);
+    for connection_id in retired_webrtc_dials {
+        let _ = swarm.close_connection(connection_id);
+    }
     let changed = direct_changed || coordination_changed || transit_changed;
     if changed {
         waiter.next_route_attempt = Instant::now();
@@ -1923,7 +1927,10 @@ fn next_webrtc_relay_peer(
         })
 }
 
-fn retain_current_webrtc_relay_attempts(waiter: &mut PendingConnect) {
+fn retain_current_webrtc_relay_attempts(
+    waiter: &mut PendingConnect,
+    retiring_connections: &mut HashSet<ConnectionId>,
+) -> Vec<ConnectionId> {
     let current = waiter
         .coordination_relay_peers
         .iter()
@@ -1941,6 +1948,29 @@ fn retain_current_webrtc_relay_attempts(waiter: &mut PendingConnect) {
     {
         active.cancellation.cancel();
     }
+    let stale_dials = waiter
+        .dials
+        .iter()
+        .filter_map(|(connection_id, origin)| match origin {
+            DialOrigin::WebRtc(attempt) if !is_current_webrtc_relay_attempt(waiter, *attempt) => {
+                Some(*connection_id)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if waiter
+        .opening
+        .as_ref()
+        .is_some_and(|opening| stale_dials.contains(&opening.connection_id))
+        && let Some(opening) = waiter.opening.take()
+    {
+        opening.task.abort();
+    }
+    for connection_id in &stale_dials {
+        remove_pending_dial(waiter, *connection_id);
+        retiring_connections.insert(*connection_id);
+    }
+    stale_dials
 }
 
 fn begin_webrtc_relay_attempt(
@@ -2051,7 +2081,9 @@ fn complete_outgoing_webrtc_upgrade(
             .pending
             .get_mut(&request_id)
             .expect("current WebRTC upgrade has a pending connect");
-        waiter.dials.insert(connection_id, DialOrigin::WebRtc);
+        waiter
+            .dials
+            .insert(connection_id, DialOrigin::WebRtc(relay_attempt));
         webrtc_debug(format_args!(
             "direct dial submitted peer={} request={} connection={connection_id}",
             peer_id, request_id,
@@ -2186,11 +2218,24 @@ fn handle_swarm_event(
             endpoint,
             ..
         } => {
-            if direct
-                .pending
-                .values()
-                .any(|connect| connect.dials.get(&connection_id) == Some(&DialOrigin::WebRtc))
-            {
+            let stale_webrtc_dial = direct.pending.values().any(|connect| {
+                matches!(
+                    connect.dials.get(&connection_id),
+                    Some(DialOrigin::WebRtc(attempt))
+                        if !is_current_webrtc_relay_attempt(connect, *attempt)
+                )
+            });
+            if stale_webrtc_dial {
+                direct.retiring_connections.insert(connection_id);
+                let _ = swarm.close_connection(connection_id);
+                return;
+            }
+            if direct.pending.values().any(|connect| {
+                matches!(
+                    connect.dials.get(&connection_id),
+                    Some(DialOrigin::WebRtc(_))
+                )
+            }) {
                 webrtc_debug(format_args!(
                     "direct connection established peer={peer_id} connection={connection_id}"
                 ));
@@ -2590,7 +2635,11 @@ fn reconcile_pending_transit_connects(
         waiter
             .transit_relay_peers
             .retain(|peer| !revoked_relays.contains(peer));
-        retain_current_webrtc_relay_attempts(waiter);
+        let retired_webrtc_dials =
+            retain_current_webrtc_relay_attempts(waiter, &mut direct.retiring_connections);
+        for connection_id in retired_webrtc_dials {
+            let _ = swarm.close_connection(connection_id);
+        }
         if let Some(opening) = waiter.opening.take() {
             opening.task.abort();
         }
@@ -2649,8 +2698,8 @@ fn remove_pending_dial(
     connection_id: ConnectionId,
 ) -> Option<DialOrigin> {
     let origin = waiter.dials.remove(&connection_id);
-    if origin == Some(DialOrigin::WebRtc) {
-        waiter.webrtc_active_attempt = None;
+    if let Some(DialOrigin::WebRtc(attempt)) = origin {
+        finish_webrtc_relay_attempt(waiter, attempt);
     }
     origin
 }
@@ -3700,7 +3749,11 @@ mod tests {
         finish_webrtc_relay_attempt(&mut waiter, first_attempt);
 
         waiter.coordination_relay_peers = vec![first_relay, second_relay];
-        retain_current_webrtc_relay_attempts(&mut waiter);
+        let mut retiring_connections = HashSet::new();
+        assert!(
+            retain_current_webrtc_relay_attempts(&mut waiter, &mut retiring_connections,)
+                .is_empty()
+        );
         let selected = next_webrtc_relay_peer(
             &waiter.coordination_relay_peers,
             &waiter.transit_relay_peers,
@@ -3711,8 +3764,8 @@ mod tests {
         assert!(waiter.attempt_id == attempt_id);
     }
 
-    #[test]
-    fn removed_webrtc_relay_attempt_is_cancelled_and_cannot_commit() {
+    #[tokio::test]
+    async fn removed_webrtc_relay_attempt_is_cancelled_and_cannot_commit() {
         let now = Instant::now();
         let removed_relay = PeerId::random();
         let replacement_relay = PeerId::random();
@@ -3741,11 +3794,29 @@ mod tests {
 
         let (removed_attempt, removed_cancellation) =
             begin_webrtc_relay_attempt(&mut waiter, removed_relay);
+        let removed_connection_id = DialOpts::peer_id(waiter.peer_id)
+            .condition(PeerCondition::Always)
+            .build()
+            .connection_id();
+        waiter
+            .dials
+            .insert(removed_connection_id, DialOrigin::WebRtc(removed_attempt));
+        waiter.opening = Some(PendingStreamOpen {
+            connection_id: removed_connection_id,
+            task: tokio::spawn(std::future::pending()),
+        });
         waiter.coordination_relay_peers = vec![replacement_relay];
-        retain_current_webrtc_relay_attempts(&mut waiter);
+        let mut retiring_connections = HashSet::new();
+        assert_eq!(
+            retain_current_webrtc_relay_attempts(&mut waiter, &mut retiring_connections),
+            vec![removed_connection_id],
+        );
 
         assert!(removed_cancellation.is_cancelled());
         assert!(!is_current_webrtc_relay_attempt(&waiter, removed_attempt));
+        assert!(waiter.opening.is_none());
+        assert!(!waiter.dials.contains_key(&removed_connection_id));
+        assert!(retiring_connections.contains(&removed_connection_id));
         let replacement = next_webrtc_relay_peer(
             &waiter.coordination_relay_peers,
             &waiter.transit_relay_peers,
@@ -3754,9 +3825,22 @@ mod tests {
         )
         .expect("replacement relay is immediately eligible");
         let (replacement_attempt, _) = begin_webrtc_relay_attempt(&mut waiter, replacement);
+        let replacement_connection_id = DialOpts::peer_id(waiter.peer_id)
+            .condition(PeerCondition::Always)
+            .build()
+            .connection_id();
+        waiter.dials.insert(
+            replacement_connection_id,
+            DialOrigin::WebRtc(replacement_attempt),
+        );
+        assert!(remove_pending_dial(&mut waiter, removed_connection_id).is_none());
         assert!(is_current_webrtc_relay_attempt(
             &waiter,
             replacement_attempt
+        ));
+        assert!(matches!(
+            waiter.dials.get(&replacement_connection_id),
+            Some(DialOrigin::WebRtc(attempt)) if *attempt == replacement_attempt
         ));
         assert_ne!(removed_attempt.id, replacement_attempt.id);
     }

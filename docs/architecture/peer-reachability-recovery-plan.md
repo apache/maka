@@ -317,6 +317,7 @@ charter. Their evidence is adjudicated into this ledger:
 | R10-S1 | simplification | confirmed | Desktop's managed-service descriptor retains only the immutable PeerId. Startup route arrays no longer form an unsigned, stale availability gate; connection codes and collaboration targets come from the Runtime Host's live signed endpoint. |
 | R11-C1 | correctness | confirmed | Reachability and advertisement anti-entropy now summarize each signed fact as `{ peerId, revision, digest }`, where the digest binds the canonical signed payload. Equal-revision disagreement is rejected during summary comparison instead of remaining silently partitioned between replicas. |
 | R11-C2 | correctness | confirmed | Each WebRTC Relay upgrade now has its own fenced identity and child cancellation token. Removing its Relay retires the active attempt, a replacement can start in the same connection attempt, and a late success is closed unless both its identity and Relay membership are still current. |
+| R12-C1 | correctness | confirmed | The WebRTC Relay-attempt identity now survives through the libp2p dial lifecycle. Candidate replacement retires and closes stale dials, an established connection is admitted only for the exact current attempt, and a late terminal event from an old dial cannot clear its replacement. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
