@@ -749,11 +749,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         result: undefined,
       };
     });
-    this.#recordReachabilityReceipts([
-      ...reachability,
-      authorityReachability,
-      localReachability,
-    ]);
+    this.#recordReachabilityReceipts([...reachability, authorityReachability, localReachability]);
     signal.throwIfAborted();
     await this.#refreshLocalEvidence();
     signal.throwIfAborted();
@@ -2014,10 +2010,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #sync(request: SyncPeerMeshRequest, remotePeerId: string): Promise<SyncPeerMeshResponse> {
-    const remoteReachability = this.#authenticateReachability(
-      request.reachability,
-      remotePeerId,
-    );
+    const remoteReachability = this.#authenticateReachability(request.reachability, remotePeerId);
     const remoteAdvertisement = this.#validateAdvertisementForPeer(
       request.advertisement,
       request.meshId,
