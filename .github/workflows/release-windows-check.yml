@@ -283,6 +283,9 @@ jobs:
       - name: Package through the existing unsigned Windows path
         run: npm run package:windows-x64
 
+      - name: Check archive reproducibility with different input timestamps
+        run: npm run test:windows-archives
+
       - name: Hash packaged files and unpacked payload without normalization
         shell: pwsh
         run: |
@@ -343,6 +346,8 @@ jobs:
             return !a || !b || a.size !== b.size || a.sha256 !== b.sha256;
           });
           const payloadDifferences = differences.filter(path => path.startsWith('win-unpacked/'));
+          // This log embeds checkout paths and is not a distributed release asset.
+          const artifactDifferences = differences.filter(path => path !== 'builder-debug.yml');
           const summary = [
             '# Windows reproducibility probe',
             'Engineering experiment only; not trusted-hardware release validation.',
@@ -350,11 +355,12 @@ jobs:
             `Environment differences: ${environmentDifferences.join(', ') || 'none'}`,
             `Files: ${files[0].size} / ${files[1].size}`,
             `Different files: ${differences.length}; unpacked payload: ${payloadDifferences.length}`,
+            `Release artifact differences: ${artifactDifferences.length}; builder-debug.yml is diagnostic-only.`,
             '```', ...differences, '```',
           ].join('\n');
           console.log(summary);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-          if (environmentDifferences.length || differences.length) process.exitCode = 1;
+          if (environmentDifferences.length || artifactDifferences.length) process.exitCode = 1;
           NODE
 
   reproducibility-diagnose:
