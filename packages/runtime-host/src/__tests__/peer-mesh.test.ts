@@ -372,7 +372,9 @@ test('publishes a changed local route promptly and refreshes a live cached peer 
     dataRoot: join(root, 'member-c'),
     peer: memberCPeer,
   });
-  const serving = [authority.serve(), memberB.serve(), memberC.serve()];
+  // Keep the observer demand-driven so its explicit prepareRoutes() call,
+  // rather than a racing background reconciliation, owns the cache refresh.
+  const serving = [authority.serve(), memberB.serve()];
   try {
     const mesh = await authority.create();
     await memberB.join(await authority.invite(mesh.roster.roster.meshId));
