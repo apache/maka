@@ -1346,6 +1346,7 @@ function recreateWorkspaceTablesAsSchema12(database: DatabaseSync): void {
     DROP TABLE runtime_workspace_heads_schema_13;
     DROP TABLE runtime_workspace_versions_schema_13;
     DROP TABLE runtime_managed_mutation_reservations;
+    DROP INDEX runtime_events_by_session_kind;
     PRAGMA user_version = 12;
     COMMIT;
     PRAGMA foreign_keys = ON;

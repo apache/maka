@@ -1268,11 +1268,6 @@ export class AgentRun {
     this.invocationOpeningCommitted = true;
   }
 
-  /** The opening fact this invocation committed, for its continuation-start event. */
-  invocationOpeningFact(): RuntimeEventInvocationOpenedContent | undefined {
-    return this.invocationOpening;
-  }
-
   private requiresDurablePersistence(): boolean {
     return this.input.durability === 'required';
   }

@@ -108,7 +108,17 @@ describe('SQLite runtime schema migration', () => {
     try {
       db.exec('PRAGMA foreign_keys = ON');
       db.exec(`
-        CREATE TABLE runtime_events (event_id TEXT PRIMARY KEY);
+        CREATE TABLE runtime_events (
+          event_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          invocation_id TEXT NOT NULL,
+          run_id TEXT NOT NULL,
+          turn_id TEXT NOT NULL,
+          event_seq INTEGER NOT NULL,
+          event_kind TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          committed_at INTEGER NOT NULL
+        );
         CREATE TABLE runtime_continuation_claims (
           claim_id TEXT PRIMARY KEY,
           source_session_id TEXT NOT NULL,
@@ -144,7 +154,7 @@ describe('SQLite runtime schema migration', () => {
 
       migrateSqliteRuntimeDatabase(db);
 
-      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 15);
+      assert.equal(SQLITE_RUNTIME_SCHEMA_VERSION, 16);
       assert.equal(
         (
           db

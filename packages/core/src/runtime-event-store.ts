@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { RuntimeEvent } from './runtime-event.js';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from './runtime-event.js';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
@@ -69,9 +69,34 @@ export class DurableStoreWriteError extends Error {
   }
 }
 
+/**
+ * One invocation as the event spine itself describes it: its opening fact and,
+ * once it has ended, its terminal event.
+ *
+ * This is a query, not a table. Nothing writes it and nothing repairs it, so
+ * clearing any physical index and rebuilding from the events produces the same
+ * inventory. Reserved control-plane invocation streams have no opening fact and
+ * therefore never appear here.
+ */
+export interface RuntimeInvocationRecord {
+  sessionId: string;
+  invocationId: string;
+  runId: string;
+  turnId: string;
+  /** Timestamp of the opening fact's own event. */
+  openedAt: number;
+  opening: RuntimeEventInvocationOpenedContent;
+  terminalEvent?: RuntimeEvent;
+}
+
 export interface RuntimeEventStore {
   /** Canonical stores fail the active run closed on every durable write error. */
   readonly durability?: 'best_effort' | 'canonical';
+  /**
+   * Enumerate a Session's invocations from the canonical events. Optional only
+   * while the Run header is still the enumeration authority consumers read.
+   */
+  listSessionInvocations?(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   appendRuntimeEvent(
     sessionId: string,
     runId: string,

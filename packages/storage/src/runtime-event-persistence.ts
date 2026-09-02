@@ -19,6 +19,7 @@
 
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-event-store';
 import type { BoundedEvidenceReadResult, EvidenceReadBudget } from './agent-run-store.js';
 import { createSqliteRuntimeStore, type SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import {
@@ -40,6 +41,7 @@ export type RuntimeEventReadPersistence = {
 };
 
 export interface RuntimeEventReadStore {
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -79,6 +81,7 @@ export async function openRuntimeEventReadPersistence(input: {
   return {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
+      listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
       readRuntimeEvents: (sessionId: string, runId: string) =>
         store.readRuntimeEvents(sessionId, runId),
       readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>

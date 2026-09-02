@@ -18,8 +18,16 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import {
+  decodePersistedAgentRunHeader,
+  runtimeInvocationOpeningFromRunHeader,
+  type AgentRunHeader,
+} from '@maka/core/agent-run';
+import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import type { PersistedValue } from '@maka/core/persisted-value';
 
-export const SQLITE_RUNTIME_SCHEMA_VERSION = 15;
+export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY_VERSION = 1;
 export const RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY = 'runtime_continuation_authority';
@@ -484,7 +492,104 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     ALTER TABLE runtime_continuation_claims_v15 RENAME TO runtime_continuation_claims;
     `,
   ],
+  [
+    16,
+    `
+    CREATE INDEX runtime_events_by_session_kind
+      ON runtime_events(session_id, event_kind, invocation_id);
+    `,
+  ],
 ]);
+
+/**
+ * Data migrations that a SQL statement cannot express, applied inside the same
+ * transaction as their schema step. They project persisted records through the
+ * one TypeScript mapping that owns that projection, so a migration and the live
+ * writer can never classify a field two different ways.
+ */
+const DATA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map([
+  [16, backfillInvocationOpeningFacts],
+]);
+
+/**
+ * Give every Run header that never wrote a RuntimeEvent the opening fact it
+ * would have written today.
+ *
+ * Only header-only runs are backfilled. A run that already has events owns an
+ * immutable sequence whose position 1, digests and coverage other facts point
+ * at; inserting into it would rewrite history that other records have already
+ * signed. Those runs keep the Run header as their opening evidence until the
+ * consumers move.
+ *
+ * A header this cannot project fails closed: it is skipped, and its transcript
+ * and tool evidence stay exactly as readable as before.
+ */
+function backfillInvocationOpeningFacts(db: DatabaseSync): void {
+  if (!hasTable(db, 'core_agent_runs')) return;
+  const rows = db
+    .prepare(`
+      SELECT r.session_id, r.run_id, r.record_json
+      FROM core_agent_runs r
+      WHERE NOT EXISTS (
+        SELECT 1 FROM runtime_events e
+        WHERE e.session_id = r.session_id AND e.run_id = r.run_id
+      )
+      ORDER BY r.created_at ASC, r.run_id ASC
+    `)
+    .all() as Array<{ session_id: string; run_id: string; record_json: string }>;
+  const insertEvent = db.prepare(`
+    INSERT INTO runtime_events (
+      event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+      event_kind, payload_json, committed_at
+    ) VALUES (?, ?, ?, ?, ?, 1, 'invocation_opened', ?, ?)
+  `);
+  const insertOrdinal = db.prepare(`
+    INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id)
+    SELECT ?, COALESCE(MAX(ordinal), 0) + 1, ?
+    FROM runtime_session_event_ordinals WHERE session_id = ?
+  `);
+  for (const row of rows) {
+    let encoded: { event: RuntimeEvent; json: string };
+    try {
+      const header = decodePersistedAgentRunHeader(
+        JSON.parse(row.record_json) as PersistedValue<AgentRunHeader>,
+      );
+      encoded = encodeCanonicalRuntimeEvent({
+        id: `invocation_opened:${header.runId}`,
+        invocationId: header.invocationId ?? header.runId,
+        runId: header.runId,
+        sessionId: header.sessionId,
+        turnId: header.turnId,
+        ts: header.createdAt,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        modelVisibility: 'hidden',
+        content: runtimeInvocationOpeningFromRunHeader(header),
+      });
+    } catch {
+      continue;
+    }
+    const event = encoded.event;
+    insertEvent.run(
+      event.id,
+      event.sessionId,
+      event.invocationId,
+      event.runId,
+      event.turnId,
+      encoded.json,
+      event.ts,
+    );
+    insertOrdinal.run(event.sessionId, event.id, event.sessionId);
+  }
+}
+
+function hasTable(db: DatabaseSync, name: string): boolean {
+  const row = db
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(name) as { present?: unknown } | undefined;
+  return row?.present === 1;
+}
 
 export function configureSqliteRuntimeDatabase(db: DatabaseSync): void {
   // Bound lock acquisition before touching persistent journal state. WAL mode is
@@ -530,6 +635,7 @@ export function migrateSqliteRuntimeDatabase(
       const sql = MIGRATIONS.get(version);
       if (!sql) throw new Error(`Missing SQLite runtime migration ${version}`);
       db.exec(sql);
+      DATA_MIGRATIONS.get(version)?.(db);
       db.exec(`PRAGMA user_version = ${version}`);
     }
     if (ownsTransaction) db.exec('COMMIT');

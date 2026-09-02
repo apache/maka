@@ -45,6 +45,7 @@ import {
   decodeRuntimeEvent,
   isPartialRuntimeEvent,
   isTerminalRuntimeEvent,
+  runtimeEventInvocationOpening,
   TOOL_BOUNDARY_PROTOCOL_V1,
   type RuntimeEvent,
   type RuntimeEventManagedWorkspaceMutationV2,
@@ -57,6 +58,7 @@ import {
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
+  type RuntimeInvocationRecord,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type RuntimeWorkspaceVersionAuthorityStore,
@@ -528,6 +530,53 @@ export class SqliteRuntimeStore
 
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     return this.readRuntimeEventsSync(sessionId, runId);
+  }
+
+  /**
+   * Enumerate a Session's invocations straight from the event spine: the
+   * opening fact names each one, and its highest-sequence event says whether it
+   * ended. There is no derived table behind this, so dropping every index and
+   * rebuilding gives the same answer.
+   */
+  async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() => {
+      const openings = this.db
+        .prepare(`
+          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+          FROM runtime_events
+          WHERE session_id = ? AND event_kind = 'invocation_opened'
+          ORDER BY committed_at ASC, event_seq ASC, event_id ASC
+        `)
+        .all(sessionId) as unknown as RuntimeEventStorageRow[];
+      const lastEvent = this.db.prepare(`
+        SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
+        FROM runtime_events
+        WHERE invocation_id = ?
+        ORDER BY event_seq DESC
+        LIMIT 1
+      `);
+      return openings.map((row) => {
+        const event = decodeRuntimeEventStorageRow(row);
+        const opening = runtimeEventInvocationOpening(event);
+        if (!opening) {
+          throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
+        }
+        const lastRow = lastEvent.get(event.invocationId) as unknown as
+          | RuntimeEventStorageRow
+          | undefined;
+        const last = lastRow ? decodeRuntimeEventStorageRow(lastRow) : undefined;
+        return {
+          sessionId: event.sessionId,
+          invocationId: event.invocationId,
+          runId: event.runId,
+          turnId: event.turnId,
+          openedAt: event.ts,
+          opening,
+          ...(last && isTerminalRuntimeEvent(last) ? { terminalEvent: last } : {}),
+        } satisfies RuntimeInvocationRecord;
+      });
+    });
   }
 
   async scanRuntimeEvents(

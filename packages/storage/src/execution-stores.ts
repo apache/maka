@@ -24,7 +24,10 @@ import type {
   AgentRunProjectionKey,
 } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
-import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeContinuationAuthorityStore,
+  RuntimeInvocationRecord,
+} from '@maka/core/runtime-event-store';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
@@ -209,6 +212,12 @@ export interface ExecutionAgentRunReader {
 }
 
 export interface ExecutionRuntimeEventReader {
+  /**
+   * Session run inventory read from the canonical events rather than the Run
+   * header table. Sits beside `listSessionRuns` so consumers can move one at a
+   * time; nothing writes or repairs it.
+   */
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -555,6 +564,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       readImmutableRuntimePrefix: (input) =>
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
@@ -666,6 +677,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readRuntimeEventsBounded(sessionId, runId, budget)),
       readImmutableRuntimeEvents: (sessionId, runId) =>
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
+      listSessionInvocations: (sessionId) =>
+        run(() => runtimeEventStore.listSessionInvocations(sessionId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
     },
