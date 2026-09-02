@@ -60,7 +60,6 @@ pub struct ConnectPeerOptions {
     pub coordination_relays: Option<Vec<String>>,
     pub transit_relay_peer_ids: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
-    pub wait_for_routes: Option<bool>,
 }
 
 #[napi(object)]
@@ -385,7 +384,6 @@ async fn connect_peer(
                 coordination_relays,
                 transit_relay_peers,
                 deadline: Duration::from_millis(u64::from(options.direct_deadline_ms)),
-                wait_for_routes: options.wait_for_routes.unwrap_or(false),
             },
             stream_kind,
             result: result_tx,

@@ -148,7 +148,6 @@ pub struct ConnectOptions {
     pub coordination_relays: Vec<Multiaddr>,
     pub transit_relay_peers: Vec<PeerId>,
     pub deadline: Duration,
-    pub wait_for_routes: bool,
 }
 
 pub struct ConnectCandidates {
@@ -794,12 +793,27 @@ async fn run_endpoint_async(
                         )));
                         continue;
                     }
+                    if stream_kind == StreamKind::MeshControl
+                        && options.route_hints.is_empty()
+                        && options.coordination_relays.is_empty()
+                        && options.transit_relay_peers.is_empty()
+                        && !mesh_control.has_connection(
+                            options.peer_id,
+                            &direct.retiring_connections,
+                            &HashSet::new(),
+                        )
+                    {
+                        let _ = result.send(Err(PeerError::new(
+                            "mesh_control_unavailable",
+                            "the peer profile has no direct, coordination, or transit route",
+                        )));
+                        continue;
+                    }
                     let started = match start_connect(
                         &mut swarm,
                         &mut coordination_relays,
                         &options,
                         local_peer_id,
-                        stream_kind,
                         &direct.active,
                     ) {
                         Ok(peers) => peers,
@@ -1564,23 +1578,8 @@ fn start_connect(
     coordination_relays: &mut HashMap<PeerId, CoordinationRelay>,
     options: &ConnectOptions,
     local_peer_id: PeerId,
-    stream_kind: StreamKind,
     active_streams: &HashMap<ConnectionId, usize>,
 ) -> Result<StartedConnect, PeerError> {
-    if !options.wait_for_routes
-        && options.route_hints.is_empty()
-        && options.coordination_relays.is_empty()
-        && options.transit_relay_peers.is_empty()
-    {
-        let code = match stream_kind {
-            StreamKind::Application => "direct_path_unavailable",
-            StreamKind::MeshControl => "mesh_control_unavailable",
-        };
-        return Err(PeerError::new(
-            code,
-            "the peer profile has no direct, coordination, or transit route",
-        ));
-    }
     let mut relay_peers = Vec::new();
     for relay_address in &options.coordination_relays {
         let relay_peer = coordination_relay_peer_id(relay_address)?;
@@ -3645,7 +3644,6 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: Vec::new(),
                 deadline: Duration::from_secs(5),
-                wait_for_routes: true,
             },
         )
         .await;
@@ -3692,6 +3690,93 @@ mod tests {
         close_test_stream(target_stream).await;
         stop_test_endpoint(source).await;
         stop_test_endpoint(target).await;
+        std::fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mesh_control_derives_empty_route_behavior_from_live_connectivity() {
+        let root = std::env::temp_dir().join(format!("maka-peer-mesh-route-{}", PeerId::random()));
+        std::fs::create_dir_all(&root).expect("create test root");
+        let source = start(test_endpoint_options(root.join("source.key"))).expect("start source");
+        let mut target =
+            start(test_endpoint_options(root.join("target.key"))).expect("start target");
+        let isolated =
+            start(test_endpoint_options(root.join("isolated.key"))).expect("start isolated");
+
+        let application_source = connect_test_stream(
+            &source,
+            target.peer_id,
+            test_listen_address(&target),
+            1,
+            StreamKind::Application,
+        )
+        .await;
+        let application_target =
+            tokio::time::timeout(Duration::from_secs(5), target.incoming.recv())
+                .await
+                .expect("application inbound timeout")
+                .expect("application inbound stream");
+
+        let (result, response) = oneshot::channel();
+        source
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id: 2,
+                    peer_id: target.peer_id,
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: Vec::new(),
+                    deadline: Duration::from_secs(5),
+                },
+                stream_kind: StreamKind::MeshControl,
+                result,
+            })
+            .await
+            .expect("send Mesh control connect");
+        let mesh_source = tokio::time::timeout(Duration::from_secs(5), response)
+            .await
+            .expect("Mesh control connect timeout")
+            .expect("Mesh control connect response")
+            .expect("Mesh control connect failed");
+        let mesh_target = tokio::time::timeout(Duration::from_secs(5), target.mesh_incoming.recv())
+            .await
+            .expect("Mesh control inbound timeout")
+            .expect("Mesh control inbound stream");
+
+        let (result, response) = oneshot::channel();
+        isolated
+            .commands
+            .send(EngineCommand::Connect {
+                options: ConnectOptions {
+                    request_id: 1,
+                    peer_id: target.peer_id,
+                    route_hints: Vec::new(),
+                    coordination_relays: Vec::new(),
+                    transit_relay_peers: Vec::new(),
+                    deadline: Duration::from_secs(5),
+                },
+                stream_kind: StreamKind::MeshControl,
+                result,
+            })
+            .await
+            .expect("send unavailable Mesh control connect");
+        let response = tokio::time::timeout(Duration::from_secs(1), response)
+            .await
+            .expect("unavailable Mesh control response timeout")
+            .expect("unavailable Mesh control response");
+        let Err(error) = response else {
+            panic!("unavailable Mesh control unexpectedly connected");
+        };
+        assert_eq!(error.code, "mesh_control_unavailable");
+
+        close_test_stream(application_source).await;
+        close_test_stream(application_target).await;
+        close_test_stream(mesh_source).await;
+        close_test_stream(mesh_target).await;
+        stop_test_endpoint(source).await;
+        stop_test_endpoint(target).await;
+        stop_test_endpoint(isolated).await;
         std::fs::remove_dir_all(root).expect("remove test root");
     }
 
@@ -3769,7 +3854,6 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
-                wait_for_routes: false,
             },
         )
         .await;
@@ -3861,7 +3945,6 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
-                wait_for_routes: false,
             },
         )
         .await;
@@ -3891,7 +3974,6 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
-                wait_for_routes: false,
             },
         )
         .await;
@@ -3922,7 +4004,6 @@ mod tests {
                 coordination_relays: Vec::new(),
                 transit_relay_peers: vec![relay.peer_id],
                 deadline: Duration::from_secs(10),
-                wait_for_routes: false,
             },
         )
         .await;
@@ -4032,7 +4113,6 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: vec![provider.peer_id],
                     deadline: Duration::from_secs(10),
-                    wait_for_routes: false,
                 },
             )
             .await,
@@ -4158,7 +4238,6 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: Vec::new(),
                     deadline: Duration::from_secs(5),
-                    wait_for_routes: false,
                 },
                 stream_kind,
                 result,
@@ -4190,7 +4269,6 @@ mod tests {
                     coordination_relays: Vec::new(),
                     transit_relay_peers: vec![relay_peer_id],
                     deadline: Duration::from_secs(10),
-                    wait_for_routes: false,
                 },
                 stream_kind,
                 result,

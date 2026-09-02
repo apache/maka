@@ -511,7 +511,6 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
         ...input,
         ...connectCandidates(resolution),
         requestId,
-        ...(hasConnectionCandidates(resolution) ? {} : { waitForRoutes: true }),
       });
     } catch (error) {
       settled = true;

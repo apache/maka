@@ -91,7 +91,6 @@ export interface RuntimeHostPeerNativeEndpoint {
     readonly coordinationRelays?: readonly string[];
     readonly transitRelayPeerIds?: readonly string[];
     readonly directDeadlineMs: number;
-    readonly waitForRoutes?: boolean;
   }): Promise<RuntimeHostPeerNativeStream>;
   connectMeshControl(options: {
     readonly requestId: number;
