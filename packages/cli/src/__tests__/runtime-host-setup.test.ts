@@ -42,6 +42,7 @@ import {
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
+import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   resolveRootControlNamespace,
   resolveRootOwnershipNamespace,
@@ -60,6 +61,7 @@ import {
 } from '../runtime-host-managed-deployment.js';
 import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
+import { replaceRuntimeHostLifecycle } from '../runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
 import {
   resolveRuntimeHostLifecycleProvider,
@@ -171,6 +173,13 @@ test('on-demand setup installs one exact deployment without a service backend', 
     replaceCredential: async () => {
       pairingAttempts += 1;
       if (pairingAttempts === 1) throw new RuntimeHostAccessUnavailableError('unavailable');
+      if (pairingAttempts === 2) {
+        throw new RuntimeHostOperationError(
+          'access.credential.replace',
+          'host_not_ready',
+          'Runtime Host is not ready',
+        );
+      }
       return {
         rootId,
         credential: 'secret-token',
@@ -189,7 +198,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
     writeOutput: (value) => outputs.push(value),
   } satisfies NonNullable<Parameters<typeof runRuntimeHostSetupCli>[1]>;
   assert.equal(await runRuntimeHostSetupCli(options, overrides), 0);
-  assert.equal(pairingAttempts, 2);
+  assert.equal(pairingAttempts, 3);
   const complete = outputs
     .map(decodeRuntimeHostSetupFrame)
     .find((frame) => frame?.kind === 'complete');
@@ -277,6 +286,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   );
 
   const replacementOutputs: string[] = [];
+  let replacementAllowedInterrupt: boolean | undefined;
   assert.equal(
     await runRuntimeHostSetupCli(
       { ...replacementOptions, updateExisting: true },
@@ -284,6 +294,10 @@ test('on-demand setup installs one exact deployment without a service backend', 
         ...replacementPackage,
         openDeployment: async () =>
           assert.fail('a changed exact package must be staged before replacement'),
+        replaceLifecycle: async (input) => {
+          replacementAllowedInterrupt = input.allowInterruptActiveTasks;
+          return replaceRuntimeHostLifecycle(input);
+        },
         writeOutput: (value) => replacementOutputs.push(value),
       },
     ),
@@ -294,6 +308,7 @@ test('on-demand setup installs one exact deployment without a service backend', 
   ) as RuntimeHostManagedDeploymentConfig;
   assert.equal(replaced.launch.package.version, '1.2.4');
   assert.equal(replaced.launch.package.integrity, replacementIntegrity);
+  assert.equal(replacementAllowedInterrupt, true);
   assert.equal(
     replacementOutputs.map(decodeRuntimeHostSetupFrame).some((frame) => frame?.kind === 'complete'),
     true,

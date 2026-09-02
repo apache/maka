@@ -19,11 +19,10 @@
     "build": "tsc -p tsconfig.json",
     "benchmark:redaction": "npm run build && node scripts/benchmark-streaming-redaction.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@astryxdesign/core": "0.5.0",
+    "@astryxdesign/core": "0.5.2",
     "@maka/core": "0.1.0",
     "clsx": "^2.1.1",
     "katex": "0.16.47",

@@ -103,16 +103,30 @@ rejected. Legacy import allowlists may only shrink relative to the base branch. 
 dependency replacement is allowed only when it moves ownership behind a shell,
 feature public, or application public/contract boundary.
 
+Validated copy catalogs are the one admitted dependency class: the locale
+policy (#2672) forces user-visible copy out of business files and into
+`locales/*-copy.ts` catalogs, which necessarily adds import edges the debt
+ratchet would otherwise forbid. A catalog is admitted structurally, re-verified
+on every run: it must carry a `UiCatalog` marker from `@maka/core/ui-locale`,
+record zero tracked hook/bridge/lifecycle/environment/action-factory
+capabilities, and keep its runtime imports to bare package specifiers — never
+relative or `@maka/desktop/` paths — so a catalog cannot become a dependency
+tunnel. Type-only imports are erased at compile time and stay admitted
+regardless of target. A `locales/*-copy.ts` file that fails validation is a
+dedicated violation (`copy catalog validation failed: …`), never a silent fall
+back to the ratchet. Admitted edges are excluded from dependency-count
+ratchets, closure admission, and feature/Desktop-adapter legacy budgets;
+everything else about the importing file still ratchets, and root-entry
+import/token counts stay strict.
+
 `ownership[].targetZone` is migration-roadmap metadata in this foundation: its
 shape and legacy path coverage are validated, but it does not claim to prove
 that a capability has reached its final owner. The directory dependency rules
 remain executable. A later owner contract can add verifiable owner paths and
 public entries once each mixed legacy capability has been split precisely.
 
-Exact Hook names remain visible in the generated ledger. A legitimate Hook
-replacement must use a one-time `hookTransitions` entry: the new call count has
-to be paid one-for-one by removal of the named old Hook in the same debt file,
-the total Hook budget may not grow, and historical transitions cannot be reused.
+Exact Hook names remain visible in the generated ledger, and no tracked Hook
+call count may grow in a debt file.
 The separate AppShell render-scope inventory tracks which calls still execute
 above the whole renderer tree; this architecture checker governs the broader
 root and transitive capability debt.
@@ -179,7 +193,7 @@ Composer mount semantics, Session switching, or Workbar resource lifecycles.
 
 Token authoring rule: custom CSS variables go in `maka-tokens.css`. New component-local vars should carry `/* local: ... */` (existing ones don't all have it yet). No new hardcoded color / radius / z-index.
 
-Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface fills for backgrounds and borders, **not** text. The 3-tier semantic aliases (`--foreground` / `--foreground-secondary` / `--muted-foreground`) are the text-color vocabulary. They are separate concerns — don't collapse the wash stops into the text aliases.
+Note the `--foreground-N` split: the wash stops (`-2/-3/-5/-8/-10`) are surface fills for backgrounds and borders, **not** text. The two semantic aliases (`--foreground` / `--muted-foreground`) are the text-color vocabulary. They are separate concerns — don't collapse the wash stops into the text aliases.
 
 ## New code: primitive first, CSS last
 

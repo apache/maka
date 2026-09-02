@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { isCollaborationMode } from '@maka/core/collaboration';
 import { isOrchestrationMode } from '@maka/core/orchestration';
 import { isPermissionMode } from '@maka/core/permission';
-import { isThinkingLevel } from '@maka/core/model-thinking';
+import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
 import { type CreateSessionRequestInput, type SessionListFilter } from '@maka/core/runtime-inputs';
 import { type SessionChangedEvent, type SessionChangedReason, type SessionCatalogSummary } from '@maka/core/session';
 import { projectSessionCatalogSummary } from '@maka/runtime-host/client';
@@ -52,6 +52,7 @@ type RuntimeHostSessionCatalogClient = Pick<
   DesktopRuntimeHostClient,
   | 'createSession'
   | 'listSessions'
+  | 'previewSessionRemoval'
   | 'removeSession'
   | 'setSessionLifecycle'
   | 'updateSessionConfiguration'
@@ -131,7 +132,8 @@ export function registerRuntimeHostSessionCatalogIpc(
       sessionId: newId(),
       workspace,
       ...(request.mode === undefined ? {} : { mode: request.mode }),
-      ...(request.mode === undefined ? { name: request.name } : {}),
+      // A nameless mode (`bot`) keeps the caller's name, so always forward it.
+      name: request.name,
       ...(request.labels === undefined ? {} : { labels: request.labels }),
       modelTarget: normalizeModelTarget(input),
       ...normalizeCreateThinkingLevel(input?.thinkingLevel),
@@ -204,10 +206,14 @@ export function registerRuntimeHostSessionCatalogIpc(
       return updateConfiguration(deps, sessionId, { orchestrationMode: mode }, 'mode-change');
     },
   );
-  ipcMain.handle('sessions:setModel', async (_event, sessionId: string, input: unknown) => {
-    const modelTarget = normalizeExplicitModel(input);
-    return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel: null }, 'updated');
-  });
+  ipcMain.handle(
+    'sessions:setModelConfiguration',
+    async (_event, sessionId: string, input: unknown) => {
+      const modelTarget = normalizeExplicitModel(input);
+      const thinkingLevel = normalizeRequiredThinkingLevel(input);
+      return updateConfiguration(deps, sessionId, { modelTarget, thinkingLevel }, 'updated');
+    },
+  );
   ipcMain.handle('sessions:setThinkingLevel', async (_event, sessionId: string, level: unknown) => {
     if (level !== undefined && level !== null && !isThinkingLevel(level)) {
       throw new Error(`Invalid thinking level: ${String(level)}`);
@@ -219,11 +225,15 @@ export function registerRuntimeHostSessionCatalogIpc(
     const ids = await actionIds(sessionId, { revisionFamily: true });
     // A task restored under the caller's decision is left alone, and nothing
     // downstream of the deletion runs for it.
-    const disposition = await deps.client.removeSession(sessionId, {
+    const outcome = await deps.client.removeSession(sessionId, {
       requireArchived: requiresArchivedSession(options),
     });
-    if (disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
-    return disposition;
+    if (outcome.disposition === 'removed') await finishSessionRetirement(deps, ids, 'deleted');
+    return outcome;
+  });
+  ipcMain.handle('sessions:removePreview', async (_event, sessionId: string) => {
+    // Read-only: how many subtasks the delete would archive, for the confirm.
+    return deps.client.previewSessionRemoval(sessionId);
   });
 }
 
@@ -364,6 +374,14 @@ function normalizeExplicitModel(input: unknown): Extract<SessionModelTarget, { k
     connectionSlug: selection.llmConnectionSlug,
     model: selection.model,
   };
+}
+
+function normalizeRequiredThinkingLevel(input: unknown): ThinkingLevel | null {
+  const level = (input as Record<string, unknown> | null)?.thinkingLevel;
+  if (level !== null && !isThinkingLevel(level)) {
+    throw new Error(`Invalid thinking level: ${String(level)}`);
+  }
+  return level;
 }
 
 function normalizeOptionalString(value: unknown, label: string): string | undefined {

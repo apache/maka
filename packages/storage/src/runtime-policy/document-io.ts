@@ -35,7 +35,7 @@ export const VAULT_DOCUMENT_MAX_BYTES = 2 * 1024 * 1024;
 
 const READ_CHUNK_BYTES = 64 * 1024;
 const RUNTIME_POLICY_TEMP_PATTERN =
-  /^(?:runtime-policy|connection-catalog|credential-vault|runtime-policy-onboarding)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/;
+  /^(?:runtime-policy|connection-catalog|credential-vault|runtime-policy-onboarding|runtime-policy-oauth-login-receipts|model-facts)\.json\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp$/;
 
 export async function cleanupRuntimePolicyDocumentTemps(root: string): Promise<void> {
   let failure: unknown;
@@ -84,6 +84,26 @@ export async function readBoundedJsonDocument(
   file: string,
   maxBytes: number,
 ): Promise<unknown | undefined> {
+  const bytes = await readBoundedDocumentBytes(root, file, maxBytes);
+  if (bytes === undefined) return undefined;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch (error) {
+    throw invalidDocument(`${file} is not valid UTF-8`, error);
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch (error) {
+    throw invalidDocument(`${file} is not valid JSON`, error);
+  }
+}
+
+export async function readBoundedDocumentBytes(
+  root: string,
+  file: string,
+  maxBytes: number,
+): Promise<Buffer | undefined> {
   const path = join(root, file);
   const flags =
     process.platform === 'win32'
@@ -100,7 +120,7 @@ export async function readBoundedJsonDocument(
     throw ioFailed(`${file} could not be opened`, error);
   }
 
-  let result: unknown | undefined;
+  let result: Buffer | undefined;
   let failure: unknown;
   try {
     const metadata = await handle.stat();
@@ -121,17 +141,7 @@ export async function readBoundedJsonDocument(
     }
     if (total > maxBytes) throw invalidDocument(`${file} exceeds its ${maxBytes} byte limit`);
 
-    let text: string;
-    try {
-      text = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks, total));
-    } catch (error) {
-      throw invalidDocument(`${file} is not valid UTF-8`, error);
-    }
-    try {
-      result = JSON.parse(text) as unknown;
-    } catch (error) {
-      throw invalidDocument(`${file} is not valid JSON`, error);
-    }
+    result = Buffer.concat(chunks, total);
   } catch (error) {
     failure = error;
   } finally {
@@ -154,6 +164,7 @@ export async function writeJsonDocument(
   file: string,
   value: unknown,
   maxBytes: number,
+  synchronizeDirectory: (root: string) => Promise<void> = syncDirectory,
 ): Promise<void> {
   const bytes = serializeJsonDocument(value);
   if (bytes.length > maxBytes) throw invalidDocument(`${file} exceeds its ${maxBytes} byte limit`);
@@ -173,7 +184,7 @@ export async function writeJsonDocument(
     handle = undefined;
     await rename(temporaryPath, path);
     published = true;
-    await syncDirectory(root);
+    await synchronizeDirectory(root);
   } catch (error) {
     failure = error;
   } finally {

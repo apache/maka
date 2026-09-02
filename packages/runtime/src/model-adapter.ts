@@ -761,6 +761,7 @@ function requireResponsesReplayProfile(runtime: ResolvedModelRuntime): string {
  */
 interface AiSdkStreamChunk {
   type: string;
+  id?: unknown;
   text?: string;
   delta?: string;
   textDelta?: string;
@@ -825,6 +826,19 @@ function reasoningSignatureFromChunk(chunk: AiSdkStreamChunk): string | undefine
   if (!anthropic || typeof anthropic !== 'object') return undefined;
   const signature = (anthropic as { signature?: unknown }).signature;
   return typeof signature === 'string' && signature.length > 0 ? signature : undefined;
+}
+
+function anthropicRedactedThinkingProviderOptionsFromChunk(
+  chunk: AiSdkStreamChunk,
+): NonNullable<ModelMessage['providerOptions']> | undefined {
+  const meta = chunk.providerMetadata;
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return undefined;
+  const anthropic = (meta as { anthropic?: unknown }).anthropic;
+  if (!anthropic || typeof anthropic !== 'object' || Array.isArray(anthropic)) return undefined;
+  const redactedData = (anthropic as { redactedData?: unknown }).redactedData;
+  return typeof redactedData === 'string'
+    ? (meta as NonNullable<ModelMessage['providerOptions']>)
+    : undefined;
 }
 
 function openAiResponsesReasoningProviderOptionsFromChunk(
@@ -935,17 +949,10 @@ function plaintextSummaryTextFromChunk(
   return plaintextSummaryParts(provider)?.join('');
 }
 
-function plaintextSummaryItemIdFromChunk(
-  chunk: AiSdkStreamChunk,
-  runtime: ResolvedModelRuntime | undefined,
-): string | undefined {
-  if (
-    runtime?.reasoningReplay.kind !== 'responses' ||
-    runtime.reasoningReplay.contract.reasoningReplay !== 'plaintext-summary'
-  ) {
-    return undefined;
-  }
-  return safePlaintextResponsesReasoningItemId((chunk as { id?: unknown }).id);
+function reasoningPartIdFromChunk(chunk: AiSdkStreamChunk): string | undefined {
+  return typeof chunk.id === 'string' && chunk.id.length > 0 && chunk.id.length <= 512
+    ? chunk.id
+    : undefined;
 }
 
 /**
@@ -961,8 +968,18 @@ function translateChunk(
 ): ModelStreamEvent[] {
   switch (chunk.type) {
     case 'reasoning-start': {
-      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
-      return reasoningItemId ? [{ kind: 'thinking', text: '', reasoningItemId }] : [];
+      const reasoningPartId = reasoningPartIdFromChunk(chunk);
+      const redactedThinkingProviderOptions =
+        anthropicRedactedThinkingProviderOptionsFromChunk(chunk);
+      return [
+        {
+          kind: 'thinking-start',
+          ...(redactedThinkingProviderOptions
+            ? { providerOptions: redactedThinkingProviderOptions }
+            : {}),
+          ...(reasoningPartId ? { reasoningPartId } : {}),
+        },
+      ];
     }
     case 'text-start':
       return [{ kind: 'text-start' }];
@@ -993,10 +1010,16 @@ function translateChunk(
       const responsesProviderOptions = runtime
         ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
-      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       const events: ModelStreamEvent[] = [];
-      if (signature) events.push({ kind: 'thinking-signature', signature });
+      if (signature) {
+        events.push({
+          kind: 'thinking-signature',
+          signature,
+          ...(reasoningPartId ? { reasoningPartId } : {}),
+        });
+      }
       // The signed reasoning chunk arrives as a standalone delta with empty
       // text; preserve provider-authored empty reasoning, but do not surface a
       // signature-only carrier as an additional empty reasoning fragment.
@@ -1014,7 +1037,7 @@ function translateChunk(
                   providerOptionsOrigin: 'maka_transport' as const,
                 }
               : {}),
-          ...(reasoningItemId ? { reasoningItemId } : {}),
+          ...(reasoningPartId ? { reasoningPartId } : {}),
           ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
         });
       }
@@ -1025,17 +1048,25 @@ function translateChunk(
       const responsesProviderOptions = runtime
         ? openAiResponsesReasoningProviderOptionsFromChunk(chunk, runtime)
         : undefined;
-      const reasoningItemId = plaintextSummaryItemIdFromChunk(chunk, runtime);
+      const reasoningPartId = reasoningPartIdFromChunk(chunk);
       const reasoningSummaryText = plaintextSummaryTextFromChunk(chunk, runtime);
       return [
-        ...(signature ? [{ kind: 'thinking-signature' as const, signature }] : []),
+        ...(signature
+          ? [
+              {
+                kind: 'thinking-signature' as const,
+                signature,
+                ...(reasoningPartId ? { reasoningPartId } : {}),
+              },
+            ]
+          : []),
         ...(responsesProviderOptions
           ? [
               {
                 kind: 'thinking' as const,
                 text: '',
                 providerOptions: responsesProviderOptions,
-                ...(reasoningItemId ? { reasoningItemId } : {}),
+                ...(reasoningPartId ? { reasoningPartId } : {}),
                 ...(reasoningSummaryText !== undefined ? { reasoningSummaryText } : {}),
               },
             ]

@@ -144,10 +144,17 @@ jobs:
             "$NIGHTLY_VERSION" \
             "$GITHUB_OUTPUT"
 
-      - name: Require the Nightly channel to advance
+      - name: Require the qualified predecessor and Nightly channel advance
         env:
           NIGHTLY_VERSION: ${{ steps.npm-nightly.outputs.version }}
+          PREDECESSOR_VERSION: ${{ needs.cli.outputs.release_predecessor_version }}
+          PREDECESSOR_TARBALL_URL: ${{ needs.cli.outputs.release_predecessor_tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ needs.cli.outputs.release_predecessor_integrity }}
         run: |
+          node scripts/release-cli-publication.mjs assert-nightly-predecessor \
+            "$PREDECESSOR_VERSION" \
+            "$PREDECESSOR_TARBALL_URL" \
+            "$PREDECESSOR_INTEGRITY"
           current="$(npm view maka-agent dist-tags.nightly --registry https://registry.npmjs.org/)"
           node scripts/product-nightly.mjs assert-channel-advance "$NIGHTLY_VERSION" "$current"
 

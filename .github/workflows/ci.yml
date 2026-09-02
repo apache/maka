@@ -32,10 +32,21 @@ permissions:
   contents: read
 
 jobs:
-  # Planning and every selected Linux surface share one runner, so the core
-  # workflow consumes one automatic job without dropping affected coverage.
+  # One job, not three. A runner slot is scarcer than a minute on shared
+  # infrastructure, and splitting planning from validation made every pull
+  # request queue for a runner three times to reach one verdict. Planning is
+  # the first step; every later step gates on its outputs, so a
+  # documentation-only change costs one short allocation rather than two.
+  #
+  # The name is `test` because that is the required context in `.asf.yaml`.
+  # Renaming it would leave that check unreported on every open pull request
+  # until the rename merged, and nothing could merge while it was unreported.
   test:
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. The two resolve to the same image, but only
+    # the alias makes this required context wait at the tail, and the steps
+    # below already assume this image. `ci-workflow-policy.test.mjs` holds the
+    # rule for every lane.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +60,7 @@ jobs:
           BASE_SHA: ${{ github.event_name == 'push' && github.event.before || github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event_name == 'push' && github.sha || github.event.pull_request.head.sha }}
         run: |
-          # PR checks may predate later main changes, so the single core job also
+          # PR checks may predate later main changes, so the planning lane also
           # validates the exact merged delta. Dispatches and unavailable history
           # fail safe to every surface.
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] || [[ "$BASE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BASE_SHA}^{commit}"; then
@@ -59,13 +70,20 @@ jobs:
           fi
 
       - name: Test CI planner
-        run: node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs scripts/verify-windows-harness.test.mjs
+        run: >-
+          node --test --test-concurrency=1 scripts/ci-test-plan.test.mjs
+          scripts/ci-workflow-policy.test.mjs scripts/verify-windows-harness.test.mjs
 
       # Pure Node like the planner test, and the labelling workflow imports this
       # module directly, so a tier or exclusion change is caught here rather
       # than by mislabelling live pull requests.
       - name: Test PR effort classification
         run: node --test --test-concurrency=1 scripts/pr-effort.test.mjs
+
+      # The scheduled lifecycle workflow imports this pure policy module. Keep
+      # its time boundaries and exemptions deterministic before it can write.
+      - name: Test issue and PR lifecycle policy
+        run: node --test --test-concurrency=1 scripts/issue-pr-lifecycle.test.mjs
 
       # Same shape and the same needs: a regenerate-and-diff contract that runs
       # on Node alone, so it belongs beside the planner test rather than behind
@@ -92,6 +110,12 @@ jobs:
       - name: Test script entrypoint contracts
         run: node --test scripts/script-entrypoints.test.mjs
 
+      # The packaged Windows lane drives the updater through this wiring. It
+      # is a few lines, so it is asserted here on every change rather than by
+      # naming its module in that lane's 25-minute path filter.
+      - name: Test the packaged update feed wiring
+        run: node --test --test-concurrency=1 scripts/update-test-feed-wiring.test.mjs
+
       # Install-free like its neighbours: the gate reads one source file and
       # compares it to a hand-edited inventory, so a hook that silently widens
       # its scope to the whole tree fails here rather than in a profile (#4109).
@@ -110,8 +134,12 @@ jobs:
       - name: Check ASF source headers
         run: npm run check:asf-headers
 
+      # Everything below this line may need an installed toolchain, so each
+      # step names the selections it belongs to. `setup-node` itself is
+      # unconditional: it costs seconds on a runner the job is already holding,
+      # and gating it needed a twelve-term disjunction over every other
+      # selection that a new lane had to remember to join (#4475).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         with:
           node-version: '24'
           cache: npm
@@ -129,13 +157,13 @@ jobs:
           restore-keys: electron-${{ runner.os }}-
 
       - name: Install Linux runtime dependencies
-        if: steps.plan.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: sudo apt-get update && sudo apt-get install -y ripgrep bubblewrap
 
       # Ubuntu 24.04 hosted runners gate unprivileged user namespaces through
       # AppArmor, which otherwise makes bwrap fail while configuring loopback.
       - name: Enable bubblewrap user namespaces
-        if: steps.plan.outputs.runtime_sandbox == 'true'
+        if: steps.plan.outputs.runtime_sandbox == 'true' || steps.plan.outputs.state_root_compat == 'true'
         run: |
           if [[ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]]; then
             sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -145,8 +173,14 @@ jobs:
           fi
 
       - name: Install dependencies
-        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
+        if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true' || steps.plan.outputs.asf_source == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
         run: npm ci
+
+      - name: Check localized TUI copy boundaries
+        if: steps.plan.outputs.code == 'true'
+        run: |
+          npm run check:tui-copy
+          node --test scripts/check-tui-copy.test.mjs
 
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
@@ -183,7 +217,9 @@ jobs:
       # directly instead of being hidden behind an earlier compilation failure.
       - name: Astryx surface inventory
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.astryx_surface == 'true'
-        run: npm run astryx:surface-inventory
+        run: |
+          npm run astryx:surface-inventory
+          npm run astryx:surface-inventory:test
 
       - name: Build
         if: steps.plan.outputs.code == 'true' || steps.plan.outputs.cli_package == 'true' || steps.plan.outputs.release_contract == 'true'
@@ -200,10 +236,12 @@ jobs:
       # Two drift contracts over the shipped app-icon artwork, sitting beside
       # the theme drift check for the same reason: the committed bytes are a
       # build output that nothing else re-derives, so without this a change to
-      # the generator, to DEFAULT_APP_ICON, or to the packaging config can go
-      # green while the artwork it names no longer matches.
+      # the generator, to the `APP_ICONS` catalog, or to the packaged-resource
+      # list can go green while the artwork it names no longer matches. Those
+      # are the inputs it selects on; regenerating the artwork costs about a
+      # minute, and every other code change used to pay it.
       - name: App icon artwork drift
-        if: steps.plan.outputs.code == 'true'
+        if: steps.plan.outputs.app_icons == 'true'
         run: node --test scripts/verify-packaged-app-icons.test.mjs scripts/generate-app-icons.test.mjs
 
       - name: Astryx theme drift
@@ -251,13 +289,86 @@ jobs:
         if: steps.plan.outputs.runtime_host == 'true'
         run: npm --workspace @maka/runtime-host run test:dist
 
+      # A published predecessor writes the durable state; the workspace built
+      # above reads it. Release packaging is deliberately not in front of this:
+      # it takes minutes and changes nothing about whether these decoders can
+      # read that state. The release lanes still qualify exact tarballs.
+      - id: forward-roll-baseline
+        name: Resolve the published forward-roll baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
+
+      - name: Download the forward-roll baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
+        env:
+          SOURCE_URL: ${{ steps.forward-roll-baseline.outputs.tarball_url }}
+          SOURCE_INTEGRITY: ${{ steps.forward-roll-baseline.outputs.integrity }}
+        run: |
+          set -euo pipefail
+          source_path="$RUNNER_TEMP/forward-roll-source.tgz"
+          curl --fail --location --max-filesize 67108864 --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-connrefused --retry-delay 2 "$SOURCE_URL" --output "$source_path"
+          node - "$source_path" "$SOURCE_INTEGRITY" <<'NODE'
+          const { createHash } = require('node:crypto');
+          const { readFileSync } = require('node:fs');
+          const bytes = readFileSync(process.argv[2]);
+          const actual = `sha512-${createHash('sha512').update(bytes).digest('base64')}`;
+          if (actual !== process.argv[3]) throw new Error('Forward-roll baseline integrity mismatch');
+          NODE
+          {
+            echo "FORWARD_ROLL_SOURCE=$source_path"
+            echo "FORWARD_ROLL_SOURCE_SHA256=$(sha256sum "$source_path" | cut -d ' ' -f 1)"
+          } >> "$GITHUB_ENV"
+
+      - name: Qualify durable state against the published baseline
+        if: steps.plan.outputs.state_root_compat == 'true'
+        env:
+          MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
+        run: |
+          set -o pipefail
+          npm run --silent release:cli:qualify-state-root -- \
+            --source "$FORWARD_ROLL_SOURCE" \
+            --source-sha256 "$FORWARD_ROLL_SOURCE_SHA256" \
+            --target-workspace "$PWD" \
+            | tee "$RUNNER_TEMP/durable-state-report.json"
+
       - name: Ensure xvfb
         if: steps.plan.outputs.e2e == 'true'
         run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
 
       - name: Desktop e2e
         if: steps.plan.outputs.e2e == 'true'
-        run: xvfb-run -a npm exec -w @maka/desktop -- playwright test --config e2e/playwright.config.ts
+        run: |
+          set -euo pipefail
+          display_base=90
+          worker_count=4
+          xvfb_pids=()
+          cleanup() {
+            kill "${xvfb_pids[@]}" 2>/dev/null || true
+            wait "${xvfb_pids[@]}" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            Xvfb ":$display" -screen 0 1280x1024x24 -nolisten tcp \
+              >"$RUNNER_TEMP/xvfb-$display.log" 2>&1 &
+            xvfb_pids+=("$!")
+          done
+          for ((index = 0; index < worker_count; index += 1)); do
+            display=$((display_base + index))
+            for _ in {1..50}; do
+              [[ -S "/tmp/.X11-unix/X$display" ]] && break
+              kill -0 "${xvfb_pids[$index]}" 2>/dev/null || break
+              sleep 0.1
+            done
+            if [[ ! -S "/tmp/.X11-unix/X$display" ]]; then
+              cat "$RUNNER_TEMP/xvfb-$display.log"
+              exit 1
+            fi
+          done
+          MAKA_E2E_X_DISPLAY_BASE="$display_base" \
+            npm exec -w @maka/desktop -- playwright test \
+              --config e2e/playwright.config.ts --workers="$worker_count"
 
       - name: Browser WebContentsView semantic smoke
         if: steps.plan.outputs.e2e == 'true'
@@ -285,15 +396,56 @@ jobs:
         if: steps.plan.outputs.cli_package == 'true'
         run: rustup update stable --no-self-update
 
+      - id: cli-rustc
+        name: Resolve CLI Rust cache version
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache-cli-package"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-cli-package-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Kache for CLI packaging
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+
+      - id: cli-kache-cache
+        name: Restore CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-${{ steps.cli-rustc.outputs.revision }}
+          restore-keys: |
+            kache-runtime-host-peer-cli-package-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.cli-rustc.outputs.version }}-
+
       - name: Install cargo-deny for CLI packaging
         if: steps.plan.outputs.cli_package == 'true'
-        uses: taiki-e/install-action@fcf5432d9f50d67e37ee6e29bdb7a224ff67b4a7 # v2
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
           tool: cargo-deny@0.20.2
 
       - name: Build CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'
         run: npm run release:cli:pack -- --allow-dirty
+
+      - name: Report CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true'
+        shell: bash
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save CLI Rust build cache
+        if: steps.plan.outputs.cli_package == 'true' && github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache-cli-package
+          key: ${{ steps.cli-kache-cache.outputs.cache-primary-key }}
 
       - name: Validate installed CLI release candidate
         if: steps.plan.outputs.cli_package == 'true'

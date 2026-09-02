@@ -19,6 +19,7 @@
 
 import type {
   ConfigurationChangedFrame,
+  ConnectionCatalogChangedFrame,
   ProjectCatalogChangedFrame,
   ScheduledTaskChangedFrame,
   ScheduledTaskChangedReason,
@@ -27,6 +28,7 @@ import type {
 
 export type HostChangeFrame =
   | ConfigurationChangedFrame
+  | ConnectionCatalogChangedFrame
   | ProjectCatalogChangedFrame
   | SessionCatalogChangedFrame
   | ScheduledTaskChangedFrame;
@@ -37,6 +39,7 @@ export interface HostChangeSubscription {
 
 export interface HostChangeSubscriptionMask {
   readonly configuration?: boolean;
+  readonly connectionCatalog?: boolean;
   readonly projectCatalog?: boolean;
   readonly sessionCatalog?: true | { readonly sessionId: string; readonly principalId: string };
   readonly scheduledTask?: boolean;
@@ -54,6 +57,7 @@ interface Subscription {
 export class HostChangeFeed {
   readonly #subscriptions = new Map<string, Subscription>();
   #configurationRevision = 0;
+  #connectionCatalogRevision = 0;
   #projectCatalogRevision = 0;
   #sessionCatalogRevision = 0;
 
@@ -78,6 +82,15 @@ export class HostChangeFeed {
     this.#publish({
       kind: 'configuration.changed',
       revision: this.#configurationRevision,
+    });
+  }
+
+  /** The Host now resolves connection catalogs differently; clients re-read. */
+  publishConnectionCatalog(): void {
+    this.#connectionCatalogRevision += 1;
+    this.#publish({
+      kind: 'connection.catalog.changed',
+      revision: this.#connectionCatalogRevision,
     });
   }
 
@@ -149,6 +162,8 @@ function isSubscribed(mask: HostChangeSubscriptionMask, frame: HostChangeFrame):
   switch (frame.kind) {
     case 'configuration.changed':
       return mask.configuration === true;
+    case 'connection.catalog.changed':
+      return mask.connectionCatalog === true;
     case 'project.catalog.changed':
       return mask.projectCatalog === true;
     case 'session.catalog.changed':

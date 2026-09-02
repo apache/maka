@@ -19,16 +19,35 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
 import {
   createRuntimeHostOnboardingSurface,
   projectProviders,
   projectRuntimeHostModelChoices,
 } from '../runtime-host-onboarding.js';
 
-function catalog(connections: ConnectionCatalogSnapshot['connections']): ConnectionCatalogSnapshot {
-  return { revision: 1, defaultTarget: null, connections };
+type StoredConnection = Omit<ConnectionCatalogSnapshot['connections'][number], 'catalogEntries'>;
+
+/**
+ * Fixtures describe what the Host stores; the Host resolves the catalog before
+ * projecting it, so these tests read the entries the same resolution produces.
+ */
+function catalog(connections: readonly StoredConnection[]): ConnectionCatalogSnapshot {
+  return {
+    revision: 1,
+    defaultTarget: null,
+    connections: connections.map((connection) => ({
+      ...connection,
+      catalogEntries: resolveConnectionModelCatalog({
+        ...connection,
+        defaultModel: '',
+        enabledModelIds: [...connection.enabledModelIds],
+        models: [...connection.models],
+      }),
+    })),
+  };
 }
 
 const live = {
@@ -43,6 +62,53 @@ const live = {
 } as const;
 
 describe('createRuntimeHostOnboardingSurface', () => {
+  test('preserves Host failure codes without projecting backend text', async () => {
+    const connection = {
+      request: async (operation: string) => {
+        if (operation === 'connection.onboarding.verify') {
+          return { kind: 'rejected', reason: 'connection_not_found' };
+        }
+        if (operation === 'connection.onboarding.save') {
+          return { kind: 'failed', errorClass: 'network' };
+        }
+        throw new Error(`Unexpected operation ${operation}`);
+      },
+    } as unknown as RuntimeHostConnection;
+    const surface = createRuntimeHostOnboardingSurface(connection);
+
+    assert.deepEqual(
+      await surface.verify({
+        target: { kind: 'existing', connectionId: 'gone-id' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'rejected', reason: 'connection_not_found' },
+    );
+    assert.deepEqual(
+      await surface.save({
+        target: { kind: 'existing', connectionId: 'live-id' },
+        apiKey: 'sk-test',
+        enabledModelIds: ['gpt-5-mini'],
+      }),
+      { kind: 'failed', errorClass: 'network' },
+    );
+  });
+
+  test('classifies transport exceptions without exposing their message', async () => {
+    const connection = {
+      request: async () => {
+        throw new Error('Host transport leaked this English detail');
+      },
+    } as unknown as RuntimeHostConnection;
+
+    assert.deepEqual(
+      await createRuntimeHostOnboardingSurface(connection).verify({
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'sk-test',
+      }),
+      { kind: 'unavailable' },
+    );
+  });
+
   test('keeps the committed Connection when the follow-up catalog refresh fails', async () => {
     const committed = {
       connectionId: 'committed-openai-id',
@@ -66,7 +132,6 @@ describe('createRuntimeHostOnboardingSurface', () => {
       target: { kind: 'create', providerType: 'openai' },
       apiKey: 'sk-test',
       enabledModelIds: ['gpt-5-mini'],
-      models: [{ id: 'gpt-5-mini' }],
     });
 
     assert.deepEqual(result, {
@@ -74,7 +139,7 @@ describe('createRuntimeHostOnboardingSurface', () => {
       connection: committed,
       refresh: {
         kind: 'failed',
-        warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+        reason: 'catalog_unavailable',
       },
     });
   });
@@ -120,6 +185,37 @@ describe('projectRuntimeHostModelChoices', () => {
 
     assert.equal(choices[0]?.displayName, 'GPT-5 Mini');
   });
+
+  test('a model that exists only in the resolved catalog still carries its context window', () => {
+    // A provider with no model-list endpoint stores no rows, so its models are
+    // reachable only through the Host's resolved catalog. The TUI reads its
+    // opening context window from these choices for exactly this reason: the
+    // stored list it used to read is empty here, and the very first status
+    // line would have had no denominator.
+    const choices = projectRuntimeHostModelChoices(
+      catalog([
+        {
+          connectionId: 'fallback-id',
+          revision: 1,
+          slug: 'codex',
+          name: 'Codex',
+          providerType: 'openai-codex',
+          enabled: true,
+          enabledModelIds: ['gpt-5.5'],
+          models: [],
+        },
+      ]),
+    );
+
+    assert.ok(choices.length > 0, 'a fallback-only connection still offers models');
+    for (const choice of choices) {
+      assert.equal(
+        typeof choice.contextWindow,
+        'number',
+        `${choice.model} reached the picker without a context window`,
+      );
+    }
+  });
 });
 
 describe('projectProviders', () => {
@@ -147,6 +243,10 @@ describe('projectProviders', () => {
       kind: 'create',
       providerType: 'openai-compatible',
     });
+    assert.equal(
+      entries.find(({ target }) => target.kind === 'create')?.label,
+      'Custom relay (OpenAI Chat-compatible)',
+    );
   });
 
   test('several non-canonical connections remain independently editable', () => {

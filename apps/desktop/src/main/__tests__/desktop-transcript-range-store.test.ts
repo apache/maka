@@ -650,6 +650,57 @@ test('delivers a mid-session tail append even while a history window is resident
   assert.equal(replica.durableThrough, 5);
 });
 
+test('advances a projected transcript across hidden durable records', async () => {
+  const visible = (sequence: number) => ({
+    identity: sequence,
+    message: userMessage(`Visible ${sequence}`, `user-${sequence}`),
+  });
+  const bootstrapPage = transcriptPage('older', null, 1);
+  const visibleAdvancePage = transcriptPage('newer', null, 5);
+  const hiddenAdvancePage = transcriptPage('newer', null, 6);
+  const changes: { durableUpserts: readonly { sequence: number }[] }[] = [];
+  const handle = runtimeHostSessionFixture({
+    snapshot: continuitySnapshot(),
+    transcript: Promise.resolve([]),
+    events: { async *[Symbol.asyncIterator]() {} },
+    transcriptBootstrap: {
+      throughSequence: 1,
+      durableCoverage: 'projected',
+      overlayMessageCount: 0,
+      durable: bootstrapPage,
+      overlay: { ...transcriptPage('older', null, 1), source: 'overlay' },
+    },
+    loadTranscriptOverlay: async () => [],
+    decodeTranscriptPage: async (page) => ({
+      messages:
+        page === bootstrapPage
+          ? [visible(0)]
+          : page === visibleAdvancePage
+            ? [visible(3), visible(4)]
+            : [],
+      nextCursor: null,
+    }),
+    loadTranscriptPage: async ({ throughSequence }) =>
+      throughSequence === 5 ? visibleAdvancePage : hiddenAdvancePage,
+    async close() {},
+  });
+  const replica = await DesktopTranscriptReplica.prepare(handle, {
+    onChange: (_replica, change) => changes.push(change),
+  });
+
+  // Sequences 1, 2, 5, and 6 are valid Host-private records omitted from the
+  // Guest projection. The physical watermark still advances across them.
+  await replica.advance(5);
+  await replica.advance(6);
+
+  assert.equal(replica.durableThrough, 6);
+  assert.deepEqual(replica.snapshot().durable.map(({ sequence }) => sequence), [0, 3, 4]);
+  assert.deepEqual(
+    changes.flatMap((change) => change.durableUpserts.map(({ sequence }) => sequence)),
+    [3, 4],
+  );
+});
+
 test('keeps an oversized streaming Turn visible when its overlay settles', async () => {
   const older = {
     identity: 0,

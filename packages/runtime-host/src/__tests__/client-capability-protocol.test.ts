@@ -118,10 +118,12 @@ describe('Client Capability protocol', () => {
       decodeClientFrame({
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
+        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
       }),
       {
         kind: 'client.capability.accepted',
         invocationId: 'invocation',
+        admissionEvidence: { kind: 'browser_url', url: 'https://example.com/path' },
       },
     );
     assert.deepEqual(

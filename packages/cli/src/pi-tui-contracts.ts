@@ -21,11 +21,19 @@ import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/for
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
+import type {
+  ConnectionEffectFailureClass,
+  ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
+  ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+} from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
-  /** Immutable account identity; required for a cross-connection selection. */
-  connectionId?: string;
+  /**
+   * Immutable account identity. The slug is renameable, so this is what a
+   * cross-connection selection rebinds the session to.
+   */
+  connectionId: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;
@@ -36,21 +44,24 @@ export interface ModelChoice {
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
   /**
-   * Thinking levels this model exposes. `listReadyModelChoices` always
-   * computes this with the full connection (so an openai-compatible relay's
-   * declared `relayModelProfiles[model].thinkingLevels` are honoured);
-   * optional only so hand-written choice literals stay valid — consumers
-   * must tolerate its absence.
+   * Thinking levels this model exposes, as the Host resolved them — a relay's
+   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * model that offers none; never absent, so no caller has to guess from a
+   * bundled metadata copy of its own.
    */
-  thinkingLevels?: readonly ThinkingLevel[];
+  thinkingLevels: readonly ThinkingLevel[];
 }
+
+export type ConnectionIdentity = {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly enabled: boolean;
+};
 
 export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
-  authKind: 'api_key' | 'optional_api_key';
   requiresBaseUrl: boolean;
-  fallbackModels: readonly string[];
 }
 
 export type OnboardingProviderEntry = OnboardableProvider &
@@ -73,16 +84,32 @@ export interface OnboardingVerifyInput {
   baseUrl?: string;
 }
 
+export type OnboardingVerifyRejectionReason = Extract<
+  RuntimeHostOnboardingVerifyResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingSaveRejectionReason = Extract<
+  RuntimeHostOnboardingSaveResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingRejectionReason =
+  | OnboardingVerifyRejectionReason
+  | OnboardingSaveRejectionReason;
+
+export type OnboardingFailureClass = ConnectionEffectFailureClass;
+
+export type OnboardingFailure =
+  | { kind: 'rejected'; reason: OnboardingRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
+
 export type OnboardingVerifyResult =
   | { kind: 'ok'; models: ModelInfo[] }
-  | {
-      kind: 'error';
-      text: string;
-      /** The wizard's provider snapshot is outdated (e.g. the targeted
-       *  connection is gone) — retyping the key cannot fix this, so the
-       *  runner shows the text without its retype-the-key framing. */
-      stale?: boolean;
-    };
+  | { kind: 'rejected'; reason: OnboardingVerifyRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
 
 export interface OnboardingSaveInput {
   target: ConnectionOnboardingTarget;
@@ -90,7 +117,6 @@ export interface OnboardingSaveInput {
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
   enabledModelIds: readonly string[];
-  models: readonly ModelInfo[];
 }
 
 export interface OnboardingSavedConnection {
@@ -104,9 +130,15 @@ export type OnboardingSaveResult =
   | {
       kind: 'ok';
       connection: OnboardingSavedConnection;
-      refresh: { kind: 'ok'; modelChoices: ModelChoice[] } | { kind: 'failed'; warning: string };
+      refresh:
+        | {
+            kind: 'ok';
+            modelChoices: ModelChoice[];
+            connectionIdentities: readonly ConnectionIdentity[];
+          }
+        | { kind: 'failed'; reason: 'catalog_unavailable' };
     }
-  | { kind: 'error'; text: string };
+  | OnboardingFailure;
 
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;

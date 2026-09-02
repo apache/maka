@@ -41,6 +41,8 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
+import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
   hostEpoch: 'retirement-test',
@@ -50,6 +52,37 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
+  test('retires context refs before draining every physical garbage batch', async () => {
+    const contextActions: string[] = [];
+    let garbageBatches = 0;
+    await purgeSessionSidecars(
+      {
+        artifacts: { purgeSessionArtifacts: async () => {} },
+        sessionTodo: { purgeSessionState: async () => {} },
+        contextOffload: {
+          retireSession: async (sessionId) => {
+            contextActions.push(`retire:${sessionId}`);
+            return { releasedReferences: 1, releasedLogicalBytes: 10 };
+          },
+          collectGarbage: async (input) => {
+            contextActions.push(`collect:${input.maxBlobs}`);
+            garbageBatches += 1;
+            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          },
+        },
+        purgeOperationalState: async () => {},
+      },
+      'session-context',
+    );
+
+    assert.deepEqual(contextActions, [
+      'retire:session-context',
+      'collect:64',
+      'collect:64',
+      'collect:64',
+    ]);
+  });
+
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
     await withHarness(async (harness) => {
       const created = await harness.store.createStableSession({
@@ -199,6 +232,14 @@ describe('Host Session retirement coordinator', () => {
       }
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
 
+      // The read-only preview reports the same deduped count the confirm warns
+      // off, before the delete executes.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 32 } });
+
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -206,7 +247,9 @@ describe('Host Session retirement coordinator', () => {
 
       assert.deepEqual(removed, {
         ok: true,
-        result: { kind: 'removed', sessionId: harness.revisionId },
+        // Each of the 32 subagent children is a distinct subtask family, so the
+        // executed count the renderer reports is 32.
+        result: { kind: 'removed', sessionId: harness.revisionId, archivedSubtaskCount: 32 },
       });
       for (const sessionId of harness.familyIds) {
         assert.deepEqual(await harness.store.probeSessionRemoval(sessionId), { kind: 'removed' });
@@ -228,7 +271,7 @@ describe('Host Session retirement coordinator', () => {
         'parent retirement cleanup did not converge',
       );
       assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
-      assert.deepEqual(new Set(harness.actions.checkedContext), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.retiredContext), new Set(harness.familyIds));
     });
   });
 
@@ -395,6 +438,13 @@ describe('Host Session retirement coordinator', () => {
       }
 
       const target = await harness.store.readHeaderRecordSnapshot(harness.revisionId);
+      // Graph operators retire with the root rather than archive, so the delete
+      // preview promises nothing — the renderer must not warn about them.
+      const preview = await harness.coordinator.handlers['session.remove.preview'](
+        { sessionId: harness.revisionId },
+        CONNECTION_CONTEXT,
+      );
+      assert.deepEqual(preview, { ok: true, result: { archivableSubtaskCount: 0 } });
       const removed = await harness.coordinator.handlers['session.remove'](
         { sessionId: harness.revisionId, expectedRevision: target.revision },
         CONNECTION_CONTEXT,
@@ -1009,7 +1059,7 @@ interface RetirementActions {
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
   readonly purgedArtifacts: string[];
-  readonly checkedContext: string[];
+  readonly retiredContext: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
   readonly purgedAgentGraphs: string[];
@@ -1048,7 +1098,7 @@ async function withHarness(
       retiredCapabilities: [],
       retiredMessages: [],
       purgedArtifacts: [],
-      checkedContext: [],
+      retiredContext: [],
       purgedTasks: [],
       purgedOperationalState: [],
       purgedAgentGraphs: [],
@@ -1209,13 +1259,17 @@ async function withHarness(
           actions.purgedArtifacts.push(sessionId);
         },
       },
-      taskLedger: {
-        purgeConversationTaskLedger: async (sessionId) => {
+      sessionTodo: {
+        purgeSessionState: async (sessionId) => {
           actions.purgedTasks.push(sessionId);
         },
       },
-      assertNoContextOffloadReferences: async (sessionIds) => {
-        actions.checkedContext.push(...sessionIds);
+      contextOffload: {
+        retireSession: async (sessionId) => {
+          actions.retiredContext.push(sessionId);
+          return { releasedReferences: 0, releasedLogicalBytes: 0 };
+        },
+        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);
@@ -1284,11 +1338,7 @@ async function waitFor(
   predicate: () => boolean | Promise<boolean>,
   message: string,
 ): Promise<void> {
-  const deadline = Date.now() + 1_000;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error(message);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
+  await pollFor(predicate, { timeoutMs: 1_000, message });
 }
 
 function retirementHandle(

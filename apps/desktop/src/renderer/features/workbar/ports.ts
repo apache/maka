@@ -34,6 +34,7 @@ import type { GitReviewReadResult, GitReviewSource } from '@maka/core/git-review
 import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   SessionChangedEvent,
   SessionSummary,
@@ -41,7 +42,7 @@ import type {
   TurnRecord,
 } from '@maka/core/session';
 import type { SessionTrace } from '@maka/core/session-trace';
-import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { Result } from '@maka/core/result';
 import type { ContextDiagnosticsResult } from '@maka/runtime-host/protocol';
@@ -91,10 +92,10 @@ export interface WorkbarTerminalService {
   ): WorkbarUnsubscribe;
 }
 
-export interface WorkbarTasksService {
-  list(sessionId: string): Promise<Task[]>;
+export interface WorkbarTodoService {
+  read(sessionId: string): Promise<SessionTodoItem[]>;
   subscribeChanges(
-    handler: (event: TaskLedgerChangedEvent) => void,
+    handler: (event: { sessionId: string; at: number }) => void,
   ): WorkbarUnsubscribe;
 }
 
@@ -256,6 +257,10 @@ export interface SideChatSessionPort {
     sessionId: string,
     response: SandboxBoundaryResponse,
   ): Promise<void>;
+  respondToClientCapability(
+    sessionId: string,
+    response: ClientCapabilityResponse,
+  ): Promise<void>;
   respondToUserQuestion(
     sessionId: string,
     response: UserQuestionResponse,
@@ -272,7 +277,7 @@ export interface SideChatSessionPort {
 export interface WorkbarServices {
   readonly review: WorkbarReviewService;
   readonly terminal: WorkbarTerminalService;
-  readonly tasks: WorkbarTasksService;
+  readonly todo: WorkbarTodoService;
   readonly browser: WorkbarBrowserService;
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;

@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  type ComponentType,
+  type ReactNode,
+} from 'react';
 import type { ProjectRecord } from '@maka/core/project';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import {
@@ -65,6 +71,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   projects: readonly ProjectRecord[];
   streamingSessionIds: ReadonlySet<string>;
   staleSessionIds: ReadonlySet<string>;
+  SessionBadge?: ComponentType<{ readonly sessionId: string }>;
   ports: SessionNavigationPorts;
   /**
    * Where the shell reads the row mutations it issues from elsewhere — the
@@ -149,6 +156,11 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     [hasProjectActions, hasRelink],
   );
 
+  const sessionBadge = useMemo<SessionRailData['sessionBadge']>(() => {
+    const SessionBadge = props.SessionBadge;
+    return SessionBadge ? (session) => <SessionBadge sessionId={session.id} /> : undefined;
+  }, [props.SessionBadge]);
+
   const data = useMemo<SessionRailData>(
     () => ({
       sessions: props.rail.sessions,
@@ -159,6 +171,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       groups: controller.layout.viewMode === 'project' ? controller.selectors.groups : undefined,
       groupVariant: controller.layout.viewMode,
       sessionMeta: controller.selectors.sessionMeta,
+      sessionBadge,
       onSelectSession: props.onSelectSession,
       rowActions,
       projectActions,
@@ -175,6 +188,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.streamingSessionIds,
       props.workHubActive,
       rowActions,
+      sessionBadge,
     ],
   );
 
@@ -209,7 +223,12 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   };
 
   return (
-    <SessionRailProvider data={data} chrome={chrome}>
+    <SessionRailProvider
+      data={data}
+      chrome={chrome}
+      selection={controller.selection}
+      rowSelection={controller.rowSelection}
+    >
       {props.children}
     </SessionRailProvider>
   );

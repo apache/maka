@@ -17,10 +17,14 @@
  * under the License.
  */
 
+import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import {
   connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
+  issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
@@ -63,6 +67,7 @@ export interface RuntimeHostAccessIssueOptions {
   readonly operationGrants: readonly string[];
   readonly canPublishClientCapabilities: boolean;
   readonly canUseHostPaths: boolean;
+  readonly capabilityOwnerCredentialId?: string;
   readonly preset?: RuntimeHostAccessPreset;
   readonly bindClientInstance?: boolean;
 }
@@ -84,6 +89,10 @@ const CLIENT_CAPABILITY_PUBLICATION_OPERATIONS = new Set<OperationKey>([
 export interface RuntimeHostAccessListOptions {
   readonly rootPath: string;
   readonly expectedRootId?: string;
+}
+
+export interface RuntimeHostAccessConnectionCodeOptions extends RuntimeHostAccessListOptions {
+  readonly name?: string;
 }
 
 export interface RuntimeHostAccessRevokeOptions extends RuntimeHostAccessListOptions {
@@ -136,6 +145,39 @@ export async function runRuntimeHostAccessListCli(
     if (!framed) throw error;
     writeAccessManagementError('list', error);
     return 1;
+  }
+}
+
+export async function runRuntimeHostAccessConnectionCodeCli(
+  options: RuntimeHostAccessConnectionCodeOptions,
+  framed = false,
+): Promise<number> {
+  let connection: Awaited<ReturnType<typeof connectLocalOwner>> | undefined;
+  try {
+    connection = await connectLocalOwner(options.rootPath, options.expectedRootId);
+    const connectionCode = await issueRuntimeHostOwnerConnectionCode({
+      rootPath: options.rootPath,
+      name: options.name?.trim() || truncateUtf8(hostname(), 128) || 'Runtime Host',
+      principalId: `connection-code:${randomUUID()}`,
+      client: connection,
+    });
+    process.stdout.write(
+      framed
+        ? encodeRuntimeHostAccessManagementFrame({
+            schemaVersion: 1,
+            kind: 'result',
+            action: 'connection-code',
+            connectionCode,
+          })
+        : `${connectionCode}\n`,
+    );
+    return 0;
+  } catch (error) {
+    if (!framed) throw error;
+    writeAccessManagementError('connection-code', error);
+    return 1;
+  } finally {
+    await connection?.close();
   }
 }
 
@@ -228,6 +270,9 @@ async function mutateRuntimeHostAccessCredential(
       operationGrants: resolved.operationGrants,
       canPublishClientCapabilities: resolved.canPublishClientCapabilities,
       canUseHostPaths: resolved.canUseHostPaths,
+      ...(operation !== 'access.credential.prepare' && options.capabilityOwnerCredentialId
+        ? { capabilityOwnerCredentialId: options.capabilityOwnerCredentialId }
+        : {}),
       ...(operation === 'access.credential.prepare' && options.bindClientInstance
         ? { bindClientInstance: true }
         : {}),
@@ -261,15 +306,14 @@ export function resolveRuntimeHostAccessIssue(
       canUseHostPaths: options.canUseHostPaths,
     };
   }
-  const canPublishClientCapabilities = options.preset === 'desktop-client';
+  if (options.preset === 'desktop-client') return REMOTE_DESKTOP_OWNER_ACCESS_POLICY;
   const operationGrants = REMOTE_OWNER_OPERATION_GRANTS.filter(
-    (operation) =>
-      canPublishClientCapabilities || !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
+    (operation) => !CLIENT_CAPABILITY_PUBLICATION_OPERATIONS.has(operation),
   );
   return {
     principalKind: 'remote_owner',
     operationGrants,
-    canPublishClientCapabilities,
+    canPublishClientCapabilities: false,
     canUseHostPaths: false,
   };
 }
@@ -366,7 +410,9 @@ async function connectLocalOwner(rootPath: string, expectedRootId?: string) {
     },
   );
   if (result.kind !== 'connected') {
-    throw new RuntimeHostAccessUnavailableError(result.kind);
+    throw new RuntimeHostAccessUnavailableError(
+      result.kind === 'unavailable' ? result.reason : result.kind,
+    );
   }
   if (expectedRootId && result.connection.rootId !== expectedRootId) {
     await result.connection.close();

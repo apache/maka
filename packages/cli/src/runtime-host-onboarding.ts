@@ -17,14 +17,15 @@
  * under the License.
  */
 
-import { isRetiredProvider } from '@maka/core/provider-registry';
-import type { ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import { offerableCatalogEntries } from '@maka/core/llm-connections';
+import type { RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot } from '@maka/runtime-host/client';
 import {
   readRuntimeHostConnectionCatalog,
   type RuntimeHostConnection,
 } from '@maka/runtime-host/client';
 import { listApiKeyOnboardableProviders } from './onboarding-catalog.js';
 import type {
+  ConnectionIdentity,
   MakaOnboardingSurface,
   ModelChoice,
   OnboardingProviderEntry,
@@ -44,15 +45,9 @@ export function createRuntimeHostOnboardingSurface(
           baseUrl: trimmedOrNull(input.baseUrl),
         });
         if (result.kind === 'verified') return { kind: 'ok', models: [...result.models] };
-        return {
-          kind: 'error',
-          text: onboardingFailureText(result),
-          ...(result.kind === 'rejected' && result.reason === 'connection_not_found'
-            ? { stale: true }
-            : {}),
-        };
-      } catch (error) {
-        return { kind: 'error', text: errorText(error) };
+        return result;
+      } catch {
+        return { kind: 'unavailable' };
       }
     },
     save: async (input) => {
@@ -64,17 +59,17 @@ export function createRuntimeHostOnboardingSurface(
           enabledModelIds: [...input.enabledModelIds],
         });
         if (result.kind !== 'saved') {
-          return { kind: 'error', text: onboardingFailureText(result) };
+          return result;
         }
         try {
+          const catalog = await readRuntimeHostConnectionCatalog(connection);
           return {
             kind: 'ok',
             connection: result.connection,
             refresh: {
               kind: 'ok',
-              modelChoices: projectRuntimeHostModelChoices(
-                await readRuntimeHostConnectionCatalog(connection),
-              ),
+              modelChoices: projectRuntimeHostModelChoices(catalog),
+              connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
             },
           };
         } catch {
@@ -86,12 +81,12 @@ export function createRuntimeHostOnboardingSurface(
             connection: result.connection,
             refresh: {
               kind: 'failed',
-              warning: '账号已保存，但模型列表暂未刷新。重启 Maka 后会重新载入。',
+              reason: 'catalog_unavailable',
             },
           };
         }
-      } catch (error) {
-        return { kind: 'error', text: errorText(error) };
+      } catch {
+        return { kind: 'unavailable' };
       }
     },
   };
@@ -100,30 +95,37 @@ export function createRuntimeHostOnboardingSurface(
 export function projectRuntimeHostModelChoices(catalog: ConnectionCatalogSnapshot): ModelChoice[] {
   const choices: ModelChoice[] = [];
   for (const connection of catalog.connections) {
-    // A retained retired connection stays enabled so its credential remains
-    // visible and deletable, but every send through it is refused — offering
-    // its models here would only let the user pick something that fails on
-    // selection.
-    if (!connection.enabled || isRetiredProvider(connection.providerType)) continue;
-    const modelsById = new Map(connection.models.map((model) => [model.id, model]));
-    const ids = new Set(connection.enabledModelIds);
-    if (catalog.defaultTarget?.connectionId === connection.connectionId) {
-      ids.add(catalog.defaultTarget.modelId);
-    }
-    for (const model of ids) {
+    // Which models are offerable, and what is true about them, are both the
+    // Host's answers. A TUI older or newer than the Host must not re-derive
+    // either against its own registry and bundled metadata — that is how the
+    // same model came to be selectable here and refused elsewhere. A retained
+    // retired connection drops out through the same gate: its entries are not
+    // chat-capable, so none of them reach this list.
+    for (const entry of offerableCatalogEntries(connection)) {
       choices.push({
         connectionId: connection.connectionId,
         connectionSlug: connection.slug,
         connectionName: connection.name,
         providerType: connection.providerType,
-        model,
-        displayName: modelsById.get(model)?.displayName,
+        model: entry.id,
+        displayName: entry.displayName,
         isDefaultConnection: catalog.defaultTarget?.connectionId === connection.connectionId,
-        contextWindow: modelsById.get(model)?.contextWindow,
+        contextWindow: entry.contextWindow,
+        thinkingLevels: entry.thinkingLevels,
       });
     }
   }
   return choices;
+}
+
+export function projectRuntimeHostConnectionIdentities(
+  catalog: ConnectionCatalogSnapshot,
+): ConnectionIdentity[] {
+  return catalog.connections.map((connection) => ({
+    connectionId: connection.connectionId,
+    connectionSlug: connection.slug,
+    enabled: connection.enabled,
+  }));
 }
 
 export function projectProviders(catalog: ConnectionCatalogSnapshot): OnboardingProviderEntry[] {
@@ -142,7 +144,7 @@ export function projectProviders(catalog: ConnectionCatalogSnapshot): Onboarding
     entries.push({
       ...provider,
       target: { kind: 'create', providerType: provider.providerType },
-      label: `${provider.label} · 添加账号`,
+      label: provider.label,
       enabledModelIds: [],
     });
   }
@@ -152,34 +154,4 @@ export function projectProviders(catalog: ConnectionCatalogSnapshot): Onboarding
 function trimmedOrNull(value: string | undefined): string | null {
   const secret = value?.trim() ?? '';
   return secret.length === 0 ? null : secret;
-}
-
-function onboardingFailureText(input: {
-  readonly kind: 'rejected' | 'failed';
-  readonly reason?: string;
-  readonly errorClass?: string;
-}): string {
-  if (input.kind === 'failed') return `Connection verification failed: ${input.errorClass}`;
-  switch (input.reason) {
-    case 'credential_not_configured':
-      return 'API key is required';
-    case 'base_url_not_configured':
-      return 'A base URL is required for this provider';
-    case 'connection_not_found':
-      return 'The existing connection is gone — reopen /setup and try again';
-    case 'superseded':
-      return 'The connection changed while onboarding — reopen /setup and try again';
-    case 'provider_unsupported':
-      return 'This provider does not support API-key onboarding';
-    case 'catalog_full':
-      return 'The connection catalog is full';
-    case 'model_unavailable':
-      return 'The selected model is no longer available';
-    default:
-      return 'Connection onboarding was rejected';
-  }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

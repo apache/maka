@@ -188,7 +188,12 @@ export type ClientCapabilityHostFrame =
 export interface ClientCapabilityAcceptedFrame {
   readonly kind: 'client.capability.accepted';
   readonly invocationId: string;
+  readonly admissionEvidence: ClientCapabilityAdmissionEvidence;
 }
+
+export type ClientCapabilityAdmissionEvidence =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'browser_url'; readonly url: string };
 
 export interface ClientCapabilityRejectedFrame {
   readonly kind: 'client.capability.rejected';
@@ -382,10 +387,15 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
   const frame = requireRecord(value, 'Client Capability client frame');
   switch (frame.kind) {
     case 'client.capability.accepted':
-      assertExactKeys(frame, 'Client Capability accepted frame', ['kind', 'invocationId']);
+      assertExactKeys(frame, 'Client Capability accepted frame', [
+        'kind',
+        'invocationId',
+        'admissionEvidence',
+      ]);
       return {
         kind: frame.kind,
         invocationId: requireEntityId(frame.invocationId, 'invocationId'),
+        admissionEvidence: decodeClientCapabilityAdmissionEvidence(frame.admissionEvidence),
       };
     case 'client.capability.rejected':
     case 'client.capability.failed':
@@ -477,6 +487,25 @@ export function decodeClientCapabilityClientFrame(value: unknown): ClientCapabil
     }
     default:
       throw invalidProtocolFrame('Invalid Client Capability client frame kind');
+  }
+}
+
+function decodeClientCapabilityAdmissionEvidence(
+  value: unknown,
+): ClientCapabilityAdmissionEvidence {
+  const evidence = requireRecord(value, 'Client Capability admission evidence');
+  switch (evidence.kind) {
+    case 'none':
+      assertExactKeys(evidence, 'Client Capability admission evidence', ['kind']);
+      return { kind: evidence.kind };
+    case 'browser_url':
+      assertExactKeys(evidence, 'Client Capability admission evidence', ['kind', 'url']);
+      return {
+        kind: evidence.kind,
+        url: requireString(evidence.url, 'url', 16_384),
+      };
+    default:
+      throw invalidProtocolFrame('Unknown Client Capability admission evidence kind');
   }
 }
 

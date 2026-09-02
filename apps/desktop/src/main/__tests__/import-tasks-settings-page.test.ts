@@ -610,6 +610,577 @@ describe('ImportTasksSettingsPage durable import state', () => {
   });
 });
 
+describe('ImportTasksSettingsPage source switching', () => {
+  const LOADING = /Reading external conversations/;
+
+  it('shows the reading spinner the first time a source is opened', async () => {
+    let settle: ((r: CatalogResult) => void) | undefined;
+    const pending = new Promise<CatalogResult>((resolve) => {
+      settle = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' }))],
+        'claude-code': [pending],
+      },
+    });
+
+    assert.match(harness.container.textContent, /Codex conv/, 'codex loads on mount');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no spinner once codex is loaded');
+
+    const cc = segment(harness.container, 'claude-code');
+    assert.ok(cc, 'claude-code segment renders');
+    await act(async () => {
+      cc.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // First visit to claude-code: nothing cached, so the blank + spinner shows.
+    assert.match(harness.container.textContent, LOADING, 'first-time load shows the spinner');
+    assert.doesNotMatch(harness.container.textContent, /Codex conv/, 'codex rows are cleared');
+
+    await act(async () => {
+      settle?.(catalog(externalSession({ id: 's-cc', name: 'CC conv' })));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code rows arrive');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'spinner clears when loaded');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('shows a previously-loaded source instantly with no spinner, then refreshes in place', async () => {
+    let settleRevisit: ((r: CatalogResult) => void) | undefined;
+    const revisitRefresh = new Promise<CatalogResult>((resolve) => {
+      settleRevisit = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load, background refresh on revisit]
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' })), revisitRefresh],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+
+    assert.match(harness.container.textContent, /Codex conv/);
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+
+    // Revisit codex: cached rows appear immediately with no blanking spinner
+    // (the background refresh is still pending here).
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'cached codex rows shown instantly');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no spinner on revisit');
+
+    await act(async () => {
+      settleRevisit?.(catalog(externalSession({ id: 's-codex', name: 'Codex conv refreshed' })));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv refreshed/, 'background refresh lands');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'still no spinner after refresh');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not let a stale background refresh overwrite a newer source selection', async () => {
+    let settleStaleCodexRefresh: ((r: CatalogResult) => void) | undefined;
+    const staleCodexRefresh = new Promise<CatalogResult>((resolve) => {
+      settleStaleCodexRefresh = resolve;
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [catalog(externalSession({ id: 's-codex', name: 'Codex conv' })), staleCodexRefresh],
+        'claude-code': [
+          catalog(externalSession({ id: 's-cc', name: 'CC conv' })),
+          catalog(externalSession({ id: 's-cc', name: 'CC conv' })),
+        ],
+      },
+    });
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    // Revisit codex (cache hit → background refresh left pending)...
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // ...then switch straight back to claude-code before that refresh resolves.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code is the current source');
+
+    await act(async () => {
+      settleStaleCodexRefresh?.(
+        catalog(externalSession({ id: 's-codex', name: 'Stale codex conv' })),
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code rows remain');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      /Stale codex conv/,
+      'the superseded codex refresh never lands under claude-code',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('drops an in-flight import poll after switching source, with no stuck spinner', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    let settleStalePoll: ((r: CatalogResult) => void) | undefined;
+    const stalePoll = new Promise<CatalogResult>((resolve) => {
+      settleStalePoll = resolve;
+    });
+    const importing = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load with an import in flight, background poll read left pending]
+        codex: [{ sessions: [importing], nextCursor: null }, stalePoll],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+
+    // The importing row schedules a poll; fire it so refreshLoadedCatalog is in
+    // flight against the pending read.
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // Switch to claude-code while the codex poll is still in flight.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'no stuck reading spinner');
+
+    // The stale codex poll resolves last — it must not overwrite claude-code.
+    await act(async () => {
+      settleStalePoll?.({
+        sessions: [externalSession({ id: 's-codex', name: 'Codex conv refreshed' })],
+        nextCursor: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'still showing claude-code');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      /Codex conv refreshed/,
+      'stale poll result is dropped',
+    );
+    assert.doesNotMatch(harness.container.textContent, LOADING, 'still no spinner');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('clears the reading spinner when a pending search returns to a cached term', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    // The uncached search never resolves, so its spinner generation stays in
+    // flight; the return-to-'' refresh never resolves either, so only the
+    // cache-hit path — not a completed refresh — can retire the spinner.
+    const pendingSearch = new Promise<CatalogResult>(() => {});
+    const refreshPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      // [initial '' load, uncached 'zzz' search, background refresh on return to '']
+      catalogs: [
+        catalog(externalSession({ id: 's-codex', name: 'Codex conv' })),
+        pendingSearch,
+        refreshPending,
+      ],
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'initial load shows rows');
+
+    // Type an uncached term (the source and archived controls disable during a
+    // load, but the search box does not, so this is the reachable way to leave a
+    // request pending). It blanks to the spinner and never resolves.
+    await act(async () => {
+      setSearchInput(harness.container, 'zzz');
+      await Promise.resolve();
+    });
+    // Fire the 250ms debounce only after the effect above has registered it.
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, LOADING, 'uncached search shows the spinner');
+
+    // Return the search to the already-loaded empty term. The cached rows must
+    // come back with no spinner even though the older 'zzz' load is still
+    // pending and this hit's own refresh has not landed — the cache hit has to
+    // clear the stranded loading state itself.
+    await act(async () => {
+      setSearchInput(harness.container, '');
+      await Promise.resolve();
+    });
+    await act(async () => {
+      context.mock.timers.runAll();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'cached rows shown instantly');
+    assert.doesNotMatch(
+      harness.container.textContent,
+      LOADING,
+      'the stranded search spinner is cleared on the cache hit',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('clears a pending Load More lock when switching back to a cached source', async () => {
+    // Both revisit refreshes and the Load More append are left pending, so the
+    // only thing that can release the Load More lock is the cache-hit reset.
+    const codexRefreshPending = new Promise<CatalogResult>(() => {});
+    const codexLoadMorePending = new Promise<CatalogResult>(() => {});
+    const claudeCodeRefreshPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [initial load (paged), revisit refresh, Load More append]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: 'c1' },
+          codexRefreshPending,
+          codexLoadMorePending,
+        ],
+        // [initial load (paged), revisit refresh]
+        'claude-code': [
+          { sessions: [externalSession({ id: 's-cc', name: 'CC conv' })], nextCursor: 'cc1' },
+          claudeCodeRefreshPending,
+        ],
+      },
+    });
+
+    // Load claude-code so it is cached with its own paged Load More.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'claude-code loaded');
+
+    // Revisit codex (cache hit; background refresh left pending), then start a
+    // Load More whose append never resolves so `loadingMore` stays set.
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const codexLoadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(codexLoadMore, 'codex Load More renders');
+    await act(async () => {
+      codexLoadMore.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const busyLoadMore = Array.from(
+      harness.container.querySelectorAll<HTMLButtonElement>('button'),
+    ).find((button) => button.textContent?.includes('Loading…'));
+    assert.ok(busyLoadMore, 'Load More shows the pending label while the append is in flight');
+
+    // Switch back to the cached claude-code before that append resolves. Its
+    // Load More must not inherit the stranded lock from codex's pending append.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/, 'cached claude-code rows shown');
+    const cachedLoadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(cachedLoadMore, "claude-code's Load More is released, not stuck on 'Loading…'");
+    assert.equal(cachedLoadMore.hasAttribute('disabled'), false, 'Load More is enabled again');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('keeps every loaded page when a revisited multi-page source refreshes', async () => {
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [page 1, page 2 via Load More, refresh page 1, refresh page 2]
+        codex: [
+          {
+            sessions: [externalSession({ id: 's-codex-1', name: 'Codex page one' })],
+            nextCursor: 'codex-cursor-1',
+          },
+          { sessions: [externalSession({ id: 's-codex-2', name: 'Codex page two' })], nextCursor: null },
+          {
+            sessions: [externalSession({ id: 's-codex-1', name: 'Codex page one' })],
+            nextCursor: 'codex-cursor-1',
+          },
+          { sessions: [externalSession({ id: 's-codex-2', name: 'Codex page two' })], nextCursor: null },
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+
+    // Page in the second page of codex via Load More.
+    const loadMore = buttonWithText(harness.container, 'Load more');
+    assert.ok(loadMore, 'codex has a second page to load');
+    await act(async () => {
+      loadMore.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex page one/);
+    assert.match(harness.container.textContent, /Codex page two/, 'both pages are loaded');
+
+    // Switch away to claude-code, then back to codex.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // The cache hit shows both pages instantly; the background refresh must
+    // re-read the *whole* loaded window rather than shrink the list back to the
+    // first page.
+    assert.match(harness.container.textContent, /Codex page one/, 'first page kept');
+    assert.match(
+      harness.container.textContent,
+      /Codex page two/,
+      'the second page survives the background refresh',
+    );
+    // codex page 1 + Load More + refresh page 1 + refresh page 2, plus the one
+    // claude-code load = 5. A first-page-only refresh would stop at 4.
+    assert.equal(harness.listCalls(), 5, 'the revisit refresh re-read every loaded page');
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('does not start a second catalog read when revisiting a still-importing source', async (context) => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const importing = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 0, importedSessionIds: [], isImporting: true },
+    });
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        codex: [{ sessions: [importing], nextCursor: null }],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+    assert.equal(harness.listCalls(), 1, 'codex loaded once on mount');
+
+    // Load claude-code (now cached), then return to the still-importing codex.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.equal(harness.listCalls(), 2, 'claude-code loaded');
+
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    // The cache hit shows the importing rows again, but must NOT kick off its own
+    // background readCatalogWindow: the 1s import poll is the single refresher for
+    // an importing selection, and a second concurrent read shares the same request
+    // generation and can land a stale pre-import page on top of a newer poll
+    // result (the timer is deliberately left un-fired here).
+    assert.match(harness.container.textContent, /Codex conv/, 'cached codex rows shown');
+    assert.equal(
+      harness.listCalls(),
+      2,
+      'revisiting an importing source starts no second catalog read',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('updates the cache for a recovered import even after switching away', async () => {
+    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      settleImport = resolve;
+    });
+    const codexRecovered = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
+    });
+    // The revisit's background refresh never resolves, so the returned view is the
+    // cache alone — proving the cache itself holds the recovered state.
+    const codexRevisitPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [mount, recovery readCatalogWindow, revisit background refresh]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
+          { sessions: [codexRecovered], nextCursor: null },
+          codexRevisitPending,
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+      importResult,
+    });
+
+    // Start an import on codex, then switch to claude-code before the (unknown)
+    // outcome resolves.
+    const importButton = harness.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Import Codex conv"]',
+    );
+    assert.ok(importButton);
+    await act(async () => importButton.click());
+
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /CC conv/);
+
+    // The import comes back unknown; recovery confirms it landed while codex is not
+    // the current selection.
+    await act(async () => {
+      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /The imported task is available now/);
+    assert.match(harness.container.textContent, /CC conv/, 'the current view is untouched by recovery');
+
+    // Returning to codex must show the recovered "imported" state straight from
+    // the cache — not the stale pre-import row that would invite a duplicate
+    // import — even though the background refresh has not landed.
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/);
+    assert.match(
+      harness.container.textContent,
+      /Imported once/,
+      'the cache reflects the recovered import on return',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+
+  it('publishes a recovered import to the current view after leaving and returning to its source', async () => {
+    let settleImport: ((r: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const importResult = new Promise<{ ok: false; reason: 'commit_outcome_unknown' }>((resolve) => {
+      settleImport = resolve;
+    });
+    const codexRecovered = externalSession({
+      id: 's-codex',
+      name: 'Codex conv',
+      importState: { importedCount: 1, importedSessionIds: ['codex-task'], isImporting: false },
+    });
+    // The revisit's own background refresh never resolves, so recovery is the only
+    // thing that can update the screen — proving recovery publishes rather than
+    // leaving the view to wait on a slow refresh.
+    const codexRevisitPending = new Promise<CatalogResult>(() => {});
+    const harness = await renderPage({
+      adapterIds: ['codex', 'claude-code'],
+      bySource: {
+        // [mount, revisit background refresh (pending), recovery readCatalogWindow]
+        codex: [
+          { sessions: [externalSession({ id: 's-codex', name: 'Codex conv' })], nextCursor: null },
+          codexRevisitPending,
+          { sessions: [codexRecovered], nextCursor: null },
+        ],
+        'claude-code': [catalog(externalSession({ id: 's-cc', name: 'CC conv' }))],
+      },
+      importResult,
+    });
+
+    const importButton = harness.container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Import Codex conv"]',
+    );
+    assert.ok(importButton);
+    await act(async () => importButton.click());
+
+    // Switch to claude-code, then back to codex — all before the import resolves.
+    await act(async () => {
+      segment(harness.container, 'claude-code')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      segment(harness.container, 'codex')!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /Codex conv/, 'back on codex, pre-import rows shown');
+    assert.doesNotMatch(harness.container.textContent, /Imported once/, 'not recovered yet');
+
+    // Recovery lands. codex is the current selection again, but at a *newer*
+    // generation than when the import started, so a generation check would refuse
+    // to publish. Matching the selection tuple, recovery must still reach the
+    // screen — not just the cache — even though the revisit refresh is pending.
+    await act(async () => {
+      settleImport?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    assert.match(harness.container.textContent, /The imported task is available now/);
+    assert.match(
+      harness.container.textContent,
+      /Imported once/,
+      'recovery publishes to the returned-to view, not only the cache',
+    );
+
+    await act(async () => harness.root.unmount());
+  });
+});
+
 function externalSession(
   overrides: Partial<DesktopExternalSessionCatalogItem> = {},
 ): DesktopExternalSessionCatalogItem {
@@ -626,9 +1197,19 @@ function externalSession(
 async function renderPage(options: {
   catalog?: CatalogResult;
   catalogs?: Array<CatalogResult | Error | Promise<CatalogResult>>;
+  // Multi-source tests: `listSources` reports these, and `list` draws per-source
+  // queues from `bySource` (keyed by adapterId) instead of the flat `catalogs`.
+  adapterIds?: string[];
+  bySource?: Record<string, Array<CatalogResult | Error | Promise<CatalogResult>>>;
   importResult?:
     | { ok: false; reason: 'commit_outcome_unknown' }
     | Promise<{ ok: false; reason: 'commit_outcome_unknown' }>;
+  /**
+   * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
+   * answering, `throw` is a rejection. Keyed by source session id, because a
+   * batch is exactly the case where the ids must not share one answer.
+   */
+  importBySource?: Record<string, 'ok' | 'unknown' | 'throw'>;
   onOpenImported?: (sessionId: string) => void;
   locale?: 'en' | 'zh';
 }): Promise<{
@@ -637,6 +1218,8 @@ async function renderPage(options: {
   listCalls(): number;
   listInputs(): Array<{ includeArchived: boolean }>;
   hostCalls(): Array<{ operation: 'listSources' | 'list' | 'import'; host?: DesktopRuntimeHostRef }>;
+  /** Source ids handed to `import`, in the order the batch walked them. */
+  importedIds(): string[];
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const matchMedia = (media: string) => ({
@@ -665,27 +1248,49 @@ async function renderPage(options: {
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   let listCalls = 0;
+  const importedIds: string[] = [];
   const listInputs: Array<{ includeArchived: boolean }> = [];
   const hostCalls: Array<{
     operation: 'listSources' | 'list' | 'import';
     host?: DesktopRuntimeHostRef;
   }> = [];
   const catalogs = options.catalogs ?? [options.catalog ?? { sessions: [], nextCursor: null }];
+  const sourceCounts: Record<string, number> = {};
   (window as unknown as { maka: unknown }).maka = {
     externalSessions: {
       listSources: async (host?: DesktopRuntimeHostRef) => {
         hostCalls.push({ operation: 'listSources', host });
-        return { adapterIds: ['codex'] };
+        return { adapterIds: options.adapterIds ?? ['codex'] };
       },
-      list: async (input: { includeArchived?: boolean }, host?: DesktopRuntimeHostRef) => {
+      list: async (
+        input: { includeArchived?: boolean; adapterId: string },
+        host?: DesktopRuntimeHostRef,
+      ) => {
         hostCalls.push({ operation: 'list', host });
         listInputs.push({ includeArchived: input.includeArchived === true });
-        const result = catalogs[Math.min(listCalls++, catalogs.length - 1)];
+        listCalls++;
+        if (options.bySource) {
+          const queue = options.bySource[input.adapterId] ?? [{ sessions: [], nextCursor: null }];
+          const index = Math.min(sourceCounts[input.adapterId] ?? 0, queue.length - 1);
+          sourceCounts[input.adapterId] = (sourceCounts[input.adapterId] ?? 0) + 1;
+          const perSource = queue[index];
+          if (perSource instanceof Error) throw perSource;
+          return perSource;
+        }
+        const result = catalogs[Math.min(listCalls - 1, catalogs.length - 1)];
         if (result instanceof Error) throw result;
         return result;
       },
-      import: async (_input: unknown, host?: DesktopRuntimeHostRef) => {
+      import: async (input: unknown, host?: DesktopRuntimeHostRef) => {
         hostCalls.push({ operation: 'import', host });
+        const sourceSessionId = (input as { sourceSessionId?: string }).sourceSessionId ?? '';
+        importedIds.push(sourceSessionId);
+        const perSource = options.importBySource?.[sourceSessionId];
+        if (perSource === 'throw') throw new Error(`import-failed:${sourceSessionId}`);
+        if (perSource === 'unknown') return { ok: false, reason: 'commit_outcome_unknown' };
+        if (perSource === 'ok') {
+          return { ok: true, session: { id: `imported-${sourceSessionId}` } };
+        }
         return options.importResult ?? Promise.reject(new Error('import is not used by this test'));
       },
     },
@@ -717,6 +1322,7 @@ async function renderPage(options: {
     listCalls: () => listCalls,
     listInputs: () => listInputs,
     hostCalls: () => hostCalls,
+    importedIds: () => importedIds,
   };
 }
 
@@ -729,3 +1335,217 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
     (button) => button.textContent === text,
   );
 }
+
+// Drives the search TextInput the way goal-dialog.test does: set the value and
+// invoke the React onChange the renderer wired to it, so `searchDraft` updates
+// without a real input event. The caller fires the debounce timer afterward.
+function setSearchInput(container: HTMLElement, value: string): void {
+  const input = Array.from(container.querySelectorAll<HTMLInputElement>('input')).find(
+    (element) => element.type !== 'checkbox' && element.type !== 'radio',
+  );
+  assert.ok(input, 'search input renders');
+  input.value = value;
+  const propsKey = Object.keys(input).find((key) => key.startsWith('__reactProps$'));
+  assert.ok(propsKey, 'missing React props on the search input');
+  const props = (input as unknown as Record<string, unknown>)[propsKey] as {
+    onChange?: (event: { target: HTMLInputElement; defaultPrevented: boolean }) => void;
+  };
+  assert.ok(props.onChange, 'missing search change handler');
+  props.onChange({ target: input, defaultPrevented: false });
+}
+
+function segment(container: HTMLElement, value: string): HTMLButtonElement | undefined {
+  return Array.from(
+    container.querySelectorAll<HTMLButtonElement>('button[role="radio"]'),
+  ).find((button) => button.getAttribute('data-value') === value);
+}
+
+/**
+ * Selecting several conversations and importing them in one go.
+ *
+ * The page is a directory you pick from, so the checkboxes are always there —
+ * there is no mode to enter. What these cases pin is the accounting: a batch
+ * that reports one number for four different outcomes is worse than no batch.
+ */
+describe('ImportTasksSettingsPage batch import', () => {
+  function rows(container: HTMLElement): HTMLInputElement[] {
+    return Array.from(container.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]'));
+  }
+
+  function masterBox(container: HTMLElement): HTMLInputElement {
+    const box = container.querySelector<HTMLInputElement>(
+      '.maka-import-selection-bar input[type="checkbox"]',
+    );
+    assert.ok(box, 'master checkbox renders');
+    return box;
+  }
+
+  async function tick(box: HTMLInputElement, checked: boolean): Promise<void> {
+    // React's checkbox onChange is driven by the native click, and its value
+    // tracker swallows a programmatic `.checked` write without one.
+    await act(async () => {
+      box.checked = checked;
+      box.dispatchEvent(new (globalThis.window as unknown as { Event: typeof Event }).Event('click', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+  }
+
+  it('the master box marks and unmarks exactly the rows on screen', async () => {
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'a', name: 'A' }),
+          externalSession({ id: 'b', name: 'B' }),
+        ],
+        nextCursor: null,
+      },
+    });
+
+    assert.equal(rows(container).length, 2);
+    await tick(masterBox(container), true);
+    assert.deepEqual(rows(container).map((box) => box.checked), [true, true]);
+    assert.match(container.textContent ?? '', /2 \/ 2 selected/);
+
+    await tick(masterBox(container), false);
+    assert.deepEqual(rows(container).map((box) => box.checked), [false, false]);
+    assert.match(container.textContent ?? '', /0 \/ 2 selected/);
+  });
+
+  it('the master box reads indeterminate for a partial selection', async () => {
+    // The usual state during a selection, and the one a checked/unchecked pair
+    // cannot express.
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [externalSession({ id: 'a' }), externalSession({ id: 'b' })],
+        nextCursor: null,
+      },
+    });
+
+    await tick(rows(container)[0]!, true);
+    assert.equal(masterBox(container).indeterminate, true);
+    await tick(rows(container)[1]!, true);
+    assert.equal(masterBox(container).indeterminate, false);
+    assert.equal(masterBox(container).checked, true);
+  });
+
+  it('imports the marked rows one at a time and counts each outcome once', async () => {
+    // Sequential on purpose: recovery re-reads the catalog window an attempt
+    // came from, so overlapping attempts would race that read, and a progress
+    // count is only true when one thing is happening.
+    const { container, importedIds } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'fresh', name: 'Fresh' }),
+          externalSession({
+            id: 'again',
+            name: 'Again',
+            importState: { importedCount: 1, importedSessionIds: ['prior'], isImporting: false },
+          }),
+          externalSession({ id: 'broken', name: 'Broken' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { fresh: 'ok', again: 'ok', broken: 'throw' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run, 'the batch button renders');
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(importedIds(), ['fresh', 'again', 'broken']);
+    const text = container.textContent ?? '';
+    // Two imported, and the summary says one of them now exists twice —
+    // re-importing is how a conversation is refreshed, but a user who marked
+    // three and reads "imported 2" deserves to know which kind they were.
+    assert.match(text, /Imported 2 conversations/);
+    assert.match(text, /1 of them had been imported before/);
+    // One rejection does not become the batch's answer for the rows after it.
+    assert.match(text, /1 more could not be imported/);
+  });
+
+  it('a Host that does not answer is not counted as a failure', async () => {
+    // Only a catalog read settles whether an unanswered conversion landed.
+    // Calling it a failure is what invites the retry that makes a second copy.
+    const { container } = await renderPage({
+      catalog: { sessions: [externalSession({ id: 'quiet' })], nextCursor: null },
+      importBySource: { quiet: 'unknown' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const text = container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.doesNotMatch(text, /could not be imported/);
+    // It surfaces through the unconfirmed banner, which owns the retry.
+    assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+  });
+
+  it('spins only the conversion in flight, not every queued row', async () => {
+    // A spinner claims something is happening now. Marking every selected row
+    // would put one on rows the batch has not reached, and on rows it already
+    // finished.
+    let releaseFirst: ((value: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [externalSession({ id: 'a', name: 'A' }), externalSession({ id: 'b', name: 'B' })],
+        nextCursor: null,
+      },
+      // The first conversion parks until released, so the assertion lands while
+      // exactly one row is converting and the other is queued.
+      importResult: new Promise((resolve) => {
+        releaseFirst = resolve;
+      }),
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const spinning = Array.from(container.querySelectorAll('li')).map((row) =>
+      row.textContent?.includes('Importing') === true || !!row.querySelector('[aria-busy="true"]'),
+    );
+    assert.equal(spinning.filter(Boolean).length, 1, 'exactly one row reads as converting');
+
+    await act(async () => {
+      releaseFirst?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it('the batch button stays out of reach until something is marked', async () => {
+    const { container } = await renderPage({
+      catalog: { sessions: [externalSession({ id: 'a' })], nextCursor: null },
+    });
+
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    assert.equal(run.disabled, true);
+    await tick(rows(container)[0]!, true);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+  });
+});

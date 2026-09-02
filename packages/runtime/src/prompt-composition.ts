@@ -21,34 +21,32 @@ import type {
   ContextDiagnosticsComposition,
   ContextDiagnosticsSegment,
 } from './context-diagnostics.js';
-import type { PreparedRequestSegmentKind } from './request-shape.js';
+import type { PreparedRequestObservationSegmentKind } from '@maka/core/model-call-attempt';
 
 /**
  * The three fields a fold needs, and no more.
  *
- * `PreparedRequestSegment` satisfies this structurally, so a live capture folds
- * without conversion — but a decoder reading one back off the ledger does not
- * have to invent an `index` or a `hash` it never uses just to produce the wider
- * type. A fabricated field is a silent wrong answer waiting for the first
- * caller that reads it.
+ * A current observation segment satisfies this structurally, while the legacy
+ * event decoder does not have to invent fields the fold never reads.
  */
 export interface SizedRequestSegment {
-  kind: PreparedRequestSegmentKind;
+  kind: PreparedRequestObservationSegmentKind;
   bytes: number;
+  representedSegments?: number;
   label?: string;
 }
 
 /**
- * Folds one request's captured segments into "what was this prompt made of"
+ * Folds one request's observed segments into "what was this prompt made of"
  * (#2323).
  *
  * The bar above this in the Inspector answers how full the context is, from
  * provider-reported tokens. This answers what filled it, and the two are not
- * views of one number: composition is measured in **bytes of serialized
- * request**, sums to `requestBytes`, and never sums to the reported
- * `inputTokens`. Nothing here estimates tokens — a byte count is the fact this
- * layer holds, and turning it into a token figure is a display decision that
- * has to be labelled as an estimate where it is made (#1679).
+ * views of one number: composition is measured in **bytes of the observed
+ * semantic segments** and never sums to the reported `inputTokens`. Nothing
+ * here estimates tokens — a byte count is the fact this layer holds, and
+ * turning it into a token figure is a display decision that has to be labelled
+ * as an estimate where it is made (#1679).
  *
  * `tool_schema` folds per tool rather than into one total, because that is the
  * only breakdown a reader can act on: "tool definitions are 40%" names nothing
@@ -61,15 +59,23 @@ export function foldPromptComposition(
 ): ContextDiagnosticsComposition | undefined {
   if (segments.length === 0) return undefined;
 
-  const byKind = new Map<PreparedRequestSegmentKind, number>();
+  const byKind = new Map<PreparedRequestObservationSegmentKind, number>();
   const byTool = new Map<string, number>();
   let unlabelledToolBytes = 0;
+  let boundedToolCount = 0;
+  let boundedToolBytes = 0;
 
   for (const segment of segments) {
     byKind.set(segment.kind, (byKind.get(segment.kind) ?? 0) + segment.bytes);
     if (segment.kind !== 'tool_schema') continue;
-    if (segment.label === undefined) unlabelledToolBytes += segment.bytes;
-    else byTool.set(segment.label, (byTool.get(segment.label) ?? 0) + segment.bytes);
+    if (segment.label !== undefined) {
+      byTool.set(segment.label, (byTool.get(segment.label) ?? 0) + segment.bytes);
+    } else if (segment.representedSegments !== undefined) {
+      boundedToolCount += segment.representedSegments;
+      boundedToolBytes += segment.bytes;
+    } else {
+      unlabelledToolBytes += segment.bytes;
+    }
   }
 
   // A zero-byte kind is dropped rather than shown as `≈0`, the same way
@@ -93,32 +99,30 @@ export function foldPromptComposition(
   // remainder, so the rows still account for every tool byte.
   const tools = ranked.slice(0, MAX_TOOL_ROWS);
   const remainder = ranked.slice(MAX_TOOL_ROWS);
-  const remainingToolBytes = remainder.reduce((carry, tool) => carry + tool.bytes, 0);
+  const remainingToolCount = remainder.length + boundedToolCount;
+  const remainingToolBytes =
+    remainder.reduce((carry, tool) => carry + tool.bytes, 0) + boundedToolBytes;
 
   return {
     segments: folded,
     ...(tools.length > 0 ? { tools } : {}),
-    ...(remainder.length > 0
-      ? { remainingTools: { count: remainder.length, bytes: remainingToolBytes } }
+    ...(remainingToolCount > 0
+      ? { remainingTools: { count: remainingToolCount, bytes: remainingToolBytes } }
       : {}),
     ...(unlabelledToolBytes > 0 ? { unlabelledToolBytes } : {}),
   };
 }
 
-/**
- * The diagnostic append that carries the segments, alongside the durable
- * metering record on the same run stream.
- */
+/** Historical provider-attempt event retained only for pre-canonical ledgers. */
 export const PROVIDER_REQUEST_ATTEMPT_EVENT_TYPE = 'provider_request_attempt_recorded';
 
 /**
  * Reads one run event into the composition of the request it describes.
  *
- * Returns undefined for every event that is not a decodable capture, so a
- * caller walking the run stream can recognise this alongside the metering
- * record without a second read. Absence is the honest outcome: this append is
- * best-effort, and a record that will not decode is a composition the reader
- * does not have — not a prompt made of nothing.
+ * Returns undefined for every event that is not a decodable historical
+ * provider attempt. Current writers put the observation on the canonical
+ * ModelCallAttempt instead. Absence is the honest outcome: an unreadable legacy
+ * record is a composition the reader does not have, not a prompt made of nothing.
  */
 export function readPromptCompositionEvent(event: {
   readonly type: string;
@@ -147,12 +151,21 @@ export function readPromptCompositionEvent(event: {
 function readSegment(value: unknown): SizedRequestSegment | undefined {
   if (!isRecord(value)) return undefined;
   const kind = value.kind;
-  if (!KIND_ORDER.includes(kind as PreparedRequestSegmentKind)) return undefined;
+  if (!KIND_ORDER.includes(kind as PreparedRequestObservationSegmentKind)) return undefined;
   if (!isNonNegativeInteger(value.bytes)) return undefined;
+  if (
+    value.representedSegments !== undefined &&
+    (!isNonNegativeInteger(value.representedSegments) || value.representedSegments === 0)
+  ) {
+    return undefined;
+  }
   if (value.label !== undefined && typeof value.label !== 'string') return undefined;
   return {
-    kind: kind as PreparedRequestSegmentKind,
+    kind: kind as PreparedRequestObservationSegmentKind,
     bytes: value.bytes,
+    ...(typeof value.representedSegments === 'number'
+      ? { representedSegments: value.representedSegments }
+      : {}),
     ...(typeof value.label === 'string' ? { label: value.label } : {}),
   };
 }
@@ -174,7 +187,7 @@ function isNonNegativeInteger(value: unknown): value is number {
  */
 const MAX_TOOL_ROWS = 64;
 
-const KIND_ORDER: readonly PreparedRequestSegmentKind[] = [
+const KIND_ORDER: readonly PreparedRequestObservationSegmentKind[] = [
   'system_prompt',
   'tool_schema',
   'message',
@@ -186,9 +199,10 @@ const KIND_ORDER: readonly PreparedRequestSegmentKind[] = [
  * four buckets already fold the same segments for `readLatestContextDiagnostics`
  * (#1580), and two names for one fact is how two surfaces start disagreeing.
  */
-const PART_KINDS: Record<PreparedRequestSegmentKind, ContextDiagnosticsSegment['kind']> = {
-  system_prompt: 'system_instructions',
-  tool_schema: 'tool_definitions',
-  message: 'messages',
-  provider_options: 'other',
-};
+const PART_KINDS: Record<PreparedRequestObservationSegmentKind, ContextDiagnosticsSegment['kind']> =
+  {
+    system_prompt: 'system_instructions',
+    tool_schema: 'tool_definitions',
+    message: 'messages',
+    provider_options: 'other',
+  };

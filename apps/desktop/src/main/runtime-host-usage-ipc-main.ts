@@ -275,12 +275,17 @@ async function loadAllLogs(
   }
 }
 
+// The Task column names the session each usage row belongs to. The Host resolves
+// the human-readable title (from the durable session header) and carries it on
+// the projection as `sessionTitle`; untitled/unreadable sessions omit it, and the
+// renderer falls back to the untitled label.
 function projectLlmLog(row: LlmUsageLogProjection): UsageStats["logs"][number] {
   return {
     id: row.id,
     ts: row.ts,
     kind: "model",
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+    ...(row.sessionTitle === undefined ? {} : { sessionName: row.sessionTitle }),
     ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
     provider: row.providerId,
     model: row.modelId,
@@ -302,6 +307,7 @@ function projectToolLog(row: ToolUsageLogProjection): UsageStats["logs"][number]
     ts: row.ts,
     kind: "tool",
     ...(row.sessionId === undefined ? {} : { sessionId: row.sessionId }),
+    ...(row.sessionTitle === undefined ? {} : { sessionName: row.sessionTitle }),
     ...(row.turnId === undefined ? {} : { turnId: row.turnId }),
     provider: row.providerId ?? "",
     model: row.modelId ?? "",

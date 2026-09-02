@@ -20,13 +20,13 @@
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
 import type { SessionEvent } from '@maka/core/events';
 import type { UiLocale } from '@maka/core/ui-locale';
-import { parseNoRealConnectionError } from '@maka/core/connection-error-copy';
+import {
+  NO_REAL_CONNECTION_CODE,
+  parseNoRealConnectionError,
+} from './application/contracts/connection-error-cleaner.js';
 import { getDesktopConversationCopy } from './locales/conversation-copy.js';
 import { localizedShellErrorMessage } from './locales/shell-copy.js';
 import { describeSessionErrorReason } from './session-error-presentation.js';
-
-const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
-const NO_REAL_CONNECTION_REASON_RE = /NO_REAL_CONNECTION:([a-z_]+): /;
 
 export function isNoRealConnectionError(error: unknown): boolean {
   return parseNoRealConnectionError(error).matched;
@@ -60,38 +60,10 @@ export function sessionEventErrorMessage(
   if (isNoRealConnectionEvent(event)) {
     return noRealConnectionSetupDescription(noRealConnectionReasonFromEvent(event), locale);
   }
-  const contextBudgetDetail =
-    event.details && !Array.isArray(event.details)
-      ? event.details.contextBudgetExhaustedDetail
-      : undefined;
-  if (typeof contextBudgetDetail === 'string' && contextBudgetDetail.startsWith('malformed_summary_')) {
-    return getDesktopConversationCopy(locale).turnError.malformedSummary;
-  }
   const reasonDescription = describeSessionErrorReason(event.reason, locale);
   if (reasonDescription) return reasonDescription;
   const fallback = getDesktopConversationCopy(locale).actions.conversationErrorFallback;
   return localizedShellErrorMessage(new Error(event.message), fallback, locale);
-}
-
-/**
- * Canonical raw-error cleaner: strips the Electron IPC wrapper so error
- * classifiers see the main-process message, not the channel name (which can
- * contain classifier keywords, e.g. the "fetch" in 'connections:fetchModels').
- * Raw output must not reach a toast unclassified — see
- * providerPanelActionErrorMessage for the display-side contract.
- */
-export function cleanErrorMessage(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  return cleanEventMessage(raw);
-}
-
-export function cleanEventMessage(message: string): string {
-  // Electron serializes a rejected handler as `${error.name}: ${error.message}`,
-  // so custom classes arrive as e.g. "ConnectionModelDiscoveryPreconditionError: …".
-  return message
-    .replace(/^Error invoking remote method '[^']+': (?:[A-Za-z_$][\w$]*)?Error: /, '')
-    .replace(NO_REAL_CONNECTION_REASON_RE, '')
-    .replace(`${NO_REAL_CONNECTION_CODE}: `, '');
 }
 
 export function modelSetupToastCopy(

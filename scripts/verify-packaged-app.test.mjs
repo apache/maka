@@ -49,34 +49,38 @@ test('packaged resources forbid the retired bundled Git distribution', async () 
   }
 });
 
-test('legacy packaged resources require the historical bundled Git contract', async () => {
+test('the upgrade baseline keeps the Git absence rule while relaxing newer resources', async () => {
   const required = [];
   const forbidden = [];
   await assertPackagedResources('resources', {
     requirePath: async (path) => required.push(path),
     forbidPath: async (path) => forbidden.push(path),
     requireWindowsSandbox: false,
-    bundledGitContract: 'legacy-required',
+    requireDisclaimer: false,
     requireCanonicalIcon: false,
+    requireAppIconCatalog: false,
     requireDirectPeerArtifact: false,
   });
 
+  // A pinned baseline may predate any of these; none of them may be demanded
+  // of bytes that were correct when they shipped.
   for (const path of [
-    join('resources', 'bundled-git.json'),
-    join('resources', 'licenses', 'dugite', 'LICENSE'),
-    join('resources', 'licenses', 'git', 'LICENSE.txt'),
-    join('resources', 'licenses', 'git', 'NOTICE.txt'),
-    join('resources', 'licenses', 'git', 'SOURCE_OFFER.txt'),
+    join('resources', 'assets', 'icon.png'),
+    join('resources', 'licenses', 'maka', 'DISCLAIMER-WIP'),
+    join('resources', 'runtime-host-peer', 'maka_runtime_host_peer.node'),
+    join('resources', 'licenses', 'runtime-host-peer', 'THIRD_PARTY_NOTICES.txt'),
   ]) {
-    assert.equal(required.includes(path), true);
+    assert.equal(required.includes(path), false);
   }
+  // Git is not one of them: no published build still carries it.
   for (const path of [
     join('resources', 'git'),
     join('resources', 'bundled-git.json'),
     join('resources', 'licenses', 'dugite'),
     join('resources', 'licenses', 'git'),
   ]) {
-    assert.equal(forbidden.includes(path), false);
+    assert.equal(required.includes(path), false);
+    assert.equal(forbidden.includes(path), true);
   }
 });
 

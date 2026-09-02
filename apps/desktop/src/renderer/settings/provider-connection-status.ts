@@ -26,7 +26,7 @@ import type { LlmConnection } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 
 import type { UiLocale } from '@maka/core/ui-locale';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy.js';
+import { getProviderSettingsCopy } from '../features/connection-settings/index.js';
 import type { StatusSemantic } from '@maka/ui';
 
 export interface ConnectionChipStatus {

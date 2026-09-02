@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
@@ -901,6 +901,78 @@ test('non-force managed update preserves a local edit made after its snapshot', 
   });
   assert.deepEqual(result, { kind: 'rejected', reason: 'local_modified' });
   assert.equal(await readFile(installedPath, 'utf8'), localEdit);
+});
+
+test('managed update blocks a symlink redirected outside its discovery root after scanning', async () => {
+  const fixture = await createFixture();
+  const sourceId = 'managed-symlink-race';
+  const installedContent = skillBody('Managed Symlink Race', 'installed');
+  const updateContent = skillBody('Managed Symlink Race', 'source update');
+  const outsideContent = skillBody('Managed Symlink Race', 'outside replacement');
+  await createSkill(fixture.sources, sourceId, updateContent);
+
+  const containedSkill = await createSkill(
+    join(fixture.root, 'linked-skill-sources'),
+    sourceId,
+    installedContent,
+  );
+  await mkdir(join(containedSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(containedSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(installedContent), sha256(installedContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(containedSkill, '.maka', 'baseline', 'SKILL.md'), installedContent);
+
+  const skillsDirectory = join(fixture.root, 'skills');
+  const linkedSkill = join(skillsDirectory, sourceId);
+  await mkdir(skillsDirectory, { recursive: true });
+  await symlink(containedSkill, linkedSkill, 'dir');
+
+  const outsideSkill = await createSkill(
+    await tempDirectory('maka-skill-symlink-race-outside-'),
+    sourceId,
+    outsideContent,
+  );
+  await mkdir(join(outsideSkill, '.maka', 'baseline'), { recursive: true });
+  await writeFile(
+    join(outsideSkill, 'skill.lock.json'),
+    `${JSON.stringify(
+      createManagedSkillLock(sourceId, sha256(outsideContent), sha256(outsideContent)),
+      null,
+      2,
+    )}\n`,
+  );
+  await writeFile(join(outsideSkill, '.maka', 'baseline', 'SKILL.md'), outsideContent);
+
+  let redirectAfterScan = false;
+  const repository = fixture.repository(undefined, {
+    beforeManagedInstalledArtifactsRead: async () => {
+      if (!redirectAfterScan) return;
+      redirectAfterScan = false;
+      await rm(linkedSkill);
+      await symlink(outsideSkill, linkedSkill, 'dir');
+    },
+  });
+  const snapshot = await start(repository, fixture.project, 'governance');
+
+  redirectAfterScan = true;
+  const result = await repository.mutate({
+    expectedRevision: snapshot.revision,
+    mutation: {
+      kind: 'update_managed',
+      ref: `workspace:legacy:${sourceId}`,
+      force: false,
+      expectedCurrentSha256: null,
+      expectedSourceSha256: null,
+    },
+  });
+
+  assert.deepEqual(result, { kind: 'rejected', reason: 'metadata_error' });
+  assert.equal(await readFile(join(outsideSkill, 'SKILL.md'), 'utf8'), outsideContent);
 });
 
 test('revision covers exact managed lock and baseline bytes and rejects post-snapshot edits', async () => {

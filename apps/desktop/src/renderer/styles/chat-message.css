@@ -324,8 +324,8 @@
   font: var(--maka-text-supporting);
   display: inline-flex;
   border-radius: var(--radius-pill);
-  background: oklch(from var(--info) l c h / 0.08);
-  color: var(--info-text);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
   padding: var(--space-0-5) var(--space-1-5);
 }
 .maka-transcript-history-controls {

@@ -76,7 +76,11 @@ export async function loadHistoryCompactCheckpointsFromRunLedger(
 export async function loadLatestHistoryCompactCheckpointFromRunLedger(
   runStore: Pick<
     AgentRunStore,
-    'listSessionRuns' | 'readEvents' | 'readEventProjection' | 'repairEventProjection'
+    | 'listSessionRuns'
+    | 'readEvents'
+    | 'readEventProjection'
+    | 'readEventLedgerRevision'
+    | 'repairEventProjection'
   >,
   sessionId: string,
 ): Promise<HistoryCompactCheckpoint | undefined> {
@@ -100,6 +104,10 @@ export async function loadLatestHistoryCompactCheckpointFromRunLedger(
       // Recover the derived projection from the canonical ledger below.
     }
   }
+  const ledgerRevision =
+    runStore.readEventLedgerRevision && runStore.repairEventProjection
+      ? await runStore.readEventLedgerRevision(sessionId)
+      : undefined;
   const runs = await runStore.listSessionRuns(sessionId);
   const candidates: LedgerCheckpointCandidate[] = [];
   for (let runIndex = runs.length - 1; runIndex >= 0; runIndex -= 1) {
@@ -118,12 +126,16 @@ export async function loadLatestHistoryCompactCheckpointFromRunLedger(
     }
   }
   const selected = selectRecoveredCheckpoint(candidates);
+  if (ledgerRevision === undefined) return selected?.checkpoint;
   await runStore
     .repairEventProjection?.(
       sessionId,
       'history_compact_checkpoint_recorded',
       selected?.event ?? null,
-      replaceEventId ? { replaceEventId } : undefined,
+      {
+        ifLedgerRevision: ledgerRevision,
+        ...(replaceEventId ? { replaceEventId } : {}),
+      },
     )
     .catch(() => {
       // Recovery succeeded; a later cold read can retry this derived-state repair.

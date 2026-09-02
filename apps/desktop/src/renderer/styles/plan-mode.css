@@ -88,7 +88,7 @@
 .plan-proposal-overview {
   font: var(--maka-text-body);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-section {
@@ -99,7 +99,7 @@
 .plan-proposal-section h3 {
   font: var(--maka-text-heading-5);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-steps,
@@ -131,9 +131,9 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: var(--border-width-hairline) solid var(--info-wash-border);
+  border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-pill);
-  background: var(--info-wash);
+  background: var(--color-accent-muted);
   color: var(--foreground);
   font-variant-numeric: tabular-nums;
 }
@@ -152,7 +152,7 @@
 .plan-proposal-step-content p {
   margin: 0;
   overflow-wrap: anywhere;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .plan-proposal-risks ul {
@@ -164,7 +164,7 @@
   position: relative;
   padding: var(--space-1-5) var(--space-2) var(--space-1-5) var(--space-5);
   border-radius: var(--radius-control);
-  background: var(--warning-wash);
+  background: var(--color-warning-muted);
 }
 
 .plan-proposal-risks li::before {
@@ -262,7 +262,11 @@
   gap: var(--space-2);
   min-height: var(--h-control-lg);
   padding: var(--space-1-5) var(--space-2);
-  color: var(--foreground-secondary);
+  /* Full ink: a pending step is live work, and the two states below (completed
+     and skipped) are the ones that recede to muted. The retired middle grey
+     used to hold this apart from them; collapsing it onto muted instead would
+     make every step in the list read as already dealt with. */
+  color: var(--foreground);
 }
 
 .plan-execution-steps li + li {
@@ -271,7 +275,7 @@
 
 .plan-execution-steps li[data-status="in_progress"] {
   color: var(--foreground);
-  background: var(--info-wash);
+  background: var(--color-accent-muted);
 }
 
 .plan-execution-steps li[data-status="completed"],
@@ -292,14 +296,14 @@
 }
 
 .plan-execution-step-marker[data-status="in_progress"] {
-  border-color: var(--info-wash-border);
-  background: var(--info-wash);
-  color: var(--info-text);
+  border-color: var(--border);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
 }
 
 .plan-execution-step-marker[data-status="completed"] {
-  border-color: var(--success-wash-border);
-  background: var(--success-wash);
+  border-color: var(--border);
+  background: var(--color-success-muted);
   color: var(--success-text);
 }
 

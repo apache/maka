@@ -379,6 +379,54 @@ describe('SQLite Artifact store', () => {
     });
   });
 
+  test('includes explicit same-Session Artifacts outside the copied turns', async () => {
+    await withWorkspace(async (root) => {
+      const authority = createArtifactStoreWriteAuthority(root);
+      await authority.recover();
+      const { store } = authority;
+      await store.create({
+        ...artifactInput('retained-artifact', 'retained', 10),
+        turnId: 'turn-retained',
+      });
+      // A user upload carries the uploadId sentinel as its turnId, so it is
+      // never a member of the copied conversation turns.
+      const upload = await store.create({
+        ...artifactInput('attachment-upload', 'uploaded bytes', 11),
+        turnId: 'upload-sentinel',
+        source: 'user_upload',
+      });
+
+      const withoutInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy',
+        turnIds: ['turn-retained'],
+      });
+      assert.equal(withoutInclude.artifactIds.has(upload.id), false);
+
+      const withInclude = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-2',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: [upload.id],
+      });
+      const copiedUploadId = withInclude.artifactIds.get(upload.id);
+      assert.ok(copiedUploadId);
+      assert.deepEqual(await store.readText(copiedUploadId), {
+        ok: true,
+        text: 'uploaded bytes',
+      });
+      assert.equal((await store.get(copiedUploadId))?.sessionId, 'session-copy-2');
+      // Unknown include ids are a no-op, not an error.
+      const withUnknown = await store.copyConversationArtifacts({
+        sourceSessionId: 'session-1',
+        targetSessionId: 'session-copy-3',
+        turnIds: ['turn-retained'],
+        includeArtifactIds: ['does-not-exist'],
+      });
+      assert.equal(withUnknown.artifactIds.has('does-not-exist'), false);
+    });
+  });
+
   test('user delete evaluates current-generation policy before tombstone state', async () => {
     await withWorkspace(async (root) => {
       const authority = createArtifactStoreWriteAuthority(root);

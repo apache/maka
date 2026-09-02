@@ -25,7 +25,10 @@ import {
   executionBoundaryDisplayMode,
 } from '@maka/core/sandbox-boundary';
 import { findProjectByIdentity } from '@maka/core/project';
-import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';
 import { SessionActivityRegistry } from '@maka/runtime/goal-turn-lifecycle';
 import { type InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
@@ -34,6 +37,7 @@ import {
 } from '@maka/storage/process-lifetime-owner';
 import {
   readRuntimeHostAgentGraphEpochs,
+  readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjects,
   isRuntimeHostReconnectingConnection,
@@ -49,6 +53,7 @@ import {
   resolveRuntimeHostCliTarget,
 } from './runtime-host-cli-context.js';
 import type {
+  ConnectionIdentity,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
   SessionRecapGenerator,
@@ -59,6 +64,7 @@ import {
 } from './runtime-host-session-driver.js';
 import {
   createRuntimeHostOnboardingSurface,
+  projectRuntimeHostConnectionIdentities,
   projectRuntimeHostModelChoices,
 } from './runtime-host-onboarding.js';
 import {
@@ -66,6 +72,7 @@ import {
   type TuiMcpController,
   type TuiMcpManagement,
 } from './tui-mcp-control.js';
+import { createRemoteTuiMcpPublicationTarget } from './tui-mcp-remote-publication.js';
 
 export interface RuntimeHostTuiContext {
   readonly connection: RuntimeHostConnection;
@@ -73,16 +80,23 @@ export interface RuntimeHostTuiContext {
   readonly cwd: string;
   readonly connectionSlug: string;
   readonly connectionId?: string;
-  readonly connectionIdentities: readonly {
-    readonly connectionId: string;
-    readonly connectionSlug: string;
-    readonly enabled: boolean;
-  }[];
+  readonly connectionIdentities: readonly ConnectionIdentity[];
   readonly connectionName: string;
-  readonly providerType?: ConnectionCatalogEntry['providerType'];
   readonly model: string;
   readonly modelContextWindow?: number;
   readonly modelChoices: readonly ModelChoice[];
+  /**
+   * The Host now resolves connection catalogs differently — it refreshed its
+   * models.dev catalog. Re-read and re-project rather than patching what is
+   * held: which models are offerable and what is true about them are both the
+   * Host's answers.
+   */
+  readonly subscribeModelCatalogChanges: (
+    listener: (refresh: {
+      readonly modelChoices: readonly ModelChoice[];
+      readonly connectionIdentities: readonly ConnectionIdentity[];
+    }) => void,
+  ) => () => void;
   /**
    * Mode a Session created right now would start in, for display only. The
    * driver never receives it: an omitted create field is what lets the Host
@@ -161,7 +175,7 @@ export async function createRuntimeHostTuiContext(
     };
     const driver = createRuntimeHostMakaSessionDriver(driverInput);
     await driver.recoverSideConversations();
-    if (!runtimeHostProfileUsesHostWorkspace(connected.profile.kind)) {
+    if (connected.profile.kind === 'local') {
       if (!isRuntimeHostReconnectingConnection(connection)) {
         throw new Error('Local Runtime Host TUI connection is not reconnectable');
       }
@@ -169,9 +183,29 @@ export async function createRuntimeHostTuiContext(
         workspaceRoot: input.rootPath,
         connection,
       });
+    } else if (connected.profile.kind === 'remote') {
+      if (!connected.profileIncarnationId) {
+        throw new Error('Remote Runtime Host profile incarnation is unavailable');
+      }
+      mcp = createTuiMcpController({
+        workspaceRoot: input.rootPath,
+        connection: createRemoteTuiMcpPublicationTarget({
+          clientDataRoot: input.clientDataRoot,
+          profile: connected.profile,
+          profileIncarnationId: connected.profileIncarnationId,
+          ownerClientInstanceId: connected.clientInstanceId,
+        }),
+      });
     }
-    const modelContextWindow = selectedTarget.connection?.models.find(
-      (model) => model.id === selectedTarget.model,
+    // From the Host-resolved choice, not the connection's stored rows: a
+    // fallback or provider-default model exists only in the resolved catalog,
+    // so reading `models` left the very first status line and its diagnostics
+    // without a denominator until some later transition happened to refresh
+    // it. Every later read of this value already comes from `modelChoices`.
+    const modelContextWindow = modelChoices.find(
+      (choice) =>
+        choice.connectionSlug === selectedTarget.connectionSlug &&
+        choice.model === selectedTarget.model,
     )?.contextWindow;
     return {
       connection,
@@ -181,18 +215,24 @@ export async function createRuntimeHostTuiContext(
       ...(selectedTarget.connectionId === undefined
         ? {}
         : { connectionId: selectedTarget.connectionId }),
-      connectionIdentities: catalog.connections.map((entry) => ({
-        connectionId: entry.connectionId,
-        connectionSlug: entry.slug,
-        enabled: entry.enabled,
-      })),
+      connectionIdentities: projectRuntimeHostConnectionIdentities(catalog),
       connectionName: selectedTarget.connection?.name ?? selectedTarget.connectionSlug,
-      ...(selectedTarget.connection
-        ? { providerType: selectedTarget.connection.providerType }
-        : {}),
       model: selectedTarget.model,
       ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
       modelChoices,
+      subscribeModelCatalogChanges: (listener) =>
+        connection.subscribeConnectionCatalogChanges(() => {
+          void readRuntimeHostConnectionCatalog(connection)
+            .then((refreshed) =>
+              listener({
+                modelChoices: projectRuntimeHostModelChoices(refreshed),
+                connectionIdentities: projectRuntimeHostConnectionIdentities(refreshed),
+              }),
+            )
+            // A catalog that will not read leaves the choices the TUI already
+            // has. The Host announces again the next time it changes.
+            .catch(() => undefined);
+        }),
       prospectivePermissionMode,
       turnActivity: createHostOwnedTurnActivity(),
       listSkills: (cwd) =>

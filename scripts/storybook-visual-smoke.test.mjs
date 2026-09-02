@@ -35,7 +35,7 @@ function storyIndex(...storyIds) {
   };
 }
 
-test('ordinary catalog stories render the default palette in both colour schemes', () => {
+test('ordinary catalog stories render the default palette in light mode', () => {
   assert.deepEqual(
     catalogJobs(storyIndex('product-settings--memory'), { themePalettes: THEME_PALETTES }),
     [
@@ -44,13 +44,17 @@ test('ordinary catalog stories render the default palette in both colour schemes
         colorScheme: 'light',
         palette: 'default',
       },
-      {
-        storyId: 'product-settings--memory',
-        colorScheme: 'dark',
-        palette: 'default',
-      },
     ],
   );
+});
+
+test('dark theme sentinel stories render the default palette in both colour schemes', () => {
+  const storyId = 'product-settings-pages--appearance';
+
+  assert.deepEqual(catalogJobs(storyIndex(storyId), { themePalettes: THEME_PALETTES }), [
+    { storyId, colorScheme: 'light', palette: 'default' },
+    { storyId, colorScheme: 'dark', palette: 'default' },
+  ]);
 });
 
 test('the reference story renders every palette in both colour schemes', () => {
@@ -76,11 +80,11 @@ test('the reference story renders every palette in both colour schemes', () => {
   ]);
 });
 
-test('a mixed catalog adds only twenty renders for full palette coverage', () => {
+test('a mixed catalog adds only the full palette story theme matrix', () => {
   const storyIds = ['product-settings--memory', REFERENCE_STORY_ID, 'design-system--button'];
   const jobs = catalogJobs(storyIndex(...storyIds), { themePalettes: THEME_PALETTES });
 
-  assert.equal(jobs.length, 2 * storyIds.length + 20);
+  assert.equal(jobs.length, storyIds.length + THEME_PALETTES.length * 2 - 1);
   assert.deepEqual(new Set(jobs.map((job) => job.storyId)), new Set(storyIds));
 });
 

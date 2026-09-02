@@ -59,6 +59,18 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-shell-official-appshell--native-conversation',
   'product-shell-official-appshell--waiting-for-permission',
 ]);
+// The smoke observes render completion, focus, and the accessibility tree; it
+// does not compare pixels. Every story supplies that structural evidence once,
+// while these canonical surfaces also prove the separate dark token block.
+// Dark mode currently changes only paint tokens, with no dark-only DOM, layout,
+// or renderer branches; expand this set if that invariant changes.
+const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'design-system-palette-matrix--all-palettes',
+  'product-accessibility-dialogs--rename-conversation',
+  'product-markdown--rich-assistant-answer',
+  'product-settings-pages--appearance',
+  'product-shell-official-appshell--default-layout',
+]);
 
 // This is a catalog render and accessibility-tree health check.
 // Story `play` functions do run: many stories reach their named final state
@@ -138,15 +150,21 @@ export function catalogJobs(
   }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .flatMap((entry) =>
-      (fullPaletteStoryIds.has(entry.id) ? palettes : ['default']).flatMap((palette) =>
-        COLOR_SCHEMES.map((colorScheme) => ({
+    .flatMap((entry) => {
+      const hasFullPaletteCoverage = fullPaletteStoryIds.has(entry.id);
+      const entryPalettes = hasFullPaletteCoverage ? palettes : ['default'];
+      const colorSchemes =
+        hasFullPaletteCoverage || DARK_THEME_SENTINEL_STORY_IDS.has(entry.id)
+          ? COLOR_SCHEMES
+          : ['light'];
+      return entryPalettes.flatMap((palette) =>
+        colorSchemes.map((colorScheme) => ({
           storyId: entry.id,
           colorScheme,
           palette,
         })),
-      ),
-    );
+      );
+    });
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
@@ -159,16 +177,16 @@ export function storyUrl(baseUrl, job) {
   return url.href;
 }
 
-function jobLabel(job) {
-  return `${job.storyId} [${job.colorScheme}/${job.palette}]`;
-}
-
 export function storyViewport(storyId) {
   return storyId.includes('narrow') ? NARROW_RENDER_VIEWPORT : RENDER_VIEWPORT;
 }
 
+export function jobLabel(job) {
+  return `${job.storyId} (${job.colorScheme}/${job.palette})`;
+}
+
 async function smokeStory(page, baseUrl, job, options = {}) {
-  const prefix = `[${job.storyId}][${job.colorScheme}/${job.palette}]`;
+  const prefix = `[${jobLabel(job)}]`;
   const browserFailures = [];
   const onConsole = (message) => {
     if (message.type() === 'error') browserFailures.push(`console.error: ${message.text()}`);
@@ -182,6 +200,7 @@ async function smokeStory(page, baseUrl, job, options = {}) {
   try {
     await page.addInitScript(installStorybookRenderProbe, { storyId: job.storyId });
     await page.setViewportSize(storyViewport(job.storyId));
+    await page.emulateMedia({ colorScheme: job.colorScheme });
     await page.goto(storyUrl(baseUrl, job), { waitUntil: 'load' });
 
     try {
@@ -339,9 +358,11 @@ async function runCli() {
   const { THEME_PALETTES } = await import('@maka/core/settings');
   const jobs = catalogJobs(storyIndex, { themePalettes: THEME_PALETTES });
   const storyIds = new Set(jobs.map((job) => job.storyId));
-  const missingRequiredStories = [...REQUIRED_COMPUTER_USE_STORY_IDS].filter(
-    (storyId) => !storyIds.has(storyId),
-  );
+  const requiredStoryIds = new Set([
+    ...REQUIRED_COMPUTER_USE_STORY_IDS,
+    ...DARK_THEME_SENTINEL_STORY_IDS,
+  ]);
+  const missingRequiredStories = [...requiredStoryIds].filter((storyId) => !storyIds.has(storyId));
   if (missingRequiredStories.length > 0) {
     throw new Error(
       `Computer Use story inventory is missing: ${missingRequiredStories.join(', ')}`,
@@ -361,7 +382,7 @@ async function runCli() {
     throw new Error(`${problems.length} story render(s) failed:\n${problems.join('\n')}`);
   }
   process.stdout.write(
-    `Storybook render smoke passed (${jobs.length} renders across ${storyIds.size} stories).\n`,
+    `Storybook render smoke passed (${storyIds.size} stories, ${jobs.length} theme renders).\n`,
   );
 }
 

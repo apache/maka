@@ -73,12 +73,13 @@ The workflow boundaries are:
 
 ### GitHub Environment
 
-The checked-in `.asf.yaml` is the authority for the `npm-publication` and `product-release`
+The checked-in `.asf.yaml` is the authority for the `npm-publication`, `nightly`, and `product-release`
 Environments. After it reaches
 `main`, confirm ASF reconciliation produced:
 
 - a selected `main` branch rule for `npm-publication`, with no approval gate so the
   scheduled Nightly can publish automatically;
+- a selected `main` branch rule for `nightly`, with no approval gate so Desktop Nightly can publish automatically;
 - a selected `main` branch rule for `product-release`, with `M4n5ter` as required reviewer and
   self-review disabled;
 - administrator bypass disabled where repository policy permits it.
@@ -130,14 +131,14 @@ The two workflows publish in this order:
 1. require the candidate npm run number to be newer than the current `nightly` tag;
 2. publish the exact npm tarball with provenance under `nightly`;
 3. require both the exact version and `nightly` tag to be readable from the public registry;
-4. require the candidate Desktop run number to be newer than every existing platform feed;
-5. append the immutable Desktop payloads to `nightlies.apache.org`;
-6. advance the mutable Desktop update feed last.
+4. build, verify, and attest the exact Desktop packages and GitHub `dev` metadata;
+5. bind a protected `v<version>` tag to the exact source commit and verify exactly the draft assets that
+   `desktopNightlyReleaseAssetNames` defines;
+6. publish the GitHub prerelease with Latest disabled only after the draft is complete.
 
 This ordering prevents Desktop from advertising a Runtime Host version that npm does not have and
-lets npm Nightly operate before Desktop's Infra transport is enabled. A failed npm or Desktop run is
-never rerun in place because npm versions and the Nightlies version directory are immutable; start
-a fresh npm Nightly run instead:
+keeps npm Nightly independent from Desktop packaging. A failed npm or Desktop run is never rerun in
+place because each attempt has an immutable npm version; start a fresh npm Nightly run instead:
 
 ```sh
 gh workflow run npm-publication.yml --ref main -f channel=nightly

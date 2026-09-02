@@ -22,12 +22,11 @@ import type { ModelCallCommit } from '@maka/core/agent-run';
  * Tests for buildLlmHistorySummarizer — the AI-SDK-backed LLM summary that
  * replaces the deterministic excerpt draft when wiring injects it.
  *
- * Run: `npm --workspace @maka/runtime run test`
+ * Run: `npm run build && npm --workspace @maka/runtime run test:dist`
  */
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expect } from '../test-helpers.js';
 import type { RuntimeEvent, RuntimeEventContent } from '@maka/core/runtime-event';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { ProviderRequestTracker } from '../provider-request-telemetry.js';
@@ -99,8 +98,8 @@ describe('buildLlmHistorySummarizer', () => {
       inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
     });
 
-    expect(seen?.providerOptions).toBe(providerOptions);
-    expect(seen?.maxOutputTokens).toBe(undefined);
+    assert.strictEqual(seen?.providerOptions, providerOptions);
+    assert.strictEqual(seen?.maxOutputTokens, undefined);
   });
 
   test('attributes provider-reported usage to one canonical history-compaction record', async () => {
@@ -135,8 +134,7 @@ describe('buildLlmHistorySummarizer', () => {
           return now;
         },
         newId: () => 'trace-id',
-        persistCapture: async () => ({ artifactId: 'artifact-1' }),
-        recordAttempt: () => {},
+        persistArtifact: async () => ({ artifactId: 'artifact-1' }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',
@@ -200,8 +198,7 @@ describe('buildLlmHistorySummarizer', () => {
         turnId: 'turn-1',
         now: () => 100 + id,
         newId: () => `request-${++id}`,
-        persistCapture: async () => ({ artifactId: `artifact-${id}` }),
-        recordAttempt: () => {},
+        persistArtifact: async () => ({ artifactId: `artifact-${id}` }),
         accounting: {
           sessionId: 'sess-1',
           resolveRunId: () => 'run-1',
@@ -251,18 +248,18 @@ describe('buildLlmHistorySummarizer', () => {
     ];
 
     const result = await summarize(inputWith(events));
-    expect(result).toBe(VALID_SUMMARY);
+    assert.strictEqual(result, VALID_SUMMARY);
 
     const messages = seen[0]!.messages as Array<{
       role: string;
       content: Array<{ type: string; toolName?: string; output?: unknown }>;
     }>;
     const toolPart = messages.find((m) => m.role === 'tool')!.content[0]!;
-    expect(toolPart.type).toBe('tool-result');
+    assert.strictEqual(toolPart.type, 'tool-result');
     // toolName must be present in AI SDK tool-result content.
-    expect(toolPart.toolName).toBe('read');
+    assert.strictEqual(toolPart.toolName, 'read');
     // output must be the {type, value} wrapper, not the raw result object
-    expect(toolPart.output).toEqual({ type: 'json', value: { name: 'maka' } });
+    assert.deepStrictEqual(toolPart.output, { type: 'json', value: { name: 'maka' } });
   });
 
   test('groups parallel tool calls into one assistant message for strict providers', async () => {
@@ -1003,7 +1000,7 @@ describe('buildLlmHistorySummarizer', () => {
     const result = await summarize(
       inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
     );
-    expect(result).toBe(threeSpaceCloser);
+    assert.strictEqual(result, threeSpaceCloser);
   });
 
   test('a longer same-family run still closes a narrower fence', async () => {
@@ -1016,7 +1013,7 @@ describe('buildLlmHistorySummarizer', () => {
     const result = await summarize(
       inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
     );
-    expect(result).toBe(closedByLonger);
+    assert.strictEqual(result, closedByLonger);
   });
 
   test('indented and bare heading markers are headings, not section content', async () => {
@@ -1059,7 +1056,7 @@ describe('buildLlmHistorySummarizer', () => {
     const result = await summarize(
       inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
     );
-    expect(result).toBe(indented);
+    assert.strictEqual(result, indented);
   });
 
   test('rejects a heading-only skeleton with no section content', async () => {
@@ -1118,7 +1115,7 @@ describe('buildLlmHistorySummarizer', () => {
     const result = await summarize(
       inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
     );
-    expect(result).toBe(crlf);
+    assert.strictEqual(result, crlf);
   });
 
   test('CRLF horizontal rules are still separators, not section content', async () => {
@@ -1223,7 +1220,7 @@ describe('buildLlmHistorySummarizer', () => {
     const result = await summarize(
       inputWith([ev({ role: 'user', author: 'user', content: { kind: 'text', text: 'hi' } })]),
     );
-    expect(result).toBe(withInlineFence);
+    assert.strictEqual(result, withInlineFence);
   });
 
   test('rejects a paragraph-sized summary for a large folded span', async () => {
@@ -1303,7 +1300,7 @@ describe('buildLlmHistorySummarizer', () => {
         }),
       ]),
     );
-    expect(result).toBe(exactFloor);
+    assert.strictEqual(result, exactFloor);
   });
 
   test('accepts a proportionate structured summary for a large folded span', async () => {
@@ -1334,7 +1331,7 @@ describe('buildLlmHistorySummarizer', () => {
         }),
       ]),
     );
-    expect(result).toBe(longSummary);
+    assert.strictEqual(result, longSummary);
   });
 
   test('returns undefined without calling generateText when there are no events to summarize', async () => {
@@ -1347,8 +1344,8 @@ describe('buildLlmHistorySummarizer', () => {
 
     const result = await summarize(inputWith([]));
 
-    expect(result).toBe(undefined);
-    expect(called).toBe(false);
+    assert.strictEqual(result, undefined);
+    assert.strictEqual(called, false);
   });
 
   test('rolling summary sends the prior summary plus only newly folded events', async () => {
@@ -1385,11 +1382,11 @@ describe('buildLlmHistorySummarizer', () => {
       inputBudget: { maxEstimatedTokens: 10_000, charsPerToken: 1 },
     });
 
-    expect(result).toBe(VALID_SUMMARY);
+    assert.strictEqual(result, VALID_SUMMARY);
     const serialized = JSON.stringify(seen[0]);
-    expect(serialized).toContain('PRIOR_SUMMARY');
-    expect(serialized).toContain('NEWLY_EVICTED_RAW');
-    expect(serialized.includes('ALREADY_SUMMARIZED_RAW')).toBe(false);
+    assert.ok(serialized.includes('PRIOR_SUMMARY'));
+    assert.ok(serialized.includes('NEWLY_EVICTED_RAW'));
+    assert.strictEqual(serialized.includes('ALREADY_SUMMARIZED_RAW'), false);
   });
 
   test('recompresses the full source when the previous checkpoint is provider-native', async () => {
@@ -1416,7 +1413,7 @@ describe('buildLlmHistorySummarizer', () => {
       coveredRuntimeEvents: [old],
       providerState: {
         kind: 'openai_codex_remote_v2',
-        connectionSlug: 'codex-subscription',
+        connectionId: 'connection-codex',
         modelId: 'gpt-5.3-codex',
         itemId: 'cmp_123',
         encryptedContent: 'opaque-state',
@@ -1430,8 +1427,8 @@ describe('buildLlmHistorySummarizer', () => {
     });
 
     const serialized = JSON.stringify(seen);
-    expect(serialized).toContain('OLD_PROVIDER_ONLY_FACT');
-    expect(serialized).toContain('NEW_PORTABLE_FACT');
-    expect(serialized.includes('opaque-state')).toBe(false);
+    assert.ok(serialized.includes('OLD_PROVIDER_ONLY_FACT'));
+    assert.ok(serialized.includes('NEW_PORTABLE_FACT'));
+    assert.strictEqual(serialized.includes('opaque-state'), false);
   });
 });

@@ -56,7 +56,7 @@ to travel with it.
 Maka has one Computer Use executor, `maka-cu`. It is built from Maka's own
 source by the `prepare` command in `scripts/computer-use.mjs` and pinned by digest in
 `apps/desktop/bundled-tools.json`. It is not signed, so it is not distributed:
-its `distributionReady` is false and `scripts/verify-macos-arm64-dmg.mjs`
+its `distributionReady` is false and `scripts/verify-macos-dmg.mjs`
 forbids its path in a packaged build. Nothing third-party ships inside the Maka
 artifact for Computer Use, which is why the table above has one row.
 

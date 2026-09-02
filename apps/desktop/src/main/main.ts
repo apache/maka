@@ -43,6 +43,7 @@ import { showFatalStartupError } from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
 import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
+import { showBrowserMessageBox } from './browser-message-box.js';
 
 let recoveryJournal: MainProcessRecoveryJournal | undefined;
 installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
@@ -56,6 +57,12 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // socket/pipe namespace, and single-instance lock) without touching any
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
+
+// Electron otherwise quits implicitly when the last BrowserWindow closes.
+// Startup and fatal-recovery surfaces can be the only window, so keep process
+// lifetime explicit; runtime-host-boot installs the normal platform policy
+// after startup, and every early terminal path calls app.exit itself.
+app.on('window-all-closed', () => {});
 
 const updateTestUserData = resolveUpdateTestUserDataDirectory({
   feedUrl: process.env.MAKA_UPDATE_TEST_FEED,
@@ -76,9 +83,9 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 }
 
 // Electron does not enforce single-instance by default. Must run before any
-// workspace/store setup below -- a losing second process exits immediately,
-// before touching shared state. See the 'second-instance' listener in
-// runtime-host-boot.ts for what the surviving process does about it.
+// workspace/store setup below -- a losing second process never touches shared
+// state. See the 'second-instance' listener in runtime-host-boot.ts for what
+// the surviving process does about it.
 if (!app.requestSingleInstanceLock()) {
   if (!app.isPackaged) {
     // Dev: losing the lock must NOT pretend to have started (exit 0 would be
@@ -87,18 +94,46 @@ if (!app.requestSingleInstanceLock()) {
     // one-shot result file. A direct launcher explicitly promises to consume
     // the exit code; a TCC launcher proves it has a consumer only when the
     // result write succeeds. Any other entry (Dock, Spotlight, Quit & Reopen)
-    // gets a native box — fail toward the dialog. Linux pre-ready showErrorBox
-    // degrades to stderr (no GUI); documented in electron.d.ts. Packaged builds
-    // keep the existing UX (double-click focuses the first window) — the gate
-    // is a semantic boundary.
+    // waits for ready and gets the same product-styled temporary window as
+    // startup recovery. Packaged builds keep the existing UX (double-click
+    // focuses the first window) — the gate is a semantic boundary.
     const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
     if (!resultReported && shouldShowLoserDialog(process.argv)) {
-      dialog.showErrorBox(
-        'Maka Dev',
-        `Another instance holds the Maka Dev profile (${app.getPath('userData')}). Quit it and retry.`,
-      );
-    }
-    app.exit(DEV_LOSER_EXIT_CODE);
+      const profilePath = app.getPath('userData');
+      void app
+        .whenReady()
+        .then(() => {
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+          const isChinese = locale === 'zh';
+          return showBrowserMessageBox(
+            {
+              type: 'warning',
+              title: isChinese ? 'Maka Dev 已在运行' : 'Maka Dev is already running',
+              message: isChinese
+                ? '另一个 Maka Dev 实例正在使用此开发配置。'
+                : 'Another Maka Dev instance is using this development profile.',
+              detail: isChinese
+                ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
+                : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+              buttons: [isChinese ? '退出' : 'Exit'],
+              defaultId: 0,
+              cancelId: 0,
+            },
+            undefined,
+            { locale },
+          );
+        })
+        .catch((error) => {
+          console.error('[dev] styled single-instance dialog failed:', error);
+          dialog.showErrorBox(
+            'Maka Dev',
+            `Another instance holds the Maka Dev profile (${profilePath}). Quit it and retry.`,
+          );
+        })
+        .finally(() => {
+          app.exit(DEV_LOSER_EXIT_CODE);
+        });
+    } else app.exit(DEV_LOSER_EXIT_CODE);
   } else {
     app.exit(0);
   }
@@ -170,8 +205,9 @@ if (!app.requestSingleInstanceLock()) {
         // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
         if (!isIsolatedE2e) {
           const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
           await showFatalStartupError(error, {
-            locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+            locale,
             environment: () =>
               captureDesktopDiagnosticEnvironment({
                 appVersion: app.getVersion(),
@@ -182,7 +218,8 @@ if (!app.requestSingleInstanceLock()) {
               }),
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
-            showMessageBox: (options) => dialog.showMessageBox(options),
+            showMessageBox: (options) =>
+              showBrowserMessageBox(options, undefined, { locale }),
           });
         }
       } finally {

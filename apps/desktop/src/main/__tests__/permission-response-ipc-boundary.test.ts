@@ -22,6 +22,7 @@ import { describe, it } from 'node:test';
 
 import {
   normalizeBranchFromTurnInput,
+  normalizeClientCapabilityResponse,
   normalizeRegenerateTurnInput,
   normalizeReviseBeforeTurnInput,
   normalizeRuntimeHostBranchFromTurnInput,
@@ -50,6 +51,14 @@ describe('permission response IPC boundary', () => {
       }),
       { requestId: 'question-1', answers: ['Option A', null] },
     );
+    assert.deepEqual(
+      normalizeClientCapabilityResponse({
+        requestId: 'capability-1',
+        decision: 'allow',
+        ignored: true,
+      }),
+      { requestId: 'capability-1', decision: 'allow' },
+    );
 
     const invalidPermissionResponses = [
       null,
@@ -59,6 +68,12 @@ describe('permission response IPC boundary', () => {
     ];
     for (const response of invalidPermissionResponses) {
       assert.throws(() => normalizeSandboxBoundaryResponse(response), /sandbox boundary response/);
+    }
+    for (const response of invalidPermissionResponses) {
+      assert.throws(
+        () => normalizeClientCapabilityResponse(response),
+        /Client Capability response/,
+      );
     }
 
     const invalidQuestionResponses = [

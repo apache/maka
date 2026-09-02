@@ -32,6 +32,7 @@
  * no E2E can reach deterministically.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
@@ -302,7 +303,7 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
-  it('waits for the new session observation before submitting its first message', async () => {
+  it('projects the first message before activation while waiting to submit until observation', async () => {
     const observation = deferred<void>();
     const order: string[] = [];
     const activeIdRef = { current: undefined as string | undefined };
@@ -325,6 +326,9 @@ describe('composer first-send cleanup', () => {
       const sending = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
+        addTransientMessage: () => {
+          order.push('optimistic');
+        },
         activateSessionForFirstSend: async (sessionId) => {
           order.push('observe');
           activeIdRef.current = sessionId;
@@ -333,11 +337,11 @@ describe('composer first-send cleanup', () => {
         },
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['create', 'observe']);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe']);
 
       observation.resolve();
       assert.equal(await sending, true);
-      assert.deepEqual(order, ['create', 'observe', 'seeded', 'submit']);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe', 'seeded', 'submit']);
     } finally {
       restoreWindow();
     }
@@ -459,15 +463,6 @@ describe('composer first-send cleanup', () => {
     }
   });
 });
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface
  * that sent, and `showModelSetupToast` is not just a toast — it ends in

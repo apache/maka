@@ -24,6 +24,7 @@
  * async-correctness contract that used to be hand-copied on every page.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
@@ -34,17 +35,6 @@ import {
 interface Draft {
   v: number;
 }
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
-
 function harness(initial: Draft) {
   const drafts: Draft[] = [];
   const errors: unknown[] = [];

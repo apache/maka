@@ -23,7 +23,9 @@
 
 Maps [Astryx wiki](https://github.com/facebook/astryx/wiki) conventions onto
 Maka product surfaces. Severity: **blocker** (raw control when an Astryx twin
-exists / broken hierarchy) · **polish** (off-scale px, density).
+exists / broken hierarchy) · **reimplementation** (a public `@maka/ui` export
+shadows a shipped Astryx component — a review signal, not proof) · **polish**
+(off-scale px, density).
 
 ## Wiki smell checklist (searchable)
 
@@ -34,6 +36,7 @@ exists / broken hierarchy) · **polish** (off-scale px, density).
 | Design · radius | Nested radii not `outer − gap` | Role radii |
 | Design · elevation | Raw `box-shadow` / magic z-index | Elevation tokens |
 | API · Use the System | Raw `<button>` / `<input>` / `<select>` with Astryx twin | `Button`, `TextInput`, `Selector`, `List`/`Item`, `EmptyState`, `Dialog`, `ToggleButton`, `Collapsible`, `SegmentedControl` |
+| API · Use the System | Public `@maka/ui` export whose name shadows a shipped Astryx component (defined locally, not a re-export) | Re-export the Astryx component, or confirm the local one is intentional |
 | Theming | One-off hex for ladder roles | Bridge + product tokens |
 | Container padding | Product padding fighting `--container-padding-*` | Let Card/Section/Layout own inset |
 

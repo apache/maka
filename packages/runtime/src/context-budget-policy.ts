@@ -21,7 +21,6 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ContextBudgetPolicy } from './context-budget.js';
-import { finitePositive } from './context-budget-helpers.js';
 
 export interface BuildDefaultContextBudgetPolicyOptions {
   name?: string;
@@ -96,13 +95,20 @@ export function resolveSelectedModelContextWindow(
 ): number | undefined {
   const selectedModelId = modelId ?? connection.defaultModel;
   if (selectedModelId === undefined) return undefined;
+  const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
+  // A model-facts pin is the cross-provider correction authority. It must win
+  // over the older relay-only declaration so catalog display and execution use
+  // the same window. Relay declarations retain their existing precedence when
+  // there is no facts pin for this field.
+  if (model?.factOverriddenFields?.includes('contextWindow')) {
+    return narrowestPositiveLimit(model.contextWindow, model.inputLimit);
+  }
   // A user declaration outranks both the provider's /models report and
   // generated metadata — mirrors the declared-vision precedence in
   // model-metadata.ts. A declared context window is legal on any provider: it
   // states a fact about the model, not a request shape (#1584).
   const declared = relayModelProfile(connection, selectedModelId)?.contextWindow;
   if (declared !== undefined) return declared;
-  const model = connection.models?.find((candidate) => candidate.id === selectedModelId);
   const metadata = lookupModelMetadata(connection.providerType, selectedModelId);
   // Provider/access-path facts outrank static metadata. Within one source,
   // use the narrowest positive bound: models.dev's input limit can be lower
@@ -118,25 +124,4 @@ function narrowestPositiveLimit(...values: Array<number | undefined>): number | 
     (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
   );
   return positiveValues.length > 0 ? Math.min(...positiveValues) : undefined;
-}
-
-export interface ContextBudgetCapacity {
-  tokens: number;
-  source: 'selected_model' | 'policy_fallback';
-}
-
-export function resolveContextBudgetCapacity(
-  connection: RuntimeExecutionConnection,
-  modelId: string | undefined,
-  policy: ContextBudgetPolicy | undefined,
-): ContextBudgetCapacity | undefined {
-  const selectedWindow = resolveSelectedModelContextWindow(connection, modelId);
-  if (selectedWindow !== undefined) {
-    return { tokens: selectedWindow, source: 'selected_model' };
-  }
-
-  const historyBudget = finitePositive(policy?.maxHistoryEstimatedTokens);
-  const reserveTokens = finitePositive(policy?.historyCompact?.midTurn?.reserveTokens);
-  if (historyBudget === undefined || reserveTokens === undefined) return undefined;
-  return { tokens: historyBudget + reserveTokens, source: 'policy_fallback' };
 }

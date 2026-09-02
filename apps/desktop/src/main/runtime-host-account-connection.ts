@@ -18,7 +18,8 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
+  providerFallbackModelIds,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import type {
@@ -56,13 +57,13 @@ export async function ensureRuntimeHostAccountConnection(
       ? enabledModelIds
       : existing?.enabledModelIds.length
         ? existing.enabledModelIds
-        : PROVIDER_DEFAULTS[identity.providerType].fallbackModels;
+        : providerFallbackModelIds(PROVIDER_REGISTRY[identity.providerType]);
   if (!existing) {
     const slugOwner = catalog.connections.find(({ slug }) => slug === identity.slug);
     if (slugOwner) {
       throw new Error(`Connection slug belongs to ${slugOwner.providerType}`);
     }
-    const defaults = PROVIDER_DEFAULTS[identity.providerType];
+    const defaults = PROVIDER_REGISTRY[identity.providerType];
     const created = await client.createConnection(catalog.revision, {
       slug: identity.slug,
       name: defaults.label,
@@ -109,15 +110,27 @@ export async function synchronizeRuntimeHostAccountConnection(
     providerType,
   );
   if (!connection) throw new Error('Account Connection is missing');
+  return synchronizeRuntimeHostAccountConnectionById(client, connection.connectionId);
+}
+
+export async function synchronizeRuntimeHostAccountConnectionById(
+  client: RuntimeHostAccountConnectionClient,
+  connectionId: string,
+): Promise<void> {
+  const connection = findRuntimeHostAccountConnectionById(
+    await client.loadConnectionCatalog(),
+    connectionId,
+  );
+  if (!connection) throw new Error('Account Connection is missing');
   // Discovery is best effort. Selecting a default must not depend on it: a
-  // connection whose inventory came from the curated fallback still has usable
+  // connection whose inventory came from the shipped baseline still has usable
   // models, and leaving `defaultTarget` empty makes every later operation that
   // needs a default — new Session, send, external Session import — fail with a
   // reason the user cannot see from the error it produces.
   await client.fetchConnectionModels(connection.connectionId).catch(() => undefined);
   const catalog = await client.loadConnectionCatalog();
   if (catalog.defaultTarget !== null) return;
-  const updated = findRuntimeHostAccountConnection(catalog, providerType);
+  const updated = findRuntimeHostAccountConnectionById(catalog, connectionId);
   const modelId = updated?.enabledModelIds[0];
   if (!updated || !modelId) return;
   const selected = await client.setDefaultConnectionTarget(catalog.revision, {
@@ -158,6 +171,18 @@ export async function disableRuntimeHostAccountConnection(
     providerType,
   );
   if (!connection) return;
+  return disableRuntimeHostAccountConnectionById(client, connection.connectionId);
+}
+
+export async function disableRuntimeHostAccountConnectionById(
+  client: RuntimeHostAccountConnectionClient,
+  connectionId: string,
+): Promise<void> {
+  const connection = findRuntimeHostAccountConnectionById(
+    await client.loadConnectionCatalog(),
+    connectionId,
+  );
+  if (!connection) return;
   const credential = await client.queryCredential(runtimeHostAccountCredential(connection));
   if (credential?.configured) {
     const removed = await client.deleteCredential({
@@ -171,9 +196,9 @@ export async function disableRuntimeHostAccountConnection(
       throw new Error(`Unable to remove account credential: ${removed.kind}`);
     }
   }
-  const latest = findRuntimeHostAccountConnection(
+  const latest = findRuntimeHostAccountConnectionById(
     await client.loadConnectionCatalog(),
-    providerType,
+    connectionId,
   );
   if (!latest?.enabled) return;
   const disabled = await client.updateConnection(
@@ -192,10 +217,17 @@ export function findRuntimeHostAccountConnection(
   return catalog.connections.find((connection) => connection.providerType === providerType);
 }
 
+export function findRuntimeHostAccountConnectionById(
+  catalog: ConnectionCatalogSnapshot,
+  connectionId: string,
+): ConnectionCatalogEntry | undefined {
+  return catalog.connections.find((connection) => connection.connectionId === connectionId);
+}
+
 export function runtimeHostAccountCredential(
   connection: ConnectionCatalogEntry,
 ): CredentialLocator {
-  if (PROVIDER_DEFAULTS[connection.providerType].authKind !== 'oauth_token') {
+  if (PROVIDER_REGISTRY[connection.providerType].authKind !== 'oauth_token') {
     throw new Error('Account Connection does not use an OAuth credential');
   }
   return {

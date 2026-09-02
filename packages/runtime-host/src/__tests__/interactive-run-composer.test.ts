@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
-import type { TaskLedgerStore } from '@maka/core/task-ledger';
+import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import { createInteractiveRunComposer } from '../server/interactive-run-composer.js';
 import type { HostMemoryCoordinator } from '../server/memory-coordinator.js';
@@ -65,7 +65,7 @@ function createFixtureComposer(
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     builtinTools: {},
     ...overrides,
   });

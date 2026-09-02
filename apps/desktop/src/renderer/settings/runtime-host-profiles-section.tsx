@@ -26,12 +26,14 @@ import {
   SegmentedControl,
   SegmentedControlItem,
   Switch,
+  Tooltip,
 } from "@astryxdesign/core";
 import type {
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
   DesktopRuntimeHostPeerMeshTarget,
 } from '../../preload/bridge-contract.js';
 import type {
+  RuntimeHostPeerConnectionPath,
   RuntimeHostRemoteTransport,
 } from "@maka/runtime-host/client";
 import { isCanonicalRuntimeHostWebSocketPath } from "@maka/runtime-host/protocol";
@@ -55,9 +57,16 @@ import {
   RuntimeHostManagementDialog,
   type RuntimeHostManagementTarget,
 } from './runtime-host-management-dialog.js';
-import { RuntimeHostConnectionCodeDialog } from './runtime-host-connection-code-dialog.js';
-import { RuntimeHostPeerMeshDialog } from './runtime-host-peer-mesh-dialog.js';
-import { SessionCollaborationDialog } from '../session-collaboration-dialog.js';
+import {
+  PeerMeshPeerIdButton,
+  RuntimeHostAddComputerMenu,
+  RuntimeHostConnectionCodeDialog,
+  RuntimeHostPairingRecoveryButton,
+  RuntimeHostPeerMeshDialog,
+  RuntimeHostProfileMoreMenu,
+  type RuntimeHostPairingActionCopy,
+} from '../features/runtime-host-management';
+import { SessionCollaborationJoinDialog } from '../features/session-collaboration';
 import { getSessionCollaborationCopy } from '../locales/session-collaboration-copy.js';
 
 type RemoteTransportKind = RuntimeHostRemoteTransport["kind"];
@@ -83,6 +92,15 @@ export function RuntimeHostProfilesSection(props: {
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const pairingActionCopy: RuntimeHostPairingActionCopy = {
+    retry: copy.resolvePairingRecovery,
+    retryFailed: copy.resolvePairingRecoveryFailed,
+    discard: copy.discardPairing,
+    discardConfirmTitle: copy.discardPairingConfirmTitle,
+    discardConfirmBody: copy.discardPairingConfirmBody,
+    discardFailed: copy.discardPairingFailed,
+    cancel: copy.cancel,
+  };
   const collaborationCopy = getSessionCollaborationCopy(locale);
   const mountedRef = useMountedRef();
   const toast = useToast();
@@ -90,7 +108,7 @@ export function RuntimeHostProfilesSection(props: {
     Awaited<ReturnType<typeof window.maka.runtimeHostProfiles.getSnapshot>>
   >();
   const [showAdd, setShowAdd] = useState(false);
-  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState<'ssh' | 'wsl'>();
   const [showJoinSharedSession, setShowJoinSharedSession] = useState(false);
   const [managedTarget, setManagedTarget] = useState<RuntimeHostManagementTarget>();
   const [localAccess, setLocalAccess] = useState<DesktopLocalRuntimeHostRemoteAccessSnapshot>();
@@ -99,13 +117,14 @@ export function RuntimeHostProfilesSection(props: {
     | {
         readonly mode: 'share';
         readonly connectionCode: string;
-        readonly openManagementOnClose?: true;
+        readonly managementTargetOnClose?: RuntimeHostManagementTarget;
       }
   >();
   const [peerMeshTarget, setPeerMeshTarget] = useState<{
     readonly target: DesktopRuntimeHostPeerMeshTarget;
     readonly name: string;
   }>();
+
   const [switching, setSwitching] = useState(false);
   const [draft, setDraft] = useState(createRemoteHostDraft);
 
@@ -242,23 +261,6 @@ export function RuntimeHostProfilesSection(props: {
     }
   }
 
-  async function resolvePairingRecovery() {
-    setSwitching(true);
-    try {
-      const next = await window.maka.runtimeHostProfiles.resolvePairingRecovery();
-      if (mountedRef.current) setSnapshot(next);
-    } catch (error) {
-      if (mountedRef.current) {
-        toast.error(
-          copy.resolvePairingRecoveryFailed,
-          settingsActionErrorMessage(error, locale),
-        );
-      }
-    } finally {
-      if (mountedRef.current) setSwitching(false);
-    }
-  }
-
   async function enableLocalRemoteAccess(allowInterruptActiveTasks = false): Promise<void> {
     setSwitching(true);
     try {
@@ -270,7 +272,9 @@ export function RuntimeHostProfilesSection(props: {
         setConnectionCodeDialog({
           mode: 'share',
           connectionCode: result.connectionCode,
-          openManagementOnClose: true,
+          ...(localManagementTarget
+            ? { managementTargetOnClose: localManagementTarget }
+            : {}),
         });
       }
       if (!mountedRef.current) return;
@@ -361,14 +365,15 @@ export function RuntimeHostProfilesSection(props: {
   const connectedEntries = snapshot?.entries.filter((entry) => entry.profile.kind !== 'local') ?? [];
   const localProfile = snapshot?.entries.find((entry) => entry.profile.kind === 'local')?.profile;
   const localManagementTarget = localProfile
-    ? { id: localProfile.id, name: localProfile.name, directPeerManagement: false }
+    ? {
+        id: localProfile.id,
+        name: localProfile.name,
+        scope: 'full' as const,
+        directPeerManagement: false,
+      }
     : undefined;
   const profileOptions = (snapshot?.entries ?? [])
-    .filter(
-      (entry) =>
-        entry.enabled &&
-        (entry.profile.kind !== 'remote' || entry.profile.access !== 'session_guest'),
-    )
+    .filter((entry) => entry.enabled)
     .map((entry) => ({
       value: entry.profile.id,
       label: entry.profile.name,
@@ -496,34 +501,20 @@ export function RuntimeHostProfilesSection(props: {
         action={
           <HStack gap={2} align="center">
             <Button
-              variant="primary"
+              variant="secondary"
               size="sm"
-              label={copy.addComputer}
+              label={collaborationCopy.joinAction}
               isDisabled={switching}
-              onClick={() => {
-                setShowOnboarding(true);
-              }}
+              onClick={() => setShowJoinSharedSession(true)}
             />
-            <MoreMenu
-              label={copy.moreActions(copy.remoteTitle)}
-              size="sm"
-              items={[
-                {
-                  label: copy.useConnectionCode,
-                  isDisabled: switching,
-                  onClick: () => setConnectionCodeDialog({ mode: 'import' }),
-                },
-                {
-                  label: collaborationCopy.joinAction,
-                  isDisabled: switching,
-                  onClick: () => setShowJoinSharedSession(true),
-                },
-                {
-                  label: showAdd ? copy.cancel : copy.configureManually,
-                  isDisabled: switching,
-                  onClick: toggleAdd,
-                },
-              ]}
+            <RuntimeHostAddComputerMenu
+              copy={copy}
+              isDisabled={switching}
+              isManualConfigurationOpen={showAdd}
+              onUseConnectionCode={() => setConnectionCodeDialog({ mode: 'import' })}
+              onSetupSsh={() => setShowOnboarding('ssh')}
+              onSetupWsl={() => setShowOnboarding('wsl')}
+              onConfigureManually={toggleAdd}
             />
           </HStack>
         }
@@ -533,12 +524,12 @@ export function RuntimeHostProfilesSection(props: {
             label={copy.pairingRecoveryTitle}
             description={copy.pairingRecoveryDescription}
             end={(
-              <Button
-                variant="secondary"
-                size="sm"
-                label={copy.resolvePairingRecovery}
+              <RuntimeHostPairingRecoveryButton
                 isDisabled={switching}
-                onClick={() => void resolvePairingRecovery()}
+                copy={pairingActionCopy}
+                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                onChanged={() => void reload()}
+                onWorkingChange={setSwitching}
               />
             )}
           />
@@ -635,14 +626,25 @@ export function RuntimeHostProfilesSection(props: {
             {connectedEntries.map((entry) => {
               const profile = entry.profile;
               if (profile.kind === 'local') return null;
-              const isSharedAccess =
-                profile.kind === 'remote' && profile.access === 'session_guest';
-              const managedSshDestination =
-                !isSharedAccess &&
-                profile.kind === 'remote' &&
-                profile.transport.kind === 'ssh' &&
+              const managementTarget: RuntimeHostManagementTarget | undefined =
                 entry.managedService
-                  ? profile.transport.destination
+                  ? profile.kind === 'environment'
+                    ? {
+                        id: profile.id,
+                        name: profile.name,
+                        subtitle: profile.provider.distribution,
+                        scope: 'project_directories',
+                        directPeerManagement: false,
+                      }
+                    : profile.transport.kind === 'ssh'
+                      ? {
+                          id: profile.id,
+                          name: profile.name,
+                          subtitle: profile.transport.destination,
+                          scope: 'full',
+                          directPeerManagement: true,
+                        }
+                      : undefined
                   : undefined;
               return (
                 <ListItem
@@ -654,7 +656,19 @@ export function RuntimeHostProfilesSection(props: {
                       : profile.transport.kind === "ssh"
                         ? profile.transport.destination
                         : profile.transport.kind === "libp2p-direct"
-                          ? abbreviatePeerId(profile.transport.peerId)
+                          ? (
+                              <PeerMeshPeerIdButton
+                                peerId={profile.transport.peerId}
+                                displayValue={abbreviatePeerId(profile.transport.peerId)}
+                                copyLabel={locale.startsWith('zh')
+                                  ? `复制完整 Peer ID：${profile.transport.peerId}`
+                                  : `Copy full Peer ID: ${profile.transport.peerId}`}
+                                copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
+                                failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
+                                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                                className="settingsRuntimeHostPeerId"
+                              />
+                            )
                           : profile.transport.url
                   }
                   startContent={<Cpu size={ICON_SIZE.control} aria-hidden="true" />}
@@ -666,42 +680,61 @@ export function RuntimeHostProfilesSection(props: {
                       {profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct' ? (
                         <Badge variant="warning" label={copy.experimentalBadge} />
                       ) : null}
-                      {isSharedAccess ? (
-                        <Badge variant="neutral" label={collaborationCopy.sharedBadge} />
+                      {entry.pairingPending ? (
+                        <Badge variant="warning" label={copy.pairingPendingBadge} />
                       ) : null}
                       {entry.readiness === "unavailable" ? (
                         <Badge variant="neutral" label={copy.unavailable} />
+                      ) : null}
+                      {entry.peerPath ? (
+                        <Tooltip content={peerPathDetail(entry.peerPath, locale)}>
+                          <span>
+                            <Badge
+                              variant="neutral"
+                              label={entry.peerPath.kind === 'direct'
+                                ? (locale.startsWith('zh') ? '直连' : 'Direct')
+                                : (locale.startsWith('zh') ? '成员转发' : 'Member transit')}
+                            />
+                          </span>
+                        </Tooltip>
                       ) : null}
                       <Switch
                         label={profile.name}
                         isLabelHidden
                         value={entry.enabled}
-                        isDisabled={switching || entry.isDefault}
-                        disabledMessage={entry.isDefault ? copy.defaultDisableHelp : undefined}
+                        isDisabled={switching || entry.isDefault || entry.pairingPending}
+                        disabledMessage={entry.pairingPending
+                          ? copy.pairingRecoveryDescription
+                          : entry.isDefault
+                            ? copy.defaultDisableHelp
+                            : undefined}
                         onChange={(enabled) => void setEnabled(profile.id, enabled)}
                       />
-                      <MoreMenu
+                      <RuntimeHostProfileMoreMenu
                         label={copy.moreActions(profile.name)}
-                        size="sm"
+                        profileId={profile.id}
+                        pairingPending={entry.pairingPending === true}
+                        isDisabled={switching}
+                        copy={pairingActionCopy}
+                        errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                        onChanged={() => void reload()}
+                        onWorkingChange={setSwitching}
                         items={[
-                          ...(managedSshDestination
+                          ...(managementTarget && !entry.pairingPending
                             ? [{
                                 label: copy.manage,
                                 isDisabled: switching,
-                                onClick: () => setManagedTarget({
-                                  id: profile.id,
-                                  name: profile.name,
-                                  subtitle: managedSshDestination,
-                                  directPeerManagement: true,
-                                }),
-                              }, {
-                                label: copy.managePeerMesh,
-                                isDisabled: switching,
-                                onClick: () => setPeerMeshTarget({
-                                  target: { kind: 'managed_host', profileId: profile.id },
-                                  name: profile.name,
-                                }),
-                              }]
+                                onClick: () => setManagedTarget(managementTarget),
+                              }, ...(managementTarget.directPeerManagement
+                                ? [{
+                                    label: copy.managePeerMesh,
+                                    isDisabled: switching,
+                                    onClick: () => setPeerMeshTarget({
+                                      target: { kind: 'managed_host', profileId: profile.id },
+                                      name: profile.name,
+                                    }),
+                                  }]
+                                : [])]
                             : []),
                           {
                             label: copy.remove,
@@ -722,9 +755,11 @@ export function RuntimeHostProfilesSection(props: {
         )}
       </SettingsSection>
       <RuntimeHostOnboardingDialog
-        isOpen={showOnboarding}
+        key={showOnboarding ?? 'closed'}
+        isOpen={showOnboarding !== undefined}
+        initialTargetKind={showOnboarding ?? 'ssh'}
         onClose={() => {
-          setShowOnboarding(false);
+          setShowOnboarding(undefined);
           void reload();
         }}
         onRemoteHostAdded={props.onRemoteHostAdded}
@@ -736,17 +771,37 @@ export function RuntimeHostProfilesSection(props: {
           setManagedTarget(undefined);
           void reload();
         }}
+        onManagePeerMesh={(target) => {
+          setManagedTarget(undefined);
+          setPeerMeshTarget({
+            target: { kind: 'managed_host', profileId: target.id },
+            name: target.name,
+          });
+        }}
+        onConnectionCodeCreated={(target, connectionCode) => {
+          setManagedTarget(undefined);
+          setConnectionCodeDialog({
+            mode: 'share',
+            connectionCode,
+            managementTargetOnClose: target,
+          });
+        }}
       />
       {peerMeshTarget ? (
         <RuntimeHostPeerMeshDialog
           target={peerMeshTarget.target}
           targetName={peerMeshTarget.name}
+          offerLocalHost={
+            peerMeshTarget.target.kind === 'desktop' && localAccess?.state === 'on'
+          }
           onClose={() => setPeerMeshTarget(undefined)}
         />
       ) : null}
       {connectionCodeDialog?.mode === 'import' ? (
         <RuntimeHostConnectionCodeDialog
           mode="import"
+          copy={copy}
+          errorMessage={(error) => settingsActionErrorMessage(error, locale)}
           onClose={() => setConnectionCodeDialog(undefined)}
           onImported={(profileId) => {
             props.onRemoteHostAdded(profileId);
@@ -756,19 +811,19 @@ export function RuntimeHostProfilesSection(props: {
       ) : connectionCodeDialog ? (
         <RuntimeHostConnectionCodeDialog
           mode="share"
+          copy={copy}
+          errorMessage={(error) => settingsActionErrorMessage(error, locale)}
           connectionCode={connectionCodeDialog.connectionCode}
           onClose={() => {
-            const openManagement = connectionCodeDialog.openManagementOnClose;
+            const managementTarget = connectionCodeDialog.managementTargetOnClose;
             setConnectionCodeDialog(undefined);
-            if (openManagement && localManagementTarget) {
-              setManagedTarget(localManagementTarget);
-            }
+            if (managementTarget) setManagedTarget(managementTarget);
           }}
         />
       ) : null}
       {showJoinSharedSession ? (
-        <SessionCollaborationDialog
-          mode="join"
+        <SessionCollaborationJoinDialog
+          copy={collaborationCopy}
           onClose={() => setShowJoinSharedSession(false)}
           onImported={() => {
             void reload();
@@ -777,6 +832,27 @@ export function RuntimeHostProfilesSection(props: {
       ) : null}
     </>
   );
+}
+
+function peerPathDetail(
+  path: RuntimeHostPeerConnectionPath,
+  locale: string,
+): string {
+  if (path.kind === 'transit') {
+    return locale.startsWith('zh')
+      ? `成员转发 · ${abbreviatePeerId(path.relayPeerId)}`
+      : `Member transit · ${abbreviatePeerId(path.relayPeerId)}`;
+  }
+  const transport = path.transport === 'webrtc'
+    ? 'WebRTC'
+    : path.transport === 'quic'
+      ? 'QUIC'
+      : path.transport === 'tcp'
+        ? 'TCP'
+        : locale.startsWith('zh')
+          ? '其他'
+          : 'Other';
+  return `${locale.startsWith('zh') ? '直连' : 'Direct'} · ${transport}`;
 }
 
 function abbreviatePeerId(peerId: string): string {

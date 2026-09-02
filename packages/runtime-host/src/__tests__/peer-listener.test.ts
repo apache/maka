@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
 import { createRuntimeHostPeerListener } from '../server/peer-listener.js';
+import { createRuntimeHostListenerSet } from '../server/listener-set.js';
 import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
 
@@ -122,6 +123,33 @@ test('bounds active application streams from one authenticated peer', async () =
   await listener.cleanup();
 });
 
+test('projects newly accepted coordination relays from the running peer endpoint', async () => {
+  let coordinationRelays: readonly string[] = [];
+  const peer = {
+    ...peerWith([]),
+    identity: () => ({
+      peerId: 'peer',
+      listenAddresses: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+      coordinationRelays,
+    }),
+  };
+  const listener = createRuntimeHostPeerListener(peer, {} as never, () => {});
+  const listeners = createRuntimeHostListenerSet(
+    {
+      kind: 'local_ipc',
+      endpoint: 'local',
+      closeAdmission: async () => undefined,
+      cleanup: async () => undefined,
+    },
+    [listener],
+  );
+
+  assert.deepEqual(listeners.peerListeners[0]?.coordinationRelays, []);
+  coordinationRelays = ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'];
+  assert.deepEqual(listeners.peerListeners[0]?.coordinationRelays, coordinationRelays);
+  await listeners.cleanup();
+});
+
 function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient {
   return {
     identity: () => ({ peerId: 'peer', listenAddresses: [], coordinationRelays: [] }),
@@ -140,6 +168,7 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
       maxCircuitBytes: 256 * 1024 * 1024,
     }),
     configureTransit: async () => undefined,
+    observeAuthenticatedRoutes: () => undefined,
     connect: async () => {
       throw new Error('not used');
     },

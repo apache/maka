@@ -328,7 +328,7 @@ const ARGS_PREVIEW_MAX_CHARS = 2048;
 /** Question lists keep only their leading entries. */
 const ARGS_PREVIEW_LIST_MAX_ITEMS = 4;
 
-const TASK_LEDGER_TOOL_NAMES = new Set(['task_create', 'task_update', 'task_list', 'task_get']);
+const COMMIT_RESULT_ONLY_TOOL_NAMES = new Set(['todo_write']);
 
 /**
  * Whitelist of scalar args keys {@link formatToolInvocationLine} can read, in
@@ -435,10 +435,10 @@ export function projectToolArgsPreview(
 ): Record<string, unknown> | undefined {
   const record = asRecord(args);
   if (!record) return undefined;
-  // Task rows need committed IDs and the exact Task Ledger mutation snapshot;
-  // args alone cannot identify the user-facing task reliably. Keep them out of
-  // the generic live preview until the Host-owned semantic timeline (#4179).
-  if (TASK_LEDGER_TOOL_NAMES.has(toolName)) return undefined;
+  // A Todo write's args are only a proposal. Showing them while the call is
+  // live would present uncommitted state as fact; the settled tool_result owns
+  // the complete committed snapshot.
+  if (COMMIT_RESULT_ONLY_TOOL_NAMES.has(toolName)) return undefined;
 
   // Apply the canonical activity projection first so WriteStdin's inputPreview
   // shape (bounded, display-safe) is what the whitelist picks up.

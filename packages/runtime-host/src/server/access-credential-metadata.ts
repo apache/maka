@@ -25,7 +25,11 @@ import {
   resolveExistingStorageRoot,
 } from '@maka/storage/root-authority';
 import type { OperationKey } from '../protocol/index.js';
-import { ACCESS_FILE_NAME, readAccessCredentialFile } from './access-credential-store.js';
+import {
+  ACCESS_FILE_NAME,
+  effectiveOperationGrants,
+  readAccessCredentialFile,
+} from './access-credential-store.js';
 
 export interface RuntimeHostAccessCredentialMetadata {
   readonly credentialId: string;
@@ -72,7 +76,9 @@ export async function readRuntimeHostAccessCredentialMetadata(
           principalKind: credential.principalKind,
           principalId: credential.principalId,
           status: credential.status,
-          operationGrants: credential.operationGrants,
+          // What the credential can exercise on this build, not what its record
+          // happens to hold — an operator reading this is asking about now.
+          operationGrants: effectiveOperationGrants(credential),
           canPublishClientCapabilities: credential.canPublishClientCapabilities,
           canUseHostPaths: credential.canUseHostPaths,
           createdAt: credential.createdAt,

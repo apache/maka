@@ -38,7 +38,7 @@ This chapter builds on Chapter 1's log-first Runtime and Chapter 2's distinction
 
 The primary subject is **RuntimeEvent history compaction**: a compactor produces either a continuation summary or provider-native compact state, the checkpoint covers a safe prefix of RuntimeEvents, and later requests use that projection in place of the prefix. The same planner and checkpoint transaction serve manual, pre-turn, mid-turn, and overflow triggers. The chapter does not fully cover active or stale pruning of individual Tool Results; those reduce provider messages without creating another LLM compaction mechanism.
 
-This chapter describes the implementation current as of 2026-08-28. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models use Codex remote compaction V2 by default; other providers retain text-summary behavior.
+This chapter describes the implementation current as of 2026-08-30. Ledger-backed checkpoints use schema V2 for text summaries and schema V3 for provider-native state. OpenAI Codex subscription models prefer Codex remote compaction V2 and retain the text summarizer as a narrow liveness fallback; other providers use text-summary behavior directly.
 
 ## Start with a long-running Session
 
@@ -180,7 +180,7 @@ Third, the checkpoint is not itself a canonical RuntimeEvent. Coverage and tail 
 
 ## Triggering ends before compaction begins
 
-Runtime derives one capacity from the selected model's metadata. For a known context window it reserves one quarter of the window, capped at 16,384 tokens; most providers without a known window use a 32,000-token history budget plus the classic 16,384-token reserve.
+Capacity is the selected model's declared context window or nothing at all; Runtime never manufactures one. For a declared window it reserves one quarter of the window, capped at 16,384 tokens, and shapes history against the rest. Where no window is declared there is no capacity to weigh a request against, and the pre-turn gate falls back to the policy's own history-shaping budget — 32,000 tokens for most providers, and none where the provider publishes neither. Either way an estimate only asks for compaction; it never ends a request.
 
 Trigger owners use that capacity but do not participate in compaction:
 
@@ -232,9 +232,11 @@ The LLM is therefore the generator of the projection value, not the projection a
 
 When the selected connection has `providerType: openai-codex`, Maka uses Codex's server-side compactor by default instead of asking the model for a text summary. The provider request is still built from the validated RuntimeEvent prefix. The dedicated compactor sets `providerOptions.openai.compactionTrigger: true`, which appends one terminal `{ "type": "compaction_trigger" }` input item. The compactor uses the streaming Responses path and consumes the full stream because a compaction-only response has no ordinary generated-text result. Ordinary Codex requests do not set this option and are unchanged.
 
+The portable text summarizer remains a bounded liveness fallback. Maka retries once through it when the native request receives a non-retryable protocol `RequestRejected`, returns no unique valid compact state, or cannot fit its native history projection. Cancellation, authentication, billing, rate-limit, and provider-availability failures retain their original outcome instead of doubling traffic through the same unhealthy connection. The two physical attempts share one logical compaction call but record `provider_native` and `text_summary` independently in telemetry.
+
 Compaction input preserves assistant-step chronology. Because the Responses converter cannot resend provider-executed tool results under `store:false`, a settled hosted call/result is lowered only for this compaction request into a paired ordinary function call and output, followed by the grounded assistant text. This keeps the available tool evidence in the request without producing an orphan output.
 
-The compaction call receives the active history-input budget. If its RuntimeEvent projection exceeds that estimate, Maka replaces older Tool Result payloads with a fixed omission marker while retaining every call/result pair and all later grounded text. If the remaining non-tool history still cannot fit, Runtime does not dispatch an already over-capacity compaction request and follows the normal fail-open path.
+The compaction call receives the active history-input budget. If its RuntimeEvent projection exceeds that estimate, Maka replaces older Tool Result payloads with a fixed omission marker while retaining every call/result pair and all later grounded text. If the remaining non-tool history still cannot fit, Runtime does not dispatch an already over-capacity native request and gives the text summarizer its one fallback opportunity before following the normal fail-open path.
 
 This is deliberately a history-only contract. Maka does not send the current system prompt or tool catalog to the remote compactor, unlike the Codex CLI's whole-request assembly. Those values are neither part of checkpoint source coverage nor frozen into the checkpoint; the subsequent model request always applies its current system prompt and tools. This keeps provider-native and text-summary compactors behind the same small contract, at the cost of not giving the compactor that extra request-shape context.
 
@@ -391,10 +393,10 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Failure point | Current behavior | What must not happen |
 |---|---|---|
 | Below high water | Keep the existing projection or apply ordinary budget selection | Create an unsourced summary as a speculative optimization |
-| LLM returns an empty summary | Record no new checkpoint. Automatic pre-turn compaction keeps the original source-derived projection and, if it remains over budget, terminates with `context_budget_exhausted` without writing a failure note; manual compaction records one visible `context_compaction_failed_open` note | Treat an empty projection as covered history |
+| LLM returns an empty summary | Record no new checkpoint. Automatic pre-turn compaction keeps the original source-derived projection and dispatches it without writing a failure note, leaving the provider to say whether it fits; manual compaction records one visible `context_compaction_failed_open` note | Treat an empty projection as covered history |
 | Text summary is malformed | Spend one stricter repair attempt, then fail open with a granular reason; do not redispatch an unchanged failed fingerprint | Persist incomplete structure or loop on the same doomed compaction input |
-| Codex returns no unique valid compact item | Record no new checkpoint and use the same fail-open path | Persist partial or ambiguous provider state |
-| Compaction input cannot fit after bounded Tool Result omission | Do not dispatch the compaction request; use the same fail-open path | Ask the provider to compact an already over-capacity request |
+| Codex returns no unique valid compact item | Try one portable text-summary checkpoint, then fail open if that also fails | Persist partial or ambiguous provider state |
+| Native compaction input cannot fit after bounded Tool Result omission | Do not dispatch the native request; try one bounded text-summary checkpoint | Ask the provider to compact an already over-capacity request |
 | Rolling summarizer fails | Reuse the old checkpoint if it still matches and fits, then add the newest complete raw Turns that fit | Pretend the old checkpoint covers newly evicted events |
 | Durable checkpoint append fails | Do not use the candidate; fall back to the old checkpoint or safe tail | Put an uncommitted projection into the model and later claim it is recoverable |
 | Prefix or digest mismatch | Reject the checkpoint | Replace canonical events through approximate matching |
@@ -402,7 +404,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Bounded projection is damaged | Recover from canonical AgentRun ledgers and repair the projection | Treat the cache as the only source of truth |
 | User stops manual compaction | Abort the summarizer/write path without poisoning the next Turn | Persist a late result or reuse aborted state |
 
-Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An automatic pre-turn initial V2 summary failure leaves the original source-derived projection untouched; if that projection still exceeds the budget, the backend terminates with `context_budget_exhausted` before the failure-note path. Manual compaction records one visible `context_compaction_failed_open` note for the same failed outcome. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
+Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An automatic pre-turn initial V2 summary failure leaves the original source-derived projection untouched, and whether that projection still fits is the provider's answer: a rejected request is compacted and retried once, and a second rejection surfaces as a `context_overflow` provider error. Manual compaction records one visible `context_compaction_failed_open` note for the same failed outcome. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
 
 The correct interpretation is:
 

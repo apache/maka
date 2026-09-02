@@ -89,38 +89,45 @@
 .maka-page-header-heading-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 
-.maka-stat-tile { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px; }
-/* Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
+/* One shape. The tone and emphasis modifiers that used to sit here — a filled
+   plate, four tinted borders, four value inks, a dimmed zero — were reachable
+   only from this package's own story; the product's single call site renders
+   the plain outlined tile. The tinted borders were also the least defensible of
+   them: the value ink already carried the status, and a second tinted edge
+   repeating it is DESIGN.md §8's One Means Rule.
+
+   Visual System 2.0 (T4): flat. DESIGN.md §5 says default surfaces are flat and
    depth comes from the ladder, then a line, then shadow only for something that
    genuinely floats — a stat tile sits on the plate. It already states its edge
    with a border, so the resting shadow was also a second separator on the same
-   edge (§4's One Means Rule). Dropping it retires --card-shadow's last consumer
+   edge (§4's One Means Rule). Dropping it retired --card-shadow's last consumer
    rather than promoting it to --elevation-raised, which would have made a
-   stationary tile float harder than it did before. */
-.maka-stat-tile-outline { border: 1px solid var(--card-border-color, var(--border)); border-radius: var(--radius-surface); background: var(--card-bg, var(--background)); }
-.maka-stat-tile-filled { border-radius: var(--radius-control); background: var(--foreground-5); }
-.maka-stat-tile-border-info { border-color: oklch(from var(--info) l c h / 0.24); }
-.maka-stat-tile-border-success { border-color: oklch(from var(--success) l c h / 0.24); }
-.maka-stat-tile-border-warning { border-color: oklch(from var(--warning) l c h / 0.28); }
-.maka-stat-tile-border-destructive { border-color: oklch(from var(--destructive) l c h / 0.3); }
-.maka-stat-tile-empty { opacity: var(--opacity-disabled); }
-.maka-stat-tile-value-outline { font: var(--maka-text-heading-1); }
-.maka-stat-tile-value-filled { font: var(--maka-text-heading-4); }
-/* After the two role rules, not before them. The `font:` shorthand resets
-   `font-variant-numeric` along with the four axes the role names, and both
-   modifiers land on this same element — so declared first, the tabular figures
-   these tiles exist to align were being reset away by the role. Ordering is
-   the fix rather than repeating the declaration on each modifier: it is one
-   authority, and it is the general rule for any sub-property the roles do not
-   carry. */
-.maka-stat-tile-value { display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
-.maka-stat-tile-value-info { color: var(--info-text); }
-.maka-stat-tile-value-success { color: var(--success-text); }
-.maka-stat-tile-value-warning { color: var(--warning-text); }
-.maka-stat-tile-value-destructive { color: var(--destructive-text); }
+   stationary tile float harder than it did before.
+
+   `.maka-stat-tile-value` is declared after the tile, not before: the `font:`
+   shorthand resets `font-variant-numeric` along with the four axes the role
+   names, so the tabular figures these tiles exist to align have to be set on
+   the element that carries the role, after it. */
+.maka-stat-tile {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--card-border-color, var(--border));
+  border-radius: var(--radius-surface);
+  background: var(--card-bg, var(--background));
+}
+.maka-stat-tile-value {
+  font: var(--maka-text-heading-1);
+ display: block; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--foreground); font-variant-numeric: tabular-nums; white-space: normal; }
+/* Label and detail share one size, so ink is the only thing ranking them: the
+   label names the metric, the detail qualifies it. Both on muted was one row
+   with no rank at all. */
 .maka-stat-tile-label {
   font: var(--maka-text-supporting);
- color: var(--foreground-secondary); letter-spacing: 0.025em; }
+ color: var(--foreground); letter-spacing: 0.025em; }
 .maka-stat-tile-detail {
   font: var(--maka-text-supporting);
  color: var(--muted-foreground); }
@@ -146,7 +153,7 @@
   height: auto;
   border: 0;
   padding: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: transparent;
   text-align: left;
   box-shadow: none;
@@ -170,7 +177,7 @@
 .maka-quote-chip-remove > svg,
 .maka-quote-chip-remove svg { width: var(--icon-meta); height: var(--icon-meta); }
 
-.maka-task-ledger-empty {
+.maka-session-todo-empty {
   margin: 0;
 }
 
@@ -257,7 +264,7 @@
 }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading,
 .maka-deep-thinking [data-maka-contract="markdown"] strong {
-  color: color-mix(in oklch, var(--link) 28%, var(--foreground-secondary));
+  color: color-mix(in oklch, var(--link) 28%, var(--muted-foreground));
 }
 .maka-deep-thinking [data-maka-contract="markdown"] .astryx-markdown-heading {
   font: var(--maka-text-label);
@@ -458,7 +465,7 @@
    point (13px h4-h6 dropped to muted); it is why a turn can carry four levels
    of structure inside two type sizes. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"], [data-level="3"]) {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 /* Astryx hands custom images no inline/block placement or spacing wrapper.
@@ -646,15 +653,16 @@
  margin: 0; color: var(--muted-foreground); }
 .maka-tool-output-wrap { min-width: 0; overflow-wrap: anywhere; }
 .maka-tool-output-destructive { color: var(--destructive); }
-.maka-tool-output-warning { color: var(--warning-text, var(--info-text)); }
-.maka-tool-output-warning-border { border-color: oklch(from var(--warning) l c h / 0.32); }
-.maka-tool-output-destructive-border { border-color: oklch(from var(--destructive) l c h / 0.28); }
+/* No tinted edge on the panel: the note text above already states the status in
+   red or amber, and a second tinted edge repeats it (DESIGN.md §8).
+   `.maka-tool-output-panel` keeps its --border hairline. */
+.maka-tool-output-warning { color: var(--warning-text); }
 .maka-tool-output-stack { display: flex; min-width: 0; flex-direction: column; gap: 6px; margin-top: 4px; }
 .maka-pty-shell { gap: 0; overflow: hidden; padding: 0; }
 .maka-pty-shell-header { display: flex; min-width: 0; align-items: center; padding: 10px 12px 4px; }
 .maka-pty-shell-title {
   font: var(--maka-text-label);
- color: var(--foreground-secondary); }
+ color: var(--muted-foreground); }
 .maka-pty-shell-body { display: grid; min-width: 0; gap: 8px; padding: 6px 12px; }
 .maka-pty-shell-footer {
   font: var(--maka-text-body);
@@ -675,9 +683,11 @@
 .maka-web-result-list a {
   font: var(--maka-text-label);
  color: var(--link); }
+/* The snippet is what a reader scans; the <small> beside it is the source
+   line. Same size, so ink is the rank. */
 .maka-web-result-list p {
   font: var(--maka-text-body);
- margin: 0; color: var(--foreground-secondary); }
+ margin: 0; color: var(--foreground); }
 .maka-web-result-error { gap: 6px; }
 .maka-web-result-error-message,
 .maka-web-result-repair {
@@ -748,7 +758,7 @@
 .maka-tool-output-chunk { display: contents; }
 .maka-tool-output-chunk-stderr { color: var(--destructive); }
 .maka-tool-output-chunk-redacted { opacity: 0.65; }
-.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text, var(--info-text)); }
+.maka-tool-output-redacted { display: inline; margin-left: 2px; color: var(--warning-text); }
 .maka-sandbox-blocked-banner,
 .maka-requires-bypass-banner { margin-bottom: 10px; }
 .maka-sandbox-blocked-description {
@@ -759,8 +769,10 @@
  }
 .maka-sandbox-blocked-copy { align-self: start; }
 .maka-sandbox-blocked-copy[data-pending="true"] { cursor: progress; }
-.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { border-color: oklch(from var(--accent) l c h / 0.35); color: var(--link); }
-.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
+.maka-sandbox-blocked-copy[data-copy-feedback="copied"] { color: var(--link); }
+/* The failed state is stated by the label ink, so the edge stays --border —
+   one status, one means (DESIGN.md §8). */
+.maka-sandbox-blocked-copy[data-copy-feedback="failed"] { color: var(--destructive); }
 .maka-turn-status-icon { flex: 0 0 auto; }
 
 .maka-turn-host-origin {
@@ -811,8 +823,8 @@
 }
 
 .maka-turn-lineage-badge[data-direction="forward"] {
-  background: oklch(from var(--info) l c h / 0.06);
-  color: oklch(from var(--info-text) calc(l - 0.06) c h);
+  background: var(--color-accent-muted);
+  color: var(--foreground);
 }
 
 .maka-turn-lineage-badge[data-direction="reverse"] {
@@ -876,7 +888,7 @@
   background: var(--foreground-2);
 }
 .maka-tool-terminal-head { align-items: center; font-variant-ligatures: none; }
-.maka-tool-diff-paths code { color: var(--foreground-secondary); background: transparent; }
+.maka-tool-diff-paths code { color: var(--muted-foreground); background: transparent; }
 .maka-tool-diff-body {
   font: var(--maka-text-supporting);
   max-height: 320px;
@@ -932,20 +944,22 @@
    flat single-tint reading the tokens exist to break up; the row's background
    tint and its marker carry add/del on their own.
 
-   This is also what brings context lines up from `--foreground-secondary` to
-   full foreground, which is deliberate rather than collateral: once a context
-   line's keywords and strings are syntax-coloured, dimming only the text
-   between them reads as damage, not as de-emphasis. The row's flat background
-   is what says "unchanged" now. */
+   Context lines read at full foreground, which is deliberate rather than
+   collateral: once a context line's keywords and strings are syntax-coloured,
+   dimming only the text between them reads as damage, not as de-emphasis. The
+   row's flat background is what says "unchanged" now. */
 .maka-tool-diff-code { color: var(--foreground); }
 .maka-tool-diff-line[data-line="meta"] .maka-tool-diff-code { color: inherit; }
-.maka-tool-diff-line[data-line="add"] { background: oklch(from var(--success) l c h / 0.1); color: var(--success-text); }
-.maka-tool-diff-line[data-line="del"] { background: oklch(from var(--destructive) l c h / 0.1); color: var(--destructive); }
+.maka-tool-diff-line[data-line="add"] { background: var(--color-success-muted); color: var(--success-text); }
+.maka-tool-diff-line[data-line="del"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-diff-line[data-line="hunk"] {
   font: var(--maka-text-heading-5);
- background: oklch(from var(--accent) l c h / 0.08); color: var(--foreground-secondary); }
+ background: oklch(from var(--accent) l c h / 0.08); color: var(--muted-foreground); }
 .maka-tool-diff-line[data-line="meta"] { color: var(--muted-foreground); }
-.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground-secondary); }
+/* Full ink, matching `.maka-tool-diff-code` above: a context line is the code
+   the change is read against, and the marker column is the only part this rule
+   still paints on its own. Meta and hunk rows are the ones that recede. */
+.maka-tool-diff-line[data-line="ctx"] { color: var(--foreground); }
 .maka-tool-terminal-cwd { color: var(--muted-foreground); background: transparent; }
 .maka-tool-terminal-cmd {
   font: var(--maka-text-heading-5);
@@ -957,9 +971,9 @@
    instead. Deleting the family is its own change. */
 .maka-tool-terminal-exit {
   font: var(--maka-text-heading-5);
- height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--foreground-secondary); letter-spacing: var(--tracking-wide); }
-.maka-tool-terminal-exit[data-ok="true"] { background: oklch(from var(--success) l c h / 0.14); color: var(--success); }
-.maka-tool-terminal-exit[data-ok="false"] { background: oklch(from var(--destructive) l c h / 0.14); color: var(--destructive); }
+ height: var(--h-control-sm); display: inline-flex; align-items: center; white-space: nowrap; padding: 1px var(--space-1-5); border-radius: var(--radius-pill); background: var(--foreground-5); color: var(--muted-foreground); letter-spacing: var(--tracking-wide); }
+.maka-tool-terminal-exit[data-ok="true"] { background: var(--color-success-muted); color: var(--success); }
+.maka-tool-terminal-exit[data-ok="false"] { background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-empty {
   font: var(--maka-text-supporting);
  margin: 0; padding: var(--space-2); color: var(--muted-foreground); font-style: italic; }
@@ -967,14 +981,14 @@
   font: var(--maka-text-supporting);
  max-height: 180px; margin: 0; padding: var(--space-1-5) var(--space-2); overflow: auto; font-variant-ligatures: none; white-space: pre-wrap; word-break: break-word; }
 .maka-tool-terminal-stream[data-stream="stdout"] { color: var(--foreground); }
-.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: oklch(from var(--destructive) l c h / 0.04); color: var(--destructive); }
+.maka-tool-terminal-stream[data-stream="stderr"] { border-top: 1px solid var(--border); background: var(--color-error-muted); color: var(--destructive); }
 .maka-tool-terminal-truncated-note {
   font: var(--maka-text-supporting);
- display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: oklch(from var(--warning) l c h / 0.06); color: var(--foreground-secondary); }
+ display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); padding: var(--space-1-5) var(--space-2); border-top: 1px solid var(--border); background: var(--color-warning-muted); color: var(--foreground); }
 .maka-tool-terminal-truncated-note > span { min-width: 0; }
 .maka-tool-terminal-copy { flex: 0 0 auto; }
 .maka-tool-terminal-copy[data-pending="true"] { cursor: progress; }
-.maka-tool-terminal-copy[data-copy-error="true"] { border-color: oklch(from var(--destructive) l c h / 0.35); color: var(--destructive); }
+.maka-tool-terminal-copy[data-copy-error="true"] { border-color: var(--color-error-muted); color: var(--destructive); }
 
 .maka-web-search-preview { display: grid; gap: var(--space-2); padding: var(--space-2-5) var(--space-3); border: 1px solid var(--foreground-10); border-radius: var(--radius-surface); background: var(--foreground-3); }
 .maka-web-search-preview > header { display: flex; flex-direction: column; gap: var(--space-0-5); padding-bottom: var(--space-1-5); border-bottom: 1px solid var(--foreground-10); }
@@ -995,14 +1009,17 @@
 .maka-web-search-preview a:focus-visible { text-decoration: underline; }
 .maka-web-search-preview li p {
   font: var(--maka-text-supporting);
- margin: 0; color: var(--foreground-secondary); white-space: pre-wrap; word-break: break-word; }
-.maka-web-search-error { border-color: color-mix(in oklab, var(--destructive-text) 32%, var(--foreground-10)); background: color-mix(in oklab, var(--destructive-text) 8%, var(--foreground-3)); }
+ margin: 0; color: var(--muted-foreground); white-space: pre-wrap; word-break: break-word; }
+/* The tinted status surface is Astryx's token; the edge around it is --border,
+   because the fill and the message ink already state the error (DESIGN.md §8).
+   Its copy sits on the tint, so it reads at primary ink (§3). */
+.maka-web-search-error { background: var(--color-error-muted); border-color: var(--border); }
 .maka-web-search-error-message,
 .maka-web-search-error-repair {
   font: var(--maka-text-supporting);
  margin: 0; white-space: pre-wrap; word-break: break-word; }
 .maka-web-search-error-message { color: var(--destructive-text); }
-.maka-web-search-error-repair { color: var(--foreground-secondary); }
+.maka-web-search-error-repair { color: var(--foreground); }
 
 .maka-load-tool-preview {
   display: grid;
@@ -1019,7 +1036,7 @@
   height: var(--space-8);
   place-items: center;
   border-radius: var(--radius-element);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: var(--foreground-5);
 }
 .maka-load-tool-summary {
@@ -1032,7 +1049,7 @@
 .maka-load-tool-description {
   font: var(--maka-text-supporting);
   margin-top: var(--space-0-5) !important;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   overflow-wrap: anywhere;
 }
 .maka-load-tool-count {
@@ -1085,7 +1102,7 @@
 .maka-load-tool-technical dd {
   min-width: 0;
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 .maka-load-tool-technical code {
   font: var(--maka-text-code);
