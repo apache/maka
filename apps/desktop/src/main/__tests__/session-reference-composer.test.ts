@@ -27,9 +27,9 @@ import type { SessionSnapshot } from '@maka/core/session-reference';
 import {
   ConversationServicesProvider,
   type ConversationServices,
-  useComposerQuotes,
   useSessionReferenceComposer,
 } from '../../renderer/features/conversation/index.js';
+import { useComposerQuotes } from '../../renderer/features/conversation/controller/use-composer-quotes.js';
 
 const originalGlobals = {
   document: globalThis.document,
