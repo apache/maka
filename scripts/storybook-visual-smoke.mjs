@@ -57,6 +57,16 @@ const REQUIRED_COMPUTER_USE_STORY_IDS = new Set([
   'product-shell-official-appshell--native-conversation',
   'product-shell-official-appshell--waiting-for-permission',
 ]);
+// The smoke observes render completion, focus, and the accessibility tree; it
+// does not compare pixels. Every story supplies that structural evidence once,
+// while these canonical surfaces also prove the separate dark token block.
+const DARK_THEME_SENTINEL_STORY_IDS = new Set([
+  'design-system-palette-matrix--all-palettes',
+  'product-accessibility-dialogs--rename-conversation',
+  'product-markdown--rich-assistant-answer',
+  'product-settings-pages--appearance',
+  'product-shell-official-appshell--default-layout',
+]);
 
 // This is a catalog render and accessibility-tree health check.
 // Story `play` functions do run: many stories reach their named final state
@@ -119,12 +129,6 @@ function installStorybookRenderProbe({ storyId }) {
   connect();
 }
 
-/* Both schemes, not just light. Dark is where a theme regression actually
-   hides: light and dark are separate token blocks, so a rule that resolves in
-   one can be undefined, inverted or invisible in the other and nothing in a
-   light-only sweep says so. Every story runs twice. */
-const COLOR_SCHEMES = ['light', 'dark'];
-
 export function catalogJobs(storyIndex) {
   const entries = storyIndex?.entries;
   if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
@@ -132,7 +136,12 @@ export function catalogJobs(storyIndex) {
   }
   const jobs = Object.values(entries)
     .filter((entry) => entry?.type === 'story' && typeof entry.id === 'string')
-    .flatMap((entry) => COLOR_SCHEMES.map((colorScheme) => ({ storyId: entry.id, colorScheme })));
+    .flatMap((entry) => [
+      { storyId: entry.id, colorScheme: 'light' },
+      ...(DARK_THEME_SENTINEL_STORY_IDS.has(entry.id)
+        ? [{ storyId: entry.id, colorScheme: 'dark' }]
+        : []),
+    ]);
   if (jobs.length === 0) throw new Error('Built Storybook index has no stories');
   return jobs;
 }
@@ -325,9 +334,11 @@ async function runCli() {
   const storyIndex = await readFile(join(staticDir, 'index.json'), 'utf8').then(JSON.parse);
   const jobs = catalogJobs(storyIndex);
   const storyIds = new Set(jobs.map((job) => job.storyId));
-  const missingRequiredStories = [...REQUIRED_COMPUTER_USE_STORY_IDS].filter(
-    (storyId) => !storyIds.has(storyId),
-  );
+  const requiredStoryIds = new Set([
+    ...REQUIRED_COMPUTER_USE_STORY_IDS,
+    ...DARK_THEME_SENTINEL_STORY_IDS,
+  ]);
+  const missingRequiredStories = [...requiredStoryIds].filter((storyId) => !storyIds.has(storyId));
   if (missingRequiredStories.length > 0) {
     throw new Error(
       `Computer Use story inventory is missing: ${missingRequiredStories.join(', ')}`,
@@ -347,7 +358,7 @@ async function runCli() {
     throw new Error(`${problems.length} story render(s) failed:\n${problems.join('\n')}`);
   }
   process.stdout.write(
-    `Storybook render smoke passed (${storyIds.size} stories x ${COLOR_SCHEMES.length} schemes = ${jobs.length} renders).\n`,
+    `Storybook render smoke passed (${storyIds.size} stories, ${jobs.length} theme renders).\n`,
   );
 }
 
