@@ -212,7 +212,6 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
-  connectionPhaseObserver?: (phase: RuntimeHostConnectionPhase) => void;
   skipPeerRouteRefreshOnce?: boolean;
   lastCandidate?: {
     readonly hostId: string;
@@ -588,10 +587,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     });
     try {
       target.lifecycle = await this.#startLifecycle(target, false, signal);
-      // Import progress describes the initial connection only. Later
-      // reconnects have their own durable target state and must not restart the
-      // one-shot join UI from route discovery.
-      target.connectionPhaseObserver = undefined;
       if (this.#closed) {
         await target.lifecycle.close();
         throw new Error('Desktop Runtime Host manager is closed');
@@ -856,6 +851,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
               ? AbortSignal.any([signal, initialSignal])
               : signal,
             starting ? target.input.profileTarget?.sshInteraction : 'batch',
+            starting ? target.input.onConnectionPhase : undefined,
           ),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
@@ -886,6 +882,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target: DesktopRuntimeHostTargetGeneration,
     signal: AbortSignal,
     sshInteraction: RuntimeHostSshInteraction | undefined,
+    onConnectionPhase: ((phase: RuntimeHostConnectionPhase) => void) | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
     let localRecoveryAttempted = false;
@@ -917,9 +914,10 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             ipcMain: this.#ipcMain.createTarget(target.epoch),
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
-            onConnectionPhase: (phase) => {
-              target.connectionPhaseObserver?.(phase);
-            },
+            // Import progress belongs to the initial connection only. Override
+            // the callback inherited from target.input so reconnects cannot
+            // replay one-shot join progress.
+            onConnectionPhase: (phase) => onConnectionPhase?.(phase),
             ...(refreshPeerRoutes ? {} : { refreshPeerRoutes: false }),
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
@@ -1097,9 +1095,6 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       input,
       target,
       observations,
-      ...(input.onConnectionPhase
-        ? { connectionPhaseObserver: input.onConnectionPhase }
-        : {}),
       state: {
         epoch,
         target,
