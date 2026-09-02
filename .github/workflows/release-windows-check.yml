@@ -102,6 +102,11 @@ on:
   schedule:
     - cron: '17 5 * * *'
   workflow_dispatch:
+    inputs:
+      reproducibility_probe:
+        description: Compare two clean unsigned builds without publishing or signing
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -116,6 +121,7 @@ concurrency:
 
 jobs:
   package:
+    if: ${{ !inputs.reproducibility_probe }}
     runs-on: windows-2025
     timeout-minutes: 45
     defaults:
@@ -208,3 +214,132 @@ jobs:
           npm run verify:windows-installer-rollback -- \
             "${{ steps.installer.outputs.exe }}" \
             apps/desktop/release-autoupdate-next
+
+  # Temporary experiment on this branch; not an independent release approval.
+  reproducibility-build:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reproducibility_probe }}
+    runs-on: windows-2025
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        sample: [a, b]
+    defaults:
+      run:
+        shell: bash
+        working-directory: sample-${{ matrix.sample }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: sample-${{ matrix.sample }}
+          persist-credentials: false
+
+      - name: Read the release toolchain authority
+        id: toolchain
+        run: |
+          echo "node=$(node -p 'require("./package.json").releaseToolchain.node')" >> "$GITHUB_OUTPUT"
+          echo "npm=$(node -p 'require("./package.json").packageManager.slice(4)')" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ steps.toolchain.outputs.node }}
+          package-manager-cache: false
+
+      - name: Install the release toolchain and clean dependencies
+        env:
+          NPM_VERSION: ${{ steps.toolchain.outputs.npm }}
+        run: |
+          npm install --global --no-audit --no-fund "npm@$NPM_VERSION"
+          test "$(npm --version)" = "$NPM_VERSION"
+          npm ci
+          rustup update stable --no-self-update
+
+      - name: Record the actual build environment
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path evidence | Out-Null
+          [ordered]@{
+            sourceCommit = (git rev-parse HEAD)
+            productVersion = (Get-Content package.json -Raw | ConvertFrom-Json).version
+            node = (node --version)
+            npm = (npm --version)
+            rust = (rustc -Vv) -join "`n"
+            cargo = (cargo --version)
+            imageOS = $env:ImageOS
+            imageVersion = $env:ImageVersion
+            os = [System.Environment]::OSVersion.VersionString
+            checkout = (Get-Location).Path
+          } | ConvertTo-Json | Set-Content evidence/environment.json -Encoding utf8
+
+      - name: Package through the existing unsigned Windows path
+        run: npm run package:windows-x64
+
+      - name: Hash packaged files and unpacked payload without normalization
+        shell: pwsh
+        run: |
+          $releaseRoot = (Resolve-Path apps/desktop/release).Path
+          $files = @(Get-ChildItem $releaseRoot -Recurse -File | ForEach-Object {
+            [ordered]@{
+              path = [System.IO.Path]::GetRelativePath($releaseRoot, $_.FullName).Replace('\', '/')
+              size = $_.Length
+              sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          } | Sort-Object { $_.path })
+          if ($files.Count -eq 0) { throw 'No release files found' }
+          ConvertTo-Json -InputObject $files -Depth 4 | Set-Content evidence/files.json -Encoding utf8
+
+      - name: Retain evidence even when packaging fails
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-repro-evidence-${{ matrix.sample }}
+          path: sample-${{ matrix.sample }}/evidence
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Retain unsigned artifacts for byte-level diagnosis
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-repro-payload-${{ matrix.sample }}
+          path: sample-${{ matrix.sample }}/apps/desktop/release
+          if-no-files-found: error
+          retention-days: 7
+
+  reproducibility-compare:
+    needs: reproducibility-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: windows-repro-evidence-*
+          path: evidence
+
+      - name: Compare raw hashes and report every difference
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const read = (sample, name) => JSON.parse(readFileSync(`evidence/windows-repro-evidence-${sample}/${name}.json`, 'utf8'));
+          const environments = ['a', 'b'].map(sample => read(sample, 'environment'));
+          const environmentKeys = ['sourceCommit', 'productVersion', 'node', 'npm', 'rust', 'cargo', 'imageOS', 'imageVersion', 'os'];
+          const environmentDifferences = environmentKeys.filter(key => environments[0][key] !== environments[1][key]);
+          const files = ['a', 'b'].map(sample => new Map(read(sample, 'files').map(file => [file.path, file])));
+          const differences = [...new Set([...files[0].keys(), ...files[1].keys()])].sort().filter(path => {
+            const [a, b] = files.map(sample => sample.get(path));
+            return !a || !b || a.size !== b.size || a.sha256 !== b.sha256;
+          });
+          const payloadDifferences = differences.filter(path => path.startsWith('win-unpacked/'));
+          const summary = [
+            '# Windows reproducibility probe',
+            'Engineering experiment only; not trusted-hardware release validation.',
+            `Source: ${environments[0].sourceCommit}`,
+            `Environment differences: ${environmentDifferences.join(', ') || 'none'}`,
+            `Files: ${files[0].size} / ${files[1].size}`,
+            `Different files: ${differences.length}; unpacked payload: ${payloadDifferences.length}`,
+            '```', ...differences, '```',
+          ].join('\n');
+          console.log(summary);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          if (environmentDifferences.length || differences.length) process.exitCode = 1;
+          NODE
