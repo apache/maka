@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeRemoteRuntimeHostProfile,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  RuntimeHostPermanentReconnectError,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostConnectionPhase,
   type RuntimeHostRemoteTransport,
@@ -267,7 +268,9 @@ export function createDesktopGuestSessionMountService(input: {
             removingMounts.has(mount.mountId)
           ) return;
           activation.stage = 'connecting';
-          onError(asError(error), mount);
+          const failure = asError(error);
+          onError(failure, mount);
+          if (failure instanceof RuntimeHostPermanentReconnectError) return;
           await wait(delayMs, activation.controller.signal);
           delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
         }
@@ -564,9 +567,12 @@ function decodeMount(value: unknown): GuestSessionMount {
 
 function isPeerPathUnavailable(error: unknown): boolean {
   if (!isRecord(error) || typeof error.code !== 'string') return false;
-  return error.code === 'direct_path_unavailable' || error.code === 'transit_unavailable';
+  return (
+    error.code === 'direct_path_unavailable' ||
+    error.code === 'transit_unavailable' ||
+    error.code === 'peer_reachability_needs_repair'
+  );
 }
-
 
 function collaborationProgressForConnectionPhase(
   phase: RuntimeHostConnectionPhase,

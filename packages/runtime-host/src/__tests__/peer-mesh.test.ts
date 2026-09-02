@@ -452,7 +452,13 @@ test('repairs an existing membership with a fresh invitation after every locator
       member.status()[0]?.memberRoutes.find(({ peerId }) => peerId === 'peer-a')?.state,
       'reconnecting',
     );
+    const observedStates: string[] = [];
+    const unsubscribe = member.subscribeRoutes('peer-a', () => {
+      observedStates.push(member.resolveRoutes('peer-a').state);
+    });
     await member.prepareRoutes('peer-a', AbortSignal.timeout(4_000));
+    unsubscribe();
+    assert.deepEqual(observedStates, ['exhausted']);
     assert.equal(
       member.status()[0]?.memberRoutes.find(({ peerId }) => peerId === 'peer-a')?.state,
       'needs_repair',

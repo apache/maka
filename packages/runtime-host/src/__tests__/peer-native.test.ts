@@ -23,7 +23,10 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import { test } from 'node:test';
-import { createRuntimeHostPeerClient } from '../client/peer-client.js';
+import {
+  createRuntimeHostPeerClient,
+  RuntimeHostPeerReachabilityUnavailableError,
+} from '../client/peer-client.js';
 import {
   ensureRuntimeHostPeerIdentity,
   normalizePeerError,
@@ -121,24 +124,36 @@ module.exports = {
     );
     let routesPrepared = false;
     let selfContainedRoutesPrepared = false;
+    let recoveryExhausted = false;
     const preparedPeerIds: string[] = [];
-    let client!: ReturnType<typeof createRuntimeHostPeerClient>;
-    client = createRuntimeHostPeerClient({
+    const client = createRuntimeHostPeerClient({
       nativePath,
       keyPath: join(directory, 'peer.key'),
-      routeResolver: {
-        prepareRoutes: async (peerId) => {
-          preparedPeerIds.push(peerId);
-          routesPrepared = true;
-          if (peerId === 'fallback') throw new Error('Mesh refresh failed');
-          if (peerId === 'self-contained') {
-            await new Promise((resolve) => setImmediate(resolve));
-            selfContainedRoutesPrepared = true;
-          }
-        },
-        resolveRoutes: (peerId) =>
-          peerId !== 'observed' &&
-          (peerId === 'self-contained' ? selfContainedRoutesPrepared : routesPrepared)
+    });
+    const detachRouteResolver = client.attachRouteResolver({
+      prepareRoutes: async (peerId) => {
+        preparedPeerIds.push(peerId);
+        if (peerId === 'exhausted') {
+          recoveryExhausted = true;
+          return;
+        }
+        routesPrepared = true;
+        if (peerId === 'fallback') throw new Error('Mesh refresh failed');
+        if (peerId === 'self-contained') {
+          await new Promise((resolve) => setImmediate(resolve));
+          selfContainedRoutesPrepared = true;
+        }
+      },
+      resolveRoutes: (peerId) =>
+        peerId === 'exhausted'
+          ? {
+              state: recoveryExhausted ? 'exhausted' : 'recovering',
+              routeHints: [],
+              coordinationRelays: [],
+              transitRelayPeerIds: [],
+            }
+          : peerId !== 'observed' &&
+              (peerId === 'self-contained' ? selfContainedRoutesPrepared : routesPrepared)
             ? {
                 state: 'available',
                 routeHints: ['/memory/discovered'],
@@ -151,7 +166,6 @@ module.exports = {
                 coordinationRelays: [],
                 transitRelayPeerIds: [],
               },
-      },
     });
     const native = await import(nativePath);
     const phases: string[] = [];
@@ -239,6 +253,28 @@ module.exports = {
       transitRelayPeerIds: [],
     });
     assert.deepEqual(native.default.stats.cancellations, [1, 1]);
+
+    await assert.rejects(
+      client.connect({
+        ...peerConnectInput('exhausted'),
+        routeHints: [],
+      }),
+      (error: unknown) =>
+        error instanceof RuntimeHostPeerReachabilityUnavailableError &&
+        error.code === 'peer_reachability_needs_repair',
+    );
+
+    detachRouteResolver();
+    const requestCount = native.default.stats.requests.length;
+    await assert.rejects(
+      client.connect({
+        ...peerConnectInput('needs-repair'),
+        routeHints: [],
+        refreshRoutes: false,
+      }),
+      (error: unknown) => error instanceof RuntimeHostPeerReachabilityUnavailableError,
+    );
+    assert.equal(native.default.stats.requests.length, requestCount);
 
     let connectivityWakeups = 0;
     const unsubscribeConnectivity = client.subscribeRoutes('restored', () => {

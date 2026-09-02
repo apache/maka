@@ -24,11 +24,7 @@ import {
   acquireFileLifetimeOwner,
   type FileLifetimeOwner,
 } from '@maka/storage/file-lifetime-owner';
-import {
-  createRuntimeHostPeerClient,
-  type RuntimeHostPeerClient,
-  type RuntimeHostPeerRouteResolver,
-} from '../client/peer-client.js';
+import { createRuntimeHostPeerClient, type RuntimeHostPeerClient } from '../client/peer-client.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
   openPeerReachabilityPublisher,
@@ -55,7 +51,6 @@ export async function openRuntimeHostPeerEndpointOwner(input: {
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
   readonly webRtcStunUrls?: readonly string[];
-  readonly routeResolver?: RuntimeHostPeerRouteResolver;
   readonly onBackgroundReachabilityError?: (error: unknown) => void;
 }): Promise<RuntimeHostPeerEndpointOwner> {
   await mkdir(input.dataRoot, { recursive: true, mode: 0o700 });
@@ -75,7 +70,6 @@ export async function openRuntimeHostPeerEndpointOwner(input: {
         ? {}
         : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
       ...(input.webRtcStunUrls === undefined ? {} : { webRtcStunUrls: input.webRtcStunUrls }),
-      ...(input.routeResolver ? { routeResolver: input.routeResolver } : {}),
     });
     const peerId = client.identity().peerId;
     reachability = await openPeerReachabilityPublisher({

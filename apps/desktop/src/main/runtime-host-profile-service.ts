@@ -1559,6 +1559,7 @@ function connectionCodeImportFailure(
     if (
       error.code === 'direct_path_unavailable' ||
       error.code === 'coordination_unavailable' ||
+      error.code === 'peer_reachability_needs_repair' ||
       error.code === 'peer_connect_in_progress'
     ) {
       return 'host_unreachable';

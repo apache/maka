@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResolvedRuntimeHostProfile } from '@maka/runtime-host/client';
+import {
+  RuntimeHostPermanentReconnectError,
+  type ResolvedRuntimeHostProfile,
+} from '@maka/runtime-host/client';
 import {
   encodeCollaborationInvitationCode,
   type HostPeerEndpoint,
@@ -142,7 +145,9 @@ test('removes failed activation desire instead of creating recoverable profile s
   const unmounted: string[] = [];
   const mounts = service(store, {
     mount: async () => {
-      throw Object.assign(new Error('route missing'), { code: 'direct_path_unavailable' });
+      throw Object.assign(new Error('route missing'), {
+        code: 'peer_reachability_needs_repair',
+      });
     },
     unmount: async (mountId) => {
       unmounted.push(mountId);
@@ -153,6 +158,34 @@ test('removes failed activation desire instead of creating recoverable profile s
   assert.deepEqual(result.kind === 'error' ? result.reason : result.kind, 'peer_path_unavailable');
   assert.deepEqual(await store.read(), []);
   assert.equal(unmounted.length, 1);
+});
+
+test('does not retry a startup mount whose reachability recovery is exhausted', async () => {
+  const store = memoryStore();
+  await store.write([retainedMount('shared-needs-repair')]);
+  let attempts = 0;
+  let waits = 0;
+  let reportFailure!: () => void;
+  const failureReported = new Promise<void>((resolve) => {
+    reportFailure = resolve;
+  });
+  const mounts = service(store, {
+    mount: async () => {
+      attempts += 1;
+      throw new RuntimeHostPermanentReconnectError('reachability recovery exhausted');
+    },
+    wait: async () => {
+      waits += 1;
+    },
+    onError: () => reportFailure(),
+  });
+
+  await mounts.start();
+  await failureReported;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.equal(waits, 0);
+  await mounts.close();
 });
 
 test('settles admitted finalization before committing unmount desire', async () => {
@@ -406,6 +439,8 @@ function service(
     readonly mount?: Parameters<typeof createDesktopGuestSessionMountService>[0]['mount'];
     readonly finalizeAccess?: Parameters<typeof createDesktopGuestSessionMountService>[0]['finalizeAccess'];
     readonly unmount?: Parameters<typeof createDesktopGuestSessionMountService>[0]['unmount'];
+    readonly wait?: Parameters<typeof createDesktopGuestSessionMountService>[0]['wait'];
+    readonly onError?: Parameters<typeof createDesktopGuestSessionMountService>[0]['onError'];
   } = {},
 ) {
   return createDesktopGuestSessionMountService({
@@ -413,7 +448,8 @@ function service(
     mount: overrides.mount ?? (async () => undefined),
     finalizeAccess: overrides.finalizeAccess ?? (async () => undefined),
     unmount: overrides.unmount ?? (async () => undefined),
-    onError: () => undefined,
+    ...(overrides.wait ? { wait: overrides.wait } : {}),
+    onError: overrides.onError ?? (() => undefined),
   });
 }
 

@@ -18,8 +18,11 @@
  */
 
 import {
+  isPeerReachabilityLeaseCurrent,
   isPeerReachabilityLeaseRecoverable,
+  peerReachabilityLeaseReceipt,
   verifySignedPeerReachabilityLease,
+  type PeerReachabilityLeaseReceipt,
   type SignedPeerReachabilityLeaseV1,
 } from '../peer-reachability/index.js';
 import {
@@ -51,7 +54,7 @@ export type RuntimeHostPeerConnectionPhase = 'discovering' | 'connecting';
 interface RuntimeHostPeerRouteCandidateSnapshot {
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
-  readonly transitRelayPeerIds?: readonly string[];
+  readonly transitRelayPeerIds: readonly string[];
 }
 
 export type RuntimeHostPeerRouteResolution =
@@ -63,6 +66,15 @@ export interface RuntimeHostPeerRouteResolver {
   resolveRoutes(peerId: string): RuntimeHostPeerRouteResolution;
   prepareRoutes?(peerId: string, signal: AbortSignal): Promise<void>;
   subscribeRoutes?(peerId: string, listener: () => void): () => void;
+}
+
+export class RuntimeHostPeerReachabilityUnavailableError extends RuntimeHostPermanentReconnectError {
+  readonly code = 'peer_reachability_needs_repair';
+
+  constructor(peerId: string) {
+    super(`Peer ${peerId} has no usable or recoverable route`);
+    this.name = 'RuntimeHostPeerReachabilityUnavailableError';
+  }
 }
 
 export interface RuntimeHostPeerClient {
@@ -119,7 +131,6 @@ export function createRuntimeHostPeerClientFromEnvironment(
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
     readonly webRtcStunUrls?: readonly string[];
-    readonly routeResolver?: RuntimeHostPeerRouteResolver;
   } = {},
 ): RuntimeHostPeerClient {
   const nativePath = environment.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
@@ -142,7 +153,6 @@ export function createRuntimeHostPeerClient(input: {
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
   readonly webRtcStunUrls?: readonly string[];
-  readonly routeResolver?: RuntimeHostPeerRouteResolver;
 }): RuntimeHostPeerClient {
   return new RuntimeHostPeerClientImpl(input);
 }
@@ -159,7 +169,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   #routeResolver: RuntimeHostPeerRouteResolver | undefined;
   readonly #routeListeners = new Map<string, Set<() => void>>();
   readonly #routeResolverSubscriptions = new Map<string, () => void>();
-  readonly #authenticatedReachability = new Map<string, SignedPeerReachabilityLeaseV1>();
+  readonly #authenticatedReachability = new Map<string, AuthenticatedReachability>();
   #endpoint: RuntimeHostPeerNativeEndpoint | undefined;
   #draining: Promise<void> | undefined;
   #meshDraining: Promise<void> | undefined;
@@ -181,7 +191,6 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     readonly coordinationRelays?: readonly string[];
     readonly automaticRelayDiscovery?: boolean;
     readonly webRtcStunUrls?: readonly string[];
-    readonly routeResolver?: RuntimeHostPeerRouteResolver;
   }) {
     this.#nativePath = input.nativePath;
     this.#keyPath = input.keyPath;
@@ -192,7 +201,6 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     this.#automaticRelayDiscovery = input.automaticRelayDiscovery ?? false;
     this.#webRtcStunUrls =
       input.webRtcStunUrls === undefined ? undefined : [...input.webRtcStunUrls];
-    this.#routeResolver = input.routeResolver;
   }
 
   identity(): Readonly<{
@@ -314,15 +322,29 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       verifyIdentity: this.verifyIdentity.bind(this),
       ...(input.allowExpired === undefined ? {} : { allowExpired: input.allowExpired }),
     });
-    const current = this.#authenticatedReachability.get(input.expectedPeerId);
-    if (!isPeerReachabilityLeaseRecoverable(next.lease, now)) return current ?? next;
-    if (current && current.lease.revision >= next.lease.revision) {
-      if (current.lease.revision === next.lease.revision && !sameReachability(current, next)) {
+    let current = this.#authenticatedReachability.get(input.expectedPeerId);
+    if (current && !isPeerReachabilityLeaseRecoverable(current.signed.lease, now)) {
+      this.#authenticatedReachability.delete(input.expectedPeerId);
+      current = undefined;
+    }
+    if (!isPeerReachabilityLeaseRecoverable(next.lease, now)) return current?.signed ?? next;
+    if (current && current.signed.lease.revision >= next.lease.revision) {
+      if (
+        current.signed.lease.revision === next.lease.revision &&
+        !sameReachability(current.signed, next)
+      ) {
         throw new Error('Peer reachability revision contains conflicting signed facts');
       }
-      return current;
+      return current.signed;
     }
-    this.#authenticatedReachability.set(input.expectedPeerId, next);
+    this.#authenticatedReachability.set(input.expectedPeerId, {
+      signed: next,
+      receipt: peerReachabilityLeaseReceipt({
+        signed: next,
+        wallNow: now,
+        monotonicNow: performance.now(),
+      }),
+    });
     this.#notifyRouteChange(input.expectedPeerId);
     return next;
   }
@@ -452,20 +474,35 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   ): Promise<RuntimeHostPeerNativeStream> {
     signal?.throwIfAborted();
     const endpoint = this.#requireEndpoint();
-    const requestId = this.#allocateRequestId();
     let settled = false;
+    let preparing = Boolean(
+      kind === 'application' && input.refreshRoutes !== false && this.#routeResolver?.prepareRoutes,
+    );
+    const snapshot = () => this.#connectionResolution(input, kind, preparing);
+    let resolution = snapshot();
+    if (resolution.state === 'exhausted') {
+      throw new RuntimeHostPeerReachabilityUnavailableError(input.peerId);
+    }
+    const requestId = this.#allocateRequestId();
     const attemptLifetime = new AbortController();
-    const snapshot = () => this.#connectionCandidates(input, kind);
-    let candidates = snapshot();
+    let reachabilityFailure: RuntimeHostPeerReachabilityUnavailableError | undefined;
     let updateTail = Promise.resolve();
     const update = () => {
       if (settled) return;
       const next = snapshot();
-      if (sameCandidates(candidates, next)) return;
-      candidates = next;
+      if (sameConnectionResolution(resolution, next)) return;
+      const candidatesChanged = !sameCandidates(resolution, next);
+      resolution = next;
+      if (next.state === 'exhausted') {
+        reachabilityFailure ??= new RuntimeHostPeerReachabilityUnavailableError(input.peerId);
+        void cancelPeerConnect(endpoint, requestId, () => settled);
+        return;
+      }
+      if (!candidatesChanged) return;
+      const candidates = connectCandidates(next);
       updateTail = updateTail.then(
-        () => updatePeerConnect(endpoint, requestId, next, () => settled),
-        () => updatePeerConnect(endpoint, requestId, next, () => settled),
+        () => updatePeerConnect(endpoint, requestId, candidates, () => settled),
+        () => updatePeerConnect(endpoint, requestId, candidates, () => settled),
       );
       void updateTail.catch(() => undefined);
     };
@@ -475,9 +512,9 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     try {
       connection = endpoint[kind === 'application' ? 'connect' : 'connectMeshControl']({
         ...input,
-        ...candidates,
+        ...connectCandidates(resolution),
         requestId,
-        ...(kind === 'application' && this.#routeResolver ? { waitForRoutes: true } : {}),
+        ...(hasConnectionCandidates(resolution) ? {} : { waitForRoutes: true }),
       });
     } catch (error) {
       settled = true;
@@ -485,11 +522,21 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       unsubscribe?.();
       throw normalizePeerError(error);
     }
-    if (kind === 'application' && input.refreshRoutes !== false) {
-      void this.#prepareRoutes(
+    if (preparing) {
+      const prepared = this.#prepareRoutes(
         input,
         signal ? AbortSignal.any([signal, attemptLifetime.signal]) : attemptLifetime.signal,
-      ).then(update, () => undefined);
+      );
+      void prepared.then(
+        () => {
+          preparing = false;
+          update();
+        },
+        () => {
+          preparing = false;
+          update();
+        },
+      );
     }
     const cancel = () => {
       void cancelPeerConnect(endpoint, requestId, () => settled);
@@ -498,6 +545,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     if (signal?.aborted) cancel();
     try {
       const stream = await connection;
+      if (reachabilityFailure) {
+        stream.abort();
+        throw reachabilityFailure;
+      }
       if (signal?.aborted) {
         stream.abort();
         signal.throwIfAborted();
@@ -505,6 +556,7 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       return stream;
     } catch (error) {
       signal?.throwIfAborted();
+      if (reachabilityFailure) throw reachabilityFailure;
       throw normalizePeerError(error);
     } finally {
       settled = true;
@@ -514,33 +566,53 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
     }
   }
 
-  #connectionCandidates(
+  #connectionResolution(
     input: RuntimeHostPeerConnectInput,
     kind: 'application' | 'mesh-control',
-  ): RuntimeHostPeerConnectCandidates {
+    preparing: boolean,
+  ): RuntimeHostPeerConnectResolution {
     const discovered =
       kind === 'application' ? this.#routeResolver?.resolveRoutes(input.peerId) : undefined;
-    const remembered =
+    const rememberedEntry =
       kind === 'application' ? this.#authenticatedReachability.get(input.peerId) : undefined;
+    const remembered = rememberedEntry?.signed;
     const authenticated =
       remembered && isPeerReachabilityLeaseRecoverable(remembered.lease, Date.now())
         ? remembered
         : undefined;
     if (remembered && !authenticated) this.#authenticatedReachability.delete(input.peerId);
-    return Object.freeze({
+    const currentAuthenticated = Boolean(
+      authenticated &&
+        rememberedEntry &&
+        isPeerReachabilityLeaseCurrent(authenticated, rememberedEntry.receipt, performance.now()),
+    );
+    const candidates = {
       routeHints: mergeAddresses(discovered?.routeHints ?? [], [
-        ...(authenticated?.lease.directRoutes ?? []),
+        ...(currentAuthenticated ? (authenticated?.lease.directRoutes ?? []) : []),
         ...input.routeHints,
+        ...(!currentAuthenticated ? (authenticated?.lease.directRoutes ?? []) : []),
       ]),
       coordinationRelays: mergeAddresses(discovered?.coordinationRelays ?? [], [
-        ...(authenticated?.lease.coordinationRoutes ?? []),
+        ...(currentAuthenticated ? (authenticated?.lease.coordinationRoutes ?? []) : []),
         ...(input.coordinationRelays ?? []),
+        ...(!currentAuthenticated ? (authenticated?.lease.coordinationRoutes ?? []) : []),
       ]),
       transitRelayPeerIds: mergeValues(
         discovered?.transitRelayPeerIds ?? [],
         input.transitRelayPeerIds,
         64,
       ),
+    };
+    const connected =
+      this.#endpoint?.connectivitySnapshot.connectedPeerIds.includes(input.peerId) ?? false;
+    return Object.freeze({
+      ...candidates,
+      state:
+        hasConnectionCandidates(candidates) || connected
+          ? 'available'
+          : preparing
+            ? 'recovering'
+            : (discovered?.state ?? 'exhausted'),
     });
   }
 
@@ -601,9 +673,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       while (!this.#closed) {
         const next = await endpoint.watchConnectivity(current.generation, 300_000);
         const previousPeers = new Set(current.connectedPeerIds);
+        const nextPeers = new Set(next.connectedPeerIds);
         current = next;
-        for (const peerId of next.connectedPeerIds) {
-          if (!previousPeers.has(peerId)) this.#notifyRouteChange(peerId);
+        for (const peerId of new Set([...previousPeers, ...nextPeers])) {
+          if (previousPeers.has(peerId) !== nextPeers.has(peerId)) this.#notifyRouteChange(peerId);
         }
       }
     } catch (error) {
@@ -699,10 +772,19 @@ interface InboundConsumer {
   readonly reject: (error: Error) => void;
 }
 
+interface AuthenticatedReachability {
+  readonly signed: SignedPeerReachabilityLeaseV1;
+  readonly receipt: PeerReachabilityLeaseReceipt;
+}
+
 interface RuntimeHostPeerConnectCandidates {
   readonly routeHints: readonly string[];
   readonly coordinationRelays: readonly string[];
   readonly transitRelayPeerIds: readonly string[];
+}
+
+interface RuntimeHostPeerConnectResolution extends RuntimeHostPeerConnectCandidates {
+  readonly state: RuntimeHostPeerRouteResolution['state'];
 }
 
 function notifyPhase(
@@ -766,6 +848,31 @@ function sameCandidates(
     sameValues(left.coordinationRelays, right.coordinationRelays) &&
     sameValues(left.transitRelayPeerIds, right.transitRelayPeerIds)
   );
+}
+
+function sameConnectionResolution(
+  left: RuntimeHostPeerConnectResolution,
+  right: RuntimeHostPeerConnectResolution,
+): boolean {
+  return left.state === right.state && sameCandidates(left, right);
+}
+
+function hasConnectionCandidates(candidates: RuntimeHostPeerConnectCandidates): boolean {
+  return (
+    candidates.routeHints.length > 0 ||
+    candidates.coordinationRelays.length > 0 ||
+    candidates.transitRelayPeerIds.length > 0
+  );
+}
+
+function connectCandidates(
+  resolution: RuntimeHostPeerConnectResolution,
+): RuntimeHostPeerConnectCandidates {
+  return {
+    routeHints: resolution.routeHints,
+    coordinationRelays: resolution.coordinationRelays,
+    transitRelayPeerIds: resolution.transitRelayPeerIds,
+  };
 }
 
 function sameValues(left: readonly string[], right: readonly string[]): boolean {

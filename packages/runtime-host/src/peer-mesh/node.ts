@@ -278,6 +278,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #recentlyReached = new Set<string>();
   readonly #reachabilityReceipts = new Map<string, PeerReachabilityLeaseReceipt>();
   readonly #completedRecoverySweeps = new Set<string>();
+  readonly #routeResolutionListeners = new Map<string, Set<() => void>>();
   #serveTask: Promise<void> | undefined;
   #closeTask: Promise<void> | undefined;
 
@@ -993,7 +994,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   async prepareRoutes(peerId: string, signal: AbortSignal): Promise<void> {
     this.#assertOpen();
     signal.throwIfAborted();
-    this.#completedRecoverySweeps.delete(peerId);
+    this.#setRecoverySweepCompleted(peerId, false);
     const localPeerId = this.#peer.identity().peerId;
     const stored = this.#store.read();
     const visible = this.#pruneCompletedRecoverySweeps(stored, localPeerId).has(peerId);
@@ -1003,9 +1004,12 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     // asks the Mesh control plane for its newest record. Callers with a
     // self-contained invitation run this reconciliation in parallel with the
     // first dial; callers without usable routes wait for it.
-    await this.#queueReconcile(signal, peerId);
-    if (this.#pruneCompletedRecoverySweeps().has(peerId)) {
-      this.#completedRecoverySweeps.add(peerId);
+    try {
+      await this.#queueReconcile(signal, peerId);
+    } finally {
+      if (!signal.aborted && !this.#lifetime.signal.aborted) {
+        this.#setRecoverySweepCompleted(peerId, true);
+      }
     }
   }
 
@@ -1029,12 +1033,35 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   subscribeRoutes(peerId: string, listener: () => void): () => void {
     this.#assertOpen();
     let current = this.resolveRoutes(peerId);
-    return this.#store.subscribe(() => {
+    const observe = () => {
       const next = this.resolveRoutes(peerId);
       if (sameResolvedRoutes(current, next)) return;
       current = next;
-      listener();
-    });
+      try {
+        listener();
+      } catch {
+        // Route observers cannot control Mesh reconciliation.
+      }
+    };
+    const listeners = this.#routeResolutionListeners.get(peerId) ?? new Set<() => void>();
+    listeners.add(observe);
+    this.#routeResolutionListeners.set(peerId, listeners);
+    const unsubscribeStore = this.#store.subscribe(observe);
+    return () => {
+      unsubscribeStore();
+      listeners.delete(observe);
+      if (listeners.size === 0) this.#routeResolutionListeners.delete(peerId);
+    };
+  }
+
+  #setRecoverySweepCompleted(peerId: string, completed: boolean): void {
+    const changed = completed
+      ? !this.#completedRecoverySweeps.has(peerId)
+      : this.#completedRecoverySweeps.has(peerId);
+    if (!changed) return;
+    if (completed) this.#completedRecoverySweeps.add(peerId);
+    else this.#completedRecoverySweeps.delete(peerId);
+    for (const listener of this.#routeResolutionListeners.get(peerId) ?? []) listener();
   }
 
   reconcile(signal?: AbortSignal): Promise<void> {
@@ -1094,6 +1121,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
     await this.#serveTask?.catch(() => undefined);
     for (const stream of this.#activeControlStreams) stream.abort();
     this.#activeControlStreams.clear();
+    this.#routeResolutionListeners.clear();
     await Promise.all([this.#admissionTail, this.#reconcileTail, this.#transitTail]);
     return this.#store.close();
   }
@@ -2192,8 +2220,8 @@ function sameResolvedRoutes(
   left: ReturnType<PeerMeshNode['resolveRoutes']>,
   right: ReturnType<PeerMeshNode['resolveRoutes']>,
 ): boolean {
-  if (!left || !right) return left === right;
   return (
+    left.state === right.state &&
     sameStringValues(left.routeHints, right.routeHints) &&
     sameStringValues(left.coordinationRelays, right.coordinationRelays) &&
     sameStringValues(left.transitRelayPeerIds, right.transitRelayPeerIds)
