@@ -1,0 +1,14 @@
+{
+  "schema": "maka/input-layout-diagnostic/1",
+  "date": "2026-09-02",
+  "readOnly": true,
+  "sentInput": false,
+  "pointerBytes": 8,
+  "actualBinaryInputBytes": 32,
+  "sourceInputBytes": 32,
+  "completeUnionInputBytes": 40,
+  "assembly": "D:/product/maka-agent/experiments/maka-cu-windows/src/bin/Release/net8.0-windows10.0.22621.0/maka-cu-windows.dll",
+  "assemblySha256": "3620D0D70A9472182F3BD7290A352FC648174ABE2F5183E94AC682A6832E3C2D",
+  "nativeDefinition": "C:/Program Files (x86)/Windows Kits/10/Include/10.0.22621.0/um/WinUser.h:6139",
+  "method": "Reflection-load the tested DLL and Marshal.SizeOf its INPUT type; separately compile the existing source definitions in memory and compare with a complete union containing the SDK MOUSEINPUT layout. No SendInput call was made by this diagnostic."
+}

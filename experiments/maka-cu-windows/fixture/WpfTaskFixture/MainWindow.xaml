@@ -1,0 +1,53 @@
+<Window x:Class="WpfTaskFixture.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="maka-cu-windows-wpf-fixture" Width="640" Height="480"
+    WindowStartupLocation="CenterScreen">
+  <Grid Margin="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+    <TextBlock Grid.Row="0" Text="maka WPF task fixture" FontSize="20" />
+    <TextBox Grid.Row="1" Margin="0,12,0,0" x:Name="Input"
+        AutomationProperties.AutomationId="wpf-input"
+        AutomationProperties.Name="WPF text input" Width="360" HorizontalAlignment="Left" />
+    <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
+      <CheckBox x:Name="ActionButton" AutomationProperties.AutomationId="wpf-button"
+          Content="Apply semantic click" Width="160" Click="ActionButton_Click"
+          Checked="ActionButton_StateChanged" Unchecked="ActionButton_StateChanged" />
+      <CheckBox x:Name="Toggle" AutomationProperties.AutomationId="wpf-toggle"
+          Margin="12,0,0,0" Content="Toggle me" Click="Toggle_Click"
+          Checked="Toggle_StateChanged" Unchecked="Toggle_StateChanged" />
+    </StackPanel>
+    <TextBlock Grid.Row="3" x:Name="Status" Margin="0,12,0,8"
+        AutomationProperties.AutomationId="wpf-status" Text="ready" />
+    <ListBox Grid.Row="4" x:Name="ChoiceList" AutomationProperties.AutomationId="wpf-list"
+        Height="80" Width="180" HorizontalAlignment="Left" Margin="0,0,0,8"
+        SelectionChanged="ChoiceList_SelectionChanged">
+      <ListBoxItem Content="Alpha" />
+      <ListBoxItem Content="Beta" />
+      <ListBoxItem Content="Gamma" />
+    </ListBox>
+    <ScrollViewer Grid.Row="4" x:Name="ScrollHost" Margin="200,0,0,0"
+        AutomationProperties.AutomationId="wpf-scroll" VerticalScrollBarVisibility="Visible"
+        Height="220" BorderBrush="Gray" BorderThickness="1">
+      <StackPanel>
+        <TextBlock Text="Scroll target" Margin="8" />
+        <ItemsControl ItemsSource="{Binding Rows}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <TextBlock Text="{Binding}" Margin="8,12" />
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+    <TextBlock Grid.Row="5" Text="Enter is intentionally not exposed as an implicit helper action."
+        Foreground="DarkSlateGray" Margin="0,10,0,0" />
+  </Grid>
+</Window>

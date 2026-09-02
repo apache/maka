@@ -1,0 +1,55 @@
+{
+  "schema": "maka.cu.windows/real-app-probe/1",
+  "generatedAt": "2026-09-02T08:38:51.541Z",
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.19.0"
+  },
+  "policy": {
+    "existingUserProfilesOpened": false,
+    "userDocumentsModified": false,
+    "temporaryLocalPageOnly": true
+  },
+  "apps": {
+    "chromium": {
+      "state": "pass",
+      "executable": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "version": "152.0.7977.64",
+      "taskEvidence": "browser-task-results.json"
+    },
+    "libreoffice": {
+      "state": "blocked",
+      "executable": null,
+      "version": null,
+      "reason": "executable not found"
+    },
+    "winui_uwp": {
+      "state": "blocked",
+      "packages": [
+        {
+          "Name": "Microsoft.WindowsCalculator",
+          "Version": "11.2607.0.0"
+        },
+        {
+          "Name": "Microsoft.WindowsNotepad",
+          "Version": "11.2607.14.0"
+        },
+        {
+          "Name": "Microsoft.Paint",
+          "Version": "11.2605.91.0"
+        }
+      ],
+      "reason": "package detected; no isolated task launched in this step"
+    }
+  },
+  "artifacts": {
+    "localWebFixture": {
+      "path": "D:\\product\\maka-agent\\experiments\\maka-cu-windows\\fixture\\web-task-fixture.html",
+      "exists": true,
+      "sizeBytes": 2965,
+      "sha256": "0B40F8CF6CB2470A723F3F92E92E9EAF626EEB2A14F3112B3A35897F08483691",
+      "lastWrite": "2026-09-02T07:36:26.679Z"
+    }
+  }
+}
