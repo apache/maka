@@ -902,10 +902,20 @@ test('one product workflow gates one draft release on every required artifact', 
       .map((target) => target.name)
       .toSorted(),
   );
-  assert.deepEqual(
-    matrix.map((entry) => entry.runner),
-    ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],
-  );
+  // The runner image is the workflow's to choose; what it may not do is choose
+  // one that disagrees with the row it builds. The native Runtime Host peer is
+  // never cross-built, so every row runs on its own platform and architecture.
+  for (const { platform, arch, runner } of matrix) {
+    if (platform === 'macos') {
+      assert.match(runner, /^macos-/u);
+      assert.equal(runner.endsWith('-intel'), arch === 'x64', runner);
+    } else if (platform === 'windows') {
+      assert.match(runner, /^windows-/u);
+    } else {
+      assert.match(runner, /^ubuntu-/u);
+      assert.equal(runner.endsWith('-arm'), arch === 'arm64', runner);
+    }
+  }
 
   const commands = Object.values(jobs)
     .flatMap((job) => job.steps ?? [])
@@ -913,10 +923,10 @@ test('one product workflow gates one draft release on every required artifact', 
     .filter((run) => typeof run === 'string')
     .join('\n');
   assert.equal((commands.match(/gh release create/gu) ?? []).length, 1);
-  // The Windows installer's name belongs to the target descriptor. The workflow
-  // resolves it — by discovering the one packaged `.exe`, or by handing the
-  // architecture to a verifier that reads the descriptor — never by spelling it.
-  assert.doesNotMatch(commands, /win-x64\.exe/u);
+  // Distributable names belong to the target descriptor. The workflow resolves
+  // them — by discovering the one packaged file, or by handing the architecture
+  // to a verifier that reads the descriptor — never by spelling one out.
+  assert.doesNotMatch(commands, /win-x64\.exe|mac-(arm64|x64)\.(zip|dmg)/u);
   assert.equal(Object.hasOwn(jobs['release-identity'].outputs, 'exe'), false);
   assert.equal(jobs.desktop['timeout-minutes'], 75);
   assert.match(commands, /npm run package:windows-autoupdate-next/u);

@@ -18,14 +18,17 @@
  */
 
 import { createHash } from 'node:crypto';
-import { access, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, open, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
-import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
+import {
+  resolveDesktopBuildVersion,
+  resolveDesktopReleaseTarget,
+  resolveRuntimeHostSetupPackage,
+} from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -297,9 +300,14 @@ export async function verifyWindowsX64Release(
     throw new Error('Windows release verification requires Windows.');
   }
 
-  const distributables = await windowsDistributables(arch, environment);
-  const exePath = resolve(distributables.exePath);
-  const zipPath = resolve(distributables.zipPath);
+  // Named from the descriptor rather than handed in as a path, the way
+  // `verify:linux` and `verify:macos` already resolve their own payloads. The
+  // workflows used to spell the installer name out in YAML, which put a second
+  // authority on the artifact name beside the descriptor — and, unlike it, that
+  // copy was checked by nothing.
+  const target = await resolveDesktopReleaseTarget(`windows-${arch}`, { environment });
+  const exePath = resolve(target.payloadPath('.exe'));
+  const zipPath = resolve(target.payloadPath('.zip'));
   const unpackedDirectory = join(dirname(exePath), 'win-unpacked');
   await access(exePath);
   await access(zipPath);
@@ -316,7 +324,7 @@ export async function verifyWindowsX64Release(
     // Which payloads a formal release publishes a `.sha256` beside is the
     // descriptor's to decide, the way `verify:linux` already reads it.
     const checksums = [];
-    for (const path of distributables.checksumSubjects) {
+    for (const path of target.checksumPaths()) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
@@ -336,38 +344,6 @@ export async function verifyWindowsX64Release(
       retryDelay: temporaryCleanupRetryDelayMs,
     });
   }
-}
-
-/**
- * Named from the descriptor rather than handed in as a path, the way
- * `verify:linux` and `verify:macos` already resolve their own payloads. The
- * workflows used to spell the installer name out in YAML, which put a second
- * authority on the artifact name beside the descriptor — and, unlike the
- * descriptor, that copy was checked by nothing.
- */
-async function windowsDistributables(arch, environment = process.env) {
-  const manifest = JSON.parse(
-    await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
-  );
-  const version = resolveDesktopBuildVersion(manifest.version, environment);
-  const target = desktopReleaseTargets(version, { nightly: version !== manifest.version }).find(
-    (entry) => entry.name === `windows-${arch}`,
-  );
-  if (!target) {
-    throw new Error('Usage: npm run verify:windows-x64 -- <x64>');
-  }
-  const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
-  return {
-    exePath: join(
-      releaseDirectory,
-      target.payloads.find((name) => name.endsWith('.exe')),
-    ),
-    zipPath: join(
-      releaseDirectory,
-      target.payloads.find((name) => name.endsWith('.zip')),
-    ),
-    checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
-  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

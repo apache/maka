@@ -44,6 +44,47 @@ export function resolveRuntimeHostSetupPackage(productVersion, environment = pro
   return `maka-agent@${resolveDesktopBuildVersion(productVersion, environment)}`;
 }
 
+/**
+ * The one place a packaging or verification step turns a target name into the
+ * files on disk. The version comes from the Desktop manifest and the nightly
+ * environment override, the names come from the descriptor, and the directory
+ * is the one electron-builder writes into — so no step spells an artifact name,
+ * and none of them can disagree about which channel it is building.
+ *
+ * It lives here rather than beside the descriptor because the descriptor cannot
+ * import `resolveDesktopBuildVersion` back out of this module without a cycle.
+ */
+export async function resolveDesktopReleaseTarget(
+  name,
+  { environment = process.env, root = repoRoot } = {},
+) {
+  const desktopRoot = join(root, 'apps', 'desktop');
+  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
+  const version = resolveDesktopBuildVersion(manifest.version, environment);
+  const nightly = version !== manifest.version;
+  const target = desktopReleaseTargets(version, { nightly }).find((entry) => entry.name === name);
+  if (!target) {
+    throw new Error(`Unknown Desktop release target ${name}.`);
+  }
+  const releaseDirectory = join(desktopRoot, 'release');
+  return {
+    ...target,
+    version,
+    nightly,
+    releaseDirectory,
+    payloadPath(extension) {
+      const payload = target.payloads.find((payloadName) => payloadName.endsWith(extension));
+      if (!payload) {
+        throw new Error(`Target ${name} ships no ${extension} payload.`);
+      }
+      return join(releaseDirectory, payload);
+    },
+    checksumPaths() {
+      return target.checksums.map((checksumName) => join(releaseDirectory, checksumName));
+    },
+  };
+}
+
 export function desktopNightlyTargets(version) {
   return desktopReleaseTargets(version, { nightly: true });
 }

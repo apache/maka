@@ -134,10 +134,20 @@ test('every packaged Desktop target ships from a runner of its own architecture'
     (target) => target.name,
   );
   assert.deepEqual(names.toSorted(), nightlyTargets.toSorted());
-  assert.deepEqual(
-    targets.map((entry) => entry.runner),
-    ['macos-15', 'macos-15-intel', 'windows-2025', 'ubuntu-24.04', 'ubuntu-24.04-arm'],
-  );
+  // The runner image is the workflow's to choose; what it may not do is choose
+  // one that disagrees with the row it builds. The native Runtime Host peer is
+  // never cross-built, so every row runs on its own platform and architecture.
+  for (const { platform, arch, runner } of targets) {
+    if (platform === 'macos') {
+      assert.match(runner, /^macos-/u);
+      assert.equal(runner.endsWith('-intel'), arch === 'x64', runner);
+    } else if (platform === 'windows') {
+      assert.match(runner, /^windows-/u);
+    } else {
+      assert.match(runner, /^ubuntu-/u);
+      assert.equal(runner.endsWith('-arm'), arch === 'arm64', runner);
+    }
+  }
 });
 
 test('the publisher verifies exact GitHub identity and assets before publishing last', async () => {

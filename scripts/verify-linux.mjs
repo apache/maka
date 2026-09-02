@@ -21,8 +21,7 @@ import { access, chmod, mkdtemp, open, readdir, readFile, rm, writeFile } from '
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
-import { desktopReleaseTargets } from './desktop-release-targets.mjs';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
 import {
   assertPackagedUpdateConfiguration,
   verifyDesktopUpdateArtifacts,
@@ -37,7 +36,6 @@ import {
 } from './verify-packaged-app.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
 
 /**
  * `e_machine`, at offset 18 of every ELF header. This is the one field that
@@ -55,37 +53,6 @@ const DEBIAN_PACKAGE_NAME = /^[a-z0-9][a-z0-9+.-]+$/u;
 
 function runCommandFromRepo(command, args, options = {}) {
   return runCommand(command, args, { cwd: repoRoot, ...options });
-}
-
-/**
- * The AppImage and the deb never share a spelling of the architecture, so the
- * target descriptor is the only place that knows both names.
- */
-async function linuxDistributables(arch, environment) {
-  const manifest = JSON.parse(
-    await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
-  );
-  const version = resolveDesktopBuildVersion(manifest.version, environment);
-  const target = desktopReleaseTargets(version, { nightly: version !== manifest.version }).find(
-    (entry) => entry.name === `linux-${arch}`,
-  );
-  if (!target) {
-    throw new Error('Usage: npm run verify:linux -- <x64|arm64>');
-  }
-  return {
-    appImagePath: join(
-      releaseDirectory,
-      target.payloads.find((name) => name.endsWith('.AppImage')),
-    ),
-    debPath: join(
-      releaseDirectory,
-      target.payloads.find((name) => name.endsWith('.deb')),
-    ),
-    checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
-    version,
-    feed: target.feed,
-    advertised: target.advertised,
-  };
 }
 
 /**
@@ -167,9 +134,11 @@ export async function verifyLinuxRelease(
     throw new Error('Linux release verification requires Linux.');
   }
 
-  const distributables = await linuxDistributables(arch, environment);
-  const appImagePath = resolve(distributables.appImagePath);
-  const debPath = resolve(distributables.debPath);
+  // The AppImage and the deb never share a spelling of the architecture, so the
+  // target descriptor is the only place that knows both names.
+  const target = await resolveDesktopReleaseTarget(`linux-${arch}`, { environment });
+  const appImagePath = resolve(target.payloadPath('.AppImage'));
+  const debPath = resolve(target.payloadPath('.deb'));
   await access(appImagePath);
   await access(debPath);
   const channel = environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release';
@@ -235,17 +204,17 @@ export async function verifyLinuxRelease(
     // a whole. Reading them here, against the payloads just verified, is what
     // keeps a dropped entry or a stale digest from surviving until publication.
     await verifyDesktopUpdateArtifacts({
-      directory: releaseDirectory,
-      metadataName: distributables.feed,
-      version: distributables.version,
-      artifactNames: distributables.advertised,
+      directory: target.releaseDirectory,
+      metadataName: target.feed,
+      version: target.version,
+      artifactNames: target.advertised,
     });
 
     // A formal release publishes a checksum beside each distributable, the way
     // the Windows verification does for its installer and archive. Each one is
     // issued only for a payload every assertion above has already accepted.
     const checksums = [];
-    for (const path of distributables.checksumSubjects) {
+    for (const path of target.checksumPaths()) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');

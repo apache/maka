@@ -220,10 +220,7 @@ jobs:
 
       - name: Verify macOS automatic update end to end
         if: matrix.platform == 'macos' && matrix.arch == 'arm64'
-        run: |
-          npm run verify:macos-autoupdate -- \
-            "apps/desktop/release/Maka-${{ needs.release-identity.outputs.version }}-mac-arm64.zip" \
-            apps/desktop/release-autoupdate-next
+        run: npm run verify:macos-autoupdate -- apps/desktop/release-autoupdate-next
 
       # Windows has no Authenticode certificate yet, so this build is unsigned
       # and there is nothing to notarize between packaging and verification.

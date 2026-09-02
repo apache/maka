@@ -32,9 +32,12 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
-import { desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
+import {
+  resolveDesktopBuildVersion,
+  resolveDesktopReleaseTarget,
+  resolveRuntimeHostSetupPackage,
+} from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -197,8 +200,13 @@ export async function verifyMacosDmg(
     throw new Error('DMG verification requires macOS.');
   }
 
-  const distributables = await macosDistributables(arch, environment);
-  const dmgPath = resolve(distributables.dmgPath);
+  // Named from the descriptor rather than handed in as a path, the way
+  // `verify:linux` already resolves its own payloads. The workflows used to
+  // spell this name out in YAML, which put a second authority on the artifact
+  // name beside the descriptor — and, unlike it, that copy was checked by
+  // nothing.
+  const target = await resolveDesktopReleaseTarget(`macos-${arch}`, { environment });
+  const dmgPath = resolve(target.payloadPath('.dmg'));
   await access(dmgPath);
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
   const mountpoint = join(temporaryDirectory, 'mounted');
@@ -225,7 +233,7 @@ export async function verifyMacosDmg(
     // Which payloads a formal release publishes a `.sha256` beside is the
     // descriptor's to decide, the way `verify:linux` already reads it.
     const checksums = [];
-    for (const path of distributables.checksumSubjects) {
+    for (const path of target.checksumPaths()) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
@@ -235,34 +243,6 @@ export async function verifyMacosDmg(
   } finally {
     await rm(temporaryDirectory, { recursive: true, force: true });
   }
-}
-
-/**
- * Named from the descriptor rather than handed in as a path, the way
- * `verify:linux` already resolves its own payloads. The workflows used to spell
- * this name out in YAML, which put a second authority on the artifact name
- * beside the one this branch exists to establish — and, unlike the descriptor,
- * that copy was checked by nothing.
- */
-async function macosDistributables(arch, environment = process.env) {
-  const manifest = JSON.parse(
-    await readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'),
-  );
-  const version = resolveDesktopBuildVersion(manifest.version, environment);
-  const target = desktopReleaseTargets(version, { nightly: version !== manifest.version }).find(
-    (entry) => entry.name === `macos-${arch}`,
-  );
-  if (!target) {
-    throw new Error('Usage: npm run verify:macos -- <arm64|x64>');
-  }
-  const releaseDirectory = join(repoRoot, 'apps', 'desktop', 'release');
-  return {
-    dmgPath: join(
-      releaseDirectory,
-      target.payloads.find((name) => name.endsWith('.dmg')),
-    ),
-    checksumSubjects: target.checksums.map((name) => join(releaseDirectory, name)),
-  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

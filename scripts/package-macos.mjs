@@ -18,16 +18,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, readFile, rename, rm } from 'node:fs/promises';
+import { access, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
-import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
+import { desktopPublishedFeeds } from './desktop-release-targets.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
-const releaseDirectory = join(desktopRoot, 'release');
 // electron is declared by apps/desktop, so resolve its install directory from
 // there rather than assuming node_modules hoisted it to the repo root. This
 // pre-flight guard exists to catch a missing electron dist before packaging;
@@ -104,31 +103,20 @@ export async function packageMacos({
     }
   }
 
-  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const nightly = buildVersion !== manifest.version;
-  const target = desktopReleaseTargets(buildVersion, { nightly }).find(
-    (entry) => entry.name === `macos-${targetArch}`,
-  );
-  const dmgPath = join(
-    releaseDirectory,
-    target.payloads.find((name) => name.endsWith('.dmg')),
-  );
-  const zipPath = join(
-    releaseDirectory,
-    target.payloads.find((name) => name.endsWith('.zip')),
-  );
+  const target = await resolveDesktopReleaseTarget(`macos-${targetArch}`, { environment: env });
+  const dmgPath = target.payloadPath('.dmg');
+  const zipPath = target.payloadPath('.zip');
   // Both architectures write the one feed clients read, and both uploads land
   // in one directory before publication. Naming the feed after its architecture
   // here is what keeps the two from overwriting each other; they are merged
   // back into the single feed at publication time.
   const updateMetadataPath = join(
-    releaseDirectory,
-    desktopPublishedFeeds(buildVersion, { nightly }).find((feed) =>
+    target.releaseDirectory,
+    desktopPublishedFeeds(target.version, { nightly: target.nightly }).find((feed) =>
       feed.mergedFrom?.includes(target.feed),
     ).name,
   );
-  const architectureMetadataPath = join(releaseDirectory, target.feed);
+  const architectureMetadataPath = join(target.releaseDirectory, target.feed);
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);
@@ -139,7 +127,7 @@ export async function packageMacos({
   await run('npm', ['run', 'build:runtime-host-peer']);
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('npm', ['run', 'check:release']);
-  await remove(releaseDirectory, { recursive: true, force: true });
+  await remove(target.releaseDirectory, { recursive: true, force: true });
   await run('npm', ['--workspace', '@maka/desktop', 'run', `package:macos-${targetArch}`]);
   await assertFile(dmgPath);
   await assertFile(zipPath);
@@ -147,7 +135,7 @@ export async function packageMacos({
   await move(updateMetadataPath, architectureMetadataPath);
   // electron-builder names the unpacked staging directory after the target:
   // `mac` for x64, `mac-<arch>` for everything else.
-  await remove(join(releaseDirectory, targetArch === 'x64' ? 'mac' : `mac-${targetArch}`), {
+  await remove(join(target.releaseDirectory, targetArch === 'x64' ? 'mac' : `mac-${targetArch}`), {
     recursive: true,
     force: true,
   });
