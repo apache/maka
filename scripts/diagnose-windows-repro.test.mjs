@@ -19,12 +19,12 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { createPackageWithOptions } from '@electron/asar';
-import { comparePe, inspectAsar } from './diagnose-windows-repro.mjs';
+import { comparePe, diagnose, inspectAsar } from './diagnose-windows-repro.mjs';
 
 function pe(sample, timestamp) {
   const bytes = Buffer.alloc(0x800);
@@ -116,4 +116,50 @@ test('hashes actual packed and unpacked ASAR file contents using Electron archiv
   assert.notEqual(left.files.get('native.node').sha256, right.files.get('native.node').sha256);
   assert.equal(left.dataHash, right.dataHash);
   assert.notEqual(left.headerHash, right.headerHash);
+});
+
+test('reports an omitted builder icon but still rejects a missing or corrupted shipped file', async (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'windows-repro-test-'));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const input = join(root, 'input');
+  mkdirSync(input);
+  writeFileSync(join(input, 'main.js'), 'same javascript');
+  for (const sample of ['a', 'b']) {
+    const evidence = join(root, `windows-repro-evidence-${sample}`);
+    const payload = join(root, `windows-repro-payload-${sample}`);
+    mkdirSync(evidence);
+    mkdirSync(join(payload, 'win-unpacked/resources'), { recursive: true });
+    const archive = join(payload, 'win-unpacked/resources/app.asar');
+    await createPackageWithOptions(input, archive, {});
+    const bytes = readFileSync(archive);
+    writeFileSync(
+      join(evidence, 'environment.json'),
+      JSON.stringify({ sourceCommit: '48b0408003edcf9594c38e2cb1bfc79beb4283b5' }),
+    );
+    writeFileSync(
+      join(evidence, 'files.json'),
+      JSON.stringify([
+        { path: '.icon-ico/icon.ico', size: 1, sha256: 'unavailable' },
+        {
+          path: 'win-unpacked/resources/app.asar',
+          size: bytes.length,
+          sha256: createHash('sha256').update(bytes).digest('hex'),
+        },
+      ]),
+    );
+  }
+  const result = diagnose(root);
+  assert.equal(result.verifiedAvailableManifestHashes, true);
+  assert.deepEqual(
+    result.unavailableArtifactFiles.map((file) => file.path),
+    ['.icon-ico/icon.ico', '.icon-ico/icon.ico'],
+  );
+  assert.equal(result.differingPaths, 0);
+  const archive = join(root, 'windows-repro-payload-a/win-unpacked/resources/app.asar');
+  const corrupted = readFileSync(archive);
+  corrupted[corrupted.length - 1] ^= 1;
+  writeFileSync(archive, corrupted);
+  assert.throws(() => diagnose(root), /Artifact hash mismatch/u);
+  rmSync(archive);
+  assert.throws(() => diagnose(root), /ENOENT/u);
 });

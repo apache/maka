@@ -238,6 +238,7 @@ function textEvidence(a, b) {
 }
 
 export function diagnose(root) {
+  const unavailableArtifactFiles = [];
   const samples = ['a', 'b'].map((sample) => {
     const evidence = join(root, `windows-repro-evidence-${sample}`);
     const environment = JSON.parse(readFileSync(join(evidence, 'environment.json')));
@@ -247,7 +248,15 @@ export function diagnose(root) {
     );
     const payload = join(root, `windows-repro-payload-${sample}`);
     for (const [path, file] of files) {
-      const bytes = readFileSync(under(payload, path));
+      let bytes;
+      try {
+        bytes = readFileSync(under(payload, path));
+      } catch (error) {
+        // upload-artifact excluded this hidden builder scratch file, not a shipped payload.
+        if (error.code !== 'ENOENT' || path !== '.icon-ico/icon.ico') throw error;
+        unavailableArtifactFiles.push({ sample, path, recordedSha256: file.sha256 });
+        continue;
+      }
       assert.equal(bytes.length, file.size, `Artifact size mismatch: ${sample}/${path}`);
       assert.equal(hash(bytes), file.sha256, `Artifact hash mismatch: ${sample}/${path}`);
     }
@@ -295,7 +304,8 @@ export function diagnose(root) {
   }
   return {
     sourceCommit,
-    verifiedOriginalManifestHashes: true,
+    verifiedAvailableManifestHashes: true,
+    unavailableArtifactFiles,
     environments: samples.map((sample) => sample.environment),
     differingPaths: differences.length,
     onlyA: differences.filter((path) => !samples[1].files.has(path)),
