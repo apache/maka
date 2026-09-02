@@ -24,10 +24,10 @@ import {
   connectExistingRuntimeHost,
   consumeAccessCredentialDelivery,
   issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
 } from '@maka/runtime-host/client';
 import {
   isOperationKey,
-  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
   REMOTE_OWNER_OPERATION_GRANTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
   type AccessCredentialRotationRevokeInput,

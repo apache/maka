@@ -19,7 +19,7 @@
 
 import { z } from 'zod';
 import { consumeAccessCredentialDelivery } from '../control/access-credential-delivery.js';
-import { REMOTE_DESKTOP_OWNER_ACCESS_POLICY, requireHostRootId } from '../protocol/index.js';
+import { REMOTE_OWNER_OPERATION_GRANTS, requireHostRootId } from '../protocol/index.js';
 import type { RuntimeHostConnection } from './connection.js';
 import {
   decodeRuntimeHostRemoteTransport,
@@ -29,6 +29,13 @@ import {
 
 const PREFIX = 'maka-runtime-host:connect:v1:';
 const ENCODED_MAX_BYTES = 48 * 1024;
+
+export const REMOTE_DESKTOP_OWNER_ACCESS_POLICY = Object.freeze({
+  principalKind: 'remote_owner' as const,
+  operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
+  canPublishClientCapabilities: true,
+  canUseHostPaths: false,
+});
 
 const boundedString = (maxBytes: number) =>
   z

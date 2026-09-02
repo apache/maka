@@ -169,6 +169,7 @@ export {
   decodeRuntimeHostOwnerConnectionCode,
   encodeRuntimeHostOwnerConnectionCode,
   issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
   type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
