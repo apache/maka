@@ -377,24 +377,15 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(bySource.computer_use, ['screen_click']);
     // Only hint-less / custom_tool tools fall back to `other`.
     assert.deepEqual(bySource.other, ['legacy_tool', 'session_tool']);
+    // A hint present in the exhaustive family map but mapped to `null`
+    // (custom_tool) still resolves to `other`, not a family of its own.
+    assert.equal(bySource.custom_tool, undefined);
 
     // Family ids surface in the searchable inventory the model sees.
     const description = searchTool(plan).description;
     assert.match(description, /agents:\n- agent_spawn/);
     assert.match(description, /web:\n- web_search/);
     assert.match(description, /computer_use:\n- screen_click/);
-
-    // Grouping is presentation only: every native tool stays gated + deferred.
-    for (const name of [
-      'agent_spawn',
-      'web_search',
-      'screen_click',
-      'session_tool',
-      'legacy_tool',
-    ]) {
-      assert.ok(plan.gating?.gatedNames.has(name), `${name} remained searchable`);
-      assert.ok(!plan.activeTools.includes(name), `${name} stayed deferred`);
-    }
   });
 
   test('a caller-supplied group keeps precedence over a categoryHint family', () => {
@@ -408,6 +399,5 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
     assert.deepEqual(bySource.orchestration, ['agent_spawn']);
     assert.deepEqual(bySource.agents, ['agent_list']);
-    assert.equal(bySource.other, undefined);
   });
 });

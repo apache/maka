@@ -60,10 +60,14 @@ const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
  * *presentation* in the deferred-tool search inventory: it never loads a tool
  * schema and never affects permission classification. Several permission
  * categories intentionally collapse into one browsing family (e.g. every shell
- * bucket → `shell`). `custom_tool` is deliberately absent so our own
+ * bucket → `shell`). `custom_tool` is deliberately `null` so our own
  * session-scoped tools without a stronger hint keep falling back to `other`.
+ *
+ * The map is TOTAL over `ToolCategory` on purpose: adding a new category to the
+ * union forces an explicit decision here (family or `null`) at compile time,
+ * instead of silently collapsing the new category into `other`.
  */
-const CATEGORY_FAMILY: Partial<Record<ToolCategory, { id: string; label: string }>> = {
+const CATEGORY_FAMILY: Record<ToolCategory, { id: string; label: string } | null> = {
   read: { id: 'filesystem', label: 'Filesystem & search' },
   file_write: { id: 'filesystem', label: 'Filesystem & search' },
   fs_destructive: { id: 'filesystem', label: 'Filesystem & search' },
@@ -77,6 +81,8 @@ const CATEGORY_FAMILY: Partial<Record<ToolCategory, { id: string; label: string 
   computer_use: { id: 'computer_use', label: 'Computer use' },
   client_capability: { id: 'client_capability', label: 'Client capabilities' },
   subagent: { id: 'agents', label: 'Agent orchestration' },
+  // null = intentionally ungrouped; falls back to the `other` bucket.
+  custom_tool: null,
 };
 
 /** Optional search metadata for a subset of the bound deferred tools. */
@@ -220,9 +226,10 @@ export class ToolAvailabilityRuntime {
       const familyMembers = new Map<string, { label?: string; names: string[] }>();
       const otherNames: string[] = [];
       for (const name of ungrouped) {
-        const family = this.toolsByName.get(name)?.categoryHint
-          ? CATEGORY_FAMILY[this.toolsByName.get(name)!.categoryHint!]
-          : undefined;
+        const hint = this.toolsByName.get(name)?.categoryHint;
+        // A mapped-but-`null` entry (e.g. custom_tool) and an absent hint both
+        // route to `other`; only a non-null family is bucketed.
+        const family = hint ? CATEGORY_FAMILY[hint] : null;
         if (!family) {
           otherNames.push(name);
           continue;
