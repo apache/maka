@@ -119,6 +119,10 @@ import type {
   RootExecutionDescriptor,
 } from '@maka/core/agent-run';
 import type { ArtifactRecord } from '@maka/core/artifacts';
+import {
+  continuationTargetRunHeader,
+  runHeaderMatchesClaimTarget,
+} from '@maka/core/runtime-boundary';
 import type { ContinuationClaimV1 } from '@maka/core/runtime-boundary';
 import type {
   RuntimeEventStore,
@@ -4415,7 +4419,7 @@ export class SessionManager {
       } catch (error) {
         if (!isMissingRunError(error)) throw error;
         try {
-          await this.deps.runStore.createRun(claim.targetRunHeader, { durable: true });
+          await this.deps.runStore.createRun(continuationTargetRunHeader(claim), { durable: true });
           run = await this.deps.runStore.readRun(sessionId, claim.target.runId);
         } catch (createError) {
           try {
@@ -4429,11 +4433,7 @@ export class SessionManager {
       let state =
         (await authority.readContinuationClaimStateByBoundary(claim.boundaryDigest)) ??
         initialState;
-      if (
-        state.startEventId
-          ? !claimTargetRunHeaderIsCompatible(run, claim.targetRunHeader)
-          : !isDeepStrictEqual(run, claim.targetRunHeader)
-      ) {
+      if (!runHeaderMatchesClaimTarget(run, claim)) {
         throw new Error(
           `Continuation claim target Run header conflicts with claim ${claim.claimId}`,
         );
@@ -4848,7 +4848,7 @@ function buildContinuationRepairStartEvent(claim: ContinuationClaimV1): RuntimeE
     role: 'system',
     author: 'system',
     modelVisibility: 'hidden',
-    content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
+    content: claim.targetOpening,
     actions: {
       continuationStart: {
         protocol: 'continuation_start_v2',
@@ -4893,38 +4893,26 @@ function assertClaimOwnsHostedLinkedChildAdmission(
   ) {
     throw new Error('Linked child admission conflicts with its continuation claim target');
   }
-  const header = claim.targetRunHeader;
+  const { lineage, source: openSource } = claim.targetOpening;
   const source = claim.boundary.segments.at(-1)!;
-  const continuationSource = header.continuationSource;
-  const continuationSourceV2 =
-    continuationSource !== undefined &&
-    'protocol' in continuationSource &&
-    continuationSource.protocol === 'continuation_source_v2'
-      ? continuationSource
-      : undefined;
   if (
-    header.sessionId !== claim.target.sessionId ||
-    header.invocationId !== claim.target.invocationId ||
-    header.runId !== claim.target.runId ||
-    header.turnId !== claim.target.turnId ||
-    header.status !== 'created' ||
-    header.agentId !== input.execution.agentId ||
-    header.agentName !== input.execution.agentName ||
+    lineage?.agentId !== input.execution.agentId ||
+    lineage.agentName !== input.execution.agentName ||
     source.identity.sessionId !== input.sessionId ||
     source.identity.runId !== input.execution.sourceRunId ||
-    !continuationSourceV2 ||
-    continuationSourceV2.claimId !== claim.claimId ||
-    continuationSourceV2.boundaryDigest !== claim.boundaryDigest ||
-    continuationSourceV2.sourceRunId !== input.execution.sourceRunId
+    openSource.kind !== 'continuation' ||
+    openSource.claimId !== claim.claimId ||
+    openSource.boundaryDigest !== claim.boundaryDigest ||
+    openSource.sourceRunId !== input.execution.sourceRunId
   ) {
     throw new Error('Linked child admission continuation claim identity is inconsistent');
   }
   if (
     input.execution.kind === 'linked_child_resume'
-      ? header.resumedFromRunId !== input.execution.sourceRunId ||
-        header.retriedFromRunId !== undefined
-      : header.retriedFromRunId !== input.execution.sourceRunId ||
-        header.resumedFromRunId !== undefined
+      ? lineage.resumedFromRunId !== input.execution.sourceRunId ||
+        lineage.retriedFromRunId !== undefined
+      : lineage.retriedFromRunId !== input.execution.sourceRunId ||
+        lineage.resumedFromRunId !== undefined
   ) {
     throw new Error('Linked child admission continuation lineage is inconsistent');
   }
@@ -4936,26 +4924,6 @@ async function readImmutableRuntimeEventsOrEmpty(
   runId: string,
 ): Promise<RuntimeEvent[]> {
   return authority.readImmutableRuntimeEvents(sessionId, runId);
-}
-
-function claimTargetRunHeaderIsCompatible(
-  actual: AgentRunHeader,
-  expected: AgentRunHeader,
-): boolean {
-  const immutable = (header: AgentRunHeader) => {
-    const {
-      status: _status,
-      updatedAt: _updatedAt,
-      completedAt: _completedAt,
-      failureClass: _failureClass,
-      failureMessage: _failureMessage,
-      abortSource: _abortSource,
-      traceWriteError: _traceWriteError,
-      ...rest
-    } = header;
-    return rest;
-  };
-  return isDeepStrictEqual(immutable(actual), immutable(expected));
 }
 
 function isMissingRunError(error: unknown): boolean {

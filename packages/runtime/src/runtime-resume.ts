@@ -26,6 +26,10 @@ import {
   type RuntimeEventFunctionCallContent,
   type RuntimeEventFunctionResponseContent,
 } from '@maka/core/runtime-event';
+import {
+  continuationStartEventMatchesClaim,
+  runHeaderMatchesClaimTarget,
+} from '@maka/core/runtime-boundary';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
@@ -533,7 +537,7 @@ export class RuntimeContinuationPlanner {
       );
     }
     const targetRun = run;
-    if (!claimTargetRunHeaderMatches(targetRun, claim)) {
+    if (!runHeaderMatchesClaimTarget(targetRun, claim)) {
       return parkedPlan(
         'continuation_claim_repair_required',
         'durable continuation claim target Run identity does not match its claim',
@@ -557,7 +561,7 @@ export class RuntimeContinuationPlanner {
     if (
       !state.startEventId ||
       prefix.events[0]?.id !== state.startEventId ||
-      !continuationStartMatchesClaim(prefix.events[0], claim, state.startKind)
+      !continuationStartEventMatchesClaim(prefix.events[0], claim, state.startKind)
     ) {
       return parkedPlan(
         'continuation_claim_repair_required',
@@ -776,8 +780,8 @@ export class RuntimeContinuationPlanner {
         state.claim.boundaryDigest !== edge.boundaryDigest ||
         state.startEventId !== edge.startEvent.id ||
         state.startKind !== edge.startKind ||
-        !claimTargetRunHeaderMatches(edge.childRunHeader, state.claim) ||
-        !continuationStartMatchesClaim(edge.startEvent, state.claim, state.startKind)
+        !runHeaderMatchesClaimTarget(edge.childRunHeader, state.claim) ||
+        !continuationStartEventMatchesClaim(edge.startEvent, state.claim, state.startKind)
       ) {
         throw new RuntimeLineageError(
           'runtime_lineage_claim_mismatch',
@@ -798,8 +802,11 @@ export class RuntimeContinuationPlanner {
         providerProjectionVersion: edge.providerProjectionVersion,
         admissionRoute: {
           runHeaders,
-          targetProviderStateIdentity: state.claim.targetRunHeader.providerStateIdentity,
-          targetModelId: state.claim.targetRunHeader.modelId,
+          targetProviderStateIdentity:
+            state.claim.targetOpening.route.provenance === 'runtime'
+              ? state.claim.targetOpening.route.providerStateIdentity
+              : undefined,
+          targetModelId: state.claim.targetOpening.route.modelId,
         },
       });
       if (
@@ -1486,76 +1493,4 @@ function hasMatchingCall(
   response: RuntimeEventFunctionResponseContent,
 ): boolean {
   return call !== undefined && call.name === response.name;
-}
-
-function claimTargetRunHeaderMatches(actual: AgentRunHeader, claim: ContinuationClaimV1): boolean {
-  const candidate = actual as unknown as Record<string, unknown>;
-  const expected = claim.targetRunHeader as unknown as Record<string, unknown>;
-  const immutable = (header: Record<string, unknown>) => {
-    const {
-      status: _status,
-      updatedAt: _updatedAt,
-      completedAt: _completedAt,
-      failureClass: _failureClass,
-      failureMessage: _failureMessage,
-      abortSource: _abortSource,
-      traceWriteError: _traceWriteError,
-      ...rest
-    } = header;
-    return rest;
-  };
-  return isDeepStrictEqual(immutable(candidate), immutable(expected));
-}
-
-function continuationStartMatchesClaim(
-  event: RuntimeEvent | undefined,
-  claim: ContinuationClaimV1,
-  startKind: ContinuationClaimStateV1['startKind'],
-): boolean {
-  const start = event?.actions?.continuationStart;
-  const runtimeProtocol = event?.actions?.runtimeProtocol;
-  const actionKeys = event?.actions ? Object.keys(event.actions) : [];
-  const actionShapeMatches =
-    actionKeys.includes('continuationStart') &&
-    actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
-    actionKeys.length === (runtimeProtocol === undefined ? 1 : 2);
-  const runtimeProtocolMatches =
-    runtimeProtocol === undefined ||
-    (startKind === 'runtime_admission' &&
-      runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1);
-  const source = claim.boundary.segments.at(-1)!;
-  return Boolean(
-    event &&
-      event.sessionId === claim.target.sessionId &&
-      event.invocationId === claim.target.invocationId &&
-      event.runId === claim.target.runId &&
-      event.turnId === claim.target.turnId &&
-      event.partial !== true &&
-      event.role === 'system' &&
-      event.author === 'system' &&
-      event.status === undefined &&
-      // Event 1 of a continuation target is also that invocation's opening fact.
-      isDeepStrictEqual(
-        event.content,
-        runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
-      ) &&
-      event.actions &&
-      actionShapeMatches &&
-      runtimeProtocolMatches &&
-      start?.protocol === 'continuation_start_v2' &&
-      start.provenance === startKind &&
-      start.claimId === claim.claimId &&
-      start.boundaryDigest === claim.boundaryDigest &&
-      start.replayManifestDigest === claim.boundary.manifestDigest &&
-      start.providerProjectionVersion === claim.providerProjectionVersion &&
-      start.providerReplayDigest === claim.providerReplayDigest &&
-      isDeepStrictEqual(start.immediateSource, {
-        sessionId: source.identity.sessionId,
-        invocationId: source.identity.invocationId,
-        runId: source.identity.runId,
-        turnId: source.identity.turnId,
-        highWater: source.position.lastEventSeq,
-        prefixDigest: source.prefixDigest,
-      }),
-  );
 }

@@ -83,6 +83,7 @@ import {
 } from '@maka/core/tool-ledger-scanner';
 import {
   buildImmutableRuntimePrefix,
+  continuationStartEventMatchesClaim,
   decodeContinuationClaim,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
@@ -1030,7 +1031,7 @@ export class SqliteRuntimeStore
               target_invocation_id,
               target_run_id,
               target_turn_id,
-              target_run_header_json,
+              target_opening_json,
               claimed_at,
               protocol_version
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
@@ -1051,7 +1052,7 @@ export class SqliteRuntimeStore
             claim.target.invocationId,
             claim.target.runId,
             claim.target.turnId,
-            stableJsonStringify(claim.targetRunHeader),
+            stableJsonStringify(claim.targetOpening),
             claim.claimedAt,
           );
       } catch (error) {
@@ -1122,7 +1123,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -3112,7 +3113,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -3143,7 +3144,7 @@ export class SqliteRuntimeStore
           target_invocation_id,
           target_run_id,
           target_turn_id,
-          target_run_header_json,
+          target_opening_json,
           claimed_at,
           start_event_id,
           start_kind,
@@ -4096,54 +4097,7 @@ function assertContinuationStartEvent(
   event: RuntimeEvent,
   startKind: 'runtime_admission' | 'claim_repair',
 ): void {
-  const start = event.actions?.continuationStart;
-  const runtimeProtocol = event.actions?.runtimeProtocol;
-  const actionKeys = event.actions ? Object.keys(event.actions) : [];
-  const validActionShape =
-    actionKeys.includes('continuationStart') &&
-    actionKeys.every((key) => key === 'continuationStart' || key === 'runtimeProtocol') &&
-    actionKeys.length === (runtimeProtocol === undefined ? 1 : 2);
-  const validRuntimeProtocol =
-    runtimeProtocol === undefined ||
-    (startKind === 'runtime_admission' &&
-      runtimeProtocol.toolBoundary === TOOL_BOUNDARY_PROTOCOL_V1);
-  const source = claim.boundary.segments.at(-1)!;
-  if (
-    event.sessionId !== claim.target.sessionId ||
-    event.invocationId !== claim.target.invocationId ||
-    event.runId !== claim.target.runId ||
-    event.turnId !== claim.target.turnId ||
-    event.ts < claim.claimedAt ||
-    event.partial ||
-    event.role !== 'system' ||
-    event.author !== 'system' ||
-    event.status !== undefined ||
-    // Event 1 of a continuation target is also that invocation's opening fact,
-    // and the claim's target header is what it must project from.
-    !isDeepStrictEqual(
-      event.content,
-      runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
-    ) ||
-    !event.actions ||
-    !validActionShape ||
-    !validRuntimeProtocol ||
-    !start ||
-    start.protocol !== 'continuation_start_v2' ||
-    start.provenance !== startKind ||
-    start.claimId !== claim.claimId ||
-    start.boundaryDigest !== claim.boundaryDigest ||
-    start.replayManifestDigest !== claim.boundary.manifestDigest ||
-    start.providerProjectionVersion !== claim.providerProjectionVersion ||
-    start.providerReplayDigest !== claim.providerReplayDigest ||
-    !isDeepStrictEqual(start.immediateSource, {
-      sessionId: source.identity.sessionId,
-      invocationId: source.identity.invocationId,
-      runId: source.identity.runId,
-      turnId: source.identity.turnId,
-      highWater: source.position.lastEventSeq,
-      prefixDigest: source.prefixDigest,
-    })
-  ) {
+  if (!continuationStartEventMatchesClaim(event, claim, startKind)) {
     throw new Error('Invalid continuation-start authority event');
   }
 }
@@ -4499,7 +4453,7 @@ interface ContinuationClaimStorageRow {
   target_invocation_id: string;
   target_run_id: string;
   target_turn_id: string;
-  target_run_header_json: string;
+  target_opening_json: string;
   claimed_at: number;
   start_event_id: string | null;
   start_kind: 'runtime_admission' | 'claim_repair' | null;
@@ -4686,9 +4640,7 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
     throw new Error(`Unsupported continuation claim protocol ${row.protocol_version}`);
   }
   const boundary = JSON.parse(row.boundary_json) as unknown;
-  const targetRunHeader = decodePersistedAgentRunHeader(
-    markPersisted<AgentRunHeader>(JSON.parse(row.target_run_header_json)),
-  );
+  const targetOpening = JSON.parse(row.target_opening_json) as unknown;
   const claim = decodeContinuationClaim({
     protocol: 'continuation_claim_v1',
     claimId: row.claim_id,
@@ -4702,7 +4654,7 @@ function decodeContinuationClaimRow(row: ContinuationClaimStorageRow): Continuat
       runId: row.target_run_id,
       turnId: row.target_turn_id,
     },
-    targetRunHeader,
+    targetOpening,
     claimedAt: row.claimed_at,
   });
   const source = claim.boundary.segments.at(-1)!;

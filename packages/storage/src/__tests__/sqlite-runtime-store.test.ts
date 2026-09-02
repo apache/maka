@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, it } from 'node:test';
-import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
+import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { RunSealedError } from '@maka/core/runtime-event-store';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -824,7 +824,7 @@ describe('SqliteRuntimeStore', () => {
     });
   });
 
-  it('decodes a persisted continuation target without widening new claims', async () => {
+  it('refuses a continuation target opening it cannot read, stored or submitted', async () => {
     await withStore(async (store, dbPath) => {
       const claim = continuationClaim();
       await persistImmutablePrefix(store, continuationSourcePrefix());
@@ -833,13 +833,16 @@ describe('SqliteRuntimeStore', () => {
           store.claimContinuation({
             claim: {
               ...claim,
-              targetRunHeader: {
-                ...claim.targetRunHeader,
-                permissionMode: 'execute',
-              } as unknown as ContinuationClaimV1['targetRunHeader'],
+              targetOpening: {
+                ...claim.targetOpening,
+                configuration: {
+                  ...claim.targetOpening.configuration,
+                  permissionMode: 'execute',
+                },
+              } as unknown as ContinuationClaimV1['targetOpening'],
             },
           }),
-        /Invalid AgentRun header schema/,
+        /Invalid RuntimeEvent invocation_opened schema/,
       );
       assert.equal((await store.claimContinuation({ claim })).kind, 'acquired');
 
@@ -847,9 +850,9 @@ describe('SqliteRuntimeStore', () => {
       try {
         database.exec(`
           UPDATE runtime_continuation_claims
-          SET target_run_header_json = json_set(
-            target_run_header_json,
-            '$.permissionMode',
+          SET target_opening_json = json_set(
+            target_opening_json,
+            '$.configuration.permissionMode',
             'execute'
           )
           WHERE claim_id = 'claim-1';
@@ -858,8 +861,15 @@ describe('SqliteRuntimeStore', () => {
         database.close();
       }
 
-      const persisted = await store.readContinuationClaimByBoundary(claim.boundaryDigest);
-      assert.equal(persisted?.targetRunHeader.permissionMode, 'ask');
+      // A persisted Run header used to be widened on read. The opening fact has
+      // no legacy layer and none is wanted: a claim whose frozen opening cannot
+      // be read cannot authenticate the start event it exists to authenticate,
+      // and admitting one against a guessed opening would be the failure this
+      // record is meant to prevent.
+      await assert.rejects(
+        store.readContinuationClaimByBoundary(claim.boundaryDigest),
+        /Invalid RuntimeEvent invocation_opened schema/,
+      );
     });
   });
 
@@ -1914,32 +1924,37 @@ function continuationClaimForBoundary(
     providerProjectionVersion: 1,
     providerReplayDigest: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     target,
-    targetRunHeader: {
-      ...target,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'connection-1',
-      modelId: 'model-1',
-      cwd: '/workspace/repo',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      agentSwarmAuthorization: 'none',
-      createdAt: claimedAt,
-      updatedAt: claimedAt,
-      parentRunId: source.identity.runId,
-      parentTurnId: source.identity.turnId,
-      continuationSource: {
-        protocol: 'continuation_source_v2',
-        claimId,
-        boundaryDigest: boundary.manifestDigest,
+    targetOpening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'unknown',
+        backendKind: 'fake',
+        llmConnectionSlug: 'connection-1',
+        modelId: 'model-1',
+      },
+      configuration: {
+        cwd: '/workspace/repo',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: DEFAULT_TOOL_MODE,
+        agentSwarmAuthorization: 'none',
+      },
+      root: { kind: 'user' },
+      source: {
+        kind: 'continuation',
         sourceInvocationId: source.identity.invocationId,
         sourceRunId: source.identity.runId,
         sourceTurnId: source.identity.turnId,
         sourceRuntimeEventHighWater: source.position.lastEventSeq,
-        sourcePrefixDigest: source.prefixDigest,
-        replayManifestDigest: boundary.manifestDigest,
+        claimId,
+        boundaryDigest: boundary.manifestDigest,
+      },
+      lineage: {
+        parentRunId: source.identity.runId,
+        parentTurnId: source.identity.turnId,
       },
     },
     claimedAt,
@@ -2023,7 +2038,7 @@ function continuationStartEvent(
     role: 'system',
     author: 'system',
     modelVisibility: 'hidden',
-    content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
+    content: claim.targetOpening,
     actions: {
       ...(overrides.toolBoundaryProtocol
         ? { runtimeProtocol: { toolBoundary: overrides.toolBoundaryProtocol } }

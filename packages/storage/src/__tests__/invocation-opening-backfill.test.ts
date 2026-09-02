@@ -213,6 +213,9 @@ function rewindRuntimeSchemaToPreviousVersion(db: DatabaseSync): void {
   db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');
   db.exec('DROP TABLE IF EXISTS runtime_legacy_invocation_openings');
   db.exec("DELETE FROM runtime_events WHERE event_kind = 'invocation_opened'");
+  db.exec(
+    'ALTER TABLE runtime_continuation_claims RENAME COLUMN target_opening_json TO target_run_header_json',
+  );
   db.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
 }
 

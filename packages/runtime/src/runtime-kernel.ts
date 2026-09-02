@@ -20,6 +20,7 @@
 import type { AgentRunHeader, AgentRunStore } from '@maka/core/agent-run';
 import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
 import {
+  continuationTargetRunHeader,
   decodeRuntimeBoundaryCursor,
   type ContinuationClaimV1,
   type ImmutableRuntimePrefixV1,
@@ -840,7 +841,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
       now: this.deps.now,
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
-      claimedRunHeader: claim.targetRunHeader,
+      // Round-tripped through the claim on purpose: createRunRecord compares it
+      // against the header it computes, so every continuation proves the claim's
+      // opening still reconstructs the run it authorised.
+      claimedRunHeader: continuationTargetRunHeader(claim),
       effectiveToolMode,
       continuationFailpoint: this.deps.continuationFailpoint,
       commitContinuationStart: async (startedAt) => {
@@ -858,7 +862,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
             modelVisibility: 'hidden',
             // The start event is event 1 of the target invocation, so it is
             // also where that invocation's opening fact lives.
-            content: runtimeInvocationOpeningFromRunHeader(claim.targetRunHeader),
+            content: claim.targetOpening,
             actions: {
               ...(continuationToolBoundaryProtocol
                 ? {
@@ -2869,7 +2873,7 @@ function continuationClaimForExecution(
       runId: continuation.runId,
       turnId: continuation.turnId,
     },
-    targetRunHeader,
+    targetOpening: runtimeInvocationOpeningFromRunHeader(targetRunHeader),
     claimedAt,
   };
 }

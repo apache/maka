@@ -509,6 +509,9 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
 
     CREATE INDEX runtime_legacy_invocation_openings_by_session
       ON runtime_legacy_invocation_openings(session_id, opened_at, invocation_id);
+
+    ALTER TABLE runtime_continuation_claims
+      RENAME COLUMN target_run_header_json TO target_opening_json;
     `,
   ],
 ]);
@@ -520,8 +523,46 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
  * writer can never classify a field two different ways.
  */
 const DATA_MIGRATIONS: ReadonlyMap<number, (db: DatabaseSync) => void> = new Map([
-  [16, backfillInvocationOpeningFacts],
+  [
+    16,
+    (db) => {
+      backfillInvocationOpeningFacts(db);
+      projectContinuationClaimOpenings(db);
+    },
+  ],
 ]);
+
+/**
+ * Replace each open claim's embedded target Run header with the opening fact it
+ * always implied.
+ *
+ * The header was only ever there so the start event could be checked against
+ * it, and the check went through the projection anyway. Projecting once, here,
+ * leaves one representation instead of a copy plus a derivation.
+ *
+ * A row this cannot project is dropped rather than left half-migrated: an
+ * undecodable claim could not have admitted a start event before this migration
+ * either, and keeping it would only block the boundary it holds.
+ */
+function projectContinuationClaimOpenings(db: DatabaseSync): void {
+  const rows = db
+    .prepare('SELECT claim_id, target_opening_json FROM runtime_continuation_claims')
+    .all() as Array<{ claim_id: string; target_opening_json: string }>;
+  const update = db.prepare(
+    'UPDATE runtime_continuation_claims SET target_opening_json = ? WHERE claim_id = ?',
+  );
+  const remove = db.prepare('DELETE FROM runtime_continuation_claims WHERE claim_id = ?');
+  for (const row of rows) {
+    try {
+      const header = decodePersistedAgentRunHeader(
+        JSON.parse(row.target_opening_json) as PersistedValue<AgentRunHeader>,
+      );
+      update.run(JSON.stringify(runtimeInvocationOpeningFromRunHeader(header)), row.claim_id);
+    } catch {
+      remove.run(row.claim_id);
+    }
+  }
+}
 
 /**
  * Give every Run header its opening fact, so that after this migration the

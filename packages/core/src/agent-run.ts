@@ -873,6 +873,8 @@ export function runtimeInvocationOpeningFromRunHeader(
 ): RuntimeEventInvocationOpenedContent {
   const lineage: RuntimeInvocationLineage = {
     ...(header.parentRunId !== undefined ? { parentRunId: header.parentRunId } : {}),
+    ...(header.resumedFromRunId !== undefined ? { resumedFromRunId: header.resumedFromRunId } : {}),
+    ...(header.retriedFromRunId !== undefined ? { retriedFromRunId: header.retriedFromRunId } : {}),
     ...(header.parentTurnId !== undefined ? { parentTurnId: header.parentTurnId } : {}),
     ...(header.parentSessionId !== undefined ? { parentSessionId: header.parentSessionId } : {}),
     ...(header.retriedFromTurnId !== undefined

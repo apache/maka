@@ -278,6 +278,9 @@ export type RuntimeInvocationRootAuthority =
 /** Turn/session lineage that is immutable once the invocation opens. */
 export interface RuntimeInvocationLineage {
   parentRunId?: string;
+  /** The run this one continues, and the run it re-attempts. Never both. */
+  resumedFromRunId?: string;
+  retriedFromRunId?: string;
   parentTurnId?: string;
   parentSessionId?: string;
   retriedFromTurnId?: string;
@@ -721,6 +724,8 @@ const INVOCATION_LINEAGE_SHAPE = defineObjectShape<RuntimeInvocationLineage>()(
   [],
   [
     'parentRunId',
+    'resumedFromRunId',
+    'retriedFromRunId',
     'parentTurnId',
     'parentSessionId',
     'retriedFromTurnId',
@@ -1148,6 +1153,8 @@ function isRuntimeInvocationLineage(value: unknown): value is RuntimeInvocationL
     Object.keys(value).length > 0 &&
     [
       value.parentRunId,
+      value.resumedFromRunId,
+      value.retriedFromRunId,
       value.parentTurnId,
       value.parentSessionId,
       value.retriedFromTurnId,

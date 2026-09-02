@@ -23,7 +23,9 @@ import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
+  continuationTargetRunHeader,
   decodeContinuationClaim,
+  runHeaderMatchesClaimTarget,
   runtimePrefixSegment,
   type RuntimeBoundaryCursorV1,
   type RuntimePrefixIdentityV1,
@@ -298,6 +300,63 @@ describe('immutable RuntimeEvent boundary', () => {
       /target turnId reuses source identity/,
     );
   });
+
+  it('rejects a target opening that does not name the boundary the claim holds', () => {
+    const boundary = boundaryForRuns('run-source');
+    const claim = claimForBoundary(boundary);
+
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          targetOpening: {
+            ...claim.targetOpening,
+            source: { ...claim.targetOpening.source, sourceRunId: 'run-elsewhere' },
+          },
+        }),
+      /target opening mismatch/,
+    );
+    assert.throws(
+      () =>
+        decodeContinuationClaim({
+          ...claim,
+          targetOpening: { ...claim.targetOpening, source: { kind: 'fresh' } },
+        }),
+      /target opening mismatch/,
+    );
+  });
+
+  it('rebuilds the target Run header the claim authorises', () => {
+    const boundary = boundaryForRuns('run-source');
+    const claim = decodeContinuationClaim(claimForBoundary(boundary));
+    const header = continuationTargetRunHeader(claim);
+    const source = boundary.segments.at(-1)!;
+
+    assert.equal(header.runId, claim.target.runId);
+    assert.equal(header.invocationId, claim.target.invocationId);
+    assert.equal(header.status, 'created');
+    assert.equal(header.createdAt, claim.claimedAt);
+    assert.equal(header.updatedAt, claim.claimedAt);
+    assert.equal(header.parentRunId, source.identity.runId);
+    assert.deepEqual(header.continuationSource, {
+      protocol: 'continuation_source_v2',
+      claimId: claim.claimId,
+      boundaryDigest: claim.boundaryDigest,
+      sourceInvocationId: source.identity.invocationId,
+      sourceRunId: source.identity.runId,
+      sourceTurnId: source.identity.turnId,
+      sourceRuntimeEventHighWater: source.position.lastEventSeq,
+      sourcePrefixDigest: source.prefixDigest,
+      replayManifestDigest: boundary.manifestDigest,
+    });
+    // The claim's opening and the header it rebuilds are one fact, not two.
+    assert.ok(runHeaderMatchesClaimTarget(header, claim));
+    assert.ok(!runHeaderMatchesClaimTarget({ ...header, cwd: '/elsewhere' }, claim));
+    assert.ok(
+      runHeaderMatchesClaimTarget({ ...header, status: 'running', updatedAt: 99 }, claim),
+      'a running target still matches: lifecycle was never part of what the claim froze',
+    );
+  });
 });
 
 function runtimeIdentity(runId: string): RuntimePrefixIdentityV1 {
@@ -353,34 +412,36 @@ function claimForBoundary(boundary: RuntimeBoundaryCursorV1) {
     providerProjectionVersion: 1,
     providerReplayDigest: `sha256:${'b'.repeat(64)}`,
     target,
-    targetRunHeader: {
-      runId: target.runId,
-      invocationId: target.invocationId,
-      sessionId: target.sessionId,
-      turnId: target.turnId,
-      status: 'created',
-      backendKind: 'fake',
-      llmConnectionSlug: 'connection-1',
-      modelId: 'model-1',
-      cwd: '/workspace',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      createdAt: 1,
-      updatedAt: 1,
-      parentRunId: source.identity.runId,
-      parentTurnId: source.identity.turnId,
-      continuationSource: {
-        protocol: 'continuation_source_v2',
-        claimId: 'claim-1',
-        boundaryDigest: boundary.manifestDigest,
+    targetOpening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'unknown',
+        backendKind: 'fake',
+        llmConnectionSlug: 'connection-1',
+        modelId: 'model-1',
+      },
+      configuration: {
+        cwd: '/workspace',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: { kind: 'user' },
+      source: {
+        kind: 'continuation',
         sourceInvocationId: source.identity.invocationId,
         sourceRunId: source.identity.runId,
         sourceTurnId: source.identity.turnId,
         sourceRuntimeEventHighWater: source.position.lastEventSeq,
-        sourcePrefixDigest: source.prefixDigest,
-        replayManifestDigest: boundary.manifestDigest,
+        claimId: 'claim-1',
+        boundaryDigest: boundary.manifestDigest,
+      },
+      lineage: {
+        parentRunId: source.identity.runId,
+        parentTurnId: source.identity.turnId,
       },
     },
     claimedAt: 1,
