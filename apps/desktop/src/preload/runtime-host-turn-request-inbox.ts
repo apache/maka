@@ -23,6 +23,13 @@ export interface RuntimeHostCollaborationScope {
   readonly collaborationAuthority?: boolean;
 }
 
+export function retainRuntimeHostCollaborationAuthority(
+  observed: boolean | undefined,
+  previous: boolean | undefined,
+): boolean | undefined {
+  return observed ?? previous;
+}
+
 /** Hosts with an explicit negative capability cannot answer collaboration queries. */
 export function selectRuntimeHostCollaborationScopes<T extends RuntimeHostCollaborationScope>(
   scopes: readonly T[],

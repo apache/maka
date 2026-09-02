@@ -22,8 +22,14 @@ import test from 'node:test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import {
   collectAvailablePendingTurnRequests,
+  retainRuntimeHostCollaborationAuthority,
   selectRuntimeHostCollaborationScopes,
 } from '../../preload/runtime-host-turn-request-inbox.js';
+
+test('retains a learned unavailable capability when a legacy identity omits it', () => {
+  assert.equal(retainRuntimeHostCollaborationAuthority(undefined, false), false);
+  assert.equal(retainRuntimeHostCollaborationAuthority(true, false), true);
+});
 
 test('skips an Owner Host that explicitly lacks collaboration authority', () => {
   const scopes = selectRuntimeHostCollaborationScopes([

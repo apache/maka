@@ -131,6 +131,7 @@ import {
 } from './runtime-host-session-catalog.js';
 import {
   collectAvailablePendingTurnRequests,
+  retainRuntimeHostCollaborationAuthority,
   selectRuntimeHostCollaborationScopes,
 } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
@@ -343,6 +344,13 @@ ipcRenderer.on(
       }
     }
     if (nextScope && nextScopeKey) {
+      const previousMetadata = runtimeHostMetadata.get(nextScopeKey);
+      const collaborationAuthority = retainRuntimeHostCollaborationAuthority(
+        typeof change.collaborationAuthority === 'boolean'
+          ? change.collaborationAuthority
+          : undefined,
+        previousMetadata?.collaborationAuthority,
+      );
       runtimeHostScopes.set(nextScopeKey, nextScope);
       runtimeHostProfiles.set(change.profileId, nextScopeKey);
       runtimeHostMetadata.set(nextScopeKey, {
@@ -350,9 +358,7 @@ ipcRenderer.on(
         profileName: change.profileName,
         profileKind: change.profileKind,
         profileAccess: change.profileAccess,
-        ...(typeof change.collaborationAuthority === 'boolean'
-          ? { collaborationAuthority: change.collaborationAuthority }
-          : {}),
+        ...(collaborationAuthority === undefined ? {} : { collaborationAuthority }),
       });
       if (change.isDefault) activeRuntimeHost = nextScope;
     } else if (change.isDefault) {
@@ -395,6 +401,11 @@ function recordRuntimeHostIdentity(value: unknown): {
     throw new Error('Desktop Runtime Host identity is invalid');
   }
   const scopeKey = runtimeHostScopeKey(scope);
+  const previousMetadata = runtimeHostMetadata.get(scopeKey);
+  const collaborationAuthority = retainRuntimeHostCollaborationAuthority(
+    metadata.collaborationAuthority as boolean | undefined,
+    previousMetadata?.collaborationAuthority,
+  );
   runtimeHostScopes.set(scopeKey, scope);
   runtimeHostProfiles.set(metadata.profileId, scopeKey);
   runtimeHostMetadata.set(scopeKey, {
@@ -402,9 +413,7 @@ function recordRuntimeHostIdentity(value: unknown): {
     profileName: metadata.profileName,
     profileKind: metadata.profileKind,
     profileAccess: metadata.profileAccess,
-    ...(metadata.collaborationAuthority === undefined
-      ? {}
-      : { collaborationAuthority: metadata.collaborationAuthority }),
+    ...(collaborationAuthority === undefined ? {} : { collaborationAuthority }),
   });
   return { scope, readiness: metadata.readiness };
 }
