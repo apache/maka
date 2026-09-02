@@ -281,7 +281,17 @@ charter. Their evidence is adjudicated into this ledger:
 | R1-C4 | correctness | confirmed | Windows recovery source closure follows the new reachability owner and publisher instead of the removed Mesh owner path. |
 | R1-S1 | simplification | confirmed | The endpoint owner is the sole peer-client lifetime authority; Desktop no longer closes the same client a second time. |
 | R1-S2 | simplification | confirmed | Route resolution has one lifecycle: clients start unattached and Mesh explicitly attaches and detaches the resolver. Constructor/factory injection was removed. |
-| R1-S3 | simplification | confirmed | Mesh authority targets derive identity from the verified signed lease instead of carrying a second peer-id field. |
+| R1-S3 | simplification | superseded | A later security review proved that deriving long-lived authority identity from a replaceable locator lets a member rebind the authority. R2-C2 replaces this decision. |
+| R2-C1 | correctness | confirmed | Startup verifies all persisted signatures, prunes leases beyond the bounded recovery horizon, and retains roster membership; ordinary offline time can no longer brick Mesh initialization. |
+| R2-C2 | correctness | confirmed | The authority PeerId is now part of the authority-signed roster and immutable across roster revisions. Invitations and authenticated streams must match it, while reachability remains only a replaceable locator. |
+| R2-S1 | simplification | confirmed | Remembered Relay anchors are persisted regardless of whether public discovery is enabled; discovery selects new anchors, while anchor recovery is a separate concern. |
+| R2-S2 | simplification | confirmed | Relay-anchor persistence uses one coalescing watch slot instead of an unbounded snapshot queue. |
+| R2-S3 | simplification | confirmed | Mesh presence reads the native Swarm connectivity snapshot instead of maintaining a partial, stale `recentlyReached` cache. |
+| R2-S4 | simplification | confirmed | Both reachability and advertisement anti-entropy use the same Mesh-scoped `{ peerId, revision }` vector. |
+| R2-S5 | simplification | rejected | The one-shot post-finalization refresh suppression remains: it prevents guest credential finalization from becoming a second network acquisition, as required by the frozen collaboration invariant. |
+| R2-S6 | simplification | confirmed | Replica state stores the authority's signed reachability lease directly; stable authority identity comes only from the signed roster, so the single-field target wrapper was removed. |
+| R2-CI1 | CI | confirmed | Lower-stack Desktop fixtures retain the flat transport shape until PR4 introduces signed profile reachability, preserving each PR's review boundary. |
+| R2-CI2 | CI | confirmed | The Peer Mesh protocol imports the reachability wire decoder directly from its model module, keeping filesystem-backed publisher code out of the Linux preload bundle. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a

@@ -214,6 +214,7 @@ export interface PeerMeshTransport {
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
+  isConnected(peerId: string): boolean;
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
@@ -275,7 +276,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   #unsubscribeReachability: (() => void) | undefined;
   #reconcileGeneration = 0;
   readonly #reconcileWaiters = new Set<() => void>();
-  readonly #recentlyReached = new Set<string>();
   readonly #reachabilityReceipts = new Map<string, PeerReachabilityLeaseReceipt>();
   readonly #completedRecoverySweeps = new Set<string>();
   readonly #routeResolutionListeners = new Map<string, Set<() => void>>();
@@ -409,7 +409,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         stored.reachability,
         stored.advertisements,
         this.#now(),
-        this.#recentlyReached,
+        (peerId) => this.#peer.isConnected(peerId),
         (peerId) => this.resolveRoutes(peerId),
         (signed) => this.#isReachabilityCurrent(signed),
       );
@@ -431,7 +431,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
             stored.reachability,
             stored.advertisements,
             this.#now(),
-            this.#recentlyReached,
+            (peerId) => this.#peer.isConnected(peerId),
             (peerId) => this.resolveRoutes(peerId),
             (signed) => this.#isReachabilityCurrent(signed),
           ),
@@ -482,7 +482,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         stored.reachability,
         stored.advertisements,
         now,
-        this.#recentlyReached,
+        (peerId) => this.#peer.isConnected(peerId),
         (peerId) => this.resolveRoutes(peerId),
         (signed) => this.#isReachabilityCurrent(signed),
       );
@@ -779,7 +779,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       stored.reachability,
       stored.advertisements,
       this.#now(),
-      this.#recentlyReached,
+      (peerId) => this.#peer.isConnected(peerId),
       (peerId) => this.resolveRoutes(peerId),
       (signed) => this.#isReachabilityCurrent(signed),
     );
@@ -1206,7 +1206,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         state.role === 'replica'
           ? currentAuthorityTarget(state, stored.reachability, now)
           : undefined;
-      if (authority && authority.reachability.lease.peerId !== excludedPeerId) {
+      if (authority && authority.lease.peerId !== excludedPeerId) {
         pending.push({
           kind: 'membership',
           meshId,
@@ -1263,9 +1263,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           }
         } catch (error) {
           if (lifetimeSignal.aborted) lifetimeSignal.throwIfAborted();
-          if (operation.kind === 'membership') {
-            this.#recentlyReached.delete(operation.target.lease.peerId);
-          }
           if (operation.kind === 'join' || operation.desiredMembership === 'left') {
             failures.push(error);
           }
@@ -1311,7 +1308,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         throw new Error('Peer Mesh authority rejected the leave request');
       }
       await this.#applySync(meshId, response.roster, [], []);
-      this.#recentlyReached.add(target.lease.peerId);
     } finally {
       await stream.close().catch(() => undefined);
     }
@@ -1383,7 +1379,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           response.reachability,
           response.advertisements,
         );
-        this.#recentlyReached.add(targetPeerId);
         if (!response.more) return;
       } finally {
         await stream.close().catch(() => undefined);
@@ -1736,7 +1731,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
       stored.reachability,
       stored.advertisements,
       this.#now(),
-      this.#recentlyReached,
+      (peerId) => this.#peer.isConnected(peerId),
       (peerId) => this.resolveRoutes(peerId),
       (signed) => this.#isReachabilityCurrent(signed),
     );
@@ -1771,7 +1766,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           if (response.kind === 'roster-rejected') {
             throw new Error('Peer Mesh roster announcement was rejected');
           }
-          this.#recentlyReached.add(target.lease.peerId);
         } finally {
           await stream.close().catch(() => undefined);
         }
@@ -2019,7 +2013,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
           ).filter(({ lease }) => lease.peerId !== remotePeerId),
         );
       }
-      this.#recentlyReached.add(remotePeerId);
     }
     return response;
   }
@@ -2165,7 +2158,6 @@ class PeerMeshNodeImpl implements PeerMeshNode {
         response.roster.roster.members.includes(remotePeerId)
       ) {
         this.#recordReachabilityReceipt(remoteReachability);
-        this.#recentlyReached.add(remotePeerId);
       }
       await this.#reconcileTransit();
     }
@@ -2331,7 +2323,7 @@ function peerMeshStatus(
   reachability: readonly SignedPeerReachabilityLeaseV1[],
   advertisements: readonly SignedPeerMeshMemberAdvertisementV1[],
   now: number,
-  recentlyReached: ReadonlySet<string>,
+  isConnected: (peerId: string) => boolean,
   resolveRoutes: (peerId: string) => RuntimeHostPeerRouteResolution,
   isCurrent: (signed: SignedPeerReachabilityLeaseV1) => boolean,
 ): PeerMeshStatus {
@@ -2364,18 +2356,17 @@ function peerMeshStatus(
         const lease = signed?.lease;
         const resolution = resolveRoutes(peerId);
         const current = Boolean(signed && isCurrent(signed));
-        const memberState =
-          resolution.state === 'exhausted'
+        const memberState = isConnected(peerId)
+          ? ('reachable' as const)
+          : resolution.state === 'exhausted'
             ? ('needs_repair' as const)
             : resolution.state === 'recovering'
               ? signed
                 ? ('reconnecting' as const)
                 : ('connecting' as const)
-              : current && recentlyReached.has(peerId)
-                ? ('reachable' as const)
-                : current
-                  ? ('connecting' as const)
-                  : ('reconnecting' as const);
+              : current
+                ? ('connecting' as const)
+                : ('reconnecting' as const);
         return Object.freeze({
           peerId,
           ...(advertisement?.endpointKind ? { endpointKind: advertisement.endpointKind } : {}),

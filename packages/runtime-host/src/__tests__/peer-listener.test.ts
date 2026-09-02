@@ -197,6 +197,7 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
       throw new Error('not used');
     },
     verifyIdentity: () => false,
+    isConnected: () => false,
     transitSnapshot: () => ({
       allowedPeerCount: 0,
       activeReservationCount: 0,

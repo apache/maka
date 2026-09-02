@@ -90,6 +90,7 @@ export interface RuntimeHostPeerClient {
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
+  isConnected(peerId: string): boolean;
   transitSnapshot(): RuntimeHostPeerTransitSnapshot;
   configureTransit(input: {
     readonly allowedPeerIds: readonly string[];
@@ -251,6 +252,10 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
       publicKey: proof.publicKey,
       signature: proof.signature,
     });
+  }
+
+  isConnected(peerId: string): boolean {
+    return this.#endpoint?.connectivitySnapshot.connectedPeerIds.includes(peerId) ?? false;
   }
 
   transitSnapshot(): RuntimeHostPeerTransitSnapshot {
