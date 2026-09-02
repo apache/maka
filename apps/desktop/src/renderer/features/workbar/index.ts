@@ -28,15 +28,3 @@ export { WorkbarServicesProvider } from './services-context';
 export { useWorkbarController } from './controller/use-workbar-controller';
 export type { SessionWorkbarTabKind } from './model/workbar-tabs';
 export type { WorkbarServices } from './ports';
-export {
-  createQuoteCompanionCompactionPresentation,
-  dispatchQuoteCompanionInput,
-  isExactCompactCommand,
-  presentQuoteCompanionCompactionResult,
-  quoteCompanionCompactionNotice,
-} from './tools/side-chat/quote-companion-context-compaction';
-export type {
-  QuoteCompanionCompactionCopy,
-  QuoteCompanionCompactionNotice,
-  QuoteCompanionCompactionPresentation,
-} from './tools/side-chat/quote-companion-context-compaction';
