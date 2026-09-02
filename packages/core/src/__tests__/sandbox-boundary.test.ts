@@ -440,6 +440,23 @@ describe('projectSandboxBoundaryNegotiation', () => {
       },
     });
 
+  const durableRequest = (
+    requestId: string,
+    status: SandboxBoundaryRequest['status'],
+  ): SandboxBoundaryRequest => ({
+    sessionId: 'session-1',
+    requestId,
+    status,
+    baseRevision: 0,
+    expansion: { network: { enabled: true } },
+    justification: 'Need network access.',
+    createdAt: 1,
+    settledAt: 2,
+    ...(status === 'approved' ? { appliedRevision: 1 } : {}),
+    turnId: 'turn-1',
+    runId: 'run-1',
+  });
+
   const failurePair = (
     id: string,
     toolName: string,
@@ -665,12 +682,7 @@ describe('projectSandboxBoundaryNegotiation', () => {
     assert.equal(projectSandboxBoundaryNegotiation([call, response]).kind, 'invalid');
 
     const originalRequest = request('request-2', 'boundary-2', 'tool-2');
-    const mismatchedIdentityDecision = decision(
-      'decision-2',
-      'boundary-2',
-      'tool-2',
-      'denied',
-    );
+    const mismatchedIdentityDecision = decision('decision-2', 'boundary-2', 'tool-2', 'denied');
     mismatchedIdentityDecision.invocationId = 'other-invocation';
     assert.equal(
       projectSandboxBoundaryNegotiation([originalRequest, mismatchedIdentityDecision]).kind,
@@ -715,22 +727,11 @@ describe('projectSandboxBoundaryNegotiation', () => {
   });
 
   test('restores a durable denial when the RuntimeEvent ack was lost', () => {
-    const durableRequest: SandboxBoundaryRequest = {
-      sessionId: 'session-1',
-      requestId: 'boundary-1',
-      status: 'denied',
-      baseRevision: 0,
-      expansion: { network: { enabled: true } },
-      justification: 'Need network access.',
-      createdAt: 1,
-      settledAt: 2,
-      turnId: 'turn-1',
-      runId: 'run-1',
-    };
+    const durable = durableRequest('boundary-1', 'denied');
     assert.deepEqual(
       projectSandboxBoundaryNegotiation(
         [base('source-event', { turnId: 'turn-1', runId: 'run-1' })],
-        [durableRequest],
+        [durable],
       ),
       {
         kind: 'valid',
@@ -741,6 +742,38 @@ describe('projectSandboxBoundaryNegotiation', () => {
           finalizationRequested: false,
         },
       },
+    );
+  });
+
+  test('fails closed when durable settlement order is unavailable', () => {
+    const approved = durableRequest('boundary-1', 'approved');
+    assert.equal(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          ...failurePair(
+            'invalid-1',
+            'request_sandbox_boundary',
+            'tool-2',
+            'invalid_boundary_declaration',
+          ),
+        ],
+        [approved],
+      ).kind,
+      'invalid',
+    );
+
+    const denied = durableRequest('boundary-1', 'denied');
+    assert.equal(
+      projectSandboxBoundaryNegotiation(
+        [
+          request('request-1', 'boundary-1', 'tool-1'),
+          request('request-2', 'boundary-2', 'tool-2'),
+          decision('decision-2', 'boundary-2', 'tool-2', 'approved'),
+        ],
+        [denied],
+      ).kind,
+      'invalid',
     );
   });
 });

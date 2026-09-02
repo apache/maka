@@ -100,7 +100,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 109 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 110 as const;
+// 110: Session continuity carries authenticated sandbox-boundary negotiation
+// facts; older Clients cannot safely preserve the new fail-closed contract.
 // 109: accepted Client Capability invocations may carry one bounded nested form
 // Interaction request/result round trip.
 // 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph
@@ -160,6 +162,9 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 109 as const;
 // Connection credentials to exact Host-owned targets before secret access.
 // Proxy policy and credentials commit through one recoverable Host command;
 // older peers can split the writes and violate the shared credential basis.
+// 94: A failed Turn snapshot no longer carries contextBudgetExhaustedDetail; the
+// retired outcome reads as context_overflow at the ledger boundary, and an older
+// Host still sending the field fails a newer client's closed snapshot decode.
 // 92: Owners can query their complete pending Session Turn-request inbox.
 // 91: Host status publishes the live Direct peer endpoint so newly issued
 // connection invitations do not preserve stale startup routes.

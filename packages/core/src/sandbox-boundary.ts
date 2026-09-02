@@ -205,6 +205,11 @@ export function projectSandboxBoundaryNegotiation(
   let invalidRounds = 0;
   let unresolvedRounds = 0;
   let finalizationRequested = false;
+  // RuntimeEvent order is authoritative inside the immutable ledger, but the
+  // durable interaction rows live in a separate append/settlement path. When
+  // a settlement has no matching decision ack, there is no shared sequence
+  // number that can place it relative to later failures or decisions.
+  let hasStatefulEvent = false;
   const invalidSteps = new Set<string>();
   const unresolvedSteps = new Set<string>();
   const requests = new Set<string>();
@@ -225,6 +230,7 @@ export function projectSandboxBoundaryNegotiation(
     reason,
   });
   const addFailure = (kind: 'invalid' | 'unresolved', step: string): void => {
+    hasStatefulEvent = true;
     const steps = kind === 'invalid' ? invalidSteps : unresolvedSteps;
     if (steps.has(step)) return;
     steps.add(step);
@@ -315,6 +321,7 @@ export function projectSandboxBoundaryNegotiation(
       }
       settledRequests.add(decision.requestId);
       decisionEvents.set(decision.requestId, { status: decision.status });
+      hasStatefulEvent = true;
       if (decision.status === 'denied') {
         denied = true;
       } else if (decision.status === 'approved') {
@@ -413,6 +420,7 @@ export function projectSandboxBoundaryNegotiation(
   }
 
   const durableById = new Map<string, SandboxBoundaryRequest>();
+  const durableSettlementsWithoutDecision: SandboxBoundaryRequest[] = [];
   for (const request of durableRequests) {
     const hasProvenance = request.turnId !== undefined || request.runId !== undefined;
     const attributable = hasProvenance
@@ -449,6 +457,7 @@ export function projectSandboxBoundaryNegotiation(
       return invalid(`sandbox boundary durable request ${request.requestId} is unresolved`);
     }
     if (!eventDecision) {
+      durableSettlementsWithoutDecision.push(request);
       settledRequests.add(request.requestId);
       if (request.status === 'denied') {
         denied = true;
@@ -468,6 +477,19 @@ export function projectSandboxBoundaryNegotiation(
         addFailure('unresolved', `request:${request.requestId}`);
       }
     }
+  }
+
+  // Do not guess at the order between an interaction-row settlement and
+  // RuntimeEvent facts from the same source run. An approved durable row
+  // applied after the event projection could erase later failure budget, and
+  // a denied row could overwrite a later approval. The only safe exception is
+  // the ack-loss recovery case where the durable row is the sole stateful fact
+  // and can be applied without crossing another state transition.
+  if (
+    durableSettlementsWithoutDecision.length > 1 ||
+    (durableSettlementsWithoutDecision.length > 0 && hasStatefulEvent)
+  ) {
+    return invalid('sandbox boundary durable settlement ordering is unavailable');
   }
 
   for (const requestId of requests) {

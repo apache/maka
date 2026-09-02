@@ -39,9 +39,7 @@ import type {
 import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { ContinuationClaimStateV1 } from '@maka/core/runtime-event-store';
-import {
-  type SandboxBoundaryRequest,
-} from '@maka/core/sandbox-boundary';
+import { type SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
 import { isDeepStrictEqual } from 'node:util';
 import {
   buildContinuationReplayPlan,
