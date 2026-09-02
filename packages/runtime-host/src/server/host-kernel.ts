@@ -836,11 +836,7 @@ export class RuntimeHostKernel {
       activeResidencies: this.#residencies.activeCount,
       ...(peer
         ? {
-            peerEndpoint: {
-              peerId: peer.peerId,
-              routeHints: peer.listenAddresses,
-              coordinationRelays: peer.coordinationRelays,
-            },
+            peerEndpoint: peer.reachability,
           }
         : {}),
     };

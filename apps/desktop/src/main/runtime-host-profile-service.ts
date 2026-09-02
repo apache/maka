@@ -956,16 +956,16 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!endpoint) {
           throw new Error('Runtime Host Direct peer is not available');
         }
-        if (configuredPeerId !== endpoint.peerId) {
+        if (configuredPeerId !== endpoint.lease.peerId) {
           throw new Error('Runtime Host Direct peer identity changed');
         }
         return {
           name: profile.name,
           transport: {
             kind: 'libp2p-direct' as const,
-            peerId: endpoint.peerId,
-            routeHints: endpoint.routeHints,
-            coordinationRelays: endpoint.coordinationRelays,
+            peerId: endpoint.lease.peerId,
+            routeHints: endpoint.lease.directRoutes,
+            coordinationRelays: endpoint.lease.coordinationRoutes,
           },
         };
       });
@@ -1357,25 +1357,22 @@ function createAuthenticatedPeerRouteObserver(
   } as const;
   let pending = Promise.resolve();
   const observe = (endpoint: HostPeerEndpoint): void => {
-    if (
-      endpoint.peerId !== expectedPeerId ||
-      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
-    ) return;
+    if (endpoint.lease.peerId !== expectedPeerId) return;
     pending = pending
       .then(async () => {
         await catalog.updateRemoteProfileIfCurrent(incarnation, (current) => {
           if (current.transport.kind !== 'libp2p-direct') return current;
           if (
-            sameStrings(current.transport.routeHints, endpoint.routeHints) &&
-            sameStrings(current.transport.coordinationRelays, endpoint.coordinationRelays)
+            sameStrings(current.transport.routeHints, endpoint.lease.directRoutes) &&
+            sameStrings(current.transport.coordinationRelays, endpoint.lease.coordinationRoutes)
           ) return current;
           return {
             ...current,
             transport: {
               kind: 'libp2p-direct',
               peerId: expectedPeerId,
-              routeHints: endpoint.routeHints,
-              coordinationRelays: endpoint.coordinationRelays,
+              routeHints: endpoint.lease.directRoutes,
+              coordinationRelays: endpoint.lease.coordinationRoutes,
             },
           };
         });
@@ -1393,6 +1390,7 @@ function createAuthenticatedPeerRouteObserver(
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
+
 
 function managedDirectPeerProfileId(sourceProfileId: string): string {
   const digest = createHash('sha256').update(sourceProfileId).digest('hex').slice(0, 32);

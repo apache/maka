@@ -690,9 +690,17 @@ test('persists authenticated Owner routes imported through a connection code', a
     coordinationRelays: ['/memory/stale-relay'],
   };
   const freshEndpoint = {
-    peerId: staleTransport.peerId,
-    routeHints: ['/ip4/198.51.100.9/udp/44002/quic-v1'],
-    coordinationRelays: ['/memory/fresh-relay'],
+    lease: {
+      version: 1 as const,
+      peerId: staleTransport.peerId,
+      revision: 2,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/198.51.100.9/udp/44002/quic-v1'],
+      coordinationRoutes: ['/memory/fresh-relay'],
+    },
+    publicKey: 'AA',
+    signature: 'AA',
   };
   let observedIncarnation: string | undefined;
   const service = createDesktopRuntimeHostProfileService({

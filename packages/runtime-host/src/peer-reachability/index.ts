@@ -18,21 +18,27 @@
  */
 
 export {
-  type PeerMeshAuthorityTarget,
-  type PeerMeshRosterV1,
-  type SignedPeerMeshRosterV1,
+  canonicalPeerReachabilityLease,
+  decodeSignedPeerReachabilityLease,
+  PEER_REACHABILITY_LEASE_TTL_MS,
+  PEER_REACHABILITY_MAX_CLOCK_SKEW_MS,
+  PEER_REACHABILITY_MAX_LIFETIME_MS,
+  PEER_REACHABILITY_MAX_RECORD_BYTES,
+  PEER_REACHABILITY_MAX_ROUTES_PER_CLASS,
+  PEER_REACHABILITY_REFRESH_LEAD_MS,
+  peerReachabilityLeaseSigningBytes,
+  verifySignedPeerReachabilityLease,
+  type PeerReachabilityIdentity,
+  type PeerReachabilityLeaseV1,
+  type SignedPeerReachabilityLeaseV1,
 } from './model.js';
-export { decodePeerMeshInvitation, type PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
 export {
-  openPeerMeshNode,
-  type PeerMeshNode,
-  type PeerMeshStatus,
-  type PeerMeshTransport,
-} from './node.js';
+  openPeerReachabilityPublisher,
+  PeerReachabilityPersistenceError,
+  PeerReachabilityPostCommitError,
+  type PeerReachabilityPublisher,
+} from './publisher.js';
 export {
-  openRuntimeHostPeerMeshComponent,
-  openRuntimeHostPeerMeshOwner,
-  type RuntimeHostPeerMeshComponent,
-  type RuntimeHostPeerMeshOwner,
+  openRuntimeHostPeerEndpointOwner,
+  type RuntimeHostPeerEndpointOwner,
 } from './owner.js';
-export { hasPeerMeshIdentityObligations, PeerMeshPostCommitError } from './store.js';

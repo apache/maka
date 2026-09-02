@@ -28,6 +28,10 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+import {
+  decodeSignedPeerReachabilityLease,
+  type SignedPeerReachabilityLeaseV1,
+} from '../peer-reachability/model.js';
 
 export type HostLifecycleState = 'starting' | 'containing' | 'recovering' | 'ready' | 'draining';
 export type HostStatusInput = Record<string, never>;
@@ -59,9 +63,6 @@ export type HostUpgradePrepareResult =
 export const HOST_DIAGNOSTICS_RESULT_MAX_BYTES = 72 * 1024;
 export const HOST_DIAGNOSTIC_LOG_MAX_ENTRIES = 256;
 export const HOST_DIAGNOSTIC_LOG_MAX_ENTRY_BYTES = 10 * 1024;
-const HOST_PEER_ID_MAX_BYTES = 160;
-const HOST_PEER_ADDRESS_MAX_BYTES = 2 * 1024;
-const HOST_PEER_ROUTE_MAX = 16;
 
 export interface HostStatusResult {
   hostEpoch: string;
@@ -74,11 +75,7 @@ export interface HostStatusResult {
   peerEndpoint?: HostPeerEndpoint;
 }
 
-export interface HostPeerEndpoint {
-  readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
-}
+export type HostPeerEndpoint = SignedPeerReachabilityLeaseV1;
 
 export interface HostDiagnosticsResult extends HostStatusResult {
   compositionModules: readonly string[];
@@ -117,19 +114,6 @@ export const HOST_BOOTSTRAP_OPERATION_SPECS = {
     decodeOutput: decodeHostUpgradePrepareResult,
   }),
 } as const;
-
-function decodePeerAddresses(value: unknown, label: string): readonly string[] {
-  if (!Array.isArray(value) || value.length > HOST_PEER_ROUTE_MAX) {
-    throw invalidProtocolFrame(`Invalid ${label}`);
-  }
-  const addresses = value.map((address) =>
-    requireString(address, label, HOST_PEER_ADDRESS_MAX_BYTES),
-  );
-  if (new Set(addresses).size !== addresses.length) {
-    throw invalidProtocolFrame(`Duplicate ${label}`);
-  }
-  return Object.freeze(addresses);
-}
 
 function decodeEmptyHostInput(value: unknown, label: string): HostStatusInput {
   requireExactRecord(value, label, []);
@@ -304,19 +288,11 @@ function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResu
 }
 
 function decodeHostPeerEndpoint(value: unknown): HostPeerEndpoint {
-  const record = requireExactRecord(value, 'Runtime Host peer endpoint', [
-    'peerId',
-    'routeHints',
-    'coordinationRelays',
-  ]);
-  return {
-    peerId: requireString(record.peerId, 'Runtime Host peer id', HOST_PEER_ID_MAX_BYTES),
-    routeHints: decodePeerAddresses(record.routeHints, 'Runtime Host peer route hints'),
-    coordinationRelays: decodePeerAddresses(
-      record.coordinationRelays,
-      'Runtime Host peer coordination relays',
-    ),
-  };
+  try {
+    return decodeSignedPeerReachabilityLease(value);
+  } catch {
+    throw invalidProtocolFrame('Invalid Runtime Host peer reachability lease');
+  }
 }
 
 function requirePlatform(value: unknown): NodeJS.Platform {

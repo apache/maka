@@ -177,8 +177,7 @@ export function createDesktopGuestSessionMountService(input: {
     if (
       closed ||
       mount.transport.kind !== 'libp2p-direct' ||
-      endpoint.peerId !== mount.transport.peerId ||
-      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
+      endpoint.lease.peerId !== mount.transport.peerId
     ) return;
     void mutate(async () => {
       if (removingMounts.has(mount.mountId)) return;
@@ -186,19 +185,19 @@ export function createDesktopGuestSessionMountService(input: {
       const retained = current.get(mount.mountId);
       if (
         retained?.transport.kind !== 'libp2p-direct' ||
-        retained.transport.peerId !== endpoint.peerId ||
+        retained.transport.peerId !== endpoint.lease.peerId ||
         (
-          sameStrings(retained.transport.routeHints, endpoint.routeHints) &&
-          sameStrings(retained.transport.coordinationRelays, endpoint.coordinationRelays)
+          sameStrings(retained.transport.routeHints, endpoint.lease.directRoutes) &&
+          sameStrings(retained.transport.coordinationRelays, endpoint.lease.coordinationRoutes)
         )
       ) return;
       const updated = decodeMount({
         ...retained,
         transport: {
           kind: 'libp2p-direct',
-          peerId: endpoint.peerId,
-          routeHints: endpoint.routeHints,
-          coordinationRelays: endpoint.coordinationRelays,
+          peerId: endpoint.lease.peerId,
+          routeHints: endpoint.lease.directRoutes,
+          coordinationRelays: endpoint.lease.coordinationRoutes,
         },
       });
       await persist(new Map(current).set(mount.mountId, updated));
@@ -468,6 +467,10 @@ export function createDesktopGuestSessionMountService(input: {
   };
 }
 
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function registerDesktopGuestSessionMountIpc(
   ipcMain: Pick<Electron.IpcMain, 'handle' | 'removeHandler'>,
   service: DesktopGuestSessionMountService,
@@ -573,9 +576,6 @@ function isPeerPathUnavailable(error: unknown): boolean {
   return error.code === 'direct_path_unavailable' || error.code === 'transit_unavailable';
 }
 
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
 
 function collaborationProgressForConnectionPhase(
   phase: RuntimeHostConnectionPhase,

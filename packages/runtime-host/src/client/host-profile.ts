@@ -47,6 +47,7 @@ import {
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
 import type { RuntimeHostPeerClient, RuntimeHostPeerConnectionPhase } from './peer-client.js';
+import { verifySignedPeerReachabilityLease } from '../peer-reachability/model.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -651,8 +652,18 @@ export async function connectPeerRuntimeHost(input: {
       handshakeTimeoutMs,
       onHostStatus: (status) => {
         const endpoint = status.peerEndpoint;
-        if (endpoint?.peerId === input.transport.peerId) {
-          input.peerClient.observeAuthenticatedRoutes(endpoint);
+        if (endpoint) {
+          const verified = verifySignedPeerReachabilityLease({
+            value: endpoint,
+            expectedPeerId: input.transport.peerId,
+            now: Date.now(),
+            verifyIdentity: input.peerClient.verifyIdentity.bind(input.peerClient),
+          });
+          input.peerClient.observeAuthenticatedRoutes({
+            peerId: verified.lease.peerId,
+            routeHints: verified.lease.directRoutes,
+            coordinationRelays: verified.lease.coordinationRoutes,
+          });
         }
         input.onHostStatus?.(status);
       },

@@ -100,7 +100,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 96 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 97 as const;
+// 97: Host status replaces unsigned route arrays with a self-signed, bounded
+// reachability lease. Older peers cannot validate the locator revision or its
+// target identity before retaining it for reconnect.
 // 96: Read image tool results may carry durable `session_context` refs.
 // 95: Catalog entries carry `describedByMetadata`, so a client asks the
 // Host-resolved entry — not its own bundled table — whether a model needs a

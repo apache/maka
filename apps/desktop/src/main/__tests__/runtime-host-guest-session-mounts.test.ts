@@ -119,9 +119,17 @@ test('persists authenticated route rotation for reconnect and restart', async ()
   const imported = await first.importInvitation(peerInvitation('guest-routes'), false, 'routes');
   assert.equal(imported.kind, 'connected');
   observePeerEndpoint({
-    peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
-    coordinationRelays: ['/memory/fresh-relay'],
+    lease: {
+      version: 1,
+      peerId: '12D3KooWpeer',
+      revision: 2,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+      coordinationRoutes: ['/memory/fresh-relay'],
+    },
+    publicKey: 'AA',
+    signature: 'AA',
   });
   await first.close();
 

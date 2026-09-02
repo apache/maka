@@ -87,10 +87,15 @@ export async function issueRuntimeHostOwnerConnectionCode(
   const rootId = requireHostRootId(input.client.rootId);
   const endpoint = (await input.client.status()).peerEndpoint;
   if (!endpoint) throw new Error('Runtime Host Direct peer is not available');
-  if (input.expectedPeerId && endpoint.peerId !== input.expectedPeerId) {
+  if (input.expectedPeerId && endpoint.lease.peerId !== input.expectedPeerId) {
     throw new Error('Runtime Host Direct peer identity changed');
   }
-  const transport = requireDirectPeerTransport({ kind: 'libp2p-direct', ...endpoint });
+  const transport = requireDirectPeerTransport({
+    kind: 'libp2p-direct',
+    peerId: endpoint.lease.peerId,
+    routeHints: endpoint.lease.directRoutes,
+    coordinationRelays: endpoint.lease.coordinationRoutes,
+  });
   const prepared = await input.client.request('access.credential.prepare', {
     ...REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
     principalId: input.principalId,

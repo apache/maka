@@ -25,7 +25,8 @@ import {
   writeRuntimeHostPeerAuthenticationResult,
   type RuntimeHostPeerNativeStream,
 } from '../transport/peer-native.js';
-import { createRuntimeHostPeerClient, type RuntimeHostPeerClient } from '../client/peer-client.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
+import type { PeerReachabilityPublisher } from '../peer-reachability/index.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import type {
   RuntimeHostListenerConnection,
@@ -46,9 +47,10 @@ export interface RuntimeHostPeerListenerConfiguration {
   readonly webRtcStunUrls?: readonly string[];
 }
 
-export type RuntimeHostPeerListenerEndpointOptions =
-  | RuntimeHostPeerListenerConfiguration
-  | { readonly client: RuntimeHostPeerClient };
+export interface RuntimeHostPeerListenerEndpointOptions {
+  readonly client: RuntimeHostPeerClient;
+  readonly reachability: PeerReachabilityPublisher;
+}
 
 export type StartRuntimeHostPeerListenerOptions = RuntimeHostPeerListenerEndpointOptions & {
   readonly accessAuthority: RuntimeHostAccessAuthority;
@@ -58,25 +60,23 @@ export type StartRuntimeHostPeerListenerOptions = RuntimeHostPeerListenerEndpoin
 export function startRuntimeHostPeerListener(
   options: StartRuntimeHostPeerListenerOptions,
 ): RuntimeHostPeerListenerContract {
-  if ('client' in options) {
-    return createRuntimeHostPeerListener(
-      options.client,
-      options.accessAuthority,
-      options.accept,
-      false,
-    );
-  }
-  const client = createRuntimeHostPeerClient(options);
-  return createRuntimeHostPeerListener(client, options.accessAuthority, options.accept, true);
+  return createRuntimeHostPeerListener(
+    options.client,
+    options.reachability,
+    options.accessAuthority,
+    options.accept,
+    false,
+  );
 }
 
 export function createRuntimeHostPeerListener(
   client: RuntimeHostPeerClient,
+  reachability: PeerReachabilityPublisher,
   accessAuthority: RuntimeHostAccessAuthority,
   accept: (connection: RuntimeHostListenerConnection) => void,
   ownsClient = false,
 ): RuntimeHostPeerListenerContract {
-  return new RuntimeHostPeerListener(client, accessAuthority, accept, ownsClient);
+  return new RuntimeHostPeerListener(client, reachability, accessAuthority, accept, ownsClient);
 }
 
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
@@ -85,6 +85,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly peerId: string;
   readonly listenAddresses: readonly string[];
   readonly #client: RuntimeHostPeerClient;
+  readonly #reachability: PeerReachabilityPublisher;
   readonly #ownsClient: boolean;
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
@@ -100,6 +101,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
 
   constructor(
     client: RuntimeHostPeerClient,
+    reachability: PeerReachabilityPublisher,
     accessAuthority: RuntimeHostAccessAuthority,
     accept: (connection: RuntimeHostListenerConnection) => void,
     ownsClient: boolean,
@@ -109,6 +111,7 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
     this.peerId = identity.peerId;
     this.listenAddresses = Object.freeze([...identity.listenAddresses]);
     this.#client = client;
+    this.#reachability = reachability;
     this.#ownsClient = ownsClient;
     this.#accessAuthority = accessAuthority;
     this.#accept = accept;
@@ -120,8 +123,8 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
       .catch(captureFailure);
   }
 
-  get coordinationRelays(): readonly string[] {
-    return this.#client.identity().coordinationRelays;
+  get reachability() {
+    return this.#reachability.current();
   }
 
   closeAdmission(): Promise<void> {

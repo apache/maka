@@ -50,6 +50,7 @@ import {
 } from './model.js';
 import { canonicalPeerMeshDisplayName } from './display-name.js';
 import type { PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
+import type { PeerReachabilityPublisher } from '../peer-reachability/index.js';
 import {
   authorityKeys,
   isActivePeerMeshMembership as isActiveMembership,
@@ -223,6 +224,7 @@ export interface PeerMeshTransport {
 export async function openPeerMeshNode(input: {
   readonly dataRoot: string;
   readonly peer: PeerMeshTransport;
+  readonly reachability?: PeerReachabilityPublisher;
   readonly endpointKind?: 'client' | 'host';
   readonly now?: () => number;
   readonly onBackgroundReconcileError?: (error: unknown) => void;
@@ -241,6 +243,7 @@ export async function openPeerMeshNode(input: {
 class PeerMeshNodeImpl implements PeerMeshNode {
   readonly #store: PeerMeshStateStore;
   readonly #peer: PeerMeshTransport;
+  readonly #reachability: PeerReachabilityPublisher | undefined;
   readonly #endpointKind: 'client' | 'host' | undefined;
   readonly #now: () => number;
   readonly #onBackgroundReconcileError: ((error: unknown) => void) | undefined;
@@ -257,12 +260,14 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   constructor(input: {
     readonly store: PeerMeshStateStore;
     readonly peer: PeerMeshTransport;
+    readonly reachability?: PeerReachabilityPublisher;
     readonly endpointKind?: 'client' | 'host';
     readonly now?: () => number;
     readonly onBackgroundReconcileError?: (error: unknown) => void;
   }) {
     this.#store = input.store;
     this.#peer = input.peer;
+    this.#reachability = input.reachability;
     this.#endpointKind = input.endpointKind;
     this.#now = input.now ?? Date.now;
     this.#onBackgroundReconcileError = input.onBackgroundReconcileError;
@@ -1188,6 +1193,7 @@ class PeerMeshNodeImpl implements PeerMeshNode {
   }
 
   async #refreshLocalRouteOnce(): Promise<SignedPeerMeshRouteRecordV1 | undefined> {
+    await this.#reachability?.refresh();
     const identity = this.#peer.identity();
     const now = this.#now();
     return this.#store.mutate(async (current) => {

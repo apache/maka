@@ -998,14 +998,14 @@ async function readLivePeer(
   if (!endpoint) {
     throw new Error('Runtime Host Direct peer is not available');
   }
-  if (endpoint.peerId !== configured.peerId) {
+  if (endpoint.lease.peerId !== configured.peerId) {
     throw new Error('Runtime Host Direct peer identity changed');
   }
   return requireEnabledPeer({
     state: 'enabled',
-    peerId: endpoint.peerId,
-    routeHints: endpoint.routeHints,
-    coordinationRelays: endpoint.coordinationRelays,
+    peerId: endpoint.lease.peerId,
+    routeHints: endpoint.lease.directRoutes,
+    coordinationRelays: endpoint.lease.coordinationRoutes,
   });
 }
 

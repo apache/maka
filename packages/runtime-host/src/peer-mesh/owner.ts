@@ -17,21 +17,60 @@
  * under the License.
  */
 
-import { createRuntimeHostPeerClient, type RuntimeHostPeerClient } from '../client/peer-client.js';
-import { chmod, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
-  acquireFileLifetimeOwner,
-  type FileLifetimeOwner,
-} from '@maka/storage/file-lifetime-owner';
+  openRuntimeHostPeerEndpointOwner,
+  type PeerReachabilityPublisher,
+  type RuntimeHostPeerEndpointOwner,
+} from '../peer-reachability/index.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import { openPeerMeshNode, type PeerMeshNode } from './node.js';
 import { migrateLegacyPeerMeshState } from './store.js';
 
-export interface RuntimeHostPeerMeshOwner {
-  readonly client: RuntimeHostPeerClient;
+export interface RuntimeHostPeerMeshComponent {
   readonly mesh: PeerMeshNode;
   readonly closed: Promise<void>;
   close(): Promise<void>;
+}
+
+export interface RuntimeHostPeerMeshOwner extends RuntimeHostPeerMeshComponent {
+  readonly client: RuntimeHostPeerClient;
+  readonly reachability: PeerReachabilityPublisher;
+}
+
+interface RuntimeHostPeerMeshComponentInput {
+  readonly dataRoot: string;
+  readonly endpoint: RuntimeHostPeerEndpointOwner;
+  readonly endpointKind: 'client' | 'host';
+  readonly onBackgroundReconcileError?: (error: unknown) => void;
+}
+
+export async function openRuntimeHostPeerMeshComponent(
+  input: RuntimeHostPeerMeshComponentInput,
+): Promise<RuntimeHostPeerMeshComponent> {
+  const peerId = input.endpoint.client.identity().peerId;
+  await migrateLegacyPeerMeshState(input.dataRoot, peerId);
+  const mesh = await openPeerMeshNode({
+    dataRoot: join(input.dataRoot, peerId),
+    peer: input.endpoint.client,
+    reachability: input.endpoint.reachability,
+    endpointKind: input.endpointKind,
+    ...(input.onBackgroundReconcileError
+      ? { onBackgroundReconcileError: input.onBackgroundReconcileError }
+      : {}),
+  });
+  const serving = mesh.serve();
+  let closeTask: Promise<void> | undefined;
+  const close = () => {
+    closeTask ??= closeMesh(mesh, serving);
+    return closeTask;
+  };
+  const closed = serving.then(
+    () => closeTask ?? stopUnexpectedMesh(mesh, new Error('Peer Mesh stopped unexpectedly')),
+    (error: unknown) => closeTask ?? stopUnexpectedMesh(mesh, error),
+  );
+  void closed.catch(() => undefined);
+  return Object.freeze({ mesh, closed, close });
 }
 
 export async function openRuntimeHostPeerMeshOwner(input: {
@@ -46,101 +85,75 @@ export async function openRuntimeHostPeerMeshOwner(input: {
   readonly webRtcStunUrls?: readonly string[];
   readonly onBackgroundReconcileError?: (error: unknown) => void;
 }): Promise<RuntimeHostPeerMeshOwner> {
-  let mesh: PeerMeshNode | undefined;
-  let resolverMesh: PeerMeshNode | undefined;
-  await mkdir(input.dataRoot, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') await chmod(input.dataRoot, 0o700);
-  const rootOwner = await acquireFileLifetimeOwner(join(input.dataRoot, 'peer-mesh.owner'));
-  let client: RuntimeHostPeerClient;
+  const endpoint = await openRuntimeHostPeerEndpointOwner(input);
+  let component: RuntimeHostPeerMeshComponent;
   try {
-    client = createRuntimeHostPeerClient({
-      nativePath: input.nativePath,
-      keyPath: input.keyPath,
-      ...(input.expectedPeerId ? { expectedPeerId: input.expectedPeerId } : {}),
-      ...(input.listenAddresses ? { listenAddresses: input.listenAddresses } : {}),
-      ...(input.coordinationRelays ? { coordinationRelays: input.coordinationRelays } : {}),
-      ...(input.automaticRelayDiscovery === undefined
-        ? {}
-        : { automaticRelayDiscovery: input.automaticRelayDiscovery }),
-      ...(input.webRtcStunUrls === undefined ? {} : { webRtcStunUrls: input.webRtcStunUrls }),
-      routeResolver: {
-        resolveRoutes: (peerId) => resolverMesh?.resolveRoutes(peerId),
-        prepareRoutes: async (peerId, signal) => resolverMesh?.prepareRoutes(peerId, signal),
-      },
-    });
-  } catch (error) {
-    await rootOwner.close().catch(() => undefined);
-    throw error;
-  }
-  try {
-    await migrateLegacyPeerMeshState(input.dataRoot, client.identity().peerId);
-    mesh = await openPeerMeshNode({
-      dataRoot: join(input.dataRoot, client.identity().peerId),
-      peer: client,
+    component = await openRuntimeHostPeerMeshComponent({
+      dataRoot: input.dataRoot,
+      endpoint,
       endpointKind: input.endpointKind,
       ...(input.onBackgroundReconcileError
         ? { onBackgroundReconcileError: input.onBackgroundReconcileError }
         : {}),
     });
-    resolverMesh = mesh;
   } catch (error) {
-    await client.close().catch(() => undefined);
-    await rootOwner.close().catch(() => undefined);
+    await endpoint.close().catch(() => undefined);
     throw error;
   }
-  const serving = mesh.serve();
   let closeTask: Promise<void> | undefined;
   const close = () => {
-    resolverMesh = undefined;
-    closeTask ??= closeOwner(mesh!, client, serving, rootOwner);
+    closeTask ??= closeCombinedOwner(component, endpoint);
     return closeTask;
   };
-  const stopUnexpected = (error: unknown) => {
-    resolverMesh = undefined;
-    return stopUnexpectedOwner(mesh!, error);
-  };
-  const closed = serving.then(
-    () =>
-      closeTask ?? stopUnexpected(new Error('Runtime Host Peer Mesh owner stopped unexpectedly')),
-    (error: unknown) => closeTask ?? stopUnexpected(error),
+  const closed = component.closed.then(
+    () => closeTask ?? close(),
+    async (error: unknown) => {
+      if (closeTask) return closeTask;
+      try {
+        await endpoint.close();
+      } catch (closeError) {
+        throw new AggregateError([error, closeError], 'Runtime Host Peer Mesh owner failed');
+      }
+      throw error;
+    },
   );
   void closed.catch(() => undefined);
   return Object.freeze({
-    client,
-    mesh,
+    client: endpoint.client,
+    reachability: endpoint.reachability,
+    mesh: component.mesh,
     closed,
     close,
   });
 }
 
-async function stopUnexpectedOwner(mesh: PeerMeshNode, error: unknown): Promise<never> {
+async function stopUnexpectedMesh(mesh: PeerMeshNode, error: unknown): Promise<never> {
   try {
     await mesh.close();
   } catch (closeError) {
-    throw new AggregateError([error, closeError], 'Runtime Host Peer Mesh owner failed to stop');
+    throw new AggregateError([error, closeError], 'Peer Mesh failed to stop');
   }
   throw error;
 }
 
-async function closeOwner(
-  mesh: PeerMeshNode,
-  client: RuntimeHostPeerClient,
-  serving: Promise<void>,
-  rootOwner: FileLifetimeOwner,
+async function closeMesh(mesh: PeerMeshNode, serving: Promise<void>): Promise<void> {
+  const errors: unknown[] = [];
+  await mesh.close().catch((error: unknown) => errors.push(error));
+  await serving.catch((error: unknown) => errors.push(error));
+  throwCollected(errors, 'Unable to close Peer Mesh');
+}
+
+async function closeCombinedOwner(
+  component: RuntimeHostPeerMeshComponent,
+  endpoint: RuntimeHostPeerEndpointOwner,
 ): Promise<void> {
   const errors: unknown[] = [];
-  await mesh.close().catch((error: unknown) => {
-    errors.push(error);
-  });
-  await serving.catch((error: unknown) => {
-    errors.push(error);
-  });
-  await client.close().catch((error: unknown) => {
-    errors.push(error);
-  });
-  await rootOwner.close().catch((error: unknown) => {
-    errors.push(error);
-  });
+  await component.close().catch((error: unknown) => errors.push(error));
+  await endpoint.close().catch((error: unknown) => errors.push(error));
+  throwCollected(errors, 'Unable to close Runtime Host Peer Mesh owner');
+}
+
+function throwCollected(errors: readonly unknown[], message: string): void {
   if (errors.length === 1) throw errors[0];
-  if (errors.length > 1) throw new AggregateError(errors, 'Unable to close peer Mesh owner');
+  if (errors.length > 1) throw new AggregateError(errors, message);
 }
