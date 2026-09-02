@@ -70,6 +70,7 @@ import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import {
+  desktopDiagnosticUpdateChannel,
   desktopUpdateChannelFromManifest,
   verifyDownloadedUpdateAttestation,
 } from "./app-update-attestation.js";
@@ -326,6 +327,10 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     captureDesktopDiagnosticEnvironment({
       appVersion: app.getVersion(),
       buildMode: buildInfo.mode,
+      updateChannel: desktopDiagnosticUpdateChannel({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+      }),
       buildCommit: buildInfo.commit,
       locale: app.getLocale(),
       workspacePath: workspaceRoot,
