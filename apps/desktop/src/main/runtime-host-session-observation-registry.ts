@@ -145,6 +145,13 @@ export class RuntimeHostSessionObservationRegistry {
     }
     this.#source = source;
     this.#bindTarget = bindTarget;
+    // Transcript replay is a recoverable renderer read replica, not part of
+    // the Runtime Host availability boundary. Start it alongside Session
+    // observation seeding, but do not keep the whole Host in `reconnecting`
+    // while a large transcript is replayed and acknowledged. The existing
+    // consumer remains registered and receives its replacement generation as
+    // soon as replay completes.
+    this.#restoreTranscripts(source);
     const restored = await Promise.all(
       [...this.#registrations].map(async ([observerId, registration]) => {
         try {
@@ -174,31 +181,6 @@ export class RuntimeHostSessionObservationRegistry {
             this.#onError(error);
           }
           return undefined;
-        }
-      }),
-    );
-    await Promise.all(
-      [...this.#transcripts].map(async ([consumerId, registration]) => {
-        try {
-          const transcriptSource = requireTranscriptSource(source);
-          const result = await transcriptSource.openTranscript(
-            registration.sessionId,
-            consumerId,
-            this.#bindTranscriptTarget(registration.target),
-          );
-          if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
-            registration.lifecycle = 'active';
-            registration.ready.resolve(result);
-          } else {
-            await transcriptSource.closeTranscript(consumerId);
-          }
-        } catch (error) {
-          if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
-            if (registration.lifecycle === 'pending') {
-              this.#deleteTranscript(consumerId, registration);
-            }
-            this.#onError(error);
-          }
         }
       }),
     );
@@ -483,6 +465,40 @@ export class RuntimeHostSessionObservationRegistry {
         return;
       }
       throw error;
+    }
+  }
+
+  #restoreTranscripts(source: SessionObservationSource): void {
+    for (const [consumerId, registration] of this.#transcripts) {
+      void this.#restoreTranscript(source, consumerId, registration);
+    }
+  }
+
+  async #restoreTranscript(
+    source: SessionObservationSource,
+    consumerId: string,
+    registration: TranscriptRegistration,
+  ): Promise<void> {
+    try {
+      const transcriptSource = requireTranscriptSource(source);
+      const result = await transcriptSource.openTranscript(
+        registration.sessionId,
+        consumerId,
+        this.#bindTranscriptTarget(registration.target),
+      );
+      if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
+        registration.lifecycle = 'active';
+        registration.ready.resolve(result);
+      } else {
+        await transcriptSource.closeTranscript(consumerId);
+      }
+    } catch (error) {
+      if (this.#source === source && this.#transcripts.get(consumerId) === registration) {
+        if (registration.lifecycle === 'pending') {
+          this.#deleteTranscript(consumerId, registration);
+        }
+        this.#onError(error);
+      }
     }
   }
 
