@@ -34,7 +34,7 @@ export {
   peerReachabilityLeaseSigningBytes,
   samePeerReachabilityRoutes,
   verifySignedPeerReachabilityLease,
-  type PeerReachabilityIdentity,
+  type PeerReachabilityPeer,
   type PeerReachabilityLeaseReceipt,
   type PeerReachabilityLeaseV1,
   type SignedPeerReachabilityLeaseV1,

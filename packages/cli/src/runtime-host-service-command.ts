@@ -102,7 +102,7 @@ export async function runRuntimeHostServiceCli(
         }
         for (const peer of host.peerListeners) {
           process.stdout.write(
-            `Runtime Host direct peer is ready as ${peer.peerId} at ${peer.reachability.lease.directRoutes.join(', ')}\n`,
+            `Runtime Host direct peer is ready as ${peer.reachability.lease.peerId} at ${peer.reachability.lease.directRoutes.join(', ')}\n`,
           );
         }
       },
@@ -150,7 +150,6 @@ export function createRuntimeHostServiceReadyEvent(host: {
   readonly endpoint: string;
   readonly websocketEndpoints: readonly string[];
   readonly peerListeners: readonly {
-    readonly peerId: string;
     readonly reachability: SignedPeerReachabilityLeaseV1;
   }[];
   readonly compositionDescriptor: { readonly id: string; readonly revision: string };
@@ -179,7 +178,7 @@ export function createRuntimeHostServiceReadyEvent(host: {
       }),
       ...host.peerListeners.map((peer) => ({
         kind: 'libp2p_direct' as const,
-        peerId: peer.peerId,
+        peerId: peer.reachability.lease.peerId,
         listenAddresses: peer.reachability.lease.directRoutes,
       })),
     ],

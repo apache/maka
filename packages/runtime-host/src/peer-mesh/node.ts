@@ -209,8 +209,6 @@ export interface PeerMeshMemberRouteStatus {
 export interface PeerMeshTransport {
   identity(): Readonly<{
     peerId: string;
-    listenAddresses: readonly string[];
-    coordinationRelays: readonly string[];
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;

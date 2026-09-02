@@ -277,7 +277,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     const listener = host.peerListeners[0];
     if (
       !listener ||
-      listener.peerId !== peerId ||
+      listener.reachability.lease.peerId !== peerId ||
       listener.reachability.lease.directRoutes.length === 0
     ) {
       throw new Error('Installed Runtime Host direct-peer listener did not become ready');

@@ -31,7 +31,7 @@ import {
   peerReachabilityLeaseSigningBytes,
   samePeerReachabilityRoutes,
   verifySignedPeerReachabilityLease,
-  type PeerReachabilityIdentity,
+  type PeerReachabilityPeer,
   type PeerReachabilityLeaseReceipt,
   type SignedPeerReachabilityLeaseV1,
 } from './model.js';
@@ -48,7 +48,7 @@ export interface PeerReachabilityPublisher {
 
 export async function openPeerReachabilityPublisher(input: {
   readonly dataRoot: string;
-  readonly peer: PeerReachabilityIdentity;
+  readonly peer: PeerReachabilityPeer;
   readonly now?: () => number;
   readonly monotonicNow?: () => number;
 }): Promise<PeerReachabilityPublisher> {
@@ -79,7 +79,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
 
   constructor(
     private readonly path: string,
-    private readonly peer: PeerReachabilityIdentity,
+    private readonly peer: PeerReachabilityPeer,
     private readonly now: () => number,
     private readonly monotonicNow: () => number,
     current: SignedPeerReachabilityLeaseV1 | undefined,
@@ -111,6 +111,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
     const task = this.#tail.then(async () => {
       this.#assertOpen();
       const identity = this.peer.identity();
+      const reachability = this.peer.reachability();
       const now = this.now();
       const monotonicNow = this.monotonicNow();
       if (
@@ -123,7 +124,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
           this.#receipt,
           monotonicNow + PEER_REACHABILITY_REFRESH_LEAD_MS,
         ) &&
-        samePeerReachabilityRoutes(this.#current.lease, identity)
+        samePeerReachabilityRoutes(this.#current.lease, reachability)
       ) {
         return this.#current;
       }
@@ -134,8 +135,8 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
         revision,
         issuedAt: now,
         expiresAt: now + PEER_REACHABILITY_LEASE_TTL_MS,
-        directRoutes: identity.listenAddresses,
-        coordinationRoutes: identity.coordinationRelays,
+        directRoutes: reachability.listenAddresses,
+        coordinationRoutes: reachability.activeCoordinationRelays,
       });
       const identityProof = await this.peer.signIdentity(peerReachabilityLeaseSigningBytes(lease));
       const signed = decodeSignedPeerReachabilityLease({
@@ -205,7 +206,7 @@ class PeerReachabilityPublisherImpl implements PeerReachabilityPublisher {
 
 async function readState(
   path: string,
-  peer: PeerReachabilityIdentity,
+  peer: PeerReachabilityPeer,
 ): Promise<SignedPeerReachabilityLeaseV1 | undefined> {
   try {
     const stat = await lstat(path);

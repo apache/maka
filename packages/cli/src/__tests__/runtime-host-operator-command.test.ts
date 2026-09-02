@@ -506,7 +506,6 @@ describe('Runtime Host operator commands', () => {
       websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
       peerListeners: [
         {
-          peerId: '12D3KooWPeer',
           reachability: {
             lease: {
               version: 1,

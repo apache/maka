@@ -85,8 +85,6 @@ export interface RuntimeHostPeerClient {
   ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
   identity(): Readonly<{
     peerId: string;
-    listenAddresses: readonly string[];
-    coordinationRelays: readonly string[];
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
@@ -206,15 +204,8 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
 
   identity(): Readonly<{
     peerId: string;
-    listenAddresses: readonly string[];
-    coordinationRelays: readonly string[];
   }> {
-    const endpoint = this.reachability();
-    return Object.freeze({
-      peerId: this.#requireEndpoint().peerId,
-      listenAddresses: Object.freeze([...endpoint.listenAddresses]),
-      coordinationRelays: Object.freeze([...endpoint.activeCoordinationRelays]),
-    });
+    return Object.freeze({ peerId: this.#requireEndpoint().peerId });
   }
 
   reachability(): RuntimeHostPeerNativeReachabilitySnapshot {

@@ -1430,10 +1430,13 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
   }
 
   identity() {
+    return { peerId: this.peerId } as const;
+  }
+
+  reachability() {
     return {
-      peerId: this.peerId,
       listenAddresses: this.#routeHints,
-      coordinationRelays: this.#coordinationRelays,
+      activeCoordinationRelays: this.#coordinationRelays,
     } as const;
   }
 
@@ -1447,13 +1450,13 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
   }
 
   async refresh(): Promise<SignedPeerReachabilityLeaseV1> {
-    const identity = this.identity();
+    const reachability = this.reachability();
     const now = this.#now();
     if (
       this.#reachability &&
       this.#reachability.lease.issuedAt <= now &&
       this.#reachability.lease.expiresAt > now + PEER_REACHABILITY_REFRESH_LEAD_MS &&
-      samePeerReachabilityRoutes(this.#reachability.lease, identity)
+      samePeerReachabilityRoutes(this.#reachability.lease, reachability)
     ) {
       return this.#reachability;
     }
@@ -1464,8 +1467,8 @@ class MemoryPeerClient implements PeerMeshTransport, PeerReachabilityPublisher {
       revision: this.#reachabilityRevision,
       issuedAt: now,
       expiresAt: now + PEER_REACHABILITY_LEASE_TTL_MS,
-      directRoutes: identity.listenAddresses,
-      coordinationRoutes: identity.coordinationRelays,
+      directRoutes: reachability.listenAddresses,
+      coordinationRoutes: reachability.activeCoordinationRelays,
     });
     const proof = await this.signIdentity(peerReachabilityLeaseSigningBytes(lease));
     const signed = decodeSignedPeerReachabilityLease({

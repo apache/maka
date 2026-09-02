@@ -45,13 +45,10 @@ export interface RuntimeHostListener {
 
 export interface RuntimeHostPeerListener extends RuntimeHostListener {
   readonly kind: 'libp2p_direct';
-  readonly peerId: string;
-  readonly listenAddresses: readonly string[];
   readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
 export interface RuntimeHostPeerListenerDescriptor {
-  readonly peerId: string;
   readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
@@ -132,7 +129,6 @@ export function createRuntimeHostListenerSet(
   const peerListeners = Object.freeze(
     additional.filter(isRuntimeHostPeerListener).map((listener) =>
       Object.freeze({
-        peerId: listener.peerId,
         get reachability() {
           return listener.reachability;
         },

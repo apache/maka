@@ -54,11 +54,13 @@ export interface PeerReachabilityLeaseReceipt {
   readonly currentUntil: number;
 }
 
-export interface PeerReachabilityIdentity {
+export interface PeerReachabilityPeer {
   identity(): Readonly<{
     peerId: string;
+  }>;
+  reachability(): Readonly<{
     listenAddresses: readonly string[];
-    coordinationRelays: readonly string[];
+    activeCoordinationRelays: readonly string[];
   }>;
   signIdentity(payload: Buffer): Promise<RuntimeHostPeerIdentityProof>;
   verifyIdentity(peerId: string, payload: Buffer, proof: RuntimeHostPeerIdentityProof): boolean;
@@ -116,7 +118,7 @@ export function verifySignedPeerReachabilityLease(input: {
   readonly value: unknown;
   readonly expectedPeerId: string;
   readonly now: number;
-  readonly verifyIdentity: PeerReachabilityIdentity['verifyIdentity'];
+  readonly verifyIdentity: PeerReachabilityPeer['verifyIdentity'];
   readonly allowExpired?: boolean;
 }): SignedPeerReachabilityLeaseV1 {
   const signed = authenticateSignedPeerReachabilityLease(input);
@@ -132,7 +134,7 @@ export function verifySignedPeerReachabilityLease(input: {
 export function authenticateSignedPeerReachabilityLease(input: {
   readonly value: unknown;
   readonly expectedPeerId: string;
-  readonly verifyIdentity: PeerReachabilityIdentity['verifyIdentity'];
+  readonly verifyIdentity: PeerReachabilityPeer['verifyIdentity'];
 }): SignedPeerReachabilityLeaseV1 {
   const signed = decodeSignedPeerReachabilityLease(input.value);
   if (signed.lease.peerId !== input.expectedPeerId) {
@@ -165,11 +167,11 @@ export function peerReachabilityLeaseSigningBytes(lease: PeerReachabilityLeaseV1
 
 export function samePeerReachabilityRoutes(
   lease: PeerReachabilityLeaseV1,
-  identity: ReturnType<PeerReachabilityIdentity['identity']>,
+  reachability: ReturnType<PeerReachabilityPeer['reachability']>,
 ): boolean {
   return (
-    sameStrings(lease.directRoutes, identity.listenAddresses) &&
-    sameStrings(lease.coordinationRoutes, identity.coordinationRelays)
+    sameStrings(lease.directRoutes, reachability.listenAddresses) &&
+    sameStrings(lease.coordinationRoutes, reachability.activeCoordinationRelays)
   );
 }
 

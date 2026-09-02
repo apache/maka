@@ -27,7 +27,7 @@ import {
   isPeerReachabilityLeaseCurrent,
   peerReachabilityLeaseReceipt,
   verifySignedPeerReachabilityLease,
-  type PeerReachabilityIdentity,
+  type PeerReachabilityPeer,
 } from '../peer-reachability/model.js';
 import { openPeerReachabilityPublisher } from '../peer-reachability/publisher.js';
 
@@ -208,7 +208,7 @@ test('publisher replaces future leases and renews them on monotonic time across 
   }
 });
 
-class TestPeerIdentity implements PeerReachabilityIdentity {
+class TestPeerIdentity implements PeerReachabilityPeer {
   readonly #publicKey: KeyObject;
   readonly #privateKey: KeyObject;
   listenAddresses: readonly string[];
@@ -223,10 +223,13 @@ class TestPeerIdentity implements PeerReachabilityIdentity {
   }
 
   identity() {
+    return { peerId: this.peerId };
+  }
+
+  reachability() {
     return {
-      peerId: this.peerId,
       listenAddresses: this.listenAddresses,
-      coordinationRelays: this.coordinationRelays,
+      activeCoordinationRelays: this.coordinationRelays,
     };
   }
 

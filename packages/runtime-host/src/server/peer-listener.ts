@@ -80,8 +80,6 @@ export function createRuntimeHostPeerListener(
 class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   readonly kind = 'libp2p_direct' as const;
   readonly endpoint: string;
-  readonly peerId: string;
-  readonly listenAddresses: readonly string[];
   readonly #reachability: PeerReachabilityPublisher;
   readonly #accessAuthority: RuntimeHostAccessAuthority;
   readonly #accept: (connection: RuntimeHostListenerConnection) => void;
@@ -103,8 +101,6 @@ class RuntimeHostPeerListener implements RuntimeHostPeerListenerContract {
   ) {
     const identity = client.identity();
     this.endpoint = identity.peerId;
-    this.peerId = identity.peerId;
-    this.listenAddresses = Object.freeze([...identity.listenAddresses]);
     this.#reachability = reachability;
     this.#accessAuthority = accessAuthority;
     this.#accept = accept;

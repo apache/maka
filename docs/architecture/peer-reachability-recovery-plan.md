@@ -303,6 +303,7 @@ charter. Their evidence is adjudicated into this ledger:
 | R5-C2 | correctness | confirmed | Desktop shutdown settles Mesh cleanup before endpoint cleanup but never lets a Mesh failure skip the endpoint owner; it reports accumulated failures only after both lifetimes have been released. |
 | R5-S1 | simplification | confirmed | The test-only borrowed endpoint service mode was removed. Runtime Host service ownership is now invariant, while tests that need independent endpoints compose them outside the service. |
 | R5-S2 | simplification | confirmed | An attached route resolver is now one complete snapshot/refresh/subscription capability. The client still supports no resolver, but no longer carries unused partial-capability branches. |
+| R6-S1 | simplification | confirmed | Peer identity now exposes only the immutable PeerId. Dynamic addresses flow from the native reachability snapshot into the signed lease, and listener/CLI projections derive from that lease instead of retaining parallel unsigned copies. |
 
 Only findings that affect the merge bar and have a proportionate root fix enter the
 stack. Narrow constructed paths and low-value polish do not. A local fix triggers a
