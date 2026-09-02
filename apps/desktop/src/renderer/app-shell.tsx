@@ -436,7 +436,7 @@ function AppShellContent({
   });
   const {
     pendingQuotes,
-    addQuote,
+    addQuote: onAddQuote,
     removeQuote,
     clearQuotes,
     restoreQuotes,
@@ -448,7 +448,7 @@ function AppShellContent({
   // Plan toggle and one orchestration value, not one fused choice.
   const [newChatPlanModeActive, setNewChatPlanModeActive] = useState(false);
   const [newChatOrchestrationMode, setNewChatOrchestrationMode] = useState<OrchestrationMode>('default');
-  const [newTaskPermissionChoice, setNewTaskPermissionChoice, clearNewTaskPermissionChoice] =
+  const [newTaskPermissionChoice, setNewTaskPermissionMode, clearNewTaskPermissionChoice] =
     useNewTaskChoice<ChatDefaultPermissionMode>(currentNewTaskDraftKey);
   const [historyLoadPendingSessionId, setHistoryLoadPendingSessionId] = useState<string>();
   // The state above is what the transcript renders; this is what the guard
@@ -653,11 +653,10 @@ function AppShellContent({
    * not a statement about every later task, so it is sent once on create and
    * never written back to `chatDefaults` — the Settings surface owns that.
    */
-  const newTaskPermissionMode =
+  const newSessionPermissionMode =
     newTaskPermissionChoice ??
     taskEntry.selectors.selectedHost?.chatDefaults.permissionMode ??
     'ask';
-  const setNewTaskPermissionMode = setNewTaskPermissionChoice;
   useEffect(() => {
     if (!appearanceHydrated) return;
     let cancelled = false;
@@ -826,7 +825,7 @@ function AppShellContent({
     catalogRevision,
     isActiveSession: (sessionId) => activeIdRef.current === sessionId,
     sessions,
-    newTaskPermissionMode,
+    newSessionPermissionMode,
     refreshCatalog: refreshSessions,
     saveComposerDefaults: (model) => saveComposerDefaults({ model }),
     writeFailureCopy: (setting, error) => sessionSettingFailureCopy(uiLocale, setting, error),
@@ -1150,7 +1149,7 @@ function AppShellContent({
     ? pendingSessionView({
         sessionId: activeId,
         name: shellCopy.newConversation,
-        permissionMode: newTaskPermissionMode,
+        permissionMode: newSessionPermissionMode,
       })
     : undefined);
   // Each control reads its own field. There is nothing to project and nothing
@@ -1223,7 +1222,7 @@ function AppShellContent({
   const activeBoundarySurface = deriveDesktopExecutionBoundarySurface(
     activeId,
     activeExecutionBoundary,
-    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newTaskPermissionMode,
+    activeId ? (activeSessionForView?.permissionMode ?? 'ask') : newSessionPermissionMode,
   );
   const activePermissionMode = activeId
     ? sessionSettingIntent.overlays.permissionMode[activeId]
@@ -1568,8 +1567,8 @@ function AppShellContent({
     newSessionCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     // Refresh only; Desktop Main re-reads the authoritative default before
     // constructing the Runtime Host preview target.
-    newSessionPermissionMode: newTaskPermissionMode,
-    onAddQuote: addQuote,
+    newSessionPermissionMode,
+    onAddQuote,
   };
 
   const hasModalOpen = helpOpen || paletteOpen || searchModalOpen || sharedSessionDialog.target !== undefined;
@@ -2947,7 +2946,7 @@ function AppShellContent({
                   onRemoveAttachment={removeAttachment}
                   pendingQuotes={pendingQuotes}
                   onRemoveQuote={removeQuote}
-                  onPasteAsQuote={canStageComposerContext ? addQuote : undefined}
+                  onPasteAsQuote={canStageComposerContext ? onAddQuote : undefined}
                   onPickAttachments={
                     !canStageComposerContext ||
                       (revisionDraft && activeId === revisionDraft.draftSessionId)
@@ -3137,7 +3136,7 @@ function AppShellContent({
                   sharedSessionActive
                     ? undefined
                     : (selection) => {
-                        addQuote(selection);
+                        onAddQuote(selection);
                         composerRef.current?.focus();
                       }
                 }

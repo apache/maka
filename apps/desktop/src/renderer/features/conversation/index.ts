@@ -45,6 +45,7 @@ export type { ConversationServices } from './ports.js';
 export {
   useSessionReferenceComposer,
 } from './controller/use-session-reference-composer.js';
+export { useComposerQuotes } from './controller/use-composer-quotes.js';
 export {
   ComposerMentionsProvider,
   useComposerMentionsContext,
