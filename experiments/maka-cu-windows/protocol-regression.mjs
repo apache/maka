@@ -20,6 +20,9 @@
 // Protocol-only regressions for the private Windows helper. These never
 // launch a fixture or interact with a desktop window.
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const helperExe = process.argv[2];
@@ -49,6 +52,18 @@ const waitExit = (child, timeoutMs) =>
     timer = setTimeout(() => finish({ code: null, signal: null, timeout: true }), timeoutMs);
   });
 const send = (child, value) => child.stdin.write(JSON.stringify(value) + '\n');
+const hello = (id, imageDir, hostPid) => ({
+  jsonrpc: '2.0',
+  id,
+  method: 'host.hello',
+  params: {
+    protocol: 'maka.cu/2',
+    host: { name: 'protocol-regression', version: '0' },
+    hostPid,
+    imageDir,
+    allowGlobalPointer: false,
+  },
+});
 const ensureStopped = async (child) => {
   if (child.exitCode !== null) return;
   child.kill();
@@ -81,6 +96,7 @@ async function malformedMethod() {
 
 async function unknownCancel() {
   const child = spawn(helperExe, [], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const imageDir = await mkdtemp(join(tmpdir(), 'maka-cu-protocol-'));
   const rl = createInterface({ input: child.stdout });
   const messages = [];
   rl.on('line', (line) => {
@@ -88,28 +104,29 @@ async function unknownCancel() {
       messages.push(JSON.parse(line));
     } catch {}
   });
-  send(child, { jsonrpc: '2.0', id: 1, method: 'debug_sleep', params: { ms: 300 } });
-  send(child, { jsonrpc: '2.0', id: 2, method: 'debug_sleep', params: { ms: 20 } });
+  send(child, hello(1, imageDir, process.pid));
+  send(child, { jsonrpc: '2.0', id: 7, method: 'debug_sleep', params: { ms: 300 } });
+  send(child, { jsonrpc: '2.0', id: 8, method: 'debug_sleep', params: { ms: 20 } });
   send(child, { jsonrpc: '2.0', method: '$/cancel', params: { id: 999 } });
   send(child, { jsonrpc: '2.0', method: '$/cancel', params: [] });
   const until = Date.now() + 3000;
   while (
     Date.now() < until &&
-    (!messages.some((m) => m.id === 1) || !messages.some((m) => m.id === 2))
+    (!messages.some((m) => m.id === 7) || !messages.some((m) => m.id === 8))
   )
     await new Promise((r) => setTimeout(r, 20));
   child.stdin.end();
   const exit = await waitExit(child, 4000);
   const pass =
-    messages.some((m) => m.id === 1 && m.result?.sleptMs === 300) &&
-    messages.some((m) => m.id === 2 && m.result?.sleptMs === 20) &&
-    !messages.some((m) => m.id === null) &&
+    messages.some((m) => m.id === 7 && m.result?.sleptMs === 300) &&
+    messages.some((m) => m.id === 8 && m.result?.sleptMs === 20) &&
     exit.code === 0;
   console.log(
     `${pass ? 'PASS' : 'FAIL'} unknown cancel does not affect unrelated requests`,
     JSON.stringify({ messages, exit }),
   );
   await ensureStopped(child);
+  await rm(imageDir, { recursive: true, force: true });
   return pass;
 }
 
@@ -117,8 +134,10 @@ async function eofBackpressure() {
   // Intentionally never attach a stdout reader. The bounded helper writer
   // must fail closed and exit instead of becoming an orphan behind a pipe.
   const child = spawn(helperExe, [], { stdio: ['pipe', 'pipe', 'ignore'] });
+  const imageDir = await mkdtemp(join(tmpdir(), 'maka-cu-protocol-'));
+  send(child, hello(1, imageDir, process.pid));
   for (let i = 0; i < 1000; i++)
-    send(child, { jsonrpc: '2.0', id: i + 1, method: 'initialize', params: {} });
+    send(child, { jsonrpc: '2.0', id: i + 2, method: 'debug_sleep', params: { ms: 1 } });
   child.stdin.end();
   const exit = await waitExit(child, 5000);
   const pass = exit.code === 0 || exit.code === 2;
@@ -127,6 +146,7 @@ async function eofBackpressure() {
     JSON.stringify(exit),
   );
   if (exit.timeout) child.kill();
+  await rm(imageDir, { recursive: true, force: true });
   return pass;
 }
 

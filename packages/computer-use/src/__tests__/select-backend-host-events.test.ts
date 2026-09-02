@@ -101,3 +101,30 @@ test('physical input policy is passed to the selected backend', () => {
   });
   assert.equal(received, physicalInputRecentlyActive);
 });
+
+test('shared host policies are passed to the Windows adapter', () => {
+  const physicalInputRecentlyActive = () => true;
+  const onTrace = () => {};
+  const backend: CuDispatchBackend = {
+    async preflight() {
+      return { accessibility: true, screenRecording: true };
+    },
+    async run() {
+      return { outcome: { ok: true, tier: 'ax', verified: true } };
+    },
+  };
+  let received: MakaCuBackendOptions | undefined;
+  selectComputerUseBackend({
+    platform: 'win32',
+    binaryPath: 'helper.exe',
+    expectedBinarySha256: '0'.repeat(64),
+    physicalInputRecentlyActive,
+    onTrace,
+    createWindowsBackend(options) {
+      received = options;
+      return backend;
+    },
+  });
+  assert.equal(received?.physicalInputRecentlyActive, physicalInputRecentlyActive);
+  assert.equal(received?.onTrace, onTrace);
+});

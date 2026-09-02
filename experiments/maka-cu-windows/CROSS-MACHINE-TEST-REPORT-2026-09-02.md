@@ -19,6 +19,13 @@
 
 # Cross-machine Computer Use test report — 2026-09-02
 
+> Historical snapshot: this report is retained for comparison, but it is
+> superseded by `CROSS_MACHINE_RUST_NATIVE_SUMMARY.md`. The later formal
+> `maka.cu/2` Rust-native rerun has the authoritative artifact hash and result
+> classification; it still records packaging and clean-machine qualification
+> as incomplete. This file must not be used alone as current production or
+> clean-machine evidence.
+
 This report records the latest Windows 11 x64 validation of the C# and Rust
 Computer Use comparison spike on branch `codex/maka-cu-rust-comparison`.
 All application tests used isolated temporary fixtures, profiles, or documents;
@@ -94,9 +101,9 @@ experimental evidence, not a production release certification.
    warning, LibreOffice discovery, cold UIA observation budget, descendant
    discovery, and Notepad document-value probing.
 4. Further source changes: no additional defect is indicated by this matrix.
-5. Evidence quality: suitable as clean-machine runtime/package evidence for
-   this experiment, but not as signed production-release or arbitrary-app
-   certification.
+5. Evidence quality: suitable as historical in-machine runtime/package evidence
+    for this experiment, but not as current clean-machine qualification, signed
+    production-release evidence, or arbitrary-app certification.
 
 ## Evidence files
 

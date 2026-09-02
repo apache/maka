@@ -1,0 +1,79 @@
+{
+  "schema": "maka.cu.windows/generic-chromium-results/1",
+  "protocol": "maka.cu/2",
+  "executor": "rust-native-windows",
+  "temporaryProfile": "C:\\Users\\heyi\\AppData\\Local\\Temp\\maka-cu2-browser-rust-cu2-25052-1788367784250-wg8g7x",
+  "target": {
+    "pid": 21860,
+    "hwnd": 1509788
+  },
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.19.0"
+  },
+  "summary": {
+    "pass": 9,
+    "fail": 0,
+    "blocked": 3,
+    "unknown": 1
+  },
+  "tests": [
+    {
+      "name": "host.hello",
+      "status": "pass"
+    },
+    {
+      "name": "session.begin",
+      "status": "pass"
+    },
+    {
+      "name": "fresh Chromium PID/HWND target",
+      "status": "pass"
+    },
+    {
+      "name": "observe web controls",
+      "status": "pass"
+    },
+    {
+      "name": "Chromium semantic set_value",
+      "status": "blocked",
+      "note": "{\"code\":\"element_not_actionable\",\"detail\":{},\"message\":\"The element cannot safely perform this action.\"}"
+    },
+    {
+      "name": "Chromium page oracle confirms value",
+      "status": "blocked",
+      "note": "helper did not expose a safe writable UIA route"
+    },
+    {
+      "name": "Chromium semantic select_text",
+      "status": "blocked",
+      "note": "{\"code\":\"element_not_actionable\",\"detail\":{},\"message\":\"The element does not expose this action.\"}"
+    },
+    {
+      "name": "Chromium semantic click",
+      "status": "pass"
+    },
+    {
+      "name": "Chromium page oracle confirms click",
+      "status": "pass"
+    },
+    {
+      "name": "Chromium semantic scroll",
+      "status": "pass"
+    },
+    {
+      "name": "Chromium page oracle confirms scroll",
+      "status": "pass"
+    },
+    {
+      "name": "Chromium Enter helper remains unknown",
+      "status": "unknown",
+      "note": "page navigation oracle is never promoted to helper verified"
+    },
+    {
+      "name": "session.end",
+      "status": "pass"
+    }
+  ]
+}

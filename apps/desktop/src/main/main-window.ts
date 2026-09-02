@@ -668,6 +668,7 @@ function emitRealWindowSmokeDiagnostic(stage: string): void {
     windowExists: true,
     title: target.getTitle(),
     bounds: target.getBounds(),
+    contentBounds: target.getContentBounds(),
     normalBounds: target.getNormalBounds(),
     isVisible: target.isVisible(),
     isFocused: target.isFocused(),

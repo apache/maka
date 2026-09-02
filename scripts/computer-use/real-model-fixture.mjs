@@ -23,7 +23,9 @@ import { createCuE2eFixture } from './e2e-fixture.mjs';
 
 const scenario = getCuE2eScenario(process.env.MAKA_CU_E2E_SCENARIO ?? 'l0-observe-only');
 
-app.setActivationPolicy('accessory');
+if (process.platform === 'darwin' && typeof app.setActivationPolicy === 'function') {
+  app.setActivationPolicy('accessory');
+}
 app.on('window-all-closed', () => {});
 
 let fixture;

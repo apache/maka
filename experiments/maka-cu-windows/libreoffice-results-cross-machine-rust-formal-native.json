@@ -1,0 +1,1060 @@
+{
+  "schema": "maka.cu.windows/real-libreoffice-results/1",
+  "protocol": "maka.cu/2",
+  "executor": "rust-native-windows",
+  "application": {
+    "path": "D:\\soft\\program\\soffice.exe",
+    "profile": "C:\\Users\\heyi\\AppData\\Local\\Temp\\maka-cu2-libreoffice-profile-bJ9319",
+    "args": [
+      "--writer",
+      "--nologo",
+      "--nofirststartwizard",
+      "--norestore",
+      "--nolockcheck",
+      "temporary-user-installation"
+    ]
+  },
+  "target": {
+    "pid": 20216,
+    "hwnd": 4457136,
+    "title": "未命名 1 — LibreOffice Writer"
+  },
+  "uiSurface": [
+    {
+      "role": "titlebar",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [],
+      "value": "未命名 1 — LibreOffice Writer"
+    },
+    {
+      "role": "menubar",
+      "title": "系统",
+      "axIdentifier": "MenuBar",
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "系统",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "最小化",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "还原",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "关闭",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "custom",
+      "title": "未命名 1 — LibreOffice Writer",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "文件(F)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "编辑(E)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "视图(V)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "插入(I)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "格式(O)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "样式(Y)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "表格(A)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "表单(R)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "工具(T)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "窗口(W)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "帮助(H)",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "document",
+      "title": "未命名 1 - LibreOffice 文档",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "scrollbar",
+      "title": "垂直滚动条",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": "0"
+    },
+    {
+      "role": "custom",
+      "title": "水平标尺",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "custom",
+      "title": "属性",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "menuitem",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "属性",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "样式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "图库",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "导航",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "页面",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "样式检视器",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "管理修订",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "检查无障碍辅助要求",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "查找",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "toolbar",
+      "title": "标准",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "新建文档",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "打开",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "保存",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "直接导出为 PDF",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "打印",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "打印预览",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "剪切",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "复制",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "粘贴",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "克隆格式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "撤消",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "恢复",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "查找与替换",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "拼写",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "格式用标记",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "表格",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "图像…",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "图表",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "文本框",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "分页符",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "字段",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "符号",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "超链接",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "脚注",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "尾注",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "书签",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "交叉引用",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "批注",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "追踪修订功能",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "线条",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "基本形状",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "绘图功能",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "separator",
+      "title": "",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "toolbar",
+      "title": "格式",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "custom",
+      "title": "段落样式",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "combobox",
+      "title": "段落样式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": ""
+    },
+    {
+      "role": "edit",
+      "title": "段落样式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": "默认段落样式"
+    },
+    {
+      "role": "button",
+      "title": "更新",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "根据选中内容新建样式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "custom",
+      "title": "字体名称",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "combobox",
+      "title": "字体名称",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": ""
+    },
+    {
+      "role": "edit",
+      "title": "字体名称",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": "Noto Serif SC"
+    },
+    {
+      "role": "custom",
+      "title": "字号",
+      "axIdentifier": null,
+      "actions": [],
+      "value": null
+    },
+    {
+      "role": "combobox",
+      "title": "字号",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": ""
+    },
+    {
+      "role": "edit",
+      "title": "字号",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": "五号"
+    },
+    {
+      "role": "button",
+      "title": "粗体",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "斜体",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "下划线",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "删除线",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "上标",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "下标",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "清除",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "字符颜色",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "字符高亮显示颜色",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "行首",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "居中",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "行尾",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "两端对齐",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "无序号列表",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "有序号列表",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "大纲格式",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "增大",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "减小",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "splitbutton",
+      "title": "单倍行距",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "增加",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "减少",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "从左向右",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    },
+    {
+      "role": "button",
+      "title": "从右向左",
+      "axIdentifier": null,
+      "actions": [
+        "press"
+      ],
+      "value": null
+    }
+  ],
+  "ownedPids": [
+    13280,
+    20216
+  ],
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.16.0"
+  },
+  "summary": {
+    "pass": 9,
+    "fail": 1,
+    "blocked": 0,
+    "unknown": 0
+  },
+  "tests": [
+    {
+      "name": "host.hello",
+      "status": "pass"
+    },
+    {
+      "name": "session.begin",
+      "status": "pass"
+    },
+    {
+      "name": "fresh LibreOffice PID/HWND target",
+      "status": "pass",
+      "note": "未命名 1 — LibreOffice Writer"
+    },
+    {
+      "name": "LibreOffice observation preserves PID/HWND target identity",
+      "status": "pass",
+      "note": "{\"appId\":\"win32:d:\\\\soft\\\\program\\\\soffice.bin\",\"appName\":\"未命名 1 — LibreOffice Writer\",\"bounds\":{\"height\":1118,\"width\":2062,\"x\":-7,\"y\":-7},\"displayId\":\"monitor:10001\",\"layer\":0,\"onScreen\":true,\"pid\":20216,\"title\":\"未命名 1 — LibreOffice Writer\",\"windowId\":4457136,\"zIndex\":21}"
+    },
+    {
+      "name": "LibreOffice action identity remains executor-bound",
+      "status": "pass",
+      "note": "native executor revalidates process start time and window generation before dispatch"
+    },
+    {
+      "name": "LibreOffice observation is bounded and structured",
+      "status": "pass",
+      "note": "elements=113"
+    },
+    {
+      "name": "LibreOffice first frame uses host-owned WGC image",
+      "status": "pass",
+      "note": "{\"byteLength\":171072,\"format\":\"png\",\"heightPx\":1380,\"path\":\"C:\\\\Users\\\\heyi\\\\AppData\\\\Local\\\\Temp\\\\maka-cu2-libreoffice-images-dwATnh\\\\s0000000000000001.png\",\"scale\":1,\"sha256\":\"sha256:788be2cd14a92ab0fac1387f0e60ce2e1d59d4b12756ee80ca93ee578934dcec\",\"widthPx\":2560}"
+    },
+    {
+      "name": "LibreOffice semantic sidebar toggle",
+      "status": "fail",
+      "note": "dispatch_refused"
+    },
+    {
+      "name": "LibreOffice target remains the same after semantic action",
+      "status": "pass"
+    },
+    {
+      "name": "session.end",
+      "status": "pass"
+    }
+  ]
+}

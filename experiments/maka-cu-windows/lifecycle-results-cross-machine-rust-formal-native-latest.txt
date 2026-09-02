@@ -1,0 +1,152 @@
+PASS host.hello protocol
+PASS host.hello fails closed for global pointer
+PASS host.hello advertises semantic element actions
+PASS host.hello declares a native release identity
+PASS session.begin
+PASS duplicate session.begin is rejected
+PASS window.list re-enumerates exact fixture PID/HWND
+PASS window.list preserves the fresh window title
+PASS window.list carries app identity and bounds
+PASS window.list is front-to-back without zIndex ties
+PASS apps.list joins the fixture PID to the same appId
+PASS observe returns a bound snapshot
+PASS observe carries process start time and window generation
+PASS observe carries a bound target digest
+PASS observe uses normalized semantic action names
+PASS observe image is host-owned and hashable
+PASS screen.capture uses a selected display and host-owned image
+PASS observe exposes a ValuePattern input or Invoke button
+PASS dispatch.element returns a complete outcome envelope
+PASS dispatch.element snapshot authority is one-use
+PASS dispatch.point is fail-closed and does not mutate
+PASS fixture recreation changes the HWND inventory
+PASS old HWND is refused after fixture recreation
+PASS fresh HWND is re-enumerated after recreation
+PASS session.end reports scoped release counts
+PASS session.end is idempotent for an unknown session
+PASS host.hello accepts the declared supervisor PID
+PASS helper exits after the declared supervisor dies — exitCode=0
+PASS shutdown returns bounded grace
+{
+  "protocol": "maka.cu/2",
+  "failures": 0,
+  "tests": [
+    {
+      "name": "host.hello protocol",
+      "result": "PASS"
+    },
+    {
+      "name": "host.hello fails closed for global pointer",
+      "result": "PASS"
+    },
+    {
+      "name": "host.hello advertises semantic element actions",
+      "result": "PASS"
+    },
+    {
+      "name": "host.hello declares a native release identity",
+      "result": "PASS"
+    },
+    {
+      "name": "session.begin",
+      "result": "PASS"
+    },
+    {
+      "name": "duplicate session.begin is rejected",
+      "result": "PASS"
+    },
+    {
+      "name": "window.list re-enumerates exact fixture PID/HWND",
+      "result": "PASS"
+    },
+    {
+      "name": "window.list preserves the fresh window title",
+      "result": "PASS"
+    },
+    {
+      "name": "window.list carries app identity and bounds",
+      "result": "PASS"
+    },
+    {
+      "name": "window.list is front-to-back without zIndex ties",
+      "result": "PASS"
+    },
+    {
+      "name": "apps.list joins the fixture PID to the same appId",
+      "result": "PASS"
+    },
+    {
+      "name": "observe returns a bound snapshot",
+      "result": "PASS"
+    },
+    {
+      "name": "observe carries process start time and window generation",
+      "result": "PASS"
+    },
+    {
+      "name": "observe carries a bound target digest",
+      "result": "PASS"
+    },
+    {
+      "name": "observe uses normalized semantic action names",
+      "result": "PASS"
+    },
+    {
+      "name": "observe image is host-owned and hashable",
+      "result": "PASS"
+    },
+    {
+      "name": "screen.capture uses a selected display and host-owned image",
+      "result": "PASS"
+    },
+    {
+      "name": "observe exposes a ValuePattern input or Invoke button",
+      "result": "PASS"
+    },
+    {
+      "name": "dispatch.element returns a complete outcome envelope",
+      "result": "PASS"
+    },
+    {
+      "name": "dispatch.element snapshot authority is one-use",
+      "result": "PASS"
+    },
+    {
+      "name": "dispatch.point is fail-closed and does not mutate",
+      "result": "PASS"
+    },
+    {
+      "name": "fixture recreation changes the HWND inventory",
+      "result": "PASS"
+    },
+    {
+      "name": "old HWND is refused after fixture recreation",
+      "result": "PASS"
+    },
+    {
+      "name": "fresh HWND is re-enumerated after recreation",
+      "result": "PASS"
+    },
+    {
+      "name": "session.end reports scoped release counts",
+      "result": "PASS"
+    },
+    {
+      "name": "session.end is idempotent for an unknown session",
+      "result": "PASS"
+    },
+    {
+      "name": "host.hello accepts the declared supervisor PID",
+      "result": "PASS"
+    },
+    {
+      "name": "helper exits after the declared supervisor dies",
+      "result": "PASS",
+      "note": "exitCode=0"
+    },
+    {
+      "name": "shutdown returns bounded grace",
+      "result": "PASS"
+    }
+  ]
+}

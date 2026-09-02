@@ -107,7 +107,7 @@ test('remote providers do not request Host paths and use a Client-owned cwd', as
   );
 });
 
-test('publishes the real Computer Use schema through the Client Capability protocol', () => {
+test('publishes the semantic-only Computer Use schema through the Client Capability protocol', () => {
   const computerUseTools = buildComputerUseTools({ backend: computerBackend() });
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
@@ -122,10 +122,12 @@ test('publishes the real Computer Use schema through the Client Capability proto
       offers: provider.offers(),
     }),
   );
-  const coordinateSchema = provider.offers()[0]?.tools[0]?.inputSchema.properties as
-    | Record<string, { items?: unknown }>
+  const properties = provider.offers()[0]?.tools[0]?.inputSchema.properties as
+    | Record<string, unknown>
     | undefined;
-  assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
+  assert.equal(properties?.coordinate, undefined);
+  assert.notEqual(properties?.position, undefined);
+  assert.notEqual(properties?.size, undefined);
 });
 
 test('publishes every production Desktop-owned tool schema through the protocol', () => {

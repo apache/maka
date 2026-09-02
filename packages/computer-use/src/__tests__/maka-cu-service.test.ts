@@ -191,6 +191,7 @@ function makeService(
     answerCancel?: boolean;
     responsePad?: number;
     binaryPath?: string;
+    childArgs?: readonly string[];
     timeoutMs?: number;
     maxRestartAttempts?: number;
   } = {},
@@ -198,7 +199,11 @@ function makeService(
   const logPath = join(workDir, `svc-${randomUUID()}.ndjson`);
   const imageDir = join(workDir, `images-${randomUUID()}`);
   const options: MakaCuServiceOptions = {
-    binaryPath: opts.binaryPath ?? mockPath,
+    // Windows cannot execute a .cjs file directly (spawn reports EFTYPE).
+    // Keep the production contract as a direct native executable, but launch
+    // this test-only CommonJS mock through the Node interpreter.
+    binaryPath: opts.binaryPath ?? process.execPath,
+    childArgs: opts.childArgs ?? [mockPath, 'host'],
     imageDir,
     hostVersion: 'test',
     handshakeTimeoutMs: 5000,
@@ -474,6 +479,7 @@ describe('maka-cu supervisor: saying what actually failed', () => {
     // discarded its Error, and a 0755 file whose interpreter does not exist was
     // reported as "maka-cu exited after request delivery" — for a child that
     // never execed and to which nothing had been delivered.
+    if (process.platform === 'win32') return;
     const badPath = join(workDir, `bad-interp-${randomUUID()}`);
     await writeFile(badPath, '#!/nonexistent/interpreter\n', 'utf8');
     chmodSync(badPath, 0o755);
@@ -517,7 +523,11 @@ describe('maka-cu supervisor: saying what actually failed', () => {
     const brokenPath = join(workDir, `broken-${randomUUID()}.cjs`);
     await writeFile(brokenPath, '#!/usr/bin/env node\nprocess.exit(3);\n', 'utf8');
     chmodSync(brokenPath, 0o755);
-    const { service } = makeService({ binaryPath: brokenPath, maxRestartAttempts: 1 });
+    const { service } = makeService({
+      binaryPath: process.execPath,
+      childArgs: [brokenPath, 'host'],
+      maxRestartAttempts: 1,
+    });
     await assert.rejects(() => service.ensureStarted());
     await assert.rejects(
       () => service.ensureStarted(),

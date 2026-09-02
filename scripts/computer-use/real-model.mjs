@@ -23,7 +23,7 @@ import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
@@ -35,18 +35,13 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '../../packages/storage/dist/root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from '../../packages/storage/dist/runtime-policy-stores.js';
+import { resolveMakaWorkspaceRoot } from '../../packages/storage/dist/workspace-root.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '../..');
 const execFileAsync = promisify(execFile);
-const sourceWorkspace = join(
-  homedir(),
-  'Library',
-  'Application Support',
-  'Maka',
-  'workspaces',
-  'default',
-);
+const sourceWorkspace = resolveMakaWorkspaceRoot();
+const isWindows = process.platform === 'win32';
 const scenario = getCuE2eScenario(process.env.MAKA_CU_E2E_SCENARIO ?? 'l0-observe-only');
 if (!scenario.realRunEnabled) {
   throw new Error(`scenario ${scenario.id} is not enabled for real-model runs`);
@@ -69,10 +64,15 @@ for (const capability of scenario.requiresExecutionCapabilities) {
 const timeoutMs = Number(process.env.MAKA_CU_REAL_MODEL_TIMEOUT_MS ?? 180_000);
 const keepProfile = process.env.MAKA_CU_KEEP_PROFILE === '1';
 const providerOverride = process.env.MAKA_CU_PROVIDER;
+const electronLauncher = isWindows
+  ? process.execPath
+  : join(repoRoot, 'node_modules', '.bin', 'electron');
+const electronLauncherArgs = isWindows
+  ? [join(repoRoot, 'node_modules', 'electron', 'cli.js')]
+  : [];
 const reportPath =
   process.env.MAKA_CU_REAL_MODEL_REPORT ??
   join(repoRoot, '.agents-workspace-data', 'cu-real-model', `report-${Date.now()}.json`);
-const runPrompt = 'Use the maka_computer tool to complete this task. ' + scenario.prompt;
 
 async function reportLineage() {
   const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], {
@@ -320,7 +320,7 @@ export async function waitForTraceFlush(path, expectedToolCallIds, timeoutMs = 2
 export async function discoverFixtureIdentity(
   fixturePid,
   windowSpecs,
-  { listApps, timeoutMs = 2_000, pollIntervalMs = 50 } = {},
+  { listApps, listWindows, observeWindow, timeoutMs = 2_000, pollIntervalMs = 50 } = {},
 ) {
   if (!Number.isInteger(fixturePid) || fixturePid <= 0) {
     throw new Error('fixture discovery requires a valid launcher-owned pid');
@@ -346,6 +346,45 @@ export async function discoverFixtureIdentity(
       ? apps.filter((app) => Number(app?.pid) === fixturePid)
       : [];
     if (fixtureApps.length === 1) {
+      const fixtureApp = fixtureApps[0];
+      if (typeof listWindows === 'function' && typeof observeWindow === 'function') {
+        const windows = (await listWindows()).filter(
+          (window) => Number(window?.pid) === fixturePid && window?.appId === fixtureApp.appId,
+        );
+        const windowIds = [];
+        const matchedTitles = new Set();
+        for (const window of windows) {
+          if (!Number.isInteger(window?.windowId) || window.windowId <= 0) continue;
+          const observation = await observeWindow(window.windowId);
+          if (
+            Number(observation?.pid) !== fixturePid ||
+            Number(observation?.windowId) !== window.windowId ||
+            observation?.appId !== fixtureApp.appId
+          ) {
+            continue;
+          }
+          const title = observation?.windowTitle;
+          if (
+            typeof title !== 'string' ||
+            !expectedTitles.includes(title) ||
+            matchedTitles.has(title)
+          ) {
+            continue;
+          }
+          matchedTitles.add(title);
+          windowIds.push(window.windowId);
+        }
+        if (
+          matchedTitles.size === expectedTitles.length &&
+          new Set(windowIds).size === windowIds.length
+        ) {
+          return {
+            appIds: [fixtureApp.appId],
+            instances: [{ pid: fixturePid, windowIds }],
+          };
+        }
+        lastFailure = `expected ${expectedTitles.length} fresh fixture windows, got ${matchedTitles.size}`;
+      }
       const windows = Array.isArray(fixtureApps[0].windows) ? fixtureApps[0].windows : [];
       const windowIds = [];
       let complete = true;
@@ -363,6 +402,7 @@ export async function discoverFixtureIdentity(
       }
       if (complete && new Set(windowIds).size === windowIds.length) {
         return {
+          appIds: typeof fixtureApp.appId === 'string' ? [fixtureApp.appId] : [],
           instances: [
             {
               pid: fixturePid,
@@ -386,21 +426,37 @@ async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
     readFile(join(repoRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'),
   ]);
   const manifest = JSON.parse(manifestText);
-  const expectedBinarySha256 = manifest?.makaCu?.binarySha256;
-  if (typeof expectedBinarySha256 !== 'string' || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
+  const manifestEntry = isWindows ? manifest?.windowsCu : manifest?.makaCu;
+  const expectedBinarySha256 = manifestEntry?.binarySha256;
+  if (typeof expectedBinarySha256 !== 'string' || !/^[a-f0-9]{64}$/i.test(expectedBinarySha256)) {
     throw new Error('fixture discovery cannot verify bundled maka-cu identity');
   }
+  const binaryDirectory = isWindows ? 'maka-cu-windows' : 'maka-cu';
+  const binaryName = isWindows ? 'maka-cu-windows.exe' : 'maka-cu';
   const backend = createMakaCuBackend({
-    binaryPath: join(repoRoot, 'apps', 'desktop', 'resources', 'bin', 'maka-cu'),
+    binaryPath: join(repoRoot, 'apps', 'desktop', 'resources', 'bin', binaryDirectory, binaryName),
     expectedBinarySha256,
     timeoutMs: 10_000,
   });
+  const discoveryContext = {
+    sessionId: `maka-cu-real-model-discovery-${randomUUID()}`,
+    turnId: 'fixture-discovery',
+    toolCallId: 'fixture-discovery',
+  };
   try {
     return await discoverFixtureIdentity(fixturePid, windowSpecs, {
       listApps: () => backend.listApps(new AbortController().signal),
+      listWindows: () => backend.listWindows(new AbortController().signal),
+      observeWindow: (windowId) =>
+        backend.observeApp(
+          { windowId, includeScreenshot: false },
+          new AbortController().signal,
+          discoveryContext,
+        ),
       timeoutMs: 5_000,
     });
   } finally {
+    backend.clearSession(discoveryContext.sessionId);
     backend.dispose();
   }
 }
@@ -465,7 +521,6 @@ async function run() {
   const workspace = join(userData, 'workspaces', 'default');
   const tracePath = join(userData, 'computer-use-trace.jsonl');
   const fixturePort = await reservePort();
-  const electronBinary = join(repoRoot, 'node_modules', '.bin', 'electron');
   let fixture;
   let desktop;
   let fixtureBrowser;
@@ -475,8 +530,9 @@ async function run() {
     await prepareProviderProfile(workspace);
 
     fixture = spawn(
-      electronBinary,
+      electronLauncher,
       [
+        ...electronLauncherArgs,
         `--remote-debugging-port=${fixturePort}`,
         '--remote-allow-origins=*',
         join(here, 'real-model-fixture.mjs'),
@@ -496,6 +552,18 @@ async function run() {
       fixturePid,
       activeWindowSpecs(scenario),
     );
+    const allowedApps = isWindows
+      ? [...new Set(fixtureIdentity.appIds ?? [])]
+      : activeWindowSpecs(scenario).map((window) => window.title);
+    if (allowedApps.length === 0) {
+      throw new Error('fixture discovery did not return a verified app id');
+    }
+    const runPrompt = isWindows
+      ? `Use the maka_computer tool to complete this task. ${scenario.prompt.replace(
+          /app "[^"]+"/g,
+          `app "${allowedApps[0]}"`,
+        )} Use the exact live app_id "${allowedApps[0]}" whenever you provide an app argument; never use a window title as an app identifier.`
+      : `Use the maka_computer tool to complete this task. ${scenario.prompt}`;
 
     desktop = await electron.launch({
       args: ['apps/desktop'],
@@ -512,7 +580,7 @@ async function run() {
             Object.fromEntries(
               scenario.allowedActions.map((action) => [action, scenario.maxTotalActions]),
             ),
-          allowedApps: activeWindowSpecs(scenario).map((window) => window.title),
+          allowedApps,
         }),
         MAKA_CU_REAL_MODEL_TRACE: tracePath,
       },

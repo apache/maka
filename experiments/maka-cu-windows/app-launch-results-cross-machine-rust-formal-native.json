@@ -1,0 +1,37 @@
+{
+  "schema": "maka.cu.windows/generic-launch-results/1",
+  "protocol": "maka.cu/2",
+  "executor": "rust-native-windows",
+  "launchedPid": 25280,
+  "summary": {
+    "pass": 6,
+    "fail": 0
+  },
+  "tests": [
+    {
+      "name": "host.hello",
+      "status": "pass"
+    },
+    {
+      "name": "session.begin",
+      "status": "pass"
+    },
+    {
+      "name": "apps.launch resolves fixture pid and appId",
+      "status": "pass"
+    },
+    {
+      "name": "apps.launch waits for a window",
+      "status": "pass",
+      "note": "{\"ms\":611,\"reason\":\"window_appeared\"}"
+    },
+    {
+      "name": "apps.launch reports foreground observation",
+      "status": "pass"
+    },
+    {
+      "name": "session.end",
+      "status": "pass"
+    }
+  ]
+}

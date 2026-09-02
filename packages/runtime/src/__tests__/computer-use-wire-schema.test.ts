@@ -36,6 +36,7 @@
 // This test exists so the next action cannot ship the same way.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { zodSchema } from 'ai';
 
 import { COMPUTER_USE_WITHHELD_VALUE, computerUseModelCallArgs } from '@maka/core/computer-use';
 import { computerWireParams } from '../computer-use-tools.js';
@@ -90,36 +91,49 @@ const CALLS: Array<Record<string, unknown>> = [
   },
   { action: 'window_action', observation_id: 'o', element_id: '0', window_action: 'minimize' },
   { action: 'screenshot', app: 'com.apple.TextEdit' },
-  { action: 'cursor_position' },
-  { action: 'mouse_move', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'left_click', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'right_click', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'middle_click', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'double_click', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'triple_click', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'left_mouse_down', observation_id: 'o', coordinate: [10, 20] },
-  { action: 'left_mouse_up', observation_id: 'o', coordinate: [10, 20] },
-  {
-    action: 'left_click_drag',
-    observation_id: 'o',
-    start_coordinate: [10, 20],
-    coordinate: [90, 120],
-  },
   { action: 'type', observation_id: 'o', text: 'hello' },
   { action: 'key', observation_id: 'o', text: 'Return' },
   { action: 'hold_key', observation_id: 'o', text: 'shift', duration: 1 },
-  {
-    action: 'scroll',
-    observation_id: 'o',
-    coordinate: [10, 20],
-    scroll_direction: 'down',
-    scroll_amount: 10,
-  },
-  { action: 'zoom', observation_id: 'o', region: [0, 0, 100, 100] },
   { action: 'wait', duration: 1 },
   { action: 'wait', wait_for_text: 'Saved', duration: 5 },
   { action: 'wait', wait_for_text_gone: 'Loading' },
 ];
+
+const REMOVED_COORDINATE_ACTIONS = [
+  'cursor_position',
+  'mouse_move',
+  'left_click',
+  'right_click',
+  'middle_click',
+  'double_click',
+  'triple_click',
+  'left_mouse_down',
+  'left_mouse_up',
+  'left_click_drag',
+  'scroll',
+  'zoom',
+] as const;
+
+for (const action of REMOVED_COORDINATE_ACTIONS) {
+  test(`${action} is rejected by both model-facing schemas`, () => {
+    const call = {
+      action,
+      observation_id: 'o',
+      coordinate: [10, 20],
+      start_coordinate: [1, 2],
+      region: [0, 0, 100, 100],
+    };
+    assert.equal(computerWireParams.safeParse(call).success, false);
+    assert.equal(computerParams.safeParse(call).success, false);
+  });
+}
+
+test('coordinate dispatch fields are absent from the wire schema', () => {
+  const fields = Object.keys(computerWireParams.shape);
+  assert.equal(fields.includes('coordinate'), false);
+  assert.equal(fields.includes('start_coordinate'), false);
+  assert.equal(fields.includes('region'), false);
+});
 
 for (const call of CALLS) {
   const name =
@@ -174,6 +188,28 @@ test('every action in the strict union has a sample call above', () => {
   const sampled = new Set(CALLS.map((call) => String(call.action)));
   for (const action of computerActionNames()) {
     assert.ok(sampled.has(action), `${action} has no sample call in CALLS`);
+  }
+});
+
+test('provider JSON Schema uses one array item schema for every coordinate field', async () => {
+  const schema = (await zodSchema(computerWireParams as never).jsonSchema) as {
+    properties?: Record<
+      string,
+      { type?: string; items?: unknown; minItems?: number; maxItems?: number }
+    >;
+  };
+  for (const [name, length] of [
+    ['coordinate', 2],
+    ['start_coordinate', 2],
+    ['position', 2],
+    ['size', 2],
+    ['region', 4],
+  ] as const) {
+    const field = schema.properties?.[name];
+    assert.equal(field?.type, 'array', `${name} must be an array`);
+    assert.equal(Array.isArray(field?.items), false, `${name} must not be a tuple schema`);
+    assert.equal(field?.minItems, length, `${name} must require ${length} values`);
+    assert.equal(field?.maxItems, length, `${name} must cap values at ${length}`);
   }
 });
 

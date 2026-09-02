@@ -29,8 +29,10 @@ Desktop supplies the executable and presentation dependencies.
 
 The package exposes one root entry point through `src/index.ts`:
 
-- `selectComputerUseBackend()` selects the available executor and builds the
-  Runtime tool set. `CU_BACKEND_IDS` currently contains only `maka-cu`.
+- `selectComputerUseBackend()` selects the available platform adapter and
+  builds the Runtime tool set. `maka-cu` supplies the native executor on macOS;
+  `windows-native` is the Windows packaging label for the same shared backend
+  and lifecycle contract.
 - `createMakaCuBackend()` adapts the native executor to Runtime's
   `CuDispatchBackend` contract.
 - `MakaCuService` supervises the executor process and owns the JSON-RPC request,
@@ -47,12 +49,13 @@ undeclared internal source paths.
 
 ## Current platform boundary
 
-The shipped selector enables Computer Use only when all of these conditions
-hold:
+The shipped selector enables the platform backend only when all of these
+conditions hold:
 
-1. the host platform is macOS (`process.platform === 'darwin'`);
-2. the composition supplies a `maka-cu` executable path; and
-3. the composition supplies the executable's expected SHA-256 digest.
+1. the host platform is macOS (`maka-cu`) or Windows (`windows-native`);
+2. the composition supplies the platform helper executable path; and
+3. the composition supplies the executable's expected SHA-256 digest. Packaged
+   Windows builds additionally require the manifest's `distributionReady` flag.
 
 On another platform, with missing inputs, or when backend construction fails,
 selection fails closed to `backendId: 'none'` with an empty tool set. This
@@ -67,8 +70,10 @@ Cross-platform work is tracked separately:
 
 - [#3896](https://github.com/apache/maka/issues/3896) — platform abstraction;
 - [#3891](https://github.com/apache/maka/issues/3891) — Linux backend;
-- [#3785](https://github.com/apache/maka/issues/3785) — Windows executor
-  hardening and production evidence.
+- [#4318](https://github.com/apache/maka/issues/4318) — Windows native Computer
+  Use product integration;
+- [#3785](https://github.com/apache/maka/issues/3785) — related Windows
+  executor hardening and production evidence.
 
 ## Protocol and lifecycle
 
@@ -120,3 +125,16 @@ npm --workspace @maka/computer-use run typecheck
 The package tests cover protocol decoding, process lifecycle, backend behavior,
 host-event propagation, display mapping, overlay projection, and the cumulative
 Computer Use path.
+
+# Windows native adapter
+
+On Windows the selector uses the `windows-native` packaging label with the
+shared `maka.cu/2` backend and lifecycle supervisor. The adapter requires an
+explicit HWND, binds semantic UIA mutations to one-use observation tokens, and
+does not narrow the wire schema or add a second supervisor. Unsupported
+coordinate/global input actions return a typed `unsupported_action` refusal.
+Helper restarts invalidate every session's observation lease. The helper
+publish is a native Windows payload; the manifest pins every file's size and
+SHA-256 and the Desktop host verifies the complete closure before launch. See
+`docs/windows-support.md` for preparing a development artifact and the
+packaged distribution gate.

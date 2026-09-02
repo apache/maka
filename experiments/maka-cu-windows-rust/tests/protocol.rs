@@ -21,6 +21,18 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};
 
+fn hello_request(id: u64, image_dir: &std::path::Path) -> String {
+    serde_json::to_string(&json!({
+        "jsonrpc":"2.0", "id":id, "method":"host.hello",
+        "params": {
+            "protocol":"maka.cu/2", "host":{"name":"test","version":"0"},
+            "hostPid":std::process::id(), "imageDir":image_dir, "allowGlobalPointer":false
+        }
+    }))
+    .unwrap()
+        + "\n"
+}
+
 // Transport-level regression that runs on every host. On Windows the same
 // binary additionally exercises COM when pointed at a real HWND by the
 // lifecycle driver; this test intentionally needs no desktop.
@@ -32,11 +44,13 @@ fn malformed_json_gets_json_rpc_parse_error() {
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
+    let image_dir = std::env::temp_dir().join(format!("maka-cu-protocol-{}", std::process::id()));
+    std::fs::create_dir_all(&image_dir).unwrap();
     child
         .stdin
         .as_mut()
         .unwrap()
-        .write_all(b"not-json\n{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}\n")
+        .write_all(format!("not-json\n{}", hello_request(1, &image_dir)).as_bytes())
         .unwrap();
     drop(child.stdin.take());
     let mut output = String::new();
@@ -53,7 +67,8 @@ fn malformed_json_gets_json_rpc_parse_error() {
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect();
     assert_eq!(lines[0]["error"]["code"], json!(-32700));
-    assert_eq!(lines[1]["result"]["protocol"], json!("maka.cu.windows/0"));
+    assert_eq!(lines[1]["result"]["protocol"], json!("maka.cu/2"));
+    let _ = std::fs::remove_dir_all(image_dir);
 }
 
 #[test]
@@ -67,6 +82,13 @@ fn control_cancel_settles_running_request() {
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout);
+    let image_dir = std::env::temp_dir().join(format!("maka-cu-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&image_dir).unwrap();
+    stdin
+        .write_all(hello_request(1, &image_dir).as_bytes())
+        .unwrap();
+    let mut hello = String::new();
+    reader.read_line(&mut hello).unwrap();
     stdin
         .write_all(
             b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"debug_sleep\",\"params\":{\"ms\":120}}\n",
@@ -104,6 +126,7 @@ fn control_cancel_settles_running_request() {
         .unwrap();
     drop(stdin);
     let _ = child.wait().unwrap();
+    let _ = std::fs::remove_dir_all(image_dir);
 }
 
 #[test]
@@ -117,6 +140,13 @@ fn shutdown_is_bounded_while_worker_is_busy() {
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut reader = BufReader::new(stdout);
+    let image_dir = std::env::temp_dir().join(format!("maka-cu-shutdown-{}", std::process::id()));
+    std::fs::create_dir_all(&image_dir).unwrap();
+    stdin
+        .write_all(hello_request(1, &image_dir).as_bytes())
+        .unwrap();
+    let mut hello = String::new();
+    reader.read_line(&mut hello).unwrap();
     stdin
         .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"debug_sleep\",\"params\":{\"ms\":2000}}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"shutdown\"}\n")
         .unwrap();
@@ -127,4 +157,5 @@ fn shutdown_is_bounded_while_worker_is_busy() {
     assert_eq!(response["result"]["graceMs"], json!(1000));
     drop(stdin);
     let _ = child.wait().unwrap();
+    let _ = std::fs::remove_dir_all(image_dir);
 }

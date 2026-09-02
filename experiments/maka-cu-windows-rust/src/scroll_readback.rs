@@ -41,10 +41,8 @@ mod tests {
     }
     #[test]
     fn shared_scroll_cases() {
-        let cases: Value = serde_json::from_str(include_str!(
-            "../../maka-cu-windows/scroll-readback-cases.json"
-        ))
-        .unwrap();
+        let cases: Value =
+            serde_json::from_str(include_str!("../fixtures/scroll-readback-cases.json")).unwrap();
         for t in cases["preflight"].as_array().unwrap() {
             assert_eq!(
                 preflight(

@@ -101,10 +101,8 @@ mod tests {
     use std::cell::Cell;
     #[test]
     fn shared_readback_policy_cases() {
-        let cases: serde_json::Value = serde_json::from_str(include_str!(
-            "../../maka-cu-windows/value-readback-cases.json"
-        ))
-        .unwrap();
+        let cases: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/value-readback-cases.json")).unwrap();
         for test in cases.as_array().unwrap() {
             let now = Cell::new(0_u64);
             let cancelled = Cell::new(test["cancelInitially"].as_bool().unwrap_or(false));
