@@ -18,11 +18,9 @@
  */
 
 import {
-  cloneElement,
   createContext,
   useContext,
   useLayoutEffect,
-  type ReactElement,
   type ReactNode,
 } from 'react';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
@@ -48,6 +46,17 @@ export interface ModuleHubProviderProps extends UseModuleHubControllerInput {
   readonly children?: ReactNode;
 }
 
+/**
+ * The stable command surface AppShell holds while the controller below it is
+ * replaced.
+ *
+ * `connect` runs from a layout effect keyed on `controller.commands`, and that
+ * object is rebuilt whenever the controller's `useMemo` input changes — which
+ * includes `openSession`, a fresh arrow on every AppShell render. So the effect
+ * re-runs on every shell render: cleanup, then connect. The identity check in
+ * the cleanup is what keeps that churn harmless — a stale cleanup must never
+ * detach a newer target that connected after it.
+ */
 export function createModuleHubCommandPort(): ModuleHubCommandPort {
   let target: ModuleHubCommands | null = null;
   return {
@@ -110,34 +119,41 @@ export function useModuleHubHostModel(): ModuleHubHostModel {
   return model;
 }
 
-interface ScheduledTasksTargetProps {
-  readonly scheduledTasks?: readonly ScheduledTask[];
-}
-
-/** Injects the rail's read-only Scheduled Tasks projection at its reader. */
+/**
+ * Hands the rail's read-only Scheduled Tasks projection to its reader.
+ *
+ * `render` receives the projection together with the element AppShell already
+ * built, so the reader's prop stays required and typed at the call site, and a
+ * Scheduled Tasks change re-renders only this boundary and the element
+ * `render` returns — the children it forwards keep their identity.
+ */
 export function ModuleHubScheduledTasksBoundary(props: {
-  readonly children: ReactElement<ScheduledTasksTargetProps>;
-}) {
+  readonly render: (
+    scheduledTasks: readonly ScheduledTask[],
+    children: ReactNode,
+  ) => ReactNode;
+  readonly children?: ReactNode;
+}): ReactNode {
   const scheduledTasks = useContext(ModuleHubScheduledTasksContext);
   if (!scheduledTasks) throw new Error('ModuleHubProvider is missing');
-  return cloneElement(props.children, { scheduledTasks });
+  return props.render(scheduledTasks, props.children);
 }
 
-interface SkillCatalogRevisionTargetProps {
-  readonly skillCatalogRevision?: number;
-}
-
-/** Injects the catalog revision into Composer mentions without waking AppShell. */
+/** Hands the Skill catalog revision to Composer mentions without waking AppShell. */
 export function ModuleHubSkillCatalogRevisionBoundary(props: {
-  readonly children: ReactElement<SkillCatalogRevisionTargetProps>;
-}) {
+  readonly render: (
+    skillCatalogRevision: number,
+    children: ReactNode,
+  ) => ReactNode;
+  readonly children?: ReactNode;
+}): ReactNode {
   const skillCatalogRevision = useContext(
     ModuleHubSkillCatalogRevisionContext,
   );
   if (skillCatalogRevision === null) {
     throw new Error('ModuleHubProvider is missing');
   }
-  return cloneElement(props.children, { skillCatalogRevision });
+  return props.render(skillCatalogRevision, props.children);
 }
 
 export type { ModuleHubCommands } from '../controller/use-module-hub-controller.js';

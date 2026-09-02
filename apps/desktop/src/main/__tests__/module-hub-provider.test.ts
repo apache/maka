@@ -136,16 +136,16 @@ test('controller scoping removes shell-wide work from Module Hub updates', async
   }
 
   function ScopedScheduledTasksProbe(props: {
-    scheduledTasks?: readonly ScheduledTask[];
+    scheduledTasks: readonly ScheduledTask[];
   }) {
     renders.scopedReader += 1;
-    scopedObservedTasks = props.scheduledTasks ?? [];
+    scopedObservedTasks = props.scheduledTasks;
     return null;
   }
 
-  function ScopedSkillCatalogProbe(props: { skillCatalogRevision?: number }) {
+  function ScopedSkillCatalogProbe(props: { skillCatalogRevision: number }) {
     renders.scopedSkillReader += 1;
-    scopedObservedSkillRevision = props.skillCatalogRevision ?? -1;
+    scopedObservedSkillRevision = props.skillCatalogRevision;
     return null;
   }
 
@@ -174,16 +174,14 @@ test('controller scoping removes shell-wide work from Module Hub updates', async
         Fragment,
         null,
         createElement(ScopedUnrelatedProbe),
-        createElement(
-          ModuleHubScheduledTasksBoundary,
-          null,
-          createElement(ScopedScheduledTasksProbe),
-        ),
-        createElement(
-          ModuleHubSkillCatalogRevisionBoundary,
-          null,
-          createElement(ScopedSkillCatalogProbe),
-        ),
+        createElement(ModuleHubScheduledTasksBoundary, {
+          render: (scheduledTasks) =>
+            createElement(ScopedScheduledTasksProbe, { scheduledTasks }),
+        }),
+        createElement(ModuleHubSkillCatalogRevisionBoundary, {
+          render: (skillCatalogRevision) =>
+            createElement(ScopedSkillCatalogProbe, { skillCatalogRevision }),
+        }),
       ),
     );
   }

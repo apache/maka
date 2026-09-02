@@ -35,10 +35,11 @@ Automations:
 top-level `NavSelection`, module-memory persistence, Session/Project
 navigation, and the Composer. Those capabilities cross the boundary only as
 intents. Commands return through a stable imperative port because the Shell
-calls them only from event handlers. Two local boundaries inject the read-only Scheduled Tasks
-projection into the Session rail and the Skill catalog revision into Composer
-mentions at their actual readers; Module Hub updates therefore do not
-subscribe or re-render `AppShell`.
+calls them only from event handlers. Two typed boundaries hand the read-only
+Scheduled Tasks projection to the Session rail and the Skill catalog revision
+to Composer mentions through a `render` prop at their actual readers, so the
+readers' props stay required and the compiler checks the wiring; Module Hub
+updates therefore do not subscribe or re-render `AppShell`.
 
 ## Dependency direction
 

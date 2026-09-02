@@ -287,6 +287,15 @@
   "legacyPlatformImports": [
     "src/renderer/platform/desktop/create-workbar-services.ts -> src/renderer/session-message-settlement"
   ],
+  "controllerOwners": [
+    {
+      "implementation": "src/renderer/features/module-hub/controller/use-module-hub-controller.ts",
+      "symbol": "useModuleHubController",
+      "owner": "src/renderer/features/module-hub/ui/module-hub-provider.tsx",
+      "ownerSymbol": "ModuleHubProvider",
+      "count": 1
+    }
+  ],
   "legacyAppShell": {
     "files": {
       "src/renderer/app-shell-app-update.ts": {
@@ -763,11 +772,10 @@
           "useEffect": 14,
           "useKeyboardHelp": 1,
           "useLayoutEffect": 2,
-          "useModuleHubController": 1,
           "useNewTaskChoice": 1,
           "useOnboardingSnapshot": 1,
           "usePlanModeState": 1,
-          "useRef": 24,
+          "useRef": 23,
           "useSessionCollaborationDialog": 1,
           "useSessionEventHealthPolling": 1,
           "useSessionNavigationReads": 1,
@@ -887,8 +895,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 148,
-        "nonTriviaTokens": 15601
+        "importSpecifiers": 147,
+        "nonTriviaTokens": 15588
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,

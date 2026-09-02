@@ -38,14 +38,14 @@ import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
 import {
   createModuleHubCommandPort,
   ModuleHubHost,
+  ModuleHubHostView,
   ModuleHubProvider,
   ModuleHubServicesProvider,
 } from '../src/renderer/features/module-hub';
 import {
   createFakeModuleHubHostModel,
   createFakeModuleHubServices,
-  ModuleHubHostView,
-} from '../src/renderer/features/module-hub/stories';
+} from '../src/renderer/features/module-hub/testing';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { McpPage } from '../src/renderer/mcp-page';
 import { withScopedMakaBridge } from './maka-bridge';

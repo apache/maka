@@ -22,7 +22,7 @@ export type {
   ModuleHubClipboardService,
   ModuleHubServices,
 } from './ports.js';
-export { ModuleHubHost } from './ui/module-hub-host.js';
+export { ModuleHubHost, ModuleHubHostView } from './ui/module-hub-host.js';
 export {
   createModuleHubCommandPort,
   ModuleHubProvider,

@@ -206,7 +206,10 @@ import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults'
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
 import { useAppShellComposerQuotes } from './use-app-shell-composer-quotes';
-import { ComposerMentionsProvider, type ComposerMentionsSurface } from './composer-mentions';
+import {
+  type ComposerMentionsSurfaceInput,
+  renderComposerMentionsProvider,
+} from './composer-mentions';
 import { useAppShellSessionWorkspace } from './use-app-shell-session-workspace';
 import { useShellMemoryPill } from './use-shell-memory-pill';
 import { useShellConnections } from './use-shell-connections';
@@ -1552,7 +1555,7 @@ function AppShellContent({
   // resolved project path as a refresh key for new-chat project changes. Only
   // the SURFACE is named here — the projection itself is owned by
   // `ComposerMentionsProvider` below, so its reloads do not re-render the shell.
-  const composerMentionsSurface: ComposerMentionsSurface = {
+  const composerMentionsSurface: ComposerMentionsSurfaceInput = {
     sessionId: ownerActiveId,
     projectPath: activeId
       ? ownerActiveId
@@ -2634,15 +2637,16 @@ function AppShellContent({
     <ModuleHub.ModuleHubProvider
       selection={navSelection}
       selectModule={setNavSelection}
-      {...(projectCapabilities.viewClientPath ? { openSkillsFolder } : {})}
+      openSkillsFolder={projectCapabilities.viewClientPath ? openSkillsFolder : undefined}
       useSkillInChat={useSkillInChat}
-      openSession={(sessionId) => openSessionInChatRef.current(sessionId)}
+      openSession={openSessionInChat}
       appendComposerText={(text) => composerRef.current?.appendText(text)}
       captureActiveComposerClaim={captureActiveComposerClaim}
       commandPort={moduleHubCommands}
     >
-    <ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
-    <ComposerMentionsProvider {...composerMentionsSurface}>
+    <ModuleHub.ModuleHubSkillCatalogRevisionBoundary
+      render={renderComposerMentionsProvider(composerMentionsSurface)}
+    >
     <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
       onOpenSession={openSession}
@@ -2771,35 +2775,38 @@ function AppShellContent({
         aria-hidden={shellObscured ? 'true' : undefined}
         inert={shellObscured ? true : undefined}
         sideNav={
-          <ModuleHub.ModuleHubScheduledTasksBoundary>
-          <SessionNavigationProvider
-            rail={sessionRail}
-            projects={localProjects}
-            streamingSessionIds={streamingSessionIds}
-            staleSessionIds={staleSessionIds}
-            SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
-            ports={sessionNavigationPorts}
-            commandsRef={sessionNavigationCommandsRef}
-            onExitWorkHub={exitWorkHub}
-            onSelectSession={openSession}
-            workHubActive={workHubActive}
-            selection={navSelection}
-            moduleMemory={navigationState.moduleMemory}
-            onSelect={setNavSelection}
-            onOpenSettings={openSettings}
-            updateReminder={updateReminder}
-            onOpenUpdate={openUpdateDownload}
-            onNew={() => void createSession()}
-            workHubEntry={workHubEnabled ? {
-              active: workHubActive,
-              label: 'WorkHub',
-              onSelect: openWorkHub,
-            } : undefined}
-            projectActions={projectRowActions}
-          >
-            {SESSION_RAIL}
-          </SessionNavigationProvider>
-          </ModuleHub.ModuleHubScheduledTasksBoundary>
+          <ModuleHub.ModuleHubScheduledTasksBoundary
+            render={(scheduledTasks) => (
+              <SessionNavigationProvider
+                scheduledTasks={scheduledTasks}
+                rail={sessionRail}
+                projects={localProjects}
+                streamingSessionIds={streamingSessionIds}
+                staleSessionIds={staleSessionIds}
+                SessionBadge={SessionCollaboration.SessionTurnRequestBadge}
+                ports={sessionNavigationPorts}
+                commandsRef={sessionNavigationCommandsRef}
+                onExitWorkHub={exitWorkHub}
+                onSelectSession={openSession}
+                workHubActive={workHubActive}
+                selection={navSelection}
+                moduleMemory={navigationState.moduleMemory}
+                onSelect={setNavSelection}
+                onOpenSettings={openSettings}
+                updateReminder={updateReminder}
+                onOpenUpdate={openUpdateDownload}
+                onNew={() => void createSession()}
+                workHubEntry={workHubEnabled ? {
+                  active: workHubActive,
+                  label: 'WorkHub',
+                  onSelect: openWorkHub,
+                } : undefined}
+                projectActions={projectRowActions}
+              >
+                {SESSION_RAIL}
+              </SessionNavigationProvider>
+            )}
+          />
         }
       >
         <AppShellDetailPanel agentsView={agentsView}>
@@ -3279,7 +3286,6 @@ function AppShellContent({
       />
     </div>
     </SessionCollaboration.SessionTurnRequestInboxProvider>
-    </ComposerMentionsProvider>
     </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
     </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
