@@ -44,8 +44,10 @@ import type { SessionNavigationRowActions } from './session-row-actions.js';
 export function useSessionSelection(input: {
   sessions: readonly SessionSummary[];
   commands: SessionNavigationRowActions;
+  /** The open task, as the rail paints it. */
+  activeId?: string;
 }): SessionRailSelection {
-  const { sessions, commands } = input;
+  const { sessions, commands, activeId } = input;
   const [selection, setSelection] = useState(EMPTY_SESSION_SELECTION);
 
   const listedIds = useMemo(() => new Set(sessions.map((session) => session.id)), [sessions]);
@@ -54,6 +56,35 @@ export function useSessionSelection(input: {
     // dropped, so this settles after one pass instead of looping on a new Set.
     setSelection((current) => pruneSessionSelection(current, listedIds));
   }, [listedIds]);
+
+  /**
+   * The set drops when the open task is not one of its members.
+   *
+   * A picked row and the open row are painted on the same ground, so a set that
+   * does not hold the open row can be read as a set around it, and the next ⋯
+   * on a picked row sweeps something other than what the user was looking at.
+   * ⌘K, the Module Hub and 新建任务 all move the open task without touching the
+   * set, which is how that misreading gets built.
+   *
+   * Membership is the rule, not a stand-in for where the navigation came from.
+   * When the open row IS in the set, every row on that ground is genuinely
+   * picked, so nothing is misread and there is nothing to drop — the same
+   * answer whether the user clicked that row or reached it through ⌘K, and the
+   * verb still names its own count before it sweeps. Correlating the click with
+   * the active id would be a second account of the same question, and a lossier
+   * one: it would drop a set the user can plainly see is still theirs.
+   *
+   * Cleared, not `replace`d onto the new row: an empty selection ALREADY reads
+   * as "just the open row", because the rail paints that row whether or not it
+   * is picked (see `EMPTY_SESSION_SELECTION`). A set of one that happens to
+   * equal the open row would be a second way to say the same thing.
+   */
+  useEffect(() => {
+    if (activeId === undefined) return;
+    setSelection((current) =>
+      current.selectedIds.has(activeId) ? current : EMPTY_SESSION_SELECTION,
+    );
+  }, [activeId]);
 
   // A sweep reads the ids at the moment it runs, and the state it reads is the
   // one the menu's verb was counted from — held in a ref so the commands below

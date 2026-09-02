@@ -196,7 +196,11 @@ export function useSessionNavigationController(
     [groups, sessionMeta, worktreeSessionIds],
   );
 
-  const selection = useSessionSelection({ sessions: rail.sessions, commands });
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands,
+    activeId: rail.activeRowId,
+  });
 
   return useMemo(
     () => ({ layout, selectors, commands, selection }),
