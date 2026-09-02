@@ -108,6 +108,8 @@ export interface RepairableAiSdkToolCall {
 
 export interface ModelAdapterInput {
   sessionId?: string;
+  /** OpenAI prompt cache routing key; defaults to sessionId when omitted. */
+  promptCacheSessionId?: string;
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
@@ -295,7 +297,7 @@ export class ModelAdapter {
     const providerOptions = usesNativeOpenAiResponses(this.input.connection, this.runtime)
       ? mergeOpenAiResponsesProviderOptions(
           this.input.providerOptions,
-          this.input.sessionId ?? this.input.connection.slug,
+          this.input.promptCacheSessionId ?? this.input.sessionId ?? this.input.connection.slug,
           continuation.previousResponseId,
         )
       : this.input.providerOptions;

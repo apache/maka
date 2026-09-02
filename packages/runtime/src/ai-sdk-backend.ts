@@ -71,6 +71,10 @@ import type {
   BackendKind,
   SessionHeader,
 } from '@maka/core/session';
+import {
+  applySideConversationUserMessageBoundary,
+  resolveSideConversationPromptCacheSessionId,
+} from '@maka/core/side-conversation';
 import type {
   AgentBackend,
   BackendCompactHistoryInput,
@@ -1098,6 +1102,11 @@ export class AiSdkBackend implements AgentBackend {
       buildProviderOptions(input.connection, input.modelId, input.header.thinkingLevel);
     this.modelAdapter = new ModelAdapter({
       sessionId: input.sessionId,
+      promptCacheSessionId: resolveSideConversationPromptCacheSessionId({
+        sessionId: input.sessionId,
+        labels: input.header.labels,
+        parentSessionId: input.header.parentSessionId,
+      }),
       connection: input.connection,
       apiKey: input.apiKey,
       modelId: input.modelId,
@@ -1853,7 +1862,7 @@ export class AiSdkBackend implements AgentBackend {
               input.quotes,
               input.headAnchorRuntimeEvent?.id,
             );
-        const messages =
+        const messages = applySideConversationUserMessageBoundary(
           currentUserContent === undefined
             ? [...priorReplay.messages]
             : [
@@ -1862,7 +1871,12 @@ export class AiSdkBackend implements AgentBackend {
                   role: 'user' as const,
                   content: currentUserContent,
                 } as ModelMessage,
-              ];
+              ],
+          {
+            inheritedPrefixLength: priorReplay.messages.length,
+            labels: this.input.header.labels,
+          },
+        );
         const loadDurableTurnEvents = async (): Promise<RuntimeEvent[]> => {
           const loadTurnRuntimeEvents = this.input.loadTurnRuntimeEvents;
           if (!loadTurnRuntimeEvents) {
@@ -1928,9 +1942,15 @@ export class AiSdkBackend implements AgentBackend {
               scope.runId,
             ),
           );
-          return projectionCheckpoint
-            ? currentTurnMessages
-            : [...priorReplay.messages, ...currentTurnMessages];
+          return applySideConversationUserMessageBoundary(
+            projectionCheckpoint
+              ? currentTurnMessages
+              : [...priorReplay.messages, ...currentTurnMessages],
+            {
+              inheritedPrefixLength: priorReplay.messages.length,
+              labels: this.input.header.labels,
+            },
+          );
         };
         // Tool Availability describes the provider-visible (active) subset. A
         // group loaded this turn expands that subset on later requests, so the

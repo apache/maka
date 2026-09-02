@@ -41,8 +41,10 @@ The generic side-conversation entry extends that foundation:
 - selecting transcript text still appends quote context to the same panel;
 - the fork is created eagerly when the panel opens, with a short preparation
   state before the Composer receives focus;
-- the child receives the `mode:side_conversation` label, which adds a system
-  boundary declaring inherited parent history reference-only;
+- the child receives the `mode:side_conversation` label; the boundary declaring
+  inherited parent history reference-only is prepended to the first fork-owned
+  user turn instead of the system prompt so prompt-cache prefixes stay aligned
+  with the parent session;
 - the main Session and its active turn continue independently;
 - only instructions submitted in the side chat are active; explicit side-chat
   actions may use the inherited permission profile, and the permission can be
@@ -118,7 +120,7 @@ moved until the eager fork is ready. It then becomes the ordinary closeable
 Side Chat tab without remounting the panel draft.
 
 The fork is marked both ephemeral and side-conversation, excluded from recent
-conversation surfaces, and receives a developer boundary that:
+conversation surfaces, and prepends a user-turn boundary that:
 
 - treats inherited history and tools as reference-only;
 - activates only instructions submitted after the side-chat boundary;
@@ -217,7 +219,7 @@ authority.
 | --- | --- | --- |
 | Entry | `/side`, keyboard shortcut, Desktop actions | `/side`, titlebar, command palette, keyboard shortcut, and selected-text actions |
 | Initial transcript | parent history hidden | parent history hidden; only side turns render |
-| Parent history | reference-only developer instruction plus hidden boundary | reference-only system prompt from the side label |
+| Parent history | reference-only developer instruction plus hidden boundary | reference-only user-turn boundary from the side label |
 | Tool policy | read-mostly guidance; explicit side requests may mutate under the active permission profile | inherited permission profile; only explicit side-chat requests are active |
 | Lifetime | temporary, with Desktop confirmation and some retained-tab behavior | temporary; close deletes the fork with durable cleanup recovery |
 | Conversation list | suppressed | suppressed |
