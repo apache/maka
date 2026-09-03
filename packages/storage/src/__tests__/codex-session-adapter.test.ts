@@ -18,10 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, test } from 'node:test';
+import { describe, mock, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { decodeCanonicalMessage } from '@maka/core/session';
 import { CodexSessionAdapter } from '../codex-session-adapter.js';
@@ -413,7 +413,7 @@ describe('CodexSessionAdapter', () => {
     });
   });
 
-  test('rejects corrupt interior records, tolerates a torn tail, and bounds full reads', async () => {
+  test('rejects corrupt interior records, tolerates a torn tail, and bounds scanned bytes', async () => {
     await withCodexHome(async (codexHome) => {
       const fixture = await readFile(CURRENT_FIXTURE, 'utf8');
       const corruptId = 'codex-corrupt';
@@ -440,6 +440,237 @@ describe('CodexSessionAdapter', () => {
 
       const bounded = new CodexSessionAdapter({ codexHome, maxRolloutBytes: 100 });
       await assert.rejects(bounded.readSession(tornId), /exceeds 100 bytes/);
+    });
+  });
+
+  test('parses a UTF-8 JSONL record split across read buffers', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-cross-buffer-utf8';
+      const meta = `${JSON.stringify({
+        timestamp: '2026-08-08T00:00:00.000Z',
+        type: 'session_meta',
+        payload: {
+          session_id: sessionId,
+          id: sessionId,
+          cwd: '/workspace/utf8',
+          source: 'cli',
+        },
+      })}\n`;
+      const prefixBytes = Buffer.byteLength(meta, 'utf8');
+      const eventTemplate = JSON.stringify({
+        timestamp: '2026-08-08T00:00:01.000Z',
+        type: 'event_msg',
+        payload: { type: 'user_message', message: '__MESSAGE__' },
+      });
+      const [eventPrefix, eventSuffix] = eventTemplate.split('__MESSAGE__');
+      assert.ok(eventPrefix !== undefined && eventSuffix !== undefined);
+      const paddingBytes = 64 * 1024 - prefixBytes - Buffer.byteLength(eventPrefix, 'utf8') - 1;
+      assert.ok(paddingBytes > 0);
+      const content = `${meta}${eventPrefix}${'x'.repeat(paddingBytes)}你${eventSuffix}\n`;
+      await seedRawRollout(codexHome, sessionId, content);
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.equal(session.messages[0]?.type, 'user');
+      assert.equal(
+        session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
+        `${'x'.repeat(paddingBytes)}你`,
+      );
+    });
+  });
+
+  test('rejects a short read before the fixed rollout snapshot is complete', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-truncated-during-read';
+      const rolloutPath = await seedRawRollout(
+        codexHome,
+        sessionId,
+        `${minimalRollout(sessionId, '/workspace', 'Keep this message')}${JSON.stringify({
+          timestamp: '2026-08-08T00:00:02.000Z',
+          type: 'world_state',
+          payload: { padding: 'x'.repeat(128 * 1024) },
+        })}\n`,
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: sessionId,
+          rolloutPath,
+          cwd: '/workspace',
+          name: 'Truncated during read',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      const probe = await open(rolloutPath, 'r');
+      type PositionalRead = (
+        buffer: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => Promise<{ bytesRead: number; buffer: Buffer }>;
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
+      const originalRead = fileHandlePrototype.read;
+      await probe.close();
+      let readCalls = 0;
+      const readMock = mock.method(
+        fileHandlePrototype,
+        'read',
+        async function (
+          this: typeof probe,
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) {
+          readCalls += 1;
+          return readCalls === 2
+            ? { bytesRead: 0, buffer }
+            : originalRead.call(this, buffer, offset, length, position);
+        },
+      );
+      try {
+        await assert.rejects(
+          new CodexSessionAdapter({ codexHome }).readSession(sessionId),
+          /changed while being read/,
+        );
+      } finally {
+        readMock.mock.restore();
+      }
+    });
+  });
+
+  test('does not follow records appended after the rollout snapshot is opened', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-appended-during-read';
+      const rolloutPath = await seedRawRollout(
+        codexHome,
+        sessionId,
+        minimalRollout(sessionId, '/workspace', 'Keep this message'),
+      );
+      await seedStateDatabase(codexHome, [
+        {
+          id: sessionId,
+          rolloutPath,
+          cwd: '/workspace',
+          name: 'Appended during read',
+          createdAtMs: 1_000,
+          updatedAtMs: 2_000,
+          archived: false,
+          source: 'cli',
+        },
+      ]);
+
+      const probe = await open(rolloutPath, 'r');
+      type PositionalRead = (
+        buffer: Buffer,
+        offset: number,
+        length: number,
+        position: number,
+      ) => Promise<{ bytesRead: number; buffer: Buffer }>;
+      const fileHandlePrototype = Object.getPrototypeOf(probe) as { read: PositionalRead };
+      const originalRead = fileHandlePrototype.read;
+      await probe.close();
+      let appended = false;
+      const readMock = mock.method(
+        fileHandlePrototype,
+        'read',
+        async function (
+          this: typeof probe,
+          buffer: Buffer,
+          offset: number,
+          length: number,
+          position: number,
+        ) {
+          const result = await originalRead.call(this, buffer, offset, length, position);
+          if (!appended) {
+            appended = true;
+            await appendFile(rolloutPath, 'not-json\n');
+          }
+          return result;
+        },
+      );
+      try {
+        const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+        assert.equal(session.messages[0]?.type, 'user');
+        assert.equal(
+          session.messages[0]?.type === 'user' ? session.messages[0].text : undefined,
+          'Keep this message',
+        );
+      } finally {
+        readMock.mock.restore();
+      }
+    });
+  });
+
+  test('rejects an oversized JSONL record without buffering the complete rollout', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-record-limit';
+      await seedMinimalRollout(codexHome, sessionId, false, '/workspace', 'hello');
+      const adapter = new CodexSessionAdapter({ codexHome, maxRecordBytes: 100 });
+
+      await assert.rejects(adapter.readSession(sessionId), /record at line 1 exceeds 100 bytes/);
+    });
+  });
+
+  test('rejects converted histories that exceed message count or byte budgets', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-converted-limits';
+      await seedRawRollout(
+        codexHome,
+        sessionId,
+        `${minimalRollout(sessionId, '/workspace', 'hello')}${JSON.stringify({
+          timestamp: '2026-08-08T00:00:02.000Z',
+          type: 'event_msg',
+          payload: { type: 'agent_message', message: 'world' },
+        })}\n`,
+      );
+
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxMessages: 1 }).readSession(sessionId),
+        /more than 1 messages/,
+      );
+      await assert.rejects(
+        new CodexSessionAdapter({ codexHome, maxConvertedBytes: 10 }).readSession(sessionId),
+        /more than 10 bytes/,
+      );
+    });
+  });
+
+  test('streams valid rollouts larger than the legacy 64 MiB whole-file limit', async () => {
+    await withCodexHome(async (codexHome) => {
+      const sessionId = 'codex-large-streamed';
+      const rolloutPath = await seedMinimalRollout(
+        codexHome,
+        sessionId,
+        false,
+        '/workspace/large',
+        'Keep this message',
+      );
+      const ignoredRecord = `${JSON.stringify({
+        timestamp: '2026-08-08T00:00:02.000Z',
+        type: 'world_state',
+        payload: { padding: 'x'.repeat(1024 * 1024) },
+      })}\n`;
+      const handle = await open(rolloutPath, 'a');
+      try {
+        for (let index = 0; index < 65; index += 1) await handle.write(ignoredRecord);
+      } finally {
+        await handle.close();
+      }
+      assert.ok((await stat(rolloutPath)).size > 64 * 1024 * 1024);
+
+      const session = await new CodexSessionAdapter({ codexHome }).readSession(sessionId);
+      assert.deepEqual(session.messages, [
+        {
+          type: 'user',
+          id: `codex-${sessionId}-user-2`,
+          turnId: `codex-${sessionId}-turn-2`,
+          ts: Date.parse('2026-08-08T00:00:01.000Z'),
+          text: 'Keep this message',
+        },
+      ]);
     });
   });
 

@@ -32,9 +32,13 @@ import type {
 } from '@maka/core/external-session';
 
 export const CODEX_SESSION_ADAPTER_ID = 'codex';
-export const CODEX_ROLLOUT_MAX_BYTES = 64 * 1024 * 1024;
+export const CODEX_ROLLOUT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
 
 const CODEX_ROLLOUT_HEAD_BYTES = 512 * 1024;
+const CODEX_ROLLOUT_READ_BYTES = 64 * 1024;
+const CODEX_ROLLOUT_MAX_RECORD_BYTES = 64 * 1024 * 1024;
+const CODEX_ROLLOUT_MAX_CONVERTED_BYTES = 256 * 1024 * 1024;
+const CODEX_ROLLOUT_MAX_MESSAGES = 250_000;
 const CODEX_SESSION_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 const CODEX_UNSAFE_PATH_CHARS =
   /[\u0000-\u001F\u007F\u0080-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/;
@@ -42,8 +46,14 @@ const CODEX_UNSAFE_PATH_CHARS =
 export interface CodexSessionAdapterOptions {
   /** Codex's state root. Defaults to `$CODEX_HOME`, then `~/.codex`. */
   codexHome?: string;
-  /** Test/host override for the bounded transcript read. */
+  /** Maximum source bytes scanned from one fixed rollout snapshot. */
   maxRolloutBytes?: number;
+  /** Maximum bytes buffered for one JSONL record. */
+  maxRecordBytes?: number;
+  /** Maximum serialized bytes retained across converted messages. */
+  maxConvertedBytes?: number;
+  /** Maximum number of converted messages retained in memory. */
+  maxMessages?: number;
 }
 
 interface CodexCatalogEntry extends ExternalSessionSummary {
@@ -83,15 +93,22 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
   private readonly codexHome: string;
   private readonly maxRolloutBytes: number;
+  private readonly maxRecordBytes: number;
+  private readonly maxConvertedBytes: number;
+  private readonly maxMessages: number;
 
   constructor(options: CodexSessionAdapterOptions = {}) {
     this.codexHome = resolve(
       options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), '.codex'),
     );
     this.maxRolloutBytes = options.maxRolloutBytes ?? CODEX_ROLLOUT_MAX_BYTES;
-    if (!Number.isSafeInteger(this.maxRolloutBytes) || this.maxRolloutBytes <= 0) {
-      throw new Error('Codex rollout byte limit must be a positive safe integer');
-    }
+    this.maxRecordBytes = options.maxRecordBytes ?? CODEX_ROLLOUT_MAX_RECORD_BYTES;
+    this.maxConvertedBytes = options.maxConvertedBytes ?? CODEX_ROLLOUT_MAX_CONVERTED_BYTES;
+    this.maxMessages = options.maxMessages ?? CODEX_ROLLOUT_MAX_MESSAGES;
+    assertPositiveSafeInteger(this.maxRolloutBytes, 'Codex rollout byte limit');
+    assertPositiveSafeInteger(this.maxRecordBytes, 'Codex rollout record byte limit');
+    assertPositiveSafeInteger(this.maxConvertedBytes, 'Codex converted message byte limit');
+    assertPositiveSafeInteger(this.maxMessages, 'Codex converted message count limit');
   }
 
   async detect(): Promise<boolean> {
@@ -114,8 +131,18 @@ export class CodexSessionAdapter implements ExternalSessionAdapter {
 
     const rolloutPath = await this.resolveRolloutPath(catalogEntry.rolloutPath, sessionId);
     if (!rolloutPath) throw new Error(`Codex rollout is unavailable: ${sessionId}`);
-    const text = await readBoundedUtf8File(rolloutPath, this.maxRolloutBytes);
-    const converted = convertCodexRollout(text, sessionId, catalogEntry.name, catalogEntry.cwd);
+    const converted = await convertCodexRollout(
+      rolloutPath,
+      sessionId,
+      catalogEntry.name,
+      catalogEntry.cwd,
+      {
+        maxRolloutBytes: this.maxRolloutBytes,
+        maxRecordBytes: this.maxRecordBytes,
+        maxConvertedBytes: this.maxConvertedBytes,
+        maxMessages: this.maxMessages,
+      },
+    );
 
     return {
       sourceSessionId: sessionId,
@@ -239,49 +266,75 @@ interface RolloutCandidate {
   archived: boolean;
 }
 
-function convertCodexRollout(
-  text: string,
+interface CodexRolloutLimits {
+  maxRolloutBytes: number;
+  maxRecordBytes: number;
+  maxConvertedBytes: number;
+  maxMessages: number;
+}
+
+interface ParsedRolloutRecord {
+  line: number;
+  value: JsonRecord;
+}
+
+async function convertCodexRollout(
+  path: string,
   expectedSessionId: string,
   fallbackName: string,
   fallbackCwd: string,
-): ExternalMakaSession {
-  const records = parseRolloutRecords(text, expectedSessionId);
-  const sessionMeta = records.find((record) => record.value.type === 'session_meta')?.value;
-  const metaPayload = asRecord(sessionMeta?.payload);
-  const actualSessionId = stringField(metaPayload, 'session_id') ?? stringField(metaPayload, 'id');
-  if (actualSessionId !== expectedSessionId) {
-    throw new Error(`Codex rollout Session id mismatch: expected ${expectedSessionId}`);
+  limits: CodexRolloutLimits,
+): Promise<ExternalMakaSession> {
+  const converter = new CodexRolloutConverter(expectedSessionId, fallbackName, fallbackCwd, limits);
+  for await (const record of readCodexRolloutRecords(path, expectedSessionId, limits)) {
+    converter.accept(record);
   }
+  return converter.finish();
+}
 
-  const metaCwd = safeCodexCwd(metaPayload?.cwd);
-  const messages: StoredMessage[] = [];
-  let activeTurnId: string | undefined;
-  let activeTurnIsExplicit = false;
-  let activeModel = stringField(metaPayload, 'model_provider') ?? 'codex';
-  let lastTimestamp = normalizeEpochMs(sessionMeta?.timestamp) ?? 0;
-  let firstUserText: string | undefined;
-  const failedTurnIds = new Set<string>();
+class CodexRolloutConverter {
+  private readonly messages: StoredMessage[] = [];
+  private readonly failedTurnIds = new Set<string>();
+  private activeTurnId: string | undefined;
+  private activeTurnIsExplicit = false;
+  private activeModel = 'codex';
+  private lastTimestamp = 0;
+  private firstUserText: string | undefined;
+  private metaCwd = '';
+  private hasSessionMeta = false;
+  private convertedBytes = 0;
 
-  const timestampFor = (record: ParsedRolloutRecord): number => {
-    const parsed = normalizeEpochMs(record.value.timestamp);
-    if (parsed !== undefined) lastTimestamp = Math.max(lastTimestamp, parsed);
-    else lastTimestamp += 1;
-    return parsed ?? lastTimestamp;
-  };
-  const ensureTurnId = (line: number): string => {
-    activeTurnId ??= generatedCodexId(expectedSessionId, 'turn', line);
-    return activeTurnId;
-  };
+  constructor(
+    private readonly expectedSessionId: string,
+    private readonly fallbackName: string,
+    private readonly fallbackCwd: string,
+    private readonly limits: CodexRolloutLimits,
+  ) {}
 
-  for (const record of records) {
+  accept(record: ParsedRolloutRecord): void {
     const envelope = record.value;
+    if (envelope.type === 'session_meta' && !this.hasSessionMeta) {
+      this.hasSessionMeta = true;
+      const metaPayload = asRecord(envelope.payload);
+      const actualSessionId =
+        stringField(metaPayload, 'session_id') ?? stringField(metaPayload, 'id');
+      if (actualSessionId !== this.expectedSessionId) {
+        throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
+      }
+      this.metaCwd = safeCodexCwd(metaPayload?.cwd);
+      this.activeModel = stringField(metaPayload, 'model_provider') ?? this.activeModel;
+      const timestamp = normalizeEpochMs(envelope.timestamp);
+      if (timestamp !== undefined) this.lastTimestamp = Math.max(this.lastTimestamp, timestamp);
+      return;
+    }
+
     const payload = asRecord(envelope.payload);
-    if (!payload) continue;
+    if (!payload) return;
 
     if (envelope.type === 'turn_context') {
-      activeTurnId = stringField(payload, 'turn_id') ?? activeTurnId;
-      activeModel = stringField(payload, 'model') ?? activeModel;
-      continue;
+      this.activeTurnId = stringField(payload, 'turn_id') ?? this.activeTurnId;
+      this.activeModel = stringField(payload, 'model') ?? this.activeModel;
+      return;
     }
 
     if (envelope.type === 'event_msg') {
@@ -289,10 +342,10 @@ function convertCodexRollout(
       if (eventType === 'task_started' || eventType === 'turn_started') {
         const turnId = stringField(payload, 'turn_id');
         if (turnId) {
-          activeTurnId = turnId;
-          activeTurnIsExplicit = true;
+          this.activeTurnId = turnId;
+          this.activeTurnIsExplicit = true;
         }
-        continue;
+        return;
       }
 
       if (eventType === 'item_completed') {
@@ -300,173 +353,173 @@ function convertCodexRollout(
         const itemType = stringField(item, 'type')?.toLowerCase();
         const eventTurnId = stringField(payload, 'turn_id');
         if (eventTurnId) {
-          activeTurnId = eventTurnId;
-          activeTurnIsExplicit = true;
+          this.activeTurnId = eventTurnId;
+          this.activeTurnIsExplicit = true;
         }
 
         if (itemType === 'usermessage') {
-          if (!activeTurnIsExplicit) {
-            activeTurnId = generatedCodexId(expectedSessionId, 'turn', record.line);
+          if (!this.activeTurnIsExplicit) {
+            this.activeTurnId = generatedCodexId(this.expectedSessionId, 'turn', record.line);
           }
           const text = codexCompletedItemText(item) || codexCompletedItemMediaText(item);
-          if (text.length === 0) continue;
-          firstUserText ??= text;
-          messages.push({
+          if (text.length === 0) return;
+          this.firstUserText ??= text;
+          this.append({
             type: 'user',
             id:
               stringField(item, 'client_id') ??
               stringField(item, 'id') ??
-              generatedCodexId(expectedSessionId, 'user', record.line),
-            turnId: ensureTurnId(record.line),
-            ts: timestampFor(record),
+              generatedCodexId(this.expectedSessionId, 'user', record.line),
+            turnId: this.ensureTurnId(record.line),
+            ts: this.timestampFor(record),
             text,
           });
-          continue;
+          return;
         }
 
         if (itemType === 'agentmessage') {
           const text = codexCompletedItemText(item);
-          if (text.length === 0) continue;
+          if (text.length === 0) return;
           const providerOptions = codexAssistantProviderOptions(item);
-          messages.push({
+          this.append({
             type: 'assistant',
             id:
               stringField(item, 'id') ??
-              generatedCodexId(expectedSessionId, 'assistant', record.line),
-            turnId: ensureTurnId(record.line),
-            ts: timestampFor(record),
+              generatedCodexId(this.expectedSessionId, 'assistant', record.line),
+            turnId: this.ensureTurnId(record.line),
+            ts: this.timestampFor(record),
             text,
             ...(providerOptions !== undefined ? { providerOptions } : {}),
-            modelId: activeModel,
+            modelId: this.activeModel,
             contentOrder: ['text'],
           });
-          continue;
+          return;
         }
 
         if (itemType === 'reasoning') {
           const reasoning = codexCompletedReasoningText(item);
-          if (reasoning.length === 0) continue;
-          messages.push({
+          if (reasoning.length === 0) return;
+          this.append({
             type: 'assistant',
             id:
               stringField(item, 'id') ??
-              generatedCodexId(expectedSessionId, 'reasoning', record.line),
-            turnId: ensureTurnId(record.line),
-            ts: timestampFor(record),
+              generatedCodexId(this.expectedSessionId, 'reasoning', record.line),
+            turnId: this.ensureTurnId(record.line),
+            ts: this.timestampFor(record),
             text: '',
             thinking: { text: reasoning },
             contentOrder: ['thinking'],
-            modelId: activeModel,
+            modelId: this.activeModel,
           });
-          continue;
+          return;
         }
       }
 
       if (eventType === 'user_message') {
-        if (!activeTurnIsExplicit) {
-          activeTurnId = generatedCodexId(expectedSessionId, 'turn', record.line);
+        if (!this.activeTurnIsExplicit) {
+          this.activeTurnId = generatedCodexId(this.expectedSessionId, 'turn', record.line);
         }
         const text = stringField(payload, 'message') ?? mediaOnlyUserText(payload);
-        if (text.length === 0) continue;
-        firstUserText ??= text;
-        const turnId = ensureTurnId(record.line);
-        messages.push({
+        if (text.length === 0) return;
+        this.firstUserText ??= text;
+        const turnId = this.ensureTurnId(record.line);
+        this.append({
           type: 'user',
           id:
             stringField(payload, 'client_id') ??
-            generatedCodexId(expectedSessionId, 'user', record.line),
+            generatedCodexId(this.expectedSessionId, 'user', record.line),
           turnId,
-          ts: timestampFor(record),
+          ts: this.timestampFor(record),
           text,
         });
-        continue;
+        return;
       }
 
       if (eventType === 'agent_message') {
         const text = stringField(payload, 'message');
-        if (!text) continue;
+        if (!text) return;
         const providerOptions = codexAssistantProviderOptions(payload);
-        messages.push({
+        this.append({
           type: 'assistant',
-          id: generatedCodexId(expectedSessionId, 'assistant', record.line),
-          turnId: ensureTurnId(record.line),
-          ts: timestampFor(record),
+          id: generatedCodexId(this.expectedSessionId, 'assistant', record.line),
+          turnId: this.ensureTurnId(record.line),
+          ts: this.timestampFor(record),
           text,
           ...(providerOptions !== undefined ? { providerOptions } : {}),
-          modelId: activeModel,
+          modelId: this.activeModel,
           contentOrder: ['text'],
         });
-        continue;
+        return;
       }
 
       if (eventType === 'agent_reasoning') {
         const reasoning = stringField(payload, 'text');
-        if (!reasoning) continue;
-        messages.push({
+        if (!reasoning) return;
+        this.append({
           type: 'assistant',
-          id: generatedCodexId(expectedSessionId, 'reasoning', record.line),
-          turnId: ensureTurnId(record.line),
-          ts: timestampFor(record),
+          id: generatedCodexId(this.expectedSessionId, 'reasoning', record.line),
+          turnId: this.ensureTurnId(record.line),
+          ts: this.timestampFor(record),
           text: '',
           thinking: { text: reasoning },
           contentOrder: ['thinking'],
-          modelId: activeModel,
+          modelId: this.activeModel,
         });
-        continue;
+        return;
       }
 
       if (eventType === 'context_compacted') {
-        messages.push({
+        this.append({
           type: 'system_note',
-          id: generatedCodexId(expectedSessionId, 'compact', record.line),
-          turnId: activeTurnId,
-          ts: timestampFor(record),
+          id: generatedCodexId(this.expectedSessionId, 'compact', record.line),
+          turnId: this.activeTurnId,
+          ts: this.timestampFor(record),
           kind: 'context_compacted',
         });
-        continue;
+        return;
       }
 
       if (eventType === 'error') {
-        if (activeTurnId && codexErrorAffectsTurnStatus(payload)) {
-          failedTurnIds.add(activeTurnId);
+        if (this.activeTurnId && codexErrorAffectsTurnStatus(payload)) {
+          this.failedTurnIds.add(this.activeTurnId);
         }
-        messages.push({
+        this.append({
           type: 'system_note',
-          id: generatedCodexId(expectedSessionId, 'error', record.line),
-          turnId: activeTurnId,
-          ts: timestampFor(record),
+          id: generatedCodexId(this.expectedSessionId, 'error', record.line),
+          turnId: this.activeTurnId,
+          ts: this.timestampFor(record),
           kind: 'error',
           data: JSON.parse(JSON.stringify(payload)) as unknown,
         });
-        continue;
+        return;
       }
 
       if (eventType === 'task_complete' || eventType === 'turn_complete') {
-        const turnId = stringField(payload, 'turn_id') ?? ensureTurnId(record.line);
-        const failed = failedTurnIds.has(turnId) || payload.error != null;
-        messages.push({
+        const turnId = stringField(payload, 'turn_id') ?? this.ensureTurnId(record.line);
+        const failed = this.failedTurnIds.has(turnId) || payload.error != null;
+        this.append({
           type: 'turn_state',
-          id: generatedCodexId(expectedSessionId, 'turn-state', record.line),
+          id: generatedCodexId(this.expectedSessionId, 'turn-state', record.line),
           turnId,
-          ts: timestampFor(record),
+          ts: this.timestampFor(record),
           status: failed ? 'failed' : 'completed',
           ...(failed ? { errorClass: 'codex_error' } : {}),
           partialOutputRetained: true,
         });
-        failedTurnIds.delete(turnId);
-        if (activeTurnId === turnId) {
-          activeTurnId = undefined;
-          activeTurnIsExplicit = false;
+        this.failedTurnIds.delete(turnId);
+        if (this.activeTurnId === turnId) {
+          this.activeTurnId = undefined;
+          this.activeTurnIsExplicit = false;
         }
-        continue;
+        return;
       }
 
       if (eventType === 'turn_aborted') {
-        const turnId = stringField(payload, 'turn_id') ?? ensureTurnId(record.line);
-        const ts = timestampFor(record);
-        messages.push({
+        const turnId = stringField(payload, 'turn_id') ?? this.ensureTurnId(record.line);
+        const ts = this.timestampFor(record);
+        this.append({
           type: 'turn_state',
-          id: generatedCodexId(expectedSessionId, 'turn-state', record.line),
+          id: generatedCodexId(this.expectedSessionId, 'turn-state', record.line),
           turnId,
           ts,
           status: 'aborted',
@@ -474,45 +527,45 @@ function convertCodexRollout(
           abortSource: stringField(payload, 'reason') ?? 'codex',
           partialOutputRetained: true,
         });
-        if (activeTurnId === turnId) {
-          activeTurnId = undefined;
-          activeTurnIsExplicit = false;
+        if (this.activeTurnId === turnId) {
+          this.activeTurnId = undefined;
+          this.activeTurnIsExplicit = false;
         }
-        continue;
+        return;
       }
     }
 
-    if (envelope.type !== 'response_item') continue;
+    if (envelope.type !== 'response_item') return;
     const itemType = stringField(payload, 'type');
     if (itemType === 'function_call' || itemType === 'custom_tool_call') {
       const callId = stringField(payload, 'call_id');
       const toolName = namespacedToolName(payload);
-      if (!callId || !toolName) continue;
+      if (!callId || !toolName) return;
       const rawArgs =
         itemType === 'function_call'
           ? stringField(payload, 'arguments')
           : stringField(payload, 'input');
-      messages.push({
+      this.append({
         type: 'tool_call',
         id: callId,
-        turnId: ensureTurnId(record.line),
-        ts: timestampFor(record),
+        turnId: this.ensureTurnId(record.line),
+        ts: this.timestampFor(record),
         toolName,
         args: parseJsonString(rawArgs),
       });
-      continue;
+      return;
     }
 
     if (itemType === 'function_call_output' || itemType === 'custom_tool_call_output') {
       const callId = stringField(payload, 'call_id');
-      if (!callId) continue;
-      messages.push({
+      if (!callId) return;
+      this.append({
         type: 'tool_result',
         id:
           stringField(payload, 'id') ??
-          generatedCodexId(expectedSessionId, 'tool-result', record.line),
-        turnId: ensureTurnId(record.line),
-        ts: timestampFor(record),
+          generatedCodexId(this.expectedSessionId, 'tool-result', record.line),
+        turnId: this.ensureTurnId(record.line),
+        ts: this.timestampFor(record),
         toolUseId: callId,
         // Codex persists the output body but not FunctionCallOutputPayload.success.
         // Preserve the raw body and avoid guessing failure from its text.
@@ -522,39 +575,146 @@ function convertCodexRollout(
     }
   }
 
-  const name =
-    sanitizeForeignTitle(fallbackName) || sanitizeForeignTitle(firstUserText) || expectedSessionId;
-  return {
-    sourceSessionId: expectedSessionId,
-    metadata: { name, cwd: metaCwd || fallbackCwd },
-    messages,
-  };
-}
-
-interface ParsedRolloutRecord {
-  line: number;
-  value: JsonRecord;
-}
-
-function parseRolloutRecords(text: string, sessionId: string): ParsedRolloutRecord[] {
-  const endsWithNewline = text.endsWith('\n');
-  const lines = text.split('\n');
-  if (endsWithNewline) lines.pop();
-  const records: ParsedRolloutRecord[] = [];
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    if (line.trim().length === 0) continue;
-    try {
-      const value = JSON.parse(line) as unknown;
-      if (!isRecord(value)) throw new Error('record is not an object');
-      records.push({ line: index + 1, value });
-    } catch (error) {
-      if (!endsWithNewline && index === lines.length - 1) break;
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Invalid Codex rollout ${sessionId} at line ${index + 1}: ${detail}`);
+  finish(): ExternalMakaSession {
+    if (!this.hasSessionMeta) {
+      throw new Error(`Codex rollout Session id mismatch: expected ${this.expectedSessionId}`);
     }
+    const name =
+      sanitizeForeignTitle(this.fallbackName) ||
+      sanitizeForeignTitle(this.firstUserText) ||
+      this.expectedSessionId;
+    return {
+      sourceSessionId: this.expectedSessionId,
+      metadata: { name, cwd: this.metaCwd || this.fallbackCwd },
+      messages: this.messages,
+    };
   }
-  return records;
+
+  private timestampFor(record: ParsedRolloutRecord): number {
+    const parsed = normalizeEpochMs(record.value.timestamp);
+    if (parsed !== undefined) this.lastTimestamp = Math.max(this.lastTimestamp, parsed);
+    else this.lastTimestamp += 1;
+    return parsed ?? this.lastTimestamp;
+  }
+
+  private ensureTurnId(line: number): string {
+    this.activeTurnId ??= generatedCodexId(this.expectedSessionId, 'turn', line);
+    return this.activeTurnId;
+  }
+
+  private append(message: StoredMessage): void {
+    if (this.messages.length >= this.limits.maxMessages) {
+      throw new Error(`Codex rollout converts to more than ${this.limits.maxMessages} messages`);
+    }
+    const encodedBytes = Buffer.byteLength(JSON.stringify(message), 'utf8');
+    if (encodedBytes > this.limits.maxConvertedBytes - this.convertedBytes) {
+      throw new Error(`Codex rollout converts to more than ${this.limits.maxConvertedBytes} bytes`);
+    }
+    this.convertedBytes += encodedBytes;
+    this.messages.push(message);
+  }
+}
+
+async function* readCodexRolloutRecords(
+  path: string,
+  sessionId: string,
+  limits: CodexRolloutLimits,
+): AsyncGenerator<ParsedRolloutRecord> {
+  const handle = await open(path, 'r');
+  try {
+    const metadata = await handle.stat();
+    if (!metadata.isFile()) throw new Error('Codex rollout is not a regular file');
+    if (metadata.size > limits.maxRolloutBytes) {
+      throw new Error(`Codex rollout exceeds ${limits.maxRolloutBytes} bytes`);
+    }
+
+    const snapshotBytes = metadata.size;
+    const pending: Buffer[] = [];
+    let pendingBytes = 0;
+    let position = 0;
+    let line = 0;
+    while (position < snapshotBytes) {
+      const buffer = Buffer.allocUnsafe(
+        Math.min(CODEX_ROLLOUT_READ_BYTES, snapshotBytes - position),
+      );
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+      if (bytesRead === 0) {
+        throw new Error('Codex rollout changed while being read');
+      }
+      position += bytesRead;
+      const chunk = buffer.subarray(0, bytesRead);
+      let start = 0;
+      for (;;) {
+        const newline = chunk.indexOf(0x0a, start);
+        if (newline === -1) break;
+        const segment = chunk.subarray(start, newline);
+        assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
+        line += 1;
+        const record = parseCodexRolloutLine(
+          pending.length === 0
+            ? segment
+            : Buffer.concat([...pending, segment], pendingBytes + segment.byteLength),
+          sessionId,
+          line,
+          false,
+        );
+        if (record) yield record;
+        pending.length = 0;
+        pendingBytes = 0;
+        start = newline + 1;
+      }
+      if (start < chunk.byteLength) {
+        const segment = chunk.subarray(start);
+        assertCodexRecordSize(pendingBytes + segment.byteLength, limits.maxRecordBytes, line + 1);
+        pending.push(segment);
+        pendingBytes += segment.byteLength;
+      }
+    }
+
+    if (pendingBytes > 0) {
+      line += 1;
+      const record = parseCodexRolloutLine(
+        pending.length === 1 ? pending[0]! : Buffer.concat(pending, pendingBytes),
+        sessionId,
+        line,
+        true,
+      );
+      if (record) yield record;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
+function parseCodexRolloutLine(
+  bytes: Buffer,
+  sessionId: string,
+  line: number,
+  tolerateTornTail: boolean,
+): ParsedRolloutRecord | undefined {
+  const text = bytes.toString('utf8');
+  if (text.trim().length === 0) return undefined;
+  try {
+    const value = JSON.parse(text) as unknown;
+    if (!isRecord(value)) throw new Error('record is not an object');
+    return { line, value };
+  } catch (error) {
+    if (tolerateTornTail) return undefined;
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Invalid Codex rollout ${sessionId} at line ${line}: ${detail}`);
+  }
+}
+
+function assertCodexRecordSize(actualBytes: number, maxBytes: number, line: number): void {
+  if (actualBytes > maxBytes) {
+    throw new Error(`Codex rollout record at line ${line} exceeds ${maxBytes} bytes`);
+  }
+}
+
+function assertPositiveSafeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label} must be a positive safe integer`);
+  }
 }
 
 function catalogEntryFromRolloutHead(
@@ -721,35 +881,6 @@ async function walkRolloutFiles(root: string, archived: boolean): Promise<Rollou
   };
   await visit(root);
   return files;
-}
-
-async function readBoundedUtf8File(path: string, maxBytes: number): Promise<string> {
-  const handle = await open(path, 'r');
-  try {
-    const metadata = await handle.stat();
-    if (!metadata.isFile()) throw new Error('Codex rollout is not a regular file');
-    if (metadata.size > maxBytes) throw new Error(`Codex rollout exceeds ${maxBytes} bytes`);
-    const chunks: Buffer[] = [];
-    let total = 0;
-    for (;;) {
-      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, maxBytes + 1 - total));
-      const { bytesRead } = await handle.read(buffer, 0, buffer.length, total);
-      if (bytesRead === 0) break;
-      total += bytesRead;
-      if (total > maxBytes) throw new Error(`Codex rollout exceeds ${maxBytes} bytes`);
-      chunks.push(buffer.subarray(0, bytesRead));
-      if (total === maxBytes) {
-        const probe = Buffer.allocUnsafe(1);
-        if ((await handle.read(probe, 0, 1, total)).bytesRead > 0) {
-          throw new Error(`Codex rollout exceeds ${maxBytes} bytes`);
-        }
-        break;
-      }
-    }
-    return Buffer.concat(chunks, total).toString('utf8');
-  } finally {
-    await handle.close();
-  }
 }
 
 async function readUtf8Prefix(path: string, maxBytes: number): Promise<string> {
