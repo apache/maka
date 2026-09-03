@@ -808,7 +808,7 @@
 .maka-turn-failed-diagnostic {
   margin-block: var(--space-0-5) var(--space-1);
   padding-inline: var(--space-1);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font-size: 0.8rem;
 }
 .maka-turn-failed-diagnostic summary { cursor: pointer; }
