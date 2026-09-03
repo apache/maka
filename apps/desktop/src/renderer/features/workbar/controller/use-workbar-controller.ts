@@ -436,7 +436,8 @@ export function useWorkbarController(
           id: `side-chat:${panel.id}`,
           kind: 'side-chat',
           ordinal:
-            activeTab?.ordinal ?? reserveOrdinal('side-chat'),
+            (activePanel ? activeTab?.ordinal : undefined) ??
+            reserveOrdinal('side-chat'),
         },
         placement,
       );
@@ -709,13 +710,15 @@ export function useWorkbarController(
     () => new Set(activeSideConversationPanels.map((panel) => `side-chat:${panel.id}`)),
     [activeSideConversationPanels],
   );
-  const sideConversationSurfaceKey = useMemo(() => {
-    if (activeSideConversationPanels.length === 0) return activeSessionId;
-    return (
+  // Keep one WorkbarSurface mounted for the whole linked Session scope. This
+  // avoids remounting every tool when the first/last Side Chat tab appears and
+  // lets each tool receive the new sessionId and reset its own session data.
+  const sideConversationSurfaceKey = useMemo(
+    () =>
       linkedSideConversationFamilyRootId(input.activeSession, input.sessions) ??
-      activeSessionId
-    );
-  }, [activeSessionId, activeSideConversationPanels.length, input.activeSession, input.sessions]);
+      activeSessionId,
+    [activeSessionId, input.activeSession, input.sessions],
+  );
   const hostPanelsState = useMemo(
     () =>
       projectWorkbarPanelsForSession(

@@ -412,6 +412,9 @@ export function WorkbarSurface(props: {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).workbar;
   const [artifactCount, setArtifactCount] = useState(0);
+  const [artifactCountSessionId, setArtifactCountSessionId] = useState<string | undefined>(
+    undefined,
+  );
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
     props.panelsState[placement].tabs.map((tab) => ({ placement, tab })),
@@ -525,7 +528,10 @@ export function WorkbarSurface(props: {
             <Suspense fallback={<WorkbarPanelLoading label={copy.files} />}>
               <ArtifactPane
                 sessionId={props.sessionId}
-                onCountChange={setArtifactCount}
+                onCountChange={(count) => {
+                  setArtifactCount(count);
+                  setArtifactCountSessionId(props.sessionId);
+                }}
                 onDismiss={() => props.onDismissPanel(placement)}
               />
             </Suspense>

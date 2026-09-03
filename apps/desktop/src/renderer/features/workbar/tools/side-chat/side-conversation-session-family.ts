@@ -39,6 +39,10 @@ export function isLinkedSideConversationSessionFamily(
   // before its catalog row arrives. Keep the panel through that refresh; a
   // missing source is only destructive once navigation has left its id.
   if (sourceSessionId === activeSession.id) return true;
+  // A pending active Session has no lineage metadata yet. Do not destroy a
+  // live Side Chat during that short catalog gap; once the row arrives the
+  // normal descendant check below decides whether it belongs to this scope.
+  if (!sessions.some((session) => session.id === activeSession.id)) return true;
   const sourceSession = sessions.find((session) => session.id === sourceSessionId);
   if (!sourceSession) return false;
 
