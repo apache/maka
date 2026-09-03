@@ -33,7 +33,7 @@ import {
 import type { ChatModelChoice, SessionViewMode, TurnViewModel } from '@maka/ui';
 import { SessionRail, type SessionRailStoryProps } from '../../../packages/ui/stories/session-rail-harness.js';
 import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions';
-import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { WorkbarTitlebarActionsView } from '../src/renderer/features/workbar/stories';
 import { AppShellDetailPanel } from '../src/renderer/app-shell-detail-panel';
 import { deriveAppShellTurnPresentation } from '../src/renderer/app-shell-turn-view-model';
 import {
@@ -404,7 +404,7 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <WorkbarTitlebarActions
+        <WorkbarTitlebarActionsView
           available
           collapsed={false}
           onToggle={noop}

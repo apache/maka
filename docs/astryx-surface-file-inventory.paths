@@ -55,6 +55,7 @@ apps/desktop/src/renderer/features/workbar/tools/side-chat/quote-companion-panel
 apps/desktop/src/renderer/features/workbar/tools/terminal/session-terminal-panel.tsx
 apps/desktop/src/renderer/features/workbar/ui/side-chat-close-confirmation.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-host.tsx
+apps/desktop/src/renderer/features/workbar/ui/workbar-provider.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-surface.tsx
 apps/desktop/src/renderer/features/workbar/ui/workbar-toggle.tsx
 apps/desktop/src/renderer/keyboard-help.tsx

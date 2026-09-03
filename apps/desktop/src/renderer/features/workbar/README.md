@@ -37,18 +37,30 @@ remounted when the active session changes.
 - Workbar must not import shell composition, Desktop bridge, or main-process implementation.
 - Desktop I/O enters through `WorkbarServices`; tool code does not read
   the Desktop global bridge directly.
-- `useWorkbarController` is the application boundary for topology, shortcuts,
-  dynamic resources and Side Chat visibility. `AppShell` supplies only the
-  active Session, workspace availability, authoritative Session ids, shell visibility and composer
+- `WorkbarProvider` is the application boundary for topology, shortcuts,
+  dynamic resources and Side Chat visibility. It is the only production caller
+  of `useWorkbarController`; that hook is intentionally absent from the
+  production barrel. `AppShell` supplies only the active Session, workspace
+  availability, authoritative Session ids, shell visibility and composer
   mention/model context.
 
-## Public surface
+## Public surface and render ownership
 
-- `host` is passed intact to `<WorkbarHost model={workbar.host} />`.
-- `commands.openTool`, `commands.openSideChatWithQuote` and
-  `commands.toggleRight` are the only shell actions.
-- `selectors.rightCollapsed` drives the titlebar restore affordance and
-  `selectors.hiddenSessionIds` filters ephemeral companion forks from the rail.
+- `<WorkbarHost>` reads its controller-owned host model directly from
+  `WorkbarProvider`; `AppShell` cannot accept or pass that model.
+- The titlebar restore affordance reads only `available`, `collapsed`, and
+  `onToggle` from its own context. Host-only changes do not repaint it.
+- Cross-feature intents use the stable imperative commands on the per-shell
+  `WorkbarShellBridge`. Replacing the controller publication does not re-render
+  the shell.
+- Ephemeral companion fork ids are the one reactive value another feature
+  needs. Session Navigation equality-selects that external-store projection at
+  its reader boundary before deriving the rail.
+
+The bridge is created per `AppShell`; it is neither global state nor a service
+locator. Controller-only updates re-render the provider and whichever narrow
+context consumes the changed projection, while the provider retains the shell
+element built by its parent.
 
 ## Lifecycle invariants
 

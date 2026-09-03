@@ -485,7 +485,7 @@
           "react": 1
         },
         "importSpecifiers": 8,
-        "nonTriviaTokens": 672
+        "nonTriviaTokens": 671
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 23,
@@ -871,8 +871,7 @@
           "useTaskEntryController": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
-          "useTurnActionRegistry": 1,
-          "useWorkbarController": 1
+          "useTurnActionRegistry": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -979,8 +978,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 184,
-        "nonTriviaTokens": 15687
+        "importSpecifiers": 182,
+        "nonTriviaTokens": 15659
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
