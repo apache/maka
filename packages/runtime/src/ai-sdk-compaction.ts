@@ -211,6 +211,18 @@ export class AiSdkCompaction {
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
   private historyCompactAbortController: AbortController | null = null;
   /**
+   * Exact duplicate compaction requests share one physical summarizer call.
+   * Automatic capacity checks and explicit/manual entry can converge while a
+   * checkpoint is still being written; dispatching both would race the same
+   * source prefix and charge the provider twice. The key is derived from the
+   * source/configuration rather than the issuing turn id so callers that are
+   * otherwise asking for the same fold share the result.
+   */
+  private readonly inFlightHistoryCompactions = new Map<
+    string,
+    Promise<AiSdkCompactHistoryResult>
+  >();
+  /**
    * Session-scoped circuit for exact malformed compaction inputs. A retry or
    * regeneration on the same backend must not dispatch the same doomed call;
    * changed source/configuration fingerprints remain eligible.
@@ -284,7 +296,25 @@ export class AiSdkCompaction {
     this.historyCompactAbortController?.abort();
   }
 
-  public async compactHistory(
+  public compactHistory(
+    input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
+    automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
+  ): Promise<AiSdkCompactHistoryResult> {
+    const key = historyCompactRequestKey(input);
+    const existing = this.inFlightHistoryCompactions.get(key);
+    if (existing) return existing;
+    const pending = this.compactHistoryOnce(input, automaticMemoryBoundary);
+    this.inFlightHistoryCompactions.set(key, pending);
+    const clear = () => {
+      if (this.inFlightHistoryCompactions.get(key) === pending) {
+        this.inFlightHistoryCompactions.delete(key);
+      }
+    };
+    void pending.then(clear, clear);
+    return pending;
+  }
+
+  private async compactHistoryOnce(
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
@@ -1380,6 +1410,17 @@ function projectAcceptedMidTurnCompactionMessages(
 
 function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
+}
+
+function historyCompactRequestKey(
+  input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
+): string {
+  return sha256(
+    stableStringifyForSignature({
+      runtimeContext: input.runtimeContext,
+      runtimeContextRunHeaders: input.runtimeContextRunHeaders ?? [],
+    }),
+  );
 }
 
 function modelMessageSignature(message: ModelMessage): string {

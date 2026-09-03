@@ -4527,6 +4527,73 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'replaced');
   });
 
+  test('coalesces identical in-flight compactHistory requests', async () => {
+    const recorded: HistoryCompactCheckpoint[] = [];
+    let summarizeCalls = 0;
+    let releaseSummary!: () => void;
+    const summaryReady = new Promise<void>((resolve) => {
+      releaseSummary = resolve;
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => completionModel(),
+      tools: [],
+      newId: idGenerator(),
+      now: monotonicClock(),
+      contextBudget: {
+        name: 'in-flight-dedup-test',
+        maxHistoryEstimatedTokens: 10_000,
+        charsPerToken: 1,
+      },
+      summarizeHistoryCompact: async () => {
+        summarizeCalls += 1;
+        await summaryReady;
+        return structuredSummary('IN_FLIGHT_DEDUP_SUMMARY');
+      },
+      recordHistoryCompactCheckpoint: (checkpoint) => {
+        recorded.push(checkpoint);
+      },
+    });
+    const runtimeContext = [
+      runtimeTextEvent({
+        id: 'dedup-old-user',
+        turnId: 'dedup-old-turn',
+        role: 'user',
+        author: 'user',
+        text: 'old context '.repeat(100),
+      }),
+      runtimeTextEvent({
+        id: 'dedup-old-agent',
+        turnId: 'dedup-old-turn',
+        role: 'model',
+        author: 'agent',
+        text: 'old response '.repeat(100),
+      }),
+    ];
+    const first = backend.compactHistory({
+      turnId: 'dedup-compact-1',
+      runId: 'run-dedup-1',
+      runtimeContext,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const second = backend.compactHistory({
+      turnId: 'dedup-compact-2',
+      runId: 'run-dedup-2',
+      runtimeContext,
+    });
+
+    assert.equal(summarizeCalls, 1);
+    releaseSummary();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    assert.deepEqual(secondResult, firstResult);
+    assert.equal(recorded.length, 1);
+  });
+
   test('manual compactHistory compacts one completed turn with multiple agent steps', async () => {
     const recorded: HistoryCompactCheckpoint[] = [];
     const backend = createTestAiSdkBackend({
