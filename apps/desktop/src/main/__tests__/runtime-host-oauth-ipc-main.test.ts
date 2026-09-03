@@ -710,7 +710,6 @@ function createFailClosedOAuthClient(overrides: Partial<OAuthClient>): {
     };
   const client = {
     loadConnectionCatalog: unexpected('loadConnectionCatalog'),
-    createConnection: unexpected('createConnection'),
     updateConnection: unexpected('updateConnection'),
     deleteCredential: unexpected('deleteCredential'),
     fetchConnectionModels: unexpected('fetchConnectionModels'),

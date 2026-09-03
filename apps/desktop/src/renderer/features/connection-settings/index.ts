@@ -25,7 +25,6 @@ export {
 export type {
   ApiKeyOnboardingBridge,
   ConnectionOAuthBridge,
-  ConnectionOAuthLoginTarget,
   ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
   ConnectionsBridge,
