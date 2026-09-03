@@ -218,15 +218,6 @@ export function useWorkbarController(
     pendingWorkBoardStartRef.current = undefined;
   }, []);
 
-  const resolveWorkBoardStartTask = useCallback(
-    (item: WorkBoardItem) => {
-      const result = input.resolveWorkBoardTarget?.(item);
-      if (!result) return { ok: false, message: 'Work Board task start is unavailable.' };
-      return result.ok ? { ok: true } : { ok: false, message: result.message };
-    },
-    [input.resolveWorkBoardTarget],
-  );
-
   const startWorkBoardTask = useCallback(
     (item: WorkBoardItem) => {
       if (pendingWorkBoardStartRef.current) {
@@ -889,7 +880,7 @@ export function useWorkbarController(
       sourceSession: input.activeSession,
       modelChoices: input.modelChoices,
       onStartWorkBoardTask: startWorkBoardTask,
-      resolveWorkBoardStartTask,
+      resolveWorkBoardStartTask: input.resolveWorkBoardTarget,
       onOpenWorkBoardSession: openWorkBoardSession,
       workBoardStartTaskEnabled,
       closeConfirmation: {

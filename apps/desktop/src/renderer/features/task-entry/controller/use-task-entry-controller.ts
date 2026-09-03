@@ -502,20 +502,15 @@ export function useTaskEntryController(
   );
   const prepareWorkBoardDraft = useCallback(
     (target: TaskEntryTarget, draft: string): string | undefined => {
-      const host = catalog.hosts.find(
-        (candidate): candidate is ReadyTaskEntryHost =>
-          candidate.profile.id === target.profileId &&
-          isReadyTaskEntryHost(candidate) &&
-          candidate.hostId === target.hostId,
-      );
-      if (!host || target.projectId === null) return undefined;
-      const project = findProjectByIdentity(host.projects, target.projectId);
-      if (!project?.available || project.archivedAt !== undefined) return undefined;
-      setSelectedProfileId(host.profile.id);
-      setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
+      // The target was resolved by resolveWorkBoardStartTarget moments ago, so
+      // the Host and project availability are already proven; only seed the
+      // selection and persist the draft for the composer.
+      if (target.projectId === null) return undefined;
+      setSelectedProfileId(target.profileId);
+      setProjectSelections((current) => new Map(current).set(target.profileId, target.projectId));
       return prepareTaskEntryDraft(target, draft);
     },
-    [catalog.hosts],
+    [setProjectSelections, setSelectedProfileId],
   );
   const addSelectedProject = useCallback(() => {
     if (selectedHost) void addProjectForHost(selectedHost);
