@@ -167,7 +167,7 @@ export interface ComputerUseBoundAction extends ComputerUseFrameIdentity {
 export const CU_SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
 export type CuScrollDirection = (typeof CU_SCROLL_DIRECTIONS)[number];
 
-export const CU_ACTION_TYPES = ['screenshot', 'type', 'key', 'hold_key', 'wait'] as const;
+export const CU_ACTION_TYPES = ['screenshot', 'type', 'key', 'wait'] as const;
 
 export const COMPUTER_USE_ACTION_TYPES = CU_ACTION_TYPES;
 export type CuActionType = (typeof CU_ACTION_TYPES)[number];
@@ -261,7 +261,6 @@ export type CuAction =
   | { type: 'screenshot' }
   | { type: 'type'; text: string }
   | { type: 'key'; text: string }
-  | { type: 'hold_key'; text: string; durationMs: number }
   | { type: 'wait'; durationMs: number };
 
 export const COMPUTER_USE_FRAME_SOURCE_KINDS = ['live-capture'] as const;
@@ -461,14 +460,14 @@ const MODEL_CALL_NAMED_ARGS = new Set([
  * Arguments whose value is the model's own choice from a fixed set, a number,
  * or a word it wrote itself — nothing here comes off the screen.
  *
- * Keyed by action, not by argument name, because `text` is six arguments
- * wearing one name. It carries the key for `press_key`, `key` and `hold_key`,
+ * Keyed by action, not by argument name, because `text` is five arguments
+ * wearing one name. It carries the key for `press_key` and `key`,
  * the element action name for `secondary_action`, the substring to select for
  * `select_text`, and whatever a person asked to be typed for `type`. Two of
- * those come off the screen or out of a person's head; four are a name the
+ * those come off the screen or out of a person's head; three are a name the
  * model picked from a set the executor publishes.
  *
- * Keying on the name meant excluding all six, which is right for `type` and
+ * Keying on the name meant excluding all five, which is right for `type` and
  * wrong for the rest — and the wrong half is the one that motivated this
  * projection: the model read back `press_key ... text: <text>` and could not
  * see which key it had pressed.
@@ -504,7 +503,6 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   // The key name, from the set of key names the executor accepts.
   ['press_key', new Set(['text'])],
   ['key', new Set(['text'])],
-  ['hold_key', new Set(['text', 'duration'])],
   // The element action name, from the closed set the observation lists.
   ['secondary_action', new Set(['text'])],
 ]);
@@ -679,7 +677,7 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
   };
 }
 
-const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
+const KEYBOARD_ACTIONS = new Set(['type', 'key', 'press_key']);
 const SEMANTIC_ACTIONS = new Set([
   'click_element',
   'set_value',

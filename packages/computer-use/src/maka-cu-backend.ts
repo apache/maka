@@ -2319,9 +2319,13 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
               if ('outcome' in snapshot) return snapshot;
               return dispatchKey(wire.wire, snapshot, signal, context, { name: action.type });
             }
+            const unsupportedType =
+              typeof (action as { type?: unknown }).type === 'string'
+                ? (action as { type: string }).type
+                : 'unknown';
             return failure(
               'unsupported_action',
-              `'${action.type}' is not available in this build of Computer Use, so nothing was attempted.`,
+              `'${unsupportedType}' is not available in this build of Computer Use, so nothing was attempted.`,
             );
           },
           context.sessionId,

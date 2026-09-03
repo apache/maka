@@ -237,7 +237,7 @@ export const computerWireParams = z
     text: text
       .optional()
       .describe(
-        'Required for select_text, secondary_action, press_key, type, key, and hold_key. ' +
+        'Required for select_text, secondary_action, press_key, type, and key. ' +
           'For secondary_action it must be one of the names the element itself advertises — an observation writes them ' +
           'after the label as "+show_menu,raise", and an element with none offers nothing beyond a plain click_element.',
       ),
@@ -254,12 +254,7 @@ export const computerWireParams = z
       .describe(
         `Amount for scroll_element, in tenths of a page (${SCROLL_UNITS_PER_PAGE} = one page).`,
       ),
-    duration: z
-      .number()
-      .min(0)
-      .max(60)
-      .optional()
-      .describe('Duration in seconds for wait or hold_key.'),
+    duration: z.number().min(0).max(60).optional().describe('Duration in seconds for wait.'),
     window_action: z
       .enum(['move', 'resize', 'minimize'])
       .optional()
@@ -342,7 +337,6 @@ export const COMPUTER_USE_MODEL_SCREENSHOT_POLICY = {
   screenshot: 'always',
   type: 'always',
   key: 'always',
-  hold_key: 'always',
   wait: 'never',
 } as const satisfies Record<CuToolActionType, 'always' | 'explicit' | 'never'>;
 

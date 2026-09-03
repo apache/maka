@@ -29,7 +29,7 @@ import assert from 'node:assert/strict';
 import { adaptToCuAction, computerActionNames } from '../computer-use-codec.js';
 
 test('a missing text is reported as a missing argument, not a bad coordinate', () => {
-  for (const action of ['type', 'key', 'hold_key'] as const) {
+  for (const action of ['type', 'key'] as const) {
     assert.throws(
       () => adaptToCuAction({ action, observation_id: 'obs-1' } as never),
       (error: Error) => {
@@ -78,6 +78,19 @@ test('the action list is read off the schema rather than kept by hand', () => {
 test('a removed coordinate action is rejected as unknown', () => {
   assert.throws(
     () => adaptToCuAction({ action: 'left_click', observation_id: 'obs-1' } as never),
+    /unknown action/,
+  );
+});
+
+test('unsupported hold_key is rejected as unknown', () => {
+  assert.throws(
+    () =>
+      adaptToCuAction({
+        action: 'hold_key',
+        observation_id: 'obs-1',
+        text: 'shift',
+        duration: 1,
+      } as never),
     /unknown action/,
   );
 });

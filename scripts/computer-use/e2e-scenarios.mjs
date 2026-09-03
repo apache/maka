@@ -34,7 +34,6 @@ export const CU_E2E_ACTIONS = Object.freeze([
   'screenshot',
   'type',
   'key',
-  'hold_key',
   'wait',
 ]);
 
@@ -187,7 +186,6 @@ export const CU_E2E_SCENARIOS = Object.freeze([
       'screenshot',
       'type',
       'key',
-      'hold_key',
       'wait',
     ],
     minimumActionCounts: { observe: 1 },

@@ -92,7 +92,6 @@ const CALLS: Array<Record<string, unknown>> = [
   { action: 'screenshot', app: 'com.apple.TextEdit' },
   { action: 'type', observation_id: 'o', text: 'hello' },
   { action: 'key', observation_id: 'o', text: 'Return' },
-  { action: 'hold_key', observation_id: 'o', text: 'shift', duration: 1 },
   { action: 'wait', duration: 1 },
   { action: 'wait', wait_for_text: 'Saved', duration: 5 },
   { action: 'wait', wait_for_text_gone: 'Loading' },
@@ -126,6 +125,17 @@ for (const action of REMOVED_COORDINATE_ACTIONS) {
     assert.equal(computerParams.safeParse(call).success, false);
   });
 }
+
+test('unsupported hold_key is rejected by both model-facing schemas', () => {
+  const call = {
+    action: 'hold_key',
+    observation_id: 'o',
+    text: 'shift',
+    duration: 1,
+  };
+  assert.equal(computerWireParams.safeParse(call).success, false);
+  assert.equal(computerParams.safeParse(call).success, false);
+});
 
 test('coordinate dispatch fields are absent from the wire schema', () => {
   const fields = Object.keys(computerWireParams.shape);

@@ -52,10 +52,10 @@ import { ToolRuntime, type MakaTool } from '../tool-runtime.js';
  *
  * What still does not cross: the value of `text` for `type` and `select_text`,
  * the value of `set_value`, and anything else whose value is screen content or
- * something a person asked to have typed. `text` for `press_key`, `key`,
- * `hold_key` and `secondary_action` is a name from a closed set the executor
- * publishes, so it is carried — that is one argument name meaning six things,
- * and only two of the six come from outside the model.
+ * something a person asked to have typed. `text` for `press_key`, `key`, and
+ * `secondary_action` is a name from a closed set the executor publishes, so it
+ * is carried — that is one argument name meaning five things, and only two of
+ * the five come from outside the model.
  */
 test('Computer Use snapshots execution args and persists the model-facing projection', async () => {
   const messages: StoredMessage[] = [];

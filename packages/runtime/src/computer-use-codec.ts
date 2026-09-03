@@ -275,14 +275,6 @@ export const computerParams = z.discriminatedUnion('action', [
     .strict(),
   z
     .object({
-      action: z.literal('hold_key'),
-      observation_id: z.string().min(1).max(256),
-      text,
-      duration: z.number().min(0).max(60).optional(),
-    })
-    .strict(),
-  z
-    .object({
       action: z.literal('wait'),
       duration: z.number().min(0).max(60).optional(),
       // A condition, so the wait can end when the thing happens rather than
@@ -463,12 +455,6 @@ export function adaptToCuAction(args: ComputerParams): CuAction {
       return { type: 'type', text: needText(args.text, args.action) };
     case 'key':
       return { type: 'key', text: needText(args.text, args.action) };
-    case 'hold_key':
-      return {
-        type: 'hold_key',
-        text: needText(args.text, args.action),
-        durationMs: Math.round((args.duration ?? 0) * 1000),
-      };
     case 'wait':
       return { type: 'wait', durationMs: Math.round((args.duration ?? 0) * 1000) };
     default:

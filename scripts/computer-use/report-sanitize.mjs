@@ -67,7 +67,6 @@ const SAFE_ACTION_TYPES = new Set([
   'screenshot',
   'type',
   'key',
-  'hold_key',
   'wait',
   'unknown',
 ]);

@@ -364,7 +364,7 @@ describe('the call as the model reads it back', () => {
   });
 
   test('a key name is a closed-set choice the model made, so it reads it back', () => {
-    // `text` is six arguments under one name. For press_key, key and hold_key it
+    // `text` is five arguments under one name. For press_key and key it
     // is a key name from the executor's set; withholding it left the model
     // reading "press_key ... text: <text>", unable to see which key it pressed.
     assert.deepStrictEqual(
@@ -374,15 +374,6 @@ describe('the call as the model reads it back', () => {
     assert.strictEqual(
       computerUseModelCallArgs({ action: 'key', observation_id: 'obs-1', text: 'cmd+s' }).text,
       'cmd+s',
-    );
-    assert.deepStrictEqual(
-      computerUseModelCallArgs({
-        action: 'hold_key',
-        observation_id: 'obs-1',
-        text: 'shift',
-        duration: 2,
-      }),
-      { action: 'hold_key', observation_id: 'obs-1', text: 'shift', duration: 2 },
     );
   });
 
