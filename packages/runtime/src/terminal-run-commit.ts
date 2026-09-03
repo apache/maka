@@ -26,9 +26,6 @@ import {
   type RuntimeEventTerminalFact,
 } from './runtime-event-read-model.js';
 
-/** How a run ended. One terminal RuntimeEvent decides it, once. */
-export type TerminalAgentRunStatus = RuntimeInvocationOutcome;
-
 /** The three ids every RuntimeEvent of one run carries. */
 export interface RunIdentity {
   sessionId: string;
@@ -82,7 +79,7 @@ export function classifyTerminalRuntimeLedger(
 export interface CommitTerminalRunWithRuntimeFactInput extends RunIdentity {
   runtimeEventStore: RuntimeEventStore;
   newId: () => string;
-  status: TerminalAgentRunStatus;
+  status: RuntimeInvocationOutcome;
   ts: number;
   terminalEvent: RuntimeEvent;
   failureClass?: string;
@@ -114,7 +111,7 @@ export interface CommitOrCreateTerminalRunFactInput
   /** Runs after the terminal durability barrier. */
   afterTerminalDurable?: () => Promise<void>;
   terminalEvent?: RuntimeEvent;
-  fallbackStatus: TerminalAgentRunStatus;
+  fallbackStatus: RuntimeInvocationOutcome;
   fallbackInvocationId: string;
   fallbackFailureClass?: string;
   fallbackFailureMessage?: string;
@@ -122,7 +119,7 @@ export interface CommitOrCreateTerminalRunFactInput
 
 export interface CommitOrCreateTerminalRunFactResult {
   terminalEvent: RuntimeEvent;
-  status: TerminalAgentRunStatus;
+  status: RuntimeInvocationOutcome;
   failureClass?: string;
   createdTerminalEvent: boolean;
 }
@@ -173,8 +170,8 @@ export async function commitOrCreateTerminalRunFact(
 function assertCommittableTerminalEvent(
   event: RuntimeEvent,
   identity: RunIdentity,
-  expected?: TerminalAgentRunStatus,
-): TerminalAgentRunStatus {
+  expected?: RuntimeInvocationOutcome,
+): RuntimeInvocationOutcome {
   if (isPartialRuntimeEvent(event)) {
     throw new Error('terminal RuntimeEvent must be final before it is committed');
   }
@@ -199,7 +196,7 @@ export interface BuildSyntheticTerminalRuntimeEventInput {
   id: string;
   invocationId: string;
   run: RunIdentity;
-  status: TerminalAgentRunStatus;
+  status: RuntimeInvocationOutcome;
   ts: number;
   failureClass?: string;
   abortSource?: string;
@@ -249,7 +246,7 @@ export function buildSyntheticTerminalRuntimeEvent(
 export interface BuildRecoveredTerminalRuntimeEventInput {
   id: string;
   run: RunIdentity & { invocationId?: string };
-  status: TerminalAgentRunStatus;
+  status: RuntimeInvocationOutcome;
   ts: number;
   invocationId?: string;
   failureClass?: string;
@@ -289,7 +286,7 @@ function runtimeEventFailureClass(event: RuntimeEvent): string | undefined {
 
 export function terminalRunStatusFromRuntimeEvent(
   event: RuntimeEvent,
-): TerminalAgentRunStatus | undefined {
+): RuntimeInvocationOutcome | undefined {
   if (event.status === 'completed') return 'completed';
   if (event.status === 'failed') return 'failed';
   if (event.status === 'aborted' || event.status === 'cancelled') return 'cancelled';

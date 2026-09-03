@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
-import { seedInvocation, type SeedInvocationInput } from './fixtures/seed-invocation.js';
+import { seedInvocation, type SeedInvocationInput } from '@maka/runtime/test-only/invocation-fixture';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {

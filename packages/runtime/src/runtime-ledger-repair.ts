@@ -27,13 +27,12 @@ import {
   buildInvocationOpenedEvent,
   isSessionInlineInvocation,
 } from '@maka/core/runtime-invocation';
-import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type { RuntimeInvocationOutcome, RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
 import type { RuntimeEventBackfillOutcome } from './runtime-event-backfill.js';
 import { projectRuntimeEventUserMessage } from './runtime-event-read-model.js';
-import type { TerminalAgentRunStatus } from './terminal-run-commit.js';
 
 export interface RuntimeLedgerRepairDeps {
   runtimeEventStore: RuntimeEventStore;
@@ -237,7 +236,7 @@ function transcriptOutcome(
   };
 }
 
-function transcriptOutcomeStatus(status: TurnRecord['status']): TerminalAgentRunStatus {
+function transcriptOutcomeStatus(status: TurnRecord['status']): RuntimeInvocationOutcome {
   if (status === 'failed') return 'failed';
   if (status === 'completed') return 'completed';
   return 'cancelled';

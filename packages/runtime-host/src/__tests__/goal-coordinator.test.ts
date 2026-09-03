@@ -23,7 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { GoalAuthorityRecord } from '@maka/core/goal';
-import { seedInvocation } from './fixtures/seed-invocation.js';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { GoalTurnOutcome } from '@maka/runtime/goal-continuation';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
 import { openInteractiveGoalAuthorityForWrite } from '@maka/storage/goal-authority';

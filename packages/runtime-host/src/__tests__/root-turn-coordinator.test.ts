@@ -19,7 +19,7 @@
 
 import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
-import { readInvocation, seedInvocation } from './fixtures/seed-invocation.js';
+import { readInvocation, seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
 import { randomUUID } from 'node:crypto';

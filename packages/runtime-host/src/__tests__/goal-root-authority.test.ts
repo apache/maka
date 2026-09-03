@@ -29,7 +29,7 @@ import {
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import { runtimeInvocationFailureClass } from '@maka/runtime/runtime-event-read-model';
-import { seedInvocation } from './fixtures/seed-invocation.js';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { GOAL_SET_TOOL_NAME } from '@maka/runtime/goal-tools';

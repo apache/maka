@@ -40,7 +40,7 @@ import {
 import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
-import { readInvocation, testInvocationRecord } from './fixtures/seed-invocation.js';
+import { readInvocation, testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import { runtimeInvocationOutcome } from '@maka/core/runtime-invocation';
 import { agentRunCompositionFromEvents } from '@maka/core/agent-run';
 import type { BackendCompactHistoryInput } from '@maka/core/backend-types';

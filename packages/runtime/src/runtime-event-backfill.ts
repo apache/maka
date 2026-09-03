@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { RunIdentity, TerminalAgentRunStatus } from './terminal-run-commit.js';
+import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import type { RunIdentity } from './terminal-run-commit.js';
 import type {
   PermissionDecisionMessage,
   StoredMessage,
@@ -51,7 +52,7 @@ export interface RuntimeEventBackfillDiagnostic {
  * StoredMessage transcript states an outcome the ledger can be held to.
  */
 export interface RuntimeEventBackfillOutcome {
-  status: TerminalAgentRunStatus;
+  status: RuntimeInvocationOutcome;
   ts: number;
   failureClass?: string;
   abortSource?: string;

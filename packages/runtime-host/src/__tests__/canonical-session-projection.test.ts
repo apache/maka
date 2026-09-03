@@ -22,7 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { seedInvocation } from './fixtures/seed-invocation.js';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   openInteractiveExecutionStoresForWrite,

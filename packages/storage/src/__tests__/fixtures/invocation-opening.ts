@@ -19,6 +19,7 @@
 
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import { createWorkspaceRuntimeStore } from '../../runtime-event-persistence.js';
 
@@ -68,20 +69,19 @@ export async function openInvocation(
   content: RuntimeEventInvocationOpenedContent = invocationOpening(),
 ): Promise<void> {
   const invocationId = identity.invocationId ?? identity.runId;
-  const openedAt = identity.openedAt ?? 1;
-  const { event } = encodeCanonicalRuntimeEvent({
-    id: `invocation_opened:${invocationId}`,
-    invocationId,
-    runId: identity.runId,
-    sessionId: identity.sessionId,
-    turnId: identity.turnId,
-    ts: openedAt,
-    partial: false,
-    role: 'system',
-    author: 'system',
-    modelVisibility: 'hidden',
-    content,
-  });
+  const { event } = encodeCanonicalRuntimeEvent(
+    buildInvocationOpenedEvent({
+      id: `invocation_opened:${invocationId}`,
+      run: {
+        sessionId: identity.sessionId,
+        invocationId,
+        runId: identity.runId,
+        turnId: identity.turnId,
+      },
+      openedAt: identity.openedAt ?? 1,
+      opening: content,
+    }),
+  );
   const store = createWorkspaceRuntimeStore(workspaceRoot);
   try {
     await store.appendRuntimeEvent(identity.sessionId, identity.runId, event);

@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { EmittedAgentRunEvent } from '@maka/core/agent-run';
-import { seedInvocation } from './fixtures/seed-invocation.js';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';

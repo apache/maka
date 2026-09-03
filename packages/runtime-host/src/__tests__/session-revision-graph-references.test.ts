@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
-import { testInvocationRecord } from './fixtures/seed-invocation.js';
+import { testInvocationRecord } from '@maka/runtime/test-only/invocation-fixture';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { collectConversationCopyLinkedChildReferences } from '@maka/runtime/conversation-copy';

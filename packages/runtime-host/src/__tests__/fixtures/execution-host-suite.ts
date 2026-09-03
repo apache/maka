@@ -43,7 +43,7 @@ import {
   runtimeInvocationOutcome,
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
-import { seedInvocation } from './seed-invocation.js';
+import { seedInvocation } from '@maka/runtime/test-only/invocation-fixture';
 import {
   aggregateMessageContents,
   messageContentDigest,
