@@ -25,7 +25,7 @@ import type {
 } from '@maka/runtime/stream-graph-read-model';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type { AgentGraphEpochSummary } from '@maka/runtime-host/protocol';
-import { AgentGraphLiveStatus, IconButton, Selector, type SelectorOptionType } from '@maka/ui';
+import { IconButton, Selector, type SelectorOptionType } from '@maka/ui';
 import { ICON_SIZE, ChevronDown, X } from '@maka/ui/icons';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -395,14 +395,20 @@ export function AgentGraphPanel(props: {
           ) : null}
           {snapshot ? (
             <span className="maka-agent-graph-progress">
-              <AgentGraphLiveStatus live={graphLive} startedAt={selectedEpoch?.createdAt}>
-                {copy.status(snapshot.status)} ·{' '}
-                {copy.progress(
-                  progress.settled,
-                  progress.total,
-                  snapshot.omitted.operators > 0,
-                )}
-              </AgentGraphLiveStatus>
+              {graphLive ? (
+                <Spinner
+                  size="sm"
+                  shade="subtle"
+                  className="maka-agent-graph-heartbeat"
+                  aria-hidden="true"
+                />
+              ) : null}
+              {copy.status(snapshot.status)} ·{' '}
+              {copy.progress(
+                progress.settled,
+                progress.total,
+                snapshot.omitted.operators > 0,
+              )}
             </span>
           ) : null}
         </div>

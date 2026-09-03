@@ -116,7 +116,7 @@ function operator(
 // a missing bridge would throw into React rather than settle into the UI.
 function graphBridge(snap: AgentGraphClientSnapshot, fail = false) {
   const directory = {
-    epochs: [{ epoch: 1, graphId: snap.graphId, createdAt: Date.now() - 23_000, current: true }],
+    epochs: [{ epoch: 1, graphId: snap.graphId, createdAt: 1, current: true }],
     truncated: false,
   };
   return {

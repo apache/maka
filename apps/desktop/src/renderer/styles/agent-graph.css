@@ -110,11 +110,6 @@
   gap: var(--space-1);
 }
 
-.maka-agent-graph-elapsed {
-  white-space: nowrap;
-  font-variant-numeric: tabular-nums;
-}
-
 .maka-agent-graph-empty {
   margin: var(--space-2) 0 0;
 }
