@@ -97,6 +97,9 @@ const zhCopy = {
     intentSeparator: " — ",
   },
 } as const;
+
+export type ShellRemainingCopy = WidenCopy<typeof zhCopy>;
+
 const zhTwCopy = {
   scheduledTaskActions: {
     refreshFailed: "重新整理計劃失敗",
@@ -169,9 +172,6 @@ const zhTwCopy = {
     intentSeparator: " — ",
   },
 } as const;
-
-export type ShellRemainingCopy = WidenCopy<typeof zhCopy>;
-
 const enCopy: ShellRemainingCopy = {
   scheduledTaskActions: {
     refreshFailed: "Failed to refresh tasks",
@@ -251,11 +251,7 @@ const enCopy: ShellRemainingCopy = {
   },
 };
 
-const COPY = {
-  'zh-CN': zhCopy,
-  'zh-TW': zhTwCopy,
-  en: enCopy,
-} satisfies UiCatalog<ShellRemainingCopy>;
+const COPY = { 'zh-CN': zhCopy, 'zh-TW': zhTwCopy, en: enCopy, ko: enCopy } satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {
   return COPY[locale];

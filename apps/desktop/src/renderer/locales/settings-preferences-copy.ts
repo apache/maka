@@ -272,7 +272,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
   'zh-CN': {
     personalization: {
       saveFailed: '保存失败', displayName: '显示名称', displayNameHelp: 'Maka 在聊天里会以这个名字称呼你。留空就用默认的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未设置，Maka 会称呼你“你”', displayNameChange: '更改', displayNameSet: '设置',
-      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh-CN', '简体中文'], ['zh-TW', '繁體中文'], ['en', 'English']],
+      interfaceLanguage: '界面语言', interfaceLanguageHelp: '选择 Maka 界面的显示语言。切换后立即生效，重启后保持。', localeOptions: [['auto', '跟随系统'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']],
       assistantTone: '助手语气偏好', assistantToneHelp: '最多 500 字，只影响回答的语气和风格。权限确认与安全规则不受影响；改动会自动保存。', assistantTonePlaceholder: '例如：技术严谨、偏简洁、不要 emoji。',
     },
     sections: {
@@ -367,6 +367,67 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     password: { copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', copying: '复制中', copied: '已复制', copy: '复制', hide: '隐藏', show: '显示', value: '凭据值' },
   },
+  en: {
+    personalization: {
+      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+    },
+    sections: {
+      identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
+      privacy: 'Privacy and notifications', privacyHelp: 'What Maka may read and write locally, and when it notifies you.',
+      chatDefaults: 'Task defaults', chatDefaultsHelp: 'The model, permission mode, and thinking level a new task starts on.',
+      shell: 'Command environment', shellHelp: 'Choose the shell the Runtime Host uses for Bash tools and terminal commands.',
+      network: 'Network', networkHelp: 'The network path AI model requests take.',
+      theme: 'Theme', themeHelp: 'Follow the system appearance, or stay on light or dark.',
+      palette: 'Color palette', paletteHelp: 'Accent and canvas colors. Changes apply immediately and are saved locally.',
+      appIcon: 'App icon', appIconHelp: 'The Maka icon shown in the dock, taskbar, and app switcher. Changes apply immediately.',
+      fontSize: 'Font size', fontSizeHelp: 'Text size across the interface and terminal. Changes apply immediately and are saved locally.',
+      pets: 'Custom pets', petsHelp: 'Manage PetPacks you import yourself. Maka does not bundle or enable any pet by default.',
+    },
+    appearance: {
+      saveFailed: 'Could not save appearance settings', theme: 'Theme', palette: 'Color palette', themeOptions: { light: { label: 'Light', help: 'Always use the light interface.' }, dark: { label: 'Dark', help: 'Always use the dark interface.' }, auto: { label: 'Follow system', help: 'Match the current system appearance.' } }, paletteLabels: { default: 'Default', onedark: 'One Dark', 'catppuccin-mocha': 'Catppuccin Mocha', 'tokyo-night': 'Tokyo Night', nord: 'Nord', coral: 'Coral', azure: 'Azure', forest: 'Forest', dusk: 'Dusk', sand: 'Sand', mono: 'Monochrome' }, paletteHelp: { default: 'Maka brand-blue accent', onedark: 'Classic dark editor theme', 'catppuccin-mocha': 'Soft purple dark theme', 'tokyo-night': 'Deep-blue editor theme', nord: 'Cool Nordic colors', coral: 'Warm pink and coral accent', azure: 'Clean, calm blue accent', forest: 'Deep moss and warm honey', dusk: 'Deep violet on a cool canvas', sand: 'Amber sand and warm ivory', mono: 'Pure grayscale without color distraction' }, paletteGroups: { editor: 'Editor themes', product: 'Product colors' }, appIconLabels: { default: 'Classic', mono: 'Monochrome', 'sky': 'Sky', 'cyan': 'Cyan', 'ice': 'Ice', 'pale-inverted': 'Inverted', 'ink': 'Ink', 'paper': 'Paper', 'graphite': 'Graphite', 'pencil-kraft': 'Pencil, kraft', 'pencil-sky': 'Pencil, sky', 'pencil-navy': 'Pencil, navy', 'alpine': 'Alpine', 'dusk': 'Dusk', 'night': 'Night', 'midnight': 'Midnight', 'carbon': 'Carbon', 'slate': 'Slate', 'obsidian': 'Obsidian', 'neon-cyan': 'Neon cyan', 'matrix': 'Phosphor', 'magenta': 'Magenta', 'amber-crt': 'Amber CRT', 'clay': 'Clay', 'sage': 'Sage', 'dust': 'Dust', 'fog': 'Fog', 'sunset': 'Sunset', 'amber': 'Amber', 'terracotta': 'Terracotta', 'ocean': 'Ocean', 'moss': 'Moss', 'desert': 'Desert', 'glacier': 'Glacier', 'gold': 'Gold', 'chrome': 'Chrome', 'mono-black': 'Mono black', 'mono-white': 'Mono white', 'hazard': 'Hazard', 'forest': 'Forest' }, appIconHelp: { default: 'The default Maka mark', mono: 'Grayscale, for a quieter dock', 'sky': 'The geometric M mark in brand blue', 'cyan': 'Blue leaning to cyan', 'ice': 'A pale-to-deep blue gradient', 'pale-inverted': 'A deep blue mark on a pale field', 'ink': 'White on black, the highest contrast', 'paper': 'Black on white', 'graphite': 'Black on white with a grey tip', 'pencil-kraft': 'The pencil reading, on kraft paper', 'pencil-sky': 'The pencil reading, on sky blue', 'pencil-navy': 'The pencil reading, on deep navy', 'alpine': 'A snow-capped peak under clear sky', 'dusk': 'A snow-capped peak at dusk', 'night': 'A snow-capped peak at night', 'midnight': 'A bright mark on deep navy; keeps its edge on a dark dock', 'carbon': 'True black, so an OLED panel shows nothing but the mark', 'slate': 'Pale grey on cool slate', 'obsidian': 'Lilac on a violet-black gradient', 'neon-cyan': 'Electric cyan on near-black', 'matrix': 'The green of a phosphor terminal', 'magenta': 'Hot pink on deep violet', 'amber-crt': 'The amber of an early terminal', 'clay': 'Muted terracotta', 'sage': 'Muted grey-green', 'dust': 'Muted dusty rose', 'fog': 'Muted blue-grey', 'sunset': 'An orange-to-pink diagonal', 'amber': 'A dark mark on amber', 'terracotta': 'A brick-red gradient', 'ocean': 'A deep teal gradient', 'moss': 'A deep moss gradient', 'desert': 'A dark mark on desert sand', 'glacier': 'A pale glacial blue', 'gold': 'The mark itself carries a gold gradient', 'chrome': 'The mark itself carries a silver gradient', 'mono-black': 'Black on pure white; prints in one colour', 'mono-white': 'White on pure black', 'hazard': 'Yellow on black, the highest contrast in the set', 'forest': 'A snow-capped peak in green' }, appIconGroups: { mascot: 'Mascot', blue: 'Blues', contrast: 'Black & white', pencil: 'Pencil', mountain: 'Mountain', dark: 'Dark', neon: 'Neon', muted: 'Muted', warm: 'Warm', nature: 'Nature', metal: 'Metal', highContrast: 'High contrast', custom: 'Imported' }, appIconSplitLabel: 'Use a different icon in dark mode', appIconSplitHelp: 'When off, one icon is used in both appearances.', appIconTargets: { light: 'Light', dark: 'Dark' }, appIconCustom: 'Imported icon', appIconCustomHelp: 'An image you imported', appIconImport: 'Import icon…', appIconImporting: 'Importing…', appIconImportHelp: 'A square PNG works best. Leave about 10% transparent margin so it sits the same size as other apps in the dock.', appIconRemove: 'Remove', appIconImportError: 'Could not import the icon', appIconRemoveFailed: 'Could not remove the icon', appIconSelectFailed: 'Could not switch the icon', appIconImportFailed: { too_large: 'That file is too large; pick a smaller image', too_many_pixels: 'That image is too large; 4096×4096 is the maximum', unsupported_format: 'Only PNG and JPEG are supported', unreadable: 'No image could be read from that file', too_small: 'That image is too small; 128×128 is the minimum', write_failed: 'Could not store the imported icon' }, appIconUnavailable: 'Could not load the app icons', fontSize: { uiLabel: 'UI font size', uiHelp: 'Base font size used across the interface', terminalLabel: 'Terminal font size', terminalHelp: 'Font size used for terminal output and code' },
+    },
+    pets: {
+      import: 'Import PetPack', importing: 'Importing…', loading: 'Loading custom pets…',
+      status: 'Desktop pet', activePet: (name) => `Currently using: ${name}`, disabled: 'Off', disable: 'Turn off pet', disabling: 'Turning off…',
+      empty: 'No pets imported yet', emptyHelp: 'Choose a local folder containing pet.json and a sprite sheet.',
+      selected: 'In use', select: 'Use', selecting: 'Switching…', remove: 'Remove', removing: 'Removing…',
+      removeTitle: (name) => `Remove “${name}”?`, removeDescription: 'This removes Maka’s local copy of the pet pack and cannot be undone. The original folder is not affected.', confirmRemove: 'Remove', cancel: 'Cancel',
+      loadFailed: 'Could not load custom pets', importFailed: 'Could not import pet', selectFailed: 'Could not switch pet', removeFailed: 'Could not remove pet',
+      importErrors: { invalid_directory: 'The selected folder is invalid.', invalid_manifest: 'pet.json does not match the maka.pet/v1 format.', invalid_asset: 'The sprite sheet is missing, invalid, or outside the supported limits.', already_installed: 'A pet with the same ID is already installed.', read_failed: 'The selected folder could not be read.' },
+      selectErrors: { invalid_id: 'The pet ID is invalid.', not_found: 'That pet is no longer in the local library.', read_failed: 'The pet library could not be read.', write_failed: 'The pet selection could not be saved.' },
+      removeErrors: { invalid_id: 'The pet ID is invalid.', remove_failed: 'The local pet pack could not be removed.' },
+    },
+    general: {
+      incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', defaultThinking: 'Default thinking level', defaultThinkingHelp: 'Thinking level for new tasks; models that do not offer the chosen level use their own default.', followModelDefault: 'Follow model default', saveDefaultThinkingFailed: 'Could not save the default thinking level', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
+      shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
+      passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
+    },
+    about: {
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', nightlyBuild: 'Nightly', buildLabel: 'Build',
+      channelSummaries: {
+        dev: 'A local development build. It does not check for updates.',
+        nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
+        release: 'The official release build. It receives stable updates automatically.',
+      },
+      supportTitle: 'Support',
+      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
+      reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
+      keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
+      privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
+      checkForUpdates: 'Check for updates',
+      checkingForUpdates: 'Checking…',
+      updateIdle: 'No update check has run yet.',
+      updateNotAvailable: 'You are on the latest version.',
+      updateAvailable: (version) => `Version v${version} is available and will download shortly…`,
+      updateDownloading: (version, percent) => `Downloading v${version} (${percent}%)…`,
+      updateVerifying: (version) => `Verifying the release provenance for v${version}…`,
+      updateDownloaded: (version) => `v${version} is ready. Restart from the sidebar to install.`,
+      updateInstalling: (version) => `Installing v${version}…`,
+      updateCheckFailed: 'Could not check for updates',
+      updateCheckFailedDetail: (message) => message,
+    },
+    password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
+  },
   'zh-TW': {
     personalization: {
       saveFailed: '儲存失敗', displayName: '顯示名稱', displayNameHelp: 'Maka 在聊天裡會以這個名字稱呼你。留空就用預設的“你”。', displayNamePlaceholder: '例如：JK', displayNameUnset: '未設定，Maka 會稱呼你“你”', displayNameChange: '更改', displayNameSet: '設定',
@@ -458,9 +519,9 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     },
     password: { copyFailed: '複製失敗', clipboardUnavailable: '剪貼簿不可用或被系統拒絕。', copying: '複製中', copied: '已複製', copy: '複製', hide: '隱藏', show: '顯示', value: '憑據值' },
   },
-  en: {
+  ko: {
     personalization: {
-      saveFailed: 'Could not save', displayName: 'Display name', displayNameHelp: 'Maka uses this name when addressing you. Leave it blank to use “you”.', displayNamePlaceholder: 'For example: JK', displayNameUnset: 'Not set — Maka will say “you”', displayNameChange: 'Change', displayNameSet: 'Set', interfaceLanguage: 'Interface language', interfaceLanguageHelp: 'Choose the language used by Maka. Changes apply immediately and persist after restart.', localeOptions: [['auto', 'Follow system'], ['zh-CN', 'Simplified Chinese'], ['zh-TW', 'Traditional Chinese'], ['en', 'English']], assistantTone: 'Assistant tone', assistantToneHelp: 'Up to 500 characters. This changes response style only; permission and safety rules still apply. Changes save automatically.', assistantTonePlaceholder: 'For example: technically rigorous, concise, and no emoji.',
+      saveFailed: '저장하지 못했습니다', displayName: '표시 이름', displayNameHelp: 'Maka가 사용자를 부를 때 사용할 이름입니다. 비워 두면 “사용자”라고 표시합니다.', displayNamePlaceholder: '예: 민준', displayNameUnset: '설정되지 않음 — Maka가 “사용자”라고 표시합니다', displayNameChange: '변경', displayNameSet: '설정', interfaceLanguage: '인터페이스 언어', interfaceLanguageHelp: 'Maka에서 사용할 언어를 선택하세요. 변경 사항은 즉시 적용되며 다시 시작해도 유지됩니다.', localeOptions: [['auto', '시스템 설정 따름'], ['zh', '中文'], ['en', 'English'], ['ko', '한국어']], assistantTone: '어시스턴트 말투', assistantToneHelp: '최대 500자입니다. 응답 스타일만 변경하며 권한 및 안전 규칙에는 영향을 주지 않습니다. 변경 사항은 자동 저장됩니다.', assistantTonePlaceholder: '예: 기술적으로 엄밀하고 간결하며 이모지 없이.',
     },
     sections: {
       identity: 'Identity', identityHelp: 'How Maka addresses you, plus interface language and response tone.',
@@ -518,7 +579,7 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       updateCheckFailedDetail: (message) => message,
     },
     password: { copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', copying: 'Copying', copied: 'Copied', copy: 'Copy', hide: 'Hide', show: 'Show', value: 'credential value' },
-  },
+  }
 } satisfies UiCatalog<SettingsPreferencesCopy>;
 
 export function getSettingsPreferencesCopy(locale: UiLocale): SettingsPreferencesCopy {

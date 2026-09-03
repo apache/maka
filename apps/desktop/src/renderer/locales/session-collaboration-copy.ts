@@ -119,7 +119,7 @@ const ZH_CN = {
 };
 
 type SessionCollaborationCopy = {
-  readonly [Key in keyof typeof ZH_CN]: (typeof ZH_CN)[Key] extends (
+  readonly [Key in keyof typeof ZH]: (typeof ZH)[Key] extends (
     ...args: infer Args
   ) => string
     ? (...args: Args) => string
@@ -224,7 +224,6 @@ const ZH_TW = {
     moreTurnRequests: (count: number) => `還有 ${count} 個請求等待核准`,
     pendingTurnRequestCount: (count: number) => `${count} 個待核准輪次請求`,
 } satisfies SessionCollaborationCopy;
-
 const EN = {
     shareAction: 'Share this task',
     shareTitle: 'Share task',
@@ -325,7 +324,7 @@ const EN = {
     pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
-const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const COPY = { 'zh-CN': ZH_CN, 'zh-TW': ZH_TW, en: EN, ko: EN } satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];

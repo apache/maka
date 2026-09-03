@@ -18,7 +18,6 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 /**
  * Restoring and deleting a single task speak through the rail's own row
  * actions, so their confirms and toasts are not repeated here. What is left is
@@ -58,8 +57,7 @@ export type SettingsTasksCopy = {
   emptyTitle: string;
   emptyBody: string;
 };
-
-const SETTINGS_TASKS_COPY_BY_LOCALE = {
+const SETTINGS_TASKS_COPY_BY_LOCALE_BASE = {
   'zh-CN': {
     listAria: '已归档任务',
     noProject: '无项目',
@@ -85,7 +83,7 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     restoreTask: (name: string) => `恢复「${name}」`,
     delete: '彻底删除',
     emptyTitle: '没有已归档的任务',
-    emptyBody: '在侧栏里归档一个任务后，可以在这里恢复或彻底删除它。',
+    emptyBody: '在侧栏里归档一个任务后，可以在这里恢复或彻底删除它。'
   },
   'zh-TW': {
     listAria: '已歸檔任務',
@@ -120,25 +118,17 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     deletedParent: 'Parent task deleted',
     searchLabel: 'Search archived tasks',
     purgeAll: 'Clear all',
-    purgeMatches: (count: number) => (count === 1 ? 'Delete this 1' : `Delete these ${count}`),
-    purgeAllConfirmTitle: (count: number) =>
-      count === 1 ? 'Clear the 1 archived task?' : `Clear all ${count} archived tasks?`,
-    purgeMatchesConfirmTitle: (count: number) =>
-      count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
-    purgeConfirmBody:
-      'The tasks and all of their messages are removed permanently. This cannot be undone.',
+    purgeMatches: (count: number) => count === 1 ? 'Delete this 1' : `Delete these ${count}`,
+    purgeAllConfirmTitle: (count: number) => count === 1 ? 'Clear the 1 archived task?' : `Clear all ${count} archived tasks?`,
+    purgeMatchesConfirmTitle: (count: number) => count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
+    purgeConfirmBody: 'The tasks and all of their messages are removed permanently. This cannot be undone.',
     purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
     purgeConfirmAction: 'Delete permanently',
-    purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
-    purgedSubtaskNote: (count: number) =>
-      count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
-    purgeKeptRestored: (count: number) =>
-      count === 1
-        ? '1 more was restored meanwhile and kept.'
-        : `${count} more were restored meanwhile and kept.`,
+    purgedToast: (count: number) => count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`,
+    purgedSubtaskNote: (count: number) => count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
+    purgeKeptRestored: (count: number) => count === 1 ? '1 more was restored meanwhile and kept.' : `${count} more were restored meanwhile and kept.`,
     purgeFailedTitle: 'Could not delete the tasks',
-    purgeFailedBody: (count: number) =>
-      count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,
+    purgeFailedBody: (count: number) => count === 1 ? '1 task is still there. Try again.' : `${count} tasks are still there. Try again.`,
     purgeUnverified: 'The tasks were deleted, but the list could not be read back to confirm. Reopen this page to check.',
     noMatchTitle: 'No matching tasks',
     noMatchBody: 'Try a different search.',
@@ -147,10 +137,39 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     restoreTask: (name: string) => `Restore ${name}`,
     delete: 'Delete',
     emptyTitle: 'Nothing archived',
-    emptyBody: 'Archive a task from the rail to restore or permanently delete it here.',
-  },
+    emptyBody: 'Archive a task from the rail to restore or permanently delete it here.'
+  }
+} satisfies Omit<UiCatalog<SettingsTasksCopy>, 'ko'>;
+const SETTINGS_TASKS_COPY_BY_LOCALE = {
+  ...SETTINGS_TASKS_COPY_BY_LOCALE_BASE,
+  ko: {
+    listAria: "보관된 작업",
+    noProject: "프로젝트 없음",
+    deletedParent: "상위 작업이 삭제되었습니다.",
+    searchLabel: "보관된 작업 검색",
+    purgeAll: "모두 지우기",
+    purgeMatches: (count: number) => count === 1 ? "삭제 1" : `이 ${count} 삭제`,
+    purgeAllConfirmTitle: (count: number) => count === 1 ? "보관된 작업 1개를 삭제하시겠습니까?" : `${count} 보관된 작업을 모두 지우시겠습니까?`,
+    purgeMatchesConfirmTitle: (count: number) => count === 1 ? "검색한 작업 1개를 삭제하시겠습니까?" : `검색한 ${count} 작업을 삭제하시겠습니까?`,
+    purgeConfirmBody: "작업과 해당 메시지가 모두 영구적으로 제거됩니다. 이 작업은 취소할 수 없습니다.",
+    purgeSubtaskNote: "일반적인 하위 작업은 보관되고 보관됨으로 이동됩니다.",
+    purgeConfirmAction: "영구 삭제",
+    purgedToast: (count: number) => count === 1 ? "할 일 1개 삭제됨" : `${count} 작업을 삭제했습니다.`,
+    purgedSubtaskNote: (count: number) => count === 1 ? "1개의 하위 작업이 보관됨으로 이동되었습니다." : `${count} 하위 작업이 보관됨으로 이동되었습니다.`,
+    purgeKeptRestored: (count: number) => count === 1 ? "그 동안 1개를 더 복원하여 보관했습니다." : `그 동안 ${count}개가 더 복원되어 보관되었습니다.`,
+    purgeFailedTitle: "작업을 삭제할 수 없습니다.",
+    purgeFailedBody: (count: number) => count === 1 ? "아직 할 일이 1개 남아 있습니다. 다시 시도해 보세요." : `${count} 작업이 아직 남아 있습니다. 다시 시도해 보세요.`,
+    purgeUnverified: "작업이 삭제되었지만 확인을 위해 목록을 다시 읽을 수 없습니다. 이 페이지를 다시 열어 확인하세요.",
+    noMatchTitle: "일치하는 작업 없음",
+    noMatchBody: "다른 검색을 시도해 보세요.",
+    moreActions: (name: string) => `${name}에 대한 추가 작업`,
+    restore: "복원하다",
+    restoreTask: (name: string) => `${name} 복원`,
+    delete: "삭제",
+    emptyTitle: "보관된 항목이 없습니다.",
+    emptyBody: "여기에서 작업을 복원하거나 영구적으로 삭제하려면 레일에서 작업을 보관하세요."
+  }
 } satisfies UiCatalog<SettingsTasksCopy>;
-
 export function getSettingsTasksCopy(locale: UiLocale): SettingsTasksCopy {
   return SETTINGS_TASKS_COPY_BY_LOCALE[locale];
 }

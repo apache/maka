@@ -18,7 +18,6 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 export type SettingsSharedCopy = {
   modalLabel: string;
   contentLabel: string;
@@ -66,8 +65,7 @@ export type SettingsSharedCopy = {
     reviewScheduleHelp: string;
   };
 };
-
-const SETTINGS_SHARED_COPY_BY_LOCALE = {
+const SETTINGS_SHARED_COPY_BY_LOCALE_BASE = {
   'zh-CN': {
     modalLabel: '设置',
     contentLabel: '设置内容',
@@ -105,8 +103,8 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       dataLocation: '数据位置',
       dataLocationHelp: '任务、设置、使用统计与凭据都以文件形式存放在本机的这个位置。',
       reviewSchedule: '回顾计划',
-      reviewScheduleHelp: '每日回顾的生成时间与使用的模型。',
-    },
+      reviewScheduleHelp: '每日回顾的生成时间与使用的模型。'
+    }
   },
   'zh-TW': {
     modalLabel: '設定',
@@ -185,11 +183,53 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       dataLocation: 'Data location',
       dataLocationHelp: 'Tasks, settings, usage statistics, and credentials are stored as files in this location on your machine.',
       reviewSchedule: 'Review schedule',
-      reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
-    },
-  },
+      reviewScheduleHelp: 'When the daily review runs, and which model writes it.'
+    }
+  }
+} satisfies Omit<UiCatalog<SettingsSharedCopy>, 'ko'>;
+const SETTINGS_SHARED_COPY_BY_LOCALE = {
+  ...SETTINGS_SHARED_COPY_BY_LOCALE_BASE,
+  ko: {
+    modalLabel: "설정",
+    contentLabel: "설정 내용",
+    sidebarLabel: "설정 사이드바",
+    navigationLabel: "설정 섹션",
+    backToApp: "앱으로 돌아가기",
+    close: "닫다",
+    loading: "설정 로드 중",
+    retry: "다시 시도하세요",
+    save: "구하다",
+    cancel: "취소",
+    copy: "복사",
+    copied: "복사됨",
+    failed: "실패한",
+    settingsLoadFailed: "설정을 로드할 수 없습니다.",
+    usageLoadFailed: "사용 통계를 로드할 수 없습니다.",
+    runtimeHost: "런타임 호스트",
+    runtimeHostUnavailable: "이 런타임 호스트를 사용할 수 없습니다. 다른 호스트를 선택하거나 프로젝트에서 연결을 다시 시도하세요.",
+    unknownError: "문제가 발생했습니다. 다시 시도해 보세요.",
+    unavailablePage: "이 페이지는 Maka 설정 트리의 일부이며 런타임 기능으로 활성화됩니다.",
+    showDetails: "세부정보 표시",
+    hideDetails: "세부정보 숨기기",
+    ready: "준비가 된",
+    groups: {
+      memorySources: "메모리",
+      memorySourcesHelp: "Maka는 귀하가 채팅에서 확인한 정보를 기억하고 이후 답변에 사용합니다.",
+      memoryDocument: "메모리 파일 및 백업",
+      memoryDocumentHelp: "메모리는 로컬 MEMORY.md에 있습니다. 여기에서 원시 파일을 편집하거나 백업을 복원하세요.",
+      memoryEntries: "마카가 기억하는 것",
+      memoryEntriesHelp: "항목을 필터링하거나, 수동으로 추가하거나, 더 이상 필요하지 않은 항목을 보관하세요.",
+      searchProvider: "검색 공급자",
+      searchProviderHelp: "공급자 및 자격 증명 웹 검색이 사용됩니다.",
+      searchBehavior: "검색 행동",
+      searchBehaviorHelp: "검색이 실행되는 시기 및 반환되는 결과 수.",
+      dataLocation: "데이터 위치",
+      dataLocationHelp: "작업, 설정, 사용 통계 및 자격 증명은 컴퓨터의 이 위치에 파일로 저장됩니다.",
+      reviewSchedule: "일정 검토",
+      reviewScheduleHelp: "일일 리뷰가 실행되는 시기와 이를 작성하는 모델."
+    }
+  }
 } satisfies UiCatalog<SettingsSharedCopy>;
-
 export function getSettingsSharedCopy(locale: UiLocale): SettingsSharedCopy {
   return SETTINGS_SHARED_COPY_BY_LOCALE[locale];
 }

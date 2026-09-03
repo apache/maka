@@ -141,4 +141,13 @@ const COPY = {
     retry: '重試退出',
     forceQuit: '強制退出 Maka',
   },
+  ko: {
+    title: 'Maka를 안전하게 종료할 수 없습니다',
+    message: '로컬 Runtime Host를 안전하게 중지하지 못했습니다. Maka는 계속 실행 중입니다.',
+    detail: '종료가 취소되었습니다. 다시 시도하거나 문제가 계속되면 진단 정보를 확인하세요.',
+    process: (pid: number) => `Runtime Host 프로세스 PID: ${pid}`,
+    manual: '다시 시도해도 실패하면 보존해야 할 실행이 없는지 확인한 후 운영 체제의 프로세스 관리 도구로 이 PID를 중지하세요.',
+    cause: '원인',
+    button: '확인',
+  },
 } as const;

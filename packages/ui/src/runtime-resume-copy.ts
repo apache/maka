@@ -69,7 +69,7 @@ interface ResumeParkCopy {
   reasons: ResumeParkReasonCopy;
 }
 
-const RESUME_PARK_COPY = {
+const RESUME_PARK_COPY_BASE = {
   'zh-CN': {
     title: '暂时无法继续这一轮',
     fallbackDescription: '当前任务不满足继续的条件。',
@@ -187,7 +187,20 @@ const RESUME_PARK_COPY = {
       resume_feature_disabled: 'Resuming interrupted tasks is not enabled.',
     },
   },
-} satisfies UiCatalog<ResumeParkCopy>;
+  ko: {
+    title: '현재 이 작업을 계속할 수 없습니다',
+    fallbackDescription: '이 작업은 계속하기 위한 조건을 충족하지 않습니다.',
+    missingCandidateTitle: '복구할 작업이 없습니다',
+    missingCandidateDescription: '작업이 이미 최신 상태입니다.',
+    reasons: {
+      dangling_tool_state: '도구 상태가 완료되지 않았습니다.', pending_permission: '대기 중인 권한 요청이 있습니다.', background_operation_pending: '백그라운드 작업이 아직 진행 중입니다.', workspace_identity_mismatch: '작업 공간 ID가 일치하지 않습니다.',
+      workspace_identity_missing: '중단된 실행의 작업 공간을 확인할 수 없습니다.', workspace_cwd_mismatch: '현재 작업 디렉터리가 중단 당시와 일치하지 않습니다.', workspace_ref_missing: '중단 당시 작업 공간을 더 이상 사용할 수 없습니다.', tool_catalog_mismatch: '사용 가능한 도구가 변경되어 안전하게 계속할 수 없습니다.', checkpoint_restore_failed: '작업 공간 체크포인트를 복원하지 못했습니다.', source_run_unreadable: '이전 실행 기록을 완전히 읽을 수 없습니다.', runtime_ledger_unreadable: '이전 실행 원장을 완전히 읽을 수 없습니다.', runtime_ledger_empty: '이전 실행에 재생할 기록이 없습니다.', terminal_repair_failed: '이전 실행 기록을 복구하지 못했습니다.', provider_resume_head_unsupported: '현재 모델은 이 복구 지점을 지원하지 않습니다.', provider_resume_boundary_unsupported: '현재 모델은 이 복구 경계를 지원하지 않습니다.', provider_replay_non_suffix_gap: '이전 모델 출력의 중단 지점을 안전하게 잘라낼 수 없습니다.', provider_replay_unsupported: '현재 모델 프로토콜에서 이전 실행 기록을 안전하게 재생할 수 없습니다.', runtime_lineage_cycle: '복구 체인에 순환 참조가 있어 복구를 중지했습니다.', runtime_lineage_depth_exceeded: '복구 체인이 너무 길어 자동 복구를 중지했습니다.', runtime_lineage_missing: '복구 체인에 필요한 기록이 없습니다.', runtime_lineage_start_mismatch: '복구 체인의 시작 기록이 일치하지 않습니다.', runtime_lineage_replay_mismatch: '복구 체인의 모델 컨텍스트가 현재 재구성 결과와 일치하지 않습니다.',
+      runtime_lineage_claim_mismatch: '복구 소유권 기록이 일치하지 않습니다.', source_prefix_digest_mismatch: '이전 실행의 변경 불가 경계가 변경되었습니다.', continuation_already_exists: '이 중단된 작업에 대한 계속 실행이 이미 있습니다.', continuation_claim_repair_required: '계속 실행 기록을 먼저 복구해야 합니다.', continuation_started_indeterminate: '계속 실행이 시작되었지만 종료 상태를 확인할 수 없습니다.', continuation_authority_unavailable: '현재 저장소는 안전한 계속 실행 소유권을 지원하지 않습니다.', resume_feature_disabled: '중단된 작업 계속 실행이 활성화되지 않았습니다.',
+    },
+  },
+};
+
+const RESUME_PARK_COPY = RESUME_PARK_COPY_BASE satisfies UiCatalog<ResumeParkCopy>;
 
 export function resumeParkToastCopy(reasons: readonly string[], locale: UiLocale): ResumeParkToastCopy {
   const copy = RESUME_PARK_COPY[locale];

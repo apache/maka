@@ -34,9 +34,9 @@ import {
 
 describe('UI locale', () => {
   it('accepts only the supported resolved locales and preferences', () => {
-    assert.equal(['zh-CN', 'zh-TW', 'en'].every(isUiLocale), true);
+    assert.equal(['zh-CN', 'zh-TW', 'en', 'ko'].every(isUiLocale), true);
     assert.equal(isUiLocale('zh'), false);
-    assert.equal(['auto', 'zh-CN', 'zh-TW', 'en'].every(isUiLocalePreference), true);
+    assert.equal(['auto', 'zh-CN', 'zh-TW', 'en', 'ko'].every(isUiLocalePreference), true);
   });
 
   it('normalizes the legacy persisted preference without widening the locale contract', () => {
@@ -54,6 +54,8 @@ describe('UI locale', () => {
     [['zh-HK'], 'zh-TW'],
     [['zh_MO'], 'zh-TW'],
     [['zh_TW.UTF-8'], 'zh-TW'],
+    [['ko-KR'], 'ko'],
+    [['ko_KR'], 'ko'],
     [['fr-FR', 'en-US'], 'en'],
     [[], 'en'],
   ] as const) {
@@ -66,6 +68,7 @@ describe('UI locale', () => {
     assert.equal(resolveUiLocale('auto', 'zh-TW'), 'zh-TW');
     assert.equal(resolveUiLocale('zh-CN', 'zh-TW'), 'zh-CN');
     assert.equal(resolveUiLocale('zh-CN', 'zh-CN', 'en'), 'en');
+    assert.equal(resolveUiLocale('auto', 'ko'), 'ko');
   });
 
   it('keeps every locale guard and formatter in step with UI_LOCALES', () => {
@@ -76,6 +79,7 @@ describe('UI locale', () => {
     }
     const intlLocales = UI_LOCALES.map(uiLocaleToIntlLocale);
     assert.equal(new Set(intlLocales).size, UI_LOCALES.length);
+    assert.equal(uiLocaleToIntlLocale('ko'), 'ko-KR');
   });
 });
 

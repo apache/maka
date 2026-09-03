@@ -59,9 +59,7 @@ export function buildRuntimeHostUpgradeDialog(
         : undefined;
   const canWait =
     availability === 'wait' ||
-    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service') ||
-    (availability === 'replace_may_interrupt_work' &&
-      conflict.registration.lifecycleMode === 'ephemeral');
+    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service');
   if (action) {
     choices.push({
       label: action === 'restart' ? copy.restart : copy.replace,
@@ -207,6 +205,28 @@ const UPGRADE_COPY = {
     activity: {
       goal: '目標', scheduledTask: '計劃任務', dailyReview: '每日回顧', execution: '活動執行',
       resource: 'Runtime 資源', graph: 'Agent Graph', other: '其他後臺活動',
+    },
+  },
+  ko: {
+    title: '이전 Runtime Host가 실행 중입니다',
+    message: '다른 Runtime Host 프로세스가 이 작업 공간을 사용하고 있습니다.',
+    restart: 'Runtime Host 다시 시작',
+    replace: 'Host 중지 후 계속',
+    wait: '대기',
+    cancel: '시작 취소',
+    uptime: (n: number) => `약 ${n}분 동안 실행됨`,
+    connections: (n: number) => `${n}개의 다른 클라이언트가 아직 연결되어 있습니다`,
+    operations: (n: number) => `${n}개의 작업이 실행 중입니다`,
+    idleNotVerified: '안전한 교체 확인 중 Host가 유휴 상태인지 확인할 수 없습니다.',
+    unknownActivity: '이 Host 버전은 백그라운드 활동을 보고할 수 없습니다.',
+    processId: (pid: number) => `프로세스 ID(PID): ${pid}`,
+    restartWarning: '다시 시작하면 영구 상태는 유지되지만 진행 중인 외부 작업이 중단될 수 있습니다.',
+    replaceWarning: '중지하면 영구 상태는 유지되지만 진행 중인 외부 작업이 중단될 수 있습니다.',
+    replaceExplanation: 'Maka가 이 Host를 중지하고 안전하게 교체한 후 시작을 계속합니다.',
+    exitOwner: (pid: number) => `이 Host를 안전하게 교체하려면 시스템 프로세스 관리자에서 프로세스 ${pid}를 종료하세요.`,
+    waitExplanation: '기다리면 이 Host가 종료된 후 Maka가 자동으로 계속합니다.',
+    activity: {
+      goal: '목표', scheduledTask: '예약된 작업', dailyReview: '일일 검토', execution: '활성 실행', resource: '런타임 리소스', graph: '에이전트 그래프', other: '기타 백그라운드 활동',
     },
   },
 } as const;

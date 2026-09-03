@@ -18,16 +18,12 @@
  */
 
 import type { SubagentProfile } from '@maka/core/subagent-settings';
-
 import type { ThinkingLevel } from '@maka/core/model-thinking';
-
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 type ProfileCopy = {
   label: string;
   description: string;
 };
-
 export type SubagentSettingsCopy = {
   section: {
     title: string;
@@ -98,26 +94,25 @@ export type SubagentSettingsCopy = {
   profiles: Record<SubagentProfile, ProfileCopy>;
   thinking: Record<ThinkingLevel, string>;
 };
-
-const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
+const SETTINGS_SUBAGENTS_COPY_BY_LOCALE_BASE = {
   'zh-CN': {
     section: {
       title: '已批准的子 Agent',
-      count: (total) => `共 ${total} 个配置`,
+      count: total => `共 ${total} 个配置`,
       add: '添加子 Agent',
       emptyTitle: '还没有子 Agent 配置',
-      emptyDescription: '添加一个配置后，主 Agent 就能把合适的任务交给独立模型处理。',
+      emptyDescription: '添加一个配置后，主 Agent 就能把合适的任务交给独立模型处理。'
     },
     row: {
       enabled: '启用',
-      configure: (name) => `配置“${name}”`,
-      fallbackDescription: '尚未填写适用场景',
+      configure: name => `配置“${name}”`,
+      fallbackDescription: '尚未填写适用场景'
     },
     status: {
       missingConnection: '连接不存在',
       providerRetired: '登录方式已移除 · 请改用其他连接',
       connectionDisabled: '连接已停用',
-      modelDisabled: '模型未启用',
+      modelDisabled: '模型未启用'
     },
     editor: {
       backToList: '返回子 Agent 列表',
@@ -148,29 +143,38 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       noConnection: '请先在“模型”页启用一个模型连接。',
       noModel: '所选连接没有已启用的模型。',
       requiredName: '请输入显示名称。',
-      invalidId: (max) => `只能使用字母、数字、点、下划线、冒号和连字符，最多 ${max} 个字符。`,
+      invalidId: max => `只能使用字母、数字、点、下划线、冒号和连字符，最多 ${max} 个字符。`,
       duplicateId: '这个 subagent_id 已经存在。',
       invalidConnection: '请选择一个已启用的模型连接。',
       invalidModel: '请选择一个已启用的模型。',
       cancel: '取消',
       create: '创建',
       save: '保存',
-      saving: '保存中…',
+      saving: '保存中…'
     },
     remove: {
-      title: (name) => `删除“${name}”？`,
+      title: name => `删除“${name}”？`,
       description: '主 Agent 将不再看到这个配置。已创建的子任务不会被删除。',
       confirm: '删除',
-      cancel: '取消',
+      cancel: '取消'
     },
     toast: {
       saveFailed: '保存子 Agent 配置失败',
-      rejected: '配置没有被保存。请确认名称长度和配置数量都在上限之内。',
+      rejected: '配置没有被保存。请确认名称长度和配置数量都在上限之内。'
     },
     profiles: {
-      local_read: { label: '代码阅读', description: '只读访问当前工作区，适合搜索、理解和总结代码。' },
-      web_research: { label: '网络研究', description: '只使用联网搜索，适合查找外部资料和最新信息。' },
-      implementation: { label: '实现代码', description: '可以读写文件并执行命令，在隔离 worktree 中完成改动。' },
+      local_read: {
+        label: '代码阅读',
+        description: '只读访问当前工作区，适合搜索、理解和总结代码。'
+      },
+      web_research: {
+        label: '网络研究',
+        description: '只使用联网搜索，适合查找外部资料和最新信息。'
+      },
+      implementation: {
+        label: '实现代码',
+        description: '可以读写文件并执行命令，在隔离 worktree 中完成改动。'
+      }
     },
     thinking: {
       off: '关闭',
@@ -179,8 +183,8 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       medium: '中',
       high: '高',
       xhigh: '超高',
-      max: '最大',
-    },
+      max: '最大'
+    }
   },
   'zh-TW': {
     section: {
@@ -267,21 +271,21 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
   en: {
     section: {
       title: 'Approved subagents',
-      count: (total) => `${total} presets`,
+      count: total => `${total} presets`,
       add: 'Add subagent',
       emptyTitle: 'No subagent presets yet',
-      emptyDescription: 'Add a preset so the main agent can delegate suitable work to a separate model.',
+      emptyDescription: 'Add a preset so the main agent can delegate suitable work to a separate model.'
     },
     row: {
       enabled: 'Enabled',
-      configure: (name) => `Configure “${name}”`,
-      fallbackDescription: 'No usage guidance yet',
+      configure: name => `Configure “${name}”`,
+      fallbackDescription: 'No usage guidance yet'
     },
     status: {
       missingConnection: 'Connection missing',
       providerRetired: 'Sign-in retired · route to another connection',
       connectionDisabled: 'Connection disabled',
-      modelDisabled: 'Model not enabled',
+      modelDisabled: 'Model not enabled'
     },
     editor: {
       backToList: 'Back to subagents',
@@ -312,29 +316,38 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       noConnection: 'Enable a model connection on the Models page first.',
       noModel: 'The selected connection has no enabled models.',
       requiredName: 'Enter a display name.',
-      invalidId: (max) => `Use only letters, numbers, dots, underscores, colons, and hyphens, up to ${max} characters.`,
+      invalidId: max => `Use only letters, numbers, dots, underscores, colons, and hyphens, up to ${max} characters.`,
       duplicateId: 'That subagent_id already exists.',
       invalidConnection: 'Select an enabled model connection.',
       invalidModel: 'Select an enabled model.',
       cancel: 'Cancel',
       create: 'Create',
       save: 'Save',
-      saving: 'Saving…',
+      saving: 'Saving…'
     },
     remove: {
-      title: (name) => `Remove “${name}”?`,
+      title: name => `Remove “${name}”?`,
       description: 'The main agent will no longer see this preset. Existing child tasks are not deleted.',
       confirm: 'Remove',
-      cancel: 'Cancel',
+      cancel: 'Cancel'
     },
     toast: {
       saveFailed: 'Failed to save subagent presets',
-      rejected: 'The preset was not saved. Check that its name length and the preset count are within their limits.',
+      rejected: 'The preset was not saved. Check that its name length and the preset count are within their limits.'
     },
     profiles: {
-      local_read: { label: 'Code reading', description: 'Read-only access to the current workspace for search, understanding, and summaries.' },
-      web_research: { label: 'Web research', description: 'Web search only, for external sources and current information.' },
-      implementation: { label: 'Implementation', description: 'Read and write files and run commands in an isolated worktree.' },
+      local_read: {
+        label: 'Code reading',
+        description: 'Read-only access to the current workspace for search, understanding, and summaries.'
+      },
+      web_research: {
+        label: 'Web research',
+        description: 'Web search only, for external sources and current information.'
+      },
+      implementation: {
+        label: 'Implementation',
+        description: 'Read and write files and run commands in an isolated worktree.'
+      }
     },
     thinking: {
       off: 'Off',
@@ -343,11 +356,104 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
       medium: 'Medium',
       high: 'High',
       xhigh: 'Extra high',
-      max: 'Maximum',
+      max: 'Maximum'
+    }
+  }
+} satisfies Omit<UiCatalog<SubagentSettingsCopy>, 'ko'>;
+const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
+  ...SETTINGS_SUBAGENTS_COPY_BY_LOCALE_BASE,
+  ko: {
+    section: {
+      title: "승인된 하위 에이전트",
+      count: total => `${total} 사전 설정`,
+      add: "하위 에이전트 추가",
+      emptyTitle: "아직 하위 에이전트 사전 설정이 없습니다.",
+      emptyDescription: "주체가 적절한 작업을 별도의 모델에 위임할 수 있도록 사전 설정을 추가합니다."
     },
-  },
+    row: {
+      enabled: "활성화됨",
+      configure: name => `"${name}" 구성`,
+      fallbackDescription: "아직 이용안내가 없습니다."
+    },
+    status: {
+      missingConnection: "연결이 누락되었습니다.",
+      providerRetired: "로그인이 종료됨 · 다른 연결로 라우팅",
+      connectionDisabled: "연결이 비활성화되었습니다.",
+      modelDisabled: "모델이 활성화되지 않았습니다."
+    },
+    editor: {
+      backToList: "하위 에이전트로 돌아가기",
+      createSubtitle: "주체가 자동으로 선택할 수 있는 모델 프리셋을 생성합니다.",
+      editSubtitle: "사용 지침, 기능 경계 및 모델 경로를 변경합니다.",
+      groupPurpose: "목적",
+      groupPurposeHelp: "주체는 주로 여기의 이름과 안내에서 프리셋을 선택합니다.",
+      groupRoute: "기능 및 모델",
+      groupRouteHelp: "이 하위 에이전트가 수행할 수 있는 작업과 실행되는 모델을 수정합니다.",
+      dangerZone: "하위 에이전트 제거",
+      dangerZoneHelp: "이 작업은 취소할 수 없습니다.",
+      delete: "제거하다",
+      enabled: "활성화됨",
+      enabledDescription: "주 상담원이 선택하지 않고 프리셋을 유지하려면 이 기능을 끄세요.",
+      name: "표시 이름",
+      namePlaceholder: "빠른 코드 리더",
+      id: 'subagent_id',
+      idDescription: "생성 후 안정적입니다. 기본 에이전트와 작업 기록은 이를 사용하여 이 사전 설정을 식별합니다.",
+      idPlaceholder: 'fast-reader',
+      description: "언제 사용하나요?",
+      descriptionPlaceholder: "대규모 저장소를 빠르고 저렴하게 탐색",
+      profile: "기능 프로필",
+      connection: "모델 연결",
+      model: "모델",
+      thinking: "사고 수준",
+      defaultThinking: "모델 기본값 사용",
+      implementationWarning: "구현 프로필은 격리된 작업 트리 내에서 파일을 작성하고 명령을 실행할 수 있습니다.",
+      noConnection: "먼저 모델 페이지에서 모델 연결을 활성화하세요.",
+      noModel: "선택한 연결에는 활성화된 모델이 없습니다.",
+      requiredName: "표시 이름을 입력하세요.",
+      invalidId: max => `최대 ${max}자까지 문자, 숫자, 점, 밑줄, 콜론, 하이픈만 사용하세요.`,
+      duplicateId: "해당 subagent_id가 이미 존재합니다.",
+      invalidConnection: "활성화된 모델 연결을 선택합니다.",
+      invalidModel: "활성화된 모델을 선택하세요.",
+      cancel: "취소",
+      create: "만들다",
+      save: "구하다",
+      saving: "절약…"
+    },
+    remove: {
+      title: name => `'${name}'을 삭제하시겠습니까?`,
+      description: "주 상담원은 더 이상 이 사전 설정을 볼 수 없습니다. 기존 하위 작업은 삭제되지 않습니다.",
+      confirm: "제거하다",
+      cancel: "취소"
+    },
+    toast: {
+      saveFailed: "하위 에이전트 사전 설정을 저장하지 못했습니다.",
+      rejected: "사전 설정이 저장되지 않았습니다. 이름 길이와 사전 설정 개수가 한도 내에 있는지 확인하세요."
+    },
+    profiles: {
+      local_read: {
+        label: "코드 판독",
+        description: "검색, 이해 및 요약을 위한 현재 작업공간에 대한 읽기 전용 액세스입니다."
+      },
+      web_research: {
+        label: "웹 조사",
+        description: "외부 소스 및 최신 정보에 대한 웹 검색만 가능합니다."
+      },
+      implementation: {
+        label: "구현",
+        description: "격리된 작업 트리에서 파일을 읽고 쓰고 명령을 실행합니다."
+      }
+    },
+    thinking: {
+      off: "끄다",
+      minimal: "최소한의",
+      low: "낮은",
+      medium: "중간",
+      high: "높은",
+      xhigh: "매우 높음",
+      max: "최고"
+    }
+  }
 } satisfies UiCatalog<SubagentSettingsCopy>;
-
 export function getSubagentSettingsCopy(locale: UiLocale): SubagentSettingsCopy {
   return SETTINGS_SUBAGENTS_COPY_BY_LOCALE[locale];
 }
