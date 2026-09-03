@@ -1285,25 +1285,32 @@ function assertEveryFormAnswerFitsCanonicalOutcome(request: InteractionFormReque
 
 function formFieldMaximumEnvelope(field: InteractionFormField): InteractionFormValue {
   if (field.kind === 'string') {
-    const maximumCodePoints = Math.min(
-      field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES,
-      Math.floor(INTERACTION_FORM_VALUE_MAX_BYTES / 4),
-    );
-    return '😀'.repeat(maximumCodePoints);
+    // Admission must prove every legal answer serializes. String values keep
+    // their schema semantics — maxLength in code points, raw UTF-8 bytes
+    // bounded at INTERACTION_FORM_VALUE_MAX_BYTES — while enforcement measures
+    // post-serialization bytes, where JSON escaping inflates a code point to
+    // as much as six bytes (backslash, quote, newline, control characters).
+    // The worst legal value is therefore all control characters: one code
+    // point and one raw byte each, six serialized bytes after escaping.
+    return ''.repeat(field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES);
   }
   if (field.kind === 'number' || field.kind === 'integer') return -1.7976931348623157e308;
   if (field.kind === 'boolean') return false;
   if (field.kind === 'single_select') {
     return field.options.reduce(
       (longest, option) =>
-        Buffer.byteLength(option.value) > Buffer.byteLength(longest) ? option.value : longest,
+        serializedByteLength(option.value) > serializedByteLength(longest) ? option.value : longest,
       field.options[0]!.value,
     );
   }
   return [...field.options]
-    .sort((left, right) => Buffer.byteLength(right.value) - Buffer.byteLength(left.value))
+    .sort((left, right) => serializedByteLength(right.value) - serializedByteLength(left.value))
     .slice(0, field.maxItems ?? field.options.length)
     .map((option) => option.value);
+}
+
+function serializedByteLength(value: string): number {
+  return UTF8.encode(JSON.stringify(value)).byteLength;
 }
 
 function assertAcceptedFormAnswerFitsCanonicalOutcome(

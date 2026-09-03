@@ -1233,6 +1233,7 @@ describe('Interaction decoding and validity', () => {
           required: false,
           default: 'password=secret@example.test',
           format: 'email',
+          maxLength: 512,
         },
         {
           kind: 'string',
@@ -1241,6 +1242,7 @@ describe('Interaction decoding and validity', () => {
           required: false,
           default: 'owner@example.test',
           format: 'email',
+          maxLength: 512,
         },
       ],
     });
@@ -1435,6 +1437,92 @@ describe('Interaction decoding and validity', () => {
           })),
         }),
       /Interaction form (answer|outcome) exceeds serialized byte limit/,
+    );
+  });
+
+  test('reserves the worst-case escaped answer envelope at admission', () => {
+    // String constraints keep their schema semantics — maxLength in code
+    // points, raw UTF-8 bytes bounded per value — so admission must prove that
+    // even a fully JSON-escaped legal answer still fits the canonical
+    // envelope. A form whose limits allow an undeliverable answer is rejected
+    // instead of stranding the pending interaction after the user submits.
+    const stringField = (name: string, maxLength?: number) => ({
+      kind: 'string' as const,
+      name,
+      label: name,
+      required: true,
+      ...(maxLength === undefined ? {} : { maxLength }),
+    });
+    for (const fields of [
+      [stringField('a', 2_048), stringField('b', 2_048)],
+      [stringField('loose')],
+    ]) {
+      assert.throws(
+        () =>
+          projectInteractionFormRequest({
+            toolUseId: 'tool-form',
+            message: 'Enter required values',
+            requester: { name: 'deploy' },
+            fields,
+          }),
+        /Interaction form (answer|outcome) exceeds serialized byte limit/,
+      );
+    }
+
+    // A form whose escaped worst case fits stays admissible, and its
+    // escape-heavy legal answers — backslashes, newlines, control characters —
+    // decode and deliver.
+    const request = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Enter a value',
+      requester: { name: 'deploy' },
+      fields: [stringField('value', 1_024)],
+    });
+    for (const heavy of ['\\'.repeat(1_024), '\n'.repeat(1_024), '\u0001'.repeat(1_024)]) {
+      const answer = {
+        kind: 'form' as const,
+        action: 'accept' as const,
+        values: { value: heavy },
+      };
+      assert.equal(isInteractionAnswerValidForRequest(request, answer), true);
+      decodeInteractionAnswer(answer);
+    }
+
+    // The displayed character constraint keeps its meaning: 2,048 plain
+    // characters or 1,024 backslashes satisfy a maxLength: 2_048 field.
+    const wideField = stringField('wide', 2_048);
+    assert.equal(isInteractionFormFieldValueValid(wideField, 'a'.repeat(2_048)), true);
+    assert.equal(isInteractionFormFieldValueValid(wideField, '\\'.repeat(1_024)), true);
+
+    // Select envelopes are measured in the serialized domain too: the
+    // raw-longest option is not always the serialized-longest one.
+    const options = [
+      { value: 'a'.repeat(1_200), label: 'Plain' },
+      { value: '\\'.repeat(1_000), label: 'Escaped' },
+    ];
+    const selectFields = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        kind: 'single_select' as const,
+        name: `select-${index}`,
+        label: `Select ${index}`,
+        required: true,
+        options,
+      }));
+    assert.throws(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Pick five values',
+        requester: { name: 'deploy' },
+        fields: selectFields(5),
+      }),
+    );
+    assert.doesNotThrow(() =>
+      projectInteractionFormRequest({
+        toolUseId: 'tool-form',
+        message: 'Pick three values',
+        requester: { name: 'deploy' },
+        fields: selectFields(3),
+      }),
     );
   });
 
