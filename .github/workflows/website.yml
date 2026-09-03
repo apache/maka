@@ -51,7 +51,7 @@ concurrency:
 jobs:
   publish:
     # Release tags publish nothing; only release candidates are staged.
-    if: github.event_name != 'push' || github.ref_type == 'branch' || contains(github.ref_name, 'rc')
+    if: github.event_name != 'push' || github.ref_type == 'branch' || contains(github.ref_name, '-rc')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
@@ -81,8 +81,11 @@ jobs:
             branch="site/$(printf '%s' "$STAGE" | tr -c 'a-z0-9' '-')-staging"
           elif [[ "$GITHUB_REF_TYPE" == tag ]]; then
             branch="site/$(printf '%s' "$GITHUB_REF_NAME" | tr '._' '--')-staging"
-          else
+          elif [[ "$GITHUB_REF" == refs/heads/main ]]; then
             branch=asf-site
+          else
+            echo "::error::Only main publishes to maka.apache.org; give a stage name to stage $GITHUB_REF_NAME instead."
+            exit 1
           fi
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
@@ -91,8 +94,10 @@ jobs:
           BRANCH: ${{ steps.target.outputs.branch }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cp .asf.yaml LICENSE NOTICE website/dist/
+          cp LICENSE NOTICE website/dist/
           cd website/dist
+          # Only the site settings: repository settings in .asf.yaml are read from main alone.
+          printf 'publish:\n  whoami: asf-site\n\nstaging:\n  profile: ~\n  autostage: site/*\n' > .asf.yaml
           git init -q -b "$BRANCH"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
