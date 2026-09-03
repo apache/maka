@@ -547,24 +547,25 @@ test('rolls back only candidate-owned IPC after a registration collision', async
 test('closes the claimed Host connection when native capability construction fails', async () => {
   const ipc = ipcHarness();
   const host = connectionHarness('invalid-capability');
-  const invalidTool = {
-    ...nativeTool(),
-    parameters: z.string(),
-  } as unknown as MakaTool;
 
+  // A native-capability construction failure must still tear down the claimed
+  // Host connection. A tool whose *schema* is unrepresentable no longer fails
+  // construction — it is skipped and warned per-tool so one bad tool cannot
+  // drop every Desktop capability (see runtime-host-native-capabilities.test.ts)
+  // — so trigger a genuine construction error: two tools colliding on one name.
   await assert.rejects(
     () =>
       createDesktopRuntimeHostCandidate(
         host.connection,
         deps(ipc, {
-          browserTools: [invalidTool],
+          browserTools: [nativeTool(), nativeTool()],
           resolveBrowserUrl: () => 'https://example.com/',
           releaseBrowserSession() {},
           computerUseTools: emptyComputerUseTools(),
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    /Duplicate Desktop native capability tool/,
   );
 
   assert.equal(ipc.size, 0);
