@@ -97,6 +97,9 @@ code {
   align-items: center;
   gap: 4px;
 }
+.nav > * {
+  flex-shrink: 0;
+}
 .nav .brand {
   display: flex;
   align-items: center;
@@ -144,6 +147,7 @@ code {
   overflow: hidden;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
 }
 .lang a,
 .lang span {
@@ -1002,6 +1006,13 @@ h2 {
 @media (max-width: 720px) {
   .wrap {
     padding: 0 20px;
+  }
+  .nav .btn {
+    display: none;
+  }
+  .nav .brand,
+  .nav .theme {
+    margin-right: 0;
   }
   .hero {
     padding-top: 40px;
