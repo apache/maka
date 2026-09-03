@@ -4630,15 +4630,7 @@ export class SessionManager {
   ): Promise<boolean> {
     if (!this.deps.runStore || !this.deps.runtimeEventStore) return false;
     const ts = this.deps.now();
-    const terminalLedger = classifyTerminalRuntimeLedger(
-      inspected.invocation,
-      inspected.runtimeEvents,
-    );
-    const existingTerminal =
-      inspected.terminalRuntimeFact?.terminalEvent ??
-      (terminalLedger.kind === 'incomplete_single_terminal'
-        ? terminalLedger.terminalEvent
-        : undefined);
+    const existingTerminal = inspected.terminalRuntimeFact?.terminalEvent;
     const status = existingTerminal
       ? (terminalRunStatusFromRuntimeEvent(existingTerminal) ?? decision.status)
       : decision.status;

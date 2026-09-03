@@ -44,11 +44,6 @@ export type TerminalRuntimeLedgerClassification =
       terminalEvents: readonly RuntimeEvent[];
     }
   | {
-      kind: 'incomplete_single_terminal';
-      terminalEvent: RuntimeEvent;
-      terminalEvents: readonly RuntimeEvent[];
-    }
-  | {
       kind: 'ambiguous';
       terminalEvents: readonly RuntimeEvent[];
     };
@@ -69,11 +64,9 @@ export function classifyTerminalRuntimeLedger(
   if (fact) {
     return { kind: 'fact', fact, terminalEvents };
   }
-  return {
-    kind: 'incomplete_single_terminal',
-    terminalEvent: terminalEvents[0]!,
-    terminalEvents,
-  };
+  // The one terminal event carries no terminal status, so it ends the stream
+  // without ending the run.
+  return { kind: 'none', terminalEvents };
 }
 
 export interface CommitTerminalRunWithRuntimeFactInput extends RunIdentity {

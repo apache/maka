@@ -592,17 +592,21 @@ export function classifyRuntimeEventTerminalFact(
     return { fact, diagnostics };
   }
 
+  // A terminal event is the run's ending, and it is immutable once written, so
+  // an omitted failure class or abort source is a detail nobody can ever supply
+  // afterwards. Withholding the fact over it would only leave the reader with a
+  // run that ended and no way to say so; the omission is worth a diagnostic, not
+  // a refusal.
   if (terminalEvent.status === 'failed') {
     const failureClass = failureClassFromRuntimeEvent(terminalEvent);
     if (!failureClass) {
       diagnostics.push(
         readModelDiagnostic(
           'incomplete_event',
-          'failed terminal RuntimeEvent requires a stable failure class',
+          'failed terminal RuntimeEvent states no failure class',
           terminalEvent,
         ),
       );
-      return { diagnostics };
     }
     const fact: RuntimeEventTerminalFact = {
       runId: invocation.runId,
@@ -610,7 +614,7 @@ export function classifyRuntimeEventTerminalFact(
       runStatus: 'failed',
       turnStatus: 'failed',
       terminalEvent,
-      failureClass,
+      failureClass: failureClass ?? 'unknown',
       diagnostics,
     };
     return { fact, diagnostics };
@@ -621,11 +625,10 @@ export function classifyRuntimeEventTerminalFact(
     diagnostics.push(
       readModelDiagnostic(
         'incomplete_event',
-        'aborted terminal RuntimeEvent requires an abort source',
+        'aborted terminal RuntimeEvent states no abort source',
         terminalEvent,
       ),
     );
-    return { diagnostics };
   }
   const fact: RuntimeEventTerminalFact = {
     runId: invocation.runId,
@@ -633,7 +636,7 @@ export function classifyRuntimeEventTerminalFact(
     runStatus: 'cancelled',
     turnStatus: 'aborted',
     terminalEvent,
-    abortSource,
+    abortSource: abortSource ?? 'unknown',
     diagnostics,
   };
   return { fact, diagnostics };
@@ -1202,22 +1205,9 @@ function projectTerminalTurnState(
       kind: 'step_limit',
     });
   }
-  if (status === 'failed' && !failureClass) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'failed terminal event did not carry an exact failure class',
-    );
-  }
-  if (status === 'aborted' && !abortSource) {
-    diagnostic(
-      state,
-      event,
-      'incomplete_event',
-      'abortSource is not present in the terminal RuntimeEvent',
-    );
-  }
+  // An omitted failure class or abort source is `classifyRuntimeEventTerminalFact`'s
+  // observation to make. Repeating it here would only turn a transcript row that
+  // already reads `unknown` into an unreadable Session.
   return true;
 }
 

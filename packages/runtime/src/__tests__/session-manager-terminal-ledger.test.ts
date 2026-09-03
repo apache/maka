@@ -257,6 +257,7 @@ describe('SessionManager terminal ledger invariants', () => {
     });
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
@@ -331,6 +332,7 @@ describe('SessionManager terminal ledger invariants', () => {
     backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
@@ -370,6 +372,7 @@ describe('SessionManager terminal ledger invariants', () => {
     backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
@@ -401,6 +404,7 @@ describe('SessionManager terminal ledger invariants', () => {
     backends.register('ai-sdk', (ctx) => new NeverEndingBackend(ctx));
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
@@ -441,6 +445,7 @@ describe('SessionManager terminal ledger invariants', () => {
     );
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends,
       newId: nextId(),
@@ -481,6 +486,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(22_000),
@@ -540,6 +546,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(23_000),
@@ -609,11 +616,15 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(24_000),
       hooks: inertAgentRunHooks(store),
     });
+    // The run is driven past its start here, so open its invocation the way
+    // starting it would have.
+    await seedOpening(runStore, { sessionId: session.id, runId: run.runId, turnId: run.turnId });
 
     // A tool fact is what a damaged ledger refuses.
     await assert.rejects(
@@ -677,6 +688,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(24_100),
@@ -718,6 +730,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId,
       now: nextNow(24_200),
@@ -754,6 +767,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-2', text: 'again' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId,
       now: nextNow(24_300),
@@ -816,6 +830,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(23_000),
@@ -917,14 +932,14 @@ describe('SessionManager terminal ledger invariants', () => {
         ts: 3,
         terminalEvent: partialTerminal,
       }),
-      /terminal RuntimeEvent must be final before terminal run header/,
+      /terminal RuntimeEvent must be final before it is committed/,
     );
     assert.strictEqual(await runOutcome(runStore, run.sessionId, run.runId), undefined);
   });
 
-  test('synthetic cancelled terminal commits the fallback abortSource to the run header', async () => {
+  test('a synthetic cancelled terminal carries the fallback abortSource', async () => {
     const runStore = new TinyAgentRunStore();
-    const run = makeRunIdentity();
+    const run = await seedOpening(runStore, makeRunIdentity());
 
     await commitOrCreateTerminalRunFact({
       runtimeEventStore: runStore,
@@ -1113,6 +1128,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(30_000),
@@ -1164,6 +1180,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(41_000),
@@ -1207,6 +1224,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(41_250),
@@ -1268,6 +1286,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(41_500),
@@ -1305,10 +1324,6 @@ describe('SessionManager terminal ledger invariants', () => {
     releaseTerminalAppend.resolve();
     await Promise.all([settled, finalized]);
 
-    const runEvents = (await runStore.readEvents(session.id, run.runId)).filter(
-      (event) => event.type === 'run_cancelled',
-    );
-    assert.strictEqual(runEvents.length, 1);
     const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
       isTerminalRuntimeEvent,
     );
@@ -1327,6 +1342,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(41_700),
@@ -1389,6 +1405,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(41_900),
@@ -1466,6 +1483,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(42_000),
@@ -1532,7 +1550,7 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.abortSource, 'renderer.stop_button');
   });
 
-  test('stop settlement probes a latched run store instead of skipping the header commit', async () => {
+  test('stop settlement probes a latched run store instead of skipping the terminal commit', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const session = await store.create(makeInput());
@@ -1544,6 +1562,7 @@ describe('SessionManager terminal ledger invariants', () => {
       header: session,
       userInput: { turnId: 'turn-1', text: 'hello' },
       store,
+      runStore,
       runtimeEventStore: runStore,
       newId: nextId(),
       now: nextNow(42_100),
@@ -1571,7 +1590,7 @@ describe('SessionManager terminal ledger invariants', () => {
     await run.begin();
     // One best-effort trace append failure latches the Run store. Nothing
     // surfaces to the user, which is what made the pre-fix behaviour a
-    // silent stop success: commitTerminalRun skips under the latch and the
+    // silent stop success: the terminal commit skips under the latch and the
     // run stays non-terminal with no error to retry on.
     runStore.failNextRunEventAppends = 1;
     run.recordRunTrace({
@@ -1594,10 +1613,6 @@ describe('SessionManager terminal ledger invariants', () => {
     );
     assert.strictEqual(terminalEvents.length, 1);
     assert.strictEqual(terminalEvents[0]?.status, 'aborted');
-    const cancelled = (await runStore.readEvents(session.id, run.runId)).filter(
-      (event) => event.type === 'run_cancelled',
-    );
-    assert.strictEqual(cancelled.length, 1);
   });
 
   test('Runtime execution still commits failed terminal facts when failed turn projection fails', async () => {
@@ -1621,11 +1636,12 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.failureClass, 'tool_failed');
   });
 
-  test('startup recovery reuses an incomplete existing terminal RuntimeEvent instead of appending another', async () => {
+  test('startup recovery leaves a failed terminal RuntimeEvent that states no failure class alone', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
       newId: nextId(),
@@ -1665,7 +1681,9 @@ describe('SessionManager terminal ledger invariants', () => {
 
     const invocation = await readInvocation(runStore, session.id, run.runId);
     assert.strictEqual(runtimeInvocationOutcome(invocation), 'failed');
-    assert.strictEqual(runtimeInvocationFailureClass(invocation), 'app_restarted');
+    // The run already ended, and its ending is immutable, so recovery has
+    // nothing to attribute and no second record to attribute it to.
+    assert.strictEqual(runtimeInvocationFailureClass(invocation), undefined);
     const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
       isTerminalRuntimeEvent,
     );
@@ -1675,14 +1693,15 @@ describe('SessionManager terminal ledger invariants', () => {
       runtimeEventStore: runStore,
     }).getSessionView(session.id);
     assert.strictEqual(view.terminalFacts.length, 1);
-    assert.strictEqual(view.terminalFacts[0]?.failureClass, 'app_restarted');
+    assert.strictEqual(view.terminalFacts[0]?.failureClass, 'unknown');
   });
 
-  test('startup recovery completes an existing aborted terminal RuntimeEvent without appending another', async () => {
+  test('startup recovery leaves an aborted terminal RuntimeEvent that states no source alone', async () => {
     const store = new TinySessionStore();
     const runStore = new TinyAgentRunStore();
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
       newId: nextId(),
@@ -1733,13 +1752,16 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(view.terminalFacts[0]?.abortSource, 'unknown');
   });
 
-  test('RuntimeReadModel reads a non-terminal header when a terminal RuntimeEvent fact exists', async () => {
+  test('RuntimeReadModel reads a run outcome off its terminal RuntimeEvent fact', async () => {
     const runStore = new TinyAgentRunStore();
-    const run = makeRunIdentity({
-      sessionId: 'session-read-model',
-      runId: 'run-read-model',
-      turnId: 'turn-read-model',
-    });
+    const run = await seedOpening(
+      runStore,
+      makeRunIdentity({
+        sessionId: 'session-read-model',
+        runId: 'run-read-model',
+        turnId: 'turn-read-model',
+      }),
+    );
     await runStore.appendRuntimeEvent(
       run.sessionId,
       run.runId,
@@ -1924,13 +1946,16 @@ describe('SessionManager terminal ledger invariants', () => {
     );
   });
 
-  test('RuntimeReadModel rejects terminal headers when the ledger has no valid terminal fact', async () => {
+  test('RuntimeReadModel rejects a run whose ledger has no valid terminal fact', async () => {
     const runStore = new TinyAgentRunStore();
-    const run = makeRunIdentity({
-      sessionId: 'session-ambiguous-terminal-read',
-      runId: 'run-ambiguous-terminal-read',
-      turnId: 'turn-ambiguous-terminal-read',
-    });
+    const run = await seedOpening(
+      runStore,
+      makeRunIdentity({
+        sessionId: 'session-ambiguous-terminal-read',
+        runId: 'run-ambiguous-terminal-read',
+        turnId: 'turn-ambiguous-terminal-read',
+      }),
+    );
     await runStore.appendRuntimeEvent(
       run.sessionId,
       run.runId,
@@ -1983,6 +2008,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const runStore = new TinyAgentRunStore();
     const manager = new SessionManager({
       store,
+      runStore,
       runtimeEventStore: runStore,
       backends: new BackendRegistry(),
       newId: nextId(),
@@ -2075,6 +2101,7 @@ async function makeHarness(
   backends.register('ai-sdk', (ctx) => new ScriptBackend(ctx, events));
   const manager = new SessionManager({
     store,
+    runStore,
     runtimeEventStore: runStore,
     backends,
     newId: nextId(),
@@ -2583,10 +2610,13 @@ function isToolLedgerBearingEvent(event: RuntimeEvent): boolean {
 }
 
 function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
+  const runId = overrides.runId ?? 'run-1';
   return {
     id: 'rt-event',
-    invocationId: 'inv-1',
-    runId: 'run-1',
+    // One invocation per run here, named by it, exactly as `seedOpening` opens
+    // it and as a run with no explicit invocation id names its own.
+    invocationId: runId,
+    runId,
     sessionId: 'session-1',
     turnId: 'turn-1',
     ts: 2,
