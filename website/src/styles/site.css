@@ -909,9 +909,3 @@ h2 {
     font-size: 32px;
   }
 }
-@media (prefers-reduced-motion: no-preference) {
-  .btn,
-  .nav .links a {
-    transition: background-color 120ms ease;
-  }
-}
