@@ -9,7 +9,7 @@
     "preview": "astro preview",
     "test:dist": "astro build && node --test test/site.test.mjs"
   },
-  "dependencies": {
+  "devDependencies": {
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
     "astro": "^7.2.10"
