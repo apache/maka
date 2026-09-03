@@ -114,9 +114,14 @@ export function createSessionSnapshot(
       const prefixLength = formatSnapshotItem({ ...candidate, text: '' }).length;
       const contentBudget = Math.max(0, available - prefixLength);
       if (contentBudget > 0) {
+        const text = sliceAtCodePointBoundary(candidate.text, contentBudget).trimEnd();
+        if (!text) {
+          truncated = true;
+          break;
+        }
         selected.push({
           ...candidate,
-          text: candidate.text.slice(0, contentBudget).trimEnd(),
+          text,
         });
         usedChars = maxChars;
       }
@@ -127,7 +132,7 @@ export function createSessionSnapshot(
   if (selected.length < candidates.length) truncated = true;
   selected.reverse();
 
-  const text = selected.map(formatSnapshotItem).join('\n\n').slice(0, maxChars);
+  const text = sliceAtCodePointBoundary(selected.map(formatSnapshotItem).join('\n\n'), maxChars);
   return {
     reference: {
       sessionId: options.sessionId,
@@ -156,6 +161,13 @@ export function sessionSnapshotToQuote(snapshot: SessionSnapshot): QuoteRef {
 
 function formatSnapshotItem(item: Pick<SessionSnapshotItem, 'role' | 'text'>): string {
   return `${item.role === 'user' ? 'User' : 'Assistant'}: ${item.text}`;
+}
+
+/** Keep a UTF-16 slice from ending between the halves of a surrogate pair. */
+function sliceAtCodePointBoundary(value: string, maxCodeUnits: number): string {
+  const sliced = value.slice(0, maxCodeUnits);
+  const last = sliced.charCodeAt(sliced.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? sliced.slice(0, -1) : sliced;
 }
 
 function clampPositiveInteger(value: number, min: number, max: number): number {

@@ -33,6 +33,10 @@ export function useComposerQuotes(options: { readonly draftKey: string }) {
   const pendingByKeyRef = useRef<PendingQuotes>({});
   const bucket = pendingByKeyRef.current[options.draftKey] ??
     (pendingByKeyRef.current[options.draftKey] = []);
+  // This is intentionally a live bucket so a same-tick send can observe a
+  // snapshot selected before React commits the state update. Consumers must
+  // read its contents, not use the array identity as a useMemo/useEffect
+  // dependency; the identity is stable while the bucket is mutated in place.
   const pendingQuotes = pendingByKey[options.draftKey] ?? bucket;
 
   const publish = useCallback((): void => {

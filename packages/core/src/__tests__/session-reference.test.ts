@@ -122,3 +122,27 @@ test('does not emit a partial role prefix when no content fits', () => {
   assert.equal(snapshot.text, '');
   assert.equal(snapshot.truncated, true);
 });
+
+test('does not split an emoji when truncating the first item', () => {
+  const snapshot = createSessionSnapshot([user('last', 'a😀b')], {
+    sessionId: 'session-source',
+    sessionName: 'Unicode boundary',
+    maxChars: 8,
+  });
+
+  assert.equal(snapshot.text, 'User: a');
+  assert.equal(snapshot.items[0]?.text, 'a');
+  assert.equal([...snapshot.text].join(''), snapshot.text);
+});
+
+test('does not emit a partial role prefix when an emoji cannot fit', () => {
+  const snapshot = createSessionSnapshot([user('last', '😀')], {
+    sessionId: 'session-source',
+    sessionName: 'Joined boundary',
+    maxChars: 7,
+  });
+
+  assert.equal(snapshot.text, '');
+  assert.deepEqual(snapshot.items, []);
+  assert.equal([...snapshot.text].join(''), snapshot.text);
+});
