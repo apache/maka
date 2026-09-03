@@ -513,6 +513,14 @@ h2 {
 }
 
 /* Leaderboard as rows */
+/* The tile's height comes from the two tiles beside it, so the table stretches its rows to fill
+   whatever the copy above it leaves over. */
+.tile.r2 .fig,
+.lb {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
 .lb {
   background: var(--surface-raised);
   border-radius: var(--radius-container);
@@ -520,6 +528,7 @@ h2 {
   border: 1px solid var(--border);
 }
 .lb .row {
+  flex: 1;
   display: grid;
   grid-template-columns: 22px 96px 1fr 58px;
   gap: 10px;
