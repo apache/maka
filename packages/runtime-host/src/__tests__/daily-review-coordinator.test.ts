@@ -198,12 +198,14 @@ test('Daily Review joins an in-flight generation even when its own reads land la
         modelKeyOverride: 'provider::model-a',
         replaceExisting: true,
       };
-      // Two Clients ask for the same archive at once. Whichever finishes first
+      // Two Clients ask for the same archive at once. Whichever settles first
       // releases the other's lagging read, so the laggard only reaches its own
-      // bookkeeping after the leader has already published.
+      // bookkeeping after the leader has already published. A rejected leader
+      // releases it too; otherwise close() would wait on the laggard forever.
       const first = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
       const second = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
-      void Promise.race([first, second]).then(() => releaseLaggingRead?.());
+      const release = () => releaseLaggingRead?.();
+      void Promise.race([first, second]).then(release, release);
       const [firstResult, secondResult] = await Promise.all([first, second]);
       assert.equal(modelCalls, 1);
       assert.deepEqual(secondResult, firstResult);

@@ -290,7 +290,9 @@ export class HostDailyReviewCoordinator {
     // Claim the archive before the first await. Two Clients asking for the
     // same archive at once share one generation; a claim taken only after the
     // reads let the second request slip past a first that had already
-    // published, and each Client then saw its own archive.
+    // published, and each Client then saw its own archive. Requests match on
+    // the override they asked for, not the resolved model key: resolving it
+    // needs the config read, which would put the claim back after an await.
     const inFlight = this.#inFlight.get(archiveId);
     if (inFlight) {
       if (inFlight.modelKeyOverride !== modelKeyOverride || inFlight.trigger !== input.trigger) {
