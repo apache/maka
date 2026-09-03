@@ -23,6 +23,11 @@ export interface RuntimeHostCollaborationScope {
   readonly collaborationAuthority?: boolean;
 }
 
+export interface RuntimeHostPendingTurnRequestQuery {
+  readonly requests: readonly SessionTurnAccessRequest[];
+  readonly authorityUnavailable?: true;
+}
+
 export function retainRuntimeHostCollaborationAuthority(
   observed: boolean | undefined,
   previous: boolean | undefined,
@@ -35,6 +40,22 @@ export function selectRuntimeHostCollaborationScopes<T extends RuntimeHostCollab
   scopes: readonly T[],
 ): T[] {
   return scopes.filter((scope) => scope.collaborationAuthority !== false);
+}
+
+export async function collectPendingTurnRequestsWithCapabilityCache<T>(
+  scopes: readonly T[],
+  collaborationAuthority: (scope: T) => boolean | undefined,
+  query: (scope: T) => Promise<RuntimeHostPendingTurnRequestQuery>,
+  markAuthorityUnavailable: (scope: T) => void,
+): Promise<SessionTurnAccessRequest[]> {
+  const eligibleScopes = scopes.filter((scope) => collaborationAuthority(scope) !== false);
+  return collectAvailablePendingTurnRequests(
+    eligibleScopes.map(async (scope) => {
+      const result = await query(scope);
+      if (result.authorityUnavailable) markAuthorityUnavailable(scope);
+      return result.requests;
+    }),
+  );
 }
 
 export async function collectAvailablePendingTurnRequests(

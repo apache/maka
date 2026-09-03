@@ -130,9 +130,8 @@ import {
   type RuntimeHostSessionCatalogCoverage,
 } from './runtime-host-session-catalog.js';
 import {
-  collectAvailablePendingTurnRequests,
+  collectPendingTurnRequestsWithCapabilityCache,
   retainRuntimeHostCollaborationAuthority,
-  selectRuntimeHostCollaborationScopes,
 } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
@@ -1495,31 +1494,31 @@ const makaBridge = {
       );
     },
     async getPendingTurnRequests() {
-      const scopes = selectRuntimeHostCollaborationScopes(
-        (await runtimeHostScopeList()).flatMap((scope) => {
-          const metadata = runtimeHostMetadataFor(scope);
-          return metadata?.profileAccess === 'owner'
-            ? [{ scope, collaborationAuthority: metadata.collaborationAuthority }]
-            : [];
-        }),
-      ).map(({ scope }) => scope);
-      return collectAvailablePendingTurnRequests(
-        scopes.map(async (scope) => {
+      const scopes = (await runtimeHostScopeList()).filter(
+        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+      );
+      return collectPendingTurnRequestsWithCapabilityCache(
+        scopes,
+        (scope) => runtimeHostMetadataFor(scope)?.collaborationAuthority,
+        async (scope) => {
           const result = await ipcRenderer.invoke(
             'session-collaboration:turn-request:query',
             scope,
           ) as CollaborationTurnRequestQueryResult & { authorityUnavailable?: true };
-          if (result.authorityUnavailable) markRuntimeHostCollaborationUnavailable(scope);
-          return result.requests
-            .filter((request) => request.state.kind === 'pending')
-            .map((request): SessionTurnAccessRequest => ({
-              ...request,
-              intent: {
-                ...request.intent,
-                sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
-              },
-            }));
-        }),
+          return {
+            ...(result.authorityUnavailable ? { authorityUnavailable: true as const } : {}),
+            requests: result.requests
+              .filter((request) => request.state.kind === 'pending')
+              .map((request): SessionTurnAccessRequest => ({
+                ...request,
+                intent: {
+                  ...request.intent,
+                  sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
+                },
+              })),
+          };
+        },
+        markRuntimeHostCollaborationUnavailable,
       );
     },
     async acknowledgeTurnRequest(sessionId, requestId) {

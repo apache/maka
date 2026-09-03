@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import {
   collectAvailablePendingTurnRequests,
+  collectPendingTurnRequestsWithCapabilityCache,
   retainRuntimeHostCollaborationAuthority,
   selectRuntimeHostCollaborationScopes,
 } from '../../preload/runtime-host-turn-request-inbox.js';
@@ -29,6 +30,29 @@ import {
 test('retains a learned unavailable capability when a legacy identity omits it', () => {
   assert.equal(retainRuntimeHostCollaborationAuthority(undefined, false), false);
   assert.equal(retainRuntimeHostCollaborationAuthority(true, false), true);
+});
+
+test('caches an unavailable legacy Host across polling calls', async () => {
+  const scope = { hostId: 'legacy' };
+  let authority: boolean | undefined;
+  let queryCalls = 0;
+  const poll = () =>
+    collectPendingTurnRequestsWithCapabilityCache(
+      [scope],
+      () => authority,
+      async () => {
+        queryCalls += 1;
+        return { requests: [], authorityUnavailable: true };
+      },
+      () => {
+        authority = false;
+      },
+    );
+
+  assert.deepEqual(await poll(), []);
+  assert.equal(authority, false);
+  assert.deepEqual(await poll(), []);
+  assert.equal(queryCalls, 1);
 });
 
 test('skips an Owner Host that explicitly lacks collaboration authority', () => {
