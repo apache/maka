@@ -4584,7 +4584,16 @@ describe('AiSdkBackend model history', () => {
     const second = backend.compactHistory({
       turnId: 'dedup-compact-2',
       runId: 'run-dedup-2',
-      runtimeContext,
+      runtimeContext: [
+        ...runtimeContext,
+        runtimeTextEvent({
+          id: 'dedup-current-turn',
+          turnId: 'dedup-compact-2',
+          role: 'user',
+          author: 'user',
+          text: 'current turn content must not affect the fold key',
+        }),
+      ],
     });
 
     assert.equal(summarizeCalls, 1);

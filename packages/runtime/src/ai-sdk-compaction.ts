@@ -300,7 +300,7 @@ export class AiSdkCompaction {
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
-    const key = historyCompactRequestKey(input);
+    const key = historyCompactRequestKey(input, automaticMemoryBoundary);
     const existing = this.inFlightHistoryCompactions.get(key);
     if (existing) return existing;
     const pending = this.compactHistoryOnce(input, automaticMemoryBoundary);
@@ -1414,11 +1414,19 @@ function sha256(text: string): string {
 
 function historyCompactRequestKey(
   input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
+  automaticMemoryBoundary: HistoryCompactMemoryExtractionBoundary | undefined,
 ): string {
+  const runtimeContext = input.runtimeContext
+    .filter((event) => event.turnId !== input.turnId)
+    .filter(isHistoryCompactContentEvent);
+  const sourceRunIds = new Set(runtimeContext.map((event) => event.runId));
   return sha256(
     stableStringifyForSignature({
-      runtimeContext: input.runtimeContext,
-      runtimeContextRunHeaders: input.runtimeContextRunHeaders ?? [],
+      runtimeContext,
+      runtimeContextRunHeaders: (input.runtimeContextRunHeaders ?? []).filter((header) =>
+        sourceRunIds.has(header.runId),
+      ),
+      automaticMemoryBoundary,
     }),
   );
 }
