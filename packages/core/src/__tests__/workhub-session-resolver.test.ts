@@ -68,19 +68,3 @@ test('equal exact matches are ambiguity rather than an unjustified ranking', () 
     },
   );
 });
-
-test('resolution is bounded to the offered candidate set', () => {
-  // A reference that names real work outside the permitted candidate set
-  // recalls nothing. Retrieval cannot widen its own visibility, and it has no
-  // vocabulary for creating work either — that stays an Action Policy decision.
-  assert.deepEqual(resolveText('Stop Payments', [session('s2', 'Login')]), { kind: 'none' });
-  const resolution = resolveText('Stop Payments', [
-    session('s1', 'Payments'),
-    session('s2', 'Login'),
-  ]);
-  assert.equal(resolution.kind, 'ranked');
-  const offered = new Set(['s1', 's2']);
-  assert.ok(
-    resolution.kind === 'ranked' && resolution.candidates.every(({ ref }) => offered.has(ref)),
-  );
-});

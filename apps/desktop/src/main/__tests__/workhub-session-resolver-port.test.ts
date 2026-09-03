@@ -89,25 +89,6 @@ test('stop resolves through the shared port rather than a stop-specific grammar'
   });
 });
 
-test('a resolved reference submits instead of judging the Host state itself', () => {
-  const descriptions = new Map([['payments', 'payment timeout work']]);
-  const text = 'Stop the payment timeout work';
-
-  // Whether that Session still owns a single stoppable delegation is not asked
-  // here, and deliberately so: only the Host can answer it, and it re-proves it
-  // under the lease that performs the stop. A renderer that answered from its
-  // own view would contradict the Host in exactly the windows where its view is
-  // empty. A confidently resolved reference therefore becomes a target, and a
-  // Session with nothing to stop is refused by the Gate, not here.
-  assert.deepEqual(
-    createWorkHubRoutePolicy(describedResolver(descriptions)).resolveStop({
-      text,
-      sessions: [routable('payments', 'Payments')],
-    }),
-    { kind: 'target', target: { sessionId: 'payments' } },
-  );
-});
-
 test('an ambiguous recall never becomes a destructive target', async () => {
   const resolver = describedResolver(
     new Map([

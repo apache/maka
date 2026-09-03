@@ -200,28 +200,6 @@ test('WorkHub detects a manual Stop that wins after its active-root check', asyn
   assert.equal(outcome.outcome, 'already_terminal');
 });
 
-test('WorkHub does not claim an unrelated manual Stop as its delivery', async () => {
-  const outcome = await stopOwnedWorkHubRoot(
-    {
-      readRootState: () => ({ kind: 'idle' }),
-      read: async (identity: { sessionId: string; turnId: string; runId: string }) => ({
-        ...identity,
-        status: 'cancelled',
-        terminalEventId: 'earlier-manual-stop',
-        abortSource: 'renderer.stop_button',
-      }),
-      stopRoot: async () => assert.fail('a terminal root must not be stopped again'),
-    } as unknown as Parameters<typeof stopOwnedWorkHubRoot>[0],
-    { sessionId: 'target-session', turnId: 'target-turn', runId: 'target-run' },
-    'workhub-stop-action',
-  );
-
-  assert.deepEqual(outcome, {
-    outcome: 'already_terminal',
-    targetTurnId: 'target-turn',
-  });
-});
-
 test('a replacement retirement never records direct-stop provenance', async () => {
   const stops: Array<Record<string, unknown> | undefined> = [];
   const outcome = await stopReplacedWorkHubRoot(

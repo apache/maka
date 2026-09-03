@@ -286,10 +286,9 @@ export class HostWorkHubCoordinationCoordinator {
       }),
       conflictMessage: 'WorkHub delegation already has a different stop claim',
       beforeAppend: async () => {
-        const [replacement, supersession, headers, messages] = await Promise.all([
+        const [replacement, supersession, messages] = await Promise.all([
           this.#stores.readWorkHubReplacement(input.stopsDelegationId),
           this.#stores.readWorkHubSupersession(input.stopsDelegationId),
-          this.#stores.listHeaders(),
           this.#stores.readMessagesSnapshot(WORKHUB_COORDINATION_SESSION_ID),
         ]);
         if (replacement || supersession) {
@@ -298,7 +297,6 @@ export class HostWorkHubCoordinationCoordinator {
             'WorkHub delegation is already being replaced',
           );
         }
-        const visibleSessionIds = new Set(headers.map((header) => header.id));
         const activeAssignments = activeWorkHubAssignments(messages);
         // Held lanes make this the last moment the one-target proof can change.
         // It is proved from opaque delegation identity, so a concurrent rename
@@ -311,7 +309,7 @@ export class HostWorkHubCoordinationCoordinator {
             assignment.actionId === input.stopsActionId &&
             assignment.delegationId === input.stopsDelegationId,
         );
-        if (!visibleSessionIds.has(input.targetSessionId) || !source) {
+        if (!source) {
           throw new WorkHubActionGateFailure(
             'action_conflict',
             'WorkHub stop target does not identify one active durable delegation',

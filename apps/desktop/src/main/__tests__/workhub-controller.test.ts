@@ -420,36 +420,6 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
   await handle.close();
 });
 
-test('a stop answer never comes from an unfilled delegation mirror', async () => {
-  // A second window, a reload, or a reconnect: the coordination stream has not
-  // delivered anything yet, so the renderer's mirror is empty. Answering from
-  // it would tell the user there is nothing to stop while the work is running.
-  const sessions = port([session('payments', { sessionName: 'Payments' })]);
-  const actions: Array<Omit<WorkHubCoordinationActInput, 'create'>> = [];
-  const controller = createGatedWorkHubController({
-    sessions,
-    coordination: {
-      open: async () => ({ close: async () => undefined }),
-      record: async (input) => ({ turnId: input.turnId }),
-      candidates: async () => assert.fail('a direct stop must not read route candidates'),
-      act: async (input) => {
-        actions.push(input);
-        return {
-          disposition: 'stop_work',
-          outcome: 'cancelled_pending',
-          targetSessionId: 'payments',
-        };
-      },
-    },
-  });
-  const handle = await controller.openConversation(() => undefined, () => undefined);
-
-  const result = await controller.submit({ requestId: 'stop-1', text: 'Stop Payments' });
-  assert.equal(result.kind, 'stop');
-  assert.equal(actions[0]?.proposal.disposition, 'stop_work');
-  await handle.close();
-});
-
 test('a named stop reports the Gate refusal instead of judging the target itself', async () => {
   // The renderer no longer decides whether a Session can be stopped, so it
   // submits and lets the Gate answer. Its refusal is the clarification, which

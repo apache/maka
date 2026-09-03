@@ -324,9 +324,8 @@ describe('WorkHub Coordination Action Gate', () => {
    * A stop proposal as the Action Policy produces it: opaque identities plus
    * the active-delegation state it resolved against, never a display name.
    */
-  const stopProposal = (stopsActionId: string, targetSessionId: string) => ({
+  const stopProposal = (targetSessionId: string) => ({
     disposition: 'stop_work' as const,
-    stopsActionId,
     expects: { targetSessionId },
   });
 
@@ -349,7 +348,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const input = {
       actionId: 'stop-action',
       userText: 'Stop Payments',
-      proposal: stopProposal('source-action', 'payments'),
+      proposal: stopProposal('payments'),
       confirmation: { kind: 'user_stop' as const },
     };
 
@@ -401,7 +400,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-login',
         userText: 'Stop Login',
-        proposal: stopProposal('login-action', 'login'),
+        proposal: stopProposal('login'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -414,7 +413,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'stop-payments',
           userText: 'Stop Payments',
-          proposal: stopProposal('pay-action', 'payments'),
+          proposal: stopProposal('payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -450,7 +449,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-live',
         userText: 'Stop Payments',
-        proposal: stopProposal('live-action', 'payments'),
+        proposal: stopProposal('payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -477,14 +476,15 @@ describe('WorkHub Coordination Action Gate', () => {
       );
     }
     // Unreadable is not the same as finished, so it still blocks the proof.
-    effects.readDelegationRetirement = async () => 'recovering';
+    effects.readDelegationRetirement = async (assignment) =>
+      assignment.actionId === 'unreadable-action' ? 'recovering' : 'not_retired';
 
     await assert.rejects(
       new WorkHubCoordinationActionGate(effects).act(
         {
           actionId: 'stop-unresolved-competitor',
           userText: 'Stop Payments',
-          proposal: stopProposal('live-action', 'payments'),
+          proposal: stopProposal('payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -520,7 +520,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'stop-ambiguous-payments',
           userText: 'Stop Payments',
-          proposal: stopProposal('source-action', 'payments'),
+          proposal: stopProposal('payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -561,7 +561,7 @@ describe('WorkHub Coordination Action Gate', () => {
           {
             actionId: `stop-${userText}`,
             userText,
-            proposal: stopProposal('source-action', 'payments'),
+            proposal: stopProposal('payments'),
             confirmation: { kind: 'user_stop' },
           },
           CONTEXT,
@@ -577,7 +577,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'stop-wrong-session',
           userText: 'Stop Payments',
-          proposal: stopProposal('source-action', 'login'),
+          proposal: stopProposal('login'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -612,7 +612,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-shared',
         userText: 'Stop Payments',
-        proposal: stopProposal('source-action', 'payments'),
+        proposal: stopProposal('payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -643,7 +643,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'stop-shared',
           userText: 'Stop Payments',
-          proposal: stopProposal('source-action', 'payments'),
+          proposal: stopProposal('payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -683,7 +683,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'reused-stop',
           userText: 'Stop Payments',
-          proposal: stopProposal('source-action', 'payments'),
+          proposal: stopProposal('payments'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -700,7 +700,7 @@ describe('WorkHub Coordination Action Gate', () => {
         {
           actionId: 'reused-stop',
           userText: 'Stop Login',
-          proposal: stopProposal('other-action', 'login'),
+          proposal: stopProposal('login'),
           confirmation: { kind: 'user_stop' },
         },
         CONTEXT,
@@ -709,6 +709,52 @@ describe('WorkHub Coordination Action Gate', () => {
     );
     assert.deepEqual([...effects.stopRequests.keys()], ['delegation-source-action']);
     assert.equal(effects.stopResolutions.size, 0);
+  });
+
+  test('a committed stop identity cannot replay against another Session with the same name', async () => {
+    const effects = fakeEffects([
+      session('payments-primary', { name: 'Payments' }),
+      session('payments-secondary', { name: 'Payments' }),
+    ]);
+    for (const [actionId, targetSessionId] of [
+      ['primary-action', 'payments-primary'],
+      ['secondary-action', 'payments-secondary'],
+    ] as const) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'primary-action' ? '1' : '2').repeat(64)}`,
+            targetSessionId,
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: 'Fix payment retry',
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    effects.retireDelegation = async () => ({ outcome: 'recovering' as const });
+    const stopInput = (targetSessionId: string) => ({
+      actionId: 'reused-stop',
+      userText: 'Stop Payments',
+      proposal: stopProposal(targetSessionId),
+      confirmation: { kind: 'user_stop' as const },
+    });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(stopInput('payments-primary'), CONTEXT),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'operation_unavailable',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-primary-action']);
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(stopInput('payments-secondary'), CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-primary-action']);
   });
 
   test('a stop action identity cannot cross into a delegation assignment', async () => {
@@ -731,7 +777,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'crossing-action',
         userText: 'Stop Payments',
-        proposal: stopProposal('source-action', 'payments'),
+        proposal: stopProposal('payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -782,7 +828,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-first',
         userText: 'Stop Payments',
-        proposal: stopProposal('source-action', 'payments'),
+        proposal: stopProposal('payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -792,7 +838,7 @@ describe('WorkHub Coordination Action Gate', () => {
       {
         actionId: 'stop-second',
         userText: 'Stop Payments',
-        proposal: stopProposal('source-action', 'payments'),
+        proposal: stopProposal('payments'),
         confirmation: { kind: 'user_stop' },
       },
       CONTEXT,
@@ -823,7 +869,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const input = {
       actionId: 'stop-removed-target',
       userText: 'Stop Payments',
-      proposal: stopProposal('source-action', 'payments'),
+      proposal: stopProposal('payments'),
       confirmation: { kind: 'user_stop' as const },
     };
     const unresolved = (error: unknown) =>
@@ -879,7 +925,7 @@ describe('WorkHub Coordination Action Gate', () => {
     const input = {
       actionId: 'stop-renamed',
       userText: 'Stop Old Payments',
-      proposal: stopProposal('source-action', 'payments'),
+      proposal: stopProposal('payments'),
       confirmation: { kind: 'user_stop' as const },
     };
     assert.equal(
