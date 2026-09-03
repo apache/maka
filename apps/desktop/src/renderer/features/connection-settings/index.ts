@@ -32,7 +32,6 @@ export type {
   RuntimeHostSettingsConnectionsBridge,
 } from './ports.js';
 export {
-  categoryLabel,
   connectionLastTestMessageDisplay,
   connectionTestFailureMessage,
   providerPanelActionErrorMessage,

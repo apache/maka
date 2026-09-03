@@ -18,10 +18,7 @@
  */
 
 import { generalizedErrorMessage, generalizedErrorMessageChinese, redactSecrets } from '@maka/core/redaction';
-import {
-  type ConnectionTestResult,
-  type ProviderCategory,
-} from '@maka/core/llm-connections';
+import { type ConnectionTestResult } from '@maka/core/llm-connections';
 import { type UiLocale } from '@maka/core/ui-locale';
 import { getProviderSettingsCopy } from './settings-provider-copy.js';
 import { cleanErrorMessage } from '../../application/contracts/connection-error-cleaner.js';
@@ -103,8 +100,4 @@ export function connectionLastTestMessageDisplay(message: string | undefined, lo
     ? generalizedErrorMessageChinese(new Error(trimmed), '')
     : generalizedErrorMessage(new Error(trimmed), '');
   return classified || copy.statusUnavailable;
-}
-
-export function categoryLabel(category: ProviderCategory, locale: UiLocale = 'zh'): string {
-  return getProviderSettingsCopy(locale).shared.categories[category];
 }
