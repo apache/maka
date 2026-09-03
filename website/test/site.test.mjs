@@ -34,13 +34,17 @@ const positioning =
   'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
 const disclaimer =
   'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator.';
+// The links the ASF website policy requires, plus the Incubator and the code of conduct.
 const footer = [
   'https://www.apache.org/',
+  'https://incubator.apache.org/',
   'https://www.apache.org/licenses/',
   'https://www.apache.org/events/current-event.html',
   'https://privacy.apache.org/policies/privacy-policy-public.html',
   'https://www.apache.org/security/',
   'https://www.apache.org/foundation/sponsorship.html',
+  'https://www.apache.org/foundation/thanks.html',
+  'https://www.apache.org/foundation/policies/conduct.html',
 ];
 
 const hrefs = (html) => new Set([...html.matchAll(/href="([^"]+)"/gu)].map(([, href]) => href));

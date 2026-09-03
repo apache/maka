@@ -137,6 +137,41 @@ code {
   background: var(--surface-sunken);
   color: var(--foreground);
 }
+.nav .asf {
+  position: relative;
+}
+.nav .asf summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 12px;
+  border-radius: 999px;
+  color: var(--muted-foreground);
+  font-weight: 500;
+}
+.nav .asf summary::-webkit-details-marker {
+  display: none;
+}
+.nav .asf summary:hover,
+.nav .asf[open] summary {
+  background: var(--surface-sunken);
+  color: var(--foreground);
+}
+.nav .asf .menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 10;
+  display: grid;
+  min-width: 180px;
+  padding: 6px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.08);
+}
+.nav .asf .menu a {
+  white-space: nowrap;
+}
 .nav .sp {
   flex: 1;
 }

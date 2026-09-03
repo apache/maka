@@ -77,6 +77,8 @@ export interface Copy {
   };
   footer: {
     foundation: string;
+    incubator: string;
+    conduct: string;
     license: string;
     events: string;
     privacy: string;

@@ -35,6 +35,7 @@ export const links = {
   windows: `${main}/docs/windows-support.md`,
   asf: 'https://www.apache.org/',
   incubator: 'https://incubator.apache.org/',
+  conduct: 'https://www.apache.org/foundation/policies/conduct.html',
   license: 'https://www.apache.org/licenses/',
   events: 'https://www.apache.org/events/current-event.html',
   privacy: 'https://privacy.apache.org/policies/privacy-policy-public.html',

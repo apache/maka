@@ -137,6 +137,8 @@ export const zhCN: Copy = {
   },
   footer: {
     foundation: '基金会',
+    incubator: '孵化器',
+    conduct: '行为准则',
     license: '许可证',
     events: '活动',
     privacy: '隐私',

@@ -146,6 +146,8 @@ export const en: Copy = {
   },
   footer: {
     foundation: 'Foundation',
+    incubator: 'Incubator',
+    conduct: 'Code of Conduct',
     license: 'License',
     events: 'Events',
     privacy: 'Privacy',

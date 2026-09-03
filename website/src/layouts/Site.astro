@@ -39,6 +39,18 @@ const href = (locale: Locale) => `/${locale}/${path}`;
 const canonical = new URL(href(copy.locale), Astro.site);
 const home = `/${copy.locale}/`;
 const downloads = `/${copy.locale}/downloads/`;
+// The ASF links every project site must carry, shown in the nav menu and the footer.
+const asf = [
+  [links.asf, copy.footer.foundation],
+  [links.incubator, copy.footer.incubator],
+  [links.license, copy.footer.license],
+  [links.events, copy.footer.events],
+  [links.privacy, copy.footer.privacy],
+  [links.asfSecurity, copy.footer.security],
+  [links.sponsorship, copy.footer.sponsorship],
+  [links.thanks, copy.footer.thanks],
+  [links.conduct, copy.footer.conduct],
+];
 ---
 
 <html lang={copy.locale}>
@@ -79,7 +91,10 @@ const downloads = `/${copy.locale}/downloads/`;
           <a href={links.eval}>{copy.nav.benchmarks}</a>
           <a href={links.discussions}>{copy.nav.community}</a>
           <a href={links.security}>{copy.nav.security}</a>
-          <a href={links.asf}>{copy.nav.asf}</a>
+          <details class="asf">
+            <summary>{copy.nav.asf}</summary>
+            <div class="menu">{asf.map(([href, label]) => <a href={href}>{label}</a>)}</div>
+          </details>
         </div>
         <div class="sp"></div>
         <div class="lang" aria-label="Language">
@@ -101,20 +116,19 @@ const downloads = `/${copy.locale}/downloads/`;
       <slot />
 
       <footer class="foot">
-        <div class="links">
-          <a href={links.asf}>{copy.footer.foundation}</a>
-          <a href={links.license}>{copy.footer.license}</a>
-          <a href={links.events}>{copy.footer.events}</a>
-          <a href={links.privacy}>{copy.footer.privacy}</a>
-          <a href={links.asfSecurity}>{copy.footer.security}</a>
-          <a href={links.sponsorship}>{copy.footer.sponsorship}</a>
-          <a href={links.thanks}>{copy.footer.thanks}</a>
-        </div>
+        <div class="links">{asf.map(([href, label]) => <a href={href}>{label}</a>)}</div>
         <p class="disc">{copy.footer.disclaimer}</p>
         <p class="tm">{copy.footer.trademark}</p>
       </footer>
     </div>
     <script is:inline>
+      // The ASF menu closes on a click anywhere outside it.
+      (() => {
+        const menu = document.querySelector('.asf');
+        document.addEventListener('click', (event) => {
+          if (!menu.contains(event.target)) menu.removeAttribute('open');
+        });
+      })();
       // The toggle flips between light and dark and remembers the choice in this browser.
       (() => {
         const root = document.documentElement;
