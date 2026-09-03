@@ -27,6 +27,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  desktopDiagnosticUpdateChannel,
   desktopUpdateChannelFromManifest,
   verifyDownloadedUpdateAttestation,
 } from '../app-update-attestation.js';
@@ -292,6 +293,34 @@ test('packaged update trust accepts only an explicit release or nightly channel'
     () => desktopUpdateChannelFromManifest({ makaUpdateChannel: 'preview' }),
     /does not declare a trusted update channel/u,
   );
+});
+
+test('a diagnostic report names the channel it can prove, and admits when it cannot', async () => {
+  const appPath = await mkdtemp(join(tmpdir(), 'maka-channel-'));
+  const channelOf = (isPackaged: boolean) => desktopDiagnosticUpdateChannel({ isPackaged, appPath });
+  try {
+    // Packaged: the manifest electron-builder stamped is the authority, and the
+    // two feeds must come back distinct — they carry different signers.
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({ makaUpdateChannel: 'nightly' }));
+    assert.equal(channelOf(true), 'nightly');
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({ makaUpdateChannel: 'release' }));
+    assert.equal(channelOf(true), 'release');
+
+    // A checkout follows no feed, and never reads the manifest: the `release`
+    // value the updater falls back to is a placeholder, not a fact.
+    assert.equal(channelOf(false), 'dev');
+
+    // Unlike the strict parser, this one must not throw — the report has to
+    // copy even when the manifest is the thing that is broken.
+    await writeFile(join(appPath, 'package.json'), '{ not json');
+    assert.equal(channelOf(true), 'unknown');
+    await writeFile(join(appPath, 'package.json'), JSON.stringify({ makaUpdateChannel: 'preview' }));
+    assert.equal(channelOf(true), 'unknown');
+    await rm(join(appPath, 'package.json'));
+    assert.equal(channelOf(true), 'unknown');
+  } finally {
+    await rm(appPath, { recursive: true, force: true });
+  }
 });
 
 test('TUF verifies ECDSA without breaking Ed25519 in the packaged Electron runtime', () => {

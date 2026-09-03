@@ -145,7 +145,6 @@ apps/desktop/src/renderer/styles/quote-side-panel.css
 apps/desktop/src/renderer/styles/search-modal.css
 apps/desktop/src/renderer/styles/session-todo-panel.css
 apps/desktop/src/renderer/styles/settings.css
-apps/desktop/src/renderer/styles/settings/about.css
 apps/desktop/src/renderer/styles/settings/bot.css
 apps/desktop/src/renderer/styles/settings/connection.css
 apps/desktop/src/renderer/styles/settings/form.css
@@ -210,7 +209,6 @@ packages/ui/src/permission-mode-menu.tsx
 packages/ui/src/platform-shortcut-text.tsx
 packages/ui/src/primitives/chat.tsx
 packages/ui/src/primitives/module-page.tsx
-packages/ui/src/primitives/page-header.tsx
 packages/ui/src/primitives/stat-tile.tsx
 packages/ui/src/prompt-anchor-rail.tsx
 packages/ui/src/quote-ref-chip.tsx
@@ -225,7 +223,6 @@ packages/ui/src/session-history-list.tsx
 packages/ui/src/session-list-panel.tsx
 packages/ui/src/session-rail-context.tsx
 packages/ui/src/session-rename-dialog.tsx
-packages/ui/src/session-selection-bar.tsx
 packages/ui/src/session-sidebar-nav.tsx
 packages/ui/src/session-todo-panel.tsx
 packages/ui/src/skill-inspector.tsx

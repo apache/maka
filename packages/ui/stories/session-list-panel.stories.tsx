@@ -79,7 +79,6 @@ const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onArchive: noop,
   onUnarchive: noop,
   onRename: noop,
-  onDelete: noop,
 };
 
 function panelProps(input: {

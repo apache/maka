@@ -22,7 +22,9 @@
   max-height: min(300px, 36vh);
   margin: var(--space-2) auto;
   padding: var(--space-3);
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   border: var(--border-width-hairline) solid var(--border);
   border-radius: var(--radius-surface);
   /* In-flow reading plate: raised fill + line only (DESIGN.md One Means). */
@@ -44,7 +46,23 @@
 }
 
 .maka-agent-graph-heading {
+  flex: 0 0 auto;
   justify-content: space-between;
+}
+
+.maka-agent-graph-panel:not([data-collapsed="true"]) .maka-agent-graph-heading {
+  padding-bottom: var(--space-2);
+  border-bottom: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.maka-agent-graph-panel[data-collapsed="true"] .maka-agent-graph-heading {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.maka-agent-graph-content {
+  min-height: 0;
+  overflow: auto;
 }
 
 .maka-agent-graph-heading-copy {

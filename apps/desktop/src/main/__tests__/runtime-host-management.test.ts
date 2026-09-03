@@ -307,9 +307,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     rootId: profile.rootId,
     transport: {
       kind: 'libp2p-direct',
-      peerId: '12D3KooWoffice',
-      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
-      coordinationRelays: [],
+      reachability: testPeerReachability('12D3KooWoffice'),
     },
     credential: 'pending-credential',
   });
@@ -429,9 +427,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     rootId: 'c'.repeat(64),
     transport: {
       kind: 'libp2p-direct',
-      peerId: '12D3KooWoffice',
-      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
-      coordinationRelays: [],
+      reachability: testPeerReachability('12D3KooWoffice'),
     },
     credential: 'pending-credential',
   });
@@ -444,9 +440,7 @@ test('identifies, rotates, and revokes managed credentials without exposing secr
     rootId: profile.rootId,
     transport: {
       kind: 'libp2p-direct',
-      peerId: '12D3KooWunexpected',
-      routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
-      coordinationRelays: [],
+      reachability: testPeerReachability('12D3KooWunexpected'),
     },
     credential: 'pending-credential',
   });
@@ -1230,8 +1224,8 @@ test('keeps the SSH profile while adding and removing its managed Direct peer', 
         exists: peerProfileExists,
         enabled: false,
       }),
-      upsertManagedDirectPeerProfile: async (_profileId, descriptor) => {
-        assert.deepEqual(descriptor.routeHints, ['/ip4/192.0.2.8/udp/44001/quic-v1']);
+      upsertManagedDirectPeerProfile: async (_profileId, peerId) => {
+        assert.equal(peerId, '12D3KooWpeer');
         peerProfileExists = true;
       },
       removeManagedDirectPeerProfile: async () => {
@@ -1533,5 +1527,21 @@ function accessCredential(
     canPublishClientCapabilities: true,
     canUseHostPaths: false,
     createdAt: '2026-08-21T01:00:00.000Z',
+  };
+}
+
+function testPeerReachability(peerId: string) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }

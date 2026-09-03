@@ -2094,13 +2094,24 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   }
   if (value.kind === 'scheduled_task') {
     if (
-      !hasExactKeys(value, ['kind', 'scheduledTaskId']) ||
+      !hasExactKeys(value, [
+        'kind',
+        'scheduledTaskId',
+        ...(Object.hasOwn(value, 'executionFingerprint') ? ['executionFingerprint'] : []),
+      ]) ||
       typeof value.scheduledTaskId !== 'string' ||
-      !isSafeId(value.scheduledTaskId)
+      !isSafeId(value.scheduledTaskId) ||
+      (value.executionFingerprint !== undefined && !isSha256Digest(value.executionFingerprint))
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId });
+    return Object.freeze({
+      kind: 'scheduled_task',
+      scheduledTaskId: value.scheduledTaskId,
+      ...(value.executionFingerprint !== undefined
+        ? { executionFingerprint: value.executionFingerprint }
+        : {}),
+    });
   }
   if (value.kind === 'automation' || value.kind === 'legacy_automation') {
     if (

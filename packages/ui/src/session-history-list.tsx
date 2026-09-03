@@ -26,6 +26,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
 } from 'react';
@@ -38,14 +39,12 @@ import {
   AlertTriangle,
   Archive,
   ArchiveRestore,
-  CircleCheckBig,
   FolderOpen,
   Pencil,
   Pin,
   PinOff,
   Plug,
   SquarePen,
-  Trash2,
 } from './icons.js';
 import { RelativeTime } from './relative-time.js';
 import { formatAbsoluteTimestamp } from '@maka/core/relative-time';
@@ -61,18 +60,18 @@ import { StatusDot, type StatusDotVariant } from '@astryxdesign/core/StatusDot';
 import { describeBlockedReason, presentSessionStatus } from './session-status-presentation.js';
 import { dotForStatus } from './status-vocabulary.js';
 import { SessionRenameDialog, type SessionRenameTarget } from './session-rename-dialog.js';
-import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import {
   type SessionRailData,
   useSessionRailData,
-  useSessionRailRowSelection,
   useSessionRailSelection,
+  type SessionRailSelectionCommands,
+  type SessionRowPick,
 } from './session-rail-context.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { getSessionHoverCardCopy } from './session-hover-card-copy.js';
 
-type SessionRowActionId = 'flag' | 'archive' | 'rename' | 'delete';
+type SessionRowActionId = 'flag' | 'archive' | 'rename';
 type ProjectRowActionId = 'new' | 'relink' | 'rename' | 'archive' | 'restore';
 type SessionHistoryGroupVariant = 'conversation' | 'project';
 
@@ -121,7 +120,6 @@ export interface SessionRowActions {
   onArchive(sessionId: string): void | Promise<void>;
   onUnarchive(sessionId: string): void | Promise<void>;
   onRename(sessionId: string, name: string): void | Promise<void>;
-  onDelete(sessionId: string): void | Promise<void>;
 }
 
 export interface ProjectRowActions {
@@ -139,48 +137,171 @@ export interface SessionHistoryGroup {
   project?: ProjectRecord;
 }
 
+/**
+ * The nearest ancestor of an event's target matching `selector`.
+ *
+ * Duck-typed rather than `instanceof Element`: this module is also rendered
+ * against linkedom, whose Element is not the ambient global, and the check
+ * would throw there rather than answer.
+ */
+function closestFrom(target: EventTarget | null, selector: string): HTMLElement | null {
+  const node = target as { closest?: (selector: string) => HTMLElement | null } | null;
+  return typeof node?.closest === 'function' ? node.closest(selector) : null;
+}
+
+/**
+ * Whether a gesture may pick this row.
+ *
+ * The one place that answers it, because answering it twice is how a range
+ * comes to disagree with what the user sees. Two rows are rendered but not
+ * pickable: a row inside a collapsed project, which keeps its DOM node —
+ * `SideNavItem` collapses by grid track, not by unmounting — and a shared row
+ * projected from someone else's Host, which is handed no actions because
+ * there is nothing this window may do to it. Neither may be swept into a set,
+ * so neither may sit in the order a range is measured against.
+ */
+function isPickableRow(row: HTMLElement): boolean {
+  return row.dataset.actionable === 'true' && row.closest('[inert]') === null;
+}
+
+/** The row a pointer event landed in, if it landed in a pickable one. */
+function pickableRowOf(target: EventTarget | null): HTMLElement | null {
+  const row = closestFrom(target, '.maka-session-row[data-session-id]');
+  return row && isPickableRow(row) ? row : null;
+}
+
+/**
+ * What a click on a row is asking for.
+ *
+ * Read in two places — the list picks the set, the row decides whether to
+ * navigate — so that "a modifier is a selection gesture, not navigation" is
+ * one sentence of code rather than a capture handler silencing a bubble one.
+ */
+function pickFor(event: Pick<MouseEvent, 'shiftKey' | 'metaKey' | 'ctrlKey'>): SessionRowPick {
+  if (event.shiftKey) return 'range';
+  return event.metaKey || event.ctrlKey ? 'toggle' : 'replace';
+}
+
 export function SessionHistoryList() {
   const rail = useSessionRailData();
   const selection = useSessionRailSelection();
   const locale = useUiLocale();
+  const listRef = useRef<HTMLDivElement>(null);
+  const commands = selection?.commands;
+
+  /**
+   * The rail's rendered order, read from the DOM at the moment of a click.
+   *
+   * A Shift range needs to know how far it may reach, and that is a property of
+   * the LIST. #4365's first revision handed each row its group's id array so a
+   * range could be computed inside the row; that array gets a fresh identity per
+   * render, which is a changed prop on every memoised row, and it turned a
+   * two-row session switch into a twelve-row one (#4109). Asked for here it
+   * costs one query per click and nothing per render — and it is the true order
+   * across groups, rather than a reconstruction of it.
+   *
+   * Rendered is not the same as reachable, so it is the pickable rows in that
+   * order: a range may only cross what the user can see and act on.
+   */
+  function orderedSessionIds(): string[] {
+    const node = listRef.current;
+    if (!node) return [];
+    return [...node.querySelectorAll<HTMLElement>('.maka-session-row[data-session-id]')]
+      .filter(isPickableRow)
+      .map((row) => row.dataset.sessionId)
+      .filter((sessionId): sessionId is string => sessionId !== undefined);
+  }
+
+  /**
+   * A menu is about a set, so opening one on a row outside the set replaces it
+   * — the way a file list answers a right-click on an unselected file.
+   *
+   * A row already in the set keeps the set: a run built by dragging must
+   * survive the gesture that asks what to do with it. But the set is narrowed
+   * to what is pickable at this instant, because the menu is the only entrance
+   * to a sweep and a sweep may act only on rows the user can see and act on. A
+   * pick does not have to leave the rail to stop being visible — its project
+   * collapses, or its session becomes a shared projection with no actions — and
+   * a set holding one of those would let a menu opened here archive a row that
+   * is not on screen.
+   *
+   * So the menu means the set it names: opening one FIXES the set at what is on
+   * screen, and a pick that was folded away is out of it for good, dismissed
+   * menu included. Folding does not narrow the set on its own — collapse lives
+   * as uncontrolled state inside `SideNavItem` and is only readable from the
+   * DOM, and this is the one moment that holds the set and the DOM together.
+   */
+  function adoptForMenu(sessionId: string) {
+    if (!commands) return;
+    if (selection?.selectedIds.has(sessionId)) {
+      commands.retain(orderedSessionIds());
+      return;
+    }
+    commands.pick({ sessionId, pick: 'replace', orderedSessionIds: [] });
+  }
+
+  function handleListClickCapture(event: MouseEvent<HTMLDivElement>) {
+    if (!commands) return;
+    const row = pickableRowOf(event.target);
+    const sessionId = row?.dataset.sessionId;
+    if (!row || !sessionId) return;
+    if (closestFrom(event.target, '.maka-session-row-action')) {
+      adoptForMenu(sessionId);
+      return;
+    }
+    // The row's own button, not its hover card or any other descendant.
+    if (!closestFrom(event.target, 'button.astryx-side-nav-item')) return;
+    const pick = pickFor(event);
+    commands.pick({
+      sessionId,
+      pick,
+      orderedSessionIds: pick === 'range' ? orderedSessionIds() : [],
+      openSessionId: rail.activeId,
+    });
+  }
+
+  /**
+   * Right-click opens the row's own ⋯ menu.
+   *
+   * Not a second menu mounted beside it. "⋯ and right-click agree" is then a
+   * fact rather than a promise kept by two lists of items that have to be
+   * maintained together — #4365 let them disagree, offering to act on one row
+   * from a ⋯ while twelve were marked.
+   *
+   * A row with no ⋯ has no menu to open, so this press is not ours: claiming it
+   * would take the native menu away and leave nothing in its place.
+   */
+  function handleListContextMenu(event: MouseEvent<HTMLDivElement>) {
+    if (!commands) return;
+    const row = pickableRowOf(event.target);
+    const sessionId = row?.dataset.sessionId;
+    if (!row || !sessionId) return;
+    const trigger = row.querySelector<HTMLElement>('.maka-session-row-action button');
+    event.preventDefault();
+    adoptForMenu(sessionId);
+    // Opening the menu re-enters `handleListClickCapture` with a synthetic
+    // click, so the adoption is dispatched twice — harmless only because both
+    // of its branches are idempotent: `replace` sets the same one row, and
+    // `retain` intersects with the same list. Anything else here needs a guard.
+    trigger?.click();
+  }
 
   function handleListKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Escape' && event.key !== 'Delete' && event.key !== 'Backspace') return;
-    // The text-entry guard comes first, and now covers Escape too: a rename
-    // field is where Escape means "abandon this edit", and answering it by
-    // clearing the selection behind the dialog would be a second, invisible
-    // effect of one keypress.
+    if (event.key !== 'Escape') return;
+    // Escape belongs to whatever is on top. A rename dialog or an open menu is
+    // above the rail and owns the press; Astryx's layer stack listens on
+    // `document`, below this handler in the bubble, and stands down on a press
+    // that is already defaultPrevented — so claiming one here would clear the
+    // set AND leave the dialog with no way to close.
     const active = document.activeElement as HTMLElement | null;
-    if (!active || active.matches('input, textarea, [contenteditable="true"]')) return;
-    const selecting = selection?.active === true;
-    const marked = selecting && selection.selectedIds.size > 0;
-    if (event.key === 'Escape') {
-      // Escape leaves the mode, matching the 取消 button. Without it the only
-      // way out is finding that button, and a mode entered by accident from the
-      // row menu becomes one the user is stuck in.
-      if (!selecting) return;
-      event.preventDefault();
-      selection.onExit();
-      return;
-    }
-    if (marked) {
-      // Delete is about the marked set once one exists. Deleting the focused
-      // row instead would act on one of several rows the user marked, which is
-      // the shape of an unrecoverable surprise. The sweep confirms first.
-      event.preventDefault();
-      void selection?.onDeleteSelected();
-      return;
-    }
-    const row = active.closest<HTMLElement>(
-      '[data-maka-contract="session-row"], [data-session-id]',
-    );
-    const sessionId =
-      row?.dataset.sessionId ??
-      row?.querySelector<HTMLElement>('[data-session-id]')?.dataset.sessionId;
-    if (sessionId && rail.rowActions) {
-      event.preventDefault();
-      void rail.rowActions.onDelete(sessionId);
-    }
+    // The rail's only text field is the rename dialog's, so `dialog` already
+    // covers it and there is nothing else here for `input`/`textarea` to name.
+    if (!active || active.closest('dialog, [role="menu"]')) return;
+    // Escape drops the picks. The open task stays open and stays painted, so
+    // what the user sees is the selection collapsing back onto it.
+    if (!commands || selection.selectedIds.size === 0) return;
+    event.preventDefault();
+    commands.clear();
   }
 
   // Memoized on what it derives from. Rebuilt per render it would give
@@ -210,7 +331,13 @@ export function SessionHistoryList() {
   // extra information for anyone hearing it. It is scroll content and a key
   // handler, nothing an assistive tech user needs to be told about separately.
   return (
-    <div className="maka-session-list" onKeyDown={handleListKeyDown}>
+    <div
+      ref={listRef}
+      className="maka-session-list"
+      onKeyDown={handleListKeyDown}
+      onClickCapture={handleListClickCapture}
+      onContextMenu={handleListContextMenu}
+    >
       <SessionListGroups groups={groups} />
     </div>
   );
@@ -244,6 +371,24 @@ function SessionListGroups(props: {
    */
   const renameOpenerRef = useRef<HTMLElement | null>(null);
   const [archivedExpanded, setArchivedExpanded] = useState(false);
+  // Read HERE and handed down as props, not read by the rows themselves. A
+  // context consumer re-renders on any change to the value it subscribes to,
+  // and the picked set now changes on an ordinary session switch — every row
+  // would redraw for a switch that changed two of them (#4109). This component
+  // is one fiber; the rows below it are ~1,000.
+  const selection = useSessionRailSelection();
+  const selectedIds = selection?.selectedIds;
+  const pickedCount = selectedIds?.size ?? 0;
+  // Whether a set-wide pin should read 置顶 or 取消置顶. Every row already
+  // pinned means the verb unpins; a mixed set pins, which is the one rule that
+  // keeps a set-wide toggle from being ambiguous.
+  const allPickedPinned = useMemo(() => {
+    if (!selectedIds || selectedIds.size === 0) return false;
+    const pinned = new Set(
+      rail.sessions.filter((session) => session.isFlagged).map((session) => session.id),
+    );
+    return [...selectedIds].every((sessionId) => pinned.has(sessionId));
+  }, [rail.sessions, selectedIds]);
 
   const startRename = useCallback((target: SessionRenameTarget, opener: HTMLElement | null) => {
     renameOpenerRef.current = opener;
@@ -278,24 +423,35 @@ function SessionListGroups(props: {
   // any one of them changing identity upstream rebuilt every row. It arrives as
   // `rail` now, so this array says what it always meant (#4109).
   const renderSessionRow = useCallback(
-    (session: SessionSummary): ReactNode => (
-      <SessionNavRow
-        key={session.id}
-        session={session}
-        active={session.id === rail.activeId}
-        streaming={rail.streamingSessionIds?.has(session.id) ?? false}
-        stale={rail.staleSessionIds?.has(session.id) ?? false}
-        worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
-        meta={rail.sessionMeta?.(session)}
-        sessionBadge={rail.sessionBadge}
-        onSelectSession={rail.onSelectSession}
-        actions={(session as SessionSummary & { readonly shared?: true }).shared
-          ? undefined
-          : rail.rowActions}
-        onStartRename={startRename}
-      />
-    ),
-    [rail, startRename],
+    (session: SessionSummary): ReactNode => {
+      const picked = selectedIds?.has(session.id) ?? false;
+      // Scoped to picked rows on purpose. A count handed to every row would be
+      // a changed prop on every row each time the set grows; this way a plain
+      // click — which picks the row it opens — changes exactly two.
+      const bulk = picked && pickedCount > 1;
+      return (
+        <SessionNavRow
+          key={session.id}
+          session={session}
+          active={session.id === rail.activeId}
+          picked={picked}
+          bulkCount={bulk ? pickedCount : 0}
+          bulkAllPinned={bulk ? allPickedPinned : false}
+          selectionCommands={selection?.commands}
+          streaming={rail.streamingSessionIds?.has(session.id) ?? false}
+          stale={rail.staleSessionIds?.has(session.id) ?? false}
+          worktree={rail.worktreeSessionIds?.has(session.id) ?? false}
+          meta={rail.sessionMeta?.(session)}
+          sessionBadge={rail.sessionBadge}
+          onSelectSession={rail.onSelectSession}
+          actions={(session as SessionSummary & { readonly shared?: true }).shared
+            ? undefined
+            : rail.rowActions}
+          onStartRename={startRename}
+        />
+      );
+    },
+    [allPickedPinned, pickedCount, rail, selectedIds, selection?.commands, startRename],
   );
 
   // Keyed per target so the field seeds from the name that row carries now,
@@ -488,6 +644,12 @@ const ProjectHoverCardLayer = memo(function ProjectHoverCardLayer(props: {
 const SessionNavRow = memo(function SessionNavRow(props: {
   session: SessionSummary;
   active: boolean;
+  /** Part of the picked set. The open row is painted the same way. */
+  picked: boolean;
+  /** How many rows a menu opened here would act on; 0 when it is this row alone. */
+  bulkCount: number;
+  bulkAllPinned: boolean;
+  selectionCommands?: SessionRailSelectionCommands;
   streaming: boolean;
   stale: boolean;
   worktree: boolean;
@@ -500,13 +662,6 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
   const locale = useUiLocale();
-  // The ROW half of the selection, not the whole of it. Read here rather than
-  // threaded through `renderSessionRow`, which is memoized on the rail value —
-  // but read from the narrow context, because a consumer re-renders on any
-  // change to the value it subscribes to and the wide one carries
-  // `listedSessionIds`, which moves whenever the catalog does (#4109).
-  const selection = useSessionRailRowSelection();
-  const marked = selection?.selectedIds.has(props.session.id) ?? false;
   const copy = getConversationCopy(locale).sessions;
   const signals = sessionRowSignals(
     props.session,
@@ -529,6 +684,16 @@ const SessionNavRow = memo(function SessionNavRow(props: {
   // the dot.
   const rowDescription = [
     ...signals.slice(1).map((entry) => entry.tooltip ?? entry.label),
+    // Being picked is a fact about the row that the ground alone carries. It is
+    // NOT `aria-current`: that names the one current page, and a set of picked
+    // rows is not a set of current pages.
+    //
+    // The open row is exempt only while it is the whole set — the state a plain
+    // click leaves, where "selected" would say nothing `isSelected` has not.
+    // Inside a real run it is one of several, and `bulkCount` is how the row
+    // already knows: nonzero on picked rows alone, and above 1 only when the
+    // menu would offer a sweep.
+    props.picked && (!props.active || props.bulkCount > 1) ? copy.pickedAriaLabel : undefined,
     props.worktree ? copy.worktreeAriaLabel : undefined,
     props.meta,
     props.session.lastMessageAt
@@ -546,24 +711,12 @@ const SessionNavRow = memo(function SessionNavRow(props: {
       data-session-id={props.session.id}
       data-stale={props.stale ? 'true' : undefined}
       data-worktree={props.worktree ? 'true' : undefined}
-      data-selected={marked ? 'true' : undefined}
-      data-selecting={selection?.active ? 'true' : undefined}
+      data-picked={props.picked ? 'true' : undefined}
+      // What the list reads to know this row can be picked. Having actions is
+      // the same fact as being ours to act on, so the two cannot drift: a
+      // shared row gets none, and is a plain navigation item all the way down.
+      data-actionable={props.actions ? 'true' : undefined}
     >
-      {/* Outside the SideNavItem, not in its icon slot: that slot is the status
-          dot's fixed gutter, and a checkbox there would take the one column the
-          rail uses to say what a task is doing. The box gets its own leading
-          column, which only exists while the mode does. */}
-      {selection?.active ? (
-        <span className="maka-session-row-check">
-          <CheckboxInput
-            size="sm"
-            value={marked}
-            label={props.session.name}
-            isLabelHidden
-            onChange={(checked) => selection.onToggleRow(props.session.id, checked)}
-          />
-        </span>
-      ) : null}
       <SideNavItem
         label={props.session.name}
         aria-describedby={hoverDescriptionId}
@@ -586,6 +739,13 @@ const SessionNavRow = memo(function SessionNavRow(props: {
           )
         }
         onClick={(event) => {
+          // Shift- and ⌘-clicks are answered by the list, which has already
+          // moved the set by the time this runs. Opening the task as well
+          // would move the main pane away from the run being built. Where
+          // nothing listens for picks — or this row cannot be picked at all —
+          // the modifier means nothing, and the row is a plain navigation item
+          // again rather than a dead click.
+          if (props.actions && props.selectionCommands && pickFor(event) !== 'replace') return;
           if (event.detail > 1 && props.actions) {
             props.onStartRename(
               {
@@ -649,6 +809,9 @@ const SessionNavRow = memo(function SessionNavRow(props: {
         <SessionItemActions
           session={props.session}
           actions={props.actions}
+          bulkCount={props.bulkCount}
+          bulkAllPinned={props.bulkAllPinned}
+          selectionCommands={props.selectionCommands}
           onStartRename={props.onStartRename}
         />
       )}
@@ -998,17 +1161,25 @@ function ProjectItemActions(props: {
   );
 }
 
+/**
+ * The row's ⋯ menu, and the menu right-click opens — one implementation, so
+ * they cannot disagree.
+ *
+ * Its verbs count the set: with seven rows picked and the menu opened on one of
+ * them it offers 归档 7 项, because acting on the one row under the cursor while
+ * six others are visibly picked is the shape of a surprise. `bulkCount` is 0
+ * whenever the menu is about this row alone, which is both "nothing is picked"
+ * and "only this row is".
+ */
 function SessionItemActions(props: {
   session: SessionSummary;
   actions: SessionRowActions;
+  bulkCount: number;
+  bulkAllPinned: boolean;
+  selectionCommands?: SessionRailSelectionCommands;
   onStartRename(target: SessionRenameTarget, opener: HTMLElement | null): void;
 }) {
   const trailingRef = useRef<HTMLSpanElement>(null);
-  // The way in. ⌘-click is invisible to anyone who has not been told about it,
-  // and this menu is where a person already looks for what a row can do — so
-  // selection is discoverable from the same place as pin, rename, and archive.
-  // The narrow context again: this renders once per row.
-  const selection = useSessionRailRowSelection();
   const locale = useUiLocale();
   const copy = getConversationCopy(locale).sessions;
   const actionContext = [
@@ -1068,66 +1239,73 @@ function SessionItemActions(props: {
           pendingMenuIntentRef.current = null;
           if (intent) window.requestAnimationFrame(intent);
         }}
-        items={[
-          ...(selection && !selection.active
+        items={
+          props.bulkCount > 1 && props.selectionCommands
             ? [
                 {
-                  label: copy.selectRow,
-                  icon: CircleCheckBig,
-                  // Enters the mode AND marks this row: the person picked a
-                  // row, not an abstract mode, and landing them in an empty
-                  // selection would discard the choice they just made.
-                  onClick: () => selection.onEnter(props.session.id),
+                  label: props.bulkAllPinned
+                    ? copy.unpinCount(props.bulkCount)
+                    : copy.pinCount(props.bulkCount),
+                  icon: props.bulkAllPinned ? PinOff : Pin,
+                  onClick: () =>
+                    void props.selectionCommands?.flagSelected(!props.bulkAllPinned),
+                },
+                // No 重命名: renaming names ONE task, and there is no honest
+                // way to ask a dialog for seven names at once.
+                {
+                  label: copy.archiveCount(props.bulkCount),
+                  icon: Archive,
+                  onClick: () => void props.selectionCommands?.archiveSelected(),
                 },
               ]
-            : []),
-          {
-            label: props.session.isFlagged ? copy.unpin : copy.pin,
-            icon: props.session.isFlagged ? PinOff : Pin,
-            onClick: () =>
-              runRowAction('flag', () =>
-                actions.onToggleFlag(props.session.id, !props.session.isFlagged),
-              ),
-          },
-          {
-            label: copy.rename,
-            icon: Pencil,
-            onClick: () => {
-              // Read now, while the trigger is still the thing the user is on:
-              // by the time the intent runs the menu has closed and focus is
-              // mid-handover.
-              const opener = trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
-              pendingMenuIntentRef.current = () =>
-                props.onStartRename(
-                  {
-                    kind: 'session',
-                    id: props.session.id,
-                    name: props.session.name,
+            : [
+                {
+                  label: props.session.isFlagged ? copy.unpin : copy.pin,
+                  icon: props.session.isFlagged ? PinOff : Pin,
+                  onClick: () =>
+                    runRowAction('flag', () =>
+                      actions.onToggleFlag(props.session.id, !props.session.isFlagged),
+                    ),
+                },
+                {
+                  label: copy.rename,
+                  icon: Pencil,
+                  onClick: () => {
+                    // Read now, while the trigger is still the thing the user
+                    // is on: by the time the intent runs the menu has closed
+                    // and focus is mid-handover.
+                    const opener =
+                      trailingRef.current?.querySelector<HTMLElement>('button') ?? null;
+                    pendingMenuIntentRef.current = () =>
+                      props.onStartRename(
+                        {
+                          kind: 'session',
+                          id: props.session.id,
+                          name: props.session.name,
+                        },
+                        opener,
+                      );
                   },
-                  opener,
-                );
-            },
-          },
-          {
-            label: props.session.isArchived ? copy.unarchive : copy.archive,
-            icon: props.session.isArchived ? ArchiveRestore : Archive,
-            onClick: () =>
-              runRowAction('archive', () =>
-                props.session.isArchived
-                  ? actions.onUnarchive(props.session.id)
-                  : actions.onArchive(props.session.id),
-              ),
-          },
-          { type: 'divider' },
-          {
-            label: copy.delete,
-            icon: Trash2,
-            onClick: () => {
-              pendingMenuIntentRef.current = () =>
-                runRowAction('delete', () => actions.onDelete(props.session.id));
-            },
-          },
-        ]}
+                },
+                // Archive is where the rail stops. Deleting is the one row
+                // action that cannot be undone, and the rail is where a
+                // mis-click is likeliest: rows are dense, the menu is one hover
+                // away, and the row under the cursor moves as the catalog
+                // refreshes. It lives in Settings › 已归档任务 instead —
+                // reachable only for a task already archived, which is the step
+                // that makes the intent deliberate.
+                {
+                  label: props.session.isArchived ? copy.unarchive : copy.archive,
+                  icon: props.session.isArchived ? ArchiveRestore : Archive,
+                  onClick: () =>
+                    runRowAction('archive', () =>
+                      props.session.isArchived
+                        ? actions.onUnarchive(props.session.id)
+                        : actions.onArchive(props.session.id),
+                    ),
+                },
+              ]
+        }
       />
     </span>
   );

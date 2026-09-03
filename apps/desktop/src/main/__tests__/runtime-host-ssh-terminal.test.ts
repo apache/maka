@@ -775,7 +775,7 @@ test('sends a Mesh invitation only after the authenticated remote operator reque
             revision: 2,
             closed: false,
             members: [
-              { peerId: 'peer-a', state: 'route_available', expiresAt: Date.now() + 60_000 },
+              { peerId: 'peer-a', state: 'reachable', expiresAt: Date.now() + 60_000 },
               { peerId: 'peer-b', state: 'local' },
             ],
             pendingInvitationCount: 0,

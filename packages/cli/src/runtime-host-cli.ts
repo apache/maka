@@ -355,12 +355,6 @@ export type RuntimeHostCliCommand =
             sshPort?: number;
             remotePort: number;
             websocketPath: string;
-          }
-        | {
-            kind: 'libp2p-direct';
-            peerId: string;
-            routeHints: string[];
-            coordinationRelays: string[];
           };
       expectedRootId: string;
       credentialEnv?: string;
@@ -1713,11 +1707,8 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   let sshRemotePort: number | undefined;
   let sshWebSocketPath = '/runtime-host';
   let sshWebSocketPathConfigured = false;
-  let peerId: string | undefined;
   let wslDistribution: string | undefined;
   let operatorPath: string | undefined;
-  const peerRouteHints: string[] = [];
-  const peerCoordinationRelays: string[] = [];
   let expectedRootId: string | undefined;
   let credentialEnv: string | undefined;
   for (let index = 1; index < argv.length; index += 1) {
@@ -1731,9 +1722,6 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       argument !== '--ssh-port' &&
       argument !== '--ssh-remote-port' &&
       argument !== '--ssh-websocket-path' &&
-      argument !== '--peer-id' &&
-      argument !== '--peer-route' &&
-      argument !== '--peer-coordination-relay' &&
       argument !== '--wsl-distribution' &&
       argument !== '--operator-path' &&
       argument !== '--expected-root' &&
@@ -1759,9 +1747,6 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       sshWebSocketPath = parsed;
       sshWebSocketPathConfigured = true;
     }
-    if (argument === '--peer-id') peerId = parsed;
-    if (argument === '--peer-route') peerRouteHints.push(parsed);
-    if (argument === '--peer-coordination-relay') peerCoordinationRelays.push(parsed);
     if (argument === '--wsl-distribution') wslDistribution = parsed;
     if (argument === '--operator-path') operatorPath = parsed;
     if (argument === '--expected-root') expectedRootId = parsed;
@@ -1774,12 +1759,11 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
     (tlsUrl ? 1 : 0) +
       (plaintextUrl ? 1 : 0) +
       (sshDestination ? 1 : 0) +
-      (peerId ? 1 : 0) +
       (wslDistribution ? 1 : 0) !==
     1
   ) {
     return error(
-      'exactly one of --tls-url, --plaintext-url, --ssh-destination, --peer-id, or --wsl-distribution is required',
+      'exactly one of --tls-url, --plaintext-url, --ssh-destination, or --wsl-distribution is required',
     );
   }
   if (wslDistribution && !operatorPath) {
@@ -1806,12 +1790,6 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
   if (sshDestination && !sshRemotePort) {
     return error('--ssh-destination requires --ssh-remote-port');
   }
-  if (!peerId && (peerRouteHints.length > 0 || peerCoordinationRelays.length > 0)) {
-    return error('peer route options require --peer-id');
-  }
-  if (peerId && peerRouteHints.length === 0 && peerCoordinationRelays.length === 0) {
-    return error('--peer-id requires at least one --peer-route or --peer-coordination-relay');
-  }
   if (sshPort !== undefined && (!Number.isInteger(sshPort) || sshPort < 1 || sshPort > 65_535)) {
     return error('--ssh-port must be an integer between 1 and 65535');
   }
@@ -1832,32 +1810,26 @@ function parseProfileCommand(argv: string[]): RuntimeHostCliCommand {
       expectedRootId,
     };
   }
+  const transport = tlsUrl
+    ? ({ kind: 'tls', url: tlsUrl } as const)
+    : plaintextUrl
+      ? ({
+          kind: 'plaintext',
+          url: plaintextUrl,
+          acknowledgement: 'plaintext-bearer-v1',
+        } as const)
+      : ({
+          kind: 'ssh',
+          destination: sshDestination!,
+          ...(sshPort === undefined ? {} : { sshPort }),
+          remotePort: sshRemotePort!,
+          websocketPath: sshWebSocketPath,
+        } as const);
   return {
     kind: 'runtime-host-profile-set',
     id,
     name,
-    transport: tlsUrl
-      ? { kind: 'tls', url: tlsUrl }
-      : plaintextUrl
-        ? {
-            kind: 'plaintext',
-            url: plaintextUrl,
-            acknowledgement: 'plaintext-bearer-v1',
-          }
-        : sshDestination
-          ? {
-              kind: 'ssh',
-              destination: sshDestination,
-              ...(sshPort === undefined ? {} : { sshPort }),
-              remotePort: sshRemotePort!,
-              websocketPath: sshWebSocketPath,
-            }
-          : {
-              kind: 'libp2p-direct',
-              peerId: peerId!,
-              routeHints: peerRouteHints,
-              coordinationRelays: peerCoordinationRelays,
-            },
+    transport,
     expectedRootId,
     ...(credentialEnv ? { credentialEnv } : {}),
   };

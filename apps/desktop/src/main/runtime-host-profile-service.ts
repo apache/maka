@@ -129,11 +129,7 @@ export interface DesktopRuntimeHostProfileService {
   }>;
   upsertManagedDirectPeerProfile(
     profileId: string,
-    peer: {
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
-    },
+    expectedPeerId: string,
   ): Promise<void>;
   removeManagedDirectPeerProfile(profileId: string): Promise<void>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedSshServiceBinding): Promise<void>;
@@ -930,7 +926,7 @@ export function createDesktopRuntimeHostProfileService(input: {
         }
         let configuredPeerId: string | undefined;
         if (profile.transport.kind === 'libp2p-direct') {
-          configuredPeerId = profile.transport.peerId;
+          configuredPeerId = profile.transport.reachability.lease.peerId;
         } else {
           const direct = (await catalog.read()).profiles.find(
             (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
@@ -940,7 +936,7 @@ export function createDesktopRuntimeHostProfileService(input: {
             direct.rootId === profile.rootId &&
             direct.transport.kind === 'libp2p-direct'
           ) {
-            configuredPeerId = direct.transport.peerId;
+            configuredPeerId = direct.transport.reachability.lease.peerId;
           }
         }
         if (!configuredPeerId) {
@@ -956,16 +952,14 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!endpoint) {
           throw new Error('Runtime Host Direct peer is not available');
         }
-        if (configuredPeerId !== endpoint.peerId) {
+        if (configuredPeerId !== endpoint.lease.peerId) {
           throw new Error('Runtime Host Direct peer identity changed');
         }
         return {
           name: profile.name,
           transport: {
             kind: 'libp2p-direct' as const,
-            peerId: endpoint.peerId,
-            routeHints: endpoint.routeHints,
-            coordinationRelays: endpoint.coordinationRelays,
+            reachability: endpoint,
           },
         };
       });
@@ -1005,12 +999,21 @@ export function createDesktopRuntimeHostProfileService(input: {
           exists: profile !== undefined,
           enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
           ...(profile?.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
-            ? { peerId: profile.transport.peerId }
+            ? { peerId: profile.transport.reachability.lease.peerId }
             : {}),
         };
       });
     },
-    upsertManagedDirectPeerProfile(profileId, peer) {
+    async upsertManagedDirectPeerProfile(profileId, expectedPeerId) {
+      requirePairingComplete(profileId);
+      const active = input.states().find((state) => state.target.profile.id === profileId);
+      if (!active || active.readiness !== 'ready') {
+        throw new Error('Connect this Runtime Host before enabling Direct peer access');
+      }
+      const reachability = (await active.candidate.client.status()).peerEndpoint;
+      if (!reachability || reachability.lease.peerId !== expectedPeerId) {
+        throw new Error('Runtime Host Direct peer identity changed');
+      }
       return mutateProfiles(async () => {
         requirePairingComplete(profileId);
         const source = await catalog.resolve(profileId);
@@ -1028,7 +1031,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!managed || managed.state !== 'active') {
           throw new Error('This Runtime Host profile is not bound to an active managed service');
         }
-        if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
+        if (
+          reachability.lease.directRoutes.length === 0 &&
+          reachability.lease.coordinationRoutes.length === 0
+        ) {
           throw new Error('Runtime Host returned an invalid direct-peer descriptor');
         }
         const peerProfileId = managedDirectPeerProfileId(profileId);
@@ -1042,9 +1048,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           rootId: source.profile.rootId,
           transport: {
             kind: 'libp2p-direct',
-            peerId: peer.peerId,
-            routeHints: peer.routeHints,
-            coordinationRelays: peer.coordinationRelays,
+            reachability,
           },
         };
         const existing = (await catalog.read()).profiles.find(
@@ -1350,32 +1354,26 @@ function createAuthenticatedPeerRouteObserver(
     target.profile.transport.kind !== 'libp2p-direct' ||
     !target.profileIncarnationId
   ) return undefined;
-  const expectedPeerId = target.profile.transport.peerId;
+  const expectedPeerId = target.profile.transport.reachability.lease.peerId;
   const incarnation = {
     profile: target.profile,
     profileIncarnationId: target.profileIncarnationId,
   } as const;
   let pending = Promise.resolve();
   const observe = (endpoint: HostPeerEndpoint): void => {
-    if (
-      endpoint.peerId !== expectedPeerId ||
-      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
-    ) return;
+    if (endpoint.lease.peerId !== expectedPeerId) return;
     pending = pending
       .then(async () => {
         await catalog.updateRemoteProfileIfCurrent(incarnation, (current) => {
           if (current.transport.kind !== 'libp2p-direct') return current;
-          if (
-            sameStrings(current.transport.routeHints, endpoint.routeHints) &&
-            sameStrings(current.transport.coordinationRelays, endpoint.coordinationRelays)
-          ) return current;
+          if (current.transport.reachability.lease.revision >= endpoint.lease.revision) {
+            return current;
+          }
           return {
             ...current,
             transport: {
               kind: 'libp2p-direct',
-              peerId: expectedPeerId,
-              routeHints: endpoint.routeHints,
-              coordinationRelays: endpoint.coordinationRelays,
+              reachability: endpoint,
             },
           };
         });
@@ -1388,10 +1386,6 @@ function createAuthenticatedPeerRouteObserver(
       });
   };
   return { observe, flush: () => pending };
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function managedDirectPeerProfileId(sourceProfileId: string): string {
@@ -1565,6 +1559,7 @@ function connectionCodeImportFailure(
     if (
       error.code === 'direct_path_unavailable' ||
       error.code === 'coordination_unavailable' ||
+      error.code === 'peer_reachability_needs_repair' ||
       error.code === 'peer_connect_in_progress'
     ) {
       return 'host_unreachable';

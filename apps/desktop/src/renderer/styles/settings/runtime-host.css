@@ -723,11 +723,11 @@
 }
 
 .settingsPeerMeshMemberState-local,
-.settingsPeerMeshMemberState-route_available {
+.settingsPeerMeshMemberState-reachable {
   background: var(--success);
 }
 
-.settingsPeerMeshMemberState-coordination_only {
+.settingsPeerMeshMemberState-reconnecting {
   background: var(--warning);
 }
 

@@ -26,6 +26,7 @@ import type { ProjectRootController } from './project-root-controller.js';
 import { resolveOpenPath, type OpenPathResult } from './open-path-guard.js';
 import { getE2eFixtureState, type resolveE2eFixture } from './e2e-fixture.js';
 import type { resolveBuildInfo } from './build-info.js';
+import type { DesktopUpdateChannel } from './app-update-attestation.js';
 import type {
   AppUpdateInstallRequest,
   AppUpdateService,
@@ -47,6 +48,7 @@ export interface AppIpcDeps {
   getProjectRoot(sessionId: unknown): Promise<string>;
   workspaceRoot: string;
   buildInfo: BuildInfo;
+  updateChannel: DesktopUpdateChannel;
   e2eFixture: E2eFixture;
   projectManagement: ProjectManagementService;
   allowLocalProjectPaths?: boolean;
@@ -89,7 +91,7 @@ export function registerAppIpc(
   deps: AppIpcDeps,
   targetIpc: ReconnectableReadIpcMain = ipcMain,
 ): void {
-  const { projectRoot, workspaceRoot, buildInfo, e2eFixture } = deps;
+  const { projectRoot, workspaceRoot, buildInfo, updateChannel, e2eFixture } = deps;
   const allowLocalProjectPaths = deps.allowLocalProjectPaths !== false;
   // Call-time read of the shared project-root authority: every handler must
   // observe the latest selection, not a snapshot taken at registration.
@@ -120,6 +122,7 @@ export function registerAppIpc(
         : { isGitRepo: false },
       buildMode: buildInfo.mode,
       buildCommit: buildInfo.commit,
+      updateChannel,
     };
   });
   handleReconnectableRead(targetIpc, 'projects:getSnapshot', () =>

@@ -19,7 +19,10 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ResolvedRuntimeHostProfile } from '@maka/runtime-host/client';
+import {
+  RuntimeHostPermanentReconnectError,
+  type ResolvedRuntimeHostProfile,
+} from '@maka/runtime-host/client';
 import {
   encodeCollaborationInvitationCode,
   type HostPeerEndpoint,
@@ -106,9 +109,7 @@ test('persists authenticated route rotation for reconnect and restart', async ()
         target.profile.kind === 'remote' ? target.profile.transport : undefined,
         {
           kind: 'libp2p-direct',
-          peerId: '12D3KooWpeer',
-          routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-          coordinationRelays: ['/memory/stale-relay'],
+          reachability: guestPeerReachability(),
         },
       );
       assert.ok(onPeerEndpoint);
@@ -118,11 +119,12 @@ test('persists authenticated route rotation for reconnect and restart', async ()
 
   const imported = await first.importInvitation(peerInvitation('guest-routes'), false, 'routes');
   assert.equal(imported.kind, 'connected');
-  observePeerEndpoint({
-    peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
-    coordinationRelays: ['/memory/fresh-relay'],
-  });
+  const rotated = guestPeerReachability(
+    2,
+    ['/ip4/198.51.100.2/udp/42000/quic-v1'],
+    ['/memory/fresh-relay'],
+  );
+  observePeerEndpoint(rotated);
   await first.close();
 
   let restarted!: ReturnType<typeof service>;
@@ -133,9 +135,7 @@ test('persists authenticated route rotation for reconnect and restart', async ()
   const target = await restartedTarget;
   assert.deepEqual(target.profile.kind === 'remote' ? target.profile.transport : undefined, {
     kind: 'libp2p-direct',
-    peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/198.51.100.2/udp/42000/quic-v1'],
-    coordinationRelays: ['/memory/fresh-relay'],
+    reachability: rotated,
   });
   await restarted.close();
 });
@@ -145,7 +145,9 @@ test('removes failed activation desire instead of creating recoverable profile s
   const unmounted: string[] = [];
   const mounts = service(store, {
     mount: async () => {
-      throw Object.assign(new Error('route missing'), { code: 'direct_path_unavailable' });
+      throw Object.assign(new Error('route missing'), {
+        code: 'peer_reachability_needs_repair',
+      });
     },
     unmount: async (mountId) => {
       unmounted.push(mountId);
@@ -156,6 +158,34 @@ test('removes failed activation desire instead of creating recoverable profile s
   assert.deepEqual(result.kind === 'error' ? result.reason : result.kind, 'peer_path_unavailable');
   assert.deepEqual(await store.read(), []);
   assert.equal(unmounted.length, 1);
+});
+
+test('does not retry a startup mount whose reachability recovery is exhausted', async () => {
+  const store = memoryStore();
+  await store.write([retainedMount('shared-needs-repair')]);
+  let attempts = 0;
+  let waits = 0;
+  let reportFailure!: () => void;
+  const failureReported = new Promise<void>((resolve) => {
+    reportFailure = resolve;
+  });
+  const mounts = service(store, {
+    mount: async () => {
+      attempts += 1;
+      throw new RuntimeHostPermanentReconnectError('reachability recovery exhausted');
+    },
+    wait: async () => {
+      waits += 1;
+    },
+    onError: () => reportFailure(),
+  });
+
+  await mounts.start();
+  await failureReported;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(attempts, 1);
+  assert.equal(waits, 0);
+  await mounts.close();
 });
 
 test('settles admitted finalization before committing unmount desire', async () => {
@@ -409,6 +439,8 @@ function service(
     readonly mount?: Parameters<typeof createDesktopGuestSessionMountService>[0]['mount'];
     readonly finalizeAccess?: Parameters<typeof createDesktopGuestSessionMountService>[0]['finalizeAccess'];
     readonly unmount?: Parameters<typeof createDesktopGuestSessionMountService>[0]['unmount'];
+    readonly wait?: Parameters<typeof createDesktopGuestSessionMountService>[0]['wait'];
+    readonly onError?: Parameters<typeof createDesktopGuestSessionMountService>[0]['onError'];
   } = {},
 ) {
   return createDesktopGuestSessionMountService({
@@ -416,7 +448,8 @@ function service(
     mount: overrides.mount ?? (async () => undefined),
     finalizeAccess: overrides.finalizeAccess ?? (async () => undefined),
     unmount: overrides.unmount ?? (async () => undefined),
-    onError: () => undefined,
+    ...(overrides.wait ? { wait: overrides.wait } : {}),
+    onError: overrides.onError ?? (() => undefined),
   });
 }
 
@@ -455,12 +488,30 @@ function peerInvitation(credential: string): string {
       name: 'Shared Host',
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: ['/memory/stale-relay'],
+        reachability: guestPeerReachability(),
       },
     },
   });
+}
+
+function guestPeerReachability(
+  revision = 1,
+  directRoutes: readonly string[] = ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+  coordinationRoutes: readonly string[] = ['/memory/stale-relay'],
+) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId: '12D3KooWpeer',
+      revision,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
+  };
 }
 
 function retainedMount(mountId: string): GuestSessionMount {

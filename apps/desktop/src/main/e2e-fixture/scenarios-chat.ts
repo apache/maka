@@ -20,11 +20,21 @@
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   header,
+  AGENT_GRAPH_SESSION_ID,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_PROMPT_COUNT,
   PROMPT_RAIL_SESSION_ID,
   TURN_SESSION_ID,
 } from './seed-helpers.js';
+
+export function agentGraphSession(now: number): SessionHeader {
+  return {
+    ...turnSession(now),
+    id: AGENT_GRAPH_SESSION_ID,
+    name: 'Agent Graph 布局示例',
+    orchestrationMode: 'graph',
+  };
+}
 
 export function turnSession(now: number): SessionHeader {
   return header({

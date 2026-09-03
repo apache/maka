@@ -100,7 +100,16 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 96 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 99 as const;
+// 99: ScheduledTask Agent execution templates carry immutable Connection
+// identity. Older peers cannot preserve the ID/slug/model binding and could
+// silently route a deleted Connection to a same-slug replacement.
+// 98: Peer Mesh invitations carry signed reachability leases and member route
+// projections use the convergent recovery state machine. Older peers decode a
+// different strict wire shape.
+// 97: Host status replaces unsigned route arrays with a self-signed, bounded
+// reachability lease. Older peers cannot validate the locator revision or its
+// target identity before retaining it for reconnect.
 // 96: Read image tool results may carry durable `session_context` refs.
 // 95: Catalog entries carry `describedByMetadata`, so a client asks the
 // Host-resolved entry — not its own bundled table — whether a model needs a

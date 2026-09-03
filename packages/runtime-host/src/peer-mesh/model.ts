@@ -31,11 +31,7 @@ import {
   decodePeerMeshInvitation as decodePeerMeshInvitationWire,
   type PeerMeshInvitationV1,
 } from '../protocol/peer-mesh.js';
-import {
-  PEER_MESH_MAX_MEMBERS,
-  PEER_MESH_MAX_ROUTE_HINTS,
-  PEER_MESH_ROUTE_RECORD_MAX_BYTES,
-} from './limits.js';
+import { PEER_MESH_MEMBER_ADVERTISEMENT_MAX_BYTES, PEER_MESH_MAX_MEMBERS } from './limits.js';
 import { canonicalPeerMeshDisplayName } from './display-name.js';
 
 export {
@@ -46,12 +42,13 @@ export {
   PEER_MESH_MAX_ROUTE_HINTS,
   PEER_MESH_MAX_TRANSIT_ADDRESSES_PER_RELAY,
   PEER_MESH_MAX_TRANSIT_RELAY_ADDRESSES,
-  PEER_MESH_ROUTE_RECORD_MAX_BYTES,
+  PEER_MESH_MEMBER_ADVERTISEMENT_MAX_BYTES,
 } from './limits.js';
 
 export interface PeerMeshRosterV1 {
   readonly version: 1;
   readonly meshId: string;
+  readonly authorityPeerId: string;
   readonly revision: number;
   readonly members: readonly string[];
   readonly closed: boolean;
@@ -64,28 +61,23 @@ export interface SignedPeerMeshRosterV1 {
   readonly signature: string;
 }
 
-export interface PeerMeshAuthorityTarget {
-  readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
-}
-
 export interface PeerMeshAuthorityKeyPair {
   readonly publicKey: string;
   readonly privateKey: string;
 }
 
-export interface PeerMeshRouteRecordV1 extends PeerMeshAuthorityTarget {
+export interface PeerMeshMemberAdvertisementV1 {
   readonly version: 1;
-  readonly sequence: number;
-  readonly expiresAt: number;
+  readonly meshId: string;
+  readonly peerId: string;
+  readonly revision: number;
   readonly endpointKind?: 'client' | 'host';
   readonly displayName?: string;
-  readonly transitMeshId?: string;
+  readonly offersTransit: boolean;
 }
 
-export interface SignedPeerMeshRouteRecordV1 {
-  readonly route: PeerMeshRouteRecordV1;
+export interface SignedPeerMeshMemberAdvertisementV1 {
+  readonly advertisement: PeerMeshMemberAdvertisementV1;
   readonly publicKey: string;
   readonly signature: string;
 }
@@ -135,12 +127,17 @@ export function validatePeerMeshAuthorityKeyPair(keys: PeerMeshAuthorityKeyPair)
       type: 'pkcs8',
     });
   } catch (error) {
-    throw new Error('Invalid Peer Mesh authority private key', { cause: error });
+    throw new Error('Invalid Peer Mesh authority private key', {
+      cause: error,
+    });
   }
   if (privateKey.asymmetricKeyType !== 'ed25519') {
     throw new Error('Peer Mesh authority key must be Ed25519');
   }
-  const derived = createPublicKey(privateKey).export({ format: 'der', type: 'spki' });
+  const derived = createPublicKey(privateKey).export({
+    format: 'der',
+    type: 'spki',
+  });
   if (derived.toString('base64url') !== keys.publicKey) {
     throw new Error('Peer Mesh authority private key does not match its public key');
   }
@@ -198,7 +195,7 @@ export function validatePeerMeshInvitation(value: unknown): PeerMeshInvitationV1
 }
 
 export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
-  const keys = ['version', 'meshId', 'revision', 'members', 'closed'];
+  const keys = ['version', 'meshId', 'authorityPeerId', 'revision', 'members', 'closed'];
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     if (Object.hasOwn(value, 'displayName')) keys.push('displayName');
   }
@@ -210,10 +207,15 @@ export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
   if (members.length === 0 || new Set(members).size !== members.length) {
     throw new Error('Peer Mesh roster members must be unique and non-empty');
   }
+  const authorityPeerId = token(record.authorityPeerId, 'authorityPeerId', 256);
+  if (!members.includes(authorityPeerId)) {
+    throw new Error('Peer Mesh authority must be present in its roster');
+  }
   if (typeof record.closed !== 'boolean') throw new Error('Invalid Peer Mesh roster closed');
   return Object.freeze({
     version: 1,
     meshId: string(record.meshId, 'meshId', 128),
+    authorityPeerId,
     revision: integer(record.revision, 'revision', 1),
     members: Object.freeze(members),
     closed: record.closed,
@@ -223,30 +225,18 @@ export function canonicalPeerMeshRoster(value: unknown): PeerMeshRosterV1 {
   });
 }
 
-export function decodeAuthorityTarget(value: unknown): PeerMeshAuthorityTarget {
-  const record = exactObject(value, 'Peer Mesh authority target', [
-    'peerId',
-    'routeHints',
-    'coordinationRelays',
-  ]);
-  return Object.freeze({
-    peerId: token(record.peerId, 'peerId', 256),
-    routeHints: Object.freeze(addressArray(record.routeHints, 'routeHints')),
-    coordinationRelays: Object.freeze(
-      addressArray(record.coordinationRelays, 'coordinationRelays'),
-    ),
-  });
-}
-
-export function canonicalPeerMeshRouteRecord(value: unknown): PeerMeshRouteRecordV1 {
-  const keys = ['version', 'peerId', 'sequence', 'expiresAt', 'routeHints', 'coordinationRelays'];
+export function canonicalPeerMeshMemberAdvertisement(
+  value: unknown,
+): PeerMeshMemberAdvertisementV1 {
+  const keys = ['version', 'meshId', 'peerId', 'revision', 'offersTransit'];
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     if (Object.hasOwn(value, 'endpointKind')) keys.push('endpointKind');
     if (Object.hasOwn(value, 'displayName')) keys.push('displayName');
-    if (Object.hasOwn(value, 'transitMeshId')) keys.push('transitMeshId');
   }
-  const record = exactObject(value, 'Peer Mesh route record', keys);
-  if (record.version !== 1) throw new Error('Unsupported Peer Mesh route record version');
+  const record = exactObject(value, 'Peer Mesh member advertisement', keys);
+  if (record.version !== 1) {
+    throw new Error('Unsupported Peer Mesh member advertisement version');
+  }
   if (
     record.endpointKind !== undefined &&
     record.endpointKind !== 'client' &&
@@ -254,56 +244,58 @@ export function canonicalPeerMeshRouteRecord(value: unknown): PeerMeshRouteRecor
   ) {
     throw new Error('Invalid Peer Mesh endpoint kind');
   }
-  const route = Object.freeze({
+  if (typeof record.offersTransit !== 'boolean') {
+    throw new Error('Invalid Peer Mesh transit advertisement');
+  }
+  const advertisement = Object.freeze({
     version: 1 as const,
+    meshId: string(record.meshId, 'meshId', 128),
     peerId: token(record.peerId, 'peerId', 256),
-    sequence: integer(record.sequence, 'route sequence', 1),
-    expiresAt: integer(record.expiresAt, 'route expiry', 1),
-    routeHints: Object.freeze(addressArray(record.routeHints, 'routeHints')),
-    coordinationRelays: Object.freeze(
-      addressArray(record.coordinationRelays, 'coordinationRelays'),
-    ),
+    revision: integer(record.revision, 'advertisement revision', 1),
     ...(record.endpointKind === undefined ? {} : { endpointKind: record.endpointKind }),
     ...(record.displayName === undefined
       ? {}
       : { displayName: canonicalPeerMeshDisplayName(record.displayName) }),
-    ...(record.transitMeshId === undefined
-      ? {}
-      : { transitMeshId: string(record.transitMeshId, 'transitMeshId', 128) }),
+    offersTransit: record.offersTransit,
   });
-  if (peerMeshRouteRecordSigningBytes(route).byteLength > PEER_MESH_ROUTE_RECORD_MAX_BYTES) {
-    throw new Error('Peer Mesh route record is too large');
+  if (
+    peerMeshMemberAdvertisementSigningBytes(advertisement).byteLength >
+    PEER_MESH_MEMBER_ADVERTISEMENT_MAX_BYTES
+  ) {
+    throw new Error('Peer Mesh member advertisement is too large');
   }
-  return route;
+  return advertisement;
 }
 
-export function decodeSignedPeerMeshRouteRecord(value: unknown): SignedPeerMeshRouteRecordV1 {
-  const record = exactObject(value, 'signed Peer Mesh route record', [
-    'route',
+export function decodeSignedPeerMeshMemberAdvertisement(
+  value: unknown,
+): SignedPeerMeshMemberAdvertisementV1 {
+  const record = exactObject(value, 'signed Peer Mesh member advertisement', [
+    'advertisement',
     'publicKey',
     'signature',
   ]);
-  const publicKey = canonicalProof(record.publicKey, 'route public key', 256);
-  const signature = canonicalProof(record.signature, 'route signature', 256);
+  const publicKey = canonicalProof(record.publicKey, 'advertisement public key', 256);
+  const signature = canonicalProof(record.signature, 'advertisement signature', 256);
   return Object.freeze({
-    route: canonicalPeerMeshRouteRecord(record.route),
+    advertisement: canonicalPeerMeshMemberAdvertisement(record.advertisement),
     publicKey,
     signature,
   });
 }
 
-export function peerMeshRouteRecordSigningBytes(route: PeerMeshRouteRecordV1): Buffer {
+export function peerMeshMemberAdvertisementSigningBytes(
+  advertisement: PeerMeshMemberAdvertisementV1,
+): Buffer {
   return Buffer.from(
-    `maka.peer-mesh.route.v1\n${JSON.stringify({
-      coordinationRelays: route.coordinationRelays,
-      ...(route.displayName ? { displayName: route.displayName } : {}),
-      ...(route.endpointKind ? { endpointKind: route.endpointKind } : {}),
-      expiresAt: route.expiresAt,
-      peerId: route.peerId,
-      routeHints: route.routeHints,
-      sequence: route.sequence,
-      ...(route.transitMeshId ? { transitMeshId: route.transitMeshId } : {}),
-      version: route.version,
+    `maka.peer-mesh.member-advertisement.v1\n${JSON.stringify({
+      ...(advertisement.displayName ? { displayName: advertisement.displayName } : {}),
+      ...(advertisement.endpointKind ? { endpointKind: advertisement.endpointKind } : {}),
+      meshId: advertisement.meshId,
+      offersTransit: advertisement.offersTransit,
+      peerId: advertisement.peerId,
+      revision: advertisement.revision,
+      version: advertisement.version,
     })}`,
   );
 }
@@ -311,6 +303,7 @@ export function peerMeshRouteRecordSigningBytes(route: PeerMeshRouteRecordV1): B
 function encodeRoster(roster: PeerMeshRosterV1): Buffer {
   return Buffer.from(
     `maka.peer-mesh.roster.v1\n${JSON.stringify({
+      authorityPeerId: roster.authorityPeerId,
       closed: roster.closed,
       ...(roster.displayName ? { displayName: roster.displayName } : {}),
       members: roster.members,
@@ -417,17 +410,4 @@ function stringArray(value: unknown, label: string, maxItems: number, maxLength:
     throw new Error(`Invalid Peer Mesh ${label}`);
   }
   return value.map((item) => string(item, label, maxLength));
-}
-
-function addressArray(value: unknown, label: string): string[] {
-  const addresses = stringArray(value, label, PEER_MESH_MAX_ROUTE_HINTS, 1024);
-  if (
-    addresses.some(
-      (address) => !address.startsWith('/') || /\s|[\u0000-\u001f\u007f]/u.test(address),
-    ) ||
-    new Set(addresses).size !== addresses.length
-  ) {
-    throw new Error(`Invalid Peer Mesh ${label}`);
-  }
-  return addresses;
 }

@@ -19,6 +19,7 @@
 
 import { startLocalIpcRuntimeHostListener } from './local-ipc-listener.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+import type { SignedPeerReachabilityLeaseV1 } from '../peer-reachability/index.js';
 import type { RuntimeHostConnectionAuthority } from './connection-authority.js';
 import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import {
@@ -44,15 +45,11 @@ export interface RuntimeHostListener {
 
 export interface RuntimeHostPeerListener extends RuntimeHostListener {
   readonly kind: 'libp2p_direct';
-  readonly peerId: string;
-  readonly listenAddresses: readonly string[];
-  readonly coordinationRelays: readonly string[];
+  readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
 export interface RuntimeHostPeerListenerDescriptor {
-  readonly peerId: string;
-  readonly listenAddresses: readonly string[];
-  readonly coordinationRelays: readonly string[];
+  readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
 export type RuntimeHostListenerKind = 'local_ipc' | 'websocket' | 'libp2p_direct';
@@ -132,10 +129,8 @@ export function createRuntimeHostListenerSet(
   const peerListeners = Object.freeze(
     additional.filter(isRuntimeHostPeerListener).map((listener) =>
       Object.freeze({
-        peerId: listener.peerId,
-        listenAddresses: Object.freeze([...listener.listenAddresses]),
-        get coordinationRelays() {
-          return Object.freeze([...listener.coordinationRelays]);
+        get reachability() {
+          return listener.reachability;
         },
       }),
     ),

@@ -85,19 +85,20 @@ Planner、CLI、UI 和未来 reconciler 不得各自组合事实。它们只消�
 |---|---|
 | call + matching response，无 dispatch | completed；表示 T1 前合成结果，legacy 下 response 本身也是完成证据 |
 | call + dispatch + matching response | completed |
-| call + dispatch，无 response | indeterminate / reconcile_required |
+| call + dispatch，无 response | indeterminate，Resolver 置 `requiresReconciliation`，reason 记 `dispatch_without_response` |
 | call，无 dispatch、无 response，首事件声明新协议 | definitely_not_dispatched |
 | call，无 dispatch、无 response，legacy/unknown protocol | indeterminate |
 | dispatch 存在但对应 call 不存在 | corruption |
 | response 存在但对应 call 不存在 | corruption |
 | dispatch/response 的 operation、tool call、tool name 或执行身份冲突 | corruption |
 | 同一 operation 出现多个不一致 dispatch 或 response | corruption |
+| call（含 dispatch 后无 response）且 operation 已带 recovery decision fact | 以 recovery bundle 结算：disposition 为 completed 则 completed（reason `recovery_bundle_completed`），否则 parked 并沿用 fact 的 reasonCode；fact 本身损坏按 corruption 处理 |
 
-Resolver 必须 fail-closed：未知组合不能退化成自动重试。Phase 3 首个恢复写入者应追加 `tool_recovery_decided` RuntimeEvent；后续 reconcile 结果同样追加事件，不回写历史事实。
+Resolver 必须 fail-closed：未知组合不能退化成自动重试。Phase 3 恢复写入者经原子 recovery bundle 事务提交 `actions.toolRecovery` decision fact（`maka.tool.recovery_decision`，protocol `tool_recovery_v1`）；后续 reconcile 结果同样追加事件，不回写历史事实。
 
 ### 5. Journal 是可重建投影，不是第二份账本
 
-Phase 2.5 保留现有表以降低查询成本，但状态缩窄为当前确有写入路径的 `prepared | outcome_committed`。未来 `indeterminate`、`reconciled`、`parked` 若需要查询状态，先定义对应 RuntimeEvent，再扩展 projector。
+Phase 2.5 保留现有表以降低查询成本，状态缩窄为写入路径可达的集合（现为 `prepared | reconcile_observed | outcome_committed | recovery_completed | recovery_parked`，与 `ToolJournalState` 联合一致，其中 `reconcile_observed` 由 reconcile 追加事件写入）。未来新状态若需要查询表示，先定义对应 RuntimeEvent，再扩展 projector。
 
 新协议的重建验收标准：清空 `tool_journal_events` 与 `tool_operations` 后，从 RuntimeEvent 投影得到相同 operation identity、dispatch/result event refs、recovery mode 与 current state。
 
@@ -139,7 +140,7 @@ Phase 2.5 保留现有表以降低查询成本，但状态缩窄为当前确有�
 1. Phase 2.5：增加 dispatch RuntimeEvent 和运行时 protocol marker；Journal 改为其同步投影。
 2. Phase 2.5：实现稳定 revalidation error code，清理无生产调用的旧接口与虚设状态。
 3. Phase 3：实现纯 RecoveryResolver 与完整决策表。
-4. Phase 3：提交 `tool_recovery_decided`，先支持 park/reconcile_required，不直接自动重跑有副作用工具。
+4. Phase 3：经 recovery bundle 提交 terminal decision fact（disposition `parked` / `completed`），先支持 park/reconcile，不直接自动重跑有副作用工具。
 5. Phase 3：加入 replay manifest、全 source digest revalidation 与投影重建工具。
 
 ## 验收不变量

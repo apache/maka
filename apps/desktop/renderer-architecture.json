@@ -2585,17 +2585,14 @@
           "../../preload/bridge-contract.js": 1,
           "../default-runtime-host-operation.js": 1,
           "../locales/settings-preferences-copy.js": 1,
-          "../locales/settings-shared-copy.js": 1,
           "./about-update-status.js": 1,
           "./settings-error-copy.js": 1,
-          "./settings-rows.js": 1,
           "./settings-section.js": 1,
           "./settings-skeleton.js": 1,
           "./use-action-guard.js": 1,
           "@astryxdesign/core": 1,
           "@astryxdesign/core/Kbd": 1,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
           "react": 1
         }
       },

@@ -41,6 +41,7 @@ import type {
 } from '@maka/core/capabilities';
 import type { HealthSignal, HealthSnapshot } from '@maka/core/health';
 import type { DesktopExternalSessionCatalogItem } from '../../src/preload/external-session-catalog';
+import type { AppUpdateStatus } from '../../src/preload/bridge-contract';
 import type { SessionSummary } from '@maka/core/session';
 import { revisionFamilySessionIds } from '@maka/core/session-revisions';
 import type {
@@ -847,14 +848,16 @@ const makaBridge = {
       osRelease: '23.4.0',
       arch: 'arm64',
       buildMode: 'dev',
+      // Dev installs report the updater's release fallback, not a real channel.
+      updateChannel: 'release',
       buildCommit: 'a63ae4d',
       appVersion: '0.9.0-dev',
       electronVersion: '33.2.0',
       nodeVersion: '20.18.0',
       chromeVersion: '130.0.6723.59',
-      // #1363: was missing entirely — the About and Data pages' 工作区路径
-      // rows rendered an EMPTY value in every story. Deliberately long and
-      // deep so the mono value exercises its wrap contract.
+      // #1363: was missing entirely — the 数据 page's 工作区路径 row rendered
+      // an EMPTY value in every story. Deliberately long and deep so the mono
+      // value exercises its wrap contract.
       workspacePath:
         '/Users/storybook-fixture-user/Library/Application Support/Maka/workspaces/infra-observability-platform-desktop',
     }),
@@ -963,6 +966,32 @@ const makaBridge = {
 } satisfies Record<string, unknown>;
 
 const withSettingsBridge = withScopedMakaBridge(makaBridge);
+
+/**
+ * A PACKAGED install, which the shared fixture cannot be: it is a dev checkout,
+ * and `buildMode` short-circuits the About lead before `updateChannel` is ever
+ * read. Only these two facts move — everything else stays the shared bridge, so
+ * the channel stories differ from `About` by exactly what they are about.
+ */
+function withPackagedChannelBridge(channel: {
+  updateChannel: 'nightly' | 'release';
+  appVersion: string;
+  updateStatus: AppUpdateStatus;
+}) {
+  return withScopedMakaBridge({
+    ...makaBridge,
+    app: {
+      ...makaBridge.app,
+      info: async () => ({
+        ...(await makaBridge.app.info()),
+        buildMode: 'packaged' as const,
+        updateChannel: channel.updateChannel,
+        appVersion: channel.appVersion,
+      }),
+      updateStatus: async () => channel.updateStatus,
+    },
+  } satisfies Record<string, unknown>);
+}
 
 function pendingForever<T>(): Promise<T> {
   return new Promise(() => undefined);
@@ -1670,6 +1699,7 @@ function SettingsStoryFrame(props: SettingsStoryProps) {
               initialConnectionSlug={props.initialConnectionSlug}
               initialFocusRef={initialFocusRef}
               onOpenDailyReview={noop}
+              onOpenKeyboardHelp={noop}
               onOpenSession={noop}
               archivedTasks={archivedTasks}
               onTaskImported={noop}
@@ -2581,6 +2611,38 @@ export const HealthCenter: Story = {
 // Real path: 设置 → 关于 (also reachable from 反馈 in the topbar).
 export const About: Story = {
   decorators: [withSettingsBridge],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page inside a packaged Nightly. Nightly publishes daily
+// and auto-downloads, so `downloaded` — not `not-available` — is what a nightly
+// user actually opens this page to. The version string is the shipped shape:
+// <product>-dev.<run>.<UTC day>.
+export const AboutNightly: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'nightly',
+      appVersion: '0.2.0-dev.12.20260901',
+      updateStatus: {
+        state: 'downloaded',
+        currentVersion: '0.2.0-dev.12.20260901',
+        latestVersion: '0.2.0-dev.13.20260902',
+      },
+    }),
+  ],
+  render: () => <SettingsStory section="about" />,
+};
+
+// Real path: the same page inside a packaged release — the default state, which
+// wears no channel token at all.
+export const AboutRelease: Story = {
+  decorators: [
+    withPackagedChannelBridge({
+      updateChannel: 'release',
+      appVersion: '0.2.0',
+      updateStatus: { state: 'not-available', currentVersion: '0.2.0' },
+    }),
+  ],
   render: () => <SettingsStory section="about" />,
 };
 

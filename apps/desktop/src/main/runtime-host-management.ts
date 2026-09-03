@@ -556,6 +556,7 @@ export function createDesktopRuntimeHostManagement(input: {
     if (peerProfile.enabled) {
       throw new Error('Disable the Direct peer profile before changing its listener');
     }
+    const previousHostEpoch = input.currentHostEpoch(profileId);
     const response = await input.runPeerManagement({
       destination: transport.destination,
       ...(transport.sshPort === undefined ? {} : { sshPort: transport.sshPort }),
@@ -574,6 +575,9 @@ export function createDesktopRuntimeHostManagement(input: {
           : 'Runtime Host returned an unrelated direct-peer result',
       );
     }
+    if (response.action !== (enabledValue ? 'enable' : 'disable')) {
+      throw new Error('Runtime Host returned an unrelated direct-peer result');
+    }
     const status = response.status;
     if (enabledValue) {
       try {
@@ -584,11 +588,13 @@ export function createDesktopRuntimeHostManagement(input: {
         ) {
           throw new Error('Runtime Host did not return a usable direct-peer descriptor');
         }
-        await input.profiles.upsertManagedDirectPeerProfile(profileId, {
-          peerId: status.peerId,
-          routeHints: status.routeHints,
-          coordinationRelays: status.coordinationRelays,
-        });
+        await input.awaitUpdatedConnection(
+          profileId,
+          managed.profile.rootId,
+          previousHostEpoch,
+          response.restarted,
+        );
+        await input.profiles.upsertManagedDirectPeerProfile(profileId, status.peerId);
       } catch (failure) {
         try {
           const rollback = await input.runPeerManagement({
@@ -919,7 +925,10 @@ export function createDesktopRuntimeHostManagement(input: {
     const peerProfile = await input.profiles.resolveManagedDirectPeerProfile(
       access.managed.profile.id,
     );
-    if (peerProfile.peerId && decoded.transport.peerId !== peerProfile.peerId) {
+    if (
+      peerProfile.peerId &&
+      decoded.transport.reachability.lease.peerId !== peerProfile.peerId
+    ) {
       throw new Error('Remote Runtime Host returned a connection code for a different Direct peer');
     }
     return response.connectionCode;

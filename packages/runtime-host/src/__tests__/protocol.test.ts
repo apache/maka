@@ -2135,6 +2135,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a bounded live Direct peer endpoint through Host status', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 94);
     const status = {
       hostEpoch: 'epoch-1',
       compositionId: 'maka.interactive',
@@ -2144,9 +2145,17 @@ describe('Runtime Host bootstrap protocol', () => {
       activeOperations: 0,
       activeResidencies: 0,
       peerEndpoint: {
-        peerId: '12D3KooWhost',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        lease: {
+          version: 1,
+          peerId: '12D3KooWhost',
+          revision: 1,
+          issuedAt: 1,
+          expiresAt: 2,
+          directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRoutes: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        },
+        publicKey: 'AA',
+        signature: 'AA',
       },
     };
     assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
@@ -2155,10 +2164,13 @@ describe('Runtime Host bootstrap protocol', () => {
         ...status,
         peerEndpoint: {
           ...status.peerEndpoint,
-          coordinationRelays: [
-            status.peerEndpoint.coordinationRelays[0],
-            status.peerEndpoint.coordinationRelays[0],
-          ],
+          lease: {
+            ...status.peerEndpoint.lease,
+            coordinationRoutes: [
+              status.peerEndpoint.lease.coordinationRoutes[0],
+              status.peerEndpoint.lease.coordinationRoutes[0],
+            ],
+          },
         },
       }),
     );

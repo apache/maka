@@ -359,7 +359,7 @@ function decodeCreateInput(value: unknown): Omit<CreateScheduledTaskInput, 'crea
       SCHEDULED_TASK_INTENT_MAX_CHARS,
     ),
     schedule: decodeSchedule(input.schedule),
-    effect: decodeEffect(input.effect),
+    effect: decodeEffect(input.effect, { requireConnectionId: true }),
     ...(Object.hasOwn(input, 'maxFires')
       ? { maxFires: nullablePositiveCount(input.maxFires, 'ScheduledTask maxFires') }
       : {}),
@@ -398,7 +398,9 @@ function decodeUpdateInput(value: unknown): UpdateScheduledTaskInput {
         }
       : {}),
     ...(Object.hasOwn(patch, 'schedule') ? { schedule: decodeSchedule(patch.schedule) } : {}),
-    ...(Object.hasOwn(patch, 'effect') ? { effect: decodeEffect(patch.effect) } : {}),
+    ...(Object.hasOwn(patch, 'effect')
+      ? { effect: decodeEffect(patch.effect, { requireConnectionId: true }) }
+      : {}),
     ...(Object.hasOwn(patch, 'maxFires')
       ? { maxFires: nullablePositiveCount(patch.maxFires, 'ScheduledTask maxFires') }
       : {}),
@@ -472,7 +474,10 @@ function decodeSchedule(value: unknown): ScheduledTaskSchedule {
   throw invalidProtocolFrame('Invalid ScheduledTask schedule');
 }
 
-function decodeEffect(value: unknown): ScheduledTaskEffect {
+function decodeEffect(
+  value: unknown,
+  options: { readonly requireConnectionId?: boolean } = {},
+): ScheduledTaskEffect {
   const effect = requireRecord(value, 'ScheduledTask effect');
   if (effect.kind === 'notify') {
     if (effect.channel === 'local') {
@@ -508,7 +513,10 @@ function decodeEffect(value: unknown): ScheduledTaskEffect {
       'kind',
       'execution',
     ]);
-    return { kind: 'agent_run', execution: decodeExecution(exact.execution) };
+    return {
+      kind: 'agent_run',
+      execution: decodeExecution(exact.execution, options.requireConnectionId === true),
+    };
   }
   if (effect.kind === 'session_resume') {
     const exact = requireExactRecord(effect, 'ScheduledTask Session resume effect', [
@@ -528,7 +536,10 @@ function decodeEffect(value: unknown): ScheduledTaskEffect {
   throw invalidProtocolFrame('Invalid ScheduledTask effect');
 }
 
-function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
+function decodeExecution(
+  value: unknown,
+  requireConnectionId = false,
+): ScheduledTaskExecutionTemplate {
   // `backend` left the template (#3306), but templates frozen by older builds
   // still carry it and this is a closed shape: the key must stay tolerated on
   // the way in, and it never lands on the decoded value.
@@ -543,8 +554,11 @@ function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
       'collaborationMode',
       'orchestrationMode',
     ],
-    ['projectId', 'thinkingLevel', 'backend'],
+    ['projectId', 'thinkingLevel', 'backend', 'llmConnectionId'],
   );
+  if (requireConnectionId && !Object.hasOwn(execution, 'llmConnectionId')) {
+    throw invalidProtocolFrame('ScheduledTask execution requires Connection id');
+  }
   if (!isPermissionMode(execution.permissionMode)) {
     throw invalidProtocolFrame('Invalid ScheduledTask permission mode');
   }
@@ -568,6 +582,14 @@ function decodeExecution(value: unknown): ScheduledTaskExecutionTemplate {
     cwd: boundedText(execution.cwd, 'ScheduledTask cwd', 4_096, true),
     ...(Object.hasOwn(execution, 'projectId')
       ? { projectId: execution.projectId as string | null }
+      : {}),
+    ...(Object.hasOwn(execution, 'llmConnectionId')
+      ? {
+          llmConnectionId: requireEntityId(
+            execution.llmConnectionId,
+            'ScheduledTask Connection id',
+          ),
+        }
       : {}),
     llmConnectionSlug: boundedText(
       execution.llmConnectionSlug,
