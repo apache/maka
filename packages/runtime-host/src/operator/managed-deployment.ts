@@ -63,11 +63,18 @@ const boundedText = (maximumBytes: number) =>
 const absolutePathSchema = boundedText(4_096).refine(isAbsolute);
 const deploymentIdSchema = z.string().regex(UUID_PATTERN);
 const configRevisionSchema = z.number().int().positive().safe();
-const providerSchema = z.enum(['systemd_user', 'launch_agent', 'openrc_user', 'openrc_system']);
-const reconciliationProviderSchema = z.enum([
+export const runtimeHostSupervisorProviderSchema = z.enum([
+  'systemd_user',
+  'launch_agent',
+  'openrc_user',
+  'openrc_system',
+  'windows_task',
+]);
+export const runtimeHostReconciliationProviderSchema = z.enum([
   'systemd_timer',
   'launch_agent_timer',
   'openrc_supervised_loop',
+  'windows_task_timer',
 ]);
 const packageIdentitySchema = z
   .object({
@@ -87,7 +94,7 @@ const lifecycleSchema = z.discriminatedUnion('mode', [
   z
     .object({
       mode: z.literal('supervised'),
-      provider: providerSchema,
+      provider: runtimeHostSupervisorProviderSchema,
       availability: z.enum(['session', 'environment', 'machine']),
     })
     .strict(),
@@ -99,7 +106,7 @@ const reconciliationSchema = z.discriminatedUnion('trigger', [
   z
     .object({
       trigger: z.literal('scheduled'),
-      provider: reconciliationProviderSchema,
+      provider: runtimeHostReconciliationProviderSchema,
     })
     .strict(),
 ]);
@@ -216,7 +223,9 @@ const managedDeploymentConfigSchema = z
           ? 'systemd_timer'
           : value.lifecycle.provider === 'launch_agent'
             ? 'launch_agent_timer'
-            : 'openrc_supervised_loop';
+            : value.lifecycle.provider === 'windows_task'
+              ? 'windows_task_timer'
+              : 'openrc_supervised_loop';
       if (value.reconciliation.provider !== expected) {
         context.addIssue({
           code: 'custom',
@@ -297,8 +306,10 @@ function validateDeploymentTransitionEndpoints(
   }
 }
 
-export type RuntimeHostSupervisorProvider = z.infer<typeof providerSchema>;
-export type RuntimeHostReconciliationProvider = z.infer<typeof reconciliationProviderSchema>;
+export type RuntimeHostSupervisorProvider = z.infer<typeof runtimeHostSupervisorProviderSchema>;
+export type RuntimeHostReconciliationProvider = z.infer<
+  typeof runtimeHostReconciliationProviderSchema
+>;
 export type RuntimeHostManagedDeploymentConfig = z.infer<typeof managedDeploymentConfigSchema>;
 export type RuntimeHostManagedLaunchClaim = z.infer<typeof managedLaunchClaimSchema>;
 export type RuntimeHostManagedDeploymentTransitionOperation = z.infer<

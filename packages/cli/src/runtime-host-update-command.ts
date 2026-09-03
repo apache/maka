@@ -233,7 +233,7 @@ export async function runManagedRuntimeHostUpdateCli(
         convergeOperator: (currentConfig, desiredConfig) =>
           convergeRuntimeHostManagedOperator(currentConfig, desiredConfig),
         verifyOperator: verifyRuntimeHostManagedOperator,
-        resolveProvider: (requested) => resolveRuntimeHostLifecycleProvider(rootId, requested),
+        resolveProvider: resolveRuntimeHostLifecycleProvider,
       }),
       assertOperatorDeployment: assertRuntimeHostManagedOperatorDeployment,
       recoverDeployment: resolveRecoverableRuntimeHostManagedDeployment,
@@ -784,7 +784,6 @@ async function runCanonicalRuntimeHostUpdate(
           return 1;
         }
         staged = undefined;
-        await deps.prunePackages(desired);
         const updated = await deps.canonical.manageLifecycle(
           options.managedRootId,
           {
@@ -797,6 +796,7 @@ async function runCanonicalRuntimeHostUpdate(
           },
           { resolveProvider: resolveRuntimeHostLifecycleProvider },
         );
+        await deps.prunePackages(desired);
         emit({
           schemaVersion: 1,
           kind: 'result',

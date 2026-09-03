@@ -97,7 +97,10 @@ test('one authority record recovers provider cutover failures without a journal'
     verifyOperator: async (expected: RuntimeHostManagedDeploymentConfig) => {
       assert.deepEqual(operatorProjection.launch, expected.launch);
     },
-    resolveProvider: (provider: RuntimeHostSupervisorProvider) => providers.get(provider)!,
+    resolveProvider: (deployment: RuntimeHostManagedDeploymentConfig) => {
+      assert.equal(deployment.lifecycle.mode, 'supervised');
+      return providers.get(deployment.lifecycle.provider)!;
+    },
   };
   const firstOwner = await tryAcquireStateRootOwner(capability);
   assert.ok(firstOwner);

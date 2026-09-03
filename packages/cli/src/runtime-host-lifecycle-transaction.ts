@@ -49,7 +49,6 @@ import {
   type RuntimeHostManagedDeploymentTransition,
   type RuntimeHostManagedDeploymentTransitionOperation,
   type RuntimeHostManagedDeploymentTransitionRecovery,
-  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import type {
   RuntimeHostLifecycleProvider,
@@ -61,7 +60,7 @@ export const RUNTIME_HOST_READY_TIMEOUT_MS = 45_000;
 
 export interface RuntimeHostLifecycleTransactionDeps {
   readonly resolveProvider: (
-    provider: RuntimeHostSupervisorProvider,
+    config: RuntimeHostManagedDeploymentConfig,
   ) => RuntimeHostLifecycleProvider;
   readonly convergeOperator: (
     current: RuntimeHostManagedDeploymentConfig | undefined,
@@ -519,7 +518,7 @@ export async function replaceRuntimeHostLifecycle(input: {
   const desired = decodeRuntimeHostManagedDeploymentConfig(input.desired);
   const currentProvider = supervisedProvider(current ?? null, input.deps);
   if (desired.lifecycle.mode === 'supervised') {
-    await input.deps.resolveProvider(desired.lifecycle.provider).supervisor.preflight();
+    await input.deps.resolveProvider(desired).supervisor.preflight();
   }
   const retirement = await retireRuntimeHostLifecycleOwner({
     rootPath: desired.root.path,
@@ -748,7 +747,7 @@ export async function activateRuntimeHostLifecycle(
 ): Promise<void> {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   await provider.supervisor.activate();
   if (canonical.reconciliation.trigger === 'scheduled') {
     await provider.reconciliationTrigger.activate();
@@ -763,7 +762,7 @@ export async function verifyRuntimeHostLifecycleReady(
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await verifyRuntimeHostLifecycleProjection(canonical, deps);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   const deadline = Date.now() + timeoutMs;
   let lastFailure: unknown = new Error('Runtime Host is not ready');
   while (Date.now() < deadline) {
@@ -815,7 +814,7 @@ export async function verifyRuntimeHostLifecycleProjection(
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   await deps.verifyOperator(canonical);
   if (canonical.lifecycle.mode !== 'supervised') return;
-  const provider = deps.resolveProvider(canonical.lifecycle.provider);
+  const provider = deps.resolveProvider(canonical);
   await provider.supervisor.verify(runtimeHostSupervisorDefinition(canonical));
   if (canonical.reconciliation.trigger !== 'scheduled') return;
   await provider.reconciliationTrigger.verify(
@@ -932,7 +931,5 @@ function supervisedProvider(
   config: RuntimeHostManagedDeploymentConfig | null,
   deps: RuntimeHostLifecycleTransactionDeps,
 ): RuntimeHostLifecycleProvider | undefined {
-  return config?.lifecycle.mode === 'supervised'
-    ? deps.resolveProvider(config.lifecycle.provider)
-    : undefined;
+  return config?.lifecycle.mode === 'supervised' ? deps.resolveProvider(config) : undefined;
 }

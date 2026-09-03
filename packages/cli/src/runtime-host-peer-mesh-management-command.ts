@@ -100,8 +100,7 @@ export async function runRuntimeHostPeerMeshManagementCli(
           {
             convergeOperator: convergeRuntimeHostManagedOperator,
             verifyOperator: verifyRuntimeHostManagedOperator,
-            resolveProvider: (requested) =>
-              resolveRuntimeHostLifecycleProvider(options.managedRootId, requested),
+            resolveProvider: resolveRuntimeHostLifecycleProvider,
           },
           { expectedTarget: options.expectedTarget },
         );

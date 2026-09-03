@@ -23,18 +23,20 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import {
   closeSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import { findReleaseTarball } from './release-cli-eval-support.mjs';
@@ -230,6 +232,10 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     'node_modules/@maka/runtime-host/dist/peer-reachability/index.js',
   );
   const access = await importInstalled(packageRoot, 'dist/runtime-host-access-command.js');
+  const windowsLifecycle = await importInstalled(
+    packageRoot,
+    'dist/runtime-host-windows-service.js',
+  );
   const clientDataRoot = join(root, 'peer-client');
   const hostRoot = join(root, 'peer-host');
   const hostKeyPath = join(root, 'peer-host.key');
@@ -256,6 +262,12 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     const nativePath = process.env.MAKA_RUNTIME_HOST_PEER_NATIVE_PATH;
     if (!nativePath) throw new Error('Installed CLI did not configure its direct-peer artifact');
     const addon = require(nativePath);
+    await smokeWindowsTaskScheduler(
+      windowsLifecycle.createWindowsRuntimeHostLifecycleProvider,
+      cliEntrypoint,
+      nativePath,
+      join(root, 'windows task & % 生命周期'),
+    );
     const peerId = await addon.ensurePeerIdentity(hostKeyPath);
     const unrelatedPeerId = await addon.ensurePeerIdentity(join(root, 'unrelated-peer.key'));
     try {
@@ -399,6 +411,137 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     await meshAuthorityEndpoint?.close().catch(() => undefined);
     restoreEnvironment('MAKA_RUNTIME_HOST_PEER_NATIVE_PATH', previousNativePath);
     restoreEnvironment('MAKA_RUNTIME_HOST_PEER_KEY_PATH', previousKeyPath);
+  }
+}
+
+async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePath, root) {
+  if (process.platform !== 'win32') return;
+  mkdirSync(root, { recursive: true });
+  const rootId = createHash('sha256').update(root).digest('hex');
+  const controllerPackageRoot = dirname(dirname(cliEntrypoint));
+  const managedPackageRoot = join(controllerPackageRoot, '.windows-lifecycle-smoke-package');
+  cpSync(join(controllerPackageRoot, 'dist'), join(managedPackageRoot, 'dist'), {
+    recursive: true,
+  });
+  cpSync(join(controllerPackageRoot, 'native'), join(managedPackageRoot, 'native'), {
+    recursive: true,
+  });
+  const managedCliEntrypoint = join(managedPackageRoot, 'dist', basename(cliEntrypoint));
+  const managedNativePath = join(managedPackageRoot, relative(controllerPackageRoot, nativePath));
+  const scriptPath = join(
+    dirname(managedCliEntrypoint),
+    'runtime-host-windows-supervisor-smoke.cjs',
+  );
+  const controllerRunnerPath = join(dirname(cliEntrypoint), 'runtime-host-windows-task-runner.js');
+  const disabledControllerRunnerPath = `${controllerRunnerPath}.disabled`;
+  const readyPath = join(root, 'ready.json');
+  const replacementReadyPath = join(root, 'replacement-ready.json');
+  const hostileArgument = '空 格 &|^<>%PATH% " \\';
+  writeFileSync(
+    scriptPath,
+    [
+      "const { spawn } = require('node:child_process');",
+      "const { writeFileSync } = require('node:fs');",
+      'const [runtimeHost, serve, nativePath, expected, readyPath] = process.argv.slice(2);',
+      'require(nativePath).ownCurrentProcessTree();',
+      "if (runtimeHost !== 'runtime-host' || serve !== 'serve') process.exit(90);",
+      `if (expected !== ${JSON.stringify(hostileArgument)}) process.exit(91);`,
+      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+      'child.unref();',
+      'writeFileSync(readyPath, JSON.stringify({ pid: process.pid, childPid: child.pid }));',
+      'setInterval(() => {}, 1000);',
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  const provider = createProvider(rootId, { cliPath: managedCliEntrypoint });
+  const hostCommand = [
+    process.execPath,
+    scriptPath,
+    'runtime-host',
+    'serve',
+    managedNativePath,
+    hostileArgument,
+    readyPath,
+  ];
+  const replacementHostCommand = [...hostCommand.slice(0, -1), replacementReadyPath];
+  const reconciliationCommand = [process.execPath, '-e', 'process.exit(0)'];
+  renameSync(controllerRunnerPath, disabledControllerRunnerPath);
+  try {
+    await provider.supervisor.preflight();
+    await provider.supervisor.converge({ command: hostCommand });
+    await provider.supervisor.verify({ command: hostCommand });
+    await provider.reconciliationTrigger.converge({ command: reconciliationCommand });
+    await provider.reconciliationTrigger.verify({ command: reconciliationCommand });
+    const reconciliation = await provider.reconciliationTrigger.status();
+    if (!reconciliation.installed || !reconciliation.active) {
+      throw new Error('Windows reconciliation task is not ready');
+    }
+    await provider.supervisor.activate();
+    await provider.supervisor.activate();
+    let deadline = Date.now() + 15_000;
+    while (!existsSync(readyPath) && Date.now() < deadline) await delay(100);
+    if (!existsSync(readyPath)) throw new Error('Windows scheduled task did not start');
+    const first = JSON.parse(readFileSync(readyPath, 'utf8'));
+    const firstStatus = await provider.supervisor.status();
+    if (
+      firstStatus.state !== 'running' ||
+      firstStatus.pid !== first.pid ||
+      !processExists(first.pid) ||
+      !processExists(first.childPid)
+    ) {
+      throw new Error('Windows scheduled task PID does not match its process tree owner');
+    }
+    rmSync(readyPath);
+    process.kill(first.pid, 'SIGKILL');
+    deadline = Date.now() + 90_000;
+    while (!existsSync(readyPath) && Date.now() < deadline) await delay(100);
+    if (!existsSync(readyPath))
+      throw new Error('Windows scheduled task did not restart after crash');
+    const ready = JSON.parse(readFileSync(readyPath, 'utf8'));
+    const status = await provider.supervisor.status();
+    if (
+      ready.pid === first.pid ||
+      status.state !== 'running' ||
+      status.pid !== ready.pid ||
+      !processExists(ready.pid) ||
+      !processExists(ready.childPid) ||
+      processExists(first.childPid)
+    ) {
+      throw new Error('Windows scheduled task did not recover with one fresh process tree');
+    }
+    await provider.supervisor.converge({ command: replacementHostCommand });
+    await provider.supervisor.verify({ command: replacementHostCommand });
+    await provider.supervisor.activate();
+    deadline = Date.now() + 15_000;
+    while (!existsSync(replacementReadyPath) && Date.now() < deadline) await delay(100);
+    if (!existsSync(replacementReadyPath)) {
+      throw new Error('Windows scheduled task did not activate its replacement definition');
+    }
+    const replacement = JSON.parse(readFileSync(replacementReadyPath, 'utf8'));
+    if (
+      processExists(ready.pid) ||
+      processExists(ready.childPid) ||
+      !processExists(replacement.pid) ||
+      !processExists(replacement.childPid)
+    ) {
+      throw new Error('Windows scheduled task replacement retained the previous process tree');
+    }
+    await provider.supervisor.retire();
+    const stopDeadline = Date.now() + 10_000;
+    while (
+      (processExists(replacement.pid) || processExists(replacement.childPid)) &&
+      Date.now() < stopDeadline
+    ) {
+      await delay(100);
+    }
+    if (processExists(replacement.pid) || processExists(replacement.childPid)) {
+      throw new Error('Windows scheduled task retirement left an owned process alive');
+    }
+  } finally {
+    await provider.supervisor.uninstall().catch(() => undefined);
+    await provider.reconciliationTrigger.uninstall().catch(() => undefined);
+    renameSync(disabledControllerRunnerPath, controllerRunnerPath);
   }
 }
 

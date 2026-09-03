@@ -64,6 +64,7 @@ import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
 import { replaceRuntimeHostLifecycle } from '../runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
+import { createOpenRcRuntimeHostLifecycleProvider } from '../runtime-host-openrc-service.js';
 import { resolveRuntimeHostLifecycleProvider } from '../runtime-host-service-management-command.js';
 import {
   resolveRuntimeHostManagedServiceId,
@@ -383,7 +384,7 @@ test('fresh supervised setup discovers its provider before constructing a legacy
       discoverLifecycleProvider: async (discoveredRootId) => {
         rootId = discoveredRootId;
         return {
-          provider: resolveRuntimeHostLifecycleProvider(rootId, 'openrc_user'),
+          provider: createOpenRcRuntimeHostLifecycleProvider(rootId, 'openrc_user'),
           availability: 'session',
         };
       },
@@ -487,7 +488,24 @@ test('managed setup frames reject malformed machine output', () => {
 });
 
 test('persisted OpenRC providers resolve without reselecting the platform default', () => {
-  const openRc = resolveRuntimeHostLifecycleProvider('a'.repeat(64), 'openrc_user');
+  const rootId = 'a'.repeat(64);
+  const openRc = resolveRuntimeHostLifecycleProvider({
+    schemaVersion: 1,
+    state: 'active',
+    deploymentId: '00000000-0000-4000-8000-000000000001',
+    configRevision: 1,
+    deploymentRoot: '/opt/maka',
+    root: { id: rootId, path: '/srv/maka' },
+    projectDirectoryRoots: [],
+    launch: {
+      kind: 'exact_package',
+      nodePath: '/usr/bin/node',
+      package: { kind: 'npm_registry', version: '0.2.0', integrity: PACKAGE_INTEGRITY },
+    },
+    listeners: { localIpc: true },
+    lifecycle: { mode: 'supervised', provider: 'openrc_user', availability: 'session' },
+    reconciliation: { trigger: 'scheduled', provider: 'openrc_supervised_loop' },
+  });
   assert.equal(openRc.supervisor.provider, 'openrc_user');
   assert.equal(openRc.reconciliationTrigger.provider, 'openrc_supervised_loop');
 });

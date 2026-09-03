@@ -21,6 +21,7 @@ import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { release } from 'node:os';
 import {
   assertRuntimeHostManagedDeploymentAuthorityDurablyAbsent,
+  decodeRuntimeHostManagedDeploymentConfig,
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
@@ -31,10 +32,11 @@ import {
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SERVICE_ERROR_MESSAGE_MAX_BYTES,
+  resolveRuntimeHostNpmDeploymentLayout,
+  type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostOperatorCapability,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceSummary,
-  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import {
@@ -60,6 +62,7 @@ import {
   createSystemdUserRuntimeHostService,
 } from './runtime-host-systemd-service.js';
 import { createOpenRcRuntimeHostLifecycleProvider } from './runtime-host-openrc-service.js';
+import { createWindowsRuntimeHostLifecycleProvider } from './runtime-host-windows-service.js';
 import type {
   RuntimeHostLifecycleProvider,
   RuntimeHostLifecycleProviderOffer,
@@ -498,10 +501,22 @@ export async function discoverRuntimeHostLifecycleProvider(
     await provider.supervisor.preflight();
     return { provider, availability: 'session' };
   }
+  if (platform === 'win32') {
+    const cliPath = process.argv[1];
+    if (!cliPath) {
+      throw new RuntimeHostServiceManagerError(
+        'invalid_launch',
+        'The Windows lifecycle probe requires the current CLI path',
+      );
+    }
+    const provider = createWindowsRuntimeHostLifecycleProvider(rootId, { cliPath });
+    await provider.supervisor.preflight();
+    return { provider, availability: 'session' };
+  }
   if (platform !== 'linux') {
     throw new RuntimeHostServiceManagerError(
       'unsupported_platform',
-      'Supervised Runtime Host deployments currently require Linux or macOS',
+      'Supervised Runtime Host deployments currently require Linux, macOS, or Windows',
     );
   }
 
@@ -550,11 +565,27 @@ export async function discoverRuntimeHostLifecycleProvider(
 
 /** Resolves only the provider identity already persisted by the deployment authority. */
 export function resolveRuntimeHostLifecycleProvider(
-  rootId: string,
-  provider: RuntimeHostSupervisorProvider,
+  config: RuntimeHostManagedDeploymentConfig,
 ): RuntimeHostLifecycleProvider {
+  const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
+  if (canonical.lifecycle.mode !== 'supervised') {
+    throw new RuntimeHostServiceManagerError(
+      'invalid_config',
+      'An on-demand Runtime Host has no lifecycle provider',
+    );
+  }
+  const rootId = canonical.root.id;
+  const provider = canonical.lifecycle.provider;
   if (provider === 'systemd_user') return createSystemdUserRuntimeHostLifecycleProvider(rootId, {});
   if (provider === 'launch_agent') return createLaunchAgentRuntimeHostLifecycleProvider(rootId);
+  if (provider === 'windows_task') {
+    return createWindowsRuntimeHostLifecycleProvider(rootId, {
+      cliPath: resolveRuntimeHostNpmDeploymentLayout(
+        canonical.deploymentRoot,
+        canonical.launch.package.integrity,
+      ).cliPath,
+    });
+  }
   return createOpenRcRuntimeHostLifecycleProvider(rootId, provider);
 }
 

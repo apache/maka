@@ -41,7 +41,6 @@ import {
   type RuntimeHostNodeOperatorCommand,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
-  type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -120,7 +119,7 @@ import type {
 } from './runtime-host-lifecycle-provider.js';
 import {
   resolveRuntimeHostManagedPeerKeyPath,
-  resolveRuntimeHostPeerNativePath,
+  resolveRuntimeHostNativePath,
 } from './runtime-host-peer-artifact.js';
 import { activateRuntimeHostManagedDeploymentWithReconciliation } from './runtime-host-activation-command.js';
 
@@ -161,8 +160,7 @@ interface RuntimeHostSetupDeps {
     rootId: string,
   ) => Promise<RuntimeHostLifecycleProviderOffer>;
   readonly resolveLifecycleProvider: (
-    rootId: string,
-    provider: RuntimeHostSupervisorProvider,
+    config: RuntimeHostManagedDeploymentConfig,
   ) => RuntimeHostLifecycleProvider;
   readonly replaceLifecycle: typeof replaceRuntimeHostLifecycle;
   readonly openDeployment: typeof openRuntimeHostManagedPackageDeployment;
@@ -179,7 +177,7 @@ interface RuntimeHostSetupDeps {
   readonly resolveRegistryCandidate: typeof resolveRuntimeHostRegistryUpdateCandidate;
   readonly withRegistryPackage: typeof withRuntimeHostRegistryUpdatePackage;
   readonly ensurePeerIdentity: typeof ensureRuntimeHostPeerIdentity;
-  readonly resolvePeerNativePath: typeof resolveRuntimeHostPeerNativePath;
+  readonly resolvePeerNativePath: typeof resolveRuntimeHostNativePath;
   readonly allocateLoopbackPort: typeof allocateRuntimeHostLoopbackPort;
   readonly allocatePeerPort: typeof allocateRuntimeHostPeerPort;
   readonly writeOutput: (value: string) => unknown;
@@ -263,7 +261,7 @@ export async function runRuntimeHostSetupCli(
     resolveRegistryCandidate: resolveRuntimeHostRegistryUpdateCandidate,
     withRegistryPackage: withRuntimeHostRegistryUpdatePackage,
     ensurePeerIdentity: ensureRuntimeHostPeerIdentity,
-    resolvePeerNativePath: resolveRuntimeHostPeerNativePath,
+    resolvePeerNativePath: resolveRuntimeHostNativePath,
     allocateLoopbackPort: allocateRuntimeHostLoopbackPort,
     allocatePeerPort: allocateRuntimeHostPeerPort,
     writeOutput: (value) => process.stdout.write(value),
@@ -392,7 +390,7 @@ async function runRuntimeHostSupervisedSetupLocked(
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (provider) => deps.resolveLifecycleProvider(capability.rootId, provider),
+    resolveProvider: deps.resolveLifecycleProvider,
     ...(legacyConfig && legacyBackend
       ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
@@ -439,7 +437,7 @@ async function runRuntimeHostSupervisedSetupLocked(
   const lifecycleOffer: RuntimeHostLifecycleProviderOffer =
     current?.lifecycle.mode === 'supervised'
       ? {
-          provider: deps.resolveLifecycleProvider(capability.rootId, current.lifecycle.provider),
+          provider: deps.resolveLifecycleProvider(current),
           availability: current.lifecycle.availability,
         }
       : await deps.discoverLifecycleProvider(capability.rootId);
@@ -742,7 +740,7 @@ async function runRuntimeHostOnDemandSetupLocked(
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (requested) => deps.resolveLifecycleProvider(capability.rootId, requested),
+    resolveProvider: deps.resolveLifecycleProvider,
     ...(legacyConfig && legacyBackend
       ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
@@ -818,7 +816,7 @@ async function runRuntimeHostOnDemandSetupLocked(
     convergeOperator: (currentConfig, desiredConfig) =>
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
-    resolveProvider: (requested) => deps.resolveLifecycleProvider(serviceId, requested),
+    resolveProvider: deps.resolveLifecycleProvider,
     ...(legacyToMigrate && legacyBackend
       ? legacyMigrationDeps(legacyToMigrate, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),

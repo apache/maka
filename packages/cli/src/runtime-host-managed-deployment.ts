@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
 import { access, lstat, mkdir, open, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -27,6 +26,7 @@ import {
   openRuntimeHostPackageDeployment,
   prepareRuntimeHostPackageDeployment,
   pruneRuntimeHostPackageDeployments,
+  removeDeploymentDirectory,
   resolveRuntimeHostPackageCliPath,
   RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError,
   type RuntimeHostPackageDeployment,
@@ -594,37 +594,8 @@ export async function removeRuntimeHostManagedDeployment(
     // recognized as already complete and reclaimed by the next deployment.
     await syncDirectory(parent);
   }
-  try {
-    await rm(retiredRoot, { recursive: true, force: true });
-    await syncDirectory(parent);
-  } catch (error) {
-    if (process.platform !== 'win32') throw error;
-    scheduleWindowsDeploymentCleanup(retiredRoot);
-  }
-}
-
-function scheduleWindowsDeploymentCleanup(path: string): void {
-  // Windows keeps loaded native addons locked until this operator exits. The
-  // deployment was already atomically renamed out of service, so a detached
-  // Node process can finish physical reclamation without owning lifecycle state.
-  const script = `const { rm } = require('node:fs/promises');
-const path = process.argv[1];
-const parent = Number(process.argv[2]);
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-(async () => {
-  for (let attempt = 0; attempt < 3000; attempt += 1) {
-    try { process.kill(parent, 0); } catch { break; }
-    await wait(100);
-  }
-  await rm(path, { recursive: true, force: true, maxRetries: 100, retryDelay: 100 });
-})().catch(() => { process.exitCode = 1; });`;
-  const cleanup = spawn(process.execPath, ['-e', script, path, String(process.pid)], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
-  cleanup.on('error', () => undefined);
-  cleanup.unref();
+  await removeDeploymentDirectory(retiredRoot);
+  await syncDirectory(parent);
 }
 
 function managedDeployment(

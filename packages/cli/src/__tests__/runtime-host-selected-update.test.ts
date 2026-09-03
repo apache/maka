@@ -110,6 +110,7 @@ describe('managed Runtime Host selected update', () => {
           assertOperatorConfig: () => {},
           manageLifecycle: async () => {
             managedReads += 1;
+            if (managedReads === 2) assert.equal(pruned, false);
             return status as never;
           },
           replaceLifecycle: async (input) => {
