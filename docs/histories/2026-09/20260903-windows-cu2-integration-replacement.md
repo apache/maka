@@ -1,0 +1,20 @@
+## [2026-09-03] | Task: 重建 Windows `maka.cu/2` 集成
+
+### Changes
+
+- 在最新 `apache/main` 上让现有 `MakaCuService`/`maka.cu/2` 后端复用到
+  Windows；没有增加第二套 service 或 model-facing 协议。
+- Desktop 按 `windowsCu` manifest 选择 helper，并校验目录内文件集合、大小和
+  SHA-256；electron-builder 仅在 helper 存在时打包它。
+- 增加 `prepare-windows` artifact 准备命令。`distributionReady` 不能由命令行
+  参数直接打开，只能由 exact digest、CI run、Authenticode、clean-machine 和
+  packaged conversation 证据共同计算。
+- 未带回旧 PR 的 generated JSON、raw outputs、experiments 或兼容输入代码。
+
+### Verification
+
+- `npm run build --workspace @maka/computer-use`：通过。
+- `node --test scripts/prepare-windows-cu-helper.test.mjs`：4 passed。
+- Desktop main typecheck 的本次文件无诊断；全量 typecheck 被主线既有的无关
+  类型错误阻断。
+- 未执行真实 Windows clean-machine/packaged conversation E2E，未提交或推送。

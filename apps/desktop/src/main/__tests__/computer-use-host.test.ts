@@ -141,4 +141,35 @@ describe('Computer Use host health', () => {
     }
   });
 
+  it('selects the shared maka.cu/2 backend for a pinned Windows helper', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-cu-host-windows-'));
+    try {
+      const binaryPath = join(directory, 'maka-cu-windows.exe');
+      const manifestPath = join(directory, 'bundled-tools.json');
+      const bytes = Buffer.from('windows-native-release-artifact');
+      await writeFile(binaryPath, bytes);
+      await chmod(binaryPath, 0o755);
+      const hash = createHash('sha256').update(bytes).digest('hex');
+      await writeFile(manifestPath, JSON.stringify({
+        windowsCu: {
+          binarySha256: hash,
+          files: [{ name: 'maka-cu-windows.exe', sizeBytes: bytes.length, sha256: hash }],
+          distributionReady: false,
+        },
+      }));
+
+      const selected = createComputerUseHost({
+        isPackaged: false,
+        resourcesPath: directory,
+        manifestPath,
+        binaryPath,
+        platform: 'win32',
+        physicalInputRecentlyActive: () => false,
+      });
+      assert.equal(selected.selected.backendId, 'maka-cu');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
 });

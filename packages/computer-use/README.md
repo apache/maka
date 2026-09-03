@@ -50,7 +50,8 @@ undeclared internal source paths.
 The shipped selector enables Computer Use only when all of these conditions
 hold:
 
-1. the host platform is macOS (`process.platform === 'darwin'`);
+1. the host platform is macOS or Windows (`process.platform === 'darwin'` or
+   `process.platform === 'win32'`);
 2. the composition supplies a `maka-cu` executable path; and
 3. the composition supplies the executable's expected SHA-256 digest.
 
@@ -69,6 +70,14 @@ Cross-platform work is tracked separately:
 - [#3891](https://github.com/apache/maka/issues/3891) — Linux backend;
 - [#3785](https://github.com/apache/maka/issues/3785) — Windows executor
   hardening and production evidence.
+
+On Windows, Desktop reads the `windowsCu` entry from
+`apps/desktop/bundled-tools.json`, verifies the complete helper directory
+against its declared file digests, and uses the same `maka.cu/2` service. The
+helper preparation script is `node scripts/computer-use.mjs prepare-windows`.
+Local preparation always leaves `distributionReady: false`; release readiness
+requires evidence tied to the exact CI artifact, Authenticode signature, clean
+machine run, and packaged conversation run.
 
 ## Protocol and lifecycle
 
