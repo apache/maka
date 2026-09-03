@@ -1892,6 +1892,46 @@ describe('Maka Pi TUI runner', () => {
     await run;
   });
 
+  test('a question overlay opened on a short terminal keeps its input row after the terminal grows (#4610)', async () => {
+    const terminal = new FakeTerminal(60, 12);
+    const driver = new LongOptionsQuestionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('choose');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Pick a strategy'));
+    // Over the small budget the overlay self-clamps: the free-text input row
+    // and divider survive and the option tails are elided.
+    let screen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(screen.includes('方案甲'), 'option labels stay visible when clamped');
+    assert.ok(screen.includes('Other: type your answer'), 'input row must survive clamping');
+    assert.ok(!screen.includes('TAIL-A'), 'option tails are elided at 12 rows');
+
+    // Growing the terminal lifts the cap: the full options render and the
+    // input row stays on screen. A maxHeight frozen at open time would keep
+    // slicing to the old 8 rows here (review on #4615).
+    terminal.resize(60, 24);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('TAIL-B'));
+    screen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(screen.includes('TAIL-A'), 'option tails render after the grow');
+    assert.ok(screen.includes('Other: type your answer'), 'input row must survive the resize');
+
+    terminal.input('\x1b');
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [{ requestId: 'question-1', answers: [null] }]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
   test('Ctrl-C stops a turn while a user-question overlay is open', async () => {
     const terminal = new FakeTerminal();
     const driver = new UserQuestionPromptDriver();
@@ -8573,6 +8613,51 @@ class UserQuestionPromptDriver extends FakeSessionDriver {
   }
   async stop(): Promise<void> {
     this.stopCalls += 1;
+    this.release?.();
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
+}
+
+class LongOptionsQuestionDriver extends FakeSessionDriver {
+  readonly responses: UserQuestionResponse[] = [];
+  private release: (() => void) | undefined;
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    return prepareTestPrompt(this, prompt);
+  }
+  async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    const filler = '兼容性说明'.repeat(12);
+    yield {
+      type: 'user_question_request',
+      id: 'event-question',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'question-1',
+      toolUseId: 'tool-1',
+      questions: [
+        {
+          question: 'Pick a strategy',
+          options: [
+            { label: '方案甲', description: `${filler}TAIL-A` },
+            { label: '方案乙', description: `${filler}TAIL-B` },
+          ],
+        },
+      ],
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield { type: 'complete', id: 'complete-1', turnId: 'turn-1', ts: 2, stopReason: 'end_turn' };
+  }
+  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
+    this.responses.push(response);
     this.release?.();
   }
   async rewindToTurn(): Promise<MakaSessionRewindResult> {

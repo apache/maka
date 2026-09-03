@@ -27,6 +27,7 @@ import {
   matchesKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type AutocompleteItem,
   type AutocompleteProvider,
   type AutocompleteSuggestions,
@@ -533,6 +534,14 @@ export class UserQuestionOverlay implements Component {
       hint: string;
       placeholder: string;
       options: readonly UserQuestionOption[];
+      /**
+       * Live row budget for the overlay (the runner derives it from
+       * `terminal.rows`, so it stays correct across resizes). When the wrapped
+       * content would exceed it, render() degrades gracefully instead of
+       * letting pi-tui clip the tail — the input row and divider must always
+       * render (#4610).
+       */
+      maxRows?(): number;
       onSelectOption(index: number): void;
       onSubmitText(value: string): void;
       onSkip(): void;
@@ -608,25 +617,49 @@ export class UserQuestionOverlay implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
-    const lines: string[] = [
-      padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
-      padLine(ansi.dim(this.input.hint), safeWidth),
-      padLine('', safeWidth),
+    // The title wraps like the option rows: a long question must not lose its
+    // tail to a hard cut at the terminal width (#4610).
+    const wrappedTitle = wrapTextWithAnsi(
+      `${this.input.title} ${ansi.accent(this.input.rightLabel)}`,
+      safeWidth,
+    );
+    const titleLines = (wrappedTitle.length > 0 ? wrappedTitle : ['']).map((line) =>
+      padLine(line, safeWidth),
+    );
+    const hint = padLine(ansi.dim(this.input.hint), safeWidth);
+    const blank = padLine('', safeWidth);
+    const divider = padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth);
+    const inputRows = this.renderInputRow(safeWidth);
+    const optionRows = this.input.options.map((option, index) =>
+      formatUserQuestionOptionRow(option, index === this.activeIndex, safeWidth),
+    );
+    const assemble = (title: string[], options: string[][]): string[] => [
+      ...title,
+      hint,
+      blank,
+      ...options.flat(),
+      ...inputRows,
+      divider,
     ];
-    this.input.options.forEach((option, index) => {
-      lines.push(this.renderOptionRow(option, index === this.activeIndex, safeWidth));
-    });
-    lines.push(...this.renderInputRow(safeWidth));
-    lines.push(padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth));
-    return lines;
-  }
-
-  private renderOptionRow(option: UserQuestionOption, active: boolean, width: number): string {
-    const prefix = active ? '→ ' : '  ';
-    const body = option.description
-      ? `${option.label}  ${active ? option.description : ansi.dim(option.description)}`
-      : option.label;
-    return formatPickerItemLine(`${prefix}${body}`, width);
+    const full = assemble(titleLines, optionRows);
+    const budget = this.input.maxRows?.() ?? Number.POSITIVE_INFINITY;
+    if (full.length <= budget) return full;
+    // Over budget pi-tui would slice(0, maxHeight) — silently dropping the
+    // input row and divider. Degrade instead: cap the title at two lines and
+    // give every option an equal share of the remaining rows, each ending in
+    // a visible ellipsis when clamped. Only a terminal too short for one row
+    // per option still overflows, falling back to the pre-existing clip.
+    const cappedTitle = clampRowsWithEllipsis(titleLines, 2, safeWidth);
+    const fixedRows = cappedTitle.length + 2 + inputRows.length + 1;
+    const optionBudget = Math.max(this.input.options.length, budget - fixedRows);
+    const perOption = Math.max(
+      1,
+      Math.floor(optionBudget / Math.max(1, this.input.options.length)),
+    );
+    return assemble(
+      cappedTitle,
+      optionRows.map((rows) => clampRowsWithEllipsis(rows, perOption, safeWidth)),
+    );
   }
 
   private renderInputRow(width: number): string[] {
@@ -977,6 +1010,49 @@ export function thinkingLevelPickerItems(
 function formatPickerItemLine(line: string, width: number): string {
   const padded = padLine(line, width);
   return stripAnsi(line).startsWith('→ ') ? ansi.reverse(padded) : padded;
+}
+
+/**
+ * One AskUserQuestion option row, wrapped instead of truncated (#4610): the
+ * option body is the decision content, and options routinely carry long
+ * trade-off descriptions that a hard cut at the terminal width made
+ * unreadable. Continuation lines indent under the option body, aligned past
+ * the `→ `/`  ` marker; the active row's highlight band covers every wrapped
+ * line, not just the first.
+ */
+export function formatUserQuestionOptionRow(
+  option: UserQuestionOption,
+  active: boolean,
+  width: number,
+): string[] {
+  const safeWidth = Math.max(1, width);
+  const prefix = active ? '→ ' : '  ';
+  const body = option.description
+    ? `${option.label}  ${active ? option.description : ansi.dim(option.description)}`
+    : option.label;
+  const wrapped = wrapTextWithAnsi(body, Math.max(1, safeWidth - USER_QUESTION_ROW_PREFIX_WIDTH));
+  const continuation = ' '.repeat(USER_QUESTION_ROW_PREFIX_WIDTH);
+  return (wrapped.length > 0 ? wrapped : ['']).map((line, index) => {
+    const padded = padLine(`${index === 0 ? prefix : continuation}${line}`, safeWidth);
+    return active ? ansi.reverse(padded) : padded;
+  });
+}
+
+/**
+ * Cap an already-formatted wrapped row group at `maxRows`, folding the last
+ * kept line into an ellipsis so the elision is visible. truncateToWidth is
+ * ANSI-aware, so an active (reversed) line keeps its closing SGR.
+ */
+export function clampRowsWithEllipsis(rows: string[], maxRows: number, width: number): string[] {
+  if (rows.length <= maxRows) return rows;
+  const keep = Math.max(1, maxRows);
+  const kept = rows.slice(0, keep);
+  // truncateToWidth only appends its marker when it actually cuts, and the
+  // kept row is already padded to full width — so cut one column short and
+  // add the ellipsis by hand to guarantee the elision stays visible.
+  const shortened = truncateToWidth(kept[kept.length - 1] ?? '', Math.max(1, width - 1), '');
+  kept[kept.length - 1] = padLine(`${shortened}…`, width);
+  return kept;
 }
 
 function padLine(text: string, width: number): string {

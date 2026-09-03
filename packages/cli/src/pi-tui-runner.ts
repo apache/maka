@@ -2021,7 +2021,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     tui.showOverlay(picker, {
       anchor: 'bottom-left',
       width: '100%',
-      maxHeight: Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
+      // A numeric cap would freeze today's rows into the option; '100%' is
+      // re-resolved against the live terminal height on every composite, so
+      // after a resize the cap still lands at rows - margin (#4610 review).
+      maxHeight: '100%',
       margin: { bottom: BOTTOM_PICKER_MARGIN_ROWS },
     });
 
@@ -2079,6 +2082,9 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         hint: '↑↓ move · type to answer · Enter select · Esc unanswered · Ctrl+C stop',
         placeholder: 'Other: type your answer…',
         options: question.options,
+        // Live budget: terminal.rows changes on resize, so read it per render
+        // rather than at overlay construction.
+        maxRows: () => Math.max(1, terminal.rows - BOTTOM_PICKER_MARGIN_ROWS),
         onSelectOption: (index) => advance(question.options[index]?.label ?? null),
         onSubmitText: (value) => advance(value),
         onSkip: () => advance(null),
