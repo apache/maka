@@ -26,7 +26,8 @@ import { describe, test } from 'node:test';
 import type { ModelMessage, ModelStreamResult } from '../model-protocol.js';
 import { MockLanguageModelV4, simulateReadableStream } from 'ai/test';
 import { APICallError, type LanguageModelV4StreamPart } from '@ai-sdk/provider';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRootAuthority } from '@maka/core/runtime-event';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { AttachmentByteReader } from '@maka/core/attachments';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import type { LlmConnection } from '@maka/core/llm-connections';
@@ -4885,31 +4886,29 @@ describe('AiSdkBackend model history', () => {
         text: 'recent',
       }),
     ];
-    const sourceRunHeader = priorModelRunHeader({
+    const sourceRunHeader = priorModelInvocation({
       connectionId: 'test-connection-id',
       modelId: 'mock-model-id',
     });
-    const priorCompactionRunHeader: AgentRunHeader = {
-      ...priorModelRunHeader({
-        connectionId: 'test-connection-id',
-        modelId: 'mock-model-id',
-        runId: 'run-1',
-      }),
+    const priorCompactionRunHeader = priorModelInvocation({
+      connectionId: 'test-connection-id',
+      modelId: 'mock-model-id',
+      runId: 'run-1',
       turnId: 'turn-compact-1',
-      rootExecutionKind: 'context_compact',
-    };
+      root: { kind: 'context_compact' },
+    });
 
     const first = await backend.compactHistory({
       turnId: 'turn-compact-1',
       runId: 'run-1',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader],
+      runtimeContextInvocations: [sourceRunHeader],
     });
     const repeated = await backend.compactHistory({
       turnId: 'turn-compact-2',
       runId: 'run-2',
       runtimeContext: history,
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
 
     assert.equal(calls, 1);
@@ -4932,7 +4931,7 @@ describe('AiSdkBackend model history', () => {
           text: 'new source history',
         }),
       ],
-      runtimeContextRunHeaders: [sourceRunHeader, priorCompactionRunHeader],
+      runtimeContextInvocations: [sourceRunHeader, priorCompactionRunHeader],
     });
     assert.equal(calls, 2, 'changed source fingerprint is eligible again');
   });
@@ -6240,8 +6239,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({ connectionId: 'connection-a', modelId: 'claude-a' }),
+        runtimeContextInvocations: [
+          priorModelInvocation({ connectionId: 'connection-a', modelId: 'claude-a' }),
         ],
         runtimeContext: [
           runtimeTextEvent({
@@ -6325,8 +6324,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-a',
             modelId: 'claude-a',
             providerStateIdentity: `sha256:${'a'.repeat(64)}`,
@@ -6438,8 +6437,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-copilot',
             connectionSlug: 'github-copilot',
             modelId: 'gpt-5.5',
@@ -6532,8 +6531,8 @@ describe('AiSdkBackend model history', () => {
         turnId: 'turn-current',
         text: 'continue',
         context: [],
-        runtimeContextRunHeaders: [
-          priorModelRunHeader({
+        runtimeContextInvocations: [
+          priorModelInvocation({
             connectionId: 'connection-openai',
             connectionSlug: 'openai-main',
             modelId: 'gpt-5.4',
@@ -11935,21 +11934,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -12029,21 +12020,13 @@ describe('AiSdkBackend thinking persistence', () => {
     } as unknown as RuntimeEventMapContext;
     const memory = createSessionEventMapMemory();
     const runtimeEvents = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
-    const runHeader: AgentRunHeader = {
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      status: 'completed',
-      backendKind: 'ai-sdk',
-      llmConnectionSlug: 'anthropic-main',
+    const runHeader = priorModelInvocation({
       modelId: 'mock-model-id',
-      cwd: '/tmp/maka',
-      permissionMode: 'ask',
-      createdAt: 1,
-      updatedAt: 2,
-    };
+      runId: 'run-1',
+      turnId: 'turn-1',
+    });
     const projection = projectRuntimeEventsToStoredMessages(runtimeEvents, {
-      runHeaders: [runHeader],
+      invocations: [runHeader],
     });
     const assistant = projection.messages.find((message) => message.type === 'assistant');
     assert.ok(assistant && assistant.type === 'assistant');
@@ -13711,20 +13694,8 @@ describe('AiSdkBackend thinking persistence', () => {
     const memory = createSessionEventMapMemory();
     const runtimeContext = events.map((event) => mapSessionEventToRuntimeEvent(event, ctx, memory));
     const projection = projectRuntimeEventsToStoredMessages(runtimeContext, {
-      runHeaders: [
-        {
-          runId: 'run-prev',
-          sessionId: 'session-1',
-          turnId: 'turn-prev',
-          status: 'completed',
-          backendKind: 'ai-sdk',
-          llmConnectionSlug: planConnection.slug,
-          modelId: 'ark-code-latest',
-          cwd: '/tmp/maka',
-          permissionMode: 'ask',
-          createdAt: 1,
-          updatedAt: 2,
-        },
+      invocations: [
+        priorModelInvocation({ modelId: 'ark-code-latest', connectionSlug: planConnection.slug }),
       ],
     });
     const projectedAssistant = projection.messages.find(
@@ -16321,38 +16292,65 @@ function header(permissionMode: SessionHeader['permissionMode'] = 'ask'): Sessio
   };
 }
 
-function priorModelRunHeader(input: {
+function priorModelInvocation(input: {
   connectionId?: string;
   modelId: string;
   connectionSlug?: string;
   runId?: string;
+  turnId?: string;
+  root?: RuntimeInvocationRootAuthority;
   providerStateIdentity?: `sha256:${string}`;
-}): AgentRunHeader {
-  return {
-    runId: input.runId ?? 'run-prev',
+}): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
-    turnId: 'turn-prev',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    ...(input.connectionId ? { llmConnectionId: input.connectionId } : {}),
-    providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
-    llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
-    modelId: input.modelId,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+    invocationId: input.runId ?? 'run-prev',
+    runId: input.runId ?? 'run-prev',
+    turnId: input.turnId ?? 'turn-prev',
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: input.connectionId ?? 'anthropic-main-connection',
+        llmConnectionSlug: input.connectionSlug ?? 'anthropic-main',
+        modelId: input.modelId,
+        providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
+      },
+      configuration: {
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: input.root ?? { kind: 'user' },
+      source: { kind: 'fresh' },
+    },
+    terminalEvent: {
+      id: `${identity.runId}-terminal`,
+      ...identity,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+    },
   };
 }
 
 function sameRouteReplayProvenance(
   modelId: string,
   runId = 'run-prev',
-): Pick<BackendSendInput, 'runtimeContextRunHeaders'> {
+): Pick<BackendSendInput, 'runtimeContextInvocations'> {
   return {
-    runtimeContextRunHeaders: [
-      priorModelRunHeader({ connectionId: 'test-connection-id', modelId, runId }),
+    runtimeContextInvocations: [
+      priorModelInvocation({ connectionId: 'test-connection-id', modelId, runId }),
     ],
   };
 }

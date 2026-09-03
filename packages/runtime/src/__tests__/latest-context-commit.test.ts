@@ -110,10 +110,12 @@ test('a real send seals its observation into SQLite and reconstructs it after re
     }
 
     let scanned = 0;
+    const sessionRunIds = (await runtimeEventStore.listSessionInvocations(session.id)).map(
+      (invocation) => invocation.runId,
+    );
     const diagnostics = await readLatestContextDiagnostics(
       {
-        listSessionRuns: (sessionId) => runStore.listSessionRuns(sessionId),
-        readEvents: async (sessionId, runId) => {
+        readEvents: async (sessionId: string, runId: string) => {
           scanned += 1;
           return runStore.readEvents(sessionId, runId);
         },
@@ -122,6 +124,7 @@ test('a real send seals its observation into SQLite and reconstructs it after re
           runStore.repairEventProjection(sessionId, type, event, options),
       },
       session.id,
+      sessionRunIds,
     );
 
     assert.equal(diagnostics.status, 'available');
@@ -140,11 +143,10 @@ test('a real send seals its observation into SQLite and reconstructs it after re
 
     const reopened = createSqliteAgentRunStore(root);
     try {
-      const runs = await reopened.listSessionRuns(session.id);
       const canonicalAttempts = (
         await Promise.all(
-          runs.map(async (run) => {
-            const events = await reopened.readEvents(session.id, run.runId);
+          sessionRunIds.map(async (runId) => {
+            const events = await reopened.readEvents(session.id, runId);
             return events
               .filter((event) => event.type === 'model_call_attempt_recorded')
               .map((event) => decodeModelCallAttempt(event.data));
@@ -161,8 +163,7 @@ test('a real send seals its observation into SQLite and reconstructs it after re
       let coldScans = 0;
       const cold = await readLatestContextDiagnostics(
         {
-          listSessionRuns: (sessionId) => reopened.listSessionRuns(sessionId),
-          readEvents: async (sessionId, runId) => {
+          readEvents: async (sessionId: string, runId: string) => {
             coldScans += 1;
             return reopened.readEvents(sessionId, runId);
           },
@@ -170,6 +171,7 @@ test('a real send seals its observation into SQLite and reconstructs it after re
             reopened.repairEventProjection(sessionId, type, event, options),
         },
         session.id,
+        sessionRunIds,
       );
 
       assert.ok(coldScans > 0, 'omitting the projection reader forces a restart-safe ledger fold');
@@ -252,14 +254,16 @@ test('an artifact captured before abort does not create a canonical sent attempt
       // Drain the aborted turn through the real AgentRun store.
     }
 
-    const runs = await runStore.listSessionRuns(session.id);
+    const runIds = (await runtimeEventStore.listSessionInvocations(session.id)).map(
+      (invocation) => invocation.runId,
+    );
     const events = (
-      await Promise.all(runs.map((run) => runStore.readEvents(session.id, run.runId)))
+      await Promise.all(runIds.map((runId) => runStore.readEvents(session.id, runId)))
     ).flat();
     assert.equal(artifactWrites, 1);
     assert.equal(providerCalls, 0);
     assert.equal(events.filter((event) => event.type === 'model_call_attempt_recorded').length, 0);
-    assert.deepEqual(await readLatestContextDiagnostics(runStore, session.id), {
+    assert.deepEqual(await readLatestContextDiagnostics(runStore, session.id, runIds), {
       status: 'unavailable',
       reason: 'no_completed_request',
     });
