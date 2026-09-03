@@ -1112,6 +1112,9 @@ function projectTokenUsage(
       : {}),
     ...(usage.promptSegments !== undefined ? { promptSegments: usage.promptSegments } : {}),
     ...(usage.contextBudget !== undefined ? { contextBudget: usage.contextBudget } : {}),
+    ...(usage.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: usage.lastRequestAnchor }
+      : {}),
     ...(event.refs?.providerRequestTraceId !== undefined
       ? { providerRequestTraceId: event.refs.providerRequestTraceId }
       : {}),
@@ -1272,15 +1275,21 @@ function failureClassFromRuntimeEvent(
   event: RuntimeEvent,
   header: AgentRunHeader,
 ): string | undefined {
-  return (
+  const failureClass =
     stringStateDelta(event, 'failureClass') ??
     stringStateDelta(event, 'errorClass') ??
     stringStateDelta(event, 'reason') ??
     stringStateDelta(event, 'code') ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.reason) : undefined) ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined) ??
-    header.failureClass
-  );
+    header.failureClass;
+  // Retired outcome. The runtime no longer decides locally that a request
+  // cannot be shaped to fit — the provider rejects it and recovery compacts and
+  // retries — so a turn that ends over the window is a context overflow like any
+  // other. Sessions written before that still carry the old name; fold it here,
+  // at the one place the durable ledger is read, so nothing downstream has to
+  // know two names for one outcome.
+  return failureClass === 'context_budget_exhausted' ? 'context_overflow' : failureClass;
 }
 
 function stringRecordValue(value: unknown, key: string): string | undefined {
@@ -1500,6 +1509,7 @@ function semanticMessage(message: StoredMessage): unknown {
         displayText: message.displayText,
         origin: message.origin,
         attachments: message.attachments ?? [],
+        directoryReferences: message.directoryReferences,
         quotes: message.quotes ?? [],
       };
     case 'assistant':
@@ -1566,6 +1576,7 @@ function semanticMessage(message: StoredMessage): unknown {
         promptSegments: message.promptSegments,
         contextBudget: message.contextBudget,
         providerRequestTraceId: message.providerRequestTraceId,
+        lastRequestAnchor: message.lastRequestAnchor,
       };
     case 'turn_state':
       return {

@@ -27,7 +27,7 @@ import {
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
-import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../locales/settings-provider-copy';
+import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../features/connection-settings';
 import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,

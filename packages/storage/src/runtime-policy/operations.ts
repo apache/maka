@@ -20,6 +20,8 @@
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
+  ConnectionCredentialTarget,
+  ConnectionVersionBasis,
   ConnectionModelDiscoveryResult,
   ConnectionOnboardingTarget,
   ConnectionTestSummary,
@@ -29,24 +31,34 @@ import type {
   CredentialStatus,
   CredentialVersionBasis,
   RuntimePolicy,
+  NetworkProxyCredentialTarget,
+  UpdateNetworkProxyInput,
+  UpdateNetworkProxyResult,
   RequestHeaderUpdate,
   SavedRequestHeaders,
 } from '@maka/core/runtime-policy';
-import type { ProviderAuthActionAvailability } from '@maka/core/provider-auth';
 import type { ProviderDefaults } from '@maka/core/llm-connections';
 
 declare const operationTicketBrand: unique symbol;
 
 export type ProviderAuthKind = ProviderDefaults['authKind'];
 export type ConnectionEffectChangedDomain = 'connection' | 'credential' | 'network_proxy';
-export type UnavailableProviderActionAvailability = Exclude<
-  ProviderAuthActionAvailability,
-  'available'
->;
 
 export interface RuntimePolicyCredentialMaterial extends CredentialVersionBasis {
   readonly secret: string;
+  readonly proxyTarget?: NetworkProxyCredentialTarget;
 }
+
+export type BoundCredentialMaterialExportResult =
+  | {
+      readonly kind: 'exported';
+      readonly material: RuntimePolicyCredentialMaterial | null;
+    }
+  | {
+      readonly kind: 'connection_stale';
+      readonly expected: ConnectionVersionBasis;
+      readonly actual: ConnectionVersionBasis | null;
+    };
 
 export interface RuntimePolicyOperationSecretMaterial {
   readonly connection?: RuntimePolicyCredentialMaterial;
@@ -94,7 +106,13 @@ export type ResolveNetworkProxyExecutionResult =
       readonly secretMaterial: Pick<RuntimePolicyOperationSecretMaterial, 'networkProxy'>;
     };
 
-export type ResolveWebFetchExecutionResult =
+/**
+ * Admission for a Host request that goes out over plain HTTP rather than to a
+ * configured model provider: the WebFetch tool, the models.dev catalog
+ * refresh. Privacy mode refuses it outright, and a configured proxy is
+ * mandatory rather than best effort.
+ */
+export type ResolveHostOutboundExecutionResult =
   | { readonly kind: 'privacy_mode' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
@@ -177,10 +195,7 @@ export type BeginInteractiveOAuthLoginResult =
   | { readonly kind: 'connection_disabled' }
   | { readonly kind: 'catalog_full' }
   | { readonly kind: 'attempt_conflict' }
-  | {
-      readonly kind: 'provider_action_unavailable';
-      readonly availability: UnavailableProviderActionAvailability;
-    }
+  | { readonly kind: 'provider_action_unavailable' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus }
   | {
       readonly kind: 'ready';
@@ -212,10 +227,7 @@ export type InteractiveOAuthLoginCompletionResult =
 export type ConnectionEffectPreparationFailure =
   | { readonly kind: 'connection_not_found' }
   | { readonly kind: 'connection_disabled' }
-  | {
-      readonly kind: 'provider_action_unavailable';
-      readonly availability: UnavailableProviderActionAvailability;
-    }
+  | { readonly kind: 'provider_action_unavailable' }
   | { readonly kind: 'credential_not_configured'; readonly status: CredentialStatus };
 
 export type BeginModelFetchResult =
@@ -356,9 +368,14 @@ export type ReplaceConnectionRequestHeadersResult =
   | { readonly kind: 'connection_not_found' };
 
 export interface RuntimePolicyOperationCoordinator {
+  updateNetworkProxy(input: UpdateNetworkProxyInput): Promise<UpdateNetworkProxyResult>;
   exportCredentialMaterial(
     locator: CredentialLocator,
   ): Promise<RuntimePolicyCredentialMaterial | null>;
+  exportCredentialMaterial(
+    locator: CredentialLocator,
+    expectedConnection: ConnectionCredentialTarget,
+  ): Promise<BoundCredentialMaterialExportResult>;
   getConnectionRequestHeaders(connectionId: string): Promise<SavedRequestHeaders | null>;
   replaceConnectionRequestHeaders(
     connectionId: string,
@@ -370,7 +387,7 @@ export interface RuntimePolicyOperationCoordinator {
   resolveWebSearchExecution(
     input?: ResolveWebSearchExecutionInput,
   ): Promise<ResolveWebSearchExecutionResult>;
-  resolveWebFetchExecution(): Promise<ResolveWebFetchExecutionResult>;
+  resolveHostOutboundExecution(): Promise<ResolveHostOutboundExecutionResult>;
   resolveNetworkProxyExecution(
     input?: ResolveNetworkProxyExecutionInput,
   ): Promise<ResolveNetworkProxyExecutionResult>;

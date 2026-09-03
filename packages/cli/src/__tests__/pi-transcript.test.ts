@@ -42,6 +42,7 @@ import {
   makaPiToolPresentationStatus,
   retireCancelledTransientMessages,
   replaceTranscriptWithStoredMessages,
+  shortenCwd,
   submitCompactToTranscript,
   toggleAllThinkingExpansion,
   toggleAllToolExpansion,
@@ -138,7 +139,7 @@ describe('Maka Pi TUI transcript', () => {
     state.steering = ['s'.repeat(250)];
     state.followup = ['f'.repeat(250)];
 
-    const lines = renderMakaPiPendingQueue(state, 400);
+    const lines = renderMakaPiPendingQueue(state, 400, process.platform, 'en');
     for (const line of lines) {
       assert.doesNotMatch(line, /[\r\n]/, `pending-queue row must be a single row: ${line}`);
     }
@@ -150,10 +151,14 @@ describe('Maka Pi TUI transcript', () => {
     const state = createMakaPiTranscriptState();
     state.steering = ['Keep going'];
     const renderFor = (platform: NodeJS.Platform) =>
-      renderMakaPiPendingQueue(state, 80, platform).map(stripAnsi);
+      renderMakaPiPendingQueue(state, 80, platform, 'en').map(stripAnsi);
 
-    assert.equal(renderFor('darwin').at(-1), '⌥+↑ 取回队列以重新编辑');
-    assert.equal(renderFor('linux').at(-1), 'Alt+↑ 取回队列以重新编辑');
+    assert.equal(renderFor('darwin').at(-1), '⌥+↑ take queued messages back to re-edit');
+    assert.equal(renderFor('linux').at(-1), 'Alt+↑ take queued messages back to re-edit');
+    assert.equal(
+      renderMakaPiPendingQueue(state, 80, 'linux', 'zh').map(stripAnsi).at(-1),
+      'Alt+↑ 取回队列以重新编辑',
+    );
   });
 
   test('renders goal-origin prompts as autonomous provenance, not as user prompts', () => {
@@ -4286,6 +4291,102 @@ describe('Maka Pi TUI transcript', () => {
     assert.doesNotMatch(rendered, /\(no output\)/);
   });
 
+  test('keeps todo_write arguments quiet and shows only its settled snapshot', () => {
+    const state = createMakaPiTranscriptState();
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_start',
+        toolUseId: 'todo-write',
+        toolName: 'todo_write',
+        displayName: 'Todo Write',
+        args: undefined,
+        argsPreview: undefined,
+      }),
+    );
+
+    const running = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(running, /Todo Write/);
+    assert.doesNotMatch(running, /uncommitted item/);
+
+    applyMakaSessionEventToTranscript(
+      state,
+      event({
+        type: 'tool_result',
+        toolUseId: 'todo-write',
+        isError: false,
+        content: {
+          kind: 'text',
+          text: 'Todo list updated.\n1. [in_progress] committed item',
+        },
+      }),
+    );
+
+    const settled = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+    assert.match(settled, /Todo Write/);
+    assert.match(settled, /2 lines/);
+    assert.equal(toggleAllToolExpansion(state), true);
+    assert.match(
+      renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n'),
+      /committed item/,
+    );
+  });
+
+  test('never restores todo_write arguments from durable transcript reconciliation', () => {
+    const messages = [
+      {
+        type: 'tool_call',
+        id: 'todo-write',
+        turnId: 'turn-1',
+        ts: 1,
+        toolName: 'todo_write',
+        displayName: 'Todo Write',
+        args: { todos: [{ content: 'uncommitted item', status: 'pending' }] },
+      },
+      {
+        type: 'tool_result',
+        id: 'todo-result',
+        turnId: 'turn-1',
+        ts: 2,
+        toolUseId: 'todo-write',
+        isError: false,
+        content: {
+          kind: 'text',
+          text: 'Todo list updated (1 items):\n1. [in_progress] "committed item"',
+        },
+      },
+    ] satisfies StoredMessage[];
+
+    for (const reconcile of [
+      (state: ReturnType<typeof createMakaPiTranscriptState>) =>
+        replaceTranscriptWithStoredMessages(state, messages),
+      (state: ReturnType<typeof createMakaPiTranscriptState>) => {
+        applyMakaSessionEventToTranscript(
+          state,
+          event({
+            type: 'tool_start',
+            toolUseId: 'todo-write',
+            toolName: 'todo_write',
+            displayName: 'Todo Write',
+            args: undefined,
+          }),
+        );
+        hydrateToolsWithStoredMessages(state, 'turn-1', messages);
+      },
+    ]) {
+      const state = createMakaPiTranscriptState();
+      reconcile(state);
+      const tool = state.entries.find(
+        (entry) => entry.kind === 'tool' && entry.toolUseId === 'todo-write',
+      );
+      assert.deepEqual(tool?.kind === 'tool' ? tool.input : undefined, {});
+      assert.equal(toggleAllToolExpansion(state), true);
+      const rendered = renderMakaPiTranscript(state, meta(), 80).map(stripAnsi).join('\n');
+      assert.match(rendered, /committed item/);
+      assert.doesNotMatch(rendered, /uncommitted item/);
+    }
+  });
+
   test('prefers a redacted runtime intent for a live compact row', () => {
     const state = createMakaPiTranscriptState();
     applyMakaSessionEventToTranscript(
@@ -5041,3 +5142,46 @@ function subagentResult(
 function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
+
+describe('shortenCwd', () => {
+  test('shortens POSIX paths under the home directory', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice/work/project', '/Users/alice'), '~/work/project');
+    assert.equal(shortenCwd('/Users/alice/..\\notes', '/Users/alice'), '~/..\\notes');
+    assert.equal(shortenCwd('/Users/alice', '/Users/alice'), '~');
+  });
+
+  test('keeps POSIX paths outside the home directory absolute', {
+    skip: process.platform === 'win32',
+  }, () => {
+    assert.equal(shortenCwd('/Users/alice-shared', '/Users/alice'), '/Users/alice-shared');
+    assert.equal(shortenCwd('/Users', '/Users/alice'), '/Users');
+    assert.equal(shortenCwd('/tmp/project', '/Users/alice'), '/tmp/project');
+  });
+
+  test('shortens Windows profile paths (#3825)', { skip: process.platform !== 'win32' }, () => {
+    assert.equal(shortenCwd('C:\\Users\\alice\\Videos', 'C:\\Users\\alice'), '~/Videos');
+    assert.equal(
+      shortenCwd('C:\\Users\\alice\\Videos\\Clips', 'C:\\Users\\alice'),
+      '~/Videos\\Clips',
+    );
+    assert.equal(shortenCwd('C:\\Users\\alice', 'C:\\Users\\alice'), '~');
+  });
+
+  test('shortens Windows profile paths with case-only differences (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(shortenCwd('c:\\users\\alice\\videos', 'C:\\Users\\alice'), '~/videos');
+  });
+
+  test('keeps Windows paths outside the profile directory absolute (#3825)', {
+    skip: process.platform !== 'win32',
+  }, () => {
+    assert.equal(
+      shortenCwd('C:\\Users\\alice-shared', 'C:\\Users\\alice'),
+      'C:\\Users\\alice-shared',
+    );
+    assert.equal(shortenCwd('D:\\data\\project', 'C:\\Users\\alice'), 'D:\\data\\project');
+  });
+});

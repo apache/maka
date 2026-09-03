@@ -29,6 +29,7 @@ type SettingsTestResultCopy = {
     ) => string;
     disabled: string;
     configurationMissing: string;
+    credentialMissing: string;
     timeout: string;
     httpError: (status: number | undefined) => string;
     unreachable: string;
@@ -49,6 +50,7 @@ const COPY = {
         ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
       disabled: "请先启用代理服务器，再进行测试。",
       configurationMissing: "请填写代理服务器地址和端口后再测试。",
+      credentialMissing: "代理认证已开启，请输入代理密码后再测试。",
       timeout: "代理测试超时，请检查代理服务是否可达。",
       httpError: (status) =>
         status === undefined
@@ -75,6 +77,8 @@ const COPY = {
           .join(" · "),
       disabled: "Enable the proxy server before testing it.",
       configurationMissing: "Enter a proxy host and port before testing it.",
+      credentialMissing:
+        "Proxy authentication is enabled. Enter a proxy password before testing.",
       timeout:
         "The proxy test timed out. Check whether the proxy service is reachable.",
       httpError: (status) =>
@@ -115,6 +119,8 @@ export function settingsTestResultMessage(
       return copy.proxy.disabled;
     case "proxy_configuration_missing":
       return copy.proxy.configurationMissing;
+    case "proxy_credential_missing":
+      return copy.proxy.credentialMissing;
     case "proxy_timeout":
       return copy.proxy.timeout;
     case "proxy_http_error":

@@ -40,7 +40,13 @@ test('routes each change kind only to subscribed connections', () => {
   );
   feed.attachConnection(
     'all',
-    { configuration: true, projectCatalog: true, sessionCatalog: true, scheduledTask: true },
+    {
+      configuration: true,
+      connectionCatalog: true,
+      projectCatalog: true,
+      sessionCatalog: true,
+      scheduledTask: true,
+    },
     { send: async (frame) => void all.push(frame) },
   );
   feed.attachConnection(
@@ -55,6 +61,7 @@ test('routes each change kind only to subscribed connections', () => {
   );
 
   feed.publishConfiguration();
+  feed.publishConnectionCatalog();
   feed.publishProjectCatalog();
   feed.publishSessionCatalog('session-1');
   feed.publishSessionCatalog('session-2');
@@ -65,12 +72,13 @@ test('routes each change kind only to subscribed connections', () => {
   assert.deepEqual(
     configuration.map((frame) => (frame as { kind: string }).kind),
     ['configuration.changed'],
+    'a connection catalog refresh is not a settings mutation',
   );
   assert.deepEqual(
     project.map((frame) => (frame as { kind: string }).kind),
     ['project.catalog.changed'],
   );
-  assert.equal(all.length, 7);
+  assert.equal(all.length, 8);
   assert.deepEqual(scopedSession, [
     { kind: 'session.catalog.changed', revision: 1, sessionId: 'session-1' },
     { kind: 'session.catalog.changed', revision: 3, sessionId: 'session-1' },

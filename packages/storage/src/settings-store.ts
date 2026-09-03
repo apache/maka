@@ -19,7 +19,7 @@
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { AppSettings, SettingsTestResult, UpdateAppSettingsInput } from '@maka/core/settings';
+import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
@@ -45,7 +45,6 @@ export interface SettingsStore {
     predicate: (current: AppSettings) => boolean,
     patch: ConditionalSettingsPatch,
   ): Promise<{ applied: boolean; settings: AppSettings }>;
-  testNetworkProxy(): Promise<SettingsTestResult>;
   /**
    * PR110b: upsert a single onboarding milestone. Caller passes the
    * desired terminal status; the store stamps `Date.now()` so the
@@ -76,7 +75,7 @@ class FileSettingsStore implements SettingsStore {
   private readonly settingsPath: string;
   private queue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly workspaceRoot: string) {
+  constructor(workspaceRoot: string) {
     this.settingsPath = join(workspaceRoot, 'settings.json');
   }
 
@@ -92,7 +91,12 @@ class FileSettingsStore implements SettingsStore {
   private async readOrCreate(): Promise<AppSettings> {
     try {
       const text = await readFile(this.settingsPath, 'utf8');
-      return normalizeSettings(JSON.parse(text));
+      const persisted: unknown = JSON.parse(text);
+      const settings = normalizeSettings(persisted);
+      if (hasLegacyProxyCredentialFields(persisted)) {
+        await this.write(settings);
+      }
+      return settings;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       const settings = createDefaultSettings();
@@ -184,28 +188,6 @@ class FileSettingsStore implements SettingsStore {
     return result;
   }
 
-  async testNetworkProxy(): Promise<SettingsTestResult> {
-    const started = Date.now();
-    const settings = await this.get();
-    const proxy = settings.network.proxy;
-    if (!proxy.enabled) {
-      return { ok: true, message: '代理未启用，当前会直接连接。', latencyMs: Date.now() - started };
-    }
-    if (!proxy.host.trim()) return { ok: false, message: '代理服务器地址不能为空' };
-    if (!Number.isInteger(proxy.port) || proxy.port <= 0 || proxy.port > 65535) {
-      return { ok: false, message: '代理端口必须在 1-65535 之间' };
-    }
-    if (proxy.authEnabled && (!proxy.username.trim() || !proxy.password)) {
-      return { ok: false, message: '启用代理认证后需要用户名和密码' };
-    }
-    return {
-      ok: true,
-      message: `代理配置有效：${proxy.protocol}://${proxy.host}:${proxy.port}`,
-      latencyMs: Date.now() - started,
-      details: { bypassList: proxy.bypassList, autoBypassDomains: proxy.autoBypassDomains },
-    };
-  }
-
   private async write(settings: AppSettings): Promise<void> {
     await mkdir(dirname(this.settingsPath), { recursive: true });
     const tempPath = `${this.settingsPath}.${process.pid}.${Date.now()}.tmp`;
@@ -218,4 +200,18 @@ class FileSettingsStore implements SettingsStore {
     this.queue = next.catch(() => {});
     return next;
   }
+}
+
+function hasLegacyProxyCredentialFields(value: unknown): boolean {
+  if (!isRecord(value) || !isRecord(value.network) || !isRecord(value.network.proxy)) {
+    return false;
+  }
+  const proxy = value.network.proxy;
+  return ['password', 'passwordConfigured', 'credential'].some((key) =>
+    Object.prototype.hasOwnProperty.call(proxy, key),
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

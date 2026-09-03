@@ -286,6 +286,33 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('keeps a sandbox failure unresolved after an unrelated tool succeeds', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Boundary was not widened',
+        'tool_search',
+      ),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
@@ -500,15 +527,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
   });
 
-  test('classifies a standalone context-budget completion as failed', async () => {
-    const outcome = await observeFixtureOutcome({
-      turnEvents: completionEvents('turn-1', 'context_budget_exhausted'),
-    });
-
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'context_budget_exhausted');
-  });
-
   test('uses the latest durable terminal state for a Graph Turn', async () => {
     const outcome = await observeFixtureOutcome({
       graph: true,
@@ -634,6 +652,7 @@ describe('Runtime Host maka run adapter', () => {
           providerType: 'openai' as const,
           enabled: true,
           enabledModelIds: ['gpt-5'],
+          catalogEntries: [],
           models: [{ id: 'gpt-5' }, { id: 'gpt-6-preview' }],
         },
       ],
@@ -673,6 +692,7 @@ describe('Runtime Host maka run adapter', () => {
     const prepareStarted = deferred<void>();
     const fixture = runFixture({
       graph: true,
+      strictTurnStopInput: true,
       prepareGate: prepareGate.promise,
       onPrepareStarted: () => prepareStarted.resolve(),
     });
@@ -869,6 +889,7 @@ function runFixture(input: {
   onGraphStop?: () => void;
   initialMessages?: StoredMessage[];
   finalMessages?: StoredMessage[];
+  strictTurnStopInput?: boolean;
 }) {
   const switches: string[] = [];
   const moves: string[] = [];
@@ -1009,6 +1030,13 @@ function runFixture(input: {
         return { rootSessionId: requestInput.rootSessionId, graphId: 'graph-1' };
       }
       if (operation === 'turn.stop') {
+        if (input.strictTurnStopInput) {
+          const allowed = new Set(['sessionId', 'turnId', 'runId']);
+          const unexpected = Object.keys(requestInput).filter((key) => !allowed.has(key));
+          if (unexpected.length > 0) {
+            throw new Error(`Unknown turn.stop input field: ${unexpected.join(', ')}`);
+          }
+        }
         exactTurnStops.push({
           sessionId: String(requestInput.sessionId),
           turnId: String(requestInput.turnId),
@@ -1141,6 +1169,7 @@ function connectionCatalog() {
         providerType: 'openai' as const,
         enabled: true,
         enabledModelIds: ['gpt-5'],
+        catalogEntries: [],
         models: [{ id: 'gpt-5' }],
       },
     ],

@@ -50,12 +50,18 @@ function restored(id: string): SessionSummary {
 
 type SweepHarness = {
   removed: string[];
+  /** Each `previewRemoval` call, in order. */
+  previews: string[];
+  /** Each `archive` call, in order. */
+  archived: string[];
   /** Each `remove` call as `[sessionId, requireArchived]`. */
   removeOptions: Array<[string, boolean]>;
   cleared: string[];
   selections: Array<string | undefined>;
   /** Titles of the success toasts a row action raised. */
   toasts: string[];
+  /** Their descriptions, positionally — the half that carries the counts. */
+  toastDescriptions: (string | undefined)[];
   listCalls: number;
 };
 
@@ -68,6 +74,12 @@ function installService(
   harness: SweepHarness,
   options: {
     rejectIds?: readonly string[];
+    rejectArchiveIds?: readonly string[];
+    /** Subtasks the Host says a delete would archive, per source id. */
+    previewSubtasks?: Readonly<Record<string, number>>;
+    /** Ids whose preview rejects, standing in for a Host that cannot answer. */
+    rejectPreviewIds?: readonly string[];
+
     rejectWithUndefinedIds?: readonly string[];
     surviving?: readonly SessionSummary[];
     /** Runs after each accepted removal, to model what another client did meanwhile. */
@@ -78,11 +90,21 @@ function installService(
      * against whatever the renderer last saw.
      */
     catalog?: readonly SessionSummary[];
+    /** Subtasks the Host archives per removed id, summed into the outcome. */
+    archivedByRemoval?: Record<string, number>;
   } = {},
 ): SessionNavigationSessionService {
   return {
+    list: async () => {
+      harness.listCalls += 1;
+      if (!options.surviving) throw new Error('catalog unavailable');
+      return [...options.surviving];
+    },
     setFlagged: async () => undefined,
-    archive: async () => undefined,
+    archive: async (id) => {
+      harness.archived.push(id);
+      if (options.rejectArchiveIds?.includes(id)) throw new Error(`archive-busy:${id}`);
+    },
     unarchive: async () => undefined,
     rename: async () => undefined,
     remove: async (id, removeOptions) => {
@@ -92,15 +114,17 @@ function installService(
       }
       if (options.rejectIds?.includes(id)) throw new Error(`busy:${id}`);
       const target = options.catalog?.find((session) => session.id === id);
-      if (removeOptions.requireArchived && target && !target.isArchived) return 'restored';
+      if (removeOptions.requireArchived && target && !target.isArchived) {
+        return { disposition: 'restored', archivedSubtaskCount: 0 };
+      }
       harness.removed.push(id);
       options.onRemove?.(id);
-      return 'removed';
+      return { disposition: 'removed', archivedSubtaskCount: options.archivedByRemoval?.[id] ?? 0 };
     },
-    list: async () => {
-      harness.listCalls += 1;
-      if (!options.surviving) throw new Error('catalog unavailable');
-      return [...options.surviving];
+    previewRemoval: async (id: string) => {
+      harness.previews.push(id);
+      if (options.rejectPreviewIds?.includes(id)) throw new Error(`preview-unavailable:${id}`);
+      return options.previewSubtasks?.[id] ?? 0;
     },
   };
 }
@@ -112,6 +136,8 @@ function createActions(input: {
   pending?: Set<string>;
   refreshed?: SessionSummary[];
   service: SessionNavigationSessionService;
+  /** Answers the confirm and records what it was asked, for the sweeps. */
+  onConfirm?: (options: { title: string; description: string }) => boolean;
 }) {
   return createSessionNavigationRowActions({
     uiLocale: 'en',
@@ -129,11 +155,12 @@ function createActions(input: {
       input.activeIdRef.current = id;
     },
     toastApi: {
-      success: (title: string) => {
+      success: (title: string, description?: string) => {
         input.harness.toasts.push(title);
+        input.harness.toastDescriptions.push(description);
       },
       error: () => undefined,
-      confirm: async () => true,
+      confirm: async (options) => input.onConfirm?.(options) ?? true,
     },
   });
 }
@@ -141,10 +168,13 @@ function createActions(input: {
 function harness(): SweepHarness {
   return {
     removed: [],
+    previews: [],
+    archived: [],
     removeOptions: [],
     cleared: [],
     selections: [],
     toasts: [],
+    toastDescriptions: [],
     listCalls: 0,
   };
 }
@@ -166,6 +196,7 @@ describe('purgeSessions', () => {
     assert.deepEqual(h.removed, ['a-v2', 'b']);
     assert.deepEqual(outcome, {
       removed: 2,
+      archivedSubtasks: 0,
       remaining: [],
       restored: [],
       verified: true,
@@ -182,6 +213,20 @@ describe('purgeSessions', () => {
     assert.deepEqual(h.selections, [undefined]);
     // Nothing rejected, so there is nothing to check back.
     assert.equal(h.listCalls, 0);
+  });
+
+  it('sums the linked subtasks the Host archived across the sweep', async () => {
+    const h = harness();
+    const sessions = [summary('p1'), summary('p2'), summary('p3')];
+    const activeIdRef = { current: undefined as string | undefined };
+    // p1 archives 2 subtasks, p3 archives 1; p2 archives none.
+    const service = installService(h, { archivedByRemoval: { p1: 2, p3: 1 } });
+    const actions = createActions({ harness: h, sessions, activeIdRef, service });
+
+    const outcome = await actions.purgeSessions(['p1', 'p2', 'p3']);
+
+    assert.equal(outcome.removed, 3);
+    assert.equal(outcome.archivedSubtasks, 3);
   });
 
   it('reports a task restored before the sweep reached it, rather than dropping it', async () => {

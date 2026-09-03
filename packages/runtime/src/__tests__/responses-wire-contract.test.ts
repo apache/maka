@@ -31,7 +31,6 @@ import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
 import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
-import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -588,112 +587,6 @@ describe('responses wire request body', () => {
       unmarkedInput.some((item) => item.type === 'compaction_trigger'),
       false,
     );
-  });
-
-  test('keeps provider-executed tool history free of dangling outputs', async () => {
-    let body: Record<string, unknown> | undefined;
-    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return Response.json({
-        id: 'r',
-        object: 'response',
-        status: 'completed',
-        output: [],
-        usage: { input_tokens: 1, output_tokens: 1 },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const event = (
-      id: string,
-      role: RuntimeEvent['role'],
-      author: RuntimeEvent['author'],
-      content: RuntimeEvent['content'],
-      refs?: RuntimeEvent['refs'],
-    ): RuntimeEvent => ({
-      id,
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      ts: 1,
-      partial: false,
-      role,
-      author,
-      content,
-      ...(refs ? { refs } : {}),
-    });
-    const messages = openAiCodexCompactionMessages([
-      event('user', 'user', 'user', { kind: 'text', text: 'search' }),
-      event(
-        'call',
-        'model',
-        'agent',
-        {
-          kind: 'function_call',
-          id: 'search-1',
-          name: 'WebSearch',
-          args: { query: 'latest Maka' },
-          providerExecuted: true,
-        },
-        { stepId: 'provider-step' },
-      ),
-      event('result', 'tool', 'tool', {
-        kind: 'function_response',
-        id: 'search-1',
-        name: 'WebSearch',
-        result: { type: 'web_search_result', query: 'latest Maka' },
-        providerOutput: { type: 'web_search_result', id: 'ws_123' },
-        providerExecuted: true,
-        isError: false,
-      }),
-      event(
-        'text',
-        'model',
-        'agent',
-        { kind: 'text', text: 'Maka shipped.' },
-        { providerEventId: 'provider-step' },
-      ),
-    ]);
-    assert.deepEqual(
-      messages.map((message) => ({
-        role: message.role,
-        parts:
-          typeof message.content === 'string' ? ['text'] : message.content.map((part) => part.type),
-      })),
-      [
-        { role: 'user', parts: ['text'] },
-        { role: 'assistant', parts: ['tool-call'] },
-        { role: 'tool', parts: ['tool-result'] },
-        { role: 'assistant', parts: ['text'] },
-      ],
-    );
-
-    const model = getAIModel({
-      connection: conn('openai-codex', 'codex-subscription'),
-      apiKey: 'codex-token',
-      modelId: 'gpt-5.3-codex',
-      fetch,
-    });
-    await model.doGenerate({
-      prompt: messages as never,
-      providerOptions: { openai: { store: false, compactionTrigger: true } },
-    });
-
-    const input = body?.input as Array<Record<string, unknown>>;
-    const callIds = new Set(
-      input.filter((item) => item.type === 'function_call').map((item) => String(item.call_id)),
-    );
-    const danglingOutputIds = input
-      .filter((item) => item.type === 'function_call_output')
-      .map((item) => String(item.call_id))
-      .filter((callId) => !callIds.has(callId));
-    assert.deepEqual([...callIds], ['search-1']);
-    assert.deepEqual(
-      input
-        .filter((item) => item.type === 'function_call_output')
-        .map((item) => String(item.call_id)),
-      ['search-1'],
-    );
-    assert.deepEqual(danglingOutputIds, [], JSON.stringify(input));
   });
 
   test('returns native apply_patch results with the provider output item', async () => {

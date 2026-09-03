@@ -79,6 +79,55 @@ export type HistoryCompactRoute = (typeof HISTORY_COMPACT_ROUTES)[number];
 /** Hard bound for provider-supplied diagnostic identifiers stored on an attempt. */
 export const MODEL_CALL_DIAGNOSTIC_FIELD_MAX_LENGTH = 256;
 
+export const PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION = 1 as const;
+export const PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS = 256;
+export const PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH = 256;
+
+export type PreparedRequestObservationSegmentKind =
+  | 'tool_schema'
+  | 'system_prompt'
+  | 'message'
+  | 'provider_options';
+
+/**
+ * One ordered semantic part of what Maka handed to the AI SDK model-call seam.
+ *
+ * `opaque` means the digest is useful for identity and auditing but MUST NOT be
+ * used to claim exact equality. It covers redacted content and bounded
+ * remainders that intentionally summarize more than one source segment.
+ */
+export interface PreparedRequestObservationSegment {
+  kind: PreparedRequestObservationSegmentKind;
+  index: number;
+  cacheable: boolean;
+  comparison: 'exact' | 'opaque';
+  digest: string;
+  bytes: number;
+  /** Present only on an opaque bounded remainder; the value is the source-segment count. */
+  representedSegments?: number;
+  role?: string;
+  label?: string;
+}
+
+/**
+ * Bounded, secret-free observation of one prepared semantic model request.
+ *
+ * This is not the provider wire body. The full secret-free serialization stays
+ * in the private request artifact referenced by `captureArtifactId` when that
+ * sink is available.
+ */
+export interface PreparedRequestObservation {
+  schemaVersion: typeof PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION;
+  /**
+   * Identity of the complete secret-free normalized serialization. It does not
+   * prove semantic equality when any segment is `opaque`; continuity consumers
+   * must compare the ordered segment identity and each segment's `comparison`.
+   */
+  digest: string;
+  bytes: number;
+  segments: PreparedRequestObservationSegment[];
+}
+
 export interface ModelCallAttempt {
   schemaVersion: typeof MODEL_CALL_ATTEMPT_SCHEMA_VERSION;
 
@@ -91,7 +140,7 @@ export interface ModelCallAttempt {
   logicalCallId: string;
   /** Idempotency key: appending the same `attemptId` twice records once. */
   attemptId: string;
-  /** Tracker instance id, retained to join request-shape capture artifacts. */
+  /** Tracker instance id, retained to join private prepared-request artifacts. */
   traceId: string;
 
   /**
@@ -116,8 +165,10 @@ export interface ModelCallAttempt {
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  /** Join key for request-shape diagnostics; absent when capture is disabled. */
+  /** Join key for the private prepared-request artifact, when best-effort persistence won the race. */
   captureArtifactId?: string;
+  /** Semantic request actually prepared for this dispatched physical attempt. */
+  requestObservation?: PreparedRequestObservation;
 
   startedAt: number;
   completedAt: number;
@@ -175,6 +226,7 @@ const MODEL_CALL_ATTEMPT_SHAPE = defineObjectShape<ModelCallAttempt>()(
     'historyCompactRoute',
     'contextWindow',
     'captureArtifactId',
+    'requestObservation',
     'timeToFirstTokenMs',
     'finishReason',
     'errorClass',
@@ -202,6 +254,24 @@ const TOKEN_FIELDS = [
   'cacheWriteInputTokens',
   'reasoningTokens',
 ] as const satisfies readonly (keyof ModelCallAttempt)[];
+
+const PREPARED_REQUEST_OBSERVATION_SHAPE = defineObjectShape<PreparedRequestObservation>()(
+  ['schemaVersion', 'digest', 'bytes', 'segments'],
+  [],
+);
+
+const PREPARED_REQUEST_OBSERVATION_SEGMENT_SHAPE =
+  defineObjectShape<PreparedRequestObservationSegment>()(
+    ['kind', 'index', 'cacheable', 'comparison', 'digest', 'bytes'],
+    ['representedSegments', 'role', 'label'],
+  );
+
+const PREPARED_REQUEST_SEGMENT_KINDS: readonly PreparedRequestObservationSegmentKind[] = [
+  'tool_schema',
+  'system_prompt',
+  'message',
+  'provider_options',
+];
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -233,6 +303,69 @@ function isOptionalHttpStatus(value: unknown): boolean {
     value === undefined ||
     (isFiniteNumber(value) && Number.isInteger(value) && value >= 100 && value <= 599)
   );
+}
+
+function isSha256Digest(value: unknown): value is string {
+  return typeof value === 'string' && /^sha256:[a-f0-9]{64}$/.test(value);
+}
+
+function isOptionalBoundedText(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'string' && value.length <= PREPARED_REQUEST_OBSERVATION_TEXT_MAX_LENGTH)
+  );
+}
+
+function isPreparedRequestObservationSegment(
+  value: unknown,
+): value is PreparedRequestObservationSegment {
+  if (!isRecord(value) || !hasExactShape(value, PREPARED_REQUEST_OBSERVATION_SEGMENT_SHAPE)) {
+    return false;
+  }
+  return (
+    PREPARED_REQUEST_SEGMENT_KINDS.includes(value.kind as PreparedRequestObservationSegmentKind) &&
+    isNonNegativeInteger(value.index) &&
+    typeof value.cacheable === 'boolean' &&
+    (value.comparison === 'exact' || value.comparison === 'opaque') &&
+    isSha256Digest(value.digest) &&
+    isNonNegativeInteger(value.bytes) &&
+    (value.representedSegments === undefined ||
+      (typeof value.representedSegments === 'number' &&
+        Number.isSafeInteger(value.representedSegments) &&
+        value.representedSegments > 0)) &&
+    (value.representedSegments === undefined || value.comparison === 'opaque') &&
+    isOptionalBoundedText(value.role) &&
+    isOptionalBoundedText(value.label)
+  );
+}
+
+function isPreparedRequestObservation(value: unknown): value is PreparedRequestObservation {
+  if (!isRecord(value) || !hasExactShape(value, PREPARED_REQUEST_OBSERVATION_SHAPE)) return false;
+  return (
+    value.schemaVersion === PREPARED_REQUEST_OBSERVATION_SCHEMA_VERSION &&
+    isSha256Digest(value.digest) &&
+    isNonNegativeInteger(value.bytes) &&
+    Array.isArray(value.segments) &&
+    value.segments.length <= PREPARED_REQUEST_OBSERVATION_MAX_SEGMENTS &&
+    value.segments.every(isPreparedRequestObservationSegment) &&
+    hasOrderedPreparedRequestSegments(value.segments)
+  );
+}
+
+function hasOrderedPreparedRequestSegments(
+  segments: readonly PreparedRequestObservationSegment[],
+): boolean {
+  let previousKind = -1;
+  let previousIndex = -1;
+  for (const segment of segments) {
+    const kind = PREPARED_REQUEST_SEGMENT_KINDS.indexOf(segment.kind);
+    if (kind < previousKind) return false;
+    if (kind === previousKind && segment.index <= previousIndex) return false;
+    if (kind !== previousKind) previousIndex = -1;
+    previousKind = kind;
+    previousIndex = segment.index;
+  }
+  return true;
 }
 
 const PRICING_RATES_SHAPE = defineObjectShape<PricingConfig>()(
@@ -286,6 +419,8 @@ export function decodeModelCallAttempt(value: unknown): ModelCallAttempt {
     isNonEmptyString(value.modelId) &&
     isOptionalNonNegativeNumber(value.contextWindow) &&
     isOptionalString(value.captureArtifactId) &&
+    (value.requestObservation === undefined ||
+      isPreparedRequestObservation(value.requestObservation)) &&
     isFiniteNumber(value.startedAt) &&
     isFiniteNumber(value.completedAt) &&
     isNonNegativeNumber(value.latencyMs) &&

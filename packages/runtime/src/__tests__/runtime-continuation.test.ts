@@ -30,7 +30,7 @@ import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 
 import { createLocalContinuationSafetyInspector } from '../continuation-safety.js';
-import { buildContinuationReplayPlan, digestProviderReplay } from '../continuation-replay.js';
+import { buildContinuationReplayPlan } from '../continuation-replay.js';
 import {
   buildRuntimeEventModelReplayPlan,
   PROVIDER_REPLAY_PROJECTION_VERSION,
@@ -87,6 +87,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -119,7 +120,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
       manifestDigest: plan.continuation?.boundary?.manifestDigest,
     },
     providerReplayDigest: plan.continuation?.providerReplayDigest,
-    providerProjectionVersion: 1,
+    providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
     safetySnapshot: {
       workspaceIdentity: 'workspace-1',
       backgroundOperationsSettled: true,
@@ -140,6 +141,7 @@ test('RuntimeContinuationPlanner parks with a stable reason when the ledger cann
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -169,6 +171,7 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -205,6 +208,7 @@ test('RuntimeContinuationPlanner parks when the terminal run header disagrees wi
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -248,6 +252,7 @@ test('RuntimeContinuationPlanner rejects immutable output after the source termi
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -293,6 +298,7 @@ test('RuntimeContinuationPlanner uses canonical provider items for composite hea
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -332,6 +338,7 @@ test('RuntimeContinuationPlanner rejects a ledger returned for another source ru
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -375,6 +382,7 @@ test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', as
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -412,6 +420,7 @@ test('RuntimeContinuationPlanner parks when a continuation ancestor is unavailab
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -458,6 +467,7 @@ test('RuntimeContinuationPlanner caps continuation lineage at 64 segments', asyn
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -529,6 +539,7 @@ test('RuntimeContinuationPlanner verifies a v2 lineage edge prefix digest', asyn
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -606,6 +617,7 @@ test('RuntimeContinuationPlanner binds every v2 lineage edge to its continuation
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -622,6 +634,7 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -684,6 +697,7 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -695,11 +709,12 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_start_mismatch']);
 });
 
-test('RuntimeContinuationPlanner authenticates every v2 edge provider replay digest', async () => {
+test('RuntimeContinuationPlanner requires a durable target before authenticating edge replay', async () => {
   const ancestor = prefixForIdentity('invocation-1', 'run-1', 'turn-1');
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -767,6 +782,7 @@ test('RuntimeContinuationPlanner authenticates every v2 edge provider replay dig
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -775,7 +791,7 @@ test('RuntimeContinuationPlanner authenticates every v2 edge provider replay dig
   });
 
   assert.equal(plan.disposition, 'park');
-  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_replay_mismatch']);
+  assert.deepEqual(plan.rejectionReasons, ['continuation_authority_unavailable']);
 });
 
 test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim is missing', async () => {
@@ -783,6 +799,7 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -850,6 +867,7 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -860,6 +878,16 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   assert.equal(plan.disposition, 'park');
   assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_claim_mismatch']);
 });
+
+function sameRouteAdmission() {
+  return {
+    runHeaders: ['run-1', 'run-2', 'run-3'].map((runId) =>
+      runHeader(runId, { llmConnectionId: 'connection-1' }),
+    ),
+    targetProviderStateIdentity: undefined,
+    targetModelId: 'test-model',
+  };
+}
 
 function runHeader(runId: string, overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';

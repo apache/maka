@@ -40,13 +40,16 @@ import { getSessionCollaborationCopy } from './locales/session-collaboration-cop
 import { turnRequestStateLabel } from './session-turn-request-composer.js';
 
 type Props = {
-  readonly mode: 'share';
-  readonly sessionId: string;
-  readonly sessionName: string;
-  readonly requiresRemoteAccess: boolean;
-  readonly onEnableRemoteAccess: () => void;
+  readonly target?: {
+    readonly sessionId: string;
+    readonly sessionName: string;
+    readonly requiresRemoteAccess: boolean;
+  };
+  readonly onOpenRemoteAccessSettings: () => void;
   readonly onClose: () => void;
 };
+
+type ShareSessionDialogProps = NonNullable<Props['target']> & Omit<Props, 'target'>;
 
 type CollaborationAuthorityState =
   | 'loading'
@@ -54,16 +57,29 @@ type CollaborationAuthorityState =
   | 'remote_access_off'
   | 'unavailable';
 
+type PreparedInvitation = CollaborationInvitationPrepareResult & {
+  readonly connectivity:
+    | { readonly kind: 'peer'; readonly coordinationRelayCount: number }
+    | { readonly kind: 'configured' };
+};
+
 export function SessionCollaborationDialog(props: Props) {
-  return <ShareSessionDialog {...props} />;
+  if (!props.target) return null;
+  return (
+    <ShareSessionDialog
+      {...props.target}
+      onOpenRemoteAccessSettings={props.onOpenRemoteAccessSettings}
+      onClose={props.onClose}
+    />
+  );
 }
 
-function ShareSessionDialog(props: Props) {
+function ShareSessionDialog(props: ShareSessionDialogProps) {
   const copy = getSessionCollaborationCopy(useUiLocale());
   const toast = useToast();
   const [preset, setPreset] = useState<'observe' | 'request_turn'>('observe');
   const [access, setAccess] = useState<CollaborationAccessQueryResult>();
-  const [invitation, setInvitation] = useState<CollaborationInvitationPrepareResult>();
+  const [invitation, setInvitation] = useState<PreparedInvitation>();
   const [turnRequests, setTurnRequests] = useState<readonly SessionTurnAccessRequest[]>();
   const [authorityState, setAuthorityState] = useState<CollaborationAuthorityState>('loading');
   const [working, setWorking] = useState(false);
@@ -133,14 +149,14 @@ function ShareSessionDialog(props: Props) {
     setWorking(true);
     try {
       if (authorityState === 'remote_access_off') {
-        props.onEnableRemoteAccess();
+        openRemoteAccessSettings();
         return;
       }
       if (authorityState !== 'available') return;
       if (props.requiresRemoteAccess) {
         const access = await window.maka.localRuntimeHostRemoteAccess.getSnapshot();
         if (access.state !== 'on') {
-          props.onEnableRemoteAccess();
+          openRemoteAccessSettings();
           return;
         }
       }
@@ -166,6 +182,12 @@ function ShareSessionDialog(props: Props) {
     } finally {
       setWorking(false);
     }
+  }
+
+  function openRemoteAccessSettings(): void {
+    props.onClose();
+    toast.info(copy.enableRemoteAccessTitle, copy.enableRemoteAccessBody);
+    props.onOpenRemoteAccessSettings();
   }
 
   async function copyInvitation(): Promise<void> {
@@ -269,7 +291,21 @@ function ShareSessionDialog(props: Props) {
                     onChange={() => undefined}
                   />
                   <Text type="supporting" color="secondary">{copy.invitationHelp}</Text>
-                  <Button variant="secondary" label={copy.copy} onClick={() => void copyInvitation()} />
+                  {invitation.connectivity.kind === 'peer' ? (
+                    invitation.connectivity.coordinationRelayCount > 0 ? (
+                      <Banner
+                        status="success"
+                        title={copy.coordinationReady}
+                        description={copy.coordinationReadyBody}
+                      />
+                    ) : (
+                      <Banner
+                        status="warning"
+                        title={copy.coordinationUnavailable}
+                        description={copy.coordinationUnavailableBody}
+                      />
+                    )
+                  ) : null}
                 </FormLayout>
               ) : (
                 <Button
@@ -366,7 +402,24 @@ function ShareSessionDialog(props: Props) {
             </div>
           </LayoutContent>
         )}
-        footer={<LayoutFooter><Button variant="secondary" label={copy.close} isDisabled={working} onClick={props.onClose} /></LayoutFooter>}
+        footer={(
+          <LayoutFooter>
+            <Button
+              variant="secondary"
+              label={copy.close}
+              isDisabled={working}
+              onClick={props.onClose}
+            />
+            {invitation ? (
+              <Button
+                variant="primary"
+                label={copy.copy}
+                isDisabled={working}
+                onClick={() => void copyInvitation()}
+              />
+            ) : null}
+          </LayoutFooter>
+        )}
       />
     </Dialog>
   );

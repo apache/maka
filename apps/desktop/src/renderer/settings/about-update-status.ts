@@ -17,18 +17,59 @@
  * under the License.
  */
 
-import type { AppUpdateStatus } from '../../preload/bridge-contract.js';
+import type { AppUpdateStatus, DesktopAppInfo } from '../../preload/bridge-contract.js';
 import type { SettingsPreferencesCopy } from '../locales/settings-preferences-copy.js';
 
 type AboutCopy = SettingsPreferencesCopy['about'];
 
-/** Map updater state to About-page detail copy (pure for unit tests). */
+export interface AboutChannelFacts {
+  /** One sentence saying what following this channel means. */
+  readonly summary: string;
+  /**
+   * The lead `Token`, or null. A release install is the default state and gets
+   * no mark: Astryx reserves colour for what departs from it, so tokening every
+   * channel would make none of them stand out — which is also why the release
+   * channel now has no name string anywhere in the product.
+   */
+  readonly token: { readonly label: string; readonly color: 'orange' | 'gray' } | null;
+}
+
+/**
+ * What the About lead says about this build's channel, pure for unit tests.
+ *
+ * Build mode and release channel answer different questions: `buildMode` says
+ * how this binary was produced (a checkout vs a packaged install), while
+ * `updateChannel` says which release feed it follows. A dev checkout follows no
+ * feed at all — its `updateChannel` is the updater's `release` placeholder — so
+ * `buildMode` decides first, and the old "packaged → 正式版" mapping that lied
+ * to nightly users stays gone.
+ */
+export function aboutChannelFacts(
+  info: Pick<DesktopAppInfo, 'buildMode' | 'updateChannel'>,
+  copy: AboutCopy,
+): AboutChannelFacts {
+  const key = info.buildMode === 'dev' ? 'dev' : info.updateChannel;
+  return {
+    summary: copy.channelSummaries[key],
+    token: key === 'nightly'
+      ? { label: copy.nightlyBuild, color: 'orange' }
+      : key === 'dev'
+        ? { label: copy.devBuild, color: 'gray' }
+        : null,
+  };
+}
+
+/**
+ * Map updater state to About-page detail copy (pure for unit tests).
+ *
+ * There is no dev-build branch: a dev checkout renders no status line at all,
+ * so the "development builds do not check GitHub releases" sentence this used
+ * to return would only have restated the channel sentence above it.
+ */
 export function aboutUpdateStatusDetail(
   status: AppUpdateStatus | null,
   copy: AboutCopy,
-  options: { readonly isDevBuild: boolean },
 ): string {
-  if (options.isDevBuild) return copy.updateDevBuildHelp;
   if (!status || status.state === 'idle') return copy.updateIdle;
   if (status.state === 'checking') return copy.checkingForUpdates;
   if (status.state === 'not-available') return copy.updateNotAvailable;

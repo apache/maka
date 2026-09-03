@@ -1204,6 +1204,12 @@ async function renderPage(options: {
   importResult?:
     | { ok: false; reason: 'commit_outcome_unknown' }
     | Promise<{ ok: false; reason: 'commit_outcome_unknown' }>;
+  /**
+   * Per-source answers for a batch: `ok` lands, `unknown` is the Host not
+   * answering, `throw` is a rejection. Keyed by source session id, because a
+   * batch is exactly the case where the ids must not share one answer.
+   */
+  importBySource?: Record<string, 'ok' | 'unknown' | 'throw'>;
   onOpenImported?: (sessionId: string) => void;
   locale?: 'en' | 'zh';
 }): Promise<{
@@ -1212,6 +1218,8 @@ async function renderPage(options: {
   listCalls(): number;
   listInputs(): Array<{ includeArchived: boolean }>;
   hostCalls(): Array<{ operation: 'listSources' | 'list' | 'import'; host?: DesktopRuntimeHostRef }>;
+  /** Source ids handed to `import`, in the order the batch walked them. */
+  importedIds(): string[];
 }> {
   const { document, window } = parseHTML('<div id="root"></div>');
   const matchMedia = (media: string) => ({
@@ -1240,6 +1248,7 @@ async function renderPage(options: {
     IS_REACT_ACT_ENVIRONMENT: true,
   });
   let listCalls = 0;
+  const importedIds: string[] = [];
   const listInputs: Array<{ includeArchived: boolean }> = [];
   const hostCalls: Array<{
     operation: 'listSources' | 'list' | 'import';
@@ -1272,8 +1281,16 @@ async function renderPage(options: {
         if (result instanceof Error) throw result;
         return result;
       },
-      import: async (_input: unknown, host?: DesktopRuntimeHostRef) => {
+      import: async (input: unknown, host?: DesktopRuntimeHostRef) => {
         hostCalls.push({ operation: 'import', host });
+        const sourceSessionId = (input as { sourceSessionId?: string }).sourceSessionId ?? '';
+        importedIds.push(sourceSessionId);
+        const perSource = options.importBySource?.[sourceSessionId];
+        if (perSource === 'throw') throw new Error(`import-failed:${sourceSessionId}`);
+        if (perSource === 'unknown') return { ok: false, reason: 'commit_outcome_unknown' };
+        if (perSource === 'ok') {
+          return { ok: true, session: { id: `imported-${sourceSessionId}` } };
+        }
         return options.importResult ?? Promise.reject(new Error('import is not used by this test'));
       },
     },
@@ -1305,6 +1322,7 @@ async function renderPage(options: {
     listCalls: () => listCalls,
     listInputs: () => listInputs,
     hostCalls: () => hostCalls,
+    importedIds: () => importedIds,
   };
 }
 
@@ -1341,3 +1359,193 @@ function segment(container: HTMLElement, value: string): HTMLButtonElement | und
     container.querySelectorAll<HTMLButtonElement>('button[role="radio"]'),
   ).find((button) => button.getAttribute('data-value') === value);
 }
+
+/**
+ * Selecting several conversations and importing them in one go.
+ *
+ * The page is a directory you pick from, so the checkboxes are always there —
+ * there is no mode to enter. What these cases pin is the accounting: a batch
+ * that reports one number for four different outcomes is worse than no batch.
+ */
+describe('ImportTasksSettingsPage batch import', () => {
+  function rows(container: HTMLElement): HTMLInputElement[] {
+    return Array.from(container.querySelectorAll<HTMLInputElement>('li input[type="checkbox"]'));
+  }
+
+  function masterBox(container: HTMLElement): HTMLInputElement {
+    const box = container.querySelector<HTMLInputElement>(
+      '.maka-import-selection-bar input[type="checkbox"]',
+    );
+    assert.ok(box, 'master checkbox renders');
+    return box;
+  }
+
+  async function tick(box: HTMLInputElement, checked: boolean): Promise<void> {
+    // React's checkbox onChange is driven by the native click, and its value
+    // tracker swallows a programmatic `.checked` write without one.
+    await act(async () => {
+      box.checked = checked;
+      box.dispatchEvent(new (globalThis.window as unknown as { Event: typeof Event }).Event('click', {
+        bubbles: true,
+        cancelable: true,
+      }));
+      await Promise.resolve();
+    });
+  }
+
+  it('the master box marks and unmarks exactly the rows on screen', async () => {
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'a', name: 'A' }),
+          externalSession({ id: 'b', name: 'B' }),
+        ],
+        nextCursor: null,
+      },
+    });
+
+    assert.equal(rows(container).length, 2);
+    await tick(masterBox(container), true);
+    assert.deepEqual(rows(container).map((box) => box.checked), [true, true]);
+    assert.match(container.textContent ?? '', /2 \/ 2 selected/);
+
+    await tick(masterBox(container), false);
+    assert.deepEqual(rows(container).map((box) => box.checked), [false, false]);
+    assert.match(container.textContent ?? '', /0 \/ 2 selected/);
+  });
+
+  it('the master box reads indeterminate for a partial selection', async () => {
+    // The usual state during a selection, and the one a checked/unchecked pair
+    // cannot express.
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [externalSession({ id: 'a' }), externalSession({ id: 'b' })],
+        nextCursor: null,
+      },
+    });
+
+    await tick(rows(container)[0]!, true);
+    assert.equal(masterBox(container).indeterminate, true);
+    await tick(rows(container)[1]!, true);
+    assert.equal(masterBox(container).indeterminate, false);
+    assert.equal(masterBox(container).checked, true);
+  });
+
+  it('imports the marked rows one at a time and counts each outcome once', async () => {
+    // Sequential on purpose: recovery re-reads the catalog window an attempt
+    // came from, so overlapping attempts would race that read, and a progress
+    // count is only true when one thing is happening.
+    const { container, importedIds } = await renderPage({
+      catalog: {
+        sessions: [
+          externalSession({ id: 'fresh', name: 'Fresh' }),
+          externalSession({
+            id: 'again',
+            name: 'Again',
+            importState: { importedCount: 1, importedSessionIds: ['prior'], isImporting: false },
+          }),
+          externalSession({ id: 'broken', name: 'Broken' }),
+        ],
+        nextCursor: null,
+      },
+      importBySource: { fresh: 'ok', again: 'ok', broken: 'throw' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run, 'the batch button renders');
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    assert.deepEqual(importedIds(), ['fresh', 'again', 'broken']);
+    const text = container.textContent ?? '';
+    // Two imported, and the summary says one of them now exists twice —
+    // re-importing is how a conversation is refreshed, but a user who marked
+    // three and reads "imported 2" deserves to know which kind they were.
+    assert.match(text, /Imported 2 conversations/);
+    assert.match(text, /1 of them had been imported before/);
+    // One rejection does not become the batch's answer for the rows after it.
+    assert.match(text, /1 more could not be imported/);
+  });
+
+  it('a Host that does not answer is not counted as a failure', async () => {
+    // Only a catalog read settles whether an unanswered conversion landed.
+    // Calling it a failure is what invites the retry that makes a second copy.
+    const { container } = await renderPage({
+      catalog: { sessions: [externalSession({ id: 'quiet' })], nextCursor: null },
+      importBySource: { quiet: 'unknown' },
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const text = container.textContent ?? '';
+    assert.match(text, /No conversation was imported/);
+    assert.doesNotMatch(text, /could not be imported/);
+    // It surfaces through the unconfirmed banner, which owns the retry.
+    assert.match(text, /unconfirmed|Unconfirmed|outcome/i);
+  });
+
+  it('spins only the conversion in flight, not every queued row', async () => {
+    // A spinner claims something is happening now. Marking every selected row
+    // would put one on rows the batch has not reached, and on rows it already
+    // finished.
+    let releaseFirst: ((value: { ok: false; reason: 'commit_outcome_unknown' }) => void) | undefined;
+    const { container } = await renderPage({
+      catalog: {
+        sessions: [externalSession({ id: 'a', name: 'A' }), externalSession({ id: 'b', name: 'B' })],
+        nextCursor: null,
+      },
+      // The first conversion parks until released, so the assertion lands while
+      // exactly one row is converting and the other is queued.
+      importResult: new Promise((resolve) => {
+        releaseFirst = resolve;
+      }),
+    });
+
+    await tick(masterBox(container), true);
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    await act(async () => {
+      run.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const spinning = Array.from(container.querySelectorAll('li')).map((row) =>
+      row.textContent?.includes('Importing') === true || !!row.querySelector('[aria-busy="true"]'),
+    );
+    assert.equal(spinning.filter(Boolean).length, 1, 'exactly one row reads as converting');
+
+    await act(async () => {
+      releaseFirst?.({ ok: false, reason: 'commit_outcome_unknown' });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  });
+
+  it('the batch button stays out of reach until something is marked', async () => {
+    const { container } = await renderPage({
+      catalog: { sessions: [externalSession({ id: 'a' })], nextCursor: null },
+    });
+
+    const run = buttonWithText(container, 'Import selected');
+    assert.ok(run);
+    assert.equal(run.disabled, true);
+    await tick(rows(container)[0]!, true);
+    assert.equal(buttonWithText(container, 'Import selected')?.disabled, false);
+  });
+});

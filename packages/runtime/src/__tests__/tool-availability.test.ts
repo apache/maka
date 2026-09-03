@@ -34,6 +34,16 @@ function tool(name: string, description = name): MakaTool {
   return { name, description, parameters: z.object({}), impl: () => ({ ok: true }) };
 }
 
+function withCategory(name: string, categoryHint: MakaTool['categoryHint']): MakaTool {
+  return {
+    name,
+    description: name,
+    parameters: z.object({}),
+    impl: () => ({ ok: true }),
+    categoryHint,
+  };
+}
+
 const invalid: MakaTool = {
   name: 'invalid',
   description: 'invalid',
@@ -345,5 +355,49 @@ describe('ToolAvailabilityRuntime — search activation', () => {
     assert.deepEqual(plan.activeTools, ['custom', 'Read']);
     assert.ok(!plan.providerTools.some((candidate) => candidate.name === TOOL_SEARCH_NAME));
     assert.equal(plan.gating, undefined);
+  });
+
+  test('buckets ungrouped native tools into capability families by categoryHint', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [
+        withCategory('agent_spawn', 'subagent'),
+        withCategory('web_search', 'web_read'),
+        withCategory('screen_click', 'computer_use'),
+        withCategory('session_tool', 'custom_tool'), // no family mapping -> other
+        tool('legacy_tool'), // no categoryHint -> other
+      ],
+      { groups: [] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // Distinct permission hints land in distinct browsing families, not one `other`.
+    assert.deepEqual(bySource.agents, ['agent_spawn']);
+    assert.deepEqual(bySource.web, ['web_search']);
+    assert.deepEqual(bySource.computer_use, ['screen_click']);
+    // Only hint-less / custom_tool tools fall back to `other`.
+    assert.deepEqual(bySource.other, ['legacy_tool', 'session_tool']);
+    // A hint present in the exhaustive family map but mapped to `null`
+    // (custom_tool) still resolves to `other`, not a family of its own.
+    assert.equal(bySource.custom_tool, undefined);
+
+    // Family ids surface in the searchable inventory the model sees.
+    const description = searchTool(plan).description;
+    assert.match(description, /agents:\n- agent_spawn/);
+    assert.match(description, /web:\n- web_search/);
+    assert.match(description, /computer_use:\n- screen_click/);
+  });
+
+  test('a caller-supplied group keeps precedence over a categoryHint family', () => {
+    const plan = new ToolAvailabilityRuntime(
+      [withCategory('agent_spawn', 'subagent'), withCategory('agent_list', 'subagent')],
+      { groups: [{ id: 'orchestration', label: 'Orchestration', toolNames: ['agent_spawn'] }] },
+      invalid,
+    ).prepare(new Map());
+
+    const bySource = plan.diagnostics([], 0)!.visibleToolNamesBySource!;
+    // The explicit group claims agent_spawn; only the remaining hinted tool is family-bucketed.
+    assert.deepEqual(bySource.orchestration, ['agent_spawn']);
+    assert.deepEqual(bySource.agents, ['agent_list']);
   });
 });

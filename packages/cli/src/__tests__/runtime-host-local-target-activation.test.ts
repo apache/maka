@@ -100,7 +100,10 @@ test('a parent deadline terminates and waits for a target activator with a hung 
         },
         inheritableAuthorityLeaseFd: lease.fd,
       },
-      { settlementTimeoutMs: 50 },
+      // 50 ms also covered child spawn and ESM load, so CI could SIGKILL before
+      // read-entered was written (#4466). Two seconds fits startup; the hung
+      // read still trips the settlement deadline.
+      { settlementTimeoutMs: 2_000 },
     );
     assert.equal(activation.kind, 'ready');
     await assert.rejects(

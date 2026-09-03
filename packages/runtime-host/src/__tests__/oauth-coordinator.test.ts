@@ -47,7 +47,10 @@ import {
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -1093,6 +1096,7 @@ async function attachPresentation(
         connection.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         return;
       }
@@ -1217,6 +1221,7 @@ async function withFixture(
   assert.ok(connection);
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });

@@ -21,10 +21,10 @@ import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { Composer, useUiLocale } from '@maka/ui';
+import { Composer, useToast, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
-import { getShellCopy } from '../../../locales/shell-copy';
+import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,
   SessionWorkbarPlacement,
@@ -137,7 +137,9 @@ export interface WorkbarHostModel {
 }
 
 export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
-  const copy = getShellCopy(useUiLocale()).app;
+  const locale = useUiLocale();
+  const toast = useToast();
+  const copy = getShellCopy(locale).app;
   const style = {
     '--maka-session-workbar-width': `${props.rightWidth}px`,
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
@@ -210,6 +212,7 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
+              confirmBypass={() => confirmBypassPermission(toast, locale)}
             />
           </Suspense>
         </div>

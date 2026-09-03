@@ -19,6 +19,10 @@
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
+import {
+  decodeEffectiveToolResultProjection,
+  effectiveToolResultMedia,
+} from './durable-tool-result-projection.js';
 
 export interface HistoricalImageToolResult {
   toolName: string;
@@ -37,32 +41,11 @@ function isRecord(value: unknown): value is UnknownRecord {
   return value !== null && typeof value === 'object';
 }
 
-function storageRefLabel(value: unknown): string | undefined {
-  if (!isRecord(value) || typeof value.kind !== 'string') return undefined;
-  if (
-    (value.kind === 'session_file' || value.kind === 'workspace_file') &&
-    typeof value.relativePath === 'string' &&
-    value.relativePath.length > 0
-  ) {
-    return value.relativePath;
-  }
-  if (
-    value.kind === 'session_context' &&
-    typeof value.refId === 'string' &&
-    value.refId.length > 0
-  ) {
-    return value.refId;
-  }
-  if (
-    value.kind === 'external_file' &&
-    typeof value.absolutePath === 'string' &&
-    value.absolutePath.length > 0
-  ) {
-    return value.absolutePath;
-  }
-  return undefined;
-}
-
+/**
+ * The image Tool Results a rejected request can give back, read through the
+ * same decode the budget measures — not from the raw execution fact, which the
+ * durable projection may already have bounded or redacted.
+ */
 export function collectHistoricalImageToolResults(
   events: readonly RuntimeEvent[],
 ): Map<string, HistoricalImageToolResult> {
@@ -70,23 +53,18 @@ export function collectHistoricalImageToolResults(
   for (const event of events) {
     const content = event.content;
     if (content?.kind !== 'function_response' || content.isError === true) continue;
-    const result = content.result;
-    if (
-      !isRecord(result) ||
-      result.kind !== 'image' ||
-      typeof result.mimeType !== 'string' ||
-      result.mimeType.length === 0
-    ) {
-      continue;
-    }
-    const artifactLabel = storageRefLabel(result.ref);
-    if (!artifactLabel) continue;
-    collected.set(content.id, { toolName: content.name, artifactLabel });
+    const effective = decodeEffectiveToolResultProjection(content, event.sessionId);
+    const [media] = effectiveToolResultMedia(effective, event.sessionId);
+    if (!media || media.label.length === 0) continue;
+    collected.set(content.id, { toolName: content.name, artifactLabel: media.label });
   }
   return collected;
 }
 
-function isInlineImageFilePart(value: unknown): value is UnknownRecord {
+/** A `file` part carrying inline image bytes, not a URL the provider fetches. */
+export function isInlineImageFilePart(
+  value: unknown,
+): value is { type: 'file'; mediaType: string; data: object } {
   if (
     !isRecord(value) ||
     value.type !== 'file' ||

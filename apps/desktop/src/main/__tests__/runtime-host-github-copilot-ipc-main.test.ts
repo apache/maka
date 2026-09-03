@@ -21,11 +21,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { IpcMainInvokeEvent } from 'electron';
 import type {
-  ConnectionCatalogEntry,
-  ConnectionCatalogSnapshot,
   CredentialStatus,
 } from '@maka/core/runtime-policy';
-import {
+import type {
+  RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
+  RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
+} from '@maka/runtime-host/client';import {
   registerRuntimeHostGitHubCopilotIpc,
   type RuntimeHostGitHubCopilotIpcDeps,
 } from '../runtime-host-github-copilot-ipc-main.js';
@@ -57,6 +58,7 @@ test('imports a local GitHub credential through the shared Host account path', a
         ...draft,
         connectionId: CONNECTION_ID,
         revision: 1,
+        catalogEntries: [],
         models: [],
       };
       catalog = {
@@ -128,7 +130,6 @@ test('imports a local GitHub credential through the shared Host account path', a
         revision: current.revision + 1,
         models: [{ id: discoveredModelId }],
         modelSource: 'fetched',
-        modelsFetchedAt: 1,
       };
       catalog = {
         ...catalog,

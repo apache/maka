@@ -24,7 +24,7 @@ import type {
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
 import { parseRequestHeaders } from '@maka/core/runtime-policy';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '@maka/core/llm-connections';
 import {
   createConnectionEffectFetchTransport,
   type ConnectionEffectFetchTransport,
@@ -233,7 +233,7 @@ export class HostConnectionEffectCoordinator {
     const candidate = begun.existingConnection ?? undefined;
     const supplied = input.apiKey?.trim() ?? '';
     const secret = supplied || begun.storedSecret || '';
-    if (PROVIDER_DEFAULTS[providerType].authKind === 'api_key' && secret.length === 0) {
+    if (PROVIDER_REGISTRY[providerType].authKind === 'api_key' && secret.length === 0) {
       return { kind: 'rejected', reason: 'credential_not_configured' };
     }
     // Mirrors the blank-key contract above: a null baseUrl reuses the
@@ -243,7 +243,7 @@ export class HostConnectionEffectCoordinator {
     const base = candidate
       ? { ...candidate, ...(begun.baseUrl ? { baseUrl: begun.baseUrl } : {}) }
       : transientConnection(begun.candidate, begun.baseUrl);
-    if (!base.baseUrl && !PROVIDER_DEFAULTS[providerType].baseUrl) {
+    if (!base.baseUrl && !PROVIDER_REGISTRY[providerType].baseUrl) {
       return { kind: 'rejected', reason: 'base_url_not_configured' };
     }
     // The ticket's basis certifies this exact proxy, so discovery must use
@@ -573,6 +573,7 @@ function storeFailure<
       return operationFailure('persistence_failed', 'Connection effect persistence failed');
     case 'invalid_policy_input':
     case 'invalid_connection_input':
+    case 'revision_conflict':
       return operationFailure('invalid_request', 'Connection effect request is invalid');
     case 'invalid_credential_input':
       throw new Error('Connection effect admitted an invalid credential operation');
@@ -597,8 +598,8 @@ function transientConnection(
   baseUrl: string | null = null,
 ): ConnectionCatalogEntry {
   const { providerType } = identity;
-  const definition = PROVIDER_DEFAULTS[providerType];
-  const models = definition.fallbackModels.map((id) => ({ id }));
+  const definition = PROVIDER_REGISTRY[providerType];
+  const models = providerFallbackModelIds(definition).map((id) => ({ id }));
   return {
     connectionId: identity.connectionId,
     revision: 0,

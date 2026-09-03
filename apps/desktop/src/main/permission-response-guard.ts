@@ -23,9 +23,15 @@ import type {
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
-import type { QuoteRef } from '@maka/core/events';
+import {
+  isDirectoryReference,
+  DIRECTORY_REFERENCE_MAX_COUNT,
+  type DirectoryReference,
+  type QuoteRef,
+} from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
@@ -60,6 +66,7 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
+  directoryReferences?: DirectoryReference[];
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
@@ -88,6 +95,24 @@ export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundar
     requestId: value.requestId,
     decision: value.decision,
   };
+}
+
+export function normalizeClientCapabilityResponse(input: unknown): ClientCapabilityResponse {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Client Capability response');
+  }
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.requestId !== 'string' ||
+    value.requestId.length === 0 ||
+    value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
+  ) {
+    throw new Error('Invalid Client Capability response requestId');
+  }
+  if (value.decision !== 'allow' && value.decision !== 'deny') {
+    throw new Error('Invalid Client Capability response decision');
+  }
+  return { requestId: value.requestId, decision: value.decision };
 }
 
 export function normalizeUserQuestionResponse(input: unknown): UserQuestionResponse {
@@ -189,6 +214,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
+    ...normalizeOptionalDirectoryReferences(value.directoryReferences),
     ...normalizeOptionalQuotes(value.quotes),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
@@ -386,4 +412,18 @@ function normalizeOptionalSendTurnId(input: unknown): { turnId?: string } {
   return {
     turnId: normalizeRequiredString(input, 'Invalid send turnId', MAX_TURN_ID_LENGTH),
   };
+}
+
+function normalizeOptionalDirectoryReferences(
+  input: unknown,
+): { directoryReferences?: DirectoryReference[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > DIRECTORY_REFERENCE_MAX_COUNT ||
+    !input.every(isDirectoryReference)
+  ) {
+    throw new Error('Invalid directory references');
+  }
+  return input.length ? { directoryReferences: input.map((ref) => ({ ...ref })) } : {};
 }

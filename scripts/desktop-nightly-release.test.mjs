@@ -32,34 +32,14 @@ import {
   desktopNightlyReleaseAssetNames,
   stageDesktopNightly,
 } from './desktop-nightly.mjs';
+import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { productReleaseArtifactRecords } from './product-release-artifacts.mjs';
-
-async function writeUpdateSet(directory, version, platform) {
-  const isMac = platform === 'mac';
-  const artifact = isMac ? `Maka-${version}-mac-arm64.zip` : `Maka-${version}-win-x64.exe`;
-  const metadata = isMac ? 'dev-mac.yml' : 'dev.yml';
-  const bytes = Buffer.from(`${platform} nightly bytes`);
-  const sha512 = createHash('sha512').update(bytes).digest('base64');
-  await Promise.all([
-    writeFile(join(directory, artifact), bytes),
-    writeFile(join(directory, `${artifact}.blockmap`), `${platform} blockmap`),
-    writeFile(
-      join(directory, metadata),
-      `version: ${version}\nfiles:\n  - url: ${artifact}\n    sha512: ${sha512}\n    size: ${bytes.length}\npath: ${artifact}\nsha512: ${sha512}\n`,
-    ),
-  ]);
-}
 
 async function stageRelease(root, version) {
   const input = join(root, 'input');
   const output = join(root, 'output');
   await mkdir(input);
-  await Promise.all([
-    writeUpdateSet(input, version, 'mac'),
-    writeUpdateSet(input, version, 'win'),
-    writeFile(join(input, `Maka-${version}-mac-arm64.dmg`), 'dmg'),
-    writeFile(join(input, `Maka-${version}-win-x64.zip`), 'windows zip'),
-  ]);
+  await writeDesktopReleaseInput(input, version, { nightly: true });
   await stageDesktopNightly({
     inputDirectory: input,
     outputDirectory: output,

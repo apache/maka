@@ -190,6 +190,20 @@ const swarmTool: MakaTool = {
   },
 };
 
+function clientCapabilityTool(): MakaTool {
+  return {
+    name: 'browser_click',
+    description: 'test',
+    categoryHint: 'client_capability',
+    hostAdmission: 'client_capability',
+    parameters: z.object({}),
+    prepareExecution: async () => {
+      assert.fail('a pre-dispatch refusal must not prepare Client Capability work');
+    },
+    impl: async () => ({ ok: true }),
+  };
+}
+
 /**
  * Every pre-dispatch refusal, not just the one that produced the bug report.
  *
@@ -298,14 +312,7 @@ const REFUSAL_PATHS: Array<{
           throw new Error('boundary read exploded');
         },
       });
-      const tool: MakaTool = {
-        name: 'browser_click',
-        description: 'test',
-        categoryHint: 'client_capability',
-        parameters: z.object({}),
-        impl: async () => ({ ok: true }),
-      };
-      return settle(h, tool, {}, { runtime, toolCallId: 'call_boundary_read' });
+      return settle(h, clientCapabilityTool(), {}, { runtime, toolCallId: 'call_boundary_read' });
     },
   },
   {
@@ -313,14 +320,7 @@ const REFUSAL_PATHS: Array<{
     expect: /require the Bypass execution boundary/,
     drive: (h) => {
       // The default test boundary is `external`, not `bypass`.
-      const tool: MakaTool = {
-        name: 'browser_click',
-        description: 'test',
-        categoryHint: 'client_capability',
-        parameters: z.object({}),
-        impl: async () => ({ ok: true }),
-      };
-      return settle(h, tool, {}, { toolCallId: 'call_boundary_blocked' });
+      return settle(h, clientCapabilityTool(), {}, { toolCallId: 'call_boundary_blocked' });
     },
   },
 ];
@@ -349,15 +349,7 @@ for (const path of REFUSAL_PATHS) {
 
 test('client-capability refusal carries actionable bypass metadata', async () => {
   const h = harness();
-  const tool: MakaTool = {
-    name: 'browser_click',
-    description: 'test',
-    categoryHint: 'client_capability',
-    parameters: z.object({}),
-    impl: async () => ({ ok: true }),
-  };
-
-  await settle(h, tool, {}, { toolCallId: 'call_boundary_metadata' });
+  await settle(h, clientCapabilityTool(), {}, { toolCallId: 'call_boundary_metadata' });
 
   const result = h.events.find(
     (event) => event.type === 'tool_result' && event.toolUseId === 'call_boundary_metadata',

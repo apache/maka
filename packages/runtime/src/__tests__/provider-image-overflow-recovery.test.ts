@@ -28,6 +28,17 @@ import {
   omitHistoricalImageToolResults,
 } from '../provider-image-overflow-recovery.js';
 
+/** A pre-artifact image result: no durable projection, materialized raw. */
+function legacyImageResultEvent(toolCallId: string, relativePath: string): RuntimeEvent {
+  const event = imageResultEvent(toolCallId, {
+    kind: 'session_file',
+    sessionId: 'session-1',
+    relativePath,
+  });
+  delete (event.content as { modelProjection?: unknown }).modelProjection;
+  return event;
+}
+
 function imageResultEvent(toolCallId: string, ref: StorageRef): RuntimeEvent {
   return {
     id: `event-${toolCallId}`,
@@ -48,6 +59,14 @@ function imageResultEvent(toolCallId: string, ref: StorageRef): RuntimeEvent {
         kind: 'image',
         mimeType: 'image/png',
         ref,
+      },
+      modelProjection: {
+        version: 1,
+        kind: 'content',
+        parts: [
+          { kind: 'text', text: 'Image read successfully.' },
+          { kind: 'artifact', mediaType: 'image/png', ref },
+        ],
       },
       isError: false,
     },
@@ -89,7 +108,7 @@ describe('provider image overflow recovery projection', () => {
       imageResultEvent('prior-image-call', {
         kind: 'session_file',
         sessionId: 'session-1',
-        relativePath: 'screenshots/screenshot.png',
+        relativePath: 'artifact-screenshot-1',
       }),
     ];
     const messages = [
@@ -110,7 +129,7 @@ describe('provider image overflow recovery projection', () => {
     assert.equal(rendered.includes('USER_IMAGE'), true);
     assert.equal(rendered.includes('NEW_IMAGE'), true);
     assert.equal(rendered.includes('PRIOR_IMAGE'), false);
-    assert.match(rendered, /screenshots\/screenshot\.png/);
+    assert.match(rendered, /artifact-screenshot-1/);
     assert.match(rendered, /repeat the preceding Read tool call/i);
   });
 
@@ -121,7 +140,7 @@ describe('provider image overflow recovery projection', () => {
       imageResultEvent('prior-image-call', {
         kind: 'session_file',
         sessionId: 'session-1',
-        relativePath: 'screenshot.png',
+        relativePath: 'artifact-screenshot-1',
       }),
     ]);
 
@@ -150,5 +169,19 @@ describe('provider image overflow recovery projection', () => {
     );
 
     assert.match(prompt(result.messages), /read-image:owner-1/);
+  });
+
+  test('still recovers a pre-artifact image result that has no durable projection', () => {
+    const eligible = collectHistoricalImageToolResults([
+      legacyImageResultEvent('prior-image-call', 'screenshots/screenshot.png'),
+    ]);
+    const result = omitHistoricalImageToolResults(
+      [toolImageMessage('prior-image-call', 'PRIOR_IMAGE')],
+      eligible,
+    );
+
+    assert.equal(eligible.size, 1);
+    assert.equal(result.omittedParts, 1);
+    assert.match(prompt(result.messages), /screenshots\/screenshot\.png/);
   });
 });

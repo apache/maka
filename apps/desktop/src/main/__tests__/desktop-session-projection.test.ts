@@ -260,7 +260,10 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
   );
 
   assert.equal(projected.type, 'workhub_coordination');
-  if (projected.type === 'workhub_coordination') {
+  if (
+    projected.type === 'workhub_coordination' &&
+    projected.kind === 'delegation_assigned'
+  ) {
     assert.equal(projected.targetSessionId, JSON.stringify(['remote-root', 'payments']));
   }
 });

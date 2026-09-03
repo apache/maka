@@ -130,7 +130,7 @@ test('shares one decoder across all TurnOrigin variants', () => {
 });
 
 describe('continuation-start protocol', () => {
-  test('accepts only the replay projection version defined by v2', () => {
+  test('reads legacy and current replay projections but rejects unknown versions', () => {
     const continuationStart = {
       protocol: 'continuation_start_v2',
       provenance: 'runtime_admission',
@@ -162,12 +162,21 @@ describe('continuation-start protocol', () => {
       ).actions?.continuationStart,
       continuationStart,
     );
+    assert.equal(
+      decodeRuntimeEvent({
+        ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+        actions: {
+          continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+        },
+      }).actions?.continuationStart?.providerProjectionVersion,
+      2,
+    );
     assert.throws(
       () =>
         decodeRuntimeEvent({
           ...baseEvent({ role: 'system', author: 'system', content: undefined }),
           actions: {
-            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+            continuationStart: { ...continuationStart, providerProjectionVersion: 3 },
           },
         }),
       /RuntimeEvent schema/,

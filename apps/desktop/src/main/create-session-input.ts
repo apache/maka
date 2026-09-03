@@ -43,7 +43,7 @@ import type { OrchestrationMode } from '@maka/core/orchestration';
 
 import type { PermissionMode } from '@maka/core/permission';
 
-import type { SessionStartMode } from '@maka/core/deep-research';
+import type { SessionStartMode } from '@maka/core/session-start-mode';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 
 import { isChatDefaultPermissionMode } from '@maka/core/settings';
@@ -52,7 +52,7 @@ import { isCollaborationMode } from '@maka/core/collaboration';
 
 import { isOrchestrationMode } from '@maka/core/orchestration';
 
-import { isSessionStartMode } from '@maka/core/deep-research';
+import { isSessionStartMode } from '@maka/core/session-start-mode';
 
 /**
  * `unknown`, because this is an IPC boundary and the renderer's type is a

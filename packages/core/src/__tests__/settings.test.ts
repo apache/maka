@@ -344,3 +344,38 @@ describe('app icon on upgrade', () => {
     assert.strictEqual(migrated.appearance.appIconDark, undefined);
   });
 });
+
+test('proxy credentials never enter persisted settings', () => {
+  const defaults = createDefaultSettings();
+  assert.strictEqual('password' in defaults.network.proxy, false);
+  assert.strictEqual('passwordConfigured' in defaults.network.proxy, false);
+
+  const merged = mergeSettings(defaults, {
+    network: {
+      proxy: {
+        host: '10.0.0.2',
+        credential: { kind: 'replace', secret: 'complete-secret' },
+        password: 'legacy-secret',
+        passwordConfigured: true,
+      },
+    },
+  } as never);
+
+  assert.strictEqual(merged.network.proxy.host, '10.0.0.2');
+  assert.strictEqual('credential' in merged.network.proxy, false);
+  assert.strictEqual('password' in merged.network.proxy, false);
+  assert.strictEqual('passwordConfigured' in merged.network.proxy, false);
+
+  const normalized = normalizeSettings({
+    network: {
+      proxy: {
+        password: 'legacy-secret',
+        passwordConfigured: true,
+        credential: { kind: 'delete' },
+      },
+    },
+  });
+  assert.strictEqual('credential' in normalized.network.proxy, false);
+  assert.strictEqual('password' in normalized.network.proxy, false);
+  assert.strictEqual('passwordConfigured' in normalized.network.proxy, false);
+});

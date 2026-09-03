@@ -110,6 +110,7 @@ import type {
   AppIconChoice,
   AppIconTarget,
   AppSettings,
+  RuntimeHostAppSettings,
   SettingsTestResult,
   UpdateAppSettingsInput,
   UpdateAppSettingsResult,
@@ -121,10 +122,12 @@ import type { BotProvider } from '@maka/core/bot-chat-settings';
 import type { BotOnboardingSnapshot, BotOnboardingStartInput } from '@maka/core/bot-onboarding';
 import type { HealthSnapshot } from '@maka/core/health';
 import {
-  collectRuntimeHostSessionCatalogs,
   collectRuntimeHostSessionCatalogsWithCoverage,
+  resolveRuntimeHostSessionCatalog,
 } from './runtime-host-session-catalog.js';
+import { collectAvailablePendingTurnRequests } from './runtime-host-turn-request-inbox.js';
 import type { ExecutionBoundaryReadModel, SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import type {
   ActiveInteractionRequestEvent,
   MessageContent,
@@ -174,7 +177,7 @@ import type {
 import type { WebSearchProvider, WebSearchResponse } from '@maka/core/web-search';
 import type { BrowserState, BrowserViewRect } from '@maka/core/browser';
 import { createBrowserSelectionCoordinator } from './browser-selection.js';
-import type { Task, TaskLedgerChangedEvent } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { DeepResearchChangedEvent, DeepResearchClientProgress } from '@maka/core/deep-research-run';
 import {
   isWebSearchProvider,
@@ -221,6 +224,8 @@ import {
   type OperationInput,
   type OperationOutcome,
   type OperationOutput,
+  type CollaborationTurnRequestQueryResult,
+  type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import {
@@ -259,6 +264,7 @@ const runtimeHostMetadata = new Map<
   }
 >();
 const runtimeHostSessionScopes = new Map<string, RuntimeHostScopeKey>();
+let lastDesktopSessionCatalog: DesktopSessionSummary[] = [];
 const newTaskChangeListeners = new Set<() => void>();
 let previousMainProcessInterruptionRead: Promise<boolean> | undefined;
 
@@ -893,19 +899,15 @@ async function listDesktopSessions(
     ) as SessionCatalogSummary[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
-  const scopes = await runtimeHostScopeList();
-  const sessions = await collectRuntimeHostSessionCatalogs(
-    scopes.map(async (scope) => {
-      const sessions = await ipcRenderer.invoke(
-        'sessions:list',
-        scope,
-        filter,
-      ) as SessionCatalogSummary[];
-      return sessions.map((session) => projectSessionCatalogSummary(scope, session));
-    }),
+  lastDesktopSessionCatalog = await resolveRuntimeHostSessionCatalog(
+    lastDesktopSessionCatalog,
+    listDesktopSessionsWithCoverage(),
+    () => [...runtimeHostMetadata.values()].map(({ profileId }) => profileId),
+    // Unknown Guest coverage cannot suppress healthy Owner catalogs or prove
+    // that a previously observed Guest mount was removed.
+    listKnownGuestMountProfileIds(),
   );
-  recordSessionCatalogScopes(sessions);
-  return sessions;
+  return lastDesktopSessionCatalog;
 }
 
 async function listDesktopSessionsWithCoverage(): Promise<{
@@ -928,6 +930,24 @@ async function listDesktopSessionsWithCoverage(): Promise<{
   );
   recordSessionCatalogScopes(catalog.sessions);
   return catalog;
+}
+
+async function listKnownGuestMountProfileIds(): Promise<string[]> {
+  const mounts: unknown = await ipcRenderer.invoke('session-collaboration:mount:list');
+  if (!Array.isArray(mounts)) {
+    throw new Error('Desktop shared Session mounts are unavailable');
+  }
+  return mounts.map((mount) => {
+    if (
+      !mount ||
+      typeof mount !== 'object' ||
+      !('mountId' in mount) ||
+      typeof mount.mountId !== 'string'
+    ) {
+      throw new Error('Desktop shared Session mount is invalid');
+    }
+    return mount.mountId;
+  });
 }
 
 async function createDesktopSessionOnScope(
@@ -1304,6 +1324,9 @@ const makaBridge = {
     cancelImport(operationId) {
       return ipcRenderer.invoke('session-collaboration:import:cancel', operationId);
     },
+    readInvitationClipboard() {
+      return ipcRenderer.invoke('session-collaboration:invitation:read-clipboard');
+    },
     listMounts() {
       return ipcRenderer.invoke('session-collaboration:mount:list');
     },
@@ -1328,6 +1351,28 @@ const makaBridge = {
         'session-collaboration:turn-request:query',
         session.scope,
         session.sessionId,
+      );
+    },
+    async getPendingTurnRequests() {
+      const scopes = (await runtimeHostScopeList()).filter(
+        (scope) => runtimeHostMetadataFor(scope)?.profileAccess === 'owner',
+      );
+      return collectAvailablePendingTurnRequests(
+        scopes.map(async (scope) => {
+          const result = await ipcRenderer.invoke(
+            'session-collaboration:turn-request:query',
+            scope,
+          ) as CollaborationTurnRequestQueryResult;
+          return result.requests
+            .filter((request) => request.state.kind === 'pending')
+            .map((request): SessionTurnAccessRequest => ({
+              ...request,
+              intent: {
+                ...request.intent,
+                sessionId: recordRuntimeHostSessionScope(scope, request.intent.sessionId),
+              },
+            }));
+        }),
       );
     },
     async acknowledgeTurnRequest(sessionId, requestId) {
@@ -1531,6 +1576,7 @@ const makaBridge = {
       enabled: boolean,
       coordinationRelays: readonly string[],
       automaticRelayDiscovery: boolean,
+      webRtcStunPolicy?: import('@maka/runtime-host/operator').RuntimeHostWebRtcStunPolicy,
     ) {
       return ipcRenderer.invoke(
         'runtime-host-management:configure-direct-peer',
@@ -1538,7 +1584,11 @@ const makaBridge = {
         enabled,
         coordinationRelays,
         automaticRelayDiscovery,
+        webRtcStunPolicy,
       );
+    },
+    createConnectionCode(profileId: string): Promise<string> {
+      return ipcRenderer.invoke('runtime-host-management:create-connection-code', profileId);
     },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
@@ -1558,6 +1608,14 @@ const makaBridge = {
     },
   },
   runtimeHostPeerMesh: {
+    getConnectivityPolicy() {
+      return ipcRenderer.invoke('runtime-host-peer-mesh:get-connectivity-policy');
+    },
+    setConnectivityPolicy(
+      policy: import('@maka/runtime-host/client').RuntimeHostWebRtcStunPolicy,
+    ) {
+      return ipcRenderer.invoke('runtime-host-peer-mesh:set-connectivity-policy', policy);
+    },
     execute(
       target: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshTarget,
       action: import('./bridge-contract.js').DesktopRuntimeHostPeerMeshAction,
@@ -1724,12 +1782,12 @@ const makaBridge = {
       return () => ipcRenderer.off('workBoard:changed', listener);
     },
   },
-  tasks: {
-    list(sessionId: string): Promise<Task[]> {
-      return invokeProjectedSessionRuntimeHost('tasks:list', sessionId);
+  todo: {
+    read(sessionId: string): Promise<SessionTodoItem[]> {
+      return invokeProjectedSessionRuntimeHost('todo:read', sessionId);
     },
-    subscribeChanges(handler: (event: TaskLedgerChangedEvent) => void): () => void {
-      return subscribeEveryRuntimeHostEvent('tasks:changed', (scope, event: TaskLedgerChangedEvent) =>
+    subscribeChanges(handler: (event: { sessionId: string; at: number }) => void): () => void {
+      return subscribeEveryRuntimeHostEvent('todo:changed', (scope, event: { sessionId: string; at: number }) =>
         handler({
           ...event,
           sessionId: recordRuntimeHostSessionScope(scope, event.sessionId),
@@ -1917,6 +1975,9 @@ const makaBridge = {
     },
     async send(sessionId, command) {
       const session = await runtimeHostSessionRef(sessionId);
+      if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
+        throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
+      }
       const encoded =
         'attachmentItems' in command && command.attachmentItems
           ? { ...command, attachmentItems: await encodeIngestItems(command.attachmentItems) }
@@ -1952,6 +2013,9 @@ const makaBridge = {
     },
     async submitMessage(sessionId, placement, command) {
       const session = await runtimeHostSessionRef(sessionId);
+      if (command.directoryReferences?.some((ref) => ref.hostId !== session.scope.hostId)) {
+        throw new Error('Directory references belong to a different Runtime Host. Select the folder on the target Host.');
+      }
       const attachmentItems = command.attachmentItems
         ? await encodeIngestItems(command.attachmentItems)
         : undefined;
@@ -2044,6 +2108,16 @@ const makaBridge = {
     },
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToSandboxBoundary', sessionId, response);
+    },
+    respondToClientCapability(
+      sessionId: string,
+      response: ClientCapabilityResponse,
+    ): Promise<void> {
+      return invokeSessionRuntimeHost(
+        'sessions:respondToClientCapability',
+        sessionId,
+        response,
+      );
     },
     respondToUserQuestion(sessionId: string, response: UserQuestionResponse): Promise<void> {
       return invokeSessionRuntimeHost('sessions:respondToUserQuestion', sessionId, response);
@@ -2209,8 +2283,13 @@ const makaBridge = {
     abandonPlanExecution(sessionId: string, executionId: string): Promise<PlanSessionState> {
       return invokeProjectedSessionRuntimeHost('plan-mode:abandonExecution', sessionId, executionId);
     },
-    setModel(sessionId: string, input: { llmConnectionId: string; llmConnectionSlug: string; model: string }): Promise<DesktopSessionSummary> {
-      return invokeSessionSummary('sessions:setModel', sessionId, input);
+    setModelConfiguration(sessionId: string, input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+      thinkingLevel: ThinkingLevel | null;
+    }): Promise<DesktopSessionSummary> {
+      return invokeSessionSummary('sessions:setModelConfiguration', sessionId, input);
     },
     setThinkingLevel(sessionId: string, level: ThinkingLevel | undefined | null): Promise<DesktopSessionSummary> {
       return invokeSessionSummary('sessions:setThinkingLevel', sessionId, level ?? undefined);
@@ -2218,8 +2297,11 @@ const makaBridge = {
     remove(
       sessionId: string,
       options?: { revisionFamily?: boolean; requireArchived?: boolean },
-    ): Promise<'removed' | 'restored'> {
+    ): Promise<{ disposition: 'removed' | 'restored'; archivedSubtaskCount: number }> {
       return invokeSessionRuntimeHost('sessions:remove', sessionId, options);
+    },
+    previewRemoval(sessionId: string): Promise<number> {
+      return invokeSessionRuntimeHost('sessions:removePreview', sessionId);
     },
     cleanupSessionCopy(sessionId: string): Promise<void> {
       return invokeSessionRuntimeHost('sessions:cleanupSessionCopy', sessionId);
@@ -2596,6 +2678,12 @@ const makaBridge = {
     create(input: CreateConnectionInput, host?: DesktopRuntimeHostRef): Promise<import('@maka/core/llm-connections').IdentifiedLlmConnection> {
       return invokeSelectedRuntimeHost(host, 'connections:create', input);
     },
+    verifyOnboarding(input, host) {
+      return invokeSelectedRuntimeHost(host, 'connections:onboardingVerify', input);
+    },
+    saveOnboarding(input, host) {
+      return invokeSelectedRuntimeHost(host, 'connections:onboardingSave', input);
+    },
     update(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, patch: UpdateConnectionInput, host?: DesktopRuntimeHostRef): Promise<LlmConnection> {
       return invokeSelectedRuntimeHost(host, 'connections:update', connection, patch);
     },
@@ -2610,7 +2698,7 @@ const makaBridge = {
         opts,
       );
     },
-    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<ModelDiscoveryResult> {
+    fetchModels(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<Pick<ModelDiscoveryResult, 'models' | 'source'>> {
       return invokeSelectedRuntimeHost(host, 'connections:fetchModels', connection);
     },
     hasSecret(connection: import('../shared/desktop-connection-snapshot.js').DesktopConnectionIdentity, host?: DesktopRuntimeHostRef): Promise<boolean> {
@@ -2766,6 +2854,7 @@ const makaBridge = {
     },
   },
   attachments: {
+    pickDirectory: () => ipcRenderer.invoke('directories:pick'),
     pickFiles(): Promise<
       | {
           ok: true;
@@ -2984,13 +3073,13 @@ const makaBridge = {
     getClient(): Promise<AppSettings> {
       return ipcRenderer.invoke('settings:client:get');
     },
-    get(host?: DesktopRuntimeHostRef): Promise<AppSettings> {
+    get(host?: DesktopRuntimeHostRef): Promise<RuntimeHostAppSettings> {
       return invokeSelectedRuntimeHost(host, 'settings:get');
     },
     updateClient(patch: UpdateAppSettingsInput): Promise<UpdateAppSettingsResult> {
       return ipcRenderer.invoke('settings:client:update', patch);
     },
-    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult> {
+    update(patch: UpdateAppSettingsInput, host?: DesktopRuntimeHostRef): Promise<UpdateAppSettingsResult<RuntimeHostAppSettings>> {
       return invokeSelectedRuntimeHost(host, 'settings:update', patch);
     },
     subscribeClientChanged(handler: () => void): () => void {
@@ -3666,6 +3755,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         waiters.push(resolve);
         invocableSkillsWaiters.set(sessionId, waiters);
       });
+    },
+    releaseRendererObservations() {
+      return invokeActiveRuntimeHost<void>('sessions:e2e:release-renderer-observations');
     },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);

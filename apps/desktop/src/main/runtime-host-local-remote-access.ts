@@ -23,16 +23,19 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { IpcMain } from 'electron';
 import {
-  consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import { REMOTE_OWNER_OPERATION_GRANTS, type HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostPeerEndpoint, HostRegistration } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
 } from '../preload/bridge-contract.js';
-import type { RuntimeHostDesktopManager } from './runtime-host-desktop-manager.js';
+import type {
+  RuntimeHostDesktopManager,
+  RuntimeHostLocalReplacement,
+} from './runtime-host-desktop-manager.js';
 import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 import type {
   createDesktopRuntimeHostLocalOperator,
@@ -93,15 +96,18 @@ export interface DesktopRuntimeHostLocalManagementTarget
   readonly deploymentId: string;
 }
 
+export type DesktopRuntimeHostManagedStartupRepairResult =
+  | { readonly kind: 'repaired' }
+  | { readonly kind: 'active_tasks' }
+  | { readonly kind: 'unavailable' };
+
 export interface DesktopLocalRuntimeHostRemoteAccess {
   getSnapshot(): Promise<DesktopLocalRuntimeHostRemoteAccessSnapshot>;
   createCollaborationConnectionTarget(): Promise<{
     readonly name: string;
     readonly transport: {
       readonly kind: 'libp2p-direct';
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
+      readonly reachability: HostPeerEndpoint;
     };
   }>;
   enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
@@ -116,7 +122,12 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
   resolveConflictingHostReplacement(
     registration: HostRegistration,
     signal: AbortSignal,
-  ): Promise<{ replace(): Promise<void> } | undefined>;
+  ): Promise<RuntimeHostLocalReplacement | undefined>;
+  repairManagedStartup(input?: {
+    readonly allowManualUpdate?: boolean;
+    readonly allowInterruptActiveTasks?: boolean;
+    readonly signal?: AbortSignal;
+  }): Promise<DesktopRuntimeHostManagedStartupRepairResult>;
   recoverBeforeLocalHostStart(signal?: AbortSignal): Promise<boolean>;
   recover(): Promise<void>;
   close(): Promise<void>;
@@ -143,8 +154,6 @@ type LocalServiceLifecycle =
 
 interface LocalPeerDescriptor {
   readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
 }
 
 type DesktopRuntimeHostLocalOperator = ReturnType<
@@ -315,7 +324,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           changed.response.restarted ? previousHostEpoch : undefined,
         );
         return enabledResult(
-          await issueConnectionCode(input.rootPath, desired.rootId, peer, localClient(input.manager)),
+          await issueConnectionCode(input.rootPath, peer, localClient(input.manager)),
         );
       }
 
@@ -329,11 +338,14 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       };
       const completed = await finishSetup(setup, 'request');
       if (completed.kind === 'active_tasks') return completed;
+      const manager = requireManager(input.manager);
+      await manager.waitUntilReady('local');
+      const livePeer = await readLivePeer(localClient(input.manager), completed.peer);
       return enabledResult(
         encodeRuntimeHostOwnerConnectionCode({
           name: hostName(),
           rootId: completed.managed.rootId,
-          transport: { kind: 'libp2p-direct', ...completed.peer },
+          transport: { kind: 'libp2p-direct', reachability: livePeer },
           credential: completed.credential,
         }),
       );
@@ -495,7 +507,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
-      return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
+      return issueConnectionCode(input.rootPath, peer, localClient(input.manager));
     });
 
   const createCollaborationConnectionTarget = () =>
@@ -505,9 +517,10 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
+      const livePeer = await readLivePeer(localClient(input.manager), peer);
       return {
         name: hostName(),
-        transport: { kind: 'libp2p-direct' as const, ...peer },
+        transport: { kind: 'libp2p-direct' as const, reachability: livePeer },
       };
     });
 
@@ -711,7 +724,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       }
       const target = authority.target;
       return {
-        replace: () =>
+        replace: (activeWorkPolicy) =>
           serialize(async () => {
             signal.throwIfAborted();
             const setupPackage = await input.resolveSetupPackage(signal);
@@ -723,13 +736,16 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
                   hostEpoch: registration.hostEpoch,
                   pid: registration.pid,
                 },
-                allowInterruptActiveTasks: true,
+                ...(activeWorkPolicy === 'interrupt_active_work'
+                  ? { allowInterruptActiveTasks: true }
+                  : {}),
                 signal,
               },
               () => undefined,
             );
             if (frame.kind === 'error') {
-              if (frame.error.code === 'target_mismatch') return;
+              if (frame.error.code === 'active_tasks') return 'active_tasks';
+              if (frame.error.code === 'target_mismatch') return 'replaced';
               throw conflictReplacementError(registration.pid, frame.error.message);
             }
             if (frame.kind === 'progress' || frame.action !== 'update') {
@@ -739,14 +755,69 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
               );
             }
             if (frame.update.kind === 'active_tasks') {
+              return 'active_tasks';
+            }
+            if (frame.update.kind === 'already_current') {
               throw conflictReplacementError(
                 registration.pid,
-                'the managed service refused to interrupt active work',
+                'the managed service did not replace the observed Host',
               );
             }
+            return 'replaced';
           }),
       };
     },
+    repairManagedStartup: (options = {}) =>
+      serialize(async () => {
+        const signal = options.signal
+          ? AbortSignal.any([options.signal, closing.signal])
+          : closing.signal;
+        signal.throwIfAborted();
+        const lifecycle = await readLifecycle(lifecyclePath, input.rootPath, input.rootId);
+        if (lifecycle?.state !== 'managed') return { kind: 'unavailable' };
+
+        const setupPackage = await input.resolveSetupPackage(signal);
+        const frame = await input.operator.runUpdate(
+          {
+            setupPackage,
+            target: lifecycle,
+            ...(options.allowManualUpdate ? { allowManualUpdate: true } : {}),
+            ...(options.allowInterruptActiveTasks
+              ? { allowInterruptActiveTasks: true }
+              : {}),
+            signal,
+          },
+          () => undefined,
+        );
+        if (frame.kind === 'error') {
+          if (frame.error.code === 'active_tasks') return { kind: 'active_tasks' };
+          throw new Error(`Runtime Host repair failed: ${frame.error.message}`);
+        }
+        if (frame.kind === 'progress' || frame.action !== 'update') {
+          throw new Error('Runtime Host repair returned an unrelated result');
+        }
+        if (frame.update.kind === 'active_tasks') return { kind: 'active_tasks' };
+
+        if (frame.update.kind === 'already_current') {
+          const restarted = await input.operator.runService({
+            operatorPath: lifecycle.operatorPath,
+            action: 'restart',
+            target: lifecycle,
+            ...(options.allowInterruptActiveTasks
+              ? { allowInterruptActiveTasks: true }
+              : {}),
+            signal,
+          });
+          if (restarted.kind === 'error') {
+            if (restarted.error.code === 'active_tasks') return { kind: 'active_tasks' };
+            throw new Error(`Runtime Host restart failed: ${restarted.error.message}`);
+          }
+          if (restarted.kind === 'progress' || restarted.action !== 'restart') {
+            throw new Error('Runtime Host restart returned an unrelated result');
+          }
+        }
+        return { kind: 'repaired' };
+      }),
     recoverBeforeLocalHostStart: async (signal) => {
       const operationSignal = signal ? AbortSignal.any([signal, closing.signal]) : closing.signal;
       operationSignal.throwIfAborted();
@@ -873,15 +944,7 @@ function requireEnabledPeer(value: unknown): LocalPeerDescriptor {
   if (typeof value.peerId !== 'string' || value.peerId.length === 0 || value.peerId.length > 160) {
     throw new Error('Runtime Host returned an invalid peer identity');
   }
-  const peer = {
-    peerId: value.peerId,
-    routeHints: requireAddresses(value.routeHints),
-    coordinationRelays: requireAddresses(value.coordinationRelays),
-  };
-  if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
-    throw new Error('Runtime Host Direct peer has no reachable route');
-  }
-  return peer;
+  return { peerId: value.peerId };
 }
 
 function onSnapshot(sharedAccess: boolean): Extract<
@@ -903,29 +966,30 @@ function enabledResult(
 
 async function issueConnectionCode(
   rootPath: string,
-  rootId: string,
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
-  const prepared = await client.request('access.credential.prepare', {
-    principalKind: 'remote_owner',
-    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-    operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
-    canPublishClientCapabilities: true,
-    canUseHostPaths: false,
-    bindClientInstance: true,
-  });
-  const credential = await consumeAccessCredentialDelivery(
+  return issueRuntimeHostOwnerConnectionCode({
     rootPath,
-    prepared.deliveryId,
-    prepared.credentialId,
-  );
-  return encodeRuntimeHostOwnerConnectionCode({
     name: hostName(),
-    rootId,
-    transport: { kind: 'libp2p-direct', ...peer },
-    credential,
+    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+    expectedPeerId: peer.peerId,
+    client,
   });
+}
+
+async function readLivePeer(
+  client: DesktopRuntimeHostClient,
+  configured: LocalPeerDescriptor,
+): Promise<HostPeerEndpoint> {
+  const endpoint = (await client.status()).peerEndpoint;
+  if (!endpoint) {
+    throw new Error('Runtime Host Direct peer is not available');
+  }
+  if (endpoint.lease.peerId !== configured.peerId) {
+    throw new Error('Runtime Host Direct peer identity changed');
+  }
+  return endpoint;
 }
 
 async function hasSharedAccess(
@@ -937,6 +1001,9 @@ async function hasSharedAccess(
     target,
   });
   if (response.kind === 'error') throw new Error(response.error.message);
+  if (response.action !== 'list') {
+    throw new Error('Runtime Host operator returned an unrelated access result');
+  }
   return response.credentials.some(
     (credential) =>
       credential.principalKind === 'remote_owner' &&

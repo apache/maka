@@ -668,15 +668,74 @@ test('classifies connection-code failures without exposing transport errors to t
         rootId: ROOT_ID,
         transport: {
           kind: 'libp2p-direct',
-          peerId: '12D3KooWpeer',
-          routeHints: ['/ip4/192.0.2.8/udp/44001/quic-v1'],
-          coordinationRelays: [],
+          reachability: peerReachability('12D3KooWpeer'),
         },
         credential: 'pending-credential',
       }),
     ),
     { kind: 'error', reason: 'code_unavailable' },
   );
+});
+
+test('persists authenticated Owner routes imported through a connection code', async () => {
+  const root = await clientRoot();
+  const catalog = createClientRuntimeHostProfileCatalog(root);
+  const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  const staleTransport = {
+    kind: 'libp2p-direct' as const,
+    reachability: peerReachability(
+      '12D3KooWpeer',
+      1,
+      ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+      ['/memory/stale-relay'],
+    ),
+  };
+  const freshEndpoint = peerReachability(
+    '12D3KooWpeer',
+    2,
+    ['/ip4/198.51.100.9/udp/44002/quic-v1'],
+    ['/memory/fresh-relay'],
+  );
+  let observedIncarnation: string | undefined;
+  const service = createDesktopRuntimeHostProfileService({
+    clientDataRoot: root,
+    startup,
+    catalog,
+    states: () => [connectingLocal()],
+    enable: async (target, _sshInteraction, onPeerEndpoint) => {
+      observedIncarnation = target.profileIncarnationId;
+      assert.deepEqual(
+        target.profile.kind === 'remote' ? target.profile.transport : undefined,
+        staleTransport,
+      );
+      assert.ok(onPeerEndpoint);
+      onPeerEndpoint(freshEndpoint);
+    },
+    disable: async () => undefined,
+    setDefault: () => undefined,
+    finalizePairing: async () => undefined,
+  });
+
+  const result = await service.importConnectionCode(
+    encodeRuntimeHostOwnerConnectionCode({
+      name: 'Other computer',
+      rootId: ROOT_ID,
+      transport: staleTransport,
+      credential: 'pending-owner-token',
+    }),
+  );
+
+  assert.equal(result.kind, 'connected');
+  if (result.kind !== 'connected') return;
+  const persisted = await catalog.resolve(result.profileId);
+  assert.equal(persisted.credential, 'pending-owner-token');
+  assert.equal(persisted.profileIncarnationId, observedIncarnation);
+  assert.deepEqual(
+    persisted.profile.kind === 'remote' ? persisted.profile.transport : undefined,
+    { kind: 'libp2p-direct', reachability: freshEndpoint },
+  );
+  const restarted = await resolveDesktopRuntimeHostStartup(root, { catalog });
+  assert.deepEqual(restarted.remotes, [persisted]);
 });
 
 test("finishes a persisted pairing after Desktop restarts before finalization", async () => {
@@ -716,12 +775,28 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   await managedServices.save(MANAGED_PROFILE, MANAGED_SERVICE);
   const startup = await resolveDesktopRuntimeHostStartup(root, { catalog });
   const activated: ResolvedRuntimeHostProfile[] = [];
+  const livePeer = peerReachability(
+    '12D3KooWpeer',
+    2,
+    ['/ip4/192.0.2.9/udp/44002/quic-v1'],
+    ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  );
+  let exposeReadyState = false;
   const service = createDesktopRuntimeHostProfileService({
     clientDataRoot: root,
     startup,
     catalog,
     managedServices,
-    states: () => [connectingLocal()],
+    states: () =>
+      exposeReadyState
+        ? [
+            connectingLocal(),
+            readyWithPeerEndpoint(
+              { profile: MANAGED_PROFILE, credential: "owner-token" },
+              livePeer,
+            ),
+          ]
+        : [connectingLocal()],
     enable: async (target) => {
       activated.push(target);
     },
@@ -735,11 +810,8 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
     /Enable Direct peer access/u,
   );
 
-  await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, {
-    peerId: "12D3KooWpeer",
-    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
-    coordinationRelays: [],
-  });
+  exposeReadyState = true;
+  await service.upsertManagedDirectPeerProfile(MANAGED_PROFILE.id, '12D3KooWpeer');
 
   const directId = (await catalog.read()).profiles.find(
     (profile) => profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct',
@@ -751,14 +823,16 @@ test("keeps a managed Direct route on the SSH profile credential authority", asy
   if (direct.profile.kind !== "remote") assert.fail("expected a remote Direct profile");
   assert.deepEqual(direct.profile.transport, {
     kind: "libp2p-direct",
-    peerId: "12D3KooWpeer",
-    routeHints: ["/ip4/192.0.2.8/udp/44001/quic-v1"],
-    coordinationRelays: [],
+    reachability: livePeer,
   });
   assert.deepEqual(
     await service.resolveCollaborationConnectionTarget(MANAGED_PROFILE),
-    { name: MANAGED_PROFILE.name, transport: direct.profile.transport },
+    {
+      name: MANAGED_PROFILE.name,
+      transport: { kind: 'libp2p-direct', reachability: livePeer },
+    },
   );
+  exposeReadyState = false;
   assert.equal((await catalog.resolve(MANAGED_PROFILE.id)).credential, "owner-token");
 
   const beforeRejectedRemoval = {
@@ -1599,6 +1673,44 @@ function ready(target: ResolvedRuntimeHostProfile): RuntimeHostDesktopTargetStat
     candidate: {
       client: { hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID },
     } as never,
+  };
+}
+
+function readyWithPeerEndpoint(
+  target: ResolvedRuntimeHostProfile,
+  peerEndpoint: ReturnType<typeof peerReachability>,
+): RuntimeHostDesktopTargetState {
+  return {
+    epoch: `epoch-${target.profile.id}`,
+    target,
+    readiness: "ready",
+    candidate: {
+      client: {
+        hostId: target.profile.kind === "remote" ? target.profile.rootId : ROOT_ID,
+        status: async () => ({ peerEndpoint }),
+      },
+    } as never,
+  };
+}
+
+function peerReachability(
+  peerId: string,
+  revision = 1,
+  directRoutes: readonly string[] = ['/ip4/192.0.2.8/udp/44001/quic-v1'],
+  coordinationRoutes: readonly string[] = [],
+) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from(`signature-${revision}`).toString('base64url'),
   };
 }
 

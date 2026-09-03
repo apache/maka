@@ -35,6 +35,7 @@ import {
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
   type IdentifiedLlmConnection,
+  type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
 import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
@@ -54,11 +55,20 @@ import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
-import { providerPanelActionErrorMessage, type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
-import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
+import {
+  getProviderSettingsCopy,
+  providerPanelActionErrorMessage,
+  ConnectionSaveUncertaintyObserver,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
+import {
+  RuntimeHostSettingsGenerationBoundary,
+  useRuntimeHostSettingsErrorReporter,
+} from './runtime-host-settings-target.js';
 
-export type { ConnectionsBridge } from './provider-panel-shared';
+export type { ConnectionsBridge } from '../features/connection-settings';
 
 /**
  * Where the panel is. Four levels, one container, one back affordance:
@@ -80,8 +90,15 @@ export type { ConnectionsBridge } from './provider-panel-shared';
 type PanelRoute =
   | { kind: 'list' }
   | { kind: 'catalog' }
-  | { kind: 'setup'; target: SetupTarget; origin: 'list' | 'catalog' }
-  | { kind: 'adopting-oauth'; identity: CreatedOAuthConnectionIdentity }
+  | {
+      kind: 'setup';
+      target: SetupTarget;
+      origin: 'list' | 'catalog';
+    }
+  | {
+      kind: 'adopting-connection';
+      identity: DesktopConnectionOnboardingIdentity | CreatedOAuthConnectionIdentity;
+    }
   | { kind: 'detail'; connectionId: string };
 
 function backTarget(route: PanelRoute): PanelRoute {
@@ -89,8 +106,9 @@ function backTarget(route: PanelRoute): PanelRoute {
   return { kind: 'list' };
 }
 
-export function ProvidersPanel({ bridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed }: {
+type ProvidersPanelProps = {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   initialPage?: 'connections' | 'catalog';
   /**
    * When set, open this connection's detail once the list has loaded.
@@ -106,9 +124,29 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   onInitialCatalogConsumed?: () => void;
   /** Called once the setup level has been entered. */
   onInitialCreateProviderConsumed?: () => void;
+};
+
+export function ProvidersPanel(props: ProvidersPanelProps) {
+  return (
+    <ConnectionSaveUncertaintyObserver store={props.apiKeyOnboardingBridge?.saveUncertainty}>
+      {(hasOnboardingUncertainty) => (
+        <ProvidersPanelContent
+          {...props}
+          hasOnboardingUncertainty={hasOnboardingUncertainty}
+        />
+      )}
+    </ConnectionSaveUncertaintyObserver>
+  );
+}
+
+function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = 'connections', initialConnectionSlug, initialCreateProviderType, onInitialCatalogConsumed, onInitialCreateProviderConsumed, hasOnboardingUncertainty }: ProvidersPanelProps & {
+  hasOnboardingUncertainty: boolean;
 }) {
   const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const [connections, setConnections] = useState<IdentifiedLlmConnection[]>([]);
+  // Projected, not merely identified: the detail editor renders the Host's
+  // resolved entries for a connection the user has not edited, so the catalog
+  // must survive this state rather than being narrowed away here.
+  const [connections, setConnections] = useState<ProjectedLlmConnection[]>([]);
   const [defaultSlug, setDefaultSlug] = useState<string | null>(null);
   const [route, setRoute] = useState<PanelRoute>({ kind: 'list' });
   // Browsing state, not navigation state: it outlives the catalog so that
@@ -165,15 +203,20 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialCatalogOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || initialPage !== 'catalog' || initialCatalogOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      initialPage !== 'catalog' ||
+      initialCatalogOpenedRef.current
+    ) return;
     initialCatalogOpenedRef.current = true;
     setRoute({ kind: 'catalog' });
     onInitialCatalogConsumed?.();
-  }, [initialPage, loading, onInitialCatalogConsumed]);
+  }, [hasOnboardingUncertainty, initialPage, loading, onInitialCatalogConsumed]);
 
   const initialConnectionDetailOpenedRef = useRef(false);
   useEffect(() => {
-    if (route.kind === 'adopting-oauth') {
+    if (route.kind === 'adopting-connection') {
       const created = connections.find(
         (connection) => connection.connectionId === route.identity.connectionId,
       );
@@ -199,7 +242,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
 
   const initialCreateOpenedRef = useRef(false);
   useEffect(() => {
-    if (loading || !initialCreateProviderType || initialCreateOpenedRef.current) return;
+    if (
+      loading ||
+      hasOnboardingUncertainty ||
+      !initialCreateProviderType ||
+      initialCreateOpenedRef.current
+    ) return;
     initialCreateOpenedRef.current = true;
     // Straight to the form, so `origin` is the list: the user never saw a
     // catalog and must not be dropped into one on the way out.
@@ -213,7 +261,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
       },
     });
     onInitialCreateProviderConsumed?.();
-  }, [loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
+  }, [hasOnboardingUncertainty, loading, initialCreateProviderType, onInitialCreateProviderConsumed]);
 
   function goBack() {
     setRoute(backTarget(route));
@@ -223,7 +271,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
     setRoute({ kind: 'list' });
   }
 
-  function openDetail(connection: IdentifiedLlmConnection) {
+  function openDetail(connection: ProjectedLlmConnection) {
     returnFocusRef.current = { level: 'list', connectionId: connection.connectionId };
     setRoute({ kind: 'detail', connectionId: connection.connectionId });
   }
@@ -236,12 +284,12 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
   const selected = route.kind === 'detail'
     ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
-  const pendingOAuthIdentity = route.kind === 'adopting-oauth' ? route.identity : null;
+  const pendingConnectionIdentity = route.kind === 'adopting-connection' ? route.identity : null;
 
   // A detail route whose connection vanished (deleted in another window) is an
   // unsatisfiable route, not a state to correct: the list is what it renders
   // as. Deriving that beats scheduling a setState from inside render.
-  const level: Exclude<PanelRoute['kind'], 'adopting-oauth'> = route.kind === 'adopting-oauth'
+  const level: Exclude<PanelRoute['kind'], 'adopting-connection'> = route.kind === 'adopting-connection'
     ? 'list'
     : route.kind === 'detail' && !selected
       ? 'list'
@@ -394,6 +442,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
         <VStack gap={5}>
           <SettingsRouteHeader
             onBack={goBack}
+            isBackDisabled={hasOnboardingUncertainty}
             backLabel={route.origin === 'catalog' ? copy.backToCatalog : copy.backToList}
             logo={<ProviderLogo type={route.target.providerType} compact />}
             titleId={setupTitleId}
@@ -404,18 +453,29 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               ? oauthPanelSubtitle(route.target.cardId, providerCopy.oauthSection)
               : copy.createSubtitle}
           />
-          <ProviderSetupPage
-            bridge={bridge}
-            target={route.target}
-            existingSlugs={connections.map((connection) => connection.slug)}
-            labelledBy={setupTitleId}
-            onCancel={goBack}
-            onAccountCreated={async (identity) => {
-              if (!identity) return;
-              setRoute({ kind: 'adopting-oauth', identity });
-              await reload();
-            }}
-            onCreated={async (slug, modelDiscoveryError) => {
+          <RuntimeHostSettingsGenerationBoundary>
+            <ProviderSetupPage
+              bridge={bridge}
+              apiKeyOnboardingBridge={apiKeyOnboardingBridge}
+              target={route.target}
+              existingSlugs={connections.map((connection) => connection.slug)}
+              labelledBy={setupTitleId}
+              hasSaveUncertainty={hasOnboardingUncertainty}
+              onCancel={goBack}
+              onAccountCreated={async (identity) => {
+                if (!identity) return;
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboarded={async (identity) => {
+                setRoute({ kind: 'adopting-connection', identity });
+                await reload();
+              }}
+              onOnboardingOutcomeUnknown={async () => {
+                setRoute({ kind: 'list' });
+                await reload();
+              }}
+              onCreated={async (slug, modelDiscoveryError) => {
               const snapshot = await reload();
               if (!snapshot || !providersPanelMountedRef.current) return;
               // The new connection's detail, not the list: creating it is the
@@ -438,8 +498,9 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
                   ),
                 );
               }
-            }}
-          />
+              }}
+            />
+          </RuntimeHostSettingsGenerationBoundary>
         </VStack>
       ) : (
         <>
@@ -458,23 +519,49 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               variant="primary"
               label={copy.addConnection}
               onClick={openCatalog}
-              isDisabled={pendingOAuthIdentity !== null}
+              isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty}
               data-maka-contract="add-connection"
             />
           </HStack>
-          {pendingOAuthIdentity && loadError ? (
+          {hasOnboardingUncertainty && (
+            <Banner
+              status="warning"
+              role="status"
+              title={providerCopy.add.onboardingOutcomeUnknown}
+              description={providerCopy.add.onboardingOutcomeUnknownDetail}
+              endContent={(
+                <HStack gap={2}>
+                  <Button
+                    variant="ghost"
+                    label={providerCopy.add.onboardingReloadConnections}
+                    onClick={() => void reload()}
+                  />
+                  <Button
+                    variant="secondary"
+                    label={providerCopy.add.onboardingRestart}
+                    onClick={() => {
+                      apiKeyOnboardingBridge?.saveUncertainty.restart();
+                      openCatalog();
+                    }}
+                  />
+                </HStack>
+              )}
+            />
+          )}
+          {pendingConnectionIdentity && loadError ? (
             <Banner
               status="warning"
               role="status"
               title={copy.connectedLoadFailed}
-              description={loadError}
+              description={`${pendingConnectionIdentity.slug} · ${loadError}`}
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
-          ) : pendingOAuthIdentity ? (
+          ) : pendingConnectionIdentity ? (
             <Banner
               status="info"
               role="status"
               title={copy.connectedLoading}
+              description={pendingConnectionIdentity.slug}
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
           ) : loadError ? (
@@ -489,7 +576,7 @@ export function ProvidersPanel({ bridge, initialPage = 'connections', initialCon
               icon={<Cpu size={ICON_SIZE.empty} />}
               title={copy.empty}
               description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingOAuthIdentity !== null} />}
+              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty} />}
             />
           ) : (
             <List hasDividers>

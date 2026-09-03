@@ -40,6 +40,7 @@ import {
   type RuntimeHostProfileCatalog,
 } from "@maka/runtime-host/client";
 import { runtimeHostAccessCredentialFingerprint } from "@maka/runtime-host/operator";
+import type { HostPeerEndpoint } from '@maka/runtime-host/protocol';
 import type { CredentialStore } from "@maka/storage/credential-store";
 import { withFileUpdateLock } from "@maka/storage/file-update-lock";
 import type {
@@ -124,14 +125,11 @@ export interface DesktopRuntimeHostProfileService {
   resolveManagedDirectPeerProfile(profileId: string): Promise<{
     readonly exists: boolean;
     readonly enabled: boolean;
+    readonly peerId?: string;
   }>;
   upsertManagedDirectPeerProfile(
     profileId: string,
-    peer: {
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
-    },
+    expectedPeerId: string,
   ): Promise<void>;
   removeManagedDirectPeerProfile(profileId: string): Promise<void>;
   clearManagedServiceBinding(expected: DesktopRuntimeHostManagedSshServiceBinding): Promise<void>;
@@ -295,6 +293,7 @@ export function createDesktopRuntimeHostProfileService(input: {
   readonly enable: (
     target: ResolvedRuntimeHostProfile,
     sshInteraction: "terminal" | "batch",
+    onPeerEndpoint?: (endpoint: HostPeerEndpoint) => void,
   ) => Promise<void>;
   readonly disable: (profileId: string) => Promise<void>;
   readonly finalizePairing: (profileId: string) => Promise<void>;
@@ -400,7 +399,12 @@ export function createDesktopRuntimeHostProfileService(input: {
           isDefault: preferences.defaultProfileId === profile.id,
           readiness: isEnabled ? (state?.readiness ?? "unavailable") : "disabled",
           ...(state?.readiness === "ready"
-            ? { hostId: state.candidate.client.hostId }
+            ? {
+                hostId: state.candidate.client.hostId,
+                ...(state.candidate.client.peerPath
+                  ? { peerPath: state.candidate.client.peerPath }
+                  : {}),
+              }
             : state && "hostId" in state && state.hostId
               ? { hostId: state.hostId }
               : {}),
@@ -483,7 +487,9 @@ export function createDesktopRuntimeHostProfileService(input: {
   ): Promise<void> => {
     try {
       const activationTarget = await resolveActivationTarget(target);
-      await input.enable(activationTarget, sshInteraction);
+      const routeObserver = createAuthenticatedPeerRouteObserver(catalog, activationTarget);
+      await input.enable(activationTarget, sshInteraction, routeObserver?.observe);
+      await routeObserver?.flush();
       const current = await catalog.resolve(activationTarget.profile.id).catch(() => undefined);
       if (!current || !sameResolvedRuntimeHostProfileTarget(current, activationTarget)) {
         await input.disable(activationTarget.profile.id);
@@ -915,23 +921,47 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (profile.kind !== 'remote') {
           throw new Error('This Runtime Host does not expose a shareable peer endpoint');
         }
-        if (profile.transport.kind !== 'ssh') {
+        if (profile.transport.kind !== 'ssh' && profile.transport.kind !== 'libp2p-direct') {
           return { name: profile.name, transport: profile.transport };
         }
-        const direct = (await catalog.read()).profiles.find(
-          (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
-        );
-        if (
-          !direct ||
-          direct.kind !== 'remote' ||
-          direct.rootId !== profile.rootId ||
-          direct.transport.kind !== 'libp2p-direct'
-        ) {
+        let configuredPeerId: string | undefined;
+        if (profile.transport.kind === 'libp2p-direct') {
+          configuredPeerId = profile.transport.reachability.lease.peerId;
+        } else {
+          const direct = (await catalog.read()).profiles.find(
+            (candidate) => candidate.id === managedDirectPeerProfileId(profile.id),
+          );
+          if (
+            direct?.kind === 'remote' &&
+            direct.rootId === profile.rootId &&
+            direct.transport.kind === 'libp2p-direct'
+          ) {
+            configuredPeerId = direct.transport.reachability.lease.peerId;
+          }
+        }
+        if (!configuredPeerId) {
           throw new Error(
             'Enable Direct peer access for this Runtime Host before sharing its Sessions',
           );
         }
-        return { name: profile.name, transport: direct.transport };
+        const active = input.states().find((state) => state.target.profile.id === profile.id);
+        if (!active || active.readiness !== 'ready') {
+          throw new Error('Connect this Runtime Host before sharing its Sessions');
+        }
+        const endpoint = (await active.candidate.client.status()).peerEndpoint;
+        if (!endpoint) {
+          throw new Error('Runtime Host Direct peer is not available');
+        }
+        if (configuredPeerId !== endpoint.lease.peerId) {
+          throw new Error('Runtime Host Direct peer identity changed');
+        }
+        return {
+          name: profile.name,
+          transport: {
+            kind: 'libp2p-direct' as const,
+            reachability: endpoint,
+          },
+        };
       });
     },
     resolveManagedAccess(profileId) {
@@ -962,13 +992,28 @@ export function createDesktopRuntimeHostProfileService(input: {
     resolveManagedDirectPeerProfile(profileId) {
       return mutate(async () => {
         const peerProfileId = managedDirectPeerProfileId(profileId);
+        const profile = (await catalog.read()).profiles.find(
+          (candidate) => candidate.id === peerProfileId,
+        );
         return {
-          exists: (await catalog.read()).profiles.some((profile) => profile.id === peerProfileId),
+          exists: profile !== undefined,
           enabled: preferences.enabledRemoteProfileIds.includes(peerProfileId),
+          ...(profile?.kind === 'remote' && profile.transport.kind === 'libp2p-direct'
+            ? { peerId: profile.transport.reachability.lease.peerId }
+            : {}),
         };
       });
     },
-    upsertManagedDirectPeerProfile(profileId, peer) {
+    async upsertManagedDirectPeerProfile(profileId, expectedPeerId) {
+      requirePairingComplete(profileId);
+      const active = input.states().find((state) => state.target.profile.id === profileId);
+      if (!active || active.readiness !== 'ready') {
+        throw new Error('Connect this Runtime Host before enabling Direct peer access');
+      }
+      const reachability = (await active.candidate.client.status()).peerEndpoint;
+      if (!reachability || reachability.lease.peerId !== expectedPeerId) {
+        throw new Error('Runtime Host Direct peer identity changed');
+      }
       return mutateProfiles(async () => {
         requirePairingComplete(profileId);
         const source = await catalog.resolve(profileId);
@@ -986,7 +1031,10 @@ export function createDesktopRuntimeHostProfileService(input: {
         if (!managed || managed.state !== 'active') {
           throw new Error('This Runtime Host profile is not bound to an active managed service');
         }
-        if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
+        if (
+          reachability.lease.directRoutes.length === 0 &&
+          reachability.lease.coordinationRoutes.length === 0
+        ) {
           throw new Error('Runtime Host returned an invalid direct-peer descriptor');
         }
         const peerProfileId = managedDirectPeerProfileId(profileId);
@@ -1000,9 +1048,7 @@ export function createDesktopRuntimeHostProfileService(input: {
           rootId: source.profile.rootId,
           transport: {
             kind: 'libp2p-direct',
-            peerId: peer.peerId,
-            routeHints: peer.routeHints,
-            coordinationRelays: peer.coordinationRelays,
+            reachability,
           },
         };
         const existing = (await catalog.read()).profiles.find(
@@ -1294,6 +1340,54 @@ export function createDesktopRuntimeHostProfileService(input: {
   };
 }
 
+interface AuthenticatedPeerRouteObserver {
+  readonly observe: (endpoint: HostPeerEndpoint) => void;
+  readonly flush: () => Promise<void>;
+}
+
+function createAuthenticatedPeerRouteObserver(
+  catalog: RuntimeHostProfileCatalog,
+  target: ResolvedRuntimeHostProfile,
+): AuthenticatedPeerRouteObserver | undefined {
+  if (
+    target.profile.kind !== 'remote' ||
+    target.profile.transport.kind !== 'libp2p-direct' ||
+    !target.profileIncarnationId
+  ) return undefined;
+  const expectedPeerId = target.profile.transport.reachability.lease.peerId;
+  const incarnation = {
+    profile: target.profile,
+    profileIncarnationId: target.profileIncarnationId,
+  } as const;
+  let pending = Promise.resolve();
+  const observe = (endpoint: HostPeerEndpoint): void => {
+    if (endpoint.lease.peerId !== expectedPeerId) return;
+    pending = pending
+      .then(async () => {
+        await catalog.updateRemoteProfileIfCurrent(incarnation, (current) => {
+          if (current.transport.kind !== 'libp2p-direct') return current;
+          if (current.transport.reachability.lease.revision >= endpoint.lease.revision) {
+            return current;
+          }
+          return {
+            ...current,
+            transport: {
+              kind: 'libp2p-direct',
+              reachability: endpoint,
+            },
+          };
+        });
+      })
+      .catch((error: unknown) => {
+        console.warn(
+          `[runtime-host] authenticated routes for profile ${target.profile.id} could not be saved:`,
+          asError(error),
+        );
+      });
+  };
+  return { observe, flush: () => pending };
+}
+
 function managedDirectPeerProfileId(sourceProfileId: string): string {
   const digest = createHash('sha256').update(sourceProfileId).digest('hex').slice(0, 32);
   return `direct-${digest}`;
@@ -1465,6 +1559,7 @@ function connectionCodeImportFailure(
     if (
       error.code === 'direct_path_unavailable' ||
       error.code === 'coordination_unavailable' ||
+      error.code === 'peer_reachability_needs_repair' ||
       error.code === 'peer_connect_in_progress'
     ) {
       return 'host_unreachable';

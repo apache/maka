@@ -30,6 +30,29 @@ export interface RuntimeHostSessionCatalogCoverage {
   readonly completeHostIds: string[];
 }
 
+export interface RuntimeHostSessionCatalogSnapshot extends RuntimeHostSessionCatalogCoverage {
+  /** Profiles still retained by Desktop, including unavailable Guest mounts. */
+  readonly knownProfileIds: string[];
+}
+
+export async function resolveRuntimeHostSessionCatalog(
+  current: readonly DesktopSessionSummary[],
+  coverage: Promise<RuntimeHostSessionCatalogCoverage>,
+  knownRuntimeProfileIds: () => readonly string[],
+  guestMountProfileIds: Promise<readonly string[]>,
+): Promise<DesktopSessionSummary[]> {
+  const [snapshot, knownGuestProfileIds] = await Promise.all([
+    coverage,
+    guestMountProfileIds.catch(() =>
+      current.flatMap((session) => session.shared === true ? [session.profileId] : []),
+    ),
+  ]);
+  return reconcileRuntimeHostSessionCatalog(current, {
+    ...snapshot,
+    knownProfileIds: [...knownRuntimeProfileIds(), ...knownGuestProfileIds],
+  });
+}
+
 export async function collectRuntimeHostSessionCatalogsWithCoverage(
   requests: readonly RuntimeHostSessionCatalogRequest[],
 ): Promise<RuntimeHostSessionCatalogCoverage> {
@@ -59,18 +82,25 @@ export async function collectRuntimeHostSessionCatalogsWithCoverage(
   };
 }
 
-export async function collectRuntimeHostSessionCatalogs(
-  requests: readonly Promise<DesktopSessionSummary[]>[],
-): Promise<DesktopSessionSummary[]> {
-  const results = await Promise.allSettled(requests);
-  const groups = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (requests.length > 0 && groups.length === 0) {
-    throw new AggregateError(
-      results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
-      'Every Runtime Host Session Catalog request failed',
-    );
-  }
-  return sortSessionCatalogs(groups.flat());
+/**
+ * Commits complete Host catalogs authoritatively while retaining the last
+ * accepted rows for a Host that still exists but cannot answer this read.
+ * An explicitly removed profile is absent from knownProfileIds and therefore
+ * retires immediately; transport availability alone cannot change access.
+ */
+export function reconcileRuntimeHostSessionCatalog(
+  current: readonly DesktopSessionSummary[],
+  snapshot: RuntimeHostSessionCatalogSnapshot,
+): DesktopSessionSummary[] {
+  const completeHostIds = new Set(snapshot.completeHostIds);
+  const knownProfileIds = new Set(snapshot.knownProfileIds);
+  return sortSessionCatalogs([
+    ...snapshot.sessions,
+    ...current.filter(
+      (session) =>
+        knownProfileIds.has(session.profileId) && !completeHostIds.has(session.runtimeHostId),
+    ),
+  ]);
 }
 
 function sortSessionCatalogs(sessions: DesktopSessionSummary[]): DesktopSessionSummary[] {
