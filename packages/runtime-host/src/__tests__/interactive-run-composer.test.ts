@@ -72,6 +72,24 @@ test('the composer resolves scoped Tool additions without rebuilding the backend
   );
 });
 
+test('the composer keeps Host bindings stable while resampling scoped Tool additions', () => {
+  let additions: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({ resolveAdditionalTools: () => additions });
+  const initialRead = composer.tools.find(({ name }) => name === 'Read');
+  assert.ok(initialRead);
+
+  additions = [tool('dynamic_tool')];
+  const next = composer.resolveTools?.() ?? [];
+  assert.equal(
+    next.find(({ name }) => name === 'Read'),
+    initialRead,
+  );
+  assert.equal(
+    next.some(({ name }) => name === 'dynamic_tool'),
+    true,
+  );
+});
+
 test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
   const composer = createFixtureComposer({
     toolProfile: 'headless-coding-v1',

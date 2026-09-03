@@ -28,6 +28,7 @@ import {
   toolAvailabilityHash,
   type ToolSearchResult,
 } from '../tool-availability.js';
+import { bindToolActivationIdentity, toolActivationKey } from '../tool-activation-identity.js';
 import type { MakaTool, MakaToolContext } from '../tool-runtime.js';
 
 function tool(name: string, description = name): MakaTool {
@@ -160,7 +161,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('a successful search activates bounded matches for the next projection', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const traces: Record<string, unknown>[] = [];
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
@@ -188,17 +189,31 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('a same-name replacement does not inherit the retired contribution activation', async () => {
-    const first = tool('plugin_weather', 'first generation');
-    const active = new Map<string, MakaTool>();
+    const first = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 1,
+      toolName: 'plugin_weather',
+    });
+    const active = new Map<string, string>();
     const initial = new ToolAvailabilityRuntime(
       [first],
       { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
       invalid,
     ).prepare(active);
     await searchTool(initial).impl({ query: 'weather' }, ctx);
-    assert.equal(active.get('plugin_weather'), first);
+    assert.equal(active.get('plugin_weather'), toolActivationKey(first));
 
-    const replacement = tool('plugin_weather', 'second generation');
+    const replacement = bindToolActivationIdentity(tool('plugin_weather', 'weather'), {
+      kind: 'plugin',
+      scopeId: 'profile',
+      entryId: 'weather-entry',
+      extensionId: 'weather-plugin',
+      generation: 2,
+      toolName: 'plugin_weather',
+    });
     const next = new ToolAvailabilityRuntime(
       [replacement],
       { groups: [{ id: 'plugins', toolNames: ['plugin_weather'] }] },
@@ -207,6 +222,28 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
     assert.equal(active.has('plugin_weather'), false);
     assert.equal(next.activeTools.includes('plugin_weather'), false);
+  });
+
+  test('an equivalent rebuilt Host wrapper keeps its activation', async () => {
+    const active = new Map<string, string>();
+    const first = tool('todo_read', 'read the session todo');
+    const initial = new ToolAvailabilityRuntime(
+      [first],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+    await searchTool(initial).impl({ query: 'read todo' }, ctx);
+
+    const rebuilt = tool('todo_read', 'read the session todo');
+    assert.notEqual(rebuilt, first);
+    const next = new ToolAvailabilityRuntime(
+      [rebuilt],
+      { groups: [{ id: 'todo', toolNames: ['todo_read'] }] },
+      invalid,
+    ).prepare(active);
+
+    assert.equal(active.get('todo_read'), toolActivationKey(rebuilt));
+    assert.equal(next.activeTools.includes('todo_read'), true);
   });
 
   test('ordinary result is thin and contains no complete schemas', async () => {
@@ -220,7 +257,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('repeated and parallel searches union and deduplicate turn activation', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active);
     const connector = searchTool(plan);
     await Promise.all([
@@ -232,7 +269,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('already-active matches do not consume a later search limit or schema budget', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const largeDescription = `Perform a calendar action ${'x'.repeat(40 * 1024)}`;
     const plan = new ToolAvailabilityRuntime(
       [tool('calendar_primary', largeDescription), tool('calendar_secondary', largeDescription)],
@@ -264,7 +301,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('reports and skips an oversized tool without hiding a smaller later match', async () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('oversized_target', `Oversized target ${'x'.repeat(TOOL_SEARCH_MAX_SCHEMA_CHARS)}`),
@@ -300,7 +337,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
 
   test('stops at the schema ceiling instead of silently changing relevance order', async () => {
     const largeDescription = `Budget branch ${'x'.repeat(40 * 1024)}`;
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = new ToolAvailabilityRuntime(
       [
         tool('budget_branch_primary', largeDescription),
@@ -330,7 +367,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('required orchestration tools are visible without changing activation state', () => {
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime().prepare(active, new Set(['docs_read']));
     assert.ok(plan.activeTools.includes('docs_read'));
     assert.equal(active.size, 0);
@@ -338,7 +375,7 @@ describe('ToolAvailabilityRuntime — search activation', () => {
   });
 
   test('activation maps isolate overlapping and subsequent turns', async () => {
-    const first = new Map<string, MakaTool>();
+    const first = new Map<string, string>();
     const firstPlan = runtime().prepare(first);
     await searchTool(firstPlan).impl({ query: 'browser click' }, ctx);
     assert.ok(firstPlan.projectActiveTools!().activeTools.includes('browser_click'));

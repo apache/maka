@@ -33,6 +33,7 @@ import type { ModelProjectionTransition } from '@maka/core/model-projection-tran
 import { planActiveToolResultSupersession } from '../active-tool-result-working-set.js';
 import { composeRequestProjection } from '../request-projection.js';
 import { ToolAvailabilityRuntime, TOOL_SEARCH_NAME } from '../tool-availability.js';
+import { toolActivationKey } from '../tool-activation-identity.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 describe('active current-turn tool-result pruning', () => {
@@ -288,11 +289,11 @@ describe('active current-turn tool-result pruning', () => {
       { groups: [{ id: 'rive', toolNames: ['RiveWorkflow'] }] },
       makaTool('invalid'),
     );
-    const active = new Map<string, MakaTool>();
+    const active = new Map<string, string>();
     const plan = runtime.prepare(active);
     active.set(
       'RiveWorkflow',
-      plan.providerTools.find((candidate) => candidate.name === 'RiveWorkflow')!,
+      toolActivationKey(plan.providerTools.find((candidate) => candidate.name === 'RiveWorkflow')!),
     );
     const activePrune = async (options: { messages: ModelMessage[]; stepNumber: number }) => {
       const rewritten = await rewriteActiveToolResultsInMessages({

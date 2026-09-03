@@ -135,23 +135,25 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     (await inventorySnapshotFor(context)).inventory;
   const hasToolCeiling = input.boundTools !== undefined || input.toolProfile !== undefined;
   const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
+  // The base Host binding is immutable for this backend. Only scoped plugin
+  // contributions are sampled at logical step boundaries.
+  const defaultTools = input.boundTools
+    ? input.boundTools
+    : buildDefaultHostTools(
+        input.sessionTodo,
+        inventoryFor,
+        builtinTools,
+        input.hostTools ?? [],
+        input.scheduledTaskTool,
+        input.goalTools,
+        input.parentAgentTools,
+        input.plan,
+        input.deepResearch?.tools,
+      );
+  const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
   const resolveTools = (): readonly MakaTool[] => {
     const additionalTools = hasToolCeiling ? [] : (input.resolveAdditionalTools?.() ?? []);
-    const defaultTools = input.boundTools
-      ? input.boundTools
-      : buildDefaultHostTools(
-          input.sessionTodo,
-          inventoryFor,
-          builtinTools,
-          [...(input.hostTools ?? []), ...additionalTools],
-          input.scheduledTaskTool,
-          input.goalTools,
-          input.parentAgentTools,
-          input.plan,
-          input.deepResearch?.tools,
-        );
-    const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
-    const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
+    const unscopedCandidateTools = [...defaultTools, ...additionalTools, ...clientCapabilityTools];
     const routedCandidateTools = input.deepResearch
       ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
       : unscopedCandidateTools;

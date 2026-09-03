@@ -1017,7 +1017,7 @@ function turnAbortError(): Error {
 class TurnScope {
   readonly abortController = new AbortController();
   /** Monotonic provider-visible activations owned by this one send(). */
-  readonly activeTools = new Map<string, MakaTool>();
+  readonly activeTools = new Map<string, string>();
   aborted = false;
   loopStopRequested = false;
   loopStopReason: CompleteEvent['stopReason'] | undefined;

@@ -4003,16 +4003,34 @@ describe('AiSdkBackend model history', () => {
         calls += 1;
         const toolCall =
           calls === 1
-            ? { id: 'enable-call', name: 'enable_inventory', input: '{}' }
+            ? {
+                id: 'search-enable-call',
+                name: TOOL_SEARCH_NAME,
+                input: JSON.stringify({ query: 'enable inventory', limit: 1 }),
+              }
             : calls === 2
-              ? {
-                  id: 'inventory-call',
-                  name: inventoryTool.name,
-                  input: JSON.stringify({ sku: 'SKU-42' }),
-                }
+              ? { id: 'enable-call', name: 'enable_inventory', input: '{}' }
               : calls === 3
-                ? { id: 'disable-call', name: 'disable_inventory', input: '{}' }
-                : undefined;
+                ? {
+                    id: 'search-inventory-call',
+                    name: TOOL_SEARCH_NAME,
+                    input: JSON.stringify({ query: 'look up current inventory', limit: 1 }),
+                  }
+                : calls === 4
+                  ? {
+                      id: 'inventory-call',
+                      name: inventoryTool.name,
+                      input: JSON.stringify({ sku: 'SKU-42' }),
+                    }
+                  : calls === 5
+                    ? {
+                        id: 'search-disable-call',
+                        name: TOOL_SEARCH_NAME,
+                        input: JSON.stringify({ query: 'disable inventory', limit: 1 }),
+                      }
+                    : calls === 6
+                      ? { id: 'disable-call', name: 'disable_inventory', input: '{}' }
+                      : undefined;
         return {
           stream: simulateReadableStream({
             chunks: (toolCall
@@ -4054,6 +4072,14 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [...pluginTools.resolve('session-1', []).tools],
       resolveTools: () => pluginTools.resolve('session-1', []).tools,
+      toolAvailability: {
+        groups: [
+          {
+            id: 'plugins',
+            toolNames: ['enable_inventory', 'lookup_inventory', 'disable_inventory'],
+          },
+        ],
+      },
       loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
       recordRequestComposition: async (_runId, snapshot) => {
         requestCompositions.push(snapshot);
@@ -4076,22 +4102,24 @@ describe('AiSdkBackend model history', () => {
           )
         : Object.keys(tools);
     };
-    assert.equal(namesForRequest(0).includes(inventoryTool.name), false);
-    assert.equal(namesForRequest(1).includes(inventoryTool.name), true);
-    assert.equal(namesForRequest(2).includes(inventoryTool.name), true);
-    assert.equal(namesForRequest(3).includes(inventoryTool.name), false);
-    assert.equal(requestCompositions.length, 4);
-    assert.equal(requestCompositions[0]?.toolNames.includes(inventoryTool.name), false);
-    assert.equal(requestCompositions[1]?.toolNames.includes(inventoryTool.name), true);
-    assert.equal(requestCompositions[2]?.toolNames.includes(inventoryTool.name), true);
-    assert.equal(requestCompositions[3]?.toolNames.includes(inventoryTool.name), false);
-    const fourthPrompt = model.doStreamCalls[3]?.prompt as Array<{
+    assert.equal(namesForRequest(0).includes('enable_inventory'), false);
+    assert.equal(namesForRequest(1).includes('enable_inventory'), true);
+    assert.equal(namesForRequest(2).includes(inventoryTool.name), false);
+    assert.equal(namesForRequest(3).includes(inventoryTool.name), true);
+    assert.equal(namesForRequest(4).includes('disable_inventory'), false);
+    assert.equal(namesForRequest(5).includes('disable_inventory'), true);
+    assert.equal(namesForRequest(6).includes(inventoryTool.name), false);
+    assert.equal(requestCompositions.length, 7);
+    assert.equal(requestCompositions[2]?.toolNames.includes(inventoryTool.name), false);
+    assert.equal(requestCompositions[3]?.toolNames.includes(inventoryTool.name), true);
+    assert.equal(requestCompositions[6]?.toolNames.includes(inventoryTool.name), false);
+    const finalPrompt = model.doStreamCalls[6]?.prompt as Array<{
       role: string;
       content: Array<{ output?: { value?: unknown } }>;
     }>;
     assert.equal(
-      JSON.stringify(fourthPrompt).includes('SKU-42') &&
-        JSON.stringify(fourthPrompt).includes('available'),
+      JSON.stringify(finalPrompt).includes('SKU-42') &&
+        JSON.stringify(finalPrompt).includes('available'),
       true,
     );
     await loader.close();

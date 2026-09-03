@@ -27,6 +27,7 @@ import {
   type MakaPluginRootId,
 } from './plugin-runtime.js';
 import type { MakaTool } from './tool-runtime.js';
+import { bindToolActivationIdentity } from './tool-activation-identity.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -153,24 +154,34 @@ export class PluginToolService extends Service {
       );
     }
     let entry!: RegisteredPluginTool;
-    const exposed: MakaTool = Object.freeze({
-      ...definition,
-      impl: async (args, context) => {
-        if (entry.retired) {
-          throw new Error(`Plugin Tool ${JSON.stringify(definition.name)} is no longer active`);
-        }
-        entry.activeCalls += 1;
-        try {
-          return await definition.impl(args, context);
-        } finally {
-          entry.activeCalls -= 1;
-          if (entry.activeCalls === 0) {
-            for (const resolve of entry.drainWaiters) resolve();
-            entry.drainWaiters.clear();
+    const exposed: MakaTool = bindToolActivationIdentity(
+      {
+        ...definition,
+        impl: async (args, context) => {
+          if (entry.retired) {
+            throw new Error(`Plugin Tool ${JSON.stringify(definition.name)} is no longer active`);
           }
-        }
+          entry.activeCalls += 1;
+          try {
+            return await definition.impl(args, context);
+          } finally {
+            entry.activeCalls -= 1;
+            if (entry.activeCalls === 0) {
+              for (const resolve of entry.drainWaiters) resolve();
+              entry.drainWaiters.clear();
+            }
+          }
+        },
       },
-    });
+      {
+        kind: 'plugin',
+        scopeId: identity.scopeId,
+        entryId: identity.entryId,
+        extensionId: identity.extensionId,
+        generation: identity.generation,
+        toolName: definition.name,
+      },
+    );
     entry = {
       ...identity,
       definition,

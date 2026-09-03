@@ -24,6 +24,7 @@ import { Context } from '../plugin-kernel.js';
 import { MakaCompositionLoader } from '../plugin-composition-loader.js';
 import { PluginToolService } from '../plugin-tool-service.js';
 import type { MakaPluginPackage } from '../plugin-runtime.js';
+import { toolActivationKey } from '../tool-activation-identity.js';
 import type { MakaTool } from '../tool-runtime.js';
 
 test('Profile tools are inherited and exact Session tools shadow them', async () => {
@@ -109,6 +110,23 @@ test('ctx.tools.register returns a live disposer', async () => {
   );
   await dispose();
   assert.deepEqual(tools.resolve('alpha', []).tools, []);
+  await loader.close();
+});
+
+test('Plugin Tool activation identity is stable within and fenced across generations', async () => {
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(toolPackage('dynamic-package', tool('dynamic', 'visible')));
+  await loader.create('profile', { id: 'dynamic-entry', packageId: 'dynamic-package' });
+
+  const first = tools.resolve('alpha', []).tools[0]!;
+  assert.equal(toolActivationKey(tools.resolve('alpha', []).tools[0]!), toolActivationKey(first));
+
+  await loader.remove('dynamic-entry');
+  await loader.create('profile', { id: 'dynamic-entry', packageId: 'dynamic-package' });
+  const replacement = tools.resolve('alpha', []).tools[0]!;
+  assert.notEqual(toolActivationKey(replacement), toolActivationKey(first));
   await loader.close();
 });
 
