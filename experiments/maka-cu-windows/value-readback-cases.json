@@ -1,0 +1,124 @@
+[
+  {
+    "name": "immediate match",
+    "samples": [{ "match": true }],
+    "expected": {
+      "status": "verified",
+      "verification": "value_readback_match",
+      "attempts": 1,
+      "elapsedMs": 0
+    }
+  },
+  {
+    "name": "two stale reads then match",
+    "samples": [{}, {}, { "match": true }],
+    "expected": {
+      "status": "verified",
+      "verification": "value_readback_match",
+      "attempts": 3,
+      "elapsedMs": 100
+    }
+  },
+  {
+    "name": "permanent mismatch expires",
+    "samples": [{}],
+    "expected": {
+      "status": "unknown",
+      "verification": "value_readback_timeout",
+      "attempts": 20,
+      "elapsedMs": 1000
+    }
+  },
+  {
+    "name": "read error must not become empty string match",
+    "samples": [{ "stopReason": "readback_unavailable" }, { "match": true }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_unavailable",
+      "attempts": 1,
+      "elapsedMs": 0
+    }
+  },
+  {
+    "name": "identity changed between attempts",
+    "samples": [{}, { "stopReason": "readback_identity_changed" }, { "match": true }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_identity_changed",
+      "attempts": 2,
+      "elapsedMs": 50
+    }
+  },
+  {
+    "name": "password field becomes protected",
+    "samples": [{ "stopReason": "readback_password_field_refused" }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_password_field_refused",
+      "attempts": 1,
+      "elapsedMs": 0
+    }
+  },
+  {
+    "name": "oversized value is not accepted",
+    "samples": [{ "stopReason": "readback_value_too_long" }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_value_too_long",
+      "attempts": 1,
+      "elapsedMs": 0
+    }
+  },
+  {
+    "name": "cancel after dispatch before first probe",
+    "cancelInitially": true,
+    "samples": [{ "match": true }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_cancelled_after_dispatch",
+      "attempts": 0,
+      "elapsedMs": 0
+    }
+  },
+  {
+    "name": "cancel while probe returns a match",
+    "samples": [{ "match": true, "cancel": true, "advanceMs": 20 }],
+    "expected": {
+      "status": "unknown",
+      "verification": "readback_cancelled_after_dispatch",
+      "attempts": 1,
+      "elapsedMs": 20
+    }
+  },
+  {
+    "name": "late match from slow provider is not verified",
+    "samples": [{ "match": true, "advanceMs": 1001 }],
+    "expected": {
+      "status": "unknown",
+      "verification": "value_readback_timeout",
+      "attempts": 1,
+      "elapsedMs": 1001
+    }
+  },
+  {
+    "name": "slow mismatch leaves only remaining budget",
+    "samples": [{ "advanceMs": 980 }, { "match": true }],
+    "expected": {
+      "status": "unknown",
+      "verification": "value_readback_timeout",
+      "attempts": 1,
+      "elapsedMs": 1000
+    }
+  },
+  {
+    "name": "attempt cap even if clock does not advance",
+    "frozenClock": true,
+    "samples": [{}],
+    "expected": {
+      "status": "unknown",
+      "verification": "value_readback_attempt_limit",
+      "attempts": 21,
+      "elapsedMs": 0
+    }
+  }
+]

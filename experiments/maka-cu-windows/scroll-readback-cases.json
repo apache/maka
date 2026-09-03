@@ -1,0 +1,189 @@
+{
+  "preflight": [
+    { "percent": 40, "scrollable": true, "amount": "large_increment", "expected": null },
+    { "percent": 40, "scrollable": true, "amount": "no_amount", "expected": "scroll_no_amount" },
+    {
+      "percent": -1,
+      "scrollable": true,
+      "amount": "large_increment",
+      "expected": "scroll_axis_not_scrollable"
+    },
+    {
+      "percent": 40,
+      "scrollable": false,
+      "amount": "large_increment",
+      "expected": "scroll_axis_not_scrollable"
+    },
+    {
+      "percent": "NaN",
+      "scrollable": true,
+      "amount": "large_increment",
+      "expected": "scroll_invalid_percent"
+    },
+    {
+      "percent": "Infinity",
+      "scrollable": true,
+      "amount": "large_increment",
+      "expected": "scroll_invalid_percent"
+    },
+    {
+      "percent": 101,
+      "scrollable": true,
+      "amount": "large_increment",
+      "expected": "scroll_invalid_percent"
+    },
+    {
+      "percent": 100,
+      "scrollable": true,
+      "amount": "large_increment",
+      "expected": "scroll_at_boundary"
+    },
+    {
+      "percent": 0,
+      "scrollable": true,
+      "amount": "small_decrement",
+      "expected": "scroll_at_boundary"
+    },
+    { "percent": 100, "scrollable": true, "amount": "large_decrement", "expected": null },
+    { "percent": 0, "scrollable": true, "amount": "small_increment", "expected": null }
+  ],
+  "readback": [
+    {
+      "name": "immediate",
+      "samples": [{ "percent": 60 }],
+      "reason": "scroll_position_readback_changed",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "delayed",
+      "samples": [{ "percent": 40 }, { "percent": 40 }, { "percent": 60 }],
+      "reason": "scroll_position_readback_changed",
+      "attempts": 3,
+      "elapsedMs": 100
+    },
+    {
+      "name": "decrement",
+      "amount": "large_decrement",
+      "samples": [{ "percent": 20 }],
+      "reason": "scroll_position_readback_changed",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "wrong-increment",
+      "samples": [{ "percent": 20 }],
+      "reason": "scroll_readback_wrong_direction",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "wrong-decrement",
+      "amount": "small_decrement",
+      "samples": [{ "percent": 60 }],
+      "reason": "scroll_readback_wrong_direction",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "unchanged-timeout",
+      "samples": [{ "percent": 40 }],
+      "reason": "scroll_readback_timeout",
+      "attempts": 20,
+      "elapsedMs": 1000
+    },
+    {
+      "name": "no-scroll-sentinel",
+      "samples": [{ "percent": -1 }],
+      "reason": "scroll_readback_invalid_percent",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "nan",
+      "samples": [{ "percent": "NaN" }],
+      "reason": "scroll_readback_invalid_percent",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "infinity",
+      "samples": [{ "percent": "Infinity" }],
+      "reason": "scroll_readback_invalid_percent",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "out-of-range",
+      "samples": [{ "percent": 101 }],
+      "reason": "scroll_readback_invalid_percent",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "read-error",
+      "samples": [{ "error": "scroll_readback_unavailable" }],
+      "reason": "scroll_readback_unavailable",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "identity-changed",
+      "samples": [{ "error": "readback_identity_changed" }],
+      "reason": "readback_identity_changed",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "axis-lost",
+      "samples": [{ "error": "scroll_readback_axis_not_scrollable" }],
+      "reason": "scroll_readback_axis_not_scrollable",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "cancel-before-probe",
+      "cancelInitially": true,
+      "samples": [{ "percent": 60 }],
+      "reason": "readback_cancelled_after_dispatch",
+      "attempts": 0,
+      "elapsedMs": 0
+    },
+    {
+      "name": "cancel-in-probe",
+      "samples": [{ "percent": 60, "cancel": true }],
+      "reason": "readback_cancelled_after_dispatch",
+      "attempts": 1,
+      "elapsedMs": 0
+    },
+    {
+      "name": "late-match",
+      "samples": [{ "percent": 60, "advanceMs": 1001 }],
+      "reason": "scroll_readback_timeout",
+      "attempts": 1,
+      "elapsedMs": 1001
+    },
+    {
+      "name": "exact-deadline-match",
+      "samples": [{ "percent": 60, "advanceMs": 1000 }],
+      "reason": "scroll_readback_timeout",
+      "attempts": 1,
+      "elapsedMs": 1000
+    },
+    {
+      "name": "slow-mismatch",
+      "samples": [{ "percent": 40, "advanceMs": 980 }],
+      "reason": "scroll_readback_timeout",
+      "attempts": 1,
+      "elapsedMs": 1000
+    },
+    {
+      "name": "frozen-clock",
+      "frozenClock": true,
+      "samples": [{ "percent": 40 }],
+      "reason": "scroll_readback_attempt_limit",
+      "attempts": 21,
+      "elapsedMs": 0
+    }
+  ]
+}

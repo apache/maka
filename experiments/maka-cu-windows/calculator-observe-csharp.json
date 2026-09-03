@@ -1,0 +1,334 @@
+{
+  "initialize": {
+    "protocol": "maka.cu.windows/0",
+    "executor": {
+      "name": "maka-cu-windows",
+      "language": "csharp-dotnet8",
+      "spikeStage": "v0"
+    },
+    "capabilities": {
+      "observation": {
+        "uia": true,
+        "wgc": true
+      },
+      "semanticActions": ["set_value", "click_element", "select", "toggle", "scroll"],
+      "input": {
+        "foreground": false,
+        "globalPointer": false,
+        "postMessage": false,
+        "sendInput": false
+      },
+      "capture": {
+        "targetWindowWgc": true,
+        "screenRect": false
+      }
+    },
+    "limits": {
+      "maxTreeNodes": 2000,
+      "maxTreeDepth": 32,
+      "maxTreeMillis": 2000,
+      "maxResponseBytes": 6291456,
+      "shutdownGraceMs": 1000
+    },
+    "deadlines": {
+      "handshake": 10,
+      "request": 20,
+      "cancelGrace": 2
+    },
+    "generation": "19564-baec505eae0940a3b56a2962c64e8bfc",
+    "signature": "none",
+    "distributionReady": false,
+    "runtime": "net8.0-windows"
+  },
+  "target": {
+    "hwnd": 1115970,
+    "pid": 17232,
+    "title": "计算器",
+    "className": "ApplicationFrameWindow",
+    "isOffscreen": false
+  },
+  "observeError": null,
+  "action": null,
+  "after": null,
+  "tree": {
+    "rootToken": "el-ae66390606f942109ec19e717e489466",
+    "nodeCount": 24,
+    "truncated": false,
+    "elapsedMs": 555,
+    "nodes": [
+      {
+        "token": "el-ae66390606f942109ec19e717e489466",
+        "controlType": "ControlType.Window",
+        "name": "计算器",
+        "automationId": "",
+        "className": "ApplicationFrameWindow",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1427, 113, 418, 675],
+        "patterns": [],
+        "actions": [],
+        "value": null
+      },
+      {
+        "token": "el-a75aa4c7f6f3431cb8004ac1c631646e",
+        "controlType": "ControlType.Window",
+        "name": "计算器",
+        "automationId": "TitleBar",
+        "className": "ApplicationFrameTitleBarWindow",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1603, 114, 233, 40],
+        "patterns": []
+      },
+      {
+        "token": "el-6ca40aef692a42ffb3fb0007a317d8bc",
+        "controlType": "ControlType.MenuBar",
+        "name": "系统",
+        "automationId": "SystemMenuBar",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [0, 0, 0, 0],
+        "patterns": []
+      },
+      {
+        "token": "el-1cfa99e3c2114ade8576ba944dfc6a62",
+        "controlType": "ControlType.MenuItem",
+        "name": "系统",
+        "automationId": "",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [0, 0, 0, 0],
+        "patterns": []
+      },
+      {
+        "token": "el-a1f78e6c370447b4813c29e19d45e512",
+        "controlType": "ControlType.Button",
+        "name": "最小化 计算器",
+        "automationId": "Minimize",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1665, 114, 57, 40],
+        "patterns": []
+      },
+      {
+        "token": "el-6e4a50362b25414883bf8d66dac1b094",
+        "controlType": "ControlType.Button",
+        "name": "使 计算器 最大化",
+        "automationId": "Maximize",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1722, 114, 57, 40],
+        "patterns": []
+      },
+      {
+        "token": "el-fd6db6c146a6495ab32f8237414ea8f8",
+        "controlType": "ControlType.Button",
+        "name": "关闭 计算器",
+        "automationId": "Close",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1779, 114, 57, 40],
+        "patterns": []
+      },
+      {
+        "token": "el-685fc77315a7419d80938bc9bf173aa5",
+        "controlType": "ControlType.Window",
+        "name": "计算器",
+        "automationId": "",
+        "className": "Windows.UI.Core.CoreWindow",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 114, 400, 665],
+        "patterns": []
+      },
+      {
+        "token": "el-cfb3f692c294463bb64bac79394ef0f8",
+        "controlType": "ControlType.Text",
+        "name": "计算器",
+        "automationId": "AppName",
+        "className": "TextBlock",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1496, 124, 45, 20],
+        "patterns": []
+      },
+      {
+        "token": "el-1261aac1320d4083aad8be4cc8a5d006",
+        "controlType": "ControlType.Custom",
+        "name": "",
+        "automationId": "NavView",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 154, 400, 625],
+        "patterns": []
+      },
+      {
+        "token": "el-35d125ff9142430f96407232f7e86b44",
+        "controlType": "ControlType.Button",
+        "name": "打开导航",
+        "automationId": "TogglePaneButton",
+        "className": "Button",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1441, 162, 50, 45],
+        "patterns": []
+      },
+      {
+        "token": "el-5620dde2545744a98f9176a169e9a08a",
+        "controlType": "ControlType.Group",
+        "name": "",
+        "automationId": "",
+        "className": "LandmarkTarget",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 164, 400, 610],
+        "patterns": []
+      },
+      {
+        "token": "el-be1c8db2fe6149d999d16da2af889308",
+        "controlType": "ControlType.Text",
+        "name": "标准 计算器模式",
+        "automationId": "Header",
+        "className": "TextBlock",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1496, 165, 52, 34],
+        "patterns": []
+      },
+      {
+        "token": "el-3895cf91b6494e00a8e2f6f2da40706d",
+        "controlType": "ControlType.Button",
+        "name": "始终置顶",
+        "automationId": "NormalAlwaysOnTopButton",
+        "className": "Button",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1560, 164, 40, 40],
+        "patterns": []
+      },
+      {
+        "token": "el-f2b9eb59e41642fcaa4843102b55a64a",
+        "controlType": "ControlType.Pane",
+        "name": "",
+        "automationId": "",
+        "className": "ApplicationFrameInputSinkWindow",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 154, 400, 625],
+        "patterns": []
+      },
+      {
+        "token": "el-0ce1b129c342493e87e7c970d94b28d3",
+        "controlType": "ControlType.TitleBar",
+        "name": "计算器",
+        "automationId": "TitleBar",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 122, 400, 29],
+        "patterns": []
+      },
+      {
+        "token": "el-e2789e73bee643849fa9e03eac253f1b",
+        "controlType": "ControlType.MenuBar",
+        "name": "系统菜单栏",
+        "automationId": "SystemMenuBar",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 122, 28, 28],
+        "patterns": []
+      },
+      {
+        "token": "el-57879008a231431a8d5bacf3161d5277",
+        "controlType": "ControlType.MenuItem",
+        "name": "系统",
+        "automationId": "Item 1",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 122, 28, 28],
+        "patterns": []
+      },
+      {
+        "token": "el-8bff64b72e444004b7d8d1fb3ea115ae",
+        "controlType": "ControlType.Button",
+        "name": "最小化",
+        "automationId": "Minimize",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": true,
+        "bounds": [0, 0, 0, 0],
+        "patterns": []
+      },
+      {
+        "token": "el-461273db3d1b436c8ff7631f2ec1cb6c",
+        "controlType": "ControlType.Button",
+        "name": "最大化",
+        "automationId": "Maximize",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": true,
+        "bounds": [0, 0, 0, 0],
+        "patterns": []
+      },
+      {
+        "token": "el-33f18438a7fd4d8e92d28ada16d23c5b",
+        "controlType": "ControlType.Button",
+        "name": "关闭",
+        "automationId": "Close",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": true,
+        "bounds": [0, 0, 0, 0],
+        "patterns": []
+      },
+      {
+        "token": "el-d953942dda96470da0775e110af17a26",
+        "controlType": "ControlType.Button",
+        "name": "最小化 计算器",
+        "automationId": "Minimize",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1665, 114, 57, 40],
+        "patterns": ["Invoke"],
+        "actions": ["click_element"],
+        "value": null
+      },
+      {
+        "token": "el-155139309d3a49e295e7d1d1a3db2f9a",
+        "controlType": "ControlType.MenuItem",
+        "name": "系统",
+        "automationId": "",
+        "className": "",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [0, 0, 0, 0],
+        "patterns": [],
+        "actions": [],
+        "value": null
+      },
+      {
+        "token": "el-d292aa25efb4401cb875f32dd1cdec2a",
+        "controlType": "ControlType.Pane",
+        "name": "",
+        "automationId": "",
+        "className": "ApplicationFrameInputSinkWindow",
+        "isEnabled": true,
+        "isOffscreen": false,
+        "bounds": [1436, 154, 400, 625],
+        "patterns": [],
+        "actions": [],
+        "value": null
+      }
+    ]
+  },
+  "elements": null
+}

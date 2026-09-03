@@ -1,0 +1,45 @@
+<!doctype html>
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+<meta charset="utf-8">
+<title>maka chromium task fixture</title>
+<style>body{font:16px sans-serif;margin:24px}#scroll{height:120px;width:360px;overflow:auto;border:1px solid #888;margin-top:16px}.row{height:48px;padding:8px}</style>
+<h1 id="page-heading">maka Chromium task fixture</h1>
+<p id="page-state" aria-live="polite">loading</p>
+<form id="task-form"><label for="web-input">Web text input</label><input id="web-input" aria-label="Web text input" type="text"><label for="compat-input">Compat text input</label><input id="compat-input" aria-label="Compat text input" type="text"><button id="web-button" type="submit">Apply semantic click</button></form>
+<div id="web-status" aria-live="polite">ready</div>
+<div id="scroll" tabindex="0" aria-label="Web scroll region"><div class="row">scroll row 01</div><div class="row">scroll row 02</div><div class="row">scroll row 03</div><div class="row">scroll row 04</div><div class="row">scroll row 05</div><div class="row">scroll row 06</div><div class="row">scroll row 07</div><div class="row">scroll row 08</div></div>
+<script>
+(() => {
+  const query = new URL(location.href).searchParams; const run = query.get('run') || 'missing-run';
+  const page = location.pathname.endsWith('/page-b') ? 'B' : 'A'; const status = document.querySelector('#web-status');
+  const input = document.querySelector('#web-input'); const compatInput = document.querySelector('#compat-input'); const scroll = document.querySelector('#scroll'); let clickCount = 0; let enterCount = 0;
+  document.title = `maka chromium task fixture ${page} ${run}`;
+  document.querySelector('#page-heading').textContent = `maka Chromium task fixture · page ${page}`;
+  document.querySelector('#page-state').textContent = `page-${page}-run-${run}`;
+  function report(event, sourceId = null) { fetch('/oracle', {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({run,event,page,sourceId,url:location.href,value:input.value,compatValue:compatInput.value,clickCount,enterCount,scrollTop:scroll.scrollTop,at:Date.now()}), keepalive:true}).catch(() => {}); }
+  if (page === 'B') { status.textContent = 'page-b-loaded'; report('pageB-load'); }
+  window.addEventListener('load', () => report('ready')); input.addEventListener('input', () => report('input'));
+  compatInput.addEventListener('input', () => report('compat-input', compatInput.id));
+  for (const field of [input, compatInput]) field.addEventListener('keydown', event => { if (event.key === 'Enter') { enterCount += 1; status.textContent = 'enter-received-by-page'; report('enter', field.id); event.preventDefault(); setTimeout(() => { location.href = `/page-b?run=${encodeURIComponent(run)}`; }, 25); } });
+  document.querySelector('#task-form').addEventListener('submit', event => { event.preventDefault(); clickCount += 1; status.textContent = 'clicked'; report('click'); });
+  scroll.addEventListener('scroll', () => report('scroll'));
+})();
+</script>

@@ -1,0 +1,216 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one
+  or more contributor license agreements.  See the NOTICE file
+  distributed with this work for additional information
+  regarding copyright ownership.  The ASF licenses this file
+  to you under the Apache License, Version 2.0 (the
+  "License"); you may not use this file except in compliance
+  with the License.  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing,
+  software distributed under the License is distributed on an
+  "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  KIND, either express or implied.  See the License for the
+  specific language governing permissions and limitations
+  under the License.
+-->
+
+# maka-cu-windows feasibility spike
+
+This private experiment supports apache/maka#4318. It is a supervised,
+fixture-only feasibility spike for long-lived C# and direct-COM Rust helpers on
+Windows. It does not enable a Windows product backend or change the public
+protocol. The default action tier has no keyboard, pointer, coordinate,
+`PostMessage`, foreground, or screen-rectangle fallback; the explicitly named
+compatibility tier permits only one-shot authorized Unicode/Enter `SendInput`
+after exact foreground/focus confirmation.
+
+The validation machine uses .NET SDK 10.0.400, and the helper/fixtures target
+`net10.0-windows10.0.22621.0`. Published artifacts are self-contained so they
+do not depend on a shared runtime. Historical net8 results remain in the dated
+test reports; they are not the current published artifact.
+
+## Components
+
+- `src/Program.cs`: line-delimited JSON-RPC 2.0, an MTA UIA lane, bounded
+  request/snapshot registries, strict process-start/window-generation identity,
+  opaque snapshot tokens, typed readback outcomes, and cancellation settlement.
+- `src/ScrollReadback.cs`, `scroll-readback-cases.json`, and
+  `scroll-readback-harness.mjs`: shared directional-scroll verification policy
+  and real delayed-provider regression. Private contract revision 0.1.1 removes
+  the ScrollItem fallback from directional `scroll`; see `PROTOCOL_CONTRACT.md`.
+- `src/WgcCapture.cs`: target-window `CreateForWindow(HWND)` capture and a
+  D3D11 staging-texture PNG encoder. Capture has no rectangle fallback and
+  reports `capture_unavailable` on failure.
+- `fixture/HangWindowFixture`: purpose-built WinForms fixture. `freeze` blocks
+  its UI thread so UIA provider calls can hang; `recreate` replaces its HWND;
+  `cover` tests target capture under occlusion.
+- `fixture/WpfTaskFixture`: deterministic WPF fixture exposing Value,
+  Toggle, SelectionItem, and Scroll patterns, plus a status readback label.
+- `driver.mjs`: safe smoke flow. It accepts only the exact fixture HWND and
+  never scans or mutates user windows.
+- `lifecycle-driver.mjs`: C4–C6, identity, and parent-death reproduction
+  scenarios. It owns and tears down all fixture/helper processes.
+- `parent-probe.mjs`: short lived host used to prove helper parent-death
+  cleanup after an initialized, blocked observe.
+- `protocol-regression.mjs`: malformed-method, unknown-cancel, and EOF plus
+  stdout-backpressure regressions without a GUI.
+- `protocol-contract.json` / `PROTOCOL_CONTRACT.md`: language-independent
+  wire, timeout, safety, cancellation, and lifecycle contract.
+- `comparison-harness.mjs`: one language-blind entry point that runs the same
+  fixture and drivers against two opaque helper artifacts and records raw,
+  structured results.
+- `app-task-harness.mjs`: language-blind WPF task matrix for set text, semantic
+  click, select, toggle, scroll, typed unsupported Enter, explicit compatibility
+  text/Enter, and negative authorization checks.
+- `browser-task-harness.mjs` / `real-app-probe.mjs`: temporary-profile Chrome
+  smoke probe plus read-only Chromium/LibreOffice/WinUI-UWP availability
+  evidence; blocked capabilities remain blocked.
+- `publish.ps1`: reproducible self-contained single-file publish plus manifest
+  and SHA-256 hash.
+
+## Build and fixture run
+
+```powershell
+dotnet build experiments/maka-cu-windows/src/MakaCuWindows.csproj -c Release
+dotnet build experiments/maka-cu-windows/fixture/HangWindowFixture/HangWindowFixture.csproj -c Release
+node experiments/maka-cu-windows/lifecycle-driver.mjs `
+  experiments/maka-cu-windows/src/bin/Release/net10.0-windows10.0.22621.0/maka-cu-windows.exe `
+  experiments/maka-cu-windows/fixture/HangWindowFixture/bin/Release/net10.0-windows10.0.22621.0/maka-cu-windows-fixture.exe
+node experiments/maka-cu-windows/protocol-regression.mjs `
+  experiments/maka-cu-windows/out/publish/maka-cu-windows.exe
+```
+
+The lifecycle run starts only the named fixture and helper. The fixture window
+is visible because UIA and WGC require an interactive desktop. Do not point
+either driver at a user application.
+
+## Published artifact
+
+```powershell
+powershell -ExecutionPolicy Bypass -File experiments/maka-cu-windows/publish.ps1
+node experiments/maka-cu-windows/lifecycle-driver.mjs `
+  experiments/maka-cu-windows/out/publish/maka-cu-windows.exe `
+  experiments/maka-cu-windows/out/fixture/maka-cu-windows-fixture.exe
+```
+
+The intended layout is self-contained `win-x64`, single-file, trimming
+disabled, unsigned, and `distributionReady: false`. The manifest records the
+actual SDK, target framework, publish settings, sizes, and hashes. The
+published run is the relevant packaging evidence; `dotnet run` is not.
+
+## C# / Rust comparison run
+
+After publishing the C# helper/fixture and building the Rust release helper:
+
+```powershell
+$rust = 'experiments/maka-cu-windows-rust/target/release/maka-cu-windows-rust.exe'
+$cs = 'experiments/maka-cu-windows/out/publish/maka-cu-windows.exe'
+$fixture = 'experiments/maka-cu-windows/out/fixture/maka-cu-windows-fixture.exe'
+node experiments/maka-cu-windows/comparison-harness.mjs `
+  $cs $rust $fixture `
+  --out experiments/maka-cu-windows/comparison-results.json
+```
+
+The result is shaped as `subjects[].artifact` plus nested
+`subjects[].runs[]`. Each artifact and the fixture include path, size, SHA-256,
+and last-write time. Each run includes the exact command/arguments, raw
+stdout/stderr, duration, exit code/signal, and parsed checks. The top level
+records host Windows build/architecture, Node version, contract/harness SHA-256,
+and start/finish timestamps. Subject, driver, and per-check summaries each
+report pass/fail/blocked counts. Missing expected checks, missing summary
+sentinels, any emitted `FAIL`, non-zero exit, timeout, or empty output fails
+closed; blocked environment evidence is never counted as pass.
+
+## Current local evidence (Windows 11 Pro 10.0.26200, x64)
+
+| Check | Result | Evidence or limit |
+| --- | --- | --- |
+| 1. handshake | pass | Protocol `maka.cu.windows/0`; 10 s handshake / 20 s request / 2 s cancel grace declared. |
+| 2. MTA UIA observation | pass on fixture | Dedicated MTA lane, bounded shallow tree, exact PID/HWND/start time/generation. |
+| 3. semantic action | pass on fixture | `ValuePattern.SetValue`, pre-dispatch snapshot spend, strict revalidation, readback; duplicate tokens refuse. |
+| 4. WGC target capture | pass on fixture | `CreateForWindow(HWND)` plus D3D11 staging readback produced real PNG bytes (464x352, 9,195 bytes); decoded LimeGreen sentinel remained present under an occluding fixture cover and after uncover. No rectangle fallback. |
+| 5. cancellation settlement | pass on fixture | In-flight post-dispatch cancellation settles the original request with `verified`; queued cancellation settles `refused/cancelled_before_dispatch` and readback proves no mutation. |
+| 6. hung-provider recovery | pass on fixture/helper | Frozen fixture remains alive; supervisor kills helper after 2 s, confirms exit, restarts with a new generation, and old snapshots are unknown. |
+| identity cases | pass on fixture | Whole-window recreation returns a new HWND and rejects the old snapshot; same-window control replacement was not exercised. New explicit selection is required. |
+| parent death | pass on fixture/helper | Dedicated parent probe completed initialize and a blocked observe, exited host code 77, and the helper disappeared without the lifecycle driver killing that helper PID. EOF and fail-closed stdout backpressure also exited within the deadline. A production integration should still add independent OS-level supervision. |
+
+The latest completed two-subject comparison artifact uses the correct
+HangWindow fixture: both subjects pass lifecycle `34/34` and protocol
+regression `3/3` (74/74 checks). The dated
+`CROSS-MACHINE-TEST-REPORT-2026-09-02.md` records the complete matrix,
+artifact hashes, and performance samples.
+`summary.subjects`, `summary.drivers`, and `summary.checks` are the
+authoritative aggregate fields.
+
+These are development-machine results that include self-contained published
+artifacts and clean temporary application state, not signed supported-release
+certification. The package is suitable as clean-machine runtime/package
+evidence for this experiment; it remains `distributionReady=false`.
+
+## Real-application matrix status
+
+The WPF fixture task artifact is `app-task-results-cross-machine.json`; the result
+separates `executionState` from `contractConformance`. Only verified actions
+count in execution success; typed Enter remains intentionally blocked and
+compatibility Enter remains `unknown` when there is no safe readback. The
+latest run has `6/8` execution pass and `8/8` contract pass for each helper;
+semantic set-text/click/select/toggle/scroll pass, and compatibility text is
+verified after clearing the fixture value first. No existing user document was
+opened or modified.
+
+The Chromium evidence is split by contract:
+`browser-results-navigation-cross-machine-latest.json` records 12/18 helper
+execution passes and 6 intentional Enter `unknown` outcomes, while the
+independent page oracle confirms all 18/18 navigations;
+`browser-results-semantic-cross-machine-latest.json` has 18/18 semantic
+set-value/scroll/click execution and contract passes. Enter is dispatched once
+and independently proven by the page oracle, but the helper side remains
+`unknown` (`readback_unavailable`), so it is not upgraded to `verified`.
+LibreOffice was found at `D:\soft\program\soffice.exe`; isolated temporary
+document observation/capture passed, while semantic document write remains
+not tested because no safe `ValuePattern` was exposed. Calculator and Notepad
+observation/action smoke passed, and Paint/Electron observation smoke passed.
+
+### 2026-09-02 browser/security follow-up
+
+The browser harness uses a loopback HTTP fixture, per-run marker, spawned Chrome
+PID/HWND identity evidence, independent page oracle, and records both default
+and `--force-renderer-accessibility` configurations. Earlier default-mode runs
+that exposed only browser-shell nodes remain historical blocked evidence; the
+complete-mode and semantic-mode artifacts above are the current controlled
+results. They do not claim signed production completion. `distributionReady=false`.
+
+The compatibility-input safety follow-up adds OS-random Rust authorization
+tokens, bounded/expired grant cleanup, final foreground/focus/identity checks,
+post-dispatch identity uncertainty, and preserves the unavoidable OS focus
+race limitation. The earlier WPF artifact remains historical and was not
+retested in this follow-up.
+
+## D1–D6 decision record
+
+- **D1 UIA binding:** retain managed `System.Windows.Automation` for the spike;
+  the dedicated MTA lane and targeted `FindFirst` avoid unbounded Chromium
+  subtree enumeration. A blocked provider still needs helper restart.
+- **D2 frame transport:** use bounded base64 PNG in the private RPC envelope
+  for the spike. The complete UTF-8 response is capped at 6 MiB; capture
+  dimensions/pixels and PNG bytes are bounded before/after allocations.
+- **D3 publishing/runtime:** the published baseline now targets .NET 10 with
+  self-contained single-file `win-x64` settings. Native extraction and signed
+  production distribution remain unverified.
+- **D4 supervision:** keep cancellation control out of the UIA lane; settle
+  known outcomes, spend queued mutation snapshots, and force-restart a helper
+  after the 2 s grace. The spike's bounded writer fails closed under blocked
+  stdout; a Windows Job Object or independent parent watchdog remains a
+  production hardening item.
+- **D5 code home:** keep the prototype under `experiments/maka-cu-windows/`
+  until all six checks and clean-machine evidence pass.
+- **D6 Go boundary:** no Go forwarding helper is justified by current local
+  evidence; revisit only with measured packaging or integration constraints.
+
+Recommendation: **no-go for production child issue yet**. The local fixture,
+published artifact, and isolated application checks pass, but clean-machine and
+supported-release interactive evidence, signing, and a production OS-level
+parent ownership mechanism remain open.

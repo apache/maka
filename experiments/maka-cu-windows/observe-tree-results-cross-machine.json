@@ -1,0 +1,898 @@
+{
+  "schema": "maka.cu.windows/observe-tree-results/1",
+  "startedAt": "2026-09-02T11:53:57.465Z",
+  "finishedAt": "2026-09-02T11:54:01.085Z",
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.16.0"
+  },
+  "subjects": [
+    {
+      "label": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\out\\publish\\maka-cu-windows.exe",
+      "app": {
+        "kind": "WPF",
+        "title": "maka-cu-windows-deep-tree-fixture"
+      },
+      "artifact": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\out\\publish\\maka-cu-windows.exe",
+        "exists": true,
+        "sizeBytes": 188335106,
+        "sha256": "00E43DEC4FF0CDEB2DF201F54B8683B7D957A5BB4C706FDE66EF521F713BF955",
+        "lastWrite": "2026-09-02T11:44:17.087Z"
+      },
+      "fixture": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\DeepTreeFixture\\bin\\Release\\net8.0-windows10.0.22621.0\\DeepTreeFixture.exe",
+        "exists": true,
+        "sizeBytes": 151552,
+        "sha256": "A069727A2AD06F291559247F0524142D5F454D0867DA4960DC19B87BE016CF2E",
+        "lastWrite": "2026-09-02T11:53:48.064Z"
+      },
+      "executionState": "pass",
+      "checks": [
+        {
+          "name": "multiple_same_type_edits",
+          "state": "pass",
+          "durationMs": 631,
+          "found": [
+            {
+              "name": "Sibling edit 01",
+              "count": 2,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling edit 02",
+              "count": 2,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling edit 03",
+              "count": 2,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling edit 04",
+              "count": 2,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling edit 05",
+              "count": 2,
+              "actionable": 1
+            }
+          ],
+          "truncated": false,
+          "truncatedReasons": [],
+          "nodeCount": 57,
+          "elapsedMs": 457,
+          "passes": {
+            "actionableAdded": 16,
+            "renderAdded": 40
+          }
+        },
+        {
+          "name": "multiple_same_type_buttons",
+          "state": "pass",
+          "durationMs": 314,
+          "found": [
+            {
+              "name": "Sibling button 01",
+              "count": 3,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling button 02",
+              "count": 3,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling button 03",
+              "count": 3,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling button 04",
+              "count": 3,
+              "actionable": 1
+            },
+            {
+              "name": "Sibling button 05",
+              "count": 3,
+              "actionable": 1
+            }
+          ]
+        },
+        {
+          "name": "deep_nested_input_beyond_render_depth",
+          "state": "not_tested",
+          "durationMs": 477,
+          "reason": "fixture_target_not_beyond_render_depth",
+          "deepCount": 2,
+          "midCount": 2,
+          "depthEvidence": {
+            "maxRawDepthVisited": 3,
+            "deep": [
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  14867369
+                ],
+                "rawDepth": null,
+                "observationSource": "live-patterns"
+              },
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  14867369
+                ],
+                "rawDepth": 1,
+                "observationSource": "cached-properties"
+              }
+            ],
+            "mid": [
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  64854219
+                ],
+                "rawDepth": null,
+                "observationSource": "live-patterns"
+              },
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  64854219
+                ],
+                "rawDepth": 1,
+                "observationSource": "cached-properties"
+              }
+            ]
+          },
+          "truncated": false,
+          "truncatedReasons": [],
+          "nodeCount": 57,
+          "elapsedMs": 473
+        },
+        {
+          "name": "budget_truncation_shared_node_limit",
+          "state": "pass",
+          "durationMs": 38,
+          "truncated": true,
+          "truncatedReasons": [
+            "max_nodes"
+          ],
+          "nodeCount": 5,
+          "elapsedMs": 34,
+          "limits": {
+            "maxTreeNodes": 8,
+            "maxTreeMillis": 5000,
+            "maxRenderDepth": 12,
+            "maxActionableDepth": 32
+          },
+          "passes": {
+            "actionableAdded": 4,
+            "renderAdded": 0
+          },
+          "siblingEditCounts": [
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "deepCount": 0,
+          "note": "Actionable runs first; a tiny shared node budget can still omit deep controls. Inter-node budget checks cannot interrupt a stuck COM call."
+        },
+        {
+          "name": "actionable_depth_boundary",
+          "state": "pass",
+          "durationMs": 297,
+          "truncated": true,
+          "truncatedReasons": [
+            "actionable_depth",
+            "render_depth"
+          ],
+          "limits": {
+            "maxTreeNodes": 2000,
+            "maxTreeMillis": 5000,
+            "maxRenderDepth": 1,
+            "maxActionableDepth": 2
+          },
+          "maxRawDepthVisited": 2,
+          "depthEvidence": [
+            {
+              "name": "",
+              "automationId": "",
+              "observationSource": "target-metadata"
+            },
+            {
+              "name": "最小化",
+              "automationId": "Minimize",
+              "runtimeId": [
+                4,
+                462160,
+                0,
+                2
+              ],
+              "rawDepth": 2,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "最大化",
+              "automationId": "Maximize",
+              "runtimeId": [
+                4,
+                462160,
+                0,
+                3
+              ],
+              "rawDepth": 2,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "关闭",
+              "automationId": "Close",
+              "runtimeId": [
+                4,
+                462160,
+                0,
+                5
+              ],
+              "rawDepth": 2,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling edit 01",
+              "automationId": "sibling-edit-01",
+              "runtimeId": [
+                7,
+                9988,
+                50184984
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling button 01",
+              "automationId": "sibling-button-01",
+              "runtimeId": [
+                7,
+                9988,
+                27598891
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling edit 02",
+              "automationId": "sibling-edit-02",
+              "runtimeId": [
+                7,
+                9988,
+                20917673
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling button 02",
+              "automationId": "sibling-button-02",
+              "runtimeId": [
+                7,
+                9988,
+                3226198
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling edit 03",
+              "automationId": "sibling-edit-03",
+              "runtimeId": [
+                7,
+                9988,
+                59995477
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling button 03",
+              "automationId": "sibling-button-03",
+              "runtimeId": [
+                7,
+                9988,
+                36842478
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling edit 04",
+              "automationId": "sibling-edit-04",
+              "runtimeId": [
+                7,
+                9988,
+                31450711
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling button 04",
+              "automationId": "sibling-button-04",
+              "runtimeId": [
+                7,
+                9988,
+                55467050
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling edit 05",
+              "automationId": "sibling-edit-05",
+              "runtimeId": [
+                7,
+                9988,
+                63646052
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Sibling button 05",
+              "automationId": "sibling-button-05",
+              "runtimeId": [
+                7,
+                9988,
+                30400195
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Mid nested input",
+              "automationId": "mid-nested-input",
+              "runtimeId": [
+                7,
+                9988,
+                64854219
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "Deep nested input",
+              "automationId": "deep-nested-input",
+              "runtimeId": [
+                7,
+                9988,
+                14867369
+              ],
+              "rawDepth": 1,
+              "observationSource": "live-patterns"
+            },
+            {
+              "name": "maka-cu-windows-deep-tree-fixture",
+              "automationId": "TitleBar",
+              "runtimeId": [
+                4,
+                462160,
+                0
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "maka deep-tree fixture",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                50315352
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling edit 01",
+              "automationId": "sibling-edit-01",
+              "runtimeId": [
+                7,
+                9988,
+                50184984
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling button 01",
+              "automationId": "sibling-button-01",
+              "runtimeId": [
+                7,
+                9988,
+                27598891
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling edit 02",
+              "automationId": "sibling-edit-02",
+              "runtimeId": [
+                7,
+                9988,
+                20917673
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling button 02",
+              "automationId": "sibling-button-02",
+              "runtimeId": [
+                7,
+                9988,
+                3226198
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling edit 03",
+              "automationId": "sibling-edit-03",
+              "runtimeId": [
+                7,
+                9988,
+                59995477
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling button 03",
+              "automationId": "sibling-button-03",
+              "runtimeId": [
+                7,
+                9988,
+                36842478
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling edit 04",
+              "automationId": "sibling-edit-04",
+              "runtimeId": [
+                7,
+                9988,
+                31450711
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling button 04",
+              "automationId": "sibling-button-04",
+              "runtimeId": [
+                7,
+                9988,
+                55467050
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling edit 05",
+              "automationId": "sibling-edit-05",
+              "runtimeId": [
+                7,
+                9988,
+                63646052
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Sibling button 05",
+              "automationId": "sibling-button-05",
+              "runtimeId": [
+                7,
+                9988,
+                30400195
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-01",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                46496694
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-02",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                15817070
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-03",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                8135907
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-04",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                6114302
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-05",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                55028720
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-06",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                25496434
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-07",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                28141317
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-08",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                51945267
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Mid nested input",
+              "automationId": "mid-nested-input",
+              "runtimeId": [
+                7,
+                9988,
+                64854219
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-09",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                38336904
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-10",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                9487824
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-11",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                18281552
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-12",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                30316242
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-13",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                4410728
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-14",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                39696553
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-15",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                21724664
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "nest-16",
+              "automationId": "",
+              "runtimeId": [
+                7,
+                9988,
+                61304253
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            },
+            {
+              "name": "Deep nested input",
+              "automationId": "deep-nested-input",
+              "runtimeId": [
+                7,
+                9988,
+                14867369
+              ],
+              "rawDepth": 1,
+              "observationSource": "cached-properties"
+            }
+          ],
+          "deepCount": 2,
+          "midCount": 2,
+          "siblingEditCounts": [
+            2,
+            2,
+            2,
+            2,
+            2
+          ]
+        }
+      ],
+      "durationMs": 2006
+    },
+    {
+      "label": "D:\\project\\maka-agent\\experiments\\maka-cu-windows-rust\\target\\release\\maka-cu-windows-rust.exe",
+      "app": {
+        "kind": "WPF",
+        "title": "maka-cu-windows-deep-tree-fixture"
+      },
+      "artifact": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows-rust\\target\\release\\maka-cu-windows-rust.exe",
+        "exists": true,
+        "sizeBytes": 533504,
+        "sha256": "E297321C6D74F8B34FC66261B21E06FDDE894A7E28CF5DA115C06B10D3190ADD",
+        "lastWrite": "2026-09-02T10:10:39.979Z"
+      },
+      "fixture": {
+        "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\DeepTreeFixture\\bin\\Release\\net8.0-windows10.0.22621.0\\DeepTreeFixture.exe",
+        "exists": true,
+        "sizeBytes": 151552,
+        "sha256": "A069727A2AD06F291559247F0524142D5F454D0867DA4960DC19B87BE016CF2E",
+        "lastWrite": "2026-09-02T11:53:48.064Z"
+      },
+      "executionState": "pass",
+      "checks": [
+        {
+          "name": "multiple_same_type_edits",
+          "state": "pass",
+          "durationMs": 141,
+          "found": [
+            {
+              "name": "Sibling edit 01",
+              "count": 2,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling edit 02",
+              "count": 2,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling edit 03",
+              "count": 2,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling edit 04",
+              "count": 2,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling edit 05",
+              "count": 2,
+              "actionable": 2
+            }
+          ],
+          "truncated": false,
+          "truncatedReasons": [],
+          "nodeCount": 40,
+          "elapsedMs": 126,
+          "passes": null
+        },
+        {
+          "name": "multiple_same_type_buttons",
+          "state": "pass",
+          "durationMs": 326,
+          "found": [
+            {
+              "name": "Sibling button 01",
+              "count": 4,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling button 02",
+              "count": 4,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling button 03",
+              "count": 4,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling button 04",
+              "count": 4,
+              "actionable": 2
+            },
+            {
+              "name": "Sibling button 05",
+              "count": 4,
+              "actionable": 2
+            }
+          ]
+        },
+        {
+          "name": "deep_nested_input_beyond_render_depth",
+          "state": "not_tested",
+          "durationMs": 123,
+          "reason": "raw_depth_evidence_unavailable",
+          "deepCount": 2,
+          "midCount": 2,
+          "depthEvidence": {
+            "maxRawDepthVisited": null,
+            "deep": [
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  14867369
+                ]
+              },
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  14867369
+                ]
+              }
+            ],
+            "mid": [
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  64854219
+                ]
+              },
+              {
+                "runtimeId": [
+                  7,
+                  9988,
+                  64854219
+                ]
+              }
+            ]
+          },
+          "truncated": false,
+          "truncatedReasons": [],
+          "nodeCount": 40,
+          "elapsedMs": 105
+        },
+        {
+          "name": "budget_truncation_shared_node_limit",
+          "state": "not_tested",
+          "durationMs": 109,
+          "reason": "helper_ignores_debug_limits",
+          "truncated": false,
+          "nodeCount": 40,
+          "elapsedMs": 99,
+          "rawDescendantCount": 40
+        },
+        {
+          "name": "actionable_depth_boundary",
+          "state": "not_tested",
+          "durationMs": 110,
+          "reason": "helper_ignores_debug_limits",
+          "truncated": false,
+          "truncatedReasons": []
+        }
+      ],
+      "durationMs": 839
+    }
+  ],
+  "summary": {
+    "subjects": {
+      "pass": 2,
+      "fail": 0,
+      "total": 2
+    },
+    "checks": {
+      "pass": 6,
+      "fail": 0,
+      "not_tested": 4,
+      "total": 10
+    }
+  },
+  "distributionReady": false
+}
