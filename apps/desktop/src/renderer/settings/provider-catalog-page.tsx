@@ -34,13 +34,17 @@ import {
   type ProviderCatalogGroup,
   type ProviderType,
 } from '@maka/core/provider-registry';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
-import { type ConnectionsBridge } from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+import {
+  getProviderSettingsCopy,
+  type ApiKeyOnboardingBridge,
+  type ConnectionsBridge,
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
 
 type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
 
@@ -66,6 +70,12 @@ export interface CatalogFilter {
 
 export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all' };
 
+export interface CreatedOAuthConnectionIdentity {
+  connectionId: string;
+  slug: string;
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
+}
+
 /**
  * One provider being set up. `credentials` is a form, `account` is a browser
  * login — two bodies of one level, not two levels: they are reached the same
@@ -87,6 +97,7 @@ export type SetupTarget =
  */
 export function ProviderCatalogPage(props: {
   filter: CatalogFilter;
+  connections: readonly LlmConnection[];
   onFilterChange(filter: CatalogFilter): void;
   onPick(target: SetupTarget): void;
 }) {
@@ -96,7 +107,10 @@ export function ProviderCatalogPage(props: {
   const catalogCopy = providerCopy.catalog;
   const { query, category } = props.filter;
   const showsOAuth = category === 'all' || category === 'recommended' || category === 'accounts';
-  const oauth = useOAuthCards({ query: showsOAuth ? query : undefined });
+  const oauth = useOAuthCards({
+    query: showsOAuth ? query : undefined,
+    connections: props.connections,
+  });
 
   // Category is a Selector, not a second TabList: the page header already owns
   // one level of navigation, and six tabs beside a search field made the
@@ -161,7 +175,12 @@ export function ProviderCatalogPage(props: {
               data-status="ready"
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
-              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(card.name, card.status, card.description)}>{card.name}</span>}
+              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
+                'add',
+                card.name,
+                card.status,
+                card.description,
+              )}>{card.name}</span>}
               description={card.description}
               endContent={(
                 <HStack gap={2} vAlign="center">
@@ -205,34 +224,46 @@ export function ProviderCatalogPage(props: {
 }
 
 /**
- * Level 3: one provider being set up — its credential form, or its account
- * login. Named `setup` rather than `create` because the account body also
- * signs out and re-authorizes; it is not a one-way create.
+ * Level 3: one provider being set up — its credential form, or a new account
+ * enrollment. Existing-account actions live on that Connection's detail page.
  */
 export function ProviderSetupPage(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   target: SetupTarget;
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
-  onAccountChanged(): Promise<void>;
+  onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
+  onOnboardingOutcomeUnknown?(): Promise<void>;
+  hasSaveUncertainty?: boolean;
+  onAccountCreated(connection?: CreatedOAuthConnectionIdentity): Promise<void>;
+  labelledBy?: string;
 }) {
   if (props.target.method === 'account') {
     return (
-      <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountChanged} />
+      <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
+        <OAuthLoginPanel
+          bridge={props.bridge}
+          cardId={props.target.cardId}
+          onLoginSuccess={props.onAccountCreated}
+        />
       </div>
     );
   }
   return (
-    <div tabIndex={-1} className="settingsRouteLevel" data-maka-contract="provider-setup">
+    <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
       <AddProviderForm
         key={props.target.providerType}
         bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
         providerType={props.target.providerType}
         existingSlugs={props.existingSlugs}
         onCancel={props.onCancel}
         onCreated={props.onCreated}
+        onOnboarded={props.onOnboarded}
+        onOnboardingOutcomeUnknown={props.onOnboardingOutcomeUnknown}
+        hasSaveUncertainty={props.hasSaveUncertainty}
       />
     </div>
   );
@@ -246,17 +277,17 @@ function providersForCategory(category: CatalogCategory, query: string, locale: 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
-    if (PROVIDER_DEFAULTS[type].status !== 'ready') return false;
+    if (PROVIDER_REGISTRY[type].status !== 'ready') return false;
     if (
       category !== 'all' &&
       category !== 'recommended' &&
-      PROVIDER_DEFAULTS[type].catalogGroup !== category
+      PROVIDER_REGISTRY[type].catalogGroup !== category
     ) {
       return false;
     }
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
-    return [type, display.name, display.description, PROVIDER_DEFAULTS[type].label]
+    return [type, display.name, display.description, PROVIDER_REGISTRY[type].label]
       .some((value) => value.toLocaleLowerCase().includes(normalizedQuery));
   });
 }

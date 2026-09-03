@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
@@ -424,21 +425,4 @@ function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
     server.close((error) => (error ? reject(error) : resolve()));
   });
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  return {
-    promise: new Promise<T>((nextResolve, nextReject) => {
-      resolve = nextResolve;
-      reject = nextReject;
-    }),
-    resolve,
-    reject,
-  };
 }

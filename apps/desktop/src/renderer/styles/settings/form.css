@@ -106,7 +106,7 @@
    explanatory wash). */
 .settingsQuietStatus {
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
 }
 
@@ -122,6 +122,6 @@
 
 .settingsQuietCallout p {
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-body);
 }

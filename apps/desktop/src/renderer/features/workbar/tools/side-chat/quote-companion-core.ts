@@ -26,11 +26,16 @@ import {
   type LiveTurnProjection,
 } from '@maka/ui';
 import type { PermissionMode } from '@maka/core/permission';
+import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { QuoteRef, SessionEvent } from '@maka/core/events';
-import type { SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type {
   SideChatSessionPort,
+  SideChatSendResult,
   WorkbarIngestInput,
 } from '../../ports.js';
 import {
@@ -50,8 +55,25 @@ import { sessionEventErrorMessage } from '../../../../model-connection-errors.js
  *  `{ok:false}`. */
 export type CompanionErrorCode =
   | 'fork_setup_failed'
+  | 'fork_source_busy'
+  | 'fork_unsupported'
   | 'send_failed'
   | 'send_rejected';
+
+export function sessionHasExactModelChoice(
+  session: SessionSummary | undefined,
+  choices: readonly ChatModelChoice[],
+): boolean {
+  return Boolean(
+    session?.llmConnectionId &&
+    choices.some(
+      (choice) =>
+        choice.connectionId === session.llmConnectionId &&
+        choice.connectionSlug === session.llmConnectionSlug &&
+        choice.model === session.model,
+    ),
+  );
+}
 
 export type EnsureCompanionForkResult =
   | { status: 'ready'; session: SessionSummary }
@@ -89,9 +111,24 @@ export interface EnsureCompanionForkDeps {
 /** The latest successfully completed turn of the source session.
  *  Failed and aborted turns are not reference context: branching through one
  *  makes a fresh side prompt look like a continuation of unfinished parent
- *  work. If no completed turn exists, the side conversation starts empty. */
+ *  work. Callers decide whether a missing completed turn is temporary (the
+ *  first turn is still running) or a hard setup failure. */
 export function latestSettledTurnId(turns: readonly TurnRecord[]): string | undefined {
   return [...turns].reverse().find((turn) => turn.status === 'completed')?.turnId;
+}
+
+/**
+ * Sentinel boundary stored in the retry lease for an empty copy. Turn ids match
+ * /^[A-Za-z0-9_-]{1,128}$/, so the NUL-prefixed token can never be one. It lets
+ * the shared `SessionCopyAttempt.sourceTurnId` stay a required string (revision
+ * copies still need it) while still representing the absent (empty) source turn
+ * for a side conversation.
+ */
+const EMPTY_SOURCE_TURN_SENTINEL = '\0empty';
+
+/** Decode a persisted retry-lease boundary into an optional source turn id. */
+function sourceTurnIdFromBoundary(boundary: string): string | undefined {
+  return boundary === EMPTY_SOURCE_TURN_SENTINEL ? undefined : boundary;
 }
 
 function companionCopyAttemptKey(
@@ -165,19 +202,22 @@ export async function dismissCompanionCopy(
 }
 
 /**
- * The shared Composer's `streaming` input means "a turn is interruptible", not
- * merely "a text delta has arrived". Keep the companion interruptible from the
- * optimistic waiting projection through live output; `processing` only chooses
- * the quieter pre-first-token presentation inside that same in-flight window.
+ * The shared Composer's `streaming` input means Host work is interruptible, not
+ * merely that a text delta has arrived. A pending admission remains stoppable
+ * before it owns a Turn; an admitted Turn remains stoppable through live output.
  */
 export function deriveCompanionComposerState(
-  turnInFlight: boolean,
+  hasPendingAdmission: boolean,
+  activeTurnId: string | null,
   liveTurn: LiveTurnProjection | undefined,
 ): { streaming: boolean; processing: boolean } {
-  const streaming = turnInFlight && liveTurn?.terminal !== true;
+  const activeTurnStreaming = activeTurnId !== null && liveTurn?.terminal !== true;
+  const streaming = hasPendingAdmission || activeTurnStreaming;
   return {
     streaming,
-    processing: streaming && (!liveTurn || liveTurn.phase === 'waiting'),
+    processing:
+      streaming &&
+      (!activeTurnStreaming || !liveTurn || liveTurn.phase === 'waiting'),
   };
 }
 
@@ -212,8 +252,11 @@ export async function ensureCompanionFork(
 ): Promise<EnsureCompanionForkResult> {
   const { api, sourceSession, name, isDisposed } = deps;
 
-  // Branch at the latest SETTLED turn (durable), not the last message that
-  // happens to carry a turnId — so a fork never starts from a mid-flight turn.
+  // Prefer the latest SETTLED turn (durable) as the branch boundary — a fork
+  // never starts from a mid-flight turn. When the source has no completed turn
+  // yet (most visibly the main session's very first turn is still running), the
+  // side conversation forks with an EMPTY context instead of failing: it
+  // inherits the source model / cwd / permission but copies no messages.
   let turns: TurnRecord[];
   try {
     turns = await api.listTurns(sourceSession.id);
@@ -221,14 +264,19 @@ export async function ensureCompanionFork(
     return { status: 'error', code: 'fork_setup_failed' };
   }
   if (isDisposed()) return { status: 'disposed' };
+  // The boundary is derived once, persisted in the retry lease, and REPLAYED on
+  // every retry of the same copyId — never recomputed from the live turns.
+  // Otherwise an ambiguous first send of an empty copy could retry through a
+  // settled turn once the source's first turn settled, and the Host fingerprint
+  // (which includes the source turn) would reject the same copyId.
   const boundaryTurnId = latestSettledTurnId(turns);
-  if (!boundaryTurnId) return { status: 'error', code: 'fork_setup_failed' };
+  const attemptBoundary = boundaryTurnId ?? EMPTY_SOURCE_TURN_SENTINEL;
 
   let created: SessionSummary;
   try {
     let copyAttempt = acquireSessionCopyAttempt(
       companionCopyAttemptKey(sourceSession.id, deps.panelId),
-      boundaryTurnId,
+      attemptBoundary,
     );
     if (copyAttempt.phase === 'abandoning') {
       if (!(await abandonPendingCompanionCopy(api, sourceSession.id, deps.panelId))) {
@@ -236,7 +284,7 @@ export async function ensureCompanionFork(
       }
       copyAttempt = acquireSessionCopyAttempt(
         companionCopyAttemptKey(sourceSession.id, deps.panelId),
-        boundaryTurnId,
+        attemptBoundary,
       );
     }
     if (
@@ -247,12 +295,20 @@ export async function ensureCompanionFork(
     ) {
       return { status: 'error', code: 'fork_setup_failed' };
     }
-    created = await api.branchFromTurn(sourceSession.id, {
-      sourceTurnId: copyAttempt.sourceTurnId,
+    const result = await api.branchFromTurn(sourceSession.id, {
+      sourceTurnId: sourceTurnIdFromBoundary(copyAttempt.sourceTurnId),
       name,
       copyId: copyAttempt.copyId,
       sideConversation: true,
     });
+    if (!result.ok) {
+      copyAttempt.complete();
+      return {
+        status: 'error',
+        code: result.reason === 'session_busy' ? 'fork_source_busy' : 'fork_unsupported',
+      };
+    }
+    created = result.session;
   } catch {
     return { status: 'error', code: 'fork_setup_failed' };
   }
@@ -273,7 +329,9 @@ export async function ensureCompanionFork(
 }
 
 export type CompanionTurnResult =
-  | { status: 'sent'; forkId: string }
+  | { status: 'sent'; forkId: string; turnId: string; steered?: false }
+  | { status: 'sent'; forkId: string; turnId: string; steered: true; messageId: string }
+  | { status: 'pending'; forkId: string; messageId: string }
   | { status: 'disposed' }
   | { status: 'error'; code: CompanionErrorCode };
 
@@ -288,16 +346,12 @@ export interface PerformCompanionTurnDeps extends EnsureCompanionForkDeps {
   onForkCommitted: (session: SessionSummary) => void;
   /** Fired right before the send — the caller arms the optimistic live turn here. */
   onBeforeSend: (forkId: string) => void;
-  /** Fired ONLY after `send` is accepted, so a failed send keeps the staged
-   *  quotes (and draft) in place for a retry. */
-  onQuotesConsumed: () => void;
 }
 
 /**
  * Ensure a fork exists (fail-closed, dispose-aware) then send the turn. The
- * staged quotes are consumed only after `send` resolves, and the result tells
- * the caller whether the send was accepted (so a failure can leave the draft +
- * chips for retry).
+ * result tells the caller whether the send was accepted so admission-owned
+ * resources can follow the exact Host outcome.
  */
 export async function performCompanionTurn(
   deps: PerformCompanionTurnDeps,
@@ -325,7 +379,7 @@ export async function performCompanionTurn(
     if (createdForkId) scheduleCompanionCleanup(deps, createdForkId);
     return { status: 'disposed' };
   }
-  let result: { ok: true } | { ok: false; reason?: string };
+  let result: SideChatSendResult;
   try {
     result = await deps.api.send(forkId, {
       type: 'send',
@@ -343,10 +397,14 @@ export async function performCompanionTurn(
   // run was started, so surface the error and keep the quotes for retry rather
   // than reporting success and hanging in the processing state.
   if (!result.ok) {
+    if (result.reason === 'outcome_unknown' && result.messageId) {
+      return { status: 'pending', forkId, messageId: result.messageId };
+    }
     return { status: 'error', code: 'send_rejected' };
   }
-  deps.onQuotesConsumed();
-  return { status: 'sent', forkId };
+  return result.steered
+    ? { status: 'sent', forkId, turnId: result.turnId, steered: true, messageId: result.messageId }
+    : { status: 'sent', forkId, turnId: result.turnId };
 }
 
 export function isCompanionTurnTerminal(event: SessionEvent): boolean {
@@ -406,9 +464,11 @@ export function applyCompanionInteractionEvent(
 ): InteractionQueues {
   switch (event.type) {
     case 'sandbox_boundary_request':
+    case 'client_capability_request':
     case 'user_question_request':
       return enqueueInteraction(queues, sessionId, event);
     case 'sandbox_boundary_decision_ack':
+    case 'client_capability_decision_ack':
       return dequeueInteractionByRequestId(queues, sessionId, event.requestId);
     case 'tool_result':
       return dequeueInteractionByToolUseId(queues, sessionId, event.toolUseId);

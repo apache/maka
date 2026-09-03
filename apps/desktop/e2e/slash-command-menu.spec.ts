@@ -135,6 +135,79 @@ test('offers commands only for the first token and keeps explicit Skill queries 
   await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
 
+test('does not open the slash menu for path separators', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+
+  for (const prefix of ['帮我整理到/Users', 'path/to/file']) {
+    await composer.fill(prefix);
+    await composer.evaluate((editable) => {
+      // Chromium can put the next typed character in a new text node. Recreate
+      // that observed input shape without letting Playwright normalize the DOM.
+      const node = editable.appendChild(document.createTextNode('/'));
+      const range = document.createRange();
+      range.setStart(node, 1);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      editable.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        data: '/',
+        inputType: 'insertText',
+      }));
+    });
+
+    await expect(menu).toHaveCount(0);
+    await expect.poll(() => composer.textContent()).toBe(`${prefix}/`);
+    await expect
+      .poll(() =>
+        composer.evaluate((editable) => {
+          const selection = window.getSelection();
+          if (!selection?.focusNode || !editable.contains(selection.focusNode)) return -1;
+          const range = document.createRange();
+          range.selectNodeContents(editable);
+          range.setEnd(selection.focusNode, selection.focusOffset);
+          return range.toString().length;
+        }),
+      )
+      .toBe(`${prefix}/`.length);
+  }
+});
+
+test('opens the slash menu after a DOM block break', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+
+  await composer.fill('first line');
+  await composer.evaluate((editable) => {
+    const block = document.createElement('div');
+    const slash = block.appendChild(document.createTextNode('/'));
+    editable.appendChild(block);
+
+    const range = document.createRange();
+    range.setStart(slash, 1);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editable.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: '/',
+      inputType: 'insertText',
+    }));
+  });
+
+  await expect.poll(() => composer.evaluate((editable) => editable.innerText)).toBe(
+    'first line\n/',
+  );
+  await expect(menu).toBeVisible();
+});
+
 test('dispatches /side instead of steering it into a running turn', async ({
   invocableSkillsWindow: page,
 }) => {
@@ -161,4 +234,118 @@ test('dispatches /side instead of steering it into a running turn', async ({
 
   await expect(page.locator('.maka-quote-workbar-panel')).toHaveCount(1);
   await page.getByRole('button', { name: '停止' }).click();
+});
+
+test('an open menu keeps its container and skills group across projection refreshes', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('seed session');
+  await composer.press('Enter');
+  await expect(page.getByText('Fake backend received: seed session')).toBeVisible();
+  await expect(page.getByRole('button', { name: '停止' })).toHaveCount(0);
+
+  // The completed turn publishes its own projection refresh. Wait on the
+  // composer's public loading state so that work cannot spill into the window
+  // this test is about.
+  await page.getByRole('button', { name: '添加上下文' }).click();
+  const contextMenu = page.getByRole('menu', { name: '添加上下文' });
+  await expect(contextMenu.getByRole('menuitem', { name: /选择技能/ })).not.toHaveAttribute(
+    'aria-busy',
+    'true',
+  );
+  await page.keyboard.press('Escape');
+  await expect(contextMenu).toHaveCount(0);
+
+  await composer.click();
+  await composer.pressSequentially('/');
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
+
+  // A thinking-level change publishes the session's 'updated' event and
+  // reloads the Skill projection without changing what the menu shows: the
+  // exact same-content refresh that used to alternate the popup (#2667).
+  const observation = await menu.evaluate(async (menuElement) => {
+    const sessions = await (
+      window as unknown as {
+        maka: { sessions: { list(): Promise<Array<{ id: string }>> } };
+      }
+    ).maka.sessions.list();
+    const sessionId = sessions[0]?.id;
+    if (!sessionId) throw new Error('Session missing before projection refresh');
+
+    // Arm immediately before the refreshes and only on this popover. The
+    // document body also contains unrelated overlays whose teardown says
+    // nothing about this menu's identity.
+    const menuContainer = menuElement.parentElement;
+    const state = { menuRemovals: 0, skillsGroupRemovals: 0 };
+    const skillsGroup = menuElement.querySelector<HTMLElement>('[role="group"][aria-label="Skills"]');
+    if (!menuContainer) throw new Error('Slash menu container missing before projection refresh');
+    if (!skillsGroup) throw new Error('Skills group missing before projection refresh');
+    const recordRemoval = (
+      mutations: MutationRecord[],
+      watchedNode: Node,
+      key: 'menuRemovals' | 'skillsGroupRemovals',
+    ) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.removedNodes) {
+          if (node === watchedNode) state[key] += 1;
+        }
+      }
+    };
+    const menuObserver = new MutationObserver((mutations) => {
+      recordRemoval(mutations, menuElement, 'menuRemovals');
+    });
+    const skillsGroupObserver = new MutationObserver((mutations) => {
+      recordRemoval(mutations, skillsGroup, 'skillsGroupRemovals');
+    });
+    menuObserver.observe(menuContainer, { childList: true });
+    skillsGroupObserver.observe(menuElement, { childList: true });
+    const maka = (
+      window as unknown as {
+        maka: {
+          sessions: {
+            setThinkingLevel(id: string, level?: null): Promise<unknown>;
+          };
+        };
+      }
+    ).maka;
+    const e2eControls = (
+      window as unknown as {
+        makaE2eLatch?: {
+          waitForInvocableSkillsCall(sessionId: string): Promise<void>;
+        };
+      }
+    ).makaE2eLatch;
+    if (!e2eControls) throw new Error('E2E bridge controls missing before projection refresh');
+    try {
+      for (let round = 0; round < 3; round += 1) {
+        const projectionSettled = e2eControls.waitForInvocableSkillsCall(sessionId);
+        await maka.sessions.setThinkingLevel(sessionId, null);
+        await projectionSettled;
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      }
+    } finally {
+      // Drain the final queued batch before closing the exact refresh window;
+      // polling a monotonic counter cannot turn a failure into success.
+      recordRemoval(menuObserver.takeRecords(), menuElement, 'menuRemovals');
+      recordRemoval(skillsGroupObserver.takeRecords(), skillsGroup, 'skillsGroupRemovals');
+      menuObserver.disconnect();
+      skillsGroupObserver.disconnect();
+    }
+    return {
+      ...state,
+      menuConnected: menuElement.isConnected,
+      skillsGroupConnected: skillsGroup.isConnected,
+    };
+  });
+  expect(observation).toEqual({
+    menuRemovals: 0,
+    skillsGroupRemovals: 0,
+    menuConnected: true,
+    skillsGroupConnected: true,
+  });
+  await expect(menu.getByRole('group', { name: 'Skills' })).toBeVisible();
 });

@@ -68,8 +68,12 @@ export const NETWORK_DEFAULTS: RuntimeNetworkSettings = {
   preferIpv4: false,
 };
 
+export interface TestProxySettings extends Omit<ProxySettings, 'password'> {
+  authEnabled?: boolean;
+}
+
 export interface TestProxyInput {
-  proxy?: ProxySettings;
+  proxy?: TestProxySettings;
   url?: string;
   timeoutMs?: number;
 }

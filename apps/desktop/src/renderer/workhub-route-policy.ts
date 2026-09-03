@@ -17,10 +17,26 @@
  * under the License.
  */
 
-import type {
-  WorkHubSessionFacts,
-  WorkHubSessionTarget,
-} from './workhub-controller.js';
+import {
+  createExactNameSessionResolver,
+  readWorkHubRequestIntent,
+  workHubCorrectionAdmitsReference,
+  type WorkHubRequestIntent,
+  type WorkHubResolverSession,
+  type WorkHubSessionResolver,
+} from './application/contracts/workhub-request-intent.js';
+
+interface WorkHubRouteTarget {
+  sessionId: string;
+}
+
+interface WorkHubRoutableSession {
+  target: WorkHubRouteTarget;
+  projectName: string;
+  sessionName: string;
+  latestResult?: string;
+  updatedAt: number;
+}
 
 export type WorkHubRouteEvidence =
   | 'explicit_target'
@@ -32,53 +48,82 @@ export type WorkHubRouteEvidence =
 export type WorkHubRouteDecision =
   | {
       kind: 'target';
-      target: WorkHubSessionTarget;
+      target: WorkHubRouteTarget;
       evidence: WorkHubRouteEvidence;
+      correctedFrom?: WorkHubRouteTarget;
     }
   | {
       kind: 'clarification';
-      options: WorkHubSessionFacts[];
+      options: WorkHubRoutableSession[];
+      reason?: 'ambiguous_command';
+      correctedFrom?: WorkHubRouteTarget;
     }
   | { kind: 'discussion' }
-  | { kind: 'new_session' };
+  | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
+
+
+/**
+ * Both reasons are about the reference itself — what the user's words name —
+ * which is the only question this policy can answer on its own.
+ *
+ * Whether the named Session still owns work a stop can reach is not asked
+ * here. Only the Host knows that, it proves it under the admission lease
+ * anyway, and a renderer that answered from its own view would contradict the
+ * Host in exactly the windows where its view is empty: a second window, a
+ * reload, a reconnect. So a resolved reference submits, and a Session with
+ * nothing to stop is refused by the Gate.
+ */
+export type WorkHubStopClarificationReason =
+  /** The stop names no safe target of its own — a pronoun or a bare noun. */
+  | 'stop_target_required'
+  /** The stop names more than one existing Session. */
+  | 'stop_target_ambiguous'
+  /** The Host refused the stop; its conflict is the whole answer. */
+  | 'stop_target_unavailable';
+
+/**
+ * A stop clarification never offers route options. Choosing one re-sends the
+ * original text as work, and stop-shaped text is exactly what must not be
+ * delivered to a Session that way, so the reason carries the whole answer.
+ */
+export type WorkHubStopRouteDecision =
+  | { kind: 'not_requested' }
+  | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
+  | { kind: 'target'; target: WorkHubRouteTarget };
 
 export interface WorkHubRoutePolicy {
+  resolveStop(input: {
+    text: string;
+    sessions: WorkHubRoutableSession[];
+  }): WorkHubStopRouteDecision;
   resolve(input: {
     text: string;
-    sessions: WorkHubSessionFacts[];
+    sessions: WorkHubRoutableSession[];
     originPromptBySessionId: ReadonlyMap<string, string | undefined>;
-    explicitTarget?: WorkHubSessionTarget;
+    explicitTarget?: WorkHubRouteTarget;
   }): WorkHubRouteDecision;
-  rememberTarget(target: WorkHubSessionTarget): void;
-  rememberCorrection(text: string, target: WorkHubSessionTarget): void;
+  initializeFocus(targets: readonly WorkHubRouteTarget[]): void;
+  newVisit(): WorkHubRoutePolicy;
+  rememberTarget(target: WorkHubRouteTarget): void;
 }
 
-export function workHubNewSessionName(text: string): string {
-  const explicitChinese = text.match(
-    /(?:标题|名称|名字)(?:为|叫|是|：|:)\s*[“”"']?([^,，。；;\n“”"']{2,48})/u,
-  )?.[1]?.trim();
-  const explicitEnglish = text.match(
-    /\b(?:called|named|titled)\s+[“”"']?([^,，。；;.!?\n“”"']{2,48})/iu,
-  )?.[1]?.trim();
-  const explicit = explicitChinese ?? explicitEnglish;
-  if (explicit) return explicit;
+export function workHubNewSessionName(
+  text: string,
+  parsedIntent?: WorkHubRequestIntent,
+): string {
+  const intent = typeof parsedIntent === 'object'
+    ? parsedIntent
+    : readWorkHubRequestIntent(text);
+  if (intent.creation.naming.kind === 'named') return intent.creation.naming.title;
   const withoutCreationPrefix = text.trim().replace(
-    /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:called|named|titled))?[，,:：\s-]*/iu,
+    /^(?:(?:请|帮我|麻烦)?(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)?|(?:please\s+)?(?:(?:can|could|would)\s+you\s+)?(?:create|start|open)\s+(?:a\s+)?(?:(?:brand[- ]new|new)\s+)?(?:ordinary\s+)?(?:session|work|task))(?:\s+(?:叫做?|名为|命名为|标题为|名称为|名字为|called|named|titled))?[，,:：\s-]*/iu,
     '',
   );
   const firstClause = withoutCreationPrefix.split(/[，。；;\n]/u)[0]?.trim();
   return firstClause?.slice(0, 48) || '新工作';
 }
 
-interface RouteCorrection {
-  text: string;
-  target: WorkHubSessionTarget;
-  sequence: number;
-}
-
-const MAX_ROUTE_CORRECTIONS = 32;
 const MIN_EXACT_SESSION_NAME_LENGTH = 2;
-const MIN_CORRECTION_TERM_LENGTH = 3;
 // One four-character Han phrase is usually a meaningful entity rather than
 // grammar; Latin needs either two whole-word matches or one distinctive word.
 const MIN_STRONG_HAN_MATCH_LENGTH = 4;
@@ -88,38 +133,141 @@ const MAX_UNCERTAINTY_OPTIONS = 5;
 const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
 
 /**
- * Deep routing module for R2.3.
+ * Deep routing module for R2.4.
  *
  * It owns only transient inference context. Session identity, transcript,
  * execution state, and recovery continue to come from the Session port.
  */
-export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
-  let currentFocus: WorkHubSessionTarget | undefined;
-  let previousFocus: WorkHubSessionTarget | undefined;
-  const corrections: RouteCorrection[] = [];
-  let correctionSequence = 0;
+export function createWorkHubRoutePolicy(
+  sessionResolver: WorkHubSessionResolver = createExactNameSessionResolver(),
+): WorkHubRoutePolicy {
+  return createWorkHubRoutePolicyVisit(sessionResolver);
+}
+
+function createWorkHubRoutePolicyVisit(
+  sessionResolver: WorkHubSessionResolver,
+): WorkHubRoutePolicy {
+  let currentFocus: WorkHubRouteTarget | undefined;
+  let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
+    // The stop Action Policy. Action Intent says only that the user issued a
+    // stop imperative and what work it refers to; the shared Session Resolver
+    // recalls which visible Sessions that reference names; this policy decides
+    // whether the resolution is sufficient for a destructive action.
+    //
+    // Direct stop is a narrow claim over WorkHub's own active delegations, not
+    // a filter over every sentence that begins with "stop". A reference that
+    // recalls no WorkHub identity — "Stop using the deprecated API" — is
+    // ordinary work and falls through to routing; an unsafe or anaphoric
+    // reference still fails closed, and a resolved Session that is not uniquely
+    // stoppable says why.
+    resolveStop({ text, sessions }) {
+      const intent = readWorkHubRequestIntent(text);
+      if (!intent.stop.cue) return { kind: 'not_requested' };
+      const reference = intent.stop.imperative ? intent.stop.target : undefined;
+      if (!reference) {
+        return { kind: 'clarification', reason: 'stop_target_required' };
+      }
+      const sessionByRef = new Map(
+        sessions.map((session) => [session.target.sessionId, session]),
+      );
+      const resolution = sessionResolver.resolve({
+        reference: { text: reference },
+        sessions: sessions.map(resolverSession),
+      });
+      if (resolution.kind === 'none') return { kind: 'not_requested' };
+      // Stop's own tail rule. The Resolver reports what the reference said
+      // after the name; a destructive command may add punctuation and nothing
+      // else, so `Stop Payments and Login` names no stoppable target here even
+      // though `Payments` matched.
+      const admissible = resolution.candidates.filter(
+        ({ evidence }) =>
+          evidence.kind === 'elided_name_punctuation' ||
+          /^[.!?。！？]*$/u.test(evidence.remainder),
+      );
+      if (admissible.length === 0) return { kind: 'not_requested' };
+      // Stop admits one candidate only. A ranked resolver may return several;
+      // this action never picks a winner from a ranking it cannot justify.
+      if (resolution.kind === 'ambiguous' || admissible.length > 1) {
+        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
+      }
+      const resolved = sessionByRef.get(admissible[0]!.ref);
+      if (!resolved) return { kind: 'not_requested' };
+      // The reference resolved, which is everything this policy can prove.
+      // Which delegation to end, and whether there is one at all, is the
+      // Host's answer and is made under the lease that performs the stop.
+      return { kind: 'target', target: resolved.target };
+    },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
+      const intent = readWorkHubRequestIntent(text);
+      if (intent.execution === 'ambiguous') {
+        return { kind: 'clarification', options: [], reason: 'ambiguous_command' };
+      }
       if (explicitTarget) {
         return { kind: 'target', target: explicitTarget, evidence: 'explicit_target' };
       }
 
-      if (looksLikeExplicitNewSession(text)) {
-        return { kind: 'new_session' };
+      if (intent.correction.cue && !isAffirmativeCorrection(intent)) {
+        return { kind: 'discussion' };
       }
 
-      const exact = sessions.map((session) => {
-        const qualifiedName = `${session.projectName}/${session.sessionName}`;
+      const correctionText = naturalCorrectionTargetText(text, intent);
+      const correctedFrom = currentFocus && sessions.some((session) =>
+        session.target.sessionId === currentFocus?.sessionId)
+        ? currentFocus
+        : undefined;
+      if (
+        !correctionText &&
+        correctedFrom &&
+        looksLikeRecentFocus(text) &&
+        looksLikeContentReplacement(text)
+      ) {
+        return { kind: 'target', target: correctedFrom, evidence: 'recent_focus' };
+      }
+      if (correctionText && correctedFrom) {
+        if (looksLikeCorrectionCreation(intent)) {
+          return { kind: 'new_session', title: workHubNewSessionName(text, intent), correctedFrom };
+        }
+        const alternatives = sessions.filter((session) =>
+          session.target.sessionId !== correctedFrom.sessionId);
+        // Correction recalls its target through the same shared port as stop,
+        // then applies its own tail rule: a correction may name the Session and
+        // go on to say what to do with it.
+        const correctionResolution = sessionResolver.resolve({
+          reference: { text: correctionText },
+          sessions: alternatives.map(resolverSession),
+        });
+        const affirmed = new Set(
+          (correctionResolution.kind === 'none' ? [] : correctionResolution.candidates)
+            .filter(({ evidence }) => workHubCorrectionAdmitsReference(correctionText, evidence))
+            .map(({ ref }) => ref),
+        );
+        const affirmedCorrections = alternatives.filter((session) =>
+          affirmed.has(session.target.sessionId));
+        if (affirmedCorrections.length === 1) {
+          return {
+            kind: 'target',
+            target: affirmedCorrections[0]!.target,
+            evidence: 'route_correction',
+            correctedFrom,
+          };
+        }
+        const options = affirmedCorrections.length > 1
+          ? affirmedCorrections
+          : alternatives.sort((left, right) => right.updatedAt - left.updatedAt);
         return {
-          session,
-          matchLength: Math.max(
-            exactIdentityMatchLength(text, qualifiedName),
-            exactIdentityMatchLength(text, session.sessionName),
-          ),
+          kind: 'clarification',
+          options: options.slice(0, MAX_UNCERTAINTY_OPTIONS),
+          correctedFrom,
         };
-      }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
-        .sort((left, right) => right.matchLength - left.matchLength);
+      }
+
+      if (looksLikeExplicitNewSession(intent)) {
+        return { kind: 'new_session', title: workHubNewSessionName(text, intent) };
+      }
+
+      const exact = rankExactSessions(text, sessions);
       if (exact[0] && exact[0].matchLength > (exact[1]?.matchLength ?? 0)) {
         return {
           kind: 'target',
@@ -145,26 +293,30 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
         return { kind: 'clarification', options: options.slice(0, MAX_UNCERTAINTY_OPTIONS) };
       }
 
-      const corrected = correctedTarget(text, sessions, corrections);
-      if (corrected) {
-        return { kind: 'target', target: corrected, evidence: 'route_correction' };
-      }
-
       const previousReference = looksLikePreviousFocus(text);
       const currentReference = !previousReference && looksLikeRecentFocus(text);
-      const focused = previousReference
+      const focusCandidate = previousReference
         ? previousFocus
         : currentReference
           ? currentFocus
           : undefined;
+      const focused = focusCandidate && sessions.some((session) =>
+        session.target.sessionId === focusCandidate.sessionId)
+        ? focusCandidate
+        : undefined;
       const strongEvidenceElsewhere = focused
         ? related.some(({ session, strongEvidence }) =>
           session.target.sessionId !== focused.sessionId && strongEvidence)
         : false;
+      const weakEvidenceElsewhere = focused
+        ? related.some(({ session }) => session.target.sessionId !== focused.sessionId)
+        : false;
       const ambiguousEvidence = related.length > 1;
       if (
         focused &&
-        (previousReference || (!strongEvidenceElsewhere && !ambiguousEvidence))
+        (previousReference || (
+          !strongEvidenceElsewhere && !weakEvidenceElsewhere && !ambiguousEvidence
+        ))
       ) {
         return { kind: 'target', target: focused, evidence: 'recent_focus' };
       }
@@ -183,7 +335,7 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
 
       const weakNewTopic = related.length === 1 &&
         !related[0]!.strongEvidence &&
-        looksExecutable(text) &&
+        looksExecutable(intent) &&
         !currentReference;
       if (related.length > 0 && !weakNewTopic) {
         return {
@@ -192,43 +344,66 @@ export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
             .map(({ session }) => session),
         };
       }
-      return looksExecutable(text) ? { kind: 'new_session' } : { kind: 'discussion' };
+      return looksExecutable(intent)
+        ? { kind: 'new_session', title: workHubNewSessionName(text, intent) }
+        : { kind: 'discussion' };
+    },
+    initializeFocus(targets) {
+      const ordered = targets.filter((target, index) =>
+        targets.findIndex((candidate) => candidate.sessionId === target.sessionId) === index);
+      const first = ordered[0];
+      if (!first) return;
+      const available = new Set(ordered.map((target) => target.sessionId));
+      if (currentFocus && !available.has(currentFocus.sessionId)) {
+        currentFocus = first;
+        previousFocus = ordered[1];
+        return;
+      }
+      if (!currentFocus) {
+        currentFocus = first;
+        previousFocus = ordered[1];
+        return;
+      }
+      if (!previousFocus || !available.has(previousFocus.sessionId)) {
+        previousFocus = ordered.find((target) => target.sessionId !== currentFocus?.sessionId);
+      }
+    },
+    newVisit() {
+      return createWorkHubRoutePolicyVisit(sessionResolver);
     },
     rememberTarget(target) {
       if (currentFocus?.sessionId === target.sessionId) return;
       previousFocus = currentFocus;
       currentFocus = target;
     },
-    rememberCorrection(text, target) {
-      correctionSequence += 1;
-      corrections.unshift({ text, target, sequence: correctionSequence });
-      corrections.splice(MAX_ROUTE_CORRECTIONS);
-    },
   };
 }
 
-function correctedTarget(
+/** Presents one routable Session to the Resolver as a bounded opaque candidate. */
+function resolverSession(session: WorkHubRoutableSession): WorkHubResolverSession {
+  return {
+    ref: session.target.sessionId,
+    sessionName: session.sessionName,
+    projectName: session.projectName,
+    updatedAt: session.updatedAt,
+  };
+}
+
+function rankExactSessions(
   text: string,
-  sessions: WorkHubSessionFacts[],
-  corrections: readonly RouteCorrection[],
-): WorkHubSessionTarget | undefined {
-  const queryTerms = new Set(routingTerms(text));
-  if (queryTerms.size === 0) return undefined;
-  const available = new Set(sessions.map((session) => session.target.sessionId));
-  const ranked = corrections
-    .filter((correction) => available.has(correction.target.sessionId))
-    .map((correction) => {
-      const matches = routingTerms(correction.text).filter((term) => queryTerms.has(term));
-      return {
-        correction,
-        score: matches.reduce((total, term) => total + term.length, 0),
-        longestMatch: matches.reduce((longest, term) => Math.max(longest, term.length), 0),
-      };
-    })
-    .filter(({ longestMatch }) => longestMatch >= MIN_CORRECTION_TERM_LENGTH)
-    .sort((left, right) =>
-      right.score - left.score || right.correction.sequence - left.correction.sequence);
-  return ranked[0]?.correction.target;
+  sessions: WorkHubRoutableSession[],
+): Array<{ session: WorkHubRoutableSession; matchLength: number }> {
+  return sessions.map((session) => {
+    const qualifiedName = `${session.projectName}/${session.sessionName}`;
+    return {
+      session,
+      matchLength: Math.max(
+        exactIdentityMatchLength(text, qualifiedName),
+        exactIdentityMatchLength(text, session.sessionName),
+      ),
+    };
+  }).filter(({ matchLength }) => matchLength >= MIN_EXACT_SESSION_NAME_LENGTH)
+    .sort((left, right) => right.matchLength - left.matchLength);
 }
 
 function normalizeIdentityText(value: string): string {
@@ -297,37 +472,49 @@ function looksLikePreviousFocus(value: string): boolean {
   );
 }
 
+function isAffirmativeCorrection(intent: WorkHubRequestIntent): boolean {
+  return intent.correction.cue && Boolean(
+    intent.correction.existingTarget ||
+      (intent.creation.explicit && intent.execution === 'imperative'),
+  );
+}
+
+function naturalCorrectionTargetText(
+  value: string,
+  intent: WorkHubRequestIntent,
+): string | undefined {
+  if (!isAffirmativeCorrection(intent)) return undefined;
+  const chineseCreation = value.match(
+    /^\s*(?:(?:不是|不要再继续)\s*(?:这个|那个|当前这个|刚才那个)(?:工作|任务|Session|会话)?|不对|错了|搞错了|弄错了)(?:[\s\p{P}\p{S}]+|$)(?:(?:请|麻烦|帮我)\s*)?(?:(?:创建|新建|新开)(?:一个)?|开一个)(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)(?:叫|名为|命名为)?\s*(.{2,})$/iu,
+  )?.[1]?.trim();
+  if (chineseCreation) return chineseCreation;
+  const englishCreation = value.match(
+    /^\s*(?:no|not\s+(?:(?:this|that|the\s+current)(?:\s+(?:one|session|work|task))?)|wrong\s+(?:one|session|work|task))\b(?:[\s\p{P}\p{S}]+|$)(?:(?:please|kindly)\s+)?(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)(?:\s+(?:called|named))?\s+(.{2,}?)(?:\s+instead)?[.!]?$/iu,
+  )?.[1]?.trim();
+  if (englishCreation) return englishCreation;
+  return intent.correction.existingTarget;
+}
+
+function looksLikeCorrectionCreation(intent: WorkHubRequestIntent): boolean {
+  return intent.creation.explicit && intent.execution === 'imperative';
+}
+
+function looksLikeContentReplacement(value: string): boolean {
+  return /(?:不要(?:再)?用|别用|[^，,。；;\n]{1,32}(?:配置|实现|方案|字段|参数)?(?:不对|错了))[^\n]{0,64}[，,。；;]\s*(?:改成|改为|换成|换用|用)\s*\S{2,}/iu.test(value);
+}
+
 function looksLikeTargetUncertainty(value: string): boolean {
   return /(?:不确定(?:具体)?(?:是)?哪(?:一)?个|不知道(?:应该)?(?:选|继续|处理)哪(?:一)?个|可能是多个|哪个都可能|\b(?:i(?:'m| am)\s+)?not\s+sure\s+(?:which|where)|\b(?:i\s+)?(?:do\s+not|don't)\s+know\s+(?:which|where)|\b(?:could|might|may)\s+(?:be|belong\s+to)\s+(?:more\s+than\s+one|multiple)|\bwhich\s+(?:one|session|work|task)\b)/iu.test(
     value,
   );
 }
 
-function looksLikeExplicitNewSession(value: string): boolean {
-  if (looksLikeCreationDeliberation(value)) return false;
-  return /(?:创建|新建|开一个|新开)(?:一个)?(?:全新的?|新的?)?(?:普通)?\s*(?:Session|会话|工作|任务)|(?:create|start|open)\s+(?:a\s+)?(?:brand[- ]new|new)\s+(?:session|work|task)/iu.test(
-    value,
-  );
+function looksLikeExplicitNewSession(intent: WorkHubRequestIntent): boolean {
+  return intent.creation.explicit && intent.execution === 'imperative';
 }
 
-function looksExecutable(value: string): boolean {
-  if (looksLikeCreationDeliberation(value)) return false;
-  const action = /(?:修复|修改|更新|实现|创建|新增|删除|移除|处理|完成|运行|测试|提交|推送|检查|优化|补充|整理|fix|implement|update|create|add|remove|delete|handle|finish|run|test|commit|push|check|optimize)/iu;
-  if (!action.test(value)) return false;
-  const directRequest = /(?:请|帮我|麻烦|现在(?:就)?|开始|can you|could you|would you|please)/iu.test(value);
-  if (directRequest) return true;
-  const designQuestion = /(?:[?？]\s*$|怎么|如何|为什么|是否|该不该|值不值得|^\s*(?:how|why|whether|what\s+(?:is|are|was|were|should|would|could|do|does|did|can))\b)/iu.test(
-    value,
-  );
-  return !designQuestion;
-}
-
-function looksLikeCreationDeliberation(value: string): boolean {
-  const creation = /(?:创建|新建|新开|开一个)(?:.{0,8})(?:Session|会话|工作|任务)|(?:create|start|open)(?:.{0,12})(?:session|work|task)/iu;
-  if (!creation.test(value)) return false;
-  return /(?:不要|别|无需|不用|不需要|先不|暂不|是否|要不要|该不该|应不应该|能不能|可不可以|为什么|如何|怎么|(?:do\s+not|don't|should\s+(?:we|i)|whether|why|how|can\s+(?:we|i)))/iu.test(
-    value,
-  ) || /[?？]\s*$/u.test(value);
+function looksExecutable(intent: WorkHubRequestIntent): boolean {
+  return intent.execution === 'imperative';
 }
 
 const ROUTING_STOP_TERMS = new Set([
@@ -340,7 +527,7 @@ const ROUTING_STOP_TERMS = new Set([
 ]);
 
 interface RelatedSession {
-  session: WorkHubSessionFacts;
+  session: WorkHubRoutableSession;
   score: number;
   longestMatch: number;
   strongEvidence: boolean;
@@ -348,7 +535,7 @@ interface RelatedSession {
 
 function rankRelatedSessions(
   value: string,
-  sessions: WorkHubSessionFacts[],
+  sessions: WorkHubRoutableSession[],
   originPromptBySessionId: ReadonlyMap<string, string | undefined>,
 ): RelatedSession[] {
   const terms = routingTerms(value);

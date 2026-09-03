@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
@@ -463,18 +464,4 @@ function pricing(modelKey: string, inputUsdPer1M: number) {
     cacheReadUsdPer1M: inputUsdPer1M / 2,
     cacheWriteUsdPer1M: inputUsdPer1M * 1.5,
   };
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: unknown): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
 }

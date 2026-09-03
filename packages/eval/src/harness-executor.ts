@@ -48,6 +48,7 @@ import {
   type SubjectExecutionContext,
 } from './runner.js';
 import type { EvalResult } from './result.js';
+import { terminateProcess } from './process-termination.js';
 
 export type HarnessFramework = 'harbor' | 'pier';
 type RelayTransportStage = 'ready' | 'execute' | 'receive' | 'decision';
@@ -1195,7 +1196,7 @@ async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<Trial
     };
   }
 
-  child.kill('SIGTERM');
+  await terminateProcess(child, 'SIGTERM');
   const terminated = await within(exit, wait.deadlineMs);
   if (terminated) {
     return {
@@ -1205,7 +1206,7 @@ async function waitForTrial(child: ChildProcess, wait: TrialWait): Promise<Trial
       outcome: terminated.code === 0 && terminated.signal === null ? 'confirmed' : 'terminated',
     };
   }
-  child.kill('SIGKILL');
+  await terminateProcess(child, 'SIGKILL');
   const killed = await within(exit, KILL_SETTLEMENT_DEADLINE_MS);
   if (killed) {
     return {

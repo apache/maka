@@ -93,6 +93,23 @@ describe('Runtime Host profile CLI', () => {
         'profile',
         'set',
         '--id',
+        'peer-lab',
+        '--name',
+        'Peer Lab',
+        '--peer-id',
+        '12D3KooWPeer',
+        '--peer-route',
+        '/ip4/192.0.2.10/udp/4001/quic-v1',
+        '--expected-root',
+        ROOT_ID,
+      ]).kind,
+      'error',
+    );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'profile',
+        'set',
+        '--id',
         'lab',
         '--name',
         'Lab',
@@ -186,8 +203,8 @@ function createProfileCatalogCapture(): {
   catalog: RuntimeHostProfileCatalog;
   saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }>;
 } {
-  const state = {
-    document: { schemaVersion: 1, profiles: [] } as RuntimeHostProfileDocument,
+  const state: { document: RuntimeHostProfileDocument } = {
+    document: { schemaVersion: 4, profiles: [] },
   };
   const saved: Array<{ profile: RemoteRuntimeHostProfile; credential?: string }> = [];
   const catalog: RuntimeHostProfileCatalog = {
@@ -197,7 +214,7 @@ function createProfileCatalogCapture(): {
     save: async (profile: RemoteRuntimeHostProfile, credential?: string) => {
       saved.push({ profile, credential });
       state.document = {
-        schemaVersion: 1,
+        schemaVersion: 4,
         profiles: [
           ...state.document.profiles.filter((candidate) => candidate.id !== profile.id),
           profile,
@@ -208,6 +225,9 @@ function createProfileCatalogCapture(): {
     remove: async () => assert.fail('unexpected profile removal'),
     removeIfCurrent: async () => assert.fail('unexpected conditional profile removal'),
     rebindIfCurrent: async () => assert.fail('unexpected conditional profile rebind'),
+    updateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional update'),
+    mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional mutation'),
+    readRemoteProfileIfCurrent: async () => assert.fail('unexpected conditional read'),
   };
   return {
     get document() {

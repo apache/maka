@@ -19,12 +19,29 @@
 
 import { constants } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import {
   RuntimeHostServiceManagerError,
   type RuntimeHostManagedServiceConfig,
 } from './runtime-host-service-manager.js';
 
 export function runtimeHostServiceLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
+  serviceConfigPath: string,
+): readonly string[] {
+  return [
+    config.launch.nodePath,
+    config.launch.cliPath,
+    'runtime-host',
+    'serve',
+    '--managed-service-config',
+    serviceConfigPath,
+    '--json',
+  ];
+}
+
+/** Exact launch contract used before the managed configuration became authoritative. */
+export function legacyRuntimeHostServiceLaunchArguments(
   config: RuntimeHostManagedServiceConfig,
 ): readonly string[] {
   return [
@@ -48,6 +65,18 @@ export function runtimeHostServiceLaunchArguments(
   ];
 }
 
+export const RUNTIME_HOST_UPDATE_INTERVAL_SECONDS = 24 * 60 * 60;
+export const RUNTIME_HOST_UPDATE_INITIAL_DELAY_SECONDS = 15 * 60;
+export const RUNTIME_HOST_UPDATE_RANDOM_DELAY_SECONDS = 60 * 60;
+
+export function runtimeHostUpdateReconcileLaunchArguments(
+  config: RuntimeHostManagedServiceConfig,
+): readonly string[] | null {
+  return config.managedDeploymentRoot
+    ? [join(config.managedDeploymentRoot, 'operator'), 'reconcile-update', '--framed']
+    : null;
+}
+
 export async function validateRuntimeHostServiceLaunch(
   config: RuntimeHostManagedServiceConfig,
 ): Promise<void> {
@@ -57,12 +86,14 @@ export async function validateRuntimeHostServiceLaunch(
       realpath(config.launch.cliPath),
     ]);
     const [node, cli] = await Promise.all([stat(nodePath), stat(cliPath)]);
-    if (!node.isFile() || !cli.isFile()) throw new Error('Launch path is not a file');
+    if (!node.isFile() || !cli.isFile()) {
+      throw new Error('Launch path is not a file');
+    }
     await Promise.all([access(nodePath, constants.X_OK), access(cliPath, constants.R_OK)]);
   } catch (error) {
     throw new RuntimeHostServiceManagerError(
       'invalid_launch',
-      'The configured Node.js or Maka CLI installation is unavailable',
+      'A configured Runtime Host launch file is unavailable',
       { cause: error },
     );
   }

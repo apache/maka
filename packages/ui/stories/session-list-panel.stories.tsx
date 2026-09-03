@@ -22,7 +22,7 @@ import type { Meta, StoryObj } from '@storybook/react-vite';
 import { expect, waitFor, within } from 'storybook/test';
 import type { ProjectRecord } from '@maka/core/project';
 import type { SessionBlockedReason, SessionStatus, SessionSummary } from '@maka/core/session';
-import { SessionListPanel } from '../src/session-list-panel.js';
+import { SessionRail, type SessionRailStoryProps } from './session-rail-harness.js';
 
 const NOW = Date.now();
 
@@ -39,7 +39,7 @@ const meta = {
 export default meta;
 
 type Story = StoryObj<typeof meta>;
-type SessionListPanelProps = Parameters<typeof SessionListPanel>[0];
+type SessionListPanelProps = SessionRailStoryProps;
 
 const noop = () => undefined;
 
@@ -79,7 +79,6 @@ const rowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onArchive: noop,
   onUnarchive: noop,
   onRename: noop,
-  onDelete: noop,
 };
 
 function panelProps(input: {
@@ -279,7 +278,7 @@ const liveRunAuthoritySessions: SessionSummary[] = [
 export const Empty: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({ sessions: [] })} />
+      <SessionRail {...panelProps({ sessions: [] })} />
     </StoryFrame>
   ),
 };
@@ -289,7 +288,7 @@ export const Empty: Story = {
 export const ConversationStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
         streamingSessionIds: new Set(['status-running']),
@@ -305,7 +304,7 @@ export const ConversationStates: Story = {
 export const ActiveTaskActionsOpen: Story = {
   render: () => (
     <StoryFrame openSessionMenuId="status-waiting">
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: statusSessions,
         activeId: 'status-waiting',
       })} />
@@ -324,7 +323,7 @@ export const ActiveTaskActionsOpen: Story = {
 export const LiveRunAuthorityStates: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         sessions: liveRunAuthoritySessions,
         activeId: 'live-remote-running',
         streamingSessionIds: new Set(['live-local-race']),
@@ -338,7 +337,7 @@ export const LiveRunAuthorityStates: Story = {
 export const LongTitlesAndNarrow: Story = {
   render: () => (
     <StoryFrame width={180}>
-      <SessionListPanel {...panelProps({
+      <SessionRail {...panelProps({
         width: 180,
         sessions: longTitleSessions,
         activeId: 'long-title-active',
@@ -353,7 +352,7 @@ export const LongTitlesAndNarrow: Story = {
 export const PinnedAndRecentSections: Story = {
   render: () => (
     <StoryFrame>
-      <SessionListPanel
+      <SessionRail
         {...panelProps({
           sessions: [
             makeSession({
@@ -389,7 +388,7 @@ export const PinnedAndRecentSections: Story = {
 };
 
 // Real path: group-by-project — collapsible project rows, sessions nested 8px
-// under the project so titles share one x, worktree mark + count badge.
+// under the project so titles share one x, worktree mark + project actions.
 export const ProjectGroups: Story = {
   render: () => {
     const maka = makeProject({
@@ -415,6 +414,7 @@ export const ProjectGroups: Story = {
       makeSession({
         id: 'proj-main',
         name: '主仓会话',
+        isFlagged: true,
         lastMessageAt: NOW - 4 * 60 * 1000,
       }),
       makeSession({
@@ -431,7 +431,7 @@ export const ProjectGroups: Story = {
     ];
     return (
       <StoryFrame height={720}>
-        <SessionListPanel
+        <SessionRail
           {...panelProps({
             sessions,
             activeId: 'proj-worktree',
@@ -456,6 +456,87 @@ export const ProjectGroups: Story = {
                 label: missing.name,
                 project: missing,
                 sessions: [],
+              },
+            ],
+            projectActions: {
+              onNew: noop,
+              onRename: noop,
+              onArchive: noop,
+              onRestore: noop,
+              onRelink: noop,
+            },
+          })}
+        />
+      </StoryFrame>
+    );
+  },
+};
+
+// Group-by-project where a project's only task is pinned, so the project row
+// has nothing left to show. What the row says about itself — disclosure,
+// action placement, the hover card's task count — has to follow what is
+// actually under it, and an archived project sits below the live ones.
+export const ProjectGroupsPinnedOnlyTask: Story = {
+  render: () => {
+    const solo = makeProject({
+      id: 'project-solo',
+      name: '独苗项目',
+      preferredPath: '/workspace/solo',
+    });
+    const docs = makeProject({
+      id: 'project-docs',
+      name: '产品文档',
+      preferredPath: '/workspace/docs',
+    });
+    const retired = makeProject({
+      id: 'project-retired',
+      name: '旧版桌面端',
+      preferredPath: '/workspace/legacy',
+      archivedAt: NOW - 30 * 24 * 60 * 60 * 1000,
+    });
+    const sessions = [
+      makeSession({
+        id: 'solo-only',
+        name: '唯一的任务',
+        isFlagged: true,
+        lastMessageAt: NOW - 6 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'docs-a',
+        name: '文档站改版',
+        lastMessageAt: NOW - 30 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'retired-a',
+        name: '旧版遗留任务',
+        lastMessageAt: NOW - 40 * 24 * 60 * 60 * 1000,
+      }),
+    ];
+    return (
+      <StoryFrame height={720}>
+        <SessionRail
+          {...panelProps({
+            sessions,
+            activeId: 'docs-a',
+            viewMode: 'project',
+            groups: [
+              {
+                id: `project:${solo.id}`,
+                label: solo.name,
+                project: solo,
+                sessions: [sessions[0]!],
+              },
+              {
+                id: `project:${docs.id}`,
+                label: docs.name,
+                project: docs,
+                sessions: [sessions[1]!],
+              },
+              {
+                id: `project:${retired.id}`,
+                label: retired.name,
+                project: retired,
+                sessions: [sessions[2]!],
               },
             ],
             projectActions: {

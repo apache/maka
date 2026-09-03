@@ -34,6 +34,7 @@ import {
   createAppShellSessionDisplayBatch,
   createAppShellSessionEventHandlers,
 } from '../../renderer/app-shell-session-events.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 function renderWithLocale(child: ReactNode): string {
   return renderToStaticMarkup(
@@ -58,11 +59,7 @@ function createStateSetter<T>(initial: T): {
 }
 
 async function waitFor(predicate: () => boolean, message: string): Promise<void> {
-  const deadline = Date.now() + 3_000;
-  while (!predicate()) {
-    if (Date.now() >= deadline) assert.fail(message);
-    await new Promise<void>((resolve) => setTimeout(resolve, 10));
-  }
+  await pollFor(predicate, { timeoutMs: 3_000, pollMs: 10, message });
 }
 
 function renderLiveTurn(liveTurn: LiveTurnProjection): string {
@@ -90,6 +87,124 @@ function renderLiveTurn(liveTurn: LiveTurnProjection): string {
 }
 
 describe('single live-turn handoff', () => {
+  it('renders a transient user message without manufacturing a Turn', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'active', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [
+        { type: 'user', id: 'old-user', turnId: 'old-turn', ts: 1, text: 'before' },
+      ],
+      transientMessages: [
+        {
+          id: 'message-pending', ts: 2,
+          text: 'send now', transientPlacement: 'current_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.equal((markup.match(/data-transcript-turn-id=/g) ?? []).length, 1);
+    assert.match(markup, /data-transient-message-id="message-pending"/);
+    assert.match(markup, />send now</);
+  });
+
+  it('does not flash the empty-chat Maka hero before a first transient message', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', status: 'active', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          id: 'message-pending', ts: 1,
+          text: 'inspect this image', transientPlacement: 'current_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.match(markup, /data-transient-message-id="message-pending"/);
+    assert.match(markup, />inspect this image</);
+    assert.doesNotMatch(markup, /maka-hero-empty-chat/);
+  });
+
+  it('shows a loading transient before its real live Turn answer', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          id: 'turn-1', ts: 1, text: 'send now',
+          transientPlacement: 'current_turn',
+        },
+      ],
+      messageLoading: true,
+      scrollBehavior: 'smooth',
+      liveTurn: {
+        turnId: 'turn-1',
+        phase: 'streamed',
+        steps: [{
+          stepId: 'assistant-1',
+          text: { text: 'live answer', truncated: false, complete: false },
+          tools: [],
+        }],
+      },
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.doesNotMatch(markup, /maka-chat-message-loading/);
+    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="turn-1"'));
+    assert.equal((markup.match(/data-transient-message-id="turn-1"/g) ?? []).length, 1);
+    assert.equal((markup.match(/data-transcript-turn-id="turn-1"/g) ?? []).length, 1);
+  });
+
+  it('keeps an unresolved root transient before a live Turn that arrived before IPC settled', () => {
+    const markup = renderWithLocale(createElement(ChatView, {
+      activeSession: {
+        id: 'session-1', name: 'pending', lastMessageAt: 1, status: 'running', backend: 'ai-sdk',
+        labels: [], isFlagged: false, isArchived: false, hasUnread: false,
+        llmConnectionSlug: 'conn', connectionLocked: false, model: 'model', permissionMode: 'ask',
+      },
+      messages: [],
+      transientMessages: [
+        {
+          id: 'message-1', ts: 1, text: 'send now',
+          transientPlacement: 'current_turn',
+        },
+        {
+          id: 'message-next', ts: 2, text: 'do this next',
+          transientPlacement: 'next_turn',
+        },
+      ],
+      scrollBehavior: 'smooth',
+      liveTurn: {
+        turnId: 'host-turn',
+        phase: 'streamed',
+        steps: [{
+          stepId: 'assistant-1',
+          text: { text: 'live answer', truncated: false, complete: false },
+          tools: [],
+        }],
+      },
+      onNew() {},
+    } satisfies Parameters<typeof ChatView>[0]));
+
+    assert.ok(markup.indexOf('send now') < markup.indexOf('data-turn-id="host-turn"'));
+    assert.ok(markup.indexOf('do this next') > markup.indexOf('data-turn-id="host-turn"'));
+    assert.equal((markup.match(/data-transient-message-id=/g) ?? []).length, 2);
+  });
+
   it('renders one ordered timeline: thinking before its tool and answer', () => {
     const markup = renderLiveTurn({
       turnId: 'turn-1',
@@ -283,6 +398,112 @@ describe('single live-turn handoff', () => {
     assert.equal(liveTurns.get()['session-1']?.steps[0]?.text?.text, 'done');
     frames.shift()?.();
     assert.equal(publications, 2);
+  });
+
+  it('bounds tool output queued for one animation frame', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    const displayBatch = createAppShellSessionDisplayBatch();
+    let publications = 0;
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        publications += 1;
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+      displayBatch,
+    });
+
+    handlers.handleEvent('session-1', {
+      type: 'tool_start', id: 'start', turnId: 'turn-1', toolUseId: 'tool-1',
+      toolName: 'Bash', args: {}, ts: 0,
+    });
+    publications = 0;
+    for (let index = 0; index <= 200; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'tool_output_delta', id: `output-${index}`, turnId: 'turn-1',
+        sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+        seq: index, stream: 'stdout', chunk: 'x', redacted: false,
+        createdAt: index + 1, ts: index + 1,
+      });
+    }
+
+    assert.equal(publications, 0);
+    assert.equal(frames.length, 1);
+    assert.equal(displayBatch.pendingEvents.get('session-1')?.length, 200);
+    frames.shift()?.();
+    assert.equal(publications, 1);
+    const chunks = liveTurns.get()['session-1']?.steps[0]?.tools[0]?.outputChunks;
+    assert.equal(chunks?.length, 200);
+    assert.equal(chunks?.[0]?.seq, 1);
+    assert.equal(chunks?.at(-1)?.seq, 200);
+
+    for (let index = 201; index <= 203; index += 1) {
+      handlers.handleEvent('session-1', {
+        type: 'tool_output_delta', id: `output-${index}`, turnId: 'turn-1',
+        sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+        seq: index, stream: 'stdout', chunk: 'y'.repeat(8 * 1024), redacted: false,
+        createdAt: index + 1, ts: index + 1,
+      });
+    }
+    const pending = displayBatch.pendingEvents.get('session-1');
+    assert.equal(publications, 1);
+    assert.equal(pending?.length, 2);
+    assert.equal(pending?.[0]?.type === 'tool_output_delta' ? pending[0].seq : undefined, 202);
+    assert.equal(pending?.[1]?.type === 'tool_output_delta' ? pending[1].seq : undefined, 203);
+    assert.equal(frames.length, 1);
+    frames.shift()?.();
+    assert.equal(publications, 2);
+  });
+
+  it('does not publish queued output after its session is cleared', () => {
+    const liveTurns = createStateSetter<Record<string, LiveTurnProjection>>({
+      'session-1': armLiveTurn('turn-1'),
+    });
+    const liveTurnBySessionRef = { current: liveTurns.get() };
+    const interactions = createStateSetter<InteractionQueues>({});
+    const frames: Array<() => void> = [];
+    const handlers = createAppShellSessionEventHandlers({
+      uiLocale: 'zh',
+      activeIdRef: { current: 'session-1' },
+      liveTurnBySessionRef,
+      refreshMessages: async () => true,
+      refreshSessions: async () => [],
+      setLiveTurnBySession: (updater) => {
+        liveTurns.set(updater);
+        liveTurnBySessionRef.current = liveTurns.get();
+      },
+      setInteractionBySession: interactions.set,
+      showModelSetupToast: () => {},
+      toastApi: { error: () => {} },
+      scheduleFrame: (callback) => { frames.push(callback); },
+    });
+
+    handlers.handleEvent('session-1', {
+      type: 'tool_output_delta', id: 'output', turnId: 'turn-1',
+      sessionId: 'session-1', toolCallId: 'tool-1', toolUseId: 'tool-1',
+      seq: 0, stream: 'stdout', chunk: 'late', redacted: false,
+      createdAt: 1, ts: 1,
+    });
+    handlers.dropDisplayEvents('session-1');
+    liveTurns.set(() => ({}));
+    liveTurnBySessionRef.current = liveTurns.get();
+
+    frames.shift()?.();
+    assert.equal(liveTurns.get()['session-1'], undefined);
   });
 
   it('applies catch-up deltas immediately until the returning session is seeded', () => {

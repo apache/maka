@@ -39,6 +39,7 @@ import {
   type ProviderUsage as Usage,
 } from './provider-metering.js';
 import { removeEvalWebTools } from './provider-web-tool-surface.js';
+import { terminateProcess } from './process-termination.js';
 import { takeRelayResultToken, writeRelayResult } from './relay-result-frame.js';
 
 const resultToken = takeRelayResultToken();
@@ -69,7 +70,10 @@ const PROFILE_PREPARERS: Record<Profile, (setup: ProfileSetup) => Promise<string
   codex: async ({ env, home, root, proxyBaseUrl }) => {
     env.OPENAI_API_KEY = 'maka-eval-local';
     env.CODEX_HOME = home;
-    const catalog = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-codex-models.json');
+    const catalog = rooted(
+      root,
+      '/opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-codex-models.json',
+    );
     await writeFile(
       join(home, 'config.toml'),
       [
@@ -261,7 +265,10 @@ const PROFILE_PREPARERS: Record<Profile, (setup: ProfileSetup) => Promise<string
     env.DSH_HOME = join(home, 'dsh');
     const profile = join(env.DSH_HOME, 'profiles', DEEPSEEK_HARNESS_PROFILE);
     await mkdir(profile, { recursive: true, mode: 0o700 });
-    const source = rooted(root, '/opt/maka-agent/packages/eval/harbor/deepseek-harness-profile');
+    const source = rooted(
+      root,
+      '/opt/maka-agent/node_modules/@maka/eval/harbor/deepseek-harness-profile',
+    );
     for (const file of ['package.json', 'cordis.yml', 'cordis.patch.yml']) {
       await copyFile(join(source, file), join(profile, file));
     }
@@ -340,10 +347,10 @@ if (!systemRoot?.startsWith('/')) throw new Error('external subject system root 
 let credentialPath: string | undefined;
 let child: ChildProcess | undefined;
 let stopped = false;
-const stop = (signal: NodeJS.Signals) => {
+const stop = (signal: 'SIGINT' | 'SIGTERM') => {
   stopped = true;
   removeCredential();
-  child?.kill(signal);
+  void terminateProcess(child, signal);
 };
 const terminate = () => stop('SIGTERM');
 const interrupt = () => stop('SIGINT');

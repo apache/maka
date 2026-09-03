@@ -24,14 +24,19 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { type RelayModelProfile } from '@maka/core/model-thinking';
-import { type SessionHeader } from '@maka/core/session';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+  type SessionHeader,
+} from '@maka/core/session';
 import {
   SessionConfigurationTransitionError,
   headerToSummary,
 } from '@maka/runtime/session-manager';
-import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage';
+import { type ProjectCatalog, ProjectUnavailableError } from '@maka/storage/project-catalog';
+import { SessionNotFoundError } from '@maka/storage/session-store';
 import type { ResolveExecutionConnectionResult } from '@maka/storage/runtime-policy-stores';
 import {
   SessionMetadataVersionConflictError,
@@ -212,6 +217,26 @@ test('catalog queries project known-empty and running state from Runtime authori
   assert.deepEqual(session.liveRunState, {
     schemaVersion: 1,
     runningTurnIds: ['turn-live'],
+  });
+});
+
+test('ordinary catalog lookup hides the WorkHub Coordination Session', async () => {
+  const fixture = createFixture({
+    stores: {
+      readCatalogRecord: async () => {
+        throw new SessionNotFoundError('session-1');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.catalog.query'](
+    { kind: 'get', sessionId: fixture.sessionId },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: true,
+    result: { kind: 'session', session: null },
   });
 });
 
@@ -422,12 +447,120 @@ test('creation rejects reserved execution labels before claiming a Session ident
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('ordinary creation rejects the reserved WorkHub Coordination Session identity', async () => {
+  let probeAttempts = 0;
+  const fixture = createFixture({
+    stores: {
+      probeStableSessionCreate: async () => {
+        probeAttempts += 1;
+        assert.fail('Reserved identity must be rejected before persistence admission');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: WORKHUB_COORDINATION_SESSION_ID,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Session identity is reserved for WorkHub coordination',
+    },
+  });
+  assert.equal(probeAttempts, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('ordinary configuration rejects the WorkHub Coordination Session identity', async () => {
+  let reads = 0;
+  const fixture = createFixture({
+    stores: {
+      readHeaderRecordSnapshot: async () => {
+        reads += 1;
+        assert.fail('Reserved identity must be rejected before configuration admission');
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(WORKHUB_COORDINATION_SESSION_ID, fixture.revision()),
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'WorkHub Coordination Session configuration requires WorkHub authority',
+    },
+  });
+  assert.equal(reads, 0);
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('ordinary metadata and configuration reject a corrupt Coordination role on another identity', async () => {
+  const corrupt = {
+    ...sessionHeader('session-1', ['user-label']),
+    role: WORKHUB_COORDINATION_SESSION_ROLE,
+  };
+  const fixture = createFixture({
+    stores: {
+      readHeaderRecordSnapshot: async () => headerSnapshot(corrupt, 3),
+      updateHeaderVersioned: async () => assert.fail('Corrupt role must not reach metadata writes'),
+    },
+    manager: {
+      transitionSessionConfiguration: async () =>
+        assert.fail('Corrupt role must not reach configuration writes'),
+    },
+  });
+
+  assert.deepEqual(
+    await fixture.coordinator.handlers['session.metadata.update'](
+      {
+        sessionId: fixture.sessionId,
+        expectedRevision: fixture.revision(),
+        patch: { name: 'Not allowed' },
+      },
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'WorkHub Coordination Session metadata requires WorkHub authority',
+      },
+    },
+  );
+  assert.deepEqual(
+    await fixture.coordinator.handlers['session.configuration.update'](
+      configurationInput(fixture.sessionId, fixture.revision()),
+      context,
+    ),
+    {
+      ok: false,
+      error: {
+        code: 'operation_conflict',
+        message: 'WorkHub Coordination Session configuration requires WorkHub authority',
+      },
+    },
+  );
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 test('creation on a relay connection honours declared levels via the catalog projection', async () => {
   // The catalog entry carries the typed relayModelProfiles projection (never
   // the extras bag), so a declared relay level passes the gate — and what
   // passes is exactly what execution rebuilds the runtime connection from.
   let createAttempts = 0;
   let persistedThinkingLevel: unknown;
+  let persistedConnectionId: unknown;
   const fixture = createFixture({
     connection: {
       providerType: 'openai-compatible',
@@ -439,6 +572,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
       createStableSession: async (args) => {
         createAttempts += 1;
         persistedThinkingLevel = args.input.thinkingLevel;
+        persistedConnectionId = args.input.llmConnectionId;
         return {
           kind: 'existing' as const,
           record: headerSnapshot(sessionHeader(args.sessionId, ['user-label']), 1),
@@ -451,7 +585,12 @@ test('creation on a relay connection honours declared levels via the catalog pro
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
       thinkingLevel: 'low',
     },
     context,
@@ -460,6 +599,7 @@ test('creation on a relay connection honours declared levels via the catalog pro
   assert.equal(outcome.ok, true);
   assert.equal(createAttempts, 1);
   assert.equal(persistedThinkingLevel, 'low');
+  assert.equal(persistedConnectionId, 'connection-1');
 });
 
 test('creation admits the enabled bootstrap DeepSeek model before discovery', async () => {
@@ -489,7 +629,12 @@ test('creation admits the enabled bootstrap DeepSeek model before discovery', as
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -555,7 +700,12 @@ test('creation refuses a retired provider named explicitly', async () => {
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'model-1' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'model-1',
+      },
     },
     context,
   );
@@ -603,7 +753,12 @@ test('creation admits an enabled model a snapshot provider never listed', async 
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -641,7 +796,12 @@ test('creation admits an enabled model a live list omits', async () => {
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: modelId },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: modelId,
+      },
     },
     context,
   );
@@ -673,7 +833,12 @@ test('creation on a relay connection without declarations still fails closed on 
     {
       sessionId: fixture.sessionId,
       workspace: { kind: 'host_path', path: process.cwd() },
-      modelTarget: { kind: 'explicit', connectionSlug: 'test', model: 'relay-model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'test',
+        model: 'relay-model',
+      },
       thinkingLevel: 'low',
     },
     context,
@@ -756,6 +921,40 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   assert.equal(fixture.drainRequests(), 0);
 });
 
+test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
+  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (request) => {
+        created = request;
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      mode: 'bot',
+      name: '飞书 任务',
+      labels: ['bot', 'feishu'],
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.ok(created);
+  assert.equal(created.input.name, '飞书 任务');
+  assert.deepEqual(created.input.labels, ['bot', 'feishu', 'mode:bot']);
+  assert.equal(created.input.permissionMode, 'explore');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
 test('configuration update admits Plan mode through Runtime authority', async () => {
   const fixture = createFixture();
   const input = configurationInput(fixture.sessionId, fixture.revision());
@@ -763,8 +962,7 @@ test('configuration update admits Plan mode through Runtime authority', async ()
   const outcome = await fixture.coordinator.handlers['session.configuration.update'](
     {
       ...input,
-      configuration: {
-        ...input.configuration,
+      patch: {
         collaborationMode: 'plan',
       },
     },
@@ -778,8 +976,103 @@ test('configuration update admits Plan mode through Runtime authority', async ()
     assert.fail('Plan mode configuration returned an unsupported Session projection');
   }
   assert.equal(outcome.result.session.collaborationMode, 'plan');
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
   assert.equal(fixture.header().collaborationMode, 'plan');
   assert.equal(fixture.drainRequests(), 0);
+});
+
+test('configuration update never rebinds a bound Session through a reused slug', async () => {
+  let observedRef: unknown;
+  const fixture = createFixture({
+    connection: {
+      executionResolution: { kind: 'not_found' },
+      onResolve: (ref) => {
+        observedRef = ref;
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Session model identity changed during selection',
+    },
+  });
+  assert.deepEqual(observedRef, {
+    kind: 'bound',
+    connectionId: 'connection-1',
+    connectionSlug: 'test',
+  });
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+});
+
+test('identity-free configuration patch fails closed for a legacy Session', async () => {
+  const fixture = createFixture({ legacyConnectionIdentity: true });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    {
+      sessionId: fixture.sessionId,
+      expectedRevision: fixture.revision(),
+      patch: { permissionMode: 'bypass' },
+    },
+    context,
+  );
+
+  assert.deepEqual(outcome, {
+    ok: false,
+    error: {
+      code: 'operation_conflict',
+      message: 'Legacy Session configuration requires an explicit account selection',
+    },
+  });
+  assert.equal(fixture.header().llmConnectionId, undefined);
+  assert.notEqual(fixture.header().permissionMode, 'bypass');
+});
+
+test('only an explicit exact target recovers a legacy Session account binding', async () => {
+  let clearConnectionBlock: boolean | undefined;
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    header: { blockedReason: 'NO_REAL_CONNECTION' },
+    manager: {
+      transitionSessionConfiguration: async (_sessionId, input) => {
+        clearConnectionBlock = input.clearConnectionBlock;
+        return {
+          header: fixture.header(),
+          revision: fixture.revision(),
+          committedAt: 1,
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(clearConnectionBlock, true);
+});
+
+test('explicit recovery persists the selected Connection entity identity', async () => {
+  const fixture = createFixture({ legacyConnectionIdentity: true });
+
+  const outcome = await fixture.coordinator.handlers['session.configuration.update'](
+    configurationInput(fixture.sessionId, fixture.revision()),
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.equal(fixture.header().llmConnectionSlug, 'test');
+  assert.equal(fixture.header().model, 'model-1');
 });
 
 test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
@@ -1136,11 +1429,18 @@ function createFixture(
     readonly connection?: FixtureConnection;
     readonly projectCatalog?: ProjectCatalog;
     readonly onProjectChanged?: () => void;
+    readonly legacyConnectionIdentity?: boolean;
+    readonly header?: Partial<SessionHeader>;
   } = {},
 ) {
   const sessionId = 'session-1';
   let revision = 3;
   let header = sessionHeader(sessionId, options.labels ?? ['user-label']);
+  header = { ...header, ...options.header };
+  if (options.legacyConnectionIdentity) {
+    const { llmConnectionId: _legacyConnectionId, ...legacyHeader } = header;
+    header = legacyHeader;
+  }
   if (options.cwd) header = { ...header, cwd: options.cwd };
   let drains = 0;
 
@@ -1235,6 +1535,9 @@ type FixtureConnection = {
     | 'volcengine-agent-plan';
   /** Lets a case exercise a resolver verdict other than `ready`. */
   readonly executionResolution?: ResolveExecutionConnectionResult;
+  readonly onResolve?: (
+    ref: Parameters<RuntimePolicy['operations']['resolveExecutionConnection']>[0],
+  ) => void;
   readonly enabledModelIds?: readonly string[];
   readonly models?: readonly { id: string }[];
   // Mirrors what the codec allows: a non-empty inventory must carry a source,
@@ -1279,13 +1582,17 @@ function runtimePolicyFixture(overrides: FixtureConnection): RuntimePolicy {
       getSnapshot: async () => ({ revision: 1, policy }),
     },
     operations: {
-      resolveExecutionConnection: async () =>
-        overrides.executionResolution ?? {
-          kind: 'ready',
-          connection,
-          secretMaterial: {},
-          networkProxy: policy.networkProxy,
-        },
+      resolveExecutionConnection: async (ref) => {
+        overrides.onResolve?.(ref);
+        return (
+          overrides.executionResolution ?? {
+            kind: 'ready',
+            connection,
+            secretMaterial: {},
+            networkProxy: policy.networkProxy,
+          }
+        );
+      },
     },
   };
 }
@@ -1297,9 +1604,10 @@ function configurationInput(
   return {
     sessionId,
     expectedRevision,
-    configuration: {
+    patch: {
       modelTarget: {
         kind: 'explicit',
+        connectionId: 'connection-1',
         connectionSlug: 'test',
         model: 'model-1',
       },
@@ -1326,6 +1634,7 @@ function sessionHeader(sessionId: string, labels: readonly string[]): SessionHea
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'test',
     connectionLocked: true,
     model: 'model-1',

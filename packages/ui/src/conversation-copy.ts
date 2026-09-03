@@ -30,7 +30,7 @@ import {
   DEEP_RESEARCH_SCOPE_OPTIONS,
   DEEP_RESEARCH_STARTER_PROMPTS,
   DEEP_RESEARCH_WORKFLOW_STEPS,
-} from '@maka/core/explore-agent';
+} from '@maka/core/deep-research';
 
 export type DayPeriod = 'morning' | 'noon' | 'afternoon' | 'evening';
 type ResearchItem = Readonly<{ title: string; body: string }>;
@@ -50,6 +50,29 @@ interface GoalElapsedUnits {
   minute: string;
   hour: string;
   day: string;
+}
+
+/** Humanize a retry delay (seconds) — 1s granularity, locale-aware. zh: `4小时 28分 3秒`, en: `4h 28m 3s`. */
+export function formatRetryDelay(seconds: number, locale: UiLocale): string {
+  const s = Math.max(1, Math.ceil(seconds));
+  const d = Math.floor(s / 86_400);
+  const h = Math.floor((s % 86_400) / 3_600);
+  const m = Math.floor((s % 3_600) / 60);
+  const sec = s % 60;
+  if (locale === 'zh') {
+    const parts: string[] = [];
+    if (d > 0) parts.push(`${d}天`);
+    if (h > 0) parts.push(`${h}小时`);
+    if (m > 0) parts.push(`${m}分`);
+    if (sec > 0 || parts.length === 0) parts.push(`${sec}秒`);
+    return parts.join(' ');
+  }
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  if (sec > 0 || parts.length === 0) parts.push(`${sec}s`);
+  return parts.join(' ');
 }
 
 /** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
@@ -111,7 +134,10 @@ export interface ConversationCopy {
     sendLabel: string;
     queuedMessagesAriaLabel(count: number): string;
     promoteQueuedEntry: string;
-    retractQueuedEntry: string;
+    editQueuedEntry: string;
+    saveQueuedEntry: string;
+    cancelQueuedEntryEdit: string;
+    deleteQueuedEntry: string;
     reorderQueuedEntry: string;
     stopLabel: string;
     stopping: string;
@@ -130,6 +156,7 @@ export interface ConversationCopy {
     dropToImport: string;
     addingAttachment: string;
     addFileOrDirectory: string;
+    referenceFolder: string;
     /** The ＋ menu entry that opens the `/` Skill menu. */
     chooseSkill: string;
     /** Why that entry is unavailable: the catalog is empty. */
@@ -189,6 +216,15 @@ export interface ConversationCopy {
     reject: string;
     allowSession: string;
   };
+  clientCapability: {
+    title: string;
+    browser: (origin: string) => string;
+    computerUse: string;
+    desktopMcp: (serverId: string, toolName: string) => string;
+    sessionNotice: string;
+    reject: string;
+    allowSession: string;
+  };
   questions: {
     other: string;
     otherDescription: string;
@@ -216,6 +252,7 @@ export interface ConversationCopy {
     choose: string;
     current: string;
     addProject: string;
+    manageProjects: string;
     noProject: string;
     relink: string;
     unavailable: string;
@@ -227,18 +264,10 @@ export interface ConversationCopy {
     assistant: string;
     processing: string;
     continuing: string;
-    /**
-     * The live turn's rotating working phrases. One is shown at a time beside
-     * the elapsed clock and swapped every `WORKING_PHRASE_INTERVAL_MS`.
-     *
-     * The zh pool is uniform in width on purpose — every entry is 「正在 + two
-     * characters + …」 — so a swap changes glyphs without moving the elapsed
-     * time that follows it. en is proportional anyway, so it only keeps the
-     * entries short.
-     */
-    workingPhrases: readonly string[];
+    awaitingModelOutput: string;
     providerRetryScheduled: (seconds: number, attempt: number, maxAttempts: number) => string;
     providerRetryStarted: (attempt: number, maxAttempts: number) => string;
+    providerRetryWaiting: (attempt: number, maxAttempts: number) => string;
     providerRetryReason: Record<ProviderRetryReason, string>;
     safeResumePending: string;
     safeResume: string;
@@ -251,6 +280,7 @@ export interface ConversationCopy {
     editMessage: string;
     editMessageDisabledRunning: string;
     editMessageDisabledAttachments: string;
+    editMessageDisabledDirectoryReferences: string;
     editMessageDisabledQuotes: string;
     editMessageDisabledTransformedText: string;
     userAriaLabel: string;
@@ -281,6 +311,14 @@ export interface ConversationCopy {
     systemNotes: {
       contextCompacted: string;
       contextCompactionFailedOpen: string;
+      contextProviderDropping: (used: number, prior: number) => string;
+      contextWindowSuggestion: (tokens: number, declared: number | undefined) => string;
+      contextWindowOverrun: (used: number, declared: number) => string;
+      contextReportedWindowExceeded: (used: number, reported: number) => string;
+      contextOverflowAfterCompaction: string;
+      contextUsageShare: (used: number, window: number) => string;
+      contextUsageNoWindow: string;
+      contextUsageUnavailable: string;
       stepLimit: string;
     };
   };
@@ -377,6 +415,8 @@ export interface ConversationCopy {
     pinned: string;
     /** Time-sort unpinned section title (SideNavSection). */
     recent: string;
+    /** Project-sort section title, sibling of `pinned` (SideNavSection). */
+    projects: string;
     groupByTime: string;
     groupByProject: string;
     groupingAriaLabel: string;
@@ -393,6 +433,12 @@ export interface ConversationCopy {
     promptRailAriaLabel: string;
     emptyPrompt: string;
     jumpToPrompt: (preview: string) => string;
+    /** Said about a picked row that is not the open one. */
+    pickedAriaLabel: string;
+    /** The row menu's verbs when the picked set is more than this one row. */
+    pinCount: (count: number) => string;
+    unpinCount: (count: number) => string;
+    archiveCount: (count: number) => string;
   };
 }
 
@@ -418,11 +464,11 @@ const CONVERSATION_COPY = {
       placeholder: '描述任务，@ 引用文件，/ 选择技能…', textareaAriaLabel: '消息输入框', pastedQuoteLabel: '粘贴的文本', selectedSkillsAriaLabel: '已选择的 Skill', removeSkillAriaLabel: (name) => `移除 Skill：${name}`, awaitingPermission: '等待你确认权限…',
       sending: '正在发送…', importing: '正在导入…', sendLabel: '发送',
       queuedMessagesAriaLabel: (count) => `${count} 条待发送消息`,
-      promoteQueuedEntry: '立即发送', retractQueuedEntry: '收回草稿', reorderQueuedEntry: '拖动排序',
+      promoteQueuedEntry: '调整方向', editQueuedEntry: '编辑', saveQueuedEntry: '保存', cancelQueuedEntryEdit: '取消编辑', deleteQueuedEntry: '删除', reorderQueuedEntry: '拖动排序',
       stopLabel: '停止', stopping: '停止中…',
       streaming: 'Maka 正在回答…', processing: 'Maka 正在处理…', continuing: 'Maka 继续中…',
       interruptHint: '或点停止中断', addContext: '添加上下文', stagedContext: '附加内容',
-      selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件或目录',
+      selectModel: '选择模型', dropToImport: '松开以导入文件内容', addingAttachment: '正在添加附件', addFileOrDirectory: '添加文件', referenceFolder: '引用文件夹',
       chooseSkill: '选择技能', noSkillsAvailable: '当前没有可用技能',
       setGoal: '设定 Goal…', goalAlreadySet: '当前会话已有进行中的 Goal',
       switchDisabledStreaming: '当前任务正在流式输出，等结束后再切换模型。', switchDisabledRunning: '当前任务正在运行，等结束后再切换模型。', switchDisabledPermission: '当前有工具调用正在等待确认，处理后再切换模型。',
@@ -462,20 +508,46 @@ const CONVERSATION_COPY = {
       reject: '拒绝',
       allowSession: '本任务允许',
     },
+    clientCapability: {
+      title: '允许使用客户端能力？',
+      browser: (origin) => `允许 Browser 操作 ${origin}`,
+      computerUse: '允许 Computer Use 操作这台 Mac',
+      desktopMcp: (serverId, toolName) => `允许调用 ${serverId} 的 ${toolName} 工具`,
+      sessionNotice: '允许后，本任务中相同范围的后续操作将不再询问。',
+      reject: '拒绝',
+      allowSession: '本任务允许',
+    },
     questions: { other: '其他', otherDescription: '输入一个不同的答案。', otherAriaLabel: '其他答案', otherPlaceholder: '输入你的答案', stop: '停止', stopping: '停止中…', previous: '上一题', submitting: '正在提交…', submit: '提交答案', next: '下一题' },
     mentions: { noFiles: '未找到文件', noSkills: '暂无技能', noCommandsOrSkills: '没有匹配的命令或技能', filesAriaLabel: '工作区文件', skillsAriaLabel: '技能', commandsAndSkillsAriaLabel: '命令和技能', commandsGroup: '命令', skillsGroup: 'Skills', loading: '加载中…' },
     workspace: {
-      choose: '选择项目', current: '当前项目', addProject: '添加项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
+      choose: '选择项目', current: '当前项目', addProject: '添加项目', manageProjects: '管理项目', noProject: '无项目', relink: '重新定位', unavailable: '不可用',
       chooseTitle: (branch) => branch ? `选择项目 · ${branch}` : '选择项目',
       chooseAriaLabel: (label, branch) => branch ? `选择项目：${label}，当前分支 ${branch}` : `选择项目：${label}`,
     },
     messages: {
-      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', workingPhrases: ['正在琢磨…', '正在推敲…', '正在盘算…', '正在钻研…', '正在忙活…', '正在梳理…', '正在打磨…', '正在鼓捣…', '正在酝酿…', '正在攻坚…', '正在权衡…', '正在拾掇…'], providerRetryScheduled: (seconds, attempt, maxAttempts) => `${seconds} 秒后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryReason: { network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, safeResumePending: '正在验证…', safeResume: '安全恢复', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '通过显式技能发送的历史消息暂不支持编辑并重发',
+      you: '你', assistant: 'Maka', processing: '正在处理…', continuing: '继续中…', awaitingModelOutput: '等待模型输出…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `${formatRetryDelay(seconds, 'zh')}后重试（${attempt}/${maxAttempts}）`, providerRetryStarted: (attempt, maxAttempts) => `正在重试（${attempt}/${maxAttempts}）`, providerRetryWaiting: (attempt, maxAttempts) => `等待重试（${attempt}/${maxAttempts}）`, providerRetryReason: { network: '网络中断', provider_capacity: '模型服务暂时满载', provider_unavailable: '模型服务暂时不可用', rate_limit: '触发模型速率限制', timeout: '请求超时', unknown: '模型请求失败' }, safeResumePending: '正在检查…', safeResume: '继续这一轮', thinking: '深度思考', truncated: '已截断', copied: '已复制', copying: '复制中', copyFailed: '复制失败', copy: '复制', editMessage: '编辑并重发', editMessageDisabledRunning: '当前回答仍在进行中，结束后再编辑', editMessageDisabledAttachments: '包含附件的历史消息暂不支持编辑并重发', editMessageDisabledQuotes: '包含引用的历史消息暂不支持编辑并重发', editMessageDisabledTransformedText: '包含已展开上下文的历史消息暂不支持编辑并重发',
+      editMessageDisabledDirectoryReferences: '包含文件夹引用的历史消息暂不支持编辑并重发',
       userAriaLabel: '你发送的消息', systemAriaLabel: '系统消息', assistantAriaLabel: 'Maka 的回答', answerActionsAriaLabel: (context) => `回答操作${context ? `：${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action}回答${context ? `：${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action}消息${context ? `：${context}` : ''}`, sourceAriaLabel: '本轮回答的来源', derivativesAriaLabel: '本轮回答的衍生', scheduledTaskTriggered: '定时任务触发', scheduledTaskTitle: (id) => `由定时任务触发 · ${id}`, legacyAutomationTriggered: '旧版自动化（仅历史）', legacyAutomationTitle: (id) => `由旧版自动化触发 · ${id} · 仅保留历史，不会再次执行`, goalContinued: 'Goal 自动继续', goalTitle: (id) => `由 Goal 继续执行 · ${id}`, agentGraphTriggered: 'Agent Graph 自动继续', agentGraphTitle: (graphId) => `由 Agent Graph 调度器触发 · ${graphId}`,
-      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '(已中断)', abortedByStop: '(已中断 · 由停止按钮触发)',
+      thinkingTruncatedTitle: '部分 reasoning 已截断；显示的是最近的内容', outputTruncatedTitle: '助手输出已超过单次回合上限，超出部分未渲染。如需完整内容请重新生成或查看持久化的任务日志。', removeAttachmentAriaLabel: (name) => `移除 ${name}`, quoteLabel: '引用', quoteExpandAriaLabel: '展开引用全文', quoteCollapseAriaLabel: '收起引用', removeQuoteAriaLabel: '移除引用', aborted: '已中断', abortedByStop: '已中断 · 由停止按钮触发',
       systemNotes: {
         contextCompacted: '已压缩较早的对话内容，以适应模型上下文窗口。',
         contextCompactionFailedOpen: '上下文摘要失败；本轮已在未生成新摘要的情况下继续。',
+        contextProviderDropping: (used, prior) =>
+          `供应商在丢弃或改写上下文：追加了内容，它报告的输入却是 ${used.toLocaleString('zh-CN')} tokens，与之前的 ${prior.toLocaleString('zh-CN')} 相比没有增长。在连接设置里为该模型声明上下文窗口，让 Maka 先行压缩。`,
+        contextWindowSuggestion: (tokens, declared) =>
+          declared === undefined
+            ? `供应商拒绝了这次请求。该模型未声明上下文窗口；上次成功的用量约 ${tokens} tokens，可将窗口设为该值让 Maka 先行压缩。`
+            : `供应商拒绝了这次请求，但用量（约 ${tokens} tokens）低于你声明的窗口（${declared}）。声明值可能大于供应商实际窗口，建议下调到 ${tokens}。`,
+        contextWindowOverrun: (used, declared) =>
+          `本次交换用了约 ${used} tokens，超过你声明的窗口（${declared}）：回复需要的空间比剩余的多。Maka 会在下一次请求前压缩；若希望回复保持完整，可调大窗口。`,
+        contextReportedWindowExceeded: (used, reported) =>
+          `本次交换用了约 ${used} tokens，已超过该模型上报的窗口（${reported}），但供应商没有拒绝。你未声明窗口，Maka 因此不会主动压缩。在连接设置里声明一个窗口即可让它先行压缩。`,
+        contextOverflowAfterCompaction:
+          '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
+        contextUsageShare: (used, window) =>
+          `${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} tokens`,
+        contextUsageNoWindow: '该模型没有窗口大小可用：未声明，模型也未上报',
+        contextUsageUnavailable: '供应商未报告用量',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
     },
@@ -516,7 +588,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: '可继续', running: '进行中', waiting_for_user: '等你确认', blocked: '需要处理', aborted: '已中止' },
       blockedReason: { NO_REAL_CONNECTION: '等待配置可用模型连接', auth: '需要重新登录', permission_required: '等待权限确认', tool_failed: '工具调用失败', unknown: '运行中断，可重试' },
-      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', recent: '最近', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`,
+      listAriaLabel: '任务列表', showMore: '显示更多', showMoreAriaLabel: (count) => `显示 ${count} 条更多任务`, renameAriaLabel: '重命名任务', renameProjectTitle: '重命名项目', renameSubmit: '保存', respondingAriaLabel: '正在响应', respondingTitle: '任务正在流式响应中', staleTitle: '此任务使用的模型连接已不可用，发送时会切换到默认连接', staleAriaLabel: '任务已过期', stale: '已过期', unreadAriaLabel: '未读消息', actionsAriaLabel: (name) => `${name} 任务操作`, pin: '置顶', unpin: '取消置顶', rename: '重命名', archive: '归档', unarchive: '取消归档', delete: '删除', pinned: '置顶', recent: '最近', projects: '项目', groupByTime: '按时间', groupByProject: '按项目', groupingAriaLabel: '任务分组方式', projectActionsAriaLabel: (name) => `${name} 项目操作`, projectNewTask: '新建任务', projectRename: '重命名', projectArchive: '归档', projectRestore: '恢复', projectRelink: '重新定位', projectUnavailable: '项目目录不可用', archivedProjects: '已归档项目', archivedProjectsAriaLabel: '展开已归档项目', worktreeAriaLabel: 'Git 工作树', promptRailAriaLabel: '按提问跳转', emptyPrompt: '（空提问）', jumpToPrompt: (preview) => `跳到提问：${preview}`, pickedAriaLabel: '已选中', pinCount: (count) => `置顶 ${count} 项`, unpinCount: (count) => `取消置顶 ${count} 项`, archiveCount: (count) => `归档 ${count} 项`,
     },
   },
   en: {
@@ -569,11 +641,11 @@ const CONVERSATION_COPY = {
       placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
       sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
       queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
-      promoteQueuedEntry: 'Send now', retractQueuedEntry: 'Restore to draft', reorderQueuedEntry: 'Drag to reorder',
+      promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
       stopLabel: 'Stop', stopping: 'Stopping…',
       streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
       interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
-      selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add file or directory',
+      selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
       chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
       setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
       switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
@@ -610,20 +682,46 @@ const CONVERSATION_COPY = {
       reject: 'Reject',
       allowSession: 'Allow for this task',
     },
+    clientCapability: {
+      title: 'Allow this client capability?',
+      browser: (origin) => `Allow Browser to operate ${origin}`,
+      computerUse: 'Allow Computer Use to operate this Mac',
+      desktopMcp: (serverId, toolName) => `Allow ${toolName} from ${serverId}`,
+      sessionNotice: 'Matching operations will be allowed for the rest of this task.',
+      reject: 'Reject',
+      allowSession: 'Allow for this task',
+    },
     questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
     mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
     workspace: {
-      choose: 'Choose project', current: 'Current project', addProject: 'Add project', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
+      choose: 'Choose project', current: 'Current project', addProject: 'Add project', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
       chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
       chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
     },
     messages: {
-      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${seconds}s (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryReason: { network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, safeResumePending: 'Checking…', safeResume: 'Safe recovery', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages sent with an explicit skill',
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', awaitingModelOutput: 'Waiting for model output…', providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, 'en')} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
       userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
-      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: '(Interrupted)', abortedByStop: '(Interrupted · Stop button)',
+      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
       systemNotes: {
         contextCompacted: 'Context compacted to keep this session within the model window.',
         contextCompactionFailedOpen: 'Context summary failed; the session continued without a new summary.',
+        contextProviderDropping: (used, prior) =>
+          `The provider is dropping or rewriting context: content was appended, and it counted ${used.toLocaleString('en-US')} input tokens against ${prior.toLocaleString('en-US')} before, which is no growth. Declare a context window for this model in the connection settings so Maka compacts first.`,
+        contextWindowSuggestion: (tokens, declared) =>
+          declared === undefined
+            ? `The provider rejected this request. No context window is declared for this model; the last accepted usage was about ${tokens} tokens — set the window to that value so Maka compacts first.`
+            : `The provider rejected this request at about ${tokens} tokens, below your declared window (${declared}). The declared value is likely larger than the provider's; consider lowering it to ${tokens}.`,
+        contextWindowOverrun: (used, declared) =>
+          `This exchange used about ${used} tokens against your declared window (${declared}): the reply needed more room than was left. Maka compacts before the next request; raise the window if the replies should stay whole.`,
+        contextReportedWindowExceeded: (used, reported) =>
+          `This exchange used about ${used} tokens, past the ${reported} this model reports, and the provider accepted it without complaint. Nothing is declared, so Maka does not compact on its own. Declare a context window in the connection settings to have it compact first.`,
+        contextOverflowAfterCompaction:
+          'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
+        contextUsageShare: (used, window) =>
+          `${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens`,
+        contextUsageNoWindow: 'No context window size is available: none declared, none reported',
+        contextUsageUnavailable: 'The provider did not report usage',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },
@@ -664,7 +762,7 @@ const CONVERSATION_COPY = {
     sessions: {
       status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
       blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
-      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`,
+      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', projects: 'Projects', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
   },
 } satisfies UiCatalog<ConversationCopy>;

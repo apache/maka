@@ -49,6 +49,7 @@ The release gate validates the following installed-package matrix:
 | --- | --- | --- | --- | --- |
 | Linux | x64 | 22.19 | Validated | Preflight only |
 | Linux | x64 | 24 | Validated | Validated |
+| Linux | arm64 | 24 | Validated | Preflight only |
 | macOS | arm64 | 24 | Validated | Preflight only |
 | Windows | x64 | 24 | Validated | Preflight only |
 
@@ -105,13 +106,16 @@ modify.
 While using prereleases, keep the `next` tag explicit:
 
 ```sh
-npm install --global maka-agent@next
+maka update --target next
 maka --version
 ```
 
-Do not use a bare `npm update --global maka-agent` for beta upgrades: global npm updates follow the
-`latest` tag and may select a different release line. After a stable release is available, install it
-with `npm install --global maka-agent@latest`.
+The update stages and verifies the exact release before replacing the local Runtime Host or the
+npm-global package. It refuses to interrupt active or durable work by default. Use
+`--allow-interrupt-active-tasks` only after deciding that interruption is safe. A direct
+`npm install --global maka-agent@next` remains available for installation repair; do not use a bare
+`npm update --global maka-agent`, because it follows `latest` and may select a different release
+line. After a stable release is available, select it with `maka update --target latest`.
 
 ## Remote Runtime Host setup
 
@@ -125,6 +129,33 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 
 Rerunning setup replaces that Client credential. The service no longer depends on the temporary
 `npx` cache after setup succeeds.
+
+Check a managed service against a release channel without changing the running Host:
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+The result pins the selected channel to an exact version and package integrity. It also reports
+whether the package carries enough compatibility evidence for unattended use; this command never
+installs or switches a package. Installation-management callers can pass the same selector to
+`service update --target`. That path verifies the archive and extracted manifest before delegating
+to the existing exact-package update transaction, and does not mutate a candidate that requires
+manual review.
+
+The installation owner can persist one update target and reconcile it with the same verified
+transaction:
+
+```sh
+maka runtime-host service update-policy --target latest \
+  --expected-service-id <service-id> \
+  --expected-root-path <state-root> \
+  --expected-root-id <root-id>
+maka runtime-host service reconcile-update --json
+```
+
+Use `update-policy --target manual` to disable automatic reconciliation. Reconciliation is a
+bounded one-shot command: it never interrupts active work and does not install a scheduler.
 
 ## Uninstall
 

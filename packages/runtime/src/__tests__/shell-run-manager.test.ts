@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import childProcess, {
   type ExecFileException,
@@ -34,7 +35,7 @@ import {
   type ShellRunStore,
 } from '@maka/core/shell-run';
 import { type ShellRunUpdate, type ToolResultContent } from '@maka/core/events';
-import { createSqliteShellRunStore } from '@maka/storage';
+import { createSqliteShellRunStore } from '@maka/storage/shell-run-store';
 
 import { ShellRunProcessManager } from '../shell-run-manager.js';
 import {
@@ -45,6 +46,7 @@ import {
 import { defaultShellPlan, type ShellPlan } from '../shell-detect.js';
 import { PtyProcessDriver } from '../pty-process-driver.js';
 import { PTY_PROTOCOL_REPLY_MAX_BYTES } from '../pty-screen-collector.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const NO_ABORT = new AbortController().signal;
 const TEMPORARY_WORKSPACES = new Set<string>();
@@ -59,6 +61,62 @@ after(async () => {
 });
 
 describe('ShellRunProcessManager', () => {
+  test('rejects a model Read of a user-owned resource while preserving client inspection', async () => {
+    const store = createSqliteShellRunStore(await workspace());
+    await store.createShellRun({
+      ...record({ shellRunId: 'user-command', status: 'completed' }),
+      visibility: 'user',
+      command: 'printf private-output',
+      output: {
+        mode: 'pipes',
+        stdout: 'private-output\n',
+        stderr: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        redacted: false,
+      },
+      completedAt: 2,
+      exitCode: 0,
+    });
+    const manager = createManager(store);
+    const ref = 'maka://runtime/background-tasks/user-command';
+
+    await assert.rejects(
+      () => manager.readRuntimeResource('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () => manager.stopBackgroundTask('session-1', ref, NO_ABORT),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+    await assert.rejects(
+      () =>
+        manager.writeStdin({
+          sessionId: 'session-1',
+          ref,
+          input: 'private-input',
+          abortSignal: NO_ABORT,
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        (error as NodeJS.ErrnoException).code === 'ENOENT' &&
+        error.message === 'Runtime background task not found in this session',
+    );
+
+    const inspected = await manager.inspectResource('session-1', ref);
+    assert.equal(inspected.output.mode, 'pipes');
+    assert.equal(inspected.output.stdout, 'private-output\n');
+    const stopped = await manager.stopBackgroundTask('session-1', ref, NO_ABORT, 'client');
+    assert.equal(stopped.kind, 'shell_run');
+    assert.equal(stopped.operation?.kind, 'stop');
+  });
+
   test('rejects unprojectable provider tool-call identities before durable admission', async () => {
     const cwd = await workspace();
     const store = sqliteShellRunStore(cwd);
@@ -2977,11 +3035,11 @@ async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 3_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for ShellRun state');
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 20,
+    message: 'Timed out waiting for ShellRun state',
+  });
 }
 
 function nodeCommand(script: string): string {
@@ -3095,15 +3153,4 @@ function delayPosixProcessDiscovery(context: TestContext): {
     started: processTableStarted.promise,
     release: () => releaseProcessTable.resolve(),
   };
-}
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T | PromiseLike<T>): void;
-} {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
 }

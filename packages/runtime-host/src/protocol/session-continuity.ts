@@ -41,7 +41,12 @@ import {
   type SessionMessageQueueProjection,
 } from './message.js';
 import { defineOperation } from './operation-spec.js';
-import { decodeTurnSnapshot, type TurnSnapshot } from './turn.js';
+import {
+  decodeMessageContent,
+  decodeTurnSnapshot,
+  type MessageContent,
+  type TurnSnapshot,
+} from './turn.js';
 import { decodeGoalProjection, type GoalProjection } from './goal.js';
 import { decodeRuntimeResourceRef } from './runtime-resource.js';
 import {
@@ -50,7 +55,7 @@ import {
   type SessionTranscriptBootstrap,
 } from './session-transcript.js';
 
-export const SESSION_CONTINUITY_SCHEMA_VERSION = 4 as const;
+export const SESSION_CONTINUITY_SCHEMA_VERSION = 5 as const;
 export const SESSION_CONTINUITY_SNAPSHOT_MAX_BYTES = 56 * 1024;
 // Leave transport headroom for the response envelope and request correlation.
 export const SUBSCRIPTION_OPEN_RESULT_MAX_BYTES = 92 * 1024;
@@ -59,6 +64,14 @@ export const SESSION_LIVE_DELTA_MAX_BYTES = 16 * 1024;
 // needs at most three UTF-8 bytes (an astral pair needs four bytes total).
 export const SESSION_TOOL_OUTPUT_DELTA_MAX_BYTES = 3 * TOOL_OUTPUT_DELTA_MAX_CHARS;
 export const SESSION_TOOL_NAME_MAX_BYTES = 256;
+export const SESSION_TOOL_INTENT_MAX_BYTES = 512;
+/**
+ * Live `tool_start` frames carry a bounded, redacted args preview (never the
+ * full args — a Write can carry a whole file) so compact tool rows can name
+ * the call during the live window. Sized to fit `@maka/core`
+ * `projectToolArgsPreview`'s 2,048-char JSON cap with UTF-8 headroom.
+ */
+export const SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES = 8 * 1024;
 export const SESSION_SUBSCRIPTION_FRAME_MAX_BYTES = 64 * 1024 - 1;
 export const SESSION_RUNTIME_RESOURCE_PTY_DATA_MAX_BYTES = 48 * 1024;
 
@@ -162,6 +175,18 @@ export type SessionToolEvent =
       // an event the rest of the system considered valid.
       activityKind?: ToolActivityKind;
       displayName?: string;
+      /**
+       * Model/runtime-authored call intent. Pass-through from the durable
+       * event; bounded on the wire.
+       */
+      intent?: string;
+      /**
+       * Bounded, redacted subset of the call args (see `@maka/core`
+       * `projectToolArgsPreview`) so live compact tool rows can name what the
+       * call does before the durable transcript delivers full args at turn
+       * end. Shaped like the args themselves; never carries file contents.
+       */
+      argsPreview?: unknown;
       stepId?: string;
       shellRunRef?: string;
     })
@@ -190,11 +215,26 @@ export type SessionToolEvent =
       content: ToolResultPreviewContent;
     });
 
+/**
+ * The durable mid-turn user interjection (steering), forwarded verbatim from the
+ * run's event stream. Unlike tool events it has no toolUseId; it shares the
+ * frame so subscribers render the interjection in place without depending on
+ * observing the transient in-flight queue state.
+ */
+export interface SessionSteeringEvent {
+  type: 'steering_message';
+  id: string;
+  turnId: string;
+  ts: number;
+  messageId: string;
+  content: MessageContent;
+}
+
 export interface SessionEventFrame extends SubscriptionEnvelope {
   kind: 'subscription.session_event';
   sessionId: string;
   runId: string;
-  event: SessionToolEvent;
+  event: SessionToolEvent | SessionSteeringEvent;
 }
 
 export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
@@ -204,7 +244,7 @@ export interface SessionTranscriptAdvancedFrame extends SubscriptionEnvelope {
 }
 
 export const SESSION_DOMAINS = [
-  'task',
+  'todo',
   'plan',
   'deep_research',
   'usage',
@@ -253,7 +293,7 @@ export interface AgentGraphChangedFrame extends SubscriptionEnvelope {
 
 export interface SubscriptionClosedFrame extends SubscriptionEnvelope {
   kind: 'subscription.closed';
-  reason: 'slow_consumer' | 'session_removed';
+  reason: 'slow_consumer' | 'session_removed' | 'access_revoked';
 }
 
 export type SubscriptionFrame =
@@ -365,7 +405,7 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       ...envelope,
       sessionId: requireEntityId(record.sessionId, 'sessionId'),
       runId: requireEntityId(record.runId, 'runId'),
-      event: decodeSessionToolEvent(record.event),
+      event: decodeSessionFrameEvent(record.event),
     };
   } else if (record.kind === 'subscription.transcript_advanced') {
     assertExactKeys(record, 'Session transcript advanced frame', [
@@ -452,7 +492,11 @@ export function decodeSubscriptionFrame(value: unknown): SubscriptionFrame {
       'sequence',
       'reason',
     ]);
-    if (record.reason !== 'slow_consumer' && record.reason !== 'session_removed') {
+    if (
+      record.reason !== 'slow_consumer' &&
+      record.reason !== 'session_removed' &&
+      record.reason !== 'access_revoked'
+    ) {
       throw invalidProtocolFrame('Invalid subscription close reason');
     }
     frame = { kind: record.kind, ...envelope, reason: record.reason };
@@ -710,6 +754,31 @@ function decodeAssistantDelta(value: unknown): SessionAssistantDelta {
   };
 }
 
+function decodeSessionFrameEvent(value: unknown): SessionToolEvent | SessionSteeringEvent {
+  const record = requireRecord(value, 'Session event');
+  if (record.type === 'steering_message') return decodeSessionSteeringEvent(record);
+  return decodeSessionToolEvent(record);
+}
+
+function decodeSessionSteeringEvent(record: Record<string, unknown>): SessionSteeringEvent {
+  assertExactKeys(record, 'Session steering event', [
+    'type',
+    'id',
+    'turnId',
+    'ts',
+    'messageId',
+    'content',
+  ]);
+  return {
+    type: 'steering_message',
+    id: requireId(record.id, 'Session steering event id'),
+    turnId: requireEntityId(record.turnId, 'turnId'),
+    ts: requireCount(record.ts, 'Session steering event timestamp'),
+    messageId: requireEntityId(record.messageId, 'messageId'),
+    content: decodeMessageContent(record.content),
+  };
+}
+
 function decodeSessionToolEvent(value: unknown): SessionToolEvent {
   const record = requireRecord(value, 'Session tool event');
   const identity = {
@@ -729,6 +798,8 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'operationId',
       'activityKind',
       'displayName',
+      'intent',
+      'argsPreview',
       'stepId',
       'shellRunRef',
     ];
@@ -741,6 +812,13 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
       'toolUseId',
       'toolName',
     ]);
+    if (record.argsPreview !== undefined) {
+      requireEncodedByteLimit(
+        record.argsPreview,
+        'Session tool args preview',
+        SESSION_TOOL_ARGS_PREVIEW_MAX_BYTES,
+      );
+    }
     return {
       type: record.type,
       ...identity,
@@ -764,6 +842,18 @@ function decodeSessionToolEvent(value: unknown): SessionToolEvent {
               SESSION_TOOL_NAME_MAX_BYTES,
             ),
           }),
+      ...(record.intent === undefined
+        ? {}
+        : {
+            intent: requireUtf8BoundedString(
+              record.intent,
+              'Session tool intent',
+              SESSION_TOOL_INTENT_MAX_BYTES,
+            ),
+          }),
+      ...(record.argsPreview === undefined
+        ? {}
+        : { argsPreview: structuredClone(record.argsPreview) }),
       ...(record.stepId === undefined ? {} : { stepId: requireEntityId(record.stepId, 'stepId') }),
       ...(record.shellRunRef === undefined
         ? {}

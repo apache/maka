@@ -46,6 +46,7 @@ release commit 中的 [DISCLAIMER-WIP](https://github.com/apache/maka/blob/main/
 | --- | --- | --- | --- | --- |
 | Linux | x64 | 22.19 | 已验证 | 仅验证 preflight |
 | Linux | x64 | 24 | 已验证 | 已验证 |
+| Linux | arm64 | 24 | 已验证 | 仅验证 preflight |
 | macOS | arm64 | 24 | 已验证 | 仅验证 preflight |
 | Windows | x64 | 24 | 已验证 | 仅验证 preflight |
 
@@ -98,13 +99,15 @@ Maka 默认会在执行高权限工具操作前询问。`maka run --yolo` 会授
 使用预发布版本时，请继续明确指定 `next`：
 
 ```sh
-npm install --global maka-agent@next
+maka update --target next
 maka --version
 ```
 
-Beta 升级不要使用不带 tag 的 `npm update --global maka-agent`：npm 的全局更新会跟随
-`latest`，可能选中不同的发布线。稳定版发布后，使用
-`npm install --global maka-agent@latest` 安装。
+更新流程会先 stage 并验证精确 release，再替换本地 Runtime Host 与 npm-global package；
+默认不会中断 active 或 durable work。只有在你确认可以安全中断后，才使用
+`--allow-interrupt-active-tasks`。`npm install --global maka-agent@next` 仍可用于修复安装；
+不要使用不带 tag 的 `npm update --global maka-agent`，因为它会跟随 `latest`，可能选中
+不同的发布线。稳定版发布后，使用 `maka update --target latest`。
 
 ## 设置远程 Runtime Host
 
@@ -117,6 +120,30 @@ npx --yes --package maka-agent@next maka runtime-host setup \
 ```
 
 重复设置会替换该 Client credential。设置成功后，service 不再依赖临时 `npx` cache。
+
+可以在不改变当前 Host 的情况下检查 managed service 对应的发布频道：
+
+```sh
+maka runtime-host service check-update --target next --json
+```
+
+结果会把频道固定为精确版本和 package integrity，并说明 package 是否提供足够的兼容性证据，
+可供无人值守流程使用；该命令不会安装或切换 package。安装管理方可以把同一
+selector 传给 `service update --target`。该路径会先校验 archive 与解包后的 manifest，再委托给
+现有的精确 package 更新事务；需要人工审查的候选不会改变当前 Host。
+
+Installation owner 可以持久化一个更新目标，并通过同一套已验证事务执行 reconciliation：
+
+```sh
+maka runtime-host service update-policy --target latest \
+  --expected-service-id <service-id> \
+  --expected-root-path <state-root> \
+  --expected-root-id <root-id>
+maka runtime-host service reconcile-update --json
+```
+
+使用 `update-policy --target manual` 关闭自动 reconciliation。Reconciliation 是有界的单次命令：
+它不会中断 active work，也不会安装 scheduler。
 
 ## 卸载
 

@@ -32,6 +32,8 @@ import type {
   ExecutionStoresWriter,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  SessionTranscriptRecordScanPage,
+  SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
 } from '@maka/storage/execution-stores';
 import { SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES, type TurnSnapshot } from '../protocol/index.js';
@@ -51,6 +53,8 @@ export function createSessionTranscriptReader(input: {
       input.stores.sessionStore.readTranscriptHighWaterSnapshot(sessionId),
     readDurablePage: (sessionId, request) =>
       input.stores.sessionStore.readTranscriptPageSnapshot(sessionId, request),
+    readDurableRecords: (sessionId, request) =>
+      input.stores.sessionStore.readTranscriptRecordsSnapshot(sessionId, request),
     readDurableMessagesById: (sessionId, request) =>
       input.stores.sessionStore.readTranscriptMessagesSnapshot(sessionId, request),
     readActiveOverlay: async (sessionId, rootTurn) => {
@@ -81,6 +85,10 @@ export interface SessionTranscriptReader {
     sessionId: string,
     request: SessionTranscriptPageRequest,
   ): Promise<SessionTranscriptStoragePage>;
+  readDurableRecords(
+    sessionId: string,
+    request: SessionTranscriptRecordScanRequest,
+  ): Promise<SessionTranscriptRecordScanPage>;
   readDurableMessagesById(
     sessionId: string,
     request: SessionTranscriptMessageLookupRequest,

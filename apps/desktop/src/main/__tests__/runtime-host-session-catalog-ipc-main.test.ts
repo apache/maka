@@ -19,8 +19,14 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { SessionCatalogProjection } from '@maka/runtime-host/protocol';
-import { toDesktopHostSessionSummary } from '../runtime-host-session-catalog-ipc-main.js';
+import type { IpcMain } from 'electron';
+import type { SessionCatalogProjection, SessionCreateInput } from '@maka/runtime-host/protocol';
+import {
+  registerRuntimeHostSessionCatalogIpc,
+  toDesktopHostSharedSessionSummary,
+  toDesktopHostSessionSummary,
+  type RuntimeHostSessionCatalogIpcDeps,
+} from '../runtime-host-session-catalog-ipc-main.js';
 
 test('maps Runtime Host live run state without collapsing unknown and known-empty', () => {
   const unknown = toDesktopHostSessionSummary(projection());
@@ -35,6 +41,63 @@ test('maps Runtime Host live run state without collapsing unknown and known-empt
   assert.deepEqual(knownEmpty.runningTurnIds, []);
   assert.deepEqual(running.runningTurnIds, ['turn-live']);
 });
+
+test('preserves the Session revision in Owner and Shared Desktop Host summaries', () => {
+  assert.equal(toDesktopHostSessionSummary(projection({ revision: 7 })).revision, 7);
+  assert.equal(toDesktopHostSharedSessionSummary(sharedProjection()).revision, 7);
+});
+
+test('session creation forwards the caller name for a mode that carries none', async () => {
+  const creates: SessionCreateInput[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostSessionCatalogIpc(createDeps(creates), ipc as unknown as IpcMain);
+
+  await ipc.invoke('sessions:create', { mode: 'bot', name: '飞书 任务' });
+  await ipc.invoke('sessions:create', { mode: 'deep_research', name: '飞书 任务' });
+
+  assert.deepEqual(
+    creates.map((input) => [input.mode, input.name]),
+    [
+      ['bot', '飞书 任务'],
+      ['deep_research', '飞书 任务'],
+    ],
+  );
+});
+
+type IpcHandler = Parameters<Pick<IpcMain, 'handle'>['handle']>[1];
+
+function ipcHarness() {
+  const handlers = new Map<string, IpcHandler>();
+  return {
+    handle(channel: string, handler: IpcHandler) {
+      handlers.set(channel, handler);
+    },
+    async invoke(channel: string, ...args: unknown[]): Promise<unknown> {
+      const handler = handlers.get(channel);
+      assert.ok(handler, `missing handler: ${channel}`);
+      return handler({} as never, ...args);
+    },
+  };
+}
+
+function createDeps(creates: SessionCreateInput[]): RuntimeHostSessionCatalogIpcDeps {
+  return {
+    client: {
+      createSession: async (input: SessionCreateInput) => {
+        creates.push(input);
+        return projection({ id: input.sessionId });
+      },
+    } as unknown as RuntimeHostSessionCatalogIpcDeps['client'],
+    runningTurnIds: () => [],
+    resolveCreateProject: async () => ({ kind: 'host_path', path: '/workspace' }),
+    emitSessionsChanged: () => {},
+    releaseSessionResources: () => {},
+    sessionCopyCleanup: {
+      ownCreation: async <T>(_creation: unknown, operation: () => Promise<T>) => operation(),
+      recover: async () => ({ removed: [], failed: [] }),
+    } as unknown as RuntimeHostSessionCatalogIpcDeps['sessionCopyCleanup'],
+  };
+}
 
 function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionCatalogProjection {
   return {
@@ -54,6 +117,7 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'openai-main',
     connectionLocked: true,
     model: 'gpt-5',
@@ -61,5 +125,17 @@ function projection(overrides: Partial<SessionCatalogProjection> = {}): SessionC
     collaborationMode: 'agent',
     orchestrationMode: 'default',
     ...overrides,
+  };
+}
+
+function sharedProjection() {
+  return {
+    kind: 'shared_session' as const,
+    id: 'session-1',
+    revision: 7,
+    createdAt: 1,
+    activityAt: 2,
+    name: 'Session',
+    status: 'active' as const,
   };
 }

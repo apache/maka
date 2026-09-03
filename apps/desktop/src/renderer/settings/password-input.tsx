@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from 'react';
 import { ICON_SIZE, Check, Copy, Eye, EyeOff } from '@maka/ui/icons';
 import {
   IconButton,
@@ -53,12 +59,20 @@ export function PasswordInput(props: {
   placeholder?: string;
   label: string;
   isLabelHidden?: boolean;
-  description?: string;
+  // ReactNode, not string: a description may carry an inline link (e.g. the web
+  // search "申请地址：tavily.com" apply link). Astryx FieldLabel already renders
+  // a ReactNode description and its click-forwarding skips nested interactive
+  // content; only the InputGroup/Field prop types under-declare it as `string`,
+  // which the single cast at the InputGroup call site below papers over.
+  description?: ReactNode;
   status?: InputGroupProps['status'];
   isRequired?: boolean;
   isOptional?: boolean;
   isDisabled?: boolean;
-  onBlur?(): void;
+  onFocusExit?(): void;
+  onEnter?(): void;
+  onKeyDown?(event: KeyboardEvent<HTMLInputElement>): void;
+  hasCopyAction?: boolean;
   hasAutoFocus?: boolean;
 }) {
   const copy = getSettingsPreferencesCopy(useUiLocale()).password;
@@ -112,18 +126,37 @@ export function PasswordInput(props: {
     // written on, and the group's `aria-labelledby` is what names it.
     <InputGroup
       label={props.label}
-      description={props.description}
+      // Cast: InputGroup/Field type `description` as `string`, but the
+      // underlying FieldLabel renders any ReactNode (see the prop's note).
+      description={props.description as string | undefined}
       isLabelHidden={props.isLabelHidden}
       isDisabled={props.isDisabled}
       isRequired={props.isRequired}
       isOptional={props.isOptional}
       status={props.status}
+      onBlurCapture={(event) => {
+        const destination = event.relatedTarget;
+        if (!destination && !event.currentTarget.ownerDocument.hasFocus()) {
+          return;
+        }
+        if (
+          destination &&
+          event.currentTarget.contains(destination as Node)
+        ) {
+          return;
+        }
+        props.onFocusExit?.();
+      }}
     >
       <TextInput
         type={visible ? 'text' : 'password'}
         value={props.value}
         onChange={(value) => props.onChange(value)}
-        onBlur={props.onBlur}
+        onKeyDown={(event) => {
+          if (event.nativeEvent.isComposing || event.key === 'Process') return;
+          if (event.key === 'Enter') props.onEnter?.();
+          props.onKeyDown?.(event);
+        }}
         placeholder={props.placeholder}
         label={copy.value}
         isLabelHidden
@@ -134,7 +167,7 @@ export function PasswordInput(props: {
       />
       {/* InputGroupText: the sanctioned addon segment — bare IconButtons break the group's caps. */}
       <InputGroupText>
-        {props.value && !props.isDisabled && (
+        {(props.hasCopyAction ?? true) && props.value && !props.isDisabled && (
           <IconButton
             variant="ghost"
             size="sm"

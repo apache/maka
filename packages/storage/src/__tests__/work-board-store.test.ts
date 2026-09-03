@@ -39,6 +39,7 @@ import {
   WORK_BOARD_DEFAULT_PAGE_SIZE,
   WORK_BOARD_PROJECT_ID_MAX_CHARS,
 } from '@maka/core/work-board';
+import { SQLITE_WORKFLOW_SCHEMA_VERSION } from '../sqlite-workflow-schema.js';
 
 describe('Work Board store', () => {
   test('persists items across reopen', async () => {
@@ -182,6 +183,22 @@ describe('Work Board store', () => {
         await store.archive(ids[0]!, {}, 7);
         assert.equal((await store.list()).items.length, 5);
         assert.equal((await store.list({ includeArchived: true })).items.length, 6);
+
+        const absorbedProjectItem = await store.create(
+          itemInput({
+            title: 'absorbed project item',
+            scope: { kind: 'project', projectId: 'project-stale' },
+          }),
+          8,
+        );
+        const projectWithAliases = await store.list({
+          scope: { kind: 'project', projectId: 'p1' },
+          projectIds: ['p1', 'project-stale'],
+        });
+        assert.deepEqual(
+          projectWithAliases.items.map((item) => item.id),
+          [absorbedProjectItem.id, projectItem.id],
+        );
       } finally {
         store.close();
       }
@@ -268,6 +285,21 @@ describe('Work Board store', () => {
           (error: unknown) =>
             error instanceof WorkBoardStoreError && error.code === 'invalid_input',
         );
+
+        const aliasItem = await store.create(
+          itemInput({ scope: { kind: 'project', projectId: 'absorbed' } }),
+          200,
+        );
+        const aliasPage = await store.list({
+          limit: 1,
+          scope: { kind: 'project', projectId: 'canonical' },
+          projectIds: ['canonical', 'absorbed'],
+        });
+        assert.deepEqual(
+          aliasPage.items.map((item) => item.id),
+          [aliasItem.id],
+        );
+        assert.equal(aliasPage.nextCursor, undefined);
         await assert.rejects(
           store.list({ includeArchived: true, cursor: inboxPage.nextCursor }),
           (error: unknown) =>
@@ -313,6 +345,48 @@ describe('Work Board store', () => {
         });
         assert.equal(second.items.length, 1);
         assert.notEqual(second.items[0]?.id, first.items[0]?.id);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('paginates across an unbounded relinked project identity set', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const projectIds = Array.from(
+          { length: 15 },
+          (_, index) => `00000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+        );
+        const createdIds: string[] = [];
+        for (let index = 0; index < 101; index += 1) {
+          const item = await store.create(
+            itemInput({
+              title: `aliased-project-${index}`,
+              scope: { kind: 'project', projectId: projectIds[index % projectIds.length]! },
+            }),
+            1_000 + index,
+          );
+          createdIds.push(item.id);
+        }
+
+        const query = {
+          limit: 100,
+          scope: { kind: 'project' as const, projectId: projectIds[0]! },
+          projectIds,
+        };
+        const first = await store.list(query);
+        assert.equal(first.items.length, 100);
+        assert.ok(first.nextCursor);
+        assert.ok(first.nextCursor.length < 512);
+
+        const second = await store.list({ ...query, cursor: first.nextCursor });
+        assert.deepEqual(
+          second.items.map((item) => item.id),
+          [createdIds[0]],
+        );
+        assert.equal(second.nextCursor, undefined);
       } finally {
         store.close();
       }
@@ -591,7 +665,7 @@ describe('Work Board store', () => {
     });
   });
 
-  test('migrates a real workflow schema 8 database to version 9 with the board table', async () => {
+  test('migrates a real workflow schema 8 database through event-only version 10', async () => {
     const base = await mkdtemp(join(tmpdir(), 'maka-work-board-schema8-'));
     const stateRoot = join(base, 'state');
     const databasePath = join(stateRoot, 'runtime.sqlite');
@@ -610,7 +684,7 @@ describe('Work Board store', () => {
           ),
         );
         // The released v0.1.6 fixture ships an Automation definition; clearing
-        // it keeps the fixture focused on the workflow 8 -> 9 upgrade while
+        // it keeps the fixture focused on the workflow 8 -> current upgrade while
         // leaving every released table and row otherwise intact.
         v8.exec('DELETE FROM automation_definitions; DELETE FROM automation_pending_fires;');
         v8.prepare(
@@ -626,11 +700,19 @@ describe('Work Board store', () => {
         const version = database
           .prepare("SELECT version FROM operational_schema_migrations WHERE scope = 'workflow'")
           .get() as { version?: unknown } | undefined;
-        assert.equal(version?.version, 9);
+        assert.equal(version?.version, SQLITE_WORKFLOW_SCHEMA_VERSION);
         assert.ok(
           database
             .prepare("SELECT 1 FROM sqlite_schema WHERE name = 'workflow_work_board_items'")
             .get(),
+        );
+        assert.equal(
+          database
+            .prepare(
+              "SELECT 1 FROM sqlite_schema WHERE name IN ('workflow_task_ledger_projections', 'workflow_plan_projections') LIMIT 1",
+            )
+            .get(),
+          undefined,
         );
         assert.ok(
           database

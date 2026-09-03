@@ -23,13 +23,14 @@ import type { BackendStopMode } from '@maka/core/backend-types';
 import type { AgentRunHeader, RootExecutionDescriptor } from '@maka/core/agent-run';
 import {
   INLINE_REFERENCE_MAX_COUNT,
+  messageContentDigest,
   messageContentsEqual,
   normalizeMessageContent,
   type AttachmentRef,
   type MessageContent,
   type SessionEvent,
 } from '@maka/core/events';
-import type { SessionHeader } from '@maka/core/session';
+import { isWorkHubCoordinationSessionId, type SessionHeader } from '@maka/core/session';
 import { resolveEffectiveOrchestration } from '@maka/core/orchestration';
 import {
   decodeSkillInvocationResult,
@@ -47,7 +48,12 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
 } from '@maka/runtime/interaction-authority';
-import { RuntimeRegenerateTurnError, type SessionManager } from '@maka/runtime/session-manager';
+import {
+  normalizeStopSessionSource,
+  RuntimeRegenerateTurnError,
+  type SessionManager,
+  type StopSessionInput,
+} from '@maka/runtime/session-manager';
 import { RuntimeOwnerCleanupError } from '@maka/runtime/runtime-kernel';
 import {
   parseSkillInvocationTokens,
@@ -79,20 +85,21 @@ import type { HostInteractionCoordinator } from './interaction-coordinator.js';
 import {
   type HostMessageRootState,
   type HostMessagePreparationInput,
+  type HostMessageRecoveryBatch,
   type HostMessageSessionHeader,
   type HostMessageStartInput,
+  type HostMessageStartOutcome,
   type HostMessageStopClaim,
   type HostMessageStopFence,
   HostMessageCoordinator,
   type QueueFenceResult,
   type RootFollowupBatch,
 } from './message-coordinator.js';
-import { messageContentDigest } from './message-content-digest.js';
 import type { ConnectionContext, TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { RootAdmissionOwner } from './root-admission-owner.js';
 import { type SessionAdmissionLease, SessionAdmissionGate } from './session-admission-gate.js';
 import {
-  type RuntimeSessionTransientEvent,
+  type RuntimeSessionForwardedEvent,
   SessionContinuityCoordinator,
 } from './session-continuity-coordinator.js';
 import type {
@@ -103,6 +110,7 @@ import {
   runtimeHostExecutionUnavailableReason,
   runtimeHostExternalTurnUnavailableReason,
   runtimeHostSafeBoundaryContinuationUnavailableReason,
+  WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
 } from './host-session-availability.js';
 import type {
   HostedExecutionAdmission,
@@ -165,7 +173,7 @@ type RootMessageStartOutcome =
 
 export type RootMessageExecution = Extract<
   RootExecutionDescriptor,
-  { kind: 'external_message' | 'regenerate' }
+  { kind: 'external_message' | 'workhub_coordination' | 'regenerate' }
 >;
 
 interface RootMessageStartRequestBase {
@@ -192,6 +200,11 @@ export type RootMessageStartRequest =
       readonly execution: Extract<RootMessageExecution, { kind: 'regenerate' }>;
       readonly turnOrchestration?: undefined;
       prepareContent(): Promise<MessageContent>;
+    })
+  | (RootMessageStartRequestBase & {
+      readonly execution: Extract<RootMessageExecution, { kind: 'workhub_coordination' }>;
+      readonly turnOrchestration?: undefined;
+      prepareFreshContent(lease: SessionAdmissionLease): Promise<RootMessageContentPreparation>;
     });
 
 export type RootMessageContentPreparation =
@@ -319,10 +332,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     private readonly resolveExecutionObserver: () => HostedExecutionObserver,
     private readonly assertScheduledTaskRecoveryAdmission?: (
       admission: RootTurnAdmission,
+      state: 'pending_fire_required' | 'run_recorded',
     ) => Promise<void>,
     attachmentValidator?: HostTurnAttachmentValidator,
     prepareSkillInvocation?: HostSkillInvocationPreparer,
     private readonly agentGraphEpochs?: HostAgentGraphEpochAuthority,
+    private readonly nameSessionFromRootMessage?: (input: {
+      sessionId: string;
+      content: MessageContent;
+    }) => void,
+    private readonly directoryHostId?: string,
   ) {
     this.stores = authenticateExecutionStoresWriter(stores, 'interactive');
     this.executionProjection = new HostedExecutionProjectionReader(this.stores);
@@ -360,7 +379,16 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           admission.runId,
           run,
         );
-        if (!isTerminalSnapshot(snapshot)) {
+        if (isTerminalSnapshot(snapshot)) {
+          if (admission.sourceMessages.length > 0) {
+            await this.messages.materializeMessageHandoffsForRun({
+              sessionId,
+              turnId: admission.turnId,
+              runId: admission.runId,
+              messageIds: admission.sourceMessages.map((source) => source.messageId),
+            });
+          }
+        } else {
           if (admission.execution.kind !== 'safe_boundary_continuation') {
             throw new Error(`Startup recovery left Turn ${admission.turnId} non-terminal`);
           }
@@ -387,7 +415,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (continuation?.disposition === 'parked') {
           if (
             continuation.plan.reason === 'safety_check_failed' ||
-            continuation.plan.reason === 'continuation_unavailable'
+            continuation.plan.reason === 'resume_feature_disabled' ||
+            continuation.plan.reason === 'continuation_authority_unavailable' ||
+            continuation.plan.reason === 'safety_observation_unavailable'
           ) {
             this.parkContinuationAdmission(admission);
             return undefined;
@@ -396,6 +426,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             `Unable to recover admitted Turn ${admission.turnId}: ${continuation.plan.reason}`,
           );
         }
+        await this.messages.handoffRootSources({
+          sessionId,
+          turnId: admission.turnId,
+          runId: admission.runId,
+          messageIds: admission.sourceMessages.map((source) => source.messageId),
+        });
         return this.prepareAdmittedTurn(
           input,
           admission,
@@ -432,7 +468,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         ...results
           .filter(
             (result): result is PromiseRejectedResult =>
-              result.status === 'rejected' && !isShutdownCancelledBackendStart(result.reason),
+              result.status === 'rejected' &&
+              !isShutdownCancelledInteractionAdmission(result.reason),
           )
           .map((result) => result.reason),
       );
@@ -446,6 +483,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   async readSessionHeader(sessionId: string): Promise<HostMessageSessionHeader | null> {
+    if (isWorkHubCoordinationSessionId(sessionId)) {
+      return {
+        isArchived: false,
+        unavailableReason: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+      };
+    }
     try {
       const header = await this.stores.sessionStore.readHeaderSnapshot(sessionId);
       if (header.conversationCopy?.state === 'preparing') return null;
@@ -527,7 +570,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: {
       readonly sessionId: string;
       readonly abortSignal: AbortSignal;
-      readonly stopSource?: HostedExecutionStopInput['source'];
+      readonly stopSource?: Exclude<HostedExecutionStopInput['source'], 'workhub_direct_stop'>;
     },
     operation: () => Promise<T>,
   ): Promise<T> {
@@ -596,6 +639,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   prepare(sessionId: string): HostedExecutionPreparation {
+    if (isWorkHubCoordinationSessionId(sessionId)) {
+      return { kind: 'unavailable', reason: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON };
+    }
     if (this.#admissions.isDraining) {
       return {
         kind: 'unavailable',
@@ -651,6 +697,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: HostedExecutionAdmission,
     preparedReservation?: RootTurnReservation,
   ): Promise<HostedExecutionAdmissionResult> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return Promise.reject(
+        new RuntimeHostedRootUnavailableError(
+          input.sessionId,
+          WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON,
+        ),
+      );
+    }
     return this.runCommand(async () => {
       const activeAtEntry = this.#executions.has(input.sessionId);
       let reservation =
@@ -844,8 +898,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async requestStop(input: HostedExecutionStopInput): Promise<HostedExecutionSnapshot> {
     await this.stopRoot(input.execution, {
       ...(input.source ? { source: input.source } : {}),
+      ...(input.workHubActionId !== undefined ? { workHubActionId: input.workHubActionId } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
-    });
+    } as StopSessionInput);
     return await this.read(input.execution);
   }
 
@@ -863,13 +918,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     );
   }
 
-  stopRoot(
-    identity: RuntimeMessageRunIdentity,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
-  ): Promise<void> {
+  stopRoot(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     return this.runCommand(async () => {
       const declared = await this.sessionAdmission.run(identity.sessionId, (lease) =>
         this.declareStopFence(
@@ -895,13 +945,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
-  stopSession(
-    sessionId: string,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
-  ): Promise<void> {
+  stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     return this.runCommand(async () => {
       const declared = await this.sessionAdmission.run(sessionId, (lease) => {
         const active = this.#executions.get(sessionId);
@@ -981,12 +1026,20 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   startFromMessage(
     input: HostMessageStartInput,
     admissionLease: SessionAdmissionLease,
-  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
+    commitAdmission: (
+      canonicalContent: MessageContent,
+      skillInvocation: SkillInvocationResult,
+    ) => Promise<void>,
+  ): Promise<HostMessageStartOutcome> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return Promise.resolve({ error: WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON });
+    }
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (
         input.sourceMessage.disposition !== 'turn_started' ||
-        !messageContentsEqual(input.sourceMessage.content, content)
+        (!input.preparedSkillInvocation &&
+          !messageContentsEqual(input.sourceMessage.content, content))
       ) {
         throw new RuntimeMessageAuthorityInvariantError(
           'Idle Message start lost its canonical turn_started source',
@@ -1003,25 +1056,48 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
         const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
         if (unavailableReason) return { error: unavailableReason };
-        const turnId = randomUUID();
-        const hasSkillInvocation = parseSkillInvocationTokens(content.text).length > 0;
-        const prepared = hasSkillInvocation
-          ? await this.prepareHostedSkillInvocationContent(
-              input.sessionId,
-              turnId,
+        const turnId = input.turnId ?? randomUUID();
+        const runId = input.runId ?? randomUUID();
+        const skillIds = input.skillIds ?? [];
+        const hasSkillInvocation =
+          skillIds.length > 0 || parseSkillInvocationTokens(content.text).length > 0;
+        const prepared = input.preparedSkillInvocation
+          ? ({
+              kind: 'ready',
               content,
-              [],
-              input.initiatingConnectionId,
-            )
-          : ({ kind: 'ready', content } as const);
+              skillInvocation: input.preparedSkillInvocation,
+            } as const)
+          : hasSkillInvocation
+            ? await this.prepareHostedSkillInvocationContent(
+                input.sessionId,
+                turnId,
+                content,
+                skillIds,
+                input.initiatingConnectionId,
+              )
+            : ({
+                kind: 'ready',
+                content,
+                skillInvocation: { loaded: [], failed: [], receipts: [] },
+              } as const);
         if (prepared.kind === 'rejected') {
+          // Skill resolution is the only rejection a client can act on, so it
+          // travels back as structured feedback instead of an opaque error.
+          if (prepared.skillInvocation) return { blocked: prepared.skillInvocation };
           return {
             error: prepared.outcome.ok
               ? 'Hosted Skill invocation was rejected'
               : prepared.outcome.error.message,
           };
         }
-        const canonicalContent = preflightRootMessageContent(prepared.content);
+        const skillInvocation = prepared.skillInvocation ?? {
+          loaded: [],
+          failed: [],
+          receipts: [],
+        };
+        const canonicalContent = preflightRootMessageContent(
+          this.validateDirectoryReferences(input.sessionId, prepared.content),
+        );
         if (!canonicalContent.ok)
           return { error: 'Prepared message content exceeds durable limits' };
         const binding = prepared.commitCapabilityBinding
@@ -1035,22 +1111,27 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           return { error: 'Root Turn reservation is no longer current' };
         }
 
-        await this.prepareFreshAgentGraphEpoch(header);
+        await this.prepareFreshAgentGraphEpoch(header, input.turnOrchestration);
+        await commitAdmission(canonicalContent.content, skillInvocation);
 
         const admitted = await this.rootAdmissionOwner.admitRootTurn({
           sessionId: input.sessionId,
           turnId,
-          proposedRunId: randomUUID(),
+          proposedRunId: runId,
           proposedUserMessageId: input.sourceMessage.messageId,
           execution: {
             kind: 'external_message',
-            inputDigest: messageContentDigest(content),
+            inputDigest:
+              input.sourceMessage.submittedContentDigest ?? messageContentDigest(content),
           },
           normalizedInput: canonicalContent.content,
+          ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+          skillInvocation,
           sourceMessages: [
             {
               ...input.sourceMessage,
               content: normalizeMessageContent(canonicalContent.content),
+              skillInvocation,
             },
           ],
           admittedAt: Date.now(),
@@ -1060,11 +1141,18 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             'Fresh Message root Turn identity already existed',
           );
         }
+        await this.messages.handoffRootSources({
+          sessionId: input.sessionId,
+          turnId,
+          runId,
+          messageIds: [input.sourceMessage.messageId],
+        });
         const disposition = await this.prepareAdmittedTurn(
           {
             sessionId: input.sessionId,
             turnId,
             content: canonicalContent.content,
+            ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
           },
           admitted.admission,
           this.acquireRecoveryResidency,
@@ -1078,34 +1166,131 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             'Fresh Message root Turn did not reserve execution',
           );
         }
-        return { turnId };
+        return {
+          turnId,
+          skillInvocation,
+        };
       } finally {
         this.releaseRootReservation(reservation);
       }
     });
   }
 
-  prepareMessage(
-    input: HostMessagePreparationInput,
-  ): Promise<
-    | { readonly kind: 'ready'; readonly content: MessageContent }
-    | { readonly kind: 'rejected'; readonly error: string }
+  startRecoveredMessages(
+    input: HostMessageRecoveryBatch,
+    admissionLease: SessionAdmissionLease,
+  ): Promise<{ readonly turnId: string } | { readonly error: string }> {
+    return this.runCommand(async () => {
+      if (this.#executions.has(input.sessionId)) {
+        return { error: 'A root Turn is still active' };
+      }
+      const header = await this.stores.sessionStore.readHeaderSnapshot(input.sessionId);
+      const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+      if (unavailableReason) return { error: unavailableReason };
+      const reservation = this.reserveRootTurn(input.sessionId);
+      if (!reservation) return { error: 'Another root Turn is being admitted' };
+      try {
+        const turnId = input.rootIdentity?.turnId ?? randomUUID();
+        // The recovered Message asked for this mode before the Host stopped;
+        // admitting without it would run a different Turn than was requested.
+        const turnOrchestration = input.submittedIntent?.turnOrchestration;
+        await this.prepareFreshAgentGraphEpoch(header, turnOrchestration);
+        const admitted = await this.rootAdmissionOwner.admitRootTurn({
+          sessionId: input.sessionId,
+          turnId,
+          proposedRunId: input.rootIdentity?.runId ?? randomUUID(),
+          proposedUserMessageId: input.sources.length === 1 ? input.sources[0]!.messageId : null,
+          execution: {
+            kind: 'external_message',
+            inputDigest: messageContentDigest(input.submittedContent),
+          },
+          normalizedInput: input.content,
+          ...(turnOrchestration ? { turnOrchestration } : {}),
+          sourceMessages: input.sources,
+          admittedAt: Date.now(),
+        });
+        if (admitted.kind !== 'admitted') {
+          return { error: 'Recovered Message root identity already existed' };
+        }
+        await this.messages.handoffRootSources({
+          sessionId: input.sessionId,
+          turnId,
+          runId: admitted.admission.runId,
+          messageIds: input.sources.map((source) => source.messageId),
+        });
+        const disposition = await this.prepareAdmittedTurn(
+          { sessionId: input.sessionId, turnId, content: input.content },
+          admitted.admission,
+          this.acquireRecoveryResidency,
+          admissionLease,
+          undefined,
+          undefined,
+          reservation,
+        );
+        if (disposition.kind !== 'await_start') {
+          return { error: 'Recovered Message root did not reserve execution' };
+        }
+        return { turnId };
+      } catch (error) {
+        this.#admissions.release(reservation);
+        throw error;
+      }
+    });
+  }
+
+  prepareMessage(input: HostMessagePreparationInput): Promise<
+    | {
+        readonly kind: 'ready';
+        readonly content: MessageContent;
+        readonly skillInvocation: SkillInvocationResult;
+      }
+    | {
+        readonly kind: 'rejected';
+        readonly error: string;
+        readonly skillInvocation?: SkillInvocationResult;
+      }
   > {
     return this.runCommand(async () => {
       const content = normalizeMessageContent(input.content);
       if (parseSkillInvocationTokens(content.text).length === 0) {
-        return { kind: 'ready', content };
+        return {
+          kind: 'ready',
+          content: this.validateDirectoryReferences(input.sessionId, content),
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        };
       }
-      const prepare = () =>
-        this.prepareSkillInvocationContent(input.sessionId, input.turnId, content, []);
+      const prepare = async () => {
+        const prepared = await this.prepareSkillInvocationContent(
+          input.sessionId,
+          input.turnId,
+          content,
+          [],
+        );
+        return prepared.kind === 'ready'
+          ? {
+              ...prepared,
+              content: this.validateDirectoryReferences(input.sessionId, prepared.content),
+            }
+          : prepared;
+      };
       if (input.placement === 'current_turn') return prepare();
-      const preview = await this.previewCapabilityBinding(
-        input.sessionId,
-        input.initiatingConnectionId,
-        prepare,
-      );
+      const preview = await this.previewCapabilityBinding(input.sessionId, '', prepare);
       return preview.ok ? preview.value : { kind: 'rejected', error: preview.message };
     });
+  }
+
+  private validateDirectoryReferences(sessionId: string, content: MessageContent): MessageContent {
+    if (!content.directoryReferences?.length) return content;
+    if (
+      !this.directoryHostId ||
+      content.directoryReferences.some((reference) => reference.hostId !== this.directoryHostId)
+    ) {
+      throw new RuntimeHostedRootUnavailableError(
+        sessionId,
+        'Directory references belong to a different Runtime Host',
+      );
+    }
+    return content;
   }
 
   claimStop(
@@ -1235,6 +1420,45 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     request: RootMessageStartRequest,
     context: ConnectionContext,
   ): Promise<RootMessageStartOutcome> {
+    if (isWorkHubCoordinationSessionId(request.sessionId)) {
+      return Promise.resolve(
+        operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON),
+      );
+    }
+    if (request.execution.kind === 'workhub_coordination') {
+      return Promise.resolve(
+        operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON),
+      );
+    }
+    return this.startRootMessage(request, context);
+  }
+
+  /** Dedicated WorkHub authority; the ordinary interactive entry stays closed. */
+  startWorkHubCoordinationMessage(
+    request: Extract<RootMessageStartRequest, { execution: { kind: 'workhub_coordination' } }>,
+    context: ConnectionContext,
+  ): Promise<RootMessageStartOutcome> {
+    if (!isWorkHubCoordinationSessionId(request.sessionId)) {
+      return Promise.resolve(
+        operationUnavailable('WorkHub Coordination execution requires its reserved Session'),
+      );
+    }
+    return this.startRootMessage(request, context);
+  }
+
+  /**
+   * Whether a durable root Turn already owns this identity. WorkHub also writes
+   * Coordination Turns outside this coordinator, and must not append a second
+   * triplet into a Turn this admission ledger already owns.
+   */
+  async hasRootTurnAdmission(sessionId: string, turnId: string): Promise<boolean> {
+    return (await this.stores.agentRunStore.readRootTurnAdmission(sessionId, turnId)) !== undefined;
+  }
+
+  private startRootMessage(
+    request: RootMessageStartRequest,
+    context: ConnectionContext,
+  ): Promise<RootMessageStartOutcome> {
     return this.runCommand(async () => {
       await this.awaitTerminalRootCleanup(request.sessionId);
       const activeAtEntry = this.#executions.has(request.sessionId);
@@ -1270,7 +1494,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
                 ? request.content
                 : requireHostedExecutionMessageContent(existing);
           }
-          if (!rootMessageAdmissionMatches(existing, request, content)) {
+          if (
+            !rootMessageAdmissionMatches(
+              existing,
+              request,
+              content,
+              context.turnAdmissionAuthorization,
+            )
+          ) {
             return completedStart(
               operationConflict('Turn identity was already admitted with a different payload'),
             );
@@ -1314,7 +1545,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         if (header.isArchived) {
           return completedStart(sessionArchived(request.archivedMessage));
         }
-        const unavailableReason = runtimeHostExternalTurnUnavailableReason(header);
+        const unavailableReason = runtimeHostExecutionUnavailableReason(header, request.execution);
         if (unavailableReason) return completedStart(operationUnavailable(unavailableReason));
         if (this.#executions.has(request.sessionId)) {
           return completedStart(sessionBusy('Session already has an active root Turn'));
@@ -1334,7 +1565,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
         const prepared = await this.prepareRootMessageContent(request, lease);
         if (prepared.kind === 'rejected') return completedStart(prepared.outcome);
-        const canonicalContent = preflightRootMessageContent(prepared.content);
+        const canonicalContent = preflightRootMessageContent(
+          this.validateDirectoryReferences(request.sessionId, prepared.content),
+        );
         if (!canonicalContent.ok) return completedStart(canonicalContent.outcome);
         const attachments = canonicalContent.content.attachments ?? [];
         if (attachments.length > 0 && !this.attachmentValidator) {
@@ -1345,9 +1578,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           attachments,
         );
         if (attachmentError) return completedStart(operationConflict(attachmentError));
-        const binding = prepared.commitCapabilityBinding
-          ? await prepared.commitCapabilityBinding()
-          : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
+        const binding =
+          request.execution.kind === 'workhub_coordination'
+            ? undefined
+            : prepared.commitCapabilityBinding
+              ? await prepared.commitCapabilityBinding()
+              : await this.clientCapabilities?.bindSession(request.sessionId, context.connectionId);
         if (binding && !binding.ok) {
           return completedStart(operationConflict(binding.message));
         }
@@ -1361,11 +1597,20 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           sessionId: request.sessionId,
           turnId: request.turnId,
           proposedRunId: randomUUID(),
-          proposedUserMessageId: randomUUID(),
+          // The interactive send's operation identity is also its canonical
+          // user-message identity. Clients can therefore render immediately
+          // and let the durable transcript replace that row in place. Other
+          // Turn kinds do not carry a user message and retain their own
+          // generated admission identity.
+          proposedUserMessageId:
+            request.execution.kind === 'external_message' ? request.turnId : randomUUID(),
           execution: request.execution,
           normalizedInput: canonicalContent.content,
           ...(request.turnOrchestration ? { turnOrchestration: request.turnOrchestration } : {}),
           ...(prepared.skillInvocation ? { skillInvocation: prepared.skillInvocation } : {}),
+          ...(context.turnAdmissionAuthorization
+            ? { authorization: context.turnAdmissionAuthorization }
+            : {}),
           sourceMessages: [],
           admittedAt: Date.now(),
         });
@@ -1374,7 +1619,14 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             operationConflict('Turn identity belongs to a different execution kind'),
           );
         }
-        if (!rootMessageAdmissionMatches(admitted.admission, request, canonicalContent.content)) {
+        if (
+          !rootMessageAdmissionMatches(
+            admitted.admission,
+            request,
+            canonicalContent.content,
+            context.turnAdmissionAuthorization,
+          )
+        ) {
           return completedStart(
             operationConflict('Turn identity was already admitted with a different payload'),
           );
@@ -1435,6 +1687,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: TurnResumeQueryInput,
     context: ConnectionContext,
   ): Promise<OperationOutcome<'turn.resume.query'>> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON);
+    }
     return this.sessionAdmission.run(input.sessionId, async () => {
       let header: SessionHeader;
       try {
@@ -1497,6 +1752,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: TurnResumeStartInput,
     context: ConnectionContext,
   ): Promise<TurnResumeStartOutcome> {
+    if (isWorkHubCoordinationSessionId(input.sessionId)) {
+      return Promise.resolve(
+        operationUnavailable(WORKHUB_COORDINATION_EXECUTION_UNAVAILABLE_REASON),
+      );
+    }
     return this.runCommand(async () => {
       const turnInput = continuationTurnInput(input.sessionId, input.turnId);
       const activeAtEntry = this.#executions.has(input.sessionId);
@@ -1798,10 +2058,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: Pick<TurnStopInput, 'sessionId' | 'turnId' | 'runId'>,
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
-    stopInput: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
+    stopInput: StopSessionInput = {},
   ): Promise<DeclaredStopFence | undefined> {
     const active = this.#executions.get(input.sessionId);
     if (!active || active.turnId !== input.turnId || active.runId !== input.runId) {
@@ -1810,7 +2067,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (active.startSettled.phase === 'rejected') {
       return { active, deliverStop: () => Promise.resolve() };
     }
-    commitQueueFence();
+    const fence = commitQueueFence();
+    await this.messages.cancelMessages(
+      input.sessionId,
+      fence.retracted.map((message) => message.messageId),
+    );
     await this.interactions.claimRunClosure(input, 'turn_stopped', admission);
     const shouldDeliverStop = !active.stopRequested;
     active.stopRequested = true;
@@ -1845,7 +2106,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     const active = this.#executions.get(input.sessionId);
     if (isTerminalSnapshot(snapshot)) {
       if (active?.turnId === input.turnId && active.runId === input.runId) {
-        commitQueueFence();
+        const fence = commitQueueFence();
+        await this.messages.cancelMessages(
+          input.sessionId,
+          fence.retracted.map((message) => message.messageId),
+        );
         active.stopRequested = true;
         return { kind: 'await_terminal', active };
       }
@@ -1870,7 +2135,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       };
     }
 
-    commitQueueFence();
+    const fence = commitQueueFence();
+    await this.messages.cancelMessages(
+      input.sessionId,
+      fence.retracted.map((message) => message.messageId),
+    );
     await this.interactions.claimRunClosure(input, 'turn_stopped', admissionLease);
     const shouldRequestStop = !active.stopRequested;
     active.stopRequested = true;
@@ -1909,6 +2178,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (unavailableReason) {
       return completedStart(operationUnavailable(unavailableReason));
     }
+    await this.clientCapabilities?.bindDurableRoot({
+      sessionId: admission.sessionId,
+      execution: admission.execution,
+    });
     const { runId } = admission;
     const existingRun = await this.readRunIfPresent(input.sessionId, runId);
     if (replacing && existingRun) {
@@ -2041,6 +2314,51 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     };
   }
 
+  /**
+   * The one root path that carries a user Message. Session naming hangs here
+   * rather than on the shared run-started hook: a compaction or a continuation
+   * opens a Run without new words, and neither should name a Session.
+   */
+  private startRootMessageTurn(
+    input: RootTurnActivationInput,
+    active: ActiveRootTurn,
+    content: MessageContent,
+    messageOrigin: ReturnType<typeof hostedExecutionMessageOrigin>,
+    onRunStarted: () => Promise<void>,
+  ): AsyncIterable<SessionEvent> {
+    return this.manager.sendMessage(
+      input.sessionId,
+      {
+        turnId: input.turnId,
+        ...content,
+        ...(active.descriptor.kind === 'regenerate'
+          ? {
+              parentTurnId: active.descriptor.sourceTurnId,
+              regeneratedFromTurnId: active.descriptor.sourceTurnId,
+            }
+          : {}),
+        ...(input.turnOrchestration ? { turnOrchestration: input.turnOrchestration } : {}),
+        ...(active.descriptor.kind === 'external_message' &&
+        active.descriptor.maxSteps !== undefined
+          ? { maxSteps: active.descriptor.maxSteps }
+          : {}),
+        ...(messageOrigin ? { origin: messageOrigin } : {}),
+      },
+      {
+        runId: active.runId,
+        userMessageId: active.userMessageId,
+        durability: 'required',
+        onRunStarted: async (startedRunId) => {
+          if (startedRunId !== active.runId) {
+            throw new Error('Runtime started a different Run than the admitted identity');
+          }
+          await onRunStarted();
+          this.nameSessionFromRootMessage?.({ sessionId: input.sessionId, content });
+        },
+      },
+    );
+  }
+
   private async drainTurn(
     input: RootTurnActivationInput,
     active: ActiveRootTurn,
@@ -2075,37 +2393,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             ? this.manager.resumeSafeBoundaryContinuation(active.continuation, {
                 onRunStarted,
               })
-            : this.manager.sendMessage(
-                input.sessionId,
-                {
-                  turnId: input.turnId,
-                  ...normalizeMessageContent(requireRootMessageContent(input)),
-                  ...(active.descriptor.kind === 'regenerate'
-                    ? {
-                        parentTurnId: active.descriptor.sourceTurnId,
-                        regeneratedFromTurnId: active.descriptor.sourceTurnId,
-                      }
-                    : {}),
-                  ...(input.turnOrchestration
-                    ? { turnOrchestration: input.turnOrchestration }
-                    : {}),
-                  ...(active.descriptor.kind === 'external_message' &&
-                  active.descriptor.maxSteps !== undefined
-                    ? { maxSteps: active.descriptor.maxSteps }
-                    : {}),
-                  ...(messageOrigin ? { origin: messageOrigin } : {}),
-                },
-                {
-                  runId: active.runId,
-                  userMessageId: active.userMessageId ?? undefined,
-                  durability: 'required',
-                  onRunStarted: async (startedRunId) => {
-                    if (startedRunId !== active.runId) {
-                      throw new Error('Runtime started a different Run than the admitted identity');
-                    }
-                    await onRunStarted();
-                  },
-                },
+            : this.startRootMessageTurn(
+                input,
+                active,
+                normalizeMessageContent(requireRootMessageContent(input)),
+                messageOrigin,
+                onRunStarted,
               );
       for await (const event of stream) {
         if (active.execution?.onEvent) {
@@ -2115,11 +2408,11 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
             // Presentation observers do not participate in execution authority.
           }
         }
-        if (isRuntimeSessionTransientEvent(event)) {
+        if (isRuntimeSessionForwardedEvent(event)) {
           await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
         } else if (isInteractionAnswerAck(event)) {
           await this.continuity.refreshCanonical(input.sessionId);
-        } else if (event.type === 'user_question_request') {
+        } else if (event.type === 'user_question_request' || event.type === 'form_request') {
           this.continuity.enqueueCanonicalRefresh(input.sessionId);
         }
       }
@@ -2137,6 +2430,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       }
       this.observeExecutionCompletion(active, { kind: 'terminal', snapshot });
       await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+      await this.materializeAdmittedMessageSources(active);
       terminalTransitionStarted = true;
       await this.completeTerminalTransition(input.sessionId, active);
     } catch (error) {
@@ -2160,6 +2454,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
               snapshot,
             });
             await this.interruptPlanAfterUnsuccessfulTurn(input.sessionId, active, snapshot.status);
+            await this.materializeAdmittedMessageSources(active);
             terminalTransitionStarted = true;
             await this.completeTerminalTransition(input.sessionId, active);
             containedRunFailure =
@@ -2213,6 +2508,20 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       active.completion.resolve(active.observedCompletion!);
       this.#executions.publish(active);
     }
+  }
+
+  private async materializeAdmittedMessageSources(active: ActiveRootTurn): Promise<void> {
+    const admission = await this.stores.agentRunStore.readRootTurnAdmission(
+      active.sessionId,
+      active.turnId,
+    );
+    if (!admission) return;
+    await this.messages.materializeMessageHandoffsForRun({
+      sessionId: active.sessionId,
+      turnId: active.turnId,
+      runId: active.runId,
+      messageIds: admission.sourceMessages.map((source) => source.messageId),
+    });
   }
 
   private observeExecutionCompletion(
@@ -2275,16 +2584,10 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     previous: ActiveRootTurn,
     admissionLease: SessionAdmissionLease,
   ): Promise<void> {
-    const initiatingConnectionId = batch.initiatingConnectionId;
-    if (!initiatingConnectionId) {
-      throw new RuntimeMessageAuthorityInvariantError(
-        'Follow-up batch lost its initiating Client identity',
-      );
-    }
     // A confirmed follow-up must become a durable root even when a Session
-    // provider is unavailable. Lost tools are omitted while ephemeral
-    // capabilities bind to the Client that submitted this follow-up.
-    await this.clientCapabilities?.bindConfirmedFollowup(batch.sessionId, initiatingConnectionId);
+    // provider is unavailable. Lost and ambiguous connection-local tools are
+    // omitted because a queued Message belongs to the durable Session.
+    await this.clientCapabilities?.bindSessionSuccessor(batch.sessionId);
 
     const turnId = randomUUID();
     const header = await this.stores.sessionStore.readHeaderSnapshot(batch.sessionId);
@@ -2293,7 +2596,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       sessionId: batch.sessionId,
       turnId,
       proposedRunId: randomUUID(),
-      proposedUserMessageId: randomUUID(),
+      proposedUserMessageId: batch.sources.length === 1 ? batch.sources[0]!.messageId : null,
       execution: {
         kind: 'external_message',
         inputDigest: messageContentDigest(batch.submittedContent),
@@ -2307,6 +2610,12 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         'Fresh follow-up root Turn identity already existed',
       );
     }
+    await this.messages.handoffRootSources({
+      sessionId: batch.sessionId,
+      turnId,
+      runId: admitted.admission.runId,
+      messageIds: batch.sources.map((source) => source.messageId),
+    });
 
     const nextIdentity = {
       sessionId: batch.sessionId,
@@ -2340,10 +2649,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   private async deliverRuntimeStopIntent(
     sessionId: string,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = { source: 'stop_button' },
+    input: StopSessionInput = { source: 'stop_button' },
   ): Promise<void> {
     await this.manager.deliverHostedRootStop(sessionId, input);
   }
@@ -2489,6 +2795,7 @@ function rootMessageAdmissionMatches(
   admission: RootTurnAdmission,
   request: RootMessageStartRequest,
   content: MessageContent,
+  authorization: ConnectionContext['turnAdmissionAuthorization'],
 ): boolean {
   return (
     isDeepStrictEqual(admission.execution, request.execution) &&
@@ -2496,6 +2803,7 @@ function rootMessageAdmissionMatches(
       ? true
       : messageContentsEqual(requireHostedExecutionMessageContent(admission), content)) &&
     isDeepStrictEqual(admission.turnOrchestration, request.turnOrchestration) &&
+    isDeepStrictEqual(admission.authorization, authorization) &&
     admission.sourceMessages.length === 0
   );
 }
@@ -2621,12 +2929,12 @@ function projectTurnResumePlan(
     reason = 'continuation_started_indeterminate';
   } else if (reasons.has('continuation_claim_repair_required')) {
     reason = 'continuation_repair_required';
-  } else if (
-    reasons.has('resume_feature_disabled') ||
-    reasons.has('continuation_authority_unavailable') ||
-    reasons.has('safety_observation_unavailable')
-  ) {
-    reason = 'continuation_unavailable';
+  } else if (reasons.has('resume_feature_disabled')) {
+    reason = 'resume_feature_disabled';
+  } else if (reasons.has('continuation_authority_unavailable')) {
+    reason = 'continuation_authority_unavailable';
+  } else if (reasons.has('safety_observation_unavailable')) {
+    reason = 'safety_observation_unavailable';
   } else {
     reason = 'safety_check_failed';
   }
@@ -2751,7 +3059,9 @@ function throwIfAborted(signal: AbortSignal): void {
     throw new DOMException('Agent graph supervisor Turn was aborted', 'AbortError');
 }
 
-function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
+function isTerminalSnapshot(
+  snapshot: TurnSnapshot,
+): snapshot is Extract<TurnSnapshot, { status: 'completed' | 'failed' | 'cancelled' }> {
   return (
     snapshot.status === 'completed' ||
     snapshot.status === 'failed' ||
@@ -2759,13 +3069,15 @@ function isTerminalSnapshot(snapshot: TurnSnapshot): boolean {
   );
 }
 
-function isShutdownCancelledBackendStart(error: unknown): boolean {
-  // The Host began draining while a Turn was still starting its backend, so
-  // the interaction bind was rejected with authority_draining. The Turn never
-  // ran; its drain rejects with this FailStopError and the Host is already
-  // shutting down. Treating it as a shutdown failure would fail the whole
-  // Host close — it is the expected consequence of stopping mid-start, not a
-  // resource that failed to close.
+function isShutdownCancelledInteractionAdmission(error: unknown): boolean {
+  // Drain can reach a running question admission before the Turn's stop fence
+  // closes its Interaction Run, so this expected cancellation is direct.
+  if (
+    error instanceof RuntimeInteractionAdmissionRejectedError &&
+    error.reason === 'authority_draining'
+  ) {
+    return true;
+  }
   return (
     error instanceof RuntimeInteractionFailStopError &&
     error.authorityFailure instanceof RuntimeInteractionAdmissionRejectedError &&
@@ -2793,9 +3105,13 @@ function isStoppedInteractionAdmission(
   );
 }
 
-function isRuntimeSessionTransientEvent(
+// Membership answers one question: forward this event live to subscribers via
+// the continuity coordinator instead of letting the canonical refresh carry
+// it. Persistence is orthogonal — it happens upstream in the run's own event
+// stream, which is why the durable steering_message belongs here.
+function isRuntimeSessionForwardedEvent(
   event: SessionEvent,
-): event is RuntimeSessionTransientEvent {
+): event is RuntimeSessionForwardedEvent {
   return (
     event.type === 'text_delta' ||
     event.type === 'text_complete' ||
@@ -2806,12 +3122,13 @@ function isRuntimeSessionTransientEvent(
     event.type === 'tool_progress' ||
     event.type === 'tool_result_preview' ||
     event.type === 'tool_result' ||
+    event.type === 'steering_message' ||
     event.type === 'provider_retry'
   );
 }
 
 function isInteractionAnswerAck(event: SessionEvent): boolean {
-  return event.type === 'user_question_answer_ack';
+  return event.type === 'user_question_answer_ack' || event.type === 'form_answer_ack';
 }
 
 function completedStart(outcome: RootMessageStartOutcome): TurnStartDisposition {

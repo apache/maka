@@ -27,35 +27,39 @@ export interface AppQuitCoordinator {
 }
 
 export interface AppQuitCoordinatorDeps {
+  prepareToQuit(): Promise<void>;
   cleanup(): Promise<void>;
   focusOrCreateWindow(signal: AbortSignal): void | Promise<void>;
+  onPreparationError(error: unknown): void;
   onCleanupError(error: unknown): void;
   onWindowCreationError(error: unknown): void;
   resumeQuit(): void;
 }
 
-type AppQuitPhase = 'running' | 'cleaning' | 'ready-to-exit';
+type AppQuitPhase = 'running' | 'preparing' | 'cleaning' | 'ready-to-exit';
 
 export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitCoordinator {
   let phase: AppQuitPhase = 'running';
-  const windowCreationAbort = new AbortController();
+  let windowCreationAbort = new AbortController();
+
+  const focusOrCreateWindow = (): void => {
+    if (phase !== 'running') return;
+    try {
+      void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
+        deps.onWindowCreationError,
+      );
+    } catch (error) {
+      deps.onWindowCreationError(error);
+    }
+  };
 
   return {
-    focusOrCreateWindow(): void {
-      if (phase !== 'running') return;
-      try {
-        void Promise.resolve(deps.focusOrCreateWindow(windowCreationAbort.signal)).catch(
-          deps.onWindowCreationError,
-        );
-      } catch (error) {
-        deps.onWindowCreationError(error);
-      }
-    },
+    focusOrCreateWindow,
     handleBeforeQuit(event): void {
       if (phase === 'ready-to-exit') return;
       event.preventDefault();
-      if (phase === 'cleaning') return;
-      phase = 'cleaning';
+      if (phase !== 'running') return;
+      phase = 'preparing';
       windowCreationAbort.abort();
       const finishCleanup = () => {
         // `before-quit` was cancelled inside Electron's native quit transaction.
@@ -68,10 +72,25 @@ export function createAppQuitCoordinator(deps: AppQuitCoordinatorDeps): AppQuitC
           deps.resumeQuit();
         });
       };
-      void deps.cleanup().then(finishCleanup, (error) => {
-        deps.onCleanupError(error);
-        finishCleanup();
-      });
+      void Promise.resolve()
+        .then(() => deps.prepareToQuit())
+        .then(
+          () => {
+            phase = 'cleaning';
+            return Promise.resolve()
+              .then(() => deps.cleanup())
+              .then(finishCleanup, (error) => {
+                deps.onCleanupError(error);
+                finishCleanup();
+              });
+          },
+          (error) => {
+            phase = 'running';
+            windowCreationAbort = new AbortController();
+            deps.onPreparationError(error);
+            focusOrCreateWindow();
+          },
+        );
     },
   };
 }

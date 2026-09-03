@@ -131,3 +131,26 @@ export function buildFixtureEnv(userDataDir, homeDir, options = {}) {
 export function isCiLinuxDisplay(env = process.env, platform = process.platform) {
   return Boolean(env.CI) && platform === 'linux';
 }
+
+/**
+ * Extra Electron arguments a launch needs when its window will be revealed
+ * inactively.
+ *
+ * Electron 43 defaults to native Wayland when XDG_SESSION_TYPE=wayland, where
+ * BrowserWindow.showInactive() is unsupported — the window may simply not
+ * appear, which puts back the ~1fps compositor throttling and the geometry
+ * failures that asking for a visible window exists to avoid. Keep those
+ * launches on XWayland; every other launch retains Electron's platform
+ * default.
+ *
+ * Returns only the extra arguments, so each launcher composes it with its own:
+ * `['.', ...inactiveWindowPlatformArgs(), `--user-data-dir=${dir}`]`.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {NodeJS.Platform} [platform]
+ */
+export function inactiveWindowPlatformArgs(env = process.env, platform = process.platform) {
+  return platform === 'linux' && env.XDG_SESSION_TYPE?.toLowerCase() === 'wayland'
+    ? ['--ozone-platform=x11']
+    : [];
+}

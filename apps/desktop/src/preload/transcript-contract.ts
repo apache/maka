@@ -19,10 +19,9 @@
 
 export const DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES = 128 * 1024;
 export const DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES = 512 * 1024;
-export const DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
+export const DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS = 10;
 export const DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES = 16 * 1024 * 1024;
 export const DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES = 64 * 1024 * 1024;
-export const DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES = 16 * 1024 * 1024;
 
 export interface DesktopTranscriptFragment {
   readonly source: 'durable' | 'overlay';
@@ -60,7 +59,8 @@ export interface DesktopTranscriptOpenResult {
 
 export interface DesktopTranscriptRangeRequest {
   readonly consumerId: string;
-  readonly generation: string;
+  readonly sessionId: string;
+  readonly hostEpoch: string;
   readonly anchorSequence: number | null;
   readonly maxBytes: number;
 }

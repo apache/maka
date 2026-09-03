@@ -18,7 +18,8 @@
  */
 
 import { PROMPT_RAIL_PROMPT_COUNT } from '../src/main/e2e-fixture/seed-helpers';
-import { expect, test } from './fixtures';
+import { DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS } from '../src/preload/transcript-contract';
+import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
 import type { Page } from '@playwright/test';
 
 const MAX_PROMPT_RAIL_TICKS = 64;
@@ -91,6 +92,22 @@ async function scrollTranscriptTo(page: Page, position: 'top' | 'bottom'): Promi
     if (!scroller) throw new Error('the chat scroll container is missing');
     scroller.scrollTop = where === 'top' ? 0 : scroller.scrollHeight;
   }, position);
+  await notifyTranscriptScrolled(page);
+  await waitForPaintedFrames(page);
+}
+
+async function scrollTranscriptAwayFromTail(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) throw new Error('the chat scroll container is missing');
+    const historyLoadBand = Math.max(640, root.clientHeight * 2);
+    root.scrollTop = Math.min(
+      root.scrollHeight - root.clientHeight - 100,
+      historyLoadBand + 200,
+    );
+    root.dispatchEvent(new Event('scroll'));
+  });
+  await waitForPaintedFrames(page);
 }
 
 async function waitForPaintedFrames(page: Page, count = 2): Promise<void> {
@@ -114,13 +131,101 @@ function notifyTranscriptScrolled(page: Page): Promise<void> {
   });
 }
 
-async function loadPromptRailBeyondVirtualWindow(page: Page): Promise<void> {
-  const transcript = page.locator('.maka-chat-message-list');
-  await scrollTranscriptTo(page, 'top');
-  await transcript.hover();
-  await page.mouse.wheel(0, -100);
-  await expect.poll(async () => Number(await transcript.getAttribute('data-turn-source-count')))
-    .toBeGreaterThan(100);
+interface ActivePromptRailSnapshot {
+  currentIds: string[];
+  expectedId: string | null;
+  sourceTurnId: string | null;
+}
+
+async function activePromptRailSnapshot(page: Page): Promise<ActivePromptRailSnapshot> {
+  return page.evaluate(async ({ promptCount }) => {
+    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+    if (!root) throw new Error('the chat scroll container is missing');
+    const ticks = [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
+    const currentIds = ticks
+      .filter((tick) => tick.getAttribute('aria-current') === 'true')
+      .map((tick) => tick.dataset.promptTurnId ?? '');
+    const rootBounds = root.getBoundingClientRect();
+    const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+    const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
+      .map((turn) => ({
+        element: turn,
+        id: turn.dataset.transcriptTurnId ?? '',
+        index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+      }))
+      .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+    const readingBandTurns = turns
+      .filter(({ element }) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.bottom > rootBounds.top
+          && bounds.top < rootBounds.top + rootBounds.height * 0.34;
+      })
+      .sort((left, right) => left.index - right.index);
+    const scrollportTurns = turns
+      .filter(({ element }) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.bottom > rootBounds.top && bounds.top < rootBounds.bottom;
+      })
+      .sort((left, right) => left.index - right.index);
+    const sourceTurn = atEnd
+      ? turns.reduce<typeof turns[number] | null>(
+        (latest, turn) => latest === null || turn.index > latest.index ? turn : latest,
+        null,
+      )
+      : readingBandTurns[0] ?? scrollportTurns[0] ?? null;
+    const expectedRailIndex = sourceTurn === null || ticks.length === 0
+      ? null
+      : Math.round(
+        sourceTurn.index * (ticks.length - 1) / (promptCount - 1),
+      );
+    const expectedId = expectedRailIndex === null
+      ? null
+      : ticks[expectedRailIndex]?.dataset.promptTurnId ?? null;
+    return {
+      currentIds,
+      expectedId,
+      sourceTurnId: sourceTurn?.id ?? null,
+    };
+  }, { promptCount: PROMPT_RAIL_PROMPT_COUNT });
+}
+
+async function expectPromptRailMatchesReadingPosition(page: Page): Promise<void> {
+  let lastSnapshot: ActivePromptRailSnapshot | null = null;
+  try {
+    await expect.poll(async () => {
+      lastSnapshot = await activePromptRailSnapshot(page);
+      return lastSnapshot.expectedId !== null
+        && lastSnapshot.currentIds.length === 1
+        && lastSnapshot.currentIds[0] === lastSnapshot.expectedId;
+    }, { message: 'the one current tick maps from the Turn being read' }).toBe(true);
+  } catch {
+    throw new Error(`the prompt rail did not settle on the reading position: ${JSON.stringify(lastSnapshot)}`);
+  }
+  const snapshot = await activePromptRailSnapshot(page);
+  expect(snapshot.expectedId, `no visible Turn in ${JSON.stringify(snapshot)}`).not.toBeNull();
+  expect(snapshot.currentIds).toEqual([snapshot.expectedId]);
+}
+
+async function scrollTranscriptThroughHistory(page: Page): Promise<void> {
+  for (let pageIndex = 0; pageIndex < PROMPT_RAIL_PROMPT_COUNT; pageIndex += 1) {
+    const firstBefore = await page.locator('[data-turn-id]').first().getAttribute('data-turn-id');
+    if (firstBefore === 'turn-prompt-rail-1') return;
+    await page.evaluate(() => {
+      const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
+      if (!root) throw new Error('the chat scroll container is missing');
+      root.scrollTop = 0;
+      root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      root.dispatchEvent(new Event('scroll'));
+    });
+    await expect.poll(async () =>
+      page.locator('[data-turn-id]').first().getAttribute('data-turn-id'), {
+      message: `history loads before ${firstBefore}`,
+      timeout: 20_000,
+    }).not.toBe(firstBefore);
+    await waitForPaintedFrames(page);
+    await expectPromptRailMatchesReadingPosition(page);
+  }
+  throw new Error('the first prompt did not enter the active transcript range');
 }
 
 test('every tick paints a bar with a real box', async ({ promptRailWindow: page }) => {
@@ -245,13 +350,16 @@ test('the first click of a session lands on its prompt and holds', async ({
   // Bounded on both sides: below is the turn never arriving, above is it
   // arriving and then being pulled off the top of the scrollport.
   await expect
-    .poll(async () => (await landing())?.offset, { message: 'the clicked prompt reaches the top' })
-    .toBeGreaterThan(-24);
-  expect((await landing())?.offset).toBeLessThan(24);
+    .poll(async () => {
+      const offset = (await landing())?.offset;
+      return offset === undefined ? Number.POSITIVE_INFINITY : Math.abs(offset);
+    }, { message: 'the clicked prompt reaches the top' })
+    .toBeLessThan(24);
   expect((await landing())?.tickIsCurrent).toBe(true);
 
-  // And stays: the fill runs on idle callbacks after the jump, so a jump that
-  // only wins the first frame reads as landing and then sliding away.
+  // And stays: turns keep resolving their content and remeasuring after the
+  // jump, so a jump that only wins the first frame reads as landing and then
+  // sliding away.
   await page.waitForTimeout(1_200);
   const settled = await landing();
   expect(settled?.offset).toBeGreaterThan(-24);
@@ -259,43 +367,162 @@ test('the first click of a session lands on its prompt and holds', async ({
   expect(settled?.tickIsCurrent).toBe(true);
 });
 
-test('long transcripts keep a bounded mounted turn window', async ({
+test('manual transcript scrolling keeps exactly the visible prompt current', async ({
   promptRailWindow: page,
 }) => {
-  const count = async () => page.locator('[data-virtual-turn-id]').count();
-  await page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]').waitFor();
-  await loadPromptRailBeyondVirtualWindow(page);
-  expect(await page.evaluate(() => {
-    const transcript = document.querySelector<HTMLElement>('.maka-chat-message-list');
-    const rows = transcript?.firstElementChild;
-    const turn = document.querySelector<HTMLElement>('[data-virtual-turn-id]');
-    if (!rows || !turn) throw new Error('the virtual transcript is missing');
-    return {
-      list: Number.parseFloat(getComputedStyle(rows).rowGap),
-      turn: Number.parseFloat(getComputedStyle(turn).rowGap),
+  await page.setViewportSize({ width: 1_000, height: 700 });
+  await scrollTranscriptTo(page, 'bottom');
+  await expectPromptRailMatchesReadingPosition(page);
+  await expect(page.locator('.maka-prompt-rail-tick[aria-current="true"]')).toHaveCount(1);
+  await expect(page.locator('.maka-prompt-rail-tick').last()).toHaveAttribute(
+    'aria-current',
+    'true',
+  );
+
+  await page.evaluate(() => {
+    const rail = document.querySelector('.maka-prompt-rail');
+    if (!rail) throw new Error('the prompt rail is missing');
+    const counts: number[] = [];
+    const record = () => counts.push(
+      rail.querySelectorAll('.maka-prompt-rail-tick[aria-current="true"]').length,
+    );
+    const observer = new MutationObserver(record);
+    observer.observe(rail, {
+      attributes: true,
+      subtree: true,
+      attributeFilter: ['aria-current'],
+    });
+    record();
+    Object.assign(window, {
+      __makaPromptRailCurrentCounts: counts,
+      __makaPromptRailCurrentObserver: observer,
+    });
+  });
+
+  await scrollTranscriptThroughHistory(page);
+  await scrollTranscriptTo(page, 'top');
+  await expectPromptRailMatchesReadingPosition(page);
+  await expect(page.locator('.maka-prompt-rail-tick[aria-current="true"]')).toHaveCount(1);
+  await expect(page.locator('.maka-prompt-rail-tick').first()).toHaveAttribute(
+    'aria-current',
+    'true',
+  );
+
+  const currentCounts = await page.evaluate(() => {
+    const state = window as Window & {
+      __makaPromptRailCurrentCounts?: number[];
+      __makaPromptRailCurrentObserver?: MutationObserver;
     };
-  })).toEqual({ list: 16, turn: 16 });
-  expect(await count()).toBeGreaterThan(0);
-  expect(await count()).toBeLessThanOrEqual(100);
-  await page.locator('.maka-prompt-rail-tick').first().click({ force: true });
-  await expect(page.locator('[data-turn-id="turn-prompt-rail-1"]')).toHaveCount(1);
-  expect(await count()).toBeGreaterThan(0);
-  expect(await count()).toBeLessThanOrEqual(100);
+    state.__makaPromptRailCurrentObserver?.disconnect();
+    return state.__makaPromptRailCurrentCounts ?? [];
+  });
+  expect(currentCounts.length).toBeGreaterThan(1);
+  expect(currentCounts.every((count) => count === 1), currentCounts.join(',')).toBe(true);
 });
 
-test('evicting a turn-owned sibling interaction hands focus back to the transcript', async ({
+test('streaming deltas do not reconstruct the prompt rail observer', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const sendAndSettle = async (prompt: string, expectedTurns: number): Promise<void> => {
+    await composer.fill(prompt);
+    await composer.press('Enter');
+    await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(expectedTurns, {
+      timeout: 20_000,
+    });
+  };
+  await sendAndSettle('First prompt rail observer seed', 1);
+  await sendAndSettle('Second prompt rail observer seed', 2);
+
+  await page.evaluate(() => {
+    const NativeIntersectionObserver = window.IntersectionObserver;
+    const state: {
+      constructions: number;
+      initialConstructions: number | null;
+    } = { constructions: 0, initialConstructions: null };
+    window.IntersectionObserver = class extends NativeIntersectionObserver {
+      constructor(
+        callback: IntersectionObserverCallback,
+        options?: IntersectionObserverInit,
+      ) {
+        super(callback, options);
+        if (
+          options?.root === document.querySelector('[data-chat-scroll-container="true"]')
+          && options.rootMargin === '0px 0px -66% 0px'
+        ) {
+          state.constructions += 1;
+          state.initialConstructions ??= state.constructions;
+        }
+      }
+    };
+    Object.assign(window, { __makaPromptRailObserverProbe: state });
+  });
+
+  const streamingPrompt = Array.from(
+    { length: 40 },
+    (_, index) => `Observer stability line ${index + 1}`,
+  ).join('\n');
+  await composer.fill(streamingPrompt);
+  await composer.press('Enter');
+
+  await expect.poll(() => page.evaluate(() => (
+    window as Window & {
+      __makaPromptRailObserverProbe?: { constructions: number };
+    }
+  ).__makaPromptRailObserverProbe?.constructions ?? 0), {
+    message: 'the third Turn creates the prompt rail observer',
+  }).toBeGreaterThan(0);
+
+  // The fake backend emits nine characters per delta, so reaching the last
+  // line proves many same-Turn text updates landed after observer creation.
+  await expect(page.getByRole('log').getByText(
+    /Fake backend received:[\s\S]*Observer stability line 40/,
+  )).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const settled = await page.evaluate(() => ({ ...(
+    window as Window & {
+      __makaPromptRailObserverProbe: {
+        constructions: number;
+        initialConstructions: number | null;
+      };
+    }
+  ).__makaPromptRailObserverProbe }));
+  expect(settled.constructions).toBe(settled.initialConstructions);
+});
+
+test('active transcript Turns keep stable DOM identities while scrolling', async ({
   promptRailWindow: page,
 }) => {
-  const scroller = page.locator('[data-chat-scroll-container="true"][data-turn-window="ready"]');
-  await scroller.waitFor();
-  await loadPromptRailBeyondVirtualWindow(page);
+  const sourceCount = Number(
+    await page.locator('.maka-chat-message-list').getAttribute('data-turn-source-count'),
+  );
+  expect(sourceCount).toBe(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
+  expect(await page.locator('[data-turn-id]').count()).toBe(sourceCount);
+  await page.evaluate(() => {
+    for (const turn of document.querySelectorAll<HTMLElement>('[data-turn-id]')) {
+      turn.dataset.stableMountProbe = turn.dataset.turnId;
+    }
+  });
+
   await scrollTranscriptTo(page, 'bottom');
-  await expect(page.locator('[data-virtual-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
-  const retainedTurnId = await page.evaluate(() => {
-    const turns = document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]');
-    const turn = turns.item(turns.length - 1);
-    if (!turn?.dataset.virtualTurnId) throw new Error('the mounted turn is missing');
+  await scrollTranscriptAwayFromTail(page);
+
+  expect(await page.locator('[data-turn-id]').count()).toBe(sourceCount);
+  expect(await page.locator('[data-turn-id][data-stable-mount-probe]').count()).toBe(sourceCount);
+});
+
+test('scrolling away preserves a turn-owned focus and selection', async ({
+  promptRailWindow: page,
+}) => {
+  await scrollTranscriptTo(page, 'bottom');
+  await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  await page.evaluate(() => {
+    const turn = document.querySelector<HTMLElement>('[data-turn-id="turn-prompt-rail-120"]');
+    if (!turn) throw new Error('the tail Turn is missing');
     const turnOwnedAction = document.createElement('button');
+    turnOwnedAction.dataset.turnOwnedAction = 'true';
     turnOwnedAction.textContent = 'Turn-owned action';
     turn.append(turnOwnedAction);
     turnOwnedAction.focus();
@@ -304,39 +531,75 @@ test('evicting a turn-owned sibling interaction hands focus back to the transcri
     const selection = document.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
-    return turn.dataset.virtualTurnId;
   });
+  await scrollTranscriptAwayFromTail(page);
 
-  // The injected control resizes the tail Turn. That can queue a scroll-anchor
-  // restore captured at the bottom. Let that setup-only restore finish before
-  // the one-shot jump so the assertion still catches any later restore that
-  // would pin the viewport back on the retained Turn (#3121).
-  await waitForPaintedFrames(page);
-  await scrollTranscriptTo(page, 'top');
-  await notifyTranscriptScrolled(page);
-  await expect.poll(async () => page.evaluate((turnId) => {
-    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    if (!root) throw new Error('the chat scroll container is missing');
-    const mounted = [...document.querySelectorAll<HTMLElement>('[data-virtual-turn-id]')]
-      .map((turn) => turn.dataset.virtualTurnId ?? '');
+  await expect.poll(async () => page.evaluate(() => {
     const active = document.activeElement;
     return {
-      retained: mounted.includes(turnId),
-      scrollTop: Math.round(root.scrollTop),
-      firstMounted: mounted[0] ?? null,
-      lastMounted: mounted.at(-1) ?? null,
-      focusOnTranscript: active instanceof HTMLElement
-        && active.classList.contains('maka-chat-message-list'),
-      selectionCollapsed: document.getSelection()?.isCollapsed ?? true,
+      retained: document.querySelector('[data-turn-id="turn-prompt-rail-120"]') !== null,
+      focusRetained: active instanceof HTMLElement
+        && active.dataset.turnOwnedAction === 'true',
+      selectionRetained: document.getSelection()?.isCollapsed === false,
     };
-  }, retainedTurnId), {
-    message: 'the retained tail turn leaves after one jump to the top',
-  }).toMatchObject({
-    retained: false,
-    scrollTop: 0,
-    focusOnTranscript: true,
-    selectionCollapsed: true,
+  })).toEqual({
+    retained: true,
+    focusRetained: true,
+    selectionRetained: true,
   });
+});
+
+test('offscreen active Turns remain findable and accessible', async ({
+  promptRailWindow: page,
+}) => {
+  const firstTurnId = await page.locator('[data-turn-id]').first().getAttribute('data-turn-id');
+  const turnNumber = Number(firstTurnId?.split('-').at(-1));
+  expect(turnNumber).toBeGreaterThan(0);
+  const needle = `第 ${turnNumber} 个问题`;
+  await scrollTranscriptTo(page, 'bottom');
+
+  const found = await page.evaluate((text) => {
+    document.getSelection()?.removeAllRanges();
+    return (window as Window & { find(text: string): boolean }).find(text);
+  }, needle);
+  expect(found).toBe(true);
+  expect(await page.evaluate(() => document.getSelection()?.toString() ?? '')).toContain(needle);
+
+  const cdp = await page.context().newCDPSession(page);
+  const tree = await cdp.send('Accessibility.getFullAXTree');
+  expect(tree.nodes.some((node) => node.name?.value?.includes(needle))).toBe(true);
+});
+
+test('switching sessions reconstructs only the Host active range', async ({
+  promptRailWindow: page,
+}) => {
+  await ensureSidebarExpanded(page);
+  const rows = page.locator('.maka-session-row');
+  const selected = rows.locator('button.astryx-side-nav-item.selected');
+  const originalId = await selected
+    .evaluate((button) => button.closest('.maka-session-row')?.getAttribute('data-session-id'));
+  if (!originalId) throw new Error('the prompt-rail Session is not selected');
+  const otherId = await rows.evaluateAll(
+    (rows, selected) => rows
+      .map((row) => row.getAttribute('data-session-id'))
+      .find((sessionId) => sessionId !== selected) ?? null,
+    originalId,
+  );
+  if (!otherId) throw new Error('the fixture has no second Session');
+  await page.locator(`.maka-session-row[data-session-id=${JSON.stringify(otherId)}] button`)
+    .first()
+    .click();
+  await expect(page.locator(
+    `.maka-session-row[data-session-id=${JSON.stringify(otherId)}] button.selected`,
+  ))
+    .toHaveCount(1);
+
+  await page.locator(`.maka-session-row[data-session-id=${JSON.stringify(originalId)}] button`)
+    .first()
+    .click();
+  await expect(page.locator('[data-turn-id="turn-prompt-rail-120"]')).toHaveCount(1);
+  expect(await page.locator('[data-turn-id]').count())
+    .toBe(DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS);
 });
 
 test('a tick is what the pointer lands on, not the scrollbar', async ({

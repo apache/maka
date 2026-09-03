@@ -47,10 +47,12 @@ export function useShellMemoryPill({
   toastApi,
   uiLocale,
   sessionId,
+  disabled = false,
 }: {
   toastApi: ToastApi;
   uiLocale: UiLocale;
   sessionId?: string;
+  disabled?: boolean;
 }): {
   memoryActive: boolean;
   refreshMemoryActive: (failureContext?: 'load') => Promise<void>;
@@ -60,6 +62,10 @@ export function useShellMemoryPill({
   const copy = getShellCopy(uiLocale).app;
   async function refreshMemoryActive(failureContext?: 'load') {
     const sequence = ++refreshSequence.current;
+    if (disabled) {
+      setMemoryActive(false);
+      return;
+    }
     try {
       const next = sessionId
         ? await window.maka.memory.getState(sessionId)
@@ -86,7 +92,7 @@ export function useShellMemoryPill({
     return () => {
       refreshSequence.current += 1;
     };
-  }, [sessionId]);
+  }, [disabled, sessionId]);
   return {
     memoryActive,
     refreshMemoryActive,

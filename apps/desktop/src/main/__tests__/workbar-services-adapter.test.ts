@@ -33,7 +33,7 @@ function createBridgeRecorder(): {
     'sessions.subscribeEvents',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
-    'tasks.subscribeChanges',
+    'todo.subscribeChanges',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
@@ -41,13 +41,26 @@ function createBridgeRecorder(): {
     'artifacts.subscribeChanges',
     'inspector.subscribeUsageChanges',
   ]);
+  // Adapters that reshape a bridge answer need one to reshape.
+  const answers = new Map<string, unknown>([
+    [
+      'sessions.submitMessage',
+      {
+        ok: true,
+        disposition: 'steering',
+        attachments: [],
+        inlineReferences: [],
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+      },
+    ],
+  ]);
   const domain = (name: string) =>
     new Proxy({}, {
       get: (_target, property) => (...args: unknown[]) => {
         const callName = `${name}.${String(property)}`;
         calls.push({ name: callName, args });
         if (syncMethods.has(callName)) return () => undefined;
-        return Promise.resolve(undefined);
+        return Promise.resolve(answers.get(callName));
       },
     });
 
@@ -57,7 +70,7 @@ function createBridgeRecorder(): {
       gitReview: domain('gitReview'),
       sessions: domain('sessions'),
       shellRuns: domain('shellRuns'),
-      tasks: domain('tasks'),
+      todo: domain('todo'),
       browser: domain('browser'),
       artifacts: domain('artifacts'),
       app: domain('app'),
@@ -69,6 +82,24 @@ function createBridgeRecorder(): {
 }
 
 describe('createDesktopWorkbarServices', () => {
+  it('preserves the Side Conversation Stop identity kind', async () => {
+    const { bridge, calls } = createBridgeRecorder();
+    const services = createDesktopWorkbarServices(bridge, {
+      readSettledMessages: async () => ({ messages: [], settled: true }),
+    });
+
+    await services.sideChat.stop('fork', { kind: 'admission', messageId: 'message-1' });
+    await services.sideChat.stop('fork', { kind: 'turn', turnId: 'turn-1' });
+
+    assert.deepEqual(
+      calls.filter((call) => call.name === 'sessions.stop').map((call) => call.args),
+      [
+        ['fork', { source: 'stop_button', expectedAdmissionId: 'message-1' }],
+        ['fork', { source: 'stop_button', expectedTurnId: 'turn-1' }],
+      ],
+    );
+  });
+
   it('maps every Workbar capability to the existing Desktop bridge', async () => {
     const { bridge, calls } = createBridgeRecorder();
     const settledReads: unknown[][] = [];
@@ -91,8 +122,8 @@ describe('createDesktopWorkbarServices', () => {
     services.terminal.subscribePtyData(eventHandler)();
     services.terminal.subscribeResync(eventHandler)();
 
-    await services.tasks.list('s');
-    services.tasks.subscribeChanges(eventHandler)();
+    await services.todo.read('s');
+    services.todo.subscribeChanges(eventHandler)();
 
     services.browser.setActiveSession('s');
     services.browser.setViewport({ sessionId: 's', rect: null });
@@ -135,6 +166,7 @@ describe('createDesktopWorkbarServices', () => {
     });
     await services.sideChat.cleanupSessionCopy('fork');
     await services.sideChat.abandonSessionCopy('s', 'copy');
+    await services.sideChat.compact('fork');
     await services.sideChat.send('fork', {
       type: 'send',
       turnId: 'turn-2',
@@ -148,6 +180,7 @@ describe('createDesktopWorkbarServices', () => {
       turnId: 'turn-3',
     });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
+    await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
@@ -163,8 +196,8 @@ describe('createDesktopWorkbarServices', () => {
         'shellRuns.write',
         'shellRuns.subscribePtyData',
         'shellRuns.subscribeResync',
-        'tasks.list',
-        'tasks.subscribeChanges',
+        'todo.read',
+        'todo.subscribeChanges',
         'browser.setActiveSession',
         'browser.setViewport',
         'browser.navigate',
@@ -195,12 +228,14 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.branchFromTurn',
         'sessions.cleanupSessionCopy',
         'sessions.abandonSessionCopy',
+        'sessions.compact',
         'sessions.send',
         'sessions.stop',
-        'sessions.steer',
+        'sessions.submitMessage',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
+        'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
         'sessions.subscribeEvents',
       ],

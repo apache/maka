@@ -18,42 +18,57 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import {
-  cp,
-  lstat,
-  mkdir,
-  open,
-  readFile,
-  readdir,
-  realpath,
-  rename,
-  rm,
-  stat,
-} from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, lstat, mkdir, open, readdir, realpath, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import {
+  openRuntimeHostPackageDeployment,
+  prepareRuntimeHostPackageDeployment,
+  pruneRuntimeHostPackageDeployments,
+  resolveRuntimeHostPackageCliPath,
+  RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError,
+  type RuntimeHostPackageDeployment,
+} from './runtime-host-package-deployment.js';
+import { readStableBoundedFile, syncDirectory } from '@maka/storage/stable-storage';
+import { resolveExistingStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
+import {
+  resolveRuntimeHostManagedDeploymentAuthorityRoot,
+  resolveRuntimeHostManagedDeploymentAuthority,
+  resolveRuntimeHostNpmDeploymentLayout,
+  type RuntimeHostManagedDeploymentAuthorityOptions,
+  type RuntimeHostManagedDeploymentConfig,
+} from '@maka/runtime-host/operator';
 
-const PACKAGE_NAME = 'maka-agent';
-
-export class RuntimeHostManagedDeploymentError extends Error {
-  constructor(
-    readonly code: 'invalid_package' | 'deployment_failed',
-    message: string,
-    options?: ErrorOptions,
-  ) {
-    super(message, options);
-    this.name = 'RuntimeHostManagedDeploymentError';
-  }
-}
+export { RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError } from './runtime-host-package-deployment.js';
 
 export interface RuntimeHostManagedPackageDeployment {
   readonly version: string;
   readonly root: string;
   readonly cliPath: string;
   readonly operatorPath: string;
+  /** Legacy service replacement only; canonical deployments project the operator transactionally. */
   activate(): Promise<void>;
   cleanup(): Promise<void>;
   rollback(): Promise<void>;
+}
+
+interface RuntimeHostManagedDeploymentCleanupReceipt {
+  readonly schemaVersion: 1;
+  readonly serviceId: string;
+  readonly deploymentId: string;
+  readonly deploymentRoot: string;
+  readonly stateRootPath: string;
+}
+
+const CLEANUP_RECEIPT_FILE = 'cleanup-approved.json';
+
+export function resolveRuntimeHostManagedPackageCliPath(
+  deploymentRoot: string,
+  version: string,
+  packageIntegrity?: string,
+): string {
+  return resolveRuntimeHostPackageCliPath(deploymentRoot, version, packageIntegrity);
 }
 
 export function isRuntimeHostDevelopmentPackageVersion(value: unknown): value is string {
@@ -66,62 +81,328 @@ export async function prepareRuntimeHostManagedPackageDeployment(
     readonly clientDataRoot: string;
     readonly sourcePackageRoot: string;
     readonly version: string;
+    readonly packageIntegrity?: string;
+    /** Existing canonical deployments persist their package-store location. */
+    readonly deploymentRoot?: string;
   },
   options: RuntimeHostManagedDeploymentPathOptions = {},
 ): Promise<RuntimeHostManagedPackageDeployment> {
-  assertVersion(input.version);
-  const sourcePackageRoot = await validatePackage(input.sourcePackageRoot, input.version);
-  const requestedDeploymentRoot = resolveRuntimeHostManagedDeploymentRoot(input.serviceId, options);
-  await mkdir(join(requestedDeploymentRoot, 'versions'), { recursive: true, mode: 0o700 });
-  const deploymentRoot = await realpath(requestedDeploymentRoot);
-  const versionsRoot = join(deploymentRoot, 'versions');
-  const packageRoot = join(versionsRoot, input.version);
-  const cliPath = join(packageRoot, 'dist', 'cli.js');
-  const clientDataRoot = resolve(input.clientDataRoot);
-  if (await pathExists(packageRoot)) {
-    await validatePackage(packageRoot, input.version);
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
-  }
-
-  await removeAbandonedStagingPackages(versionsRoot, input.version);
-  const stagingRoot = join(versionsRoot, `.${input.version}.${randomUUID()}.tmp`);
-  try {
-    await cp(sourcePackageRoot, stagingRoot, {
-      recursive: true,
-      force: false,
-      errorOnExist: true,
-      preserveTimestamps: true,
-    });
-    await validatePackage(stagingRoot, input.version);
-    try {
-      await rename(stagingRoot, packageRoot);
-    } catch (error) {
-      if (!isNodeError(error, 'EEXIST') && !isNodeError(error, 'ENOTEMPTY')) throw error;
-      await validatePackage(packageRoot, input.version);
-      await rm(stagingRoot, { recursive: true, force: true });
-      return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, false);
-    }
-    return deployment(input.version, deploymentRoot, packageRoot, cliPath, clientDataRoot, true);
-  } catch (error) {
-    await rm(stagingRoot, { recursive: true, force: true }).catch(() => undefined);
-    if (error instanceof RuntimeHostManagedDeploymentError) throw error;
+  const requestedRoot =
+    input.deploymentRoot === undefined ? undefined : resolve(input.deploymentRoot);
+  const selectedDataHome =
+    requestedRoot !== undefined
+      ? dirname(dirname(dirname(requestedRoot)))
+      : resolveRuntimeHostManagedDataHome(options);
+  const dataHome = await canonicalizePotentialPath(selectedDataHome);
+  const deploymentRoot = join(dataHome, 'Maka', 'runtime-host-services', input.serviceId);
+  if (requestedRoot !== undefined && requestedRoot !== deploymentRoot) {
     throw new RuntimeHostManagedDeploymentError(
       'deployment_failed',
-      `Unable to install Maka ${input.version} into the managed Runtime Host deployment`,
-      { cause: error },
+      'The persisted managed Runtime Host deployment root is redirected or invalid',
     );
+  }
+  await assertUnredirectedManagedDeploymentSuffix(dataHome, deploymentRoot);
+  await reapRuntimeHostManagedDeploymentRetirement(deploymentRoot, input.serviceId);
+  const staged = await prepareRuntimeHostPackageDeployment({
+    deploymentRoot,
+    sourcePackageRoot: input.sourcePackageRoot,
+    version: input.version,
+    ...(input.packageIntegrity ? { packageIntegrity: input.packageIntegrity } : {}),
+  });
+  return managedDeployment(staged, resolve(input.clientDataRoot), input.serviceId);
+}
+
+async function reapRuntimeHostManagedDeploymentRetirement(
+  root: string,
+  serviceId: string,
+): Promise<void> {
+  if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to reclaim an invalid managed Runtime Host deployment path',
+    );
+  }
+  const cleanup = await readRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
+  if (cleanup) {
+    const authority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
+    if (authority) {
+      await clearRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
+    } else {
+      const capability = await resolveExistingStorageRoot({
+        path: cleanup.stateRootPath,
+        kind: 'interactive',
+        expectedRootId: serviceId,
+      });
+      const owner = await tryAcquireStateRootOwner(capability);
+      if (!owner) {
+        throw new RuntimeHostManagedDeploymentError(
+          'deployment_failed',
+          'The Runtime Host still owns the State Root pending deployment cleanup',
+        );
+      }
+      try {
+        const fencedAuthority = await resolveRuntimeHostManagedDeploymentAuthority(serviceId);
+        if (!fencedAuthority) {
+          await removeRuntimeHostManagedDeployment(cleanup.deploymentRoot, serviceId);
+        }
+        await clearRuntimeHostManagedDeploymentCleanupReceipt(serviceId);
+      } finally {
+        await owner.close();
+      }
+    }
+  }
+  const parent = await resolveExistingRuntimeHostManagedDeploymentParent(root, serviceId);
+  if (!parent) return;
+  await rm(join(parent, `.${serviceId}.retired`), {
+    recursive: true,
+    force: true,
+  });
+  await syncDirectory(parent);
+}
+
+async function canonicalizePotentialPath(path: string): Promise<string> {
+  const requestedPath = resolve(path);
+  let existing = requestedPath;
+  for (;;) {
+    try {
+      const canonical = await realpath(existing);
+      return resolve(canonical, relative(existing, requestedPath));
+    } catch (error) {
+      if (!isNodeError(error, 'ENOENT')) throw error;
+      const parent = dirname(existing);
+      if (parent === existing) throw error;
+      existing = parent;
+    }
   }
 }
 
-async function removeAbandonedStagingPackages(
-  versionsRoot: string,
-  version: string,
+async function assertUnredirectedManagedDeploymentSuffix(
+  dataHome: string,
+  deploymentRoot: string,
 ): Promise<void> {
-  const prefix = `.${version}.`;
-  await Promise.all(
-    (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter((entry) => entry.name.startsWith(prefix) && entry.name.endsWith('.tmp'))
-      .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
+  let current = resolve(dataHome);
+  for (const segment of relative(current, resolve(deploymentRoot)).split(sep).filter(Boolean)) {
+    current = join(current, segment);
+    try {
+      const target = await lstat(current);
+      if (!target.isDirectory() || target.isSymbolicLink()) {
+        throw new RuntimeHostManagedDeploymentError(
+          'deployment_failed',
+          'Refusing to use a redirected managed Runtime Host deployment path',
+        );
+      }
+    } catch (error) {
+      if (isNodeError(error, 'ENOENT')) return;
+      throw error;
+    }
+  }
+}
+
+export async function acknowledgeRuntimeHostManagedDeploymentCleanup(input: {
+  readonly serviceId: string;
+  readonly deploymentId: string;
+  readonly deploymentRoot: string;
+  readonly stateRootPath: string;
+}): Promise<void> {
+  if (!isRuntimeHostManagedDeploymentRoot(input.deploymentRoot, input.serviceId)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to acknowledge cleanup for an invalid managed deployment path',
+    );
+  }
+  const controlRoot = resolveRuntimeHostManagedControlRoot(input.serviceId);
+  await mkdir(controlRoot, { recursive: true, mode: 0o700 });
+  const path = join(controlRoot, CLEANUP_RECEIPT_FILE);
+  const receipt: RuntimeHostManagedDeploymentCleanupReceipt = {
+    schemaVersion: 1,
+    serviceId: input.serviceId,
+    deploymentId: input.deploymentId,
+    deploymentRoot: resolve(input.deploymentRoot),
+    stateRootPath: resolve(input.stateRootPath),
+  };
+  const existing = await readRuntimeHostManagedDeploymentCleanupReceipt(input.serviceId);
+  if (existing) {
+    if (
+      existing.deploymentId !== receipt.deploymentId ||
+      existing.deploymentRoot !== receipt.deploymentRoot ||
+      existing.stateRootPath !== receipt.stateRootPath
+    ) {
+      throw new RuntimeHostManagedDeploymentError(
+        'deployment_failed',
+        'Another managed Runtime Host deployment is already pending cleanup',
+      );
+    }
+    await syncDirectory(controlRoot);
+    return;
+  }
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporaryPath, 'wx', 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(receipt)}\n`, 'utf8');
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await rename(temporaryPath, path);
+    await syncDirectory(controlRoot);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export async function readRuntimeHostManagedDeploymentCleanupReceipt(
+  serviceId: string,
+): Promise<RuntimeHostManagedDeploymentCleanupReceipt | undefined> {
+  const path = join(resolveRuntimeHostManagedControlRoot(serviceId), CLEANUP_RECEIPT_FILE);
+  let value: unknown;
+  try {
+    const contents = await readStableBoundedFile({
+      path,
+      maxBytes: 16 * 1024,
+      invalidFile: () =>
+        new RuntimeHostManagedDeploymentError(
+          'deployment_failed',
+          'The managed Runtime Host cleanup receipt is not a stable regular file',
+        ),
+    });
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(contents));
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  }
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== 1 ||
+    value.serviceId !== serviceId ||
+    typeof value.deploymentId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(
+      value.deploymentId,
+    ) ||
+    typeof value.deploymentRoot !== 'string' ||
+    typeof value.stateRootPath !== 'string' ||
+    !isAbsolute(value.stateRootPath) ||
+    !isRuntimeHostManagedDeploymentRoot(value.deploymentRoot, serviceId)
+  ) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'The managed Runtime Host cleanup receipt is invalid',
+    );
+  }
+  return {
+    schemaVersion: 1,
+    serviceId,
+    deploymentId: value.deploymentId,
+    deploymentRoot: resolve(value.deploymentRoot),
+    stateRootPath: resolve(value.stateRootPath),
+  };
+}
+
+export async function clearRuntimeHostManagedDeploymentCleanupReceipt(
+  serviceId: string,
+): Promise<void> {
+  const controlRoot = resolveRuntimeHostManagedControlRoot(serviceId);
+  await rm(join(controlRoot, CLEANUP_RECEIPT_FILE), { force: true });
+  await syncDirectory(controlRoot);
+}
+
+async function resolveExistingRuntimeHostManagedDeploymentParent(
+  root: string,
+  serviceId: string,
+): Promise<string | undefined> {
+  if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to inspect an invalid managed Runtime Host deployment path',
+    );
+  }
+  const requestedParent = dirname(resolve(root));
+  try {
+    const [canonicalParent, target] = await Promise.all([
+      realpath(requestedParent),
+      lstat(requestedParent),
+    ]);
+    if (canonicalParent !== requestedParent || !target.isDirectory() || target.isSymbolicLink()) {
+      throw new RuntimeHostManagedDeploymentError(
+        'deployment_failed',
+        'Refusing to use a redirected managed Runtime Host deployment path',
+      );
+    }
+    return canonicalParent;
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw error;
+  }
+}
+
+export async function pruneRuntimeHostManagedPackages(
+  config: RuntimeHostManagedDeploymentConfig,
+): Promise<void> {
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  await pruneRuntimeHostPackageDeployments(config.deploymentRoot, layout.cliPath);
+}
+
+export async function pruneRuntimeHostManagedPeerKeys(
+  config: RuntimeHostManagedDeploymentConfig,
+): Promise<void> {
+  const root = resolve(config.deploymentRoot);
+  const retained = config.listeners.directPeer?.keyPath;
+  if (retained && dirname(resolve(retained)) !== root) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      'The managed Runtime Host peer key does not belong to its deployment',
+    );
+  }
+  const removable = (await readdir(root, { withFileTypes: true }))
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        (entry.name === 'runtime-host-service.peer.key' ||
+          /^runtime-host-peer\.[0-9a-f-]{36}\.key$/iu.test(entry.name)) &&
+        (!retained || entry.name !== basename(retained)),
+    )
+    .map((entry) => join(root, entry.name));
+  if (removable.length === 0) return;
+  await Promise.all(removable.map((path) => rm(path, { force: true })));
+  await syncDirectory(root);
+}
+
+export async function openRuntimeHostManagedPackageDeployment(input: {
+  readonly serviceId: string;
+  readonly clientDataRoot: string;
+  readonly deploymentRoot: string;
+  readonly cliPath: string;
+  readonly version: string;
+}): Promise<RuntimeHostManagedPackageDeployment> {
+  let deploymentRoot: string;
+  let cliPath: string;
+  try {
+    deploymentRoot = await realpath(resolve(input.deploymentRoot));
+    cliPath = await realpath(input.cliPath);
+  } catch (error) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      `The managed Maka ${input.version} package is unavailable`,
+      { cause: error },
+    );
+  }
+  if (resolveRuntimeHostManagedDeploymentForCli(input.serviceId, cliPath) !== deploymentRoot) {
+    throw new RuntimeHostManagedDeploymentError(
+      'invalid_package',
+      'The configured Runtime Host package does not belong to its managed deployment',
+    );
+  }
+  return managedDeployment(
+    await openRuntimeHostPackageDeployment({
+      deploymentRoot,
+      cliPath,
+      version: input.version,
+    }),
+    resolve(input.clientDataRoot),
+    input.serviceId,
   );
 }
 
@@ -135,15 +416,87 @@ export function resolveRuntimeHostManagedDeploymentRoot(
   serviceId: string,
   options: RuntimeHostManagedDeploymentPathOptions = {},
 ): string {
+  return join(
+    resolveRuntimeHostManagedDataHome(options),
+    'Maka',
+    'runtime-host-services',
+    serviceId,
+  );
+}
+
+function resolveRuntimeHostManagedDataHome(
+  options: RuntimeHostManagedDeploymentPathOptions = {},
+): string {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
-  const dataHome =
-    (options.platform ?? process.platform) === 'darwin'
-      ? join(homeDir, 'Library', 'Application Support')
-      : env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
-        ? env.XDG_DATA_HOME
-        : join(homeDir, '.local', 'share');
-  return join(dataHome, 'Maka', 'runtime-host-services', serviceId);
+  return (options.platform ?? process.platform) === 'darwin'
+    ? join(homeDir, 'Library', 'Application Support')
+    : env.XDG_DATA_HOME && isAbsolute(env.XDG_DATA_HOME)
+      ? env.XDG_DATA_HOME
+      : join(homeDir, '.local', 'share');
+}
+
+export function resolveRuntimeHostManagedControlRoot(serviceId: string): string {
+  return join(resolveRuntimeHostManagedDeploymentAuthorityRoot(), serviceId, 'control');
+}
+
+export async function assertRuntimeHostManagedOperatorDeployment(
+  serviceId: string,
+  deploymentId: string | undefined,
+  cliPath: string,
+  options: {
+    readonly allowAbsent?: boolean;
+    readonly authority?: RuntimeHostManagedDeploymentAuthorityOptions;
+  } = {},
+): Promise<void> {
+  if (!deploymentId) return;
+  const authority = await resolveRuntimeHostManagedDeploymentAuthority(
+    serviceId,
+    options.authority,
+  );
+  if (!authority && options.allowAbsent) return;
+  const record = authority?.record;
+  const endpoints = record?.state === 'active' ? [record] : record ? [record.from, record.to] : [];
+  if (
+    !endpoints.some(
+      (config) =>
+        config !== null && runtimeHostManagedOperatorMatches(config, deploymentId, cliPath),
+    )
+  ) {
+    throw operatorClaimMismatch();
+  }
+}
+
+export function assertRuntimeHostManagedOperatorConfig(
+  config: RuntimeHostManagedDeploymentConfig,
+  deploymentId: string | undefined,
+  cliPath: string,
+): void {
+  if (!deploymentId) return;
+  if (!runtimeHostManagedOperatorMatches(config, deploymentId, cliPath)) {
+    throw operatorClaimMismatch();
+  }
+}
+
+function runtimeHostManagedOperatorMatches(
+  config: RuntimeHostManagedDeploymentConfig,
+  deploymentId: string,
+  cliPath: string,
+): boolean {
+  return (
+    config.deploymentId === deploymentId &&
+    resolve(
+      resolveRuntimeHostNpmDeploymentLayout(config.deploymentRoot, config.launch.package.integrity)
+        .cliPath,
+    ) === resolve(cliPath)
+  );
+}
+
+function operatorClaimMismatch(): RuntimeHostManagedDeploymentError {
+  return new RuntimeHostManagedDeploymentError(
+    'deployment_failed',
+    'The managed Runtime Host operator belongs to a different deployment generation or exact package',
+  );
 }
 
 export function isRuntimeHostManagedDeploymentRoot(root: string, serviceId: string): boolean {
@@ -179,6 +532,38 @@ export function resolveRuntimeHostManagedDeploymentForCli(
   return isRuntimeHostManagedDeploymentCli(root, serviceId, cliPath) ? root : undefined;
 }
 
+export async function resolveExistingRuntimeHostManagedDeploymentRoot(
+  root: string,
+  serviceId: string,
+): Promise<string | undefined> {
+  if (!isRuntimeHostManagedDeploymentRoot(root, serviceId)) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to inspect an invalid managed Runtime Host deployment path',
+    );
+  }
+  const requestedRoot = resolve(root);
+  let inspected: readonly [string, Awaited<ReturnType<typeof lstat>>];
+  try {
+    inspected = await Promise.all([realpath(requestedRoot), lstat(requestedRoot)]);
+  } catch (error) {
+    if (isNodeError(error, 'ENOENT')) return undefined;
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Unable to inspect the managed Runtime Host deployment',
+      { cause: error },
+    );
+  }
+  const [canonicalRoot, target] = inspected;
+  if (canonicalRoot !== requestedRoot || !target.isDirectory() || target.isSymbolicLink()) {
+    throw new RuntimeHostManagedDeploymentError(
+      'deployment_failed',
+      'Refusing to use a redirected managed Runtime Host deployment path',
+    );
+  }
+  return canonicalRoot;
+}
+
 export async function removeRuntimeHostManagedDeployment(
   root: string,
   serviceId: string,
@@ -190,88 +575,44 @@ export async function removeRuntimeHostManagedDeployment(
     );
   }
   const requestedRoot = resolve(root);
-  let inspected: readonly [string, Awaited<ReturnType<typeof lstat>>];
-  try {
-    inspected = await Promise.all([realpath(requestedRoot), lstat(requestedRoot)]);
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return;
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      'Unable to inspect the managed Runtime Host deployment before removal',
-      { cause: error },
-    );
+  const parent = await resolveExistingRuntimeHostManagedDeploymentParent(root, serviceId);
+  if (!parent) return;
+  const retiredRoot = join(parent, `.${serviceId}.retired`);
+  await rm(retiredRoot, { recursive: true, force: true });
+  await syncDirectory(parent);
+  const existing = await resolveExistingRuntimeHostManagedDeploymentRoot(requestedRoot, serviceId);
+  if (existing) {
+    await rename(existing, retiredRoot);
+    // The rename is the logical cleanup commit. After this barrier the public
+    // operator path is absent, so an interrupted physical delete is safely
+    // recognized as already complete and reclaimed by the next deployment.
+    await syncDirectory(parent);
   }
-  const [canonicalRoot, target] = inspected;
-  if (canonicalRoot !== requestedRoot || !target.isDirectory() || target.isSymbolicLink()) {
-    throw new RuntimeHostManagedDeploymentError(
-      'deployment_failed',
-      'Refusing to remove a redirected managed Runtime Host deployment path',
-    );
-  }
-  const operatorPath = join(requestedRoot, 'operator');
-  for (const entry of await readdir(requestedRoot)) {
-    if (entry === 'operator') continue;
-    await rm(join(requestedRoot, entry), { recursive: true, force: true });
-  }
-  await rm(operatorPath, { force: true });
-  await rm(requestedRoot, { recursive: true, force: true });
+  await rm(retiredRoot, { recursive: true, force: true });
+  await syncDirectory(parent);
 }
 
-async function validatePackage(path: string, version: string): Promise<string> {
-  let packageRoot: string;
-  let manifest: unknown;
-  try {
-    packageRoot = await realpath(resolve(path));
-    manifest = JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')) as unknown;
-    const cli = await stat(join(packageRoot, 'dist', 'cli.js'));
-    const runtimeHost = await stat(
-      join(packageRoot, 'node_modules', '@maka', 'runtime-host', 'package.json'),
-    );
-    if (!cli.isFile() || !runtimeHost.isFile()) throw new Error('Package payload is incomplete');
-  } catch (error) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      `Maka ${version} is not a self-contained release package`,
-      { cause: error },
-    );
-  }
-  if (!isRecord(manifest) || manifest.name !== PACKAGE_NAME || manifest.version !== version) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      `The setup package does not contain ${PACKAGE_NAME}@${version}`,
-    );
-  }
-  return packageRoot;
-}
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch (error) {
-    if (isNodeError(error, 'ENOENT')) return false;
-    throw error;
-  }
-}
-
-function deployment(
-  version: string,
-  root: string,
-  packageRoot: string,
-  cliPath: string,
+function managedDeployment(
+  staged: RuntimeHostPackageDeployment,
   clientDataRoot: string,
-  created: boolean,
+  managedRootId: string,
 ): RuntimeHostManagedPackageDeployment {
-  const operatorPath = join(root, 'operator');
+  const operatorPath = join(staged.root, 'operator');
   return {
-    version,
-    root,
-    cliPath,
+    version: staged.version,
+    root: staged.root,
+    cliPath: staged.cliPath,
     operatorPath,
-    activate: () => writeOperatorLauncher(operatorPath, process.execPath, cliPath, clientDataRoot),
-    cleanup: () => pruneInactiveDevelopmentPackages(dirname(packageRoot), version),
-    rollback: () =>
-      created ? rm(packageRoot, { recursive: true, force: true }) : Promise.resolve(),
+    activate: () =>
+      writeOperatorLauncher(
+        operatorPath,
+        process.execPath,
+        staged.cliPath,
+        clientDataRoot,
+        managedRootId,
+      ),
+    cleanup: staged.cleanup,
+    rollback: staged.rollback,
   };
 }
 
@@ -280,21 +621,17 @@ async function writeOperatorLauncher(
   nodePath: string,
   cliPath: string,
   clientDataRoot: string,
+  managedRootId: string,
+  deploymentId?: string,
 ): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  const contents = [
-    '#!/bin/sh',
-    'if [ "$#" -ge 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
-    'fi',
-    'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
-    '  shift',
-    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
-    'fi',
-    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)}`,
-    '',
-  ].join('\n');
+  const contents = operatorLauncherContents(
+    nodePath,
+    cliPath,
+    clientDataRoot,
+    managedRootId,
+    deploymentId,
+  );
   try {
     const file = await open(temporaryPath, 'wx', 0o700);
     try {
@@ -315,34 +652,110 @@ async function writeOperatorLauncher(
   }
 }
 
-function quotePosix(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
+function operatorLauncherContents(
+  nodePath: string,
+  cliPath: string,
+  clientDataRoot: string,
+  managedRootId: string,
+  deploymentId?: string,
+): string {
+  return [
+    '#!/bin/sh',
+    'if [ "$#" -ge 1 ] && [ "$1" = "__cleanup-managed-deployment" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service cleanup-deployment "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}${deploymentId ? ` --operator-deployment-id ${quotePosix(deploymentId)}` : ''}`,
+    'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "access" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host access "$@"`,
+    'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "activate" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host activate "$@"`,
+    'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "connect" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host connect "$@"`,
+    'fi',
+    'if [ "$#" -ge 1 ] && [ "$1" = "serve" ]; then',
+    '  shift',
+    `  exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host serve "$@"`,
+    'fi',
+    `exec ${quotePosix(nodePath)} ${quotePosix(cliPath)} runtime-host service "$@" --client-data-root ${quotePosix(clientDataRoot)} --managed-root-id ${quotePosix(managedRootId)}${deploymentId ? ` --operator-deployment-id ${quotePosix(deploymentId)}` : ''}`,
+    '',
+  ].join('\n');
 }
 
-async function pruneInactiveDevelopmentPackages(
-  versionsRoot: string,
-  retainedVersion: string,
+export async function convergeRuntimeHostManagedOperator(
+  current: RuntimeHostManagedDeploymentConfig | undefined,
+  desired: RuntimeHostManagedDeploymentConfig | undefined,
 ): Promise<void> {
-  if (!isRuntimeHostDevelopmentPackageVersion(retainedVersion)) return;
-  await Promise.all(
-    (await readdir(versionsRoot, { withFileTypes: true }))
-      .filter(
-        (entry) =>
-          entry.isDirectory() &&
-          entry.name !== retainedVersion &&
-          isRuntimeHostDevelopmentPackageVersion(entry.name),
-      )
-      .map((entry) => rm(join(versionsRoot, entry.name), { recursive: true, force: true })),
+  const deployment = desired ?? current;
+  if (!deployment) return;
+  // The stable operator is the bounded cleanup and recovery route after authority
+  // is removed. Package cleanup removes it with the deployment root.
+  if (!desired) return;
+  const operatorPath = join(deployment.deploymentRoot, 'operator');
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    desired.deploymentRoot,
+    desired.launch.package.integrity,
+  );
+  await writeOperatorLauncher(
+    operatorPath,
+    desired.launch.nodePath,
+    layout.cliPath,
+    resolveRuntimeHostManagedControlRoot(desired.root.id),
+    desired.root.id,
+    desired.deploymentId,
   );
 }
 
-function assertVersion(version: string): void {
-  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]{0,127}$/u.test(version)) {
-    throw new RuntimeHostManagedDeploymentError(
-      'invalid_package',
-      'The Maka package version cannot be used as a managed deployment identity',
-    );
-  }
+export async function restoreRuntimeHostLegacyManagedOperator(input: {
+  readonly deploymentRoot: string;
+  readonly nodePath: string;
+  readonly cliPath: string;
+  readonly clientDataRoot: string;
+  readonly serviceId: string;
+}): Promise<void> {
+  await writeOperatorLauncher(
+    join(input.deploymentRoot, 'operator'),
+    input.nodePath,
+    input.cliPath,
+    input.clientDataRoot,
+    input.serviceId,
+  );
+}
+
+export async function verifyRuntimeHostManagedOperator(
+  config: RuntimeHostManagedDeploymentConfig,
+): Promise<void> {
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  const expected = operatorLauncherContents(
+    config.launch.nodePath,
+    layout.cliPath,
+    resolveRuntimeHostManagedControlRoot(config.root.id),
+    config.root.id,
+    config.deploymentId,
+  );
+  const observed = await readStableBoundedFile({
+    path: join(config.deploymentRoot, 'operator'),
+    maxBytes: Buffer.byteLength(expected),
+    invalidFile: () => new Error('The managed Runtime Host operator is not a stable regular file'),
+  }).then((contents) => new TextDecoder('utf-8', { fatal: true }).decode(contents));
+  if (observed !== expected)
+    throw new Error('The managed Runtime Host operator does not match its deployment');
+  await access(join(config.deploymentRoot, 'operator'), constants.X_OK).catch((error: unknown) => {
+    throw new Error('The managed Runtime Host operator is not executable', {
+      cause: error,
+    });
+  });
+}
+
+function quotePosix(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

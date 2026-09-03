@@ -25,14 +25,11 @@
 
 <p align="center">
   <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon and Intel" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows unsigned preview" />
-  <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux not yet supported" />
-</p>
-
-<p align="center">
+  <img src="https://img.shields.io/badge/Linux-preview-9BB8F0?style=flat&logo=linux&logoColor=white" alt="Linux unsigned preview" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-third--party%20AI%20docs-9BB8F0?style=flat" alt="DeepWiki: third-party AI-generated docs" /></a>
   <a href="./README.zh-CN.md"><img src="https://img.shields.io/badge/%E4%B8%AD%E6%96%87%E6%96%87%E6%A1%A3-4C8DFF?style=flat" alt="中文文档" /></a>
 </p>
 
@@ -43,13 +40,18 @@
   machine, through one Runtime Host.
 </p>
 
+<p align="center">
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/Download%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="Download Desktop Nightly" /></a><br/>
+  Daily builds from <code>main</code> for developers and testers. Not an ASF release, not intended for production use.
+</p>
+
 ![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
 
 > [!IMPORTANT]
-> Maka is under active development. The macOS Apple Silicon desktop build is an early public release; data formats, CLI commands, and experimental capabilities may still change.
+> Maka is under active development. Data formats, CLI commands, and experimental capabilities may still change.
 
 ## Why Maka
 
@@ -99,7 +101,7 @@ Apache Maka has not made an Apache release yet. Everything currently published f
 
 Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
 
-Until an approved source release exists, this README recommends no prebuilt download. Build and run Maka from source as described below. Desktop currently targets Apple Silicon Macs (`arm64`). Intel Macs and Linux are not supported yet. [Windows](docs/windows-support.md) is an unsigned preview, not a supported release tier.
+[Desktop Nightly](https://github.com/apache/maka/releases) is built daily from `main` for developers and testers. Choose the newest **Maka Desktop Nightly** prerelease; after installation, the app updates automatically on the Nightly channel. It is not an ASF release and is not intended for production use. Desktop currently targets Apple Silicon Macs (`arm64`). Intel Macs and Linux are not supported yet. [Windows](docs/windows-support.md) is an unsigned preview, not a supported release tier.
 
 ### Requirements
 
@@ -121,6 +123,15 @@ npm run dev
 
 ```sh
 npm run dev:full
+```
+
+Direct Peer and Peer Mesh development additionally requires Rust stable 1.98 or newer and the
+platform linker (Xcode Command Line Tools on macOS, MSVC Build Tools on Windows). Use the
+peer-enabled entry point so the native addon is built before Desktop starts:
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # full build
 ```
 
 If dependencies were installed with `ELECTRON_SKIP_BINARY_DOWNLOAD=1`, install the Electron platform binary before starting:
@@ -190,17 +201,20 @@ Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, cod
 ## Repository layout
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Pure contracts for Sessions, Events, Permissions, and Connections
-packages/storage/   SQLite operational state, configuration, and payload stores
-packages/runtime/   AgentRun, model adapters, tools, context, and recovery
-packages/eval/      Experiment cells, attempts, results, and executor/subject adapters
-packages/cli/       TUI and non-interactive CLI
-packages/ui/        Shared conversation, Markdown, Artifact, and UI primitives
+packages/core/         Pure contracts for Sessions, Events, Permissions, and Connections
+packages/storage/      SQLite operational state, configuration, and payload stores
+packages/mcp/          Provider-neutral Model Context Protocol client integration
+packages/runtime/      AgentRun, model adapters, tools, context, and recovery
+packages/runtime-host/ Single-owner Runtime Host lifecycle, protocol, and client bootstrap
+packages/eval/         Experiment cells, attempts, results, and executor/subject adapters
+packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
+packages/cli/          TUI and non-interactive CLI
+packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
 
-docs/               Architecture, product, security, privacy, and test contracts
-scripts/            Build hygiene, visual checks, smoke tests, and release helpers
+docs/                  Architecture, product, security, privacy, and test contracts
+scripts/               Build hygiene, visual checks, smoke tests, and release helpers
 ```
 
 ## Local data and recovery
@@ -239,16 +253,16 @@ npm run check:release
 Run one workspace in isolation:
 
 ```sh
-npm --workspace @maka/runtime test
-npm --workspace @maka/eval test
-npm --workspace @maka/desktop test
+npm --workspace @maka/runtime run test:dist
+npm --workspace @maka/eval run test:dist
+npm --workspace @maka/desktop run test:dist
 ```
 
 Use `refresh:model-metadata` to fetch the current catalog from models.dev, update the committed snapshot, and regenerate the derived TypeScript files. A refresh fails closed when any committed model, capability, provider override, or pricing field disappears; after reviewing an intentional upstream removal, acknowledge it with `npm run refresh:model-metadata -- --accept-upstream-removals`. `sync:model-metadata` is intentionally offline: it only regenerates those files from the committed snapshot. Keep access-path-specific overrides in `model-metadata.ts`; do not edit the generated files by hand.
 
 ```sh
 npm run refresh:model-metadata
-npm --workspace @maka/core test
+npm --workspace @maka/core run test:dist
 ```
 
 Desktop real-window and visual verification:

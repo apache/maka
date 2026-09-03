@@ -21,9 +21,11 @@ import {
   forwardRef,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type ClipboardEvent,
   type DragEvent,
   type FormEvent,
@@ -35,6 +37,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CircleGauge,
   FileText,
   ListTodo,
   Network,
@@ -54,9 +57,16 @@ import {
 } from './chat-model-switcher.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
-import { type ChatModelChoice, modelChoiceValue } from './chat-model-helpers.js';
-import { appendPromptContextDraft, isReferenceSizedPaste } from './composer-helpers.js';
+import { type ChatModelChoice, exactModelChoiceValue } from './chat-model-helpers.js';
+import {
+  appendPromptContextDraft,
+  deriveComposerModelSwitchAvailability,
+  isReferenceSizedPaste,
+  type ComposerModelSwitchAvailability,
+} from './composer-helpers.js';
 import { stripQuoteHeadingMarkers } from './quote-ref-chip.js';
+import { DirectoryReferenceChip } from './directory-reference-chip.js';
+import { FolderOpen } from './icons.js';
 import { WorkspacePicker, type WorkspacePickerModel } from './workspace-picker.js';
 import { useComposerDraft, type ComposerDraftPersistence } from './use-composer-draft.js';
 import { useComposerHistory } from './use-composer-history.js';
@@ -207,6 +217,8 @@ export interface ComposerHandle {
   appendDraft?(draftKey: string, text: string): void;
   /** Move focus to the input without changing its content. */
   focus(): void;
+  /** Open the active Session's existing account-and-model picker. */
+  openModelPicker(): void;
 }
 
 export interface ComposerSendMetadata {
@@ -214,7 +226,22 @@ export interface ComposerSendMetadata {
   followUpMode?: FollowUpMode;
 }
 
-type ComposerImportActionId = 'pick' | 'attach';
+type ComposerImportActionId = 'pick' | 'attach' | 'directory';
+
+export interface ComposerGoalProps {
+  /**
+   * Open the host's Goal dialog. The composer offers the entry and nothing
+   * else: a Goal names a condition and two budgets, which is a form, and the
+   * ＋ menu is a menu. Absent handler, no entry — the same rule the other
+   * ＋ entries follow.
+   */
+  onSetGoal?(): void | Promise<void>;
+  /**
+   * A Goal is already running here. Arming refuses a second one, so the
+   * entry says so up front instead of spending the user's click on an error.
+   */
+  goalActive?: boolean;
+}
 
 export const Composer = forwardRef<
   ComposerHandle,
@@ -231,9 +258,17 @@ export const Composer = forwardRef<
      * Send becomes Stop while the draft is empty. The ＋ menu and permission
      * control stay reachable (#1444); the model and thinking menus stay
      * mounted but lock with an explanatory tooltip, so the footer row never
-     * reflows mid-turn; import stays blocked mid-turn.
+     * reflows mid-turn. Attachment import remains blocked unless the host opts
+     * in via `allowAttachmentImportWhileStreaming`.
      */
     streaming?: boolean;
+    /**
+     * Keep attachment paste, drop, and picker imports available during a
+     * running turn. Only hosts whose running-turn submission carries staged
+     * attachments into a follow-up should opt in; text-only steering hosts
+     * must retain the default gate so text cannot leave its attachment behind.
+     */
+    allowAttachmentImportWhileStreaming?: boolean;
     /**
      * #646: retained for hosts that still track first-token wait vs mid-turn
      * lull. Quiet composer no longer surfaces long status copy from these;
@@ -247,10 +282,17 @@ export const Composer = forwardRef<
     /** True while the current streaming session is processing a stop request. */
     stopPending?: boolean;
     queuedMessages?: readonly MessageQueueEntryProjection[];
-    /** Promote a queued follow-up into the active Turn (立即发送). */
+    queuedMessageRevision?: number;
+    /** Promote a queued follow-up into the active Turn (调整方向). */
     onPromoteQueuedEntry?(entryId: string): void | Promise<void>;
-    /** Retract one queued entry back into the draft (收回草稿). */
-    onRetractQueuedEntry?(entry: MessageQueueEntryProjection): void | Promise<void>;
+    /** Update one queued entry in place without changing its order or placement. */
+    onUpdateQueuedEntry?(
+      entryId: string,
+      expectedQueueRevision: number,
+      text: string,
+    ): void | Promise<void>;
+    /** Remove one queued entry without restoring it. */
+    onDeleteQueuedEntry?(entryId: string): void | Promise<void>;
     /** Reorder the follow-up queue; entryIds is the full intended order. */
     onReorderQueuedEntries?(entryIds: readonly string[]): void | Promise<void>;
     /** Runtime-only key used to keep unsent drafts isolated per session. */
@@ -268,6 +310,9 @@ export const Composer = forwardRef<
     ): boolean | void | Promise<boolean | void>;
     onStop(): void | Promise<void>;
     onPickAttachments?(): void | Promise<void>;
+    onPickDirectory?(): void | Promise<void>;
+    pendingDirectories?: readonly import('@maka/core/events').DirectoryReference[];
+    onRemoveDirectory?(index: number): void;
     onAttachFilePaths?(files: File[]): void | Promise<void>;
     pendingAttachments?: readonly {
       displayName: string;
@@ -296,17 +341,26 @@ export const Composer = forwardRef<
     onPasteAsQuote?(input: { text: string; label?: string }): void;
     modelLabel?: string;
     activeSession?: SessionSummary;
+    activeModelConnectionId?: string;
+    activeModelConnectionSlug?: string;
     activeModel?: string;
     activeModelLabel?: string;
     activeProviderType?: ProviderType;
     modelChoices?: ChatModelChoice[];
     /** Whether this Session already has conversation history whose provider prompt cache may be rebuilt by a switch. */
     modelSwitchHasHistory?: boolean;
+    /** Identity recovery must not present the stale target as a checked, selectable row. */
+    hideUnavailableCurrentModel?: boolean;
     /** Renders the provider brand mark beside each model option;
      *  injected by the desktop app to keep the provider SVG library out of @maka/ui. */
     renderProviderMark?(type: ProviderType): ReactNode;
-    modelChangePending?: boolean;
-    onModelChange?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    /** Host-projected availability when another recovery surface opens this picker. */
+    modelSwitchAvailability?: ComposerModelSwitchAvailability;
+    onModelChange?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /** Per-model thinking-level variants for the active model; empty/undefined hides the switcher. */
     activeThinkingLevels?: readonly import('@maka/core/model-thinking').ThinkingLevel[];
     activeThinkingLevel?: import('@maka/core/model-thinking').ThinkingLevel;
@@ -320,9 +374,13 @@ export const Composer = forwardRef<
      * the otherwise-static model chip becomes a real dropdown so the user can
      * choose the new-chat model inline instead of only via Settings · 模型.
      */
-    newChatModel?: { llmConnectionSlug: string; model: string };
+    newChatModel?: { llmConnectionId: string; llmConnectionSlug: string; model: string };
     newChatProviderType?: ProviderType;
-    onPickNewChatModel?(input: { llmConnectionSlug: string; model: string }): void | Promise<void>;
+    onPickNewChatModel?(input: {
+      llmConnectionId: string;
+      llmConnectionSlug: string;
+      model: string;
+    }): void | Promise<void>;
     /**
      * Empty-state only: no models are configured yet, so the model chip is a
      * non-interactive label. When provided, the chip becomes a button into
@@ -340,6 +398,12 @@ export const Composer = forwardRef<
     noModelConnection?: boolean;
     /** Optional Host-aware replacement for the generic no-model hint. */
     noModelHint?: string;
+    /** Read-only usage indicator for the active model's latest request. */
+    contextUsage?: {
+      usageTokens?: number;
+      declaredContextWindow?: number;
+      metadataContextWindow?: number;
+    };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
      * revision draft; Composer only renders the notice + cancel affordance.
@@ -368,7 +432,6 @@ export const Composer = forwardRef<
      * option (#1611).
      */
     permissionMode?: PermissionMode;
-    permissionModePending?: boolean;
     permissionModeDisabledReason?: string;
     onPermissionModeChange?(mode: PermissionMode): void | Promise<void>;
     /**
@@ -400,18 +463,6 @@ export const Composer = forwardRef<
     orchestrationMode?: OrchestrationMode;
     orchestrationModeDisabledReason?: string;
     onOrchestrationModeChange?(mode: OrchestrationMode): void | Promise<void>;
-    /**
-     * Open the host's Goal dialog. The composer offers the entry and nothing
-     * else: a Goal names a condition and two budgets, which is a form, and the
-     * ＋ menu is a menu. Absent handler, no entry — the same rule the other
-     * ＋ entries follow.
-     */
-    onSetGoal?(): void | Promise<void>;
-    /**
-     * A Goal is already running here. Arming refuses a second one, so the
-     * entry says so up front instead of spending the user's click on an error.
-     */
-    goalActive?: boolean;
     /**
      * Why a Goal cannot be set right now — a running Turn, typically. A Goal
      * takes hold on the Turn after it is armed, so arming during one reads as
@@ -454,7 +505,7 @@ export const Composer = forwardRef<
     mentionSkillsLoading?: boolean;
     slashCommands?: ReadonlyArray<ComposerSlashCommandOption>;
     onSearchMentionFiles?(query: string): Promise<ReadonlyArray<{ relativePath: string }>>;
-  }
+  } & ComposerGoalProps
 >(function Composer(props, ref) {
   const formRef = useRef<HTMLFormElement>(null);
   /** Astryx's imperative handle on the contentEditable input. */
@@ -466,10 +517,21 @@ export const Composer = forwardRef<
   }
   const [dragActive, setDragActive] = useState(false);
   const [sendPending, setSendPending] = useState(false);
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const modelSwitchAvailability =
+    props.modelSwitchAvailability ??
+    deriveComposerModelSwitchAvailability({
+      streaming: props.streaming,
+      sessionStatus: props.activeSession?.status,
+    });
+  const modelSwitchAvailabilityRef = useRef(modelSwitchAvailability);
+  modelSwitchAvailabilityRef.current = modelSwitchAvailability;
+  useLayoutEffect(() => setModelPickerOpen(false), [props.activeSession?.id]);
   const [pendingImportAction, setPendingImportAction] = useState<ComposerImportActionId | null>(null);
   const composerMountedRef = useMountedRef();
   const sendPendingRef = useRef(false);
   const compositionActiveRef = useRef(false);
+  const plainTextPasteInputActiveRef = useRef(false);
   const importActionOwnerRef = useRef<ChatInputActionOwner<ComposerImportActionId> | null>(null);
   if (!importActionOwnerRef.current) {
     importActionOwnerRef.current = createChatInputActionOwner((action) => {
@@ -499,6 +561,8 @@ export const Composer = forwardRef<
    * identity so neither hook re-runs an effect when the draft changes.
    */
   const caretToEndRef = useRef(false);
+  /** A caret-to-end owed to an editor that was not focused when it came due. */
+  const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
@@ -523,10 +587,27 @@ export const Composer = forwardRef<
    * say) then landed the caret at offset 0, so typing prepended to the restored
    * draft. Collapse to the end here when the editor holds no selection of its
    * own, which is what the retired `focusTextInputAtEnd` did unconditionally.
+   *
+   * Only on a focused editor, though. A selection inside a `contenteditable` is
+   * never only a caret: the browser focuses the element to carry it, whatever
+   * held focus before — measured in the shipping runtime, a selection placed
+   * here takes focus from a focused button exactly as it takes it from `body` —
+   * and sequential focus navigation then resumes from the selection rather than
+   * from the top of the document. So a restored draft claimed focus nobody
+   * directed at it: on a cold start, tens of milliseconds in, past the skip link
+   * and with no `focus()` call to explain it; and on a session swap, out from
+   * under the sidebar row the user had just activated. Hold the caret while the
+   * editor is not focused and land it on the editor's next real focus, which is
+   * the first moment the offset is the only thing being decided.
    */
   function caretToContentEnd() {
     const editable = editableNode();
     if (!editable) return;
+    if (document.activeElement !== editable) {
+      caretPendingRef.current = true;
+      return;
+    }
+    caretPendingRef.current = false;
     const selection = document.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editable);
@@ -541,6 +622,30 @@ export const Composer = forwardRef<
     if (!editable || (selection?.anchorNode && editable.contains(selection.anchorNode))) return;
     caretToContentEnd();
   }
+  /**
+   * Settle a held caret when focus reaches the editor for real. On the component
+   * root, like the other native listeners here: `focusin` and `pointerdown`
+   * bubble, and a disabled composer renders no editable to look up at mount.
+   *
+   * A pointer press places the caret itself and is the more specific intent, so
+   * it drops the claim rather than being overruled by it.
+   */
+  useEffect(() => {
+    const root = inputRootRef.current;
+    if (!root) return undefined;
+    const land = () => {
+      if (caretPendingRef.current) caretToContentEnd();
+    };
+    const drop = () => {
+      caretPendingRef.current = false;
+    };
+    root.addEventListener('focusin', land);
+    root.addEventListener('pointerdown', drop);
+    return () => {
+      root.removeEventListener('focusin', land);
+      root.removeEventListener('pointerdown', drop);
+    };
+  }, []);
   /**
    * The ＋ menu's Skills entry opens the same `/` menu the keyboard opens: it
    * types the trigger for the user. There is no second Skill surface to keep in
@@ -672,13 +777,27 @@ export const Composer = forwardRef<
    * The redraw gets the same treatment for the same reason, and can land a
    * render later than the write that owed it: `insertToken` parks the selection
    * after the last chip it wrote, so the caret has to be collected again.
+   *
+   * A held caret is suspended across the redraw rather than left armed. The
+   * redraw drives `insertToken` through the document selection, and its first
+   * range focuses the editor — which would otherwise fire the focus lander onto
+   * the very range the redraw is holding, collapsing it to the end so the chip
+   * landed at the end and its source text stayed in the draft. The redraw ends
+   * by collecting the caret itself, so on success the claim is settled; on a
+   * pass that redrew nothing it is handed back untouched.
    */
   useEffect(() => {
     let restoreCaret = caretToEndRef.current;
     caretToEndRef.current = false;
-    if (redrawPendingRef.current && redrawSkillTokens()) {
-      redrawPendingRef.current = false;
-      restoreCaret = true;
+    if (redrawPendingRef.current) {
+      const heldCaret = caretPendingRef.current;
+      caretPendingRef.current = false;
+      const redrew = redrawSkillTokens();
+      caretPendingRef.current = redrew ? false : heldCaret;
+      if (redrew) {
+        redrawPendingRef.current = false;
+        restoreCaret = true;
+      }
     }
     if (restoreCaret) caretToContentEnd();
   });
@@ -1119,6 +1238,10 @@ export const Composer = forwardRef<
       focus() {
         focusInput();
       },
+      openModelPicker() {
+        if (!modelSwitchAvailabilityRef.current.available) return;
+        setModelPickerOpen(true);
+      },
     }),
     [],
   );
@@ -1181,8 +1304,13 @@ export const Composer = forwardRef<
     void sendCurrent();
   }
 
+  const attachmentImportBlocked = Boolean(
+    props.disabled
+      || (props.streaming && !props.allowAttachmentImportWhileStreaming),
+  );
+
   async function runImportAction(actionId: ComposerImportActionId, action: (() => void | Promise<void>) | undefined) {
-    if (!action || props.disabled || props.streaming) return;
+    if (!action || attachmentImportBlocked) return;
     await importActionOwnerRef.current?.run(actionId, async () => {
       await action();
     });
@@ -1253,7 +1381,11 @@ export const Composer = forwardRef<
   }
 
   function canAcceptDroppedFiles(): boolean {
-    return Boolean(props.onAttachFilePaths && !props.disabled && !props.streaming && !importActionOwnerRef.current?.pending);
+    return Boolean(
+      props.onAttachFilePaths
+        && !attachmentImportBlocked
+        && !importActionOwnerRef.current?.pending,
+    );
   }
 
   function hasDraggedFiles(event: DragEvent<HTMLFormElement>): boolean {
@@ -1332,13 +1464,9 @@ export const Composer = forwardRef<
   // Mid-turn the model and thinking menus stay mounted but locked, each
   // carrying the reason in its own words (model vs thinking level) — the
   // lock is one state with two wordings, not two locks.
-  const switchLock = props.streaming
-    ? 'streaming'
-    : props.activeSession?.status === 'running'
-      ? 'running'
-      : props.activeSession?.status === 'waiting_for_user'
-        ? 'permission'
-        : undefined;
+  const switchLock = modelSwitchAvailability.available
+    ? undefined
+    : modelSwitchAvailability.reason;
   const modelSwitcherDisabledReason =
     switchLock === 'streaming' ? copy.switchDisabledStreaming
     : switchLock === 'running' ? copy.switchDisabledRunning
@@ -1360,7 +1488,9 @@ export const Composer = forwardRef<
    * Skill is a chip in the draft itself, visible where it will be sent from.
    */
   const drawerTokenCount =
-    (props.pendingQuotes?.length ?? 0) + (props.pendingAttachments?.length ?? 0);
+    (props.pendingQuotes?.length ?? 0) +
+    (props.pendingAttachments?.length ?? 0) +
+    (props.pendingDirectories?.length ?? 0);
   /** The last staged image opened from a chip (Lightbox media shape). Kept
    *  mounted after close — see the Lightbox render — so only the open flag
    *  drives visibility. */
@@ -1493,7 +1623,7 @@ export const Composer = forwardRef<
    * that wires only the mode controls would open the menu on a rule.
    */
   const hasPlusMenuActions = Boolean(
-    props.onPickAttachments || props.mentionSkills || props.onSetGoal,
+    props.onPickAttachments || props.onPickDirectory || props.mentionSkills || props.onSetGoal,
   );
   const hasPlusMenuModes = Boolean(props.onPlanModeChange || props.onOrchestrationModeChange);
   const showPlusMenu = Boolean(hasPlusMenuActions || hasPlusMenuModes);
@@ -1532,11 +1662,13 @@ export const Composer = forwardRef<
         </div>
       )}
       {!props.hidden && queueCount > 0 ? (
-        <ComposerMessageQueue
-          queuedMessages={props.queuedMessages!}
+          <ComposerMessageQueue
+            queuedMessages={props.queuedMessages!}
+            queueRevision={props.queuedMessageRevision}
           copy={copy}
           onPromoteEntry={props.onPromoteQueuedEntry}
-          onRetractEntry={props.onRetractQueuedEntry}
+          onUpdateEntry={props.onUpdateQueuedEntry}
+          onDeleteEntry={props.onDeleteQueuedEntry}
           onReorderEntries={props.onReorderQueuedEntries}
         />
       ) : null}
@@ -1604,6 +1736,13 @@ export const Composer = forwardRef<
               }}
             >
               <div className="maka-composer-context-drawer" role="group" aria-label={copy.stagedContext}>
+                {props.pendingDirectories?.map((reference, index) => (
+                  <DirectoryReferenceChip
+                    key={`${reference.hostId}:${reference.path}`}
+                    reference={reference}
+                    onRemove={props.onRemoveDirectory ? () => props.onRemoveDirectory?.(index) : undefined}
+                  />
+                ))}
                 {props.pendingQuotes?.map((quote, index) => (
                   <Token
                     key={`${quote.sourceTurnId ?? 'quote'}-${index}`}
@@ -1671,6 +1810,9 @@ export const Composer = forwardRef<
           input={(
             <div
               className="maka-composer-input"
+              onInputCapture={(event) => {
+                if (plainTextPasteInputActiveRef.current) event.stopPropagation();
+              }}
               // PR-FE-BUG-HUNT-10: a paste that lands mid-CJK-composition must
               // not be consumed — `ChatComposerInput` always preventDefault()s
               // the paste, which would interrupt the IME mid-character. The
@@ -1701,6 +1843,36 @@ export const Composer = forwardRef<
                 hasHistory={false}
                 triggers={triggers}
                 pasteAsToken={pasteAsToken}
+                onPaste={(event, pasted) => {
+                  // Astryx has already offered token-adjacent, file, and
+                  // reference-sized-token pastes before it reaches this seam.
+                  const plainTextContainer = document.createElement('div');
+                  plainTextContainer.textContent = pasted;
+                  const menuWasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
+                  plainTextPasteInputActiveRef.current = true;
+                  try {
+                    // Deprecated, but still the composer's only insertion
+                    // primitive that creates a browser undo transaction.
+                    // Migrate when Astryx exposes a transactional plain-text
+                    // insertion authority.
+                    return document.execCommand(
+                      'insertHTML',
+                      false,
+                      plainTextContainer.innerHTML.replace(/\r\n?|\n/g, '<br>'),
+                    );
+                  } finally {
+                    plainTextPasteInputActiveRef.current = false;
+                    if (menuWasOpen) {
+                      event.currentTarget.dispatchEvent(
+                        new KeyboardEvent('keydown', {
+                          key: 'Escape',
+                          bubbles: true,
+                          cancelable: true,
+                        }),
+                      );
+                    }
+                  }
+                }}
                 onFiles={onInputFiles}
                 onKeyDown={onInputKeyDown}
                 onCompositionStart={() => { compositionActiveRef.current = true; }}
@@ -1736,9 +1908,19 @@ export const Composer = forwardRef<
                       <DropdownMenuItem
                         label={pendingImportAction === 'pick' ? copy.addingAttachment : copy.addFileOrDirectory}
                         icon={<Upload size={ICON_SIZE.control} aria-hidden="true" />}
-                        isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                        isDisabled={attachmentImportBlocked || importActionBusy}
                         onClick={() => {
                           void runImportAction('pick', props.onPickAttachments);
+                        }}
+                      />
+                    ) : null}
+                    {props.onPickDirectory ? (
+                      <DropdownMenuItem
+                        label={copy.referenceFolder}
+                        icon={<FolderOpen size={ICON_SIZE.control} aria-hidden="true" />}
+                        isDisabled={props.disabled || props.streaming === true || importActionBusy}
+                        onClick={() => {
+                          void runImportAction('directory', props.onPickDirectory);
                         }}
                       />
                     ) : null}
@@ -1891,7 +2073,6 @@ export const Composer = forwardRef<
                   }}
                   disabled={
                     props.disabled
-                    || props.permissionModePending === true
                     || Boolean(props.permissionModeDisabledReason)
                   }
                   disabledReason={props.permissionModeDisabledReason}
@@ -1907,13 +2088,18 @@ export const Composer = forwardRef<
                 {props.activeSession ? (
                   <ChatModelSwitcher
                     activeSession={props.activeSession}
+                    activeModelConnectionId={props.activeModelConnectionId}
+                    activeModelConnectionSlug={props.activeModelConnectionSlug}
                     activeModel={props.activeModel}
                     activeModelLabel={props.activeModelLabel}
                     currentProviderType={props.activeProviderType}
                     choices={props.modelChoices ?? []}
                     hasConversationHistory={props.modelSwitchHasHistory}
-                    pending={props.modelChangePending}
+                    availability={modelSwitchAvailability}
                     disabledReason={modelSwitcherDisabledReason}
+                    isMenuOpen={modelPickerOpen}
+                    onMenuOpenChange={setModelPickerOpen}
+                    hideUnavailableCurrentOption={props.hideUnavailableCurrentModel}
                     renderProviderMark={props.renderProviderMark}
                     onChange={props.onModelChange}
                   />
@@ -1923,7 +2109,11 @@ export const Composer = forwardRef<
                     choices={props.modelChoices ?? []}
                     currentValue={
                       props.newChatModel
-                        ? modelChoiceValue(props.newChatModel.llmConnectionSlug, props.newChatModel.model)
+                        ? exactModelChoiceValue(
+                            props.newChatModel.llmConnectionId,
+                            props.newChatModel.llmConnectionSlug,
+                            props.newChatModel.model,
+                          )
                         : undefined
                     }
                     currentProviderType={props.newChatProviderType}
@@ -1942,9 +2132,8 @@ export const Composer = forwardRef<
                     levels={props.activeThinkingLevels ?? []}
                     current={props.activeThinkingLevel}
                     onChange={props.onThinkingLevelChange}
-                    disabled={Boolean(modelSwitcherDisabledReason) || props.modelChangePending}
+                    disabled={!modelSwitchAvailability.available}
                     disabledReason={thinkingSwitcherDisabledReason}
-                    loading={props.modelChangePending}
                   />
                 ) : (
                   <ThinkingLevelSelector
@@ -1953,6 +2142,7 @@ export const Composer = forwardRef<
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}
+                {props.contextUsage ? <ContextUsageIndicator {...props.contextUsage} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a
                   parameter of this send like the model beside it — so it sits
@@ -2051,3 +2241,38 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+function ContextUsageIndicator(props: {
+  usageTokens?: number;
+  declaredContextWindow?: number;
+  metadataContextWindow?: number;
+}) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  // A window from either source is enough to show a share: the user's
+  // declaration when there is one, otherwise the model's reported window. The
+  // distinction matters for the compaction threshold, which only a declaration
+  // arms, not for reading a number off the screen. With no window at all the
+  // usage stands on its own.
+  const window = props.declaredContextWindow ?? props.metadataContextWindow;
+  const label =
+    props.usageTokens === undefined
+      ? '—'
+      : window !== undefined && window > 0
+        ? `${Math.round((props.usageTokens / window) * 100)}%`
+        : `${props.usageTokens} tok`;
+  const tooltip =
+    props.usageTokens === undefined
+      ? copy.systemNotes.contextUsageUnavailable
+      : window !== undefined && window > 0
+        ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
+        : copy.systemNotes.contextUsageNoWindow;
+  const indicator = (
+    <span className="maka-context-usage-indicator" aria-label={tooltip ?? label}>
+      <CircleGauge size={ICON_SIZE.meta} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+  return tooltip ? <Tooltip content={tooltip}>{indicator}</Tooltip> : indicator;
+}
+
+export type ComposerProps = ComponentProps<typeof Composer>;

@@ -52,6 +52,7 @@ import {
   isDeepResearchArtifactRole,
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
+import { sniffAttachmentMimeType } from '@maka/core/attachments';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import {
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
@@ -78,7 +79,9 @@ export const ARTIFACT_TEXT_PREVIEW_LIMIT_BYTES = 10 * 1024 * 1024;
 export const ARTIFACT_BINARY_PREVIEW_LIMIT_BYTES = 50 * 1024 * 1024;
 
 const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
+
 const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
+const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
 const EMPTY_SESSION_SNAPSHOT: ArtifactSessionSnapshot = {
   records: [],
   revision: artifactListRevision([]),
@@ -158,6 +161,19 @@ export interface ConversationArtifactCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
   readonly turnIds: readonly string[];
+  readonly excludeArtifactIds?: readonly string[];
+  /**
+   * Source-Session artifact ids to copy in addition to the turn-scoped
+   * selection, regardless of their `turnId`. Used to carry user-uploaded
+   * attachments (whose `turnId` is the upload id sentinel, not a conversation
+   * turn) that the copied transcript still references. Lenient: an id with no
+   * matching source record is a no-op.
+   */
+  readonly includeArtifactIds?: readonly string[];
+  readonly linkedArtifacts?: readonly {
+    readonly sessionId: string;
+    readonly artifactIds: readonly string[];
+  }[];
 }
 
 export interface ConversationArtifactCopyResult {
@@ -383,21 +399,65 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       throw new Error('Artifact conversation copy requires distinct Sessions');
     }
     const turnIds = new Set(input.turnIds);
+    const excludedArtifactIds = new Set(input.excludeArtifactIds ?? []);
+    const includedArtifactIds = new Set(input.includeArtifactIds ?? []);
     for (const turnId of turnIds) assertArtifactTurnKey(turnId);
+    const linkedArtifacts = input.linkedArtifacts ?? [];
+    const requestedLinkedArtifactIds = new Map<string, Set<string>>();
+    for (const linked of linkedArtifacts) {
+      assertCanonicalArtifactEntityId(linked.sessionId, 'sessionId');
+      if (linked.sessionId === input.targetSessionId) {
+        throw new Error('Linked Artifact copy requires a distinct source Session');
+      }
+      const artifactIds = requestedLinkedArtifactIds.get(linked.sessionId) ?? new Set<string>();
+      for (const artifactId of linked.artifactIds) {
+        assertCanonicalArtifactEntityId(artifactId, 'id');
+        artifactIds.add(artifactId);
+      }
+      requestedLinkedArtifactIds.set(linked.sessionId, artifactIds);
+    }
     const records = await this.enqueue(async () => {
       await this.load();
-      return this.records
+      const selected = this.records
         .filter(
-          (record) => record.sessionId === input.sourceSessionId && turnIds.has(record.turnId),
+          (record) =>
+            record.sessionId === input.sourceSessionId &&
+            turnIds.has(record.turnId) &&
+            !excludedArtifactIds.has(record.id),
         )
         .map((record) => ({ ...record }));
+      for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
+        for (const artifactId of artifactIds) {
+          const record = this.records.find(
+            (candidate) =>
+              candidate.sessionId === sessionId &&
+              candidate.id === artifactId &&
+              candidate.status !== 'deleted',
+          );
+          if (!record) throw new Error(`Linked Artifact ${artifactId} could not be copied`);
+          selected.push({ ...record });
+        }
+      }
+      const selectedIds = new Set(selected.map((record) => record.id));
+      for (const record of this.records) {
+        if (
+          record.sessionId === input.sourceSessionId &&
+          includedArtifactIds.has(record.id) &&
+          !excludedArtifactIds.has(record.id) &&
+          !selectedIds.has(record.id)
+        ) {
+          selected.push({ ...record });
+          selectedIds.add(record.id);
+        }
+      }
+      return selected;
     });
 
     const artifactIds = new Map<string, string>();
     const relativePaths = new Map<string, string>();
     for (const record of records) {
       const targetId = conversationCopyArtifactId(
-        input.sourceSessionId,
+        record.sessionId,
         input.targetSessionId,
         record.id,
       );
@@ -847,28 +907,75 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
     const relativePaths = new Map(records.map((record) => [record.relativePath, record] as const));
     for (const record of records) {
       validateRelativeArtifactPath(record.relativePath);
-      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
+    }
+    const purgeEntries = await this.resolveRemovalEntriesUnlocked(records);
+    for (const [index, record] of records.entries()) {
+      const entry = purgeEntries[index];
       if (!entry) continue;
       if (!isInsideOrSamePath(root, dirname(entry.unlinkPath))) {
         throw new Error(`Artifact ${record.id} resolves outside the artifact root`);
       }
       entries.set(entry.comparisonIdentity, { unlinkPath: entry.unlinkPath, record });
     }
-    for (const record of this.records) {
-      if (ids.has(record.id)) continue;
+    const guardRecords = this.records.filter((record) => !ids.has(record.id));
+    for (const record of guardRecords) {
       const exactTarget = relativePaths.get(record.relativePath);
       if (exactTarget) {
         throw new Error(
           `Artifact ${exactTarget.id} path is still referenced by artifact ${record.id}`,
         );
       }
-      const entry = await resolveArtifactRemovalEntry(this.artifactRoot, record.relativePath);
+    }
+    const guardEntries = await this.resolveRemovalEntriesUnlocked(guardRecords);
+    for (const [index, record] of guardRecords.entries()) {
+      const entry = guardEntries[index];
       const target = entry ? entries.get(entry.comparisonIdentity)?.record : undefined;
       if (target) {
         throw new Error(`Artifact ${target.id} path is still referenced by artifact ${record.id}`);
       }
     }
     return [...entries.values()].map((entry) => entry.unlinkPath);
+  }
+
+  // Resolves removal entries with bounded concurrency: each resolution issues
+  // realpath/lstat syscalls, so a serial loop over the full record set turned
+  // session-cleanup purges into a syscall storm on large artifact stores.
+  // Workers capture per-record results and always drain the queue, so all
+  // filesystem work settles before this mutation releases the writer lock,
+  // and resolver failures surface in record order rather than completion
+  // order.
+  private async resolveRemovalEntriesUnlocked(
+    records: readonly ArtifactRecord[],
+  ): Promise<readonly (ArtifactRemovalEntry | undefined)[]> {
+    type Resolution =
+      | { readonly ok: true; readonly entry: ArtifactRemovalEntry | undefined }
+      | { readonly ok: false; readonly error: unknown };
+    const results: (Resolution | undefined)[] = new Array(records.length);
+    let nextIndex = 0;
+    const worker = async () => {
+      while (nextIndex < records.length) {
+        const index = nextIndex++;
+        try {
+          const entry = await resolveArtifactRemovalEntry(
+            this.artifactRoot,
+            records[index]!.relativePath,
+          );
+          results[index] = { ok: true, entry };
+        } catch (error) {
+          results[index] = { ok: false, error };
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(ARTIFACT_PURGE_RESOLVE_CONCURRENCY, records.length) }, worker),
+    );
+    const resolved: (ArtifactRemovalEntry | undefined)[] = new Array(records.length);
+    for (const [index, result] of results.entries()) {
+      if (result === undefined) throw new Error('Artifact removal resolution did not settle');
+      if (!result.ok) throw result.error;
+      resolved[index] = result.entry;
+    }
+    return resolved;
   }
 
   private async completePurgeUnlocked(
@@ -1822,31 +1929,15 @@ function isAlreadyExists(error: unknown): boolean {
 }
 
 function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {
-  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
-  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return 'image/jpeg';
-  if (asciiStartsWith(bytes, 'GIF87a') || asciiStartsWith(bytes, 'GIF89a')) return 'image/gif';
-  if (
-    asciiStartsWith(bytes, 'RIFF') &&
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  ) {
-    return 'image/webp';
-  }
-  if (asciiStartsWith(bytes, '%PDF-')) return 'application/pdf';
+  // Core owns the binary signatures, shared with the attachment and image-read
+  // paths so the three cannot drift. SVG needs a wider text scan than a fixed
+  // prefix, so it stays local to this reader.
+  const sniffed = sniffAttachmentMimeType(bytes);
+  if (sniffed) return sniffed;
   const leading = new TextDecoder('utf-8', { fatal: false })
     .decode(bytes.slice(0, Math.min(bytes.length, 512)))
     .trimStart();
   if (/^<svg[\s>]/i.test(leading) || /^<\?xml[\s\S]*<svg[\s>]/i.test(leading))
     return 'image/svg+xml';
   return null;
-}
-
-function startsWith(bytes: Uint8Array, prefix: number[]): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.every((value, index) => bytes[index] === value);
-}
-
-function asciiStartsWith(bytes: Uint8Array, prefix: string): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.split('').every((char, index) => bytes[index] === char.charCodeAt(0));
 }

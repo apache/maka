@@ -23,18 +23,20 @@ import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron';
 import {
   copyDesktopDiagnosticReport,
   createDesktopMainRendererDiagnosticInput,
-  createDesktopPreviousMainProcessDiagnosticInput,
+  createDesktopStartupDiagnosticInput,
 } from '../main-process-diagnostics.js';
 import {
+  defaultRuntimeHostRecoveryDialog,
   showFatalStartupError,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
-  showPreviousMainProcessInterruptionDialog,
+  showRuntimeHostStartupRecoveryDialog,
 } from '../native-diagnostic-dialog.js';
 
 const diagnosticEnvironment = () => ({
   appVersion: '0.1.8',
   buildMode: 'packaged' as const,
+  updateChannel: 'release' as const,
   buildCommit: null,
   electronVersion: '38.0.0',
   nodeVersion: '22.0.0',
@@ -48,7 +50,7 @@ const diagnosticEnvironment = () => ({
   processUptimeSeconds: 3,
 });
 
-test('copies diagnostics as an auxiliary native-dialog action', async () => {
+test('copies diagnostics as an auxiliary dialog action', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [2, 1];
   let copies = 0;
@@ -81,6 +83,40 @@ test('copies diagnostics as an auxiliary native-dialog action', async () => {
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
 });
 
+test('keeps Default Runtime Host errors in diagnostics instead of dialog copy', async () => {
+  const error = new Error('Authorization: Bearer very-secret-token');
+  const recovery = defaultRuntimeHostRecoveryDialog({
+    locale: 'en',
+    profileName: 'Shared Host',
+    error,
+  });
+
+  assert.doesNotMatch(JSON.stringify(recovery.options), /very-secret-token/u);
+  assert.match(recovery.options.detail ?? '', /Copy diagnostics/u);
+  assert.match(recovery.diagnosticDetails, /very-secret-token/u);
+
+  let report = '';
+  await copyDesktopDiagnosticReport(
+    {
+      environment: diagnosticEnvironment,
+      mainLogs: () => [],
+      runtimeHostProcessLogs: () => [],
+      resolveActiveRuntimeHost: () => undefined,
+      resolveRuntimeHost: () => undefined,
+      writeClipboard: (value) => {
+        report = value;
+      },
+    },
+    createDesktopStartupDiagnosticInput({
+      title: recovery.options.title ?? '',
+      description: recovery.options.message,
+      details: recovery.diagnosticDetails,
+    }),
+  );
+  assert.match(report, /Error: Authorization/u);
+  assert.doesNotMatch(report, /very-secret-token/u);
+});
+
 test('fatal startup errors remain copyable without a renderer or BrowserWindow', async () => {
   const shown: MessageBoxOptions[] = [];
   const responses = [1, 0];
@@ -101,6 +137,11 @@ test('fatal startup errors remain copyable without a renderer or BrowserWindow',
 
   assert.deepEqual(shown[0]?.buttons, ['Exit', 'Copy Diagnostics']);
   assert.deepEqual(shown[1]?.buttons, ['Exit', 'Copy Again']);
+  assert.equal(
+    shown[0]?.detail,
+    'An unexpected startup error occurred. Copy diagnostics to inspect the details.',
+  );
+  assert.doesNotMatch(shown[0]?.detail ?? '', /very-secret-token/);
   assert.match(shown[1]?.detail ?? '', /Diagnostics copied/);
   assert.match(clipboard, /Surface: startup/);
   assert.match(clipboard, /Recent main-process logs \(1\)/);
@@ -142,9 +183,10 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
     },
   });
 
-  assert.equal(decision, 'relaunch');
-  assert.deepEqual(shown[0]?.buttons, ['Relaunch', 'Exit', 'Copy Diagnostics']);
-  assert.deepEqual(shown[1]?.buttons, ['Relaunch', 'Exit', 'Copy Again']);
+  assert.equal(decision, 'recover');
+  assert.deepEqual(shown[0]?.buttons, ['Recover Interface', 'Exit', 'Copy Diagnostics']);
+  assert.deepEqual(shown[1]?.buttons, ['Recover Interface', 'Exit', 'Copy Again']);
+  assert.match(shown[0]?.detail ?? '', /without restarting Maka/);
   assert.match(clipboard, /Surface: renderer_process_gone/);
   assert.match(clipboard, /Reason: oom/);
   assert.match(clipboard, /Exit code: 137/);
@@ -152,58 +194,53 @@ test('main Renderer loss keeps Copy Diagnostics auxiliary to recovery', async ()
   assert.doesNotMatch(clipboard, /very-secret-token/);
 });
 
-test('previous main-process evidence remains copyable before a Renderer exists', async () => {
-  const shown: MessageBoxOptions[] = [];
-  const responses = [1, 0];
-  let clipboard = '';
-  const input = createDesktopPreviousMainProcessDiagnosticInput({
-    run: {
-      startedAt: '2026-08-20T00:00:00.000Z',
-      appVersion: '0.1.10',
-      buildMode: 'packaged',
-      buildCommit: 'b'.repeat(40),
-      electronVersion: '43.2.0',
-      nodeVersion: '24.0.0',
-      chromeVersion: '144.0.0',
-      platform: 'win32',
-      arch: 'x64',
-      osRelease: '10.0.26100',
+test('managed Host recovery preserves the workspace and confirms active-work interruption', async () => {
+  let shown: MessageBoxOptions | undefined;
+  const decision = await showRuntimeHostStartupRecoveryDialog(
+    {
+      startupError: new Error('managed service unavailable'),
+      repairError: new Error('service update failed'),
+      activeTasks: true,
     },
-    snapshotAt: '2026-08-20T00:10:00.000Z',
-    logs: ['previous main log with api_key=very-secret-token'],
-  });
-
-  await showPreviousMainProcessInterruptionDialog({
-    locale: 'en',
-    copyDiagnostics: () =>
-      copyDesktopDiagnosticReport(
-        {
-          environment: diagnosticEnvironment,
-          mainLogs: () => ['current main log'],
-          runtimeHostProcessLogs: () => ['current Runtime Host exit'],
-          resolveActiveRuntimeHost: () => {
-            throw new Error('Previous-run diagnostics must remain Desktop-only');
-          },
-          resolveRuntimeHost: () => {
-            throw new Error('Previous-run diagnostics must not resolve a task Host');
-          },
-          writeClipboard: (value) => {
-            clipboard = value;
-          },
-        },
-        input,
-      ),
-    showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
-      shown.push(options);
-      return { response: responses.shift() ?? 0, checkboxChecked: false };
+    {
+      locale: 'en',
+      copyDiagnostics() {},
+      showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
+        shown = options;
+        return { response: 0, checkboxChecked: false };
+      },
     },
-  });
+  );
 
-  assert.deepEqual(shown[0]?.buttons, ['Continue', 'Copy Diagnostics']);
-  assert.deepEqual(shown[1]?.buttons, ['Continue', 'Copy Again']);
-  assert.match(clipboard, /Surface: previous_main_process_interruption/);
-  assert.match(clipboard, /clean shutdown was not observed/);
-  assert.match(clipboard, /Maka: 0\.1\.10/);
-  assert.match(clipboard, /Recent previous main-process logs \(1\)/);
-  assert.doesNotMatch(clipboard, /current main log|current Runtime Host exit|very-secret-token/);
+  assert.equal(decision, 'repair');
+  assert.deepEqual(shown?.buttons, [
+    'Repair and Restart Host',
+    'Exit',
+    'Copy Diagnostics',
+  ]);
+  assert.equal(shown?.defaultId, shown?.cancelId);
+  assert.match(shown?.detail ?? '', /workspace, Host identity, credentials, and settings/);
+  assert.match(shown?.detail ?? '', /automatic update compatibility cannot be confirmed/);
+  assert.match(shown?.detail ?? '', /interrupt that work/);
+  assert.match(shown?.detail ?? '', /Copy diagnostics to inspect the details/);
+  assert.doesNotMatch(shown?.detail ?? '', /service update failed/);
+
+  let unknownShown: MessageBoxOptions | undefined;
+  const unknownDecision = await showRuntimeHostStartupRecoveryDialog(
+    {
+      startupError: new Error('managed service unavailable'),
+      repairError: new Error('safe repair could not verify Host activity'),
+      activeTasks: false,
+    },
+    {
+      locale: 'en',
+      copyDiagnostics() {},
+      showMessageBox: async (options): Promise<MessageBoxReturnValue> => {
+        unknownShown = options;
+        return { response: 1, checkboxChecked: false };
+      },
+    },
+  );
+  assert.equal(unknownDecision, 'exit');
+  assert.equal(unknownShown?.defaultId, unknownShown?.cancelId);
 });

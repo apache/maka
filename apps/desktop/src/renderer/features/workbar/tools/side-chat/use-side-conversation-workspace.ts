@@ -23,12 +23,11 @@ import type { QuoteCompanionPanelState } from './quote-companion-panel-state.js'
 interface SideConversationRecord {
   panel: QuoteCompanionPanelState;
   hasContent: boolean;
-  preparing: boolean;
   active: boolean;
 }
 
 type SideConversationAction =
-  | { type: 'upsert'; panel: QuoteCompanionPanelState; preparingOnCreate: boolean }
+  | { type: 'upsert'; panel: QuoteCompanionPanelState }
   | {
       type: 'update-panel';
       panelId: string;
@@ -38,7 +37,7 @@ type SideConversationAction =
   | {
       type: 'set-lifecycle';
       panelId: string;
-      field: 'hasContent' | 'preparing' | 'active';
+      field: 'hasContent' | 'active';
       value: boolean;
     };
 
@@ -54,7 +53,6 @@ function reduceSideConversations(
         {
           panel: action.panel,
           hasContent: false,
-          preparing: action.preparingOnCreate,
           active: false,
         },
       ];
@@ -90,7 +88,7 @@ export function useSideConversationWorkspace() {
   const [records, dispatch] = useReducer(reduceSideConversations, []);
   const panels = useMemo(() => records.map((record) => record.panel), [records]);
   const panelIds = useCallback(
-    (field: 'hasContent' | 'preparing' | 'active') =>
+    (field: 'hasContent' | 'active') =>
       new Set(
         records
           .filter((record) => record[field])
@@ -99,12 +97,10 @@ export function useSideConversationWorkspace() {
     [records],
   );
   const contentPanelIds = useMemo(() => panelIds('hasContent'), [panelIds]);
-  const preparingPanelIds = useMemo(() => panelIds('preparing'), [panelIds]);
   const activePanelIds = useMemo(() => panelIds('active'), [panelIds]);
 
   const upsertPanel = useCallback(
-    (panel: QuoteCompanionPanelState, preparingOnCreate = false) =>
-      dispatch({ type: 'upsert', panel, preparingOnCreate }),
+    (panel: QuoteCompanionPanelState) => dispatch({ type: 'upsert', panel }),
     [],
   );
   const updatePanel = useCallback(
@@ -121,17 +117,13 @@ export function useSideConversationWorkspace() {
   const setLifecycle = useCallback(
     (
       panelId: string,
-      field: 'hasContent' | 'preparing' | 'active',
+      field: 'hasContent' | 'active',
       value: boolean,
     ) => dispatch({ type: 'set-lifecycle', panelId, field, value }),
     [],
   );
   const setContent = useCallback(
     (panelId: string, value: boolean) => setLifecycle(panelId, 'hasContent', value),
-    [setLifecycle],
-  );
-  const setPreparing = useCallback(
-    (panelId: string, value: boolean) => setLifecycle(panelId, 'preparing', value),
     [setLifecycle],
   );
   const setActive = useCallback(
@@ -143,25 +135,21 @@ export function useSideConversationWorkspace() {
     () => ({
       panels,
       contentPanelIds,
-      preparingPanelIds,
       activePanelIds,
       upsertPanel,
       updatePanel,
       removePanels,
       setContent,
-      setPreparing,
       setActive,
     }),
     [
       panels,
       contentPanelIds,
-      preparingPanelIds,
       activePanelIds,
       upsertPanel,
       updatePanel,
       removePanels,
       setContent,
-      setPreparing,
       setActive,
     ],
   );

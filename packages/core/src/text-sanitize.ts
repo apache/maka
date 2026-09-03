@@ -57,7 +57,12 @@ const CONTROL_CHARS_REGEX = /[\u0000-\u001F\u007F-\u009F]/g;
 //   U+200F  RLM (right-to-left mark)
 //   U+202A  LRE, U+202B RLE, U+202C PDF, U+202D LRO, U+202E RLO
 //   U+2066  LRI, U+2067 RLI, U+2068 FSI, U+2069 PDI
-const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+//   U+206A  INHIBIT SYMMETRIC SWAPPING, U+206B ACTIVATE SYMMETRIC SWAPPING,
+//   U+206C  INHIBIT ARABIC FORM SHAPING, U+206D ACTIVATE ARABIC FORM SHAPING,
+//   U+206E  NATIONAL DIGIT SHAPES, U+206F NOMINAL DIGIT SHAPES
+//     (deprecated Cf bidi-adjacent controls; invisible and not whitespace, so
+//      the `\s+` collapse never removed them — #3823)
+const BIDI_FORMAT_REGEX = /[\u061C\u200E\u200F\u202A-\u202E\u2066-\u206F]/g;
 
 // Zero-width / invisible format characters. Removed entirely (no replacement)
 // because they're meant to be invisible and replacing with space would inject
@@ -105,4 +110,22 @@ export function sanitizeUnicodeText(text: string, opts: SanitizeUnicodeOptions):
   const points = Array.from(cleaned);
   if (points.length <= opts.maxCodePoints) return cleaned;
   return points.slice(0, opts.maxCodePoints).join('') + suffix;
+}
+
+/**
+ * Truncate to at most `maxUnits` UTF-16 code units without ending on an
+ * unpaired high surrogate: when the cut lands inside a surrogate pair, the
+ * dangling high half is dropped with the rest of the clipped tail, so the
+ * result survives a UTF-8 round trip (durable storage, model requests)
+ * instead of decoding as U+FFFD.
+ *
+ * Budgets here are code *units*, not code points — callers clip against
+ * provider/storage limits measured in UTF-16 lengths. Marker/suffix policy
+ * stays with the caller, per the boundary note above.
+ */
+export function truncateUtf16Safe(text: string, maxUnits: number): string {
+  if (maxUnits <= 0) return '';
+  if (text.length <= maxUnits) return text;
+  const kept = text.slice(0, maxUnits);
+  return /[\uD800-\uDBFF]$/.test(kept) ? kept.slice(0, -1) : kept;
 }

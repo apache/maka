@@ -18,20 +18,26 @@
  */
 
 import { useEffect, useRef, type ReactNode } from 'react';
+import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import type { ProjectedLlmConnection } from '@maka/core/llm-connections';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { expect, userEvent, within } from 'storybook/test';
+import { expect, userEvent, waitFor, within } from 'storybook/test';
 import { Layout, LayoutContent, LayoutHeader } from '@astryxdesign/core';
 import { ToastProvider } from '@maka/ui';
 import type {
   ConnectionTestResult,
+  IdentifiedLlmConnection,
   LlmConnection,
-  ModelDiscoveryResult,
   ProviderType,
 } from '@maka/core/llm-connections';
 import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
+import type {
+  ApiKeyOnboardingBridge,
+  ConnectionOAuthBridge,
+} from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
@@ -50,6 +56,7 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 type AutoOpenTarget =
   | 'detail'
+  | 'detail-alibaba'
   | 'detail-static'
   | 'detail-relay'
   | 'add'
@@ -68,8 +75,9 @@ function makeConnection(input: {
   lastTestMessage?: string;
   models?: LlmConnection['models'];
   modelSource?: LlmConnection['modelSource'];
-}): LlmConnection {
-  return {
+}): ProjectedLlmConnection {
+  const stored: IdentifiedLlmConnection = {
+    connectionId: `connection-${input.slug}`,
     slug: input.slug,
     name: input.name,
     providerType: input.providerType,
@@ -78,13 +86,13 @@ function makeConnection(input: {
     enabled: input.enabled ?? true,
     ...(input.models ? { models: input.models } : {}),
     ...(input.modelSource ? { modelSource: input.modelSource } : {}),
-    modelsFetchedAt: NOW - 18 * 60 * 1000,
     ...(input.lastTestStatus ? { lastTestStatus: input.lastTestStatus } : {}),
     lastTestAt: new Date(NOW - 12 * 60 * 1000).toISOString(),
     ...(input.lastTestMessage ? { lastTestMessage: input.lastTestMessage } : {}),
     createdAt: NOW - 6 * 24 * 60 * 60 * 1000,
     updatedAt: NOW - 12 * 60 * 1000,
   };
+  return { ...stored, catalogEntries: resolveConnectionModelCatalog(stored) };
 }
 
 const configuredConnections = [
@@ -124,6 +132,21 @@ const configuredConnections = [
     providerType: 'ollama',
     defaultModel: 'qwen2.5-coder',
     lastTestStatus: 'verified',
+  }),
+];
+
+const alibabaTokenPlanConnections = [
+  makeConnection({
+    slug: 'alibaba-token-plan-cn',
+    name: 'Alibaba Token Plan（团队版）',
+    providerType: 'alibaba-token-plan-cn',
+    defaultModel: 'qwen3.8-max',
+    lastTestStatus: 'verified',
+    models: [
+      { id: 'qwen3.8-max', displayName: 'Qwen3.8 Max' },
+      { id: 'qwen3.7-max', displayName: 'Qwen3.7 Max' },
+    ],
+    modelSource: 'fetched',
   }),
 ];
 
@@ -196,16 +219,56 @@ const problemConnections = [
   }),
 ];
 
+const oauthConnections = [
+  makeConnection({
+    slug: 'openai-codex',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-2',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'openai-codex-3',
+    name: 'OpenAI Codex',
+    providerType: 'openai-codex',
+    defaultModel: 'gpt-5',
+    lastTestStatus: 'verified',
+  }),
+  makeConnection({
+    slug: 'xai-oauth',
+    name: 'xAI Grok',
+    providerType: 'xai-oauth',
+    defaultModel: 'grok-4',
+    lastTestStatus: 'verified',
+  }),
+];
+
+interface StoryConnectionsBridge extends ConnectionsBridge {
+  addFixtureConnection(connection: ProjectedLlmConnection): void;
+}
+
 function createBridge(input: {
-  connections?: LlmConnection[];
+  connections?: ProjectedLlmConnection[];
   defaultSlug?: string | null;
   failLoad?: boolean;
   loading?: boolean;
-}): ConnectionsBridge {
+}): StoryConnectionsBridge {
   let connections = [...(input.connections ?? [])];
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
+    oauth: storyOAuthBridge(),
+    addFixtureConnection(connection) {
+      connections = [...connections, connection];
+      defaultSlug ??= connection.slug;
+    },
     async getSnapshot() {
       if (input.loading) return new Promise<never>(() => undefined);
       if (input.failLoad) throw new Error('模型连接服务暂时不可用');
@@ -215,8 +278,8 @@ function createBridge(input: {
         chatModelChoices: buildChatModelChoices(connections),
       };
     },
-    async setDefault(slug) {
-      defaultSlug = slug;
+    async setDefault(connection) {
+      defaultSlug = connection?.slug ?? null;
     },
     async create(next) {
       const connection = makeConnection({
@@ -231,10 +294,10 @@ function createBridge(input: {
       defaultSlug ??= connection.slug;
       return connection;
     },
-    async update(slug, patch) {
-      const current = connections.find((connection) => connection.slug === slug);
+    async update(identity, patch) {
+      const current = connections.find((connection) => connection.connectionId === identity.connectionId && connection.slug === identity.slug);
       if (!current) throw new Error('连接不存在');
-      const updated: LlmConnection = {
+      const updated: ProjectedLlmConnection = {
         ...current,
         ...patch,
         // UpdateConnectionInput.relayModelProfiles is tri-state (null clears);
@@ -249,15 +312,15 @@ function createBridge(input: {
             : (patch.requestBodyOverlay ?? undefined),
         updatedAt: NOW,
       };
-      connections = connections.map((connection) => connection.slug === slug ? updated : connection);
+      connections = connections.map((connection) => connection.connectionId === identity.connectionId ? updated : connection);
       return updated;
     },
-    async delete(slug) {
-      connections = connections.filter((connection) => connection.slug !== slug);
-      if (defaultSlug === slug) defaultSlug = connections[0]?.slug ?? null;
+    async delete(identity) {
+      connections = connections.filter((connection) => connection.connectionId !== identity.connectionId);
+      if (defaultSlug === identity.slug) defaultSlug = connections[0]?.slug ?? null;
     },
-    async test(slug): Promise<ConnectionTestResult> {
-      if (slug.includes('rate-limit')) {
+    async test(identity): Promise<ConnectionTestResult> {
+      if (identity.slug.includes('rate-limit')) {
         return {
           ok: false,
           statusCode: 429,
@@ -267,14 +330,13 @@ function createBridge(input: {
       }
       return { ok: true, latencyMs: 328, modelTested: 'glm-4.7' };
     },
-    async fetchModels(slug): Promise<ModelDiscoveryResult> {
+    async fetchModels(identity) {
       return {
         models: [
-          { id: slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
-          { id: slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
+          { id: identity.slug.includes('openai') ? 'gpt-5' : 'glm-4.7' },
+          { id: identity.slug.includes('openai') ? 'gpt-4o' : 'glm-4.6' },
         ],
         source: 'fetched',
-        fetchedAt: NOW,
       };
     },
     async hasSecret() {
@@ -292,61 +354,235 @@ function createBridge(input: {
   };
 }
 
-function installSubscriptionFixtures() {
-  const target = window as unknown as {
-    maka?: Record<string, unknown>;
+function createApiKeyOnboardingFixture(options: {
+  save?: 'saved' | 'outcome_unknown' | 'auth_failed';
+  failRefreshAfterSave?: boolean;
+  emptyCatalog?: boolean;
+} = {}) {
+  const bridge = createBridge({
+    connections: options.emptyCatalog
+      ? []
+      : [
+          ...configuredConnections,
+          makeConnection({
+            slug: 'deepseek',
+            name: 'DeepSeek',
+            providerType: 'deepseek',
+            defaultModel: 'deepseek-chat',
+          }),
+        ],
+    defaultSlug: options.emptyCatalog ? undefined : 'zai-live',
+  });
+  let failNextSnapshot = false;
+  const projectedBridge: ConnectionsBridge = {
+    ...bridge,
+    async getSnapshot() {
+      if (failNextSnapshot) {
+        failNextSnapshot = false;
+        throw new Error('模型连接服务暂时不可用');
+      }
+      return bridge.getSnapshot();
+    },
   };
-  target.maka = {
-    ...(target.maka ?? {}),
-    openAiCodex: browserSubscriptionFixture({
-      runtimeState: 'authenticated',
-      email: 'codex@example.com',
-      plan: 'Plus',
-    }),
-    githubCopilotSubscription: browserSubscriptionFixture({
-      runtimeState: 'not_logged_in',
-    }),
+  let uncertainAttemptId: number | undefined;
+  let nextAttemptId = 1;
+  const uncertaintyListeners = new Set<() => void>();
+  const settleUncertainty = (attemptId: number) => {
+    if (uncertainAttemptId !== attemptId) return;
+    uncertainAttemptId = undefined;
+    for (const listener of [...uncertaintyListeners]) listener();
+  };
+  const apiKeyOnboardingBridge: ApiKeyOnboardingBridge = {
+    saveUncertainty: {
+      getSnapshot: () => uncertainAttemptId !== undefined,
+      subscribe: (listener) => {
+        uncertaintyListeners.add(listener);
+        return () => uncertaintyListeners.delete(listener);
+      },
+      restart: () => {
+        if (uncertainAttemptId === undefined) return;
+        uncertainAttemptId = undefined;
+        for (const listener of [...uncertaintyListeners]) listener();
+      },
+    },
+    async verify() {
+      return {
+        kind: 'verified',
+        models: [
+          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+        ],
+      };
+    },
+    async save() {
+      const attemptId = nextAttemptId++;
+      const wasUncertain = uncertainAttemptId !== undefined;
+      uncertainAttemptId = attemptId;
+      if (!wasUncertain) {
+        for (const listener of [...uncertaintyListeners]) listener();
+      }
+      if (options.save === 'outcome_unknown') return { kind: 'outcome_unknown' };
+      if (options.save === 'auth_failed') {
+        settleUncertainty(attemptId);
+        return {
+          kind: 'result',
+          result: { kind: 'failed', errorClass: 'auth' },
+        };
+      }
+      const connection = makeConnection({
+        slug: 'deepseek-2',
+        name: 'DeepSeek',
+        providerType: 'deepseek',
+        defaultModel: '',
+        models: [
+          { id: 'deepseek-reasoner', displayName: 'DeepSeek Reasoner' },
+          { id: 'deepseek-chat', displayName: 'DeepSeek Chat' },
+        ],
+        modelSource: 'fetched',
+      });
+      bridge.addFixtureConnection(connection);
+      failNextSnapshot = options.failRefreshAfterSave === true;
+      settleUncertainty(attemptId);
+      return {
+        kind: 'result',
+        result: {
+          kind: 'saved',
+          connection: {
+            connectionId: connection.connectionId,
+            revision: 1,
+            slug: connection.slug,
+            providerType: connection.providerType,
+          },
+        },
+      };
+    },
+  };
+  return { bridge: projectedBridge, apiKeyOnboardingBridge };
+}
+
+function createOAuthSuccessLifecycleFixture() {
+  const bridge = createBridge({ connections: oauthConnections });
+  let eventHandler: (() => void) | undefined;
+  let delayNextSnapshot = false;
+  let releaseSupersededSnapshot: (() => void) | undefined;
+  return {
+    bridge: {
+      ...bridge,
+      async getSnapshot() {
+        const snapshot = await bridge.getSnapshot();
+        if (delayNextSnapshot) {
+          delayNextSnapshot = false;
+          return new Promise<typeof snapshot>((resolve) => {
+            releaseSupersededSnapshot = () => resolve(snapshot);
+          });
+        }
+        const release = releaseSupersededSnapshot;
+        releaseSupersededSnapshot = undefined;
+        queueMicrotask(() => release?.());
+        return snapshot;
+      },
+      subscribeEvents(handler: () => void) {
+        eventHandler = handler;
+        return () => {
+          if (eventHandler === handler) eventHandler = undefined;
+        };
+      },
+    } satisfies ConnectionsBridge,
+    onOAuthComplete() {
+      // `create` mutates the fixture before its already-resolved Promise is
+      // observed. Delay the completion callback's reload, then emit the Host
+      // event so its newer reload wins the ticket and releases the older one:
+      // this is the exact ordering that used to strand the setup page.
+      void bridge.create({
+        slug: 'openai-codex-4',
+        name: 'OpenAI Codex',
+        providerType: 'openai-codex',
+        defaultModel: 'gpt-5',
+      });
+      delayNextSnapshot = true;
+      window.setTimeout(() => eventHandler?.(), 0);
+    },
+  };
+}
+
+function storyOAuthBridge(onOAuthComplete?: () => void): ConnectionOAuthBridge {
+  const githubCopilotSubscription = {
+    ...browserSubscriptionFixture(
+      { runtimeState: 'not_logged_in' },
+      undefined,
+      'github-copilot',
+    ),
+    connectExistingLogin: async () => ({ ok: true as const }),
+  };
+  return {
+    openAiCodex: browserSubscriptionFixture(
+      {
+        runtimeState: 'authenticated',
+        email: 'codex@example.com',
+        plan: 'Plus',
+      },
+      onOAuthComplete,
+      'openai-codex',
+    ),
+    githubCopilotSubscription,
     xaiOAuth: xaiDeviceSubscriptionFixture(),
   };
 }
 
 function xaiDeviceSubscriptionFixture() {
+  const connection = {
+    connectionId: 'connection-xai-oauth-2',
+    slug: 'xai-oauth-2',
+    providerType: 'xai-oauth' as const,
+  };
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
-    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH' }),
-    openAuthUrl: async () => ({ ok: true }),
+    getEnrollmentState: async () => ({ enabled: true }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH', connection }),
+    openAuthUrl: async () => ({ ok: true as const }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
-function browserSubscriptionFixture(state: {
-  runtimeState: string;
-  email?: string;
-  plan?: string;
-  errorMessage?: string;
-}) {
+function browserSubscriptionFixture(
+  state: {
+    runtimeState: string;
+    email?: string;
+    plan?: string;
+    errorMessage?: string;
+  },
+  onComplete?: () => void,
+  providerType: 'openai-codex' | 'github-copilot' = 'openai-codex',
+) {
+  const connection = {
+    connectionId: `connection-${providerType}-4`,
+    slug: `${providerType}-4`,
+    providerType,
+  };
   return {
     getAccountState: async () => state,
-    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook' }),
-    openAuthUrl: async () => ({ ok: true }),
-    completeAuthorization: async () => ({ ok: true }),
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    getEnrollmentState: async () => ({ enabled: true }),
+    getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook', connection }),
+    openAuthUrl: async () => ({ ok: true as const }),
+    completeAuthorization: async () => {
+      onComplete?.();
+      return { ok: true as const, connection };
+    },
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
 function ProviderStoryFrame(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   autoOpen?: AutoOpenTarget;
+  onOAuthComplete?: () => void;
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
-
-  useEffect(() => {
-    installSubscriptionFixtures();
-  }, []);
 
   useEffect(() => {
     const autoOpen = props.autoOpen;
@@ -400,7 +636,13 @@ function ProviderStoryFrame(props: {
             content={(
               <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
-                  <ProvidersPanel bridge={props.bridge} />
+                  <ProvidersPanel
+                    bridge={{
+                      ...props.bridge,
+                      oauth: storyOAuthBridge(props.onOAuthComplete),
+                    }}
+                    apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
+                  />
                 </SettingsPage>
               </LayoutContent>
             )}
@@ -426,11 +668,22 @@ function reachCatalog(root: HTMLElement): HTMLElement | null {
 }
 
 function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean {
-  if (target === 'detail' || target === 'detail-static' || target === 'detail-relay') {
+  if (
+    target === 'detail'
+    || target === 'detail-alibaba'
+    || target === 'detail-static'
+    || target === 'detail-relay'
+  ) {
     // ListItem's clickable surface is an invisible button inside the row, so
     // the row is located by its slug hook and the button taken from within it.
     const slug =
-      target === 'detail' ? 'zai-live' : target === 'detail-static' ? 'ark-plan' : 'relay-house';
+      target === 'detail'
+        ? 'zai-live'
+        : target === 'detail-alibaba'
+          ? 'alibaba-token-plan-cn'
+          : target === 'detail-static'
+            ? 'ark-plan'
+            : 'relay-house';
     const row = root.querySelector<HTMLElement>(`[data-connection-slug="${slug}"]`);
     const detailButton = row?.querySelector('button') ?? null;
     detailButton?.click();
@@ -466,13 +719,29 @@ function clickAutoOpenTarget(root: HTMLElement, target: AutoOpenTarget): boolean
 
 function ProviderStory(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   autoOpen?: AutoOpenTarget;
+  onOAuthComplete?: () => void;
 }): ReactNode {
   return (
     <RuntimeHostSettingsTarget host={{ profileId: 'local', hostId: 'storybook-local-host' }}>
-      <ProviderStoryFrame bridge={props.bridge} autoOpen={props.autoOpen} />
+      <ProviderStoryFrame
+        bridge={props.bridge}
+        apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
+        autoOpen={props.autoOpen}
+        onOAuthComplete={props.onOAuthComplete}
+      />
     </RuntimeHostSettingsTarget>
   );
+}
+
+async function findApiKeyInput(canvasElement: HTMLElement): Promise<HTMLInputElement> {
+  let input: HTMLInputElement | null = null;
+  await waitFor(() => {
+    input = canvasElement.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(input).not.toBeNull();
+  }, { timeout: 5_000 });
+  return input!;
 }
 
 // Real path: same page with several healthy connections and one of them set as default.
@@ -492,6 +761,21 @@ export const ConnectionDetailPage: Story = {
     <ProviderStory
       bridge={createBridge({ connections: configuredConnections, defaultSlug: 'zai-live' })}
       autoOpen="detail"
+    />
+  ),
+};
+
+// Fixed endpoints are inspectable but not editable. Alibaba is the high-signal
+// case because several catalog entries share one brand while routing to
+// different products and regions (#3636).
+export const AlibabaConnectionDetailPage: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({
+        connections: alibabaTokenPlanConnections,
+        defaultSlug: 'alibaba-token-plan-cn',
+      })}
+      autoOpen="detail-alibaba"
     />
   ),
 };
@@ -557,6 +841,72 @@ export const AddConnectionCatalog: Story = {
   ),
 };
 
+// Real path: 设置 → 模型 → 添加连接. OAuth rows are enrollment intents and
+// describe the number of configured Connection entities, never provider-wide
+// login state.
+export const OAuthCatalogNoAccounts: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} autoOpen="catalog" />,
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('使用 ChatGPT Plus / Pro 账号添加连接。')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogOneAccount: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections.slice(0, 1) })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCatalogMultipleAccounts: Story = {
+  render: () => (
+    <ProviderStory
+      bridge={createBridge({ connections: oauthConnections })}
+      autoOpen="catalog"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).findByText('已有 3 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+    await expect(within(canvasElement).findByText('已有 1 个连接 · 添加另一个账号')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthConnectionsDisambiguated: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: oauthConnections })} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByText('OpenAI Codex · openai-codex')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-2')).resolves.toBeTruthy();
+    await expect(canvas.findByText('OpenAI Codex · openai-codex-3')).resolves.toBeTruthy();
+  },
+};
+
+export const OAuthCreateAdoptsExactConnection: Story = {
+  render: () => {
+    const fixture = createOAuthSuccessLifecycleFixture();
+    return <ProviderStory bridge={fixture.bridge} onOAuthComplete={fixture.onOAuthComplete} />;
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await userEvent.click(await canvas.findByRole('button', { name: /添加账号连接：OpenAI Codex/ }));
+    await userEvent.click(await canvas.findByRole('button', { name: '登录并添加' }));
+
+    await expect(canvas.findByRole('region', { name: 'OpenAI Codex · openai-codex-4' })).resolves.toBeTruthy();
+    await userEvent.click(await canvas.findByRole('button', { name: '返回模型连接' }));
+    const createdRow = canvasElement.querySelector<HTMLElement>(
+      '[data-connection-id="connection-openai-codex-4"]',
+    );
+    await expect(createdRow).not.toBeNull();
+    await waitFor(() => expect(within(createdRow!).getByRole('button')).toHaveFocus());
+  },
+};
+
 // Real path: 设置 → 模型 → 添加连接 → pick a provider — level three, its form.
 export const AddProvider: Story = {
   render: () => (
@@ -565,4 +915,181 @@ export const AddProvider: Story = {
       autoOpen="add"
     />
   ),
+};
+
+// Real path: 设置 → 模型 → 添加连接 → DeepSeek. The common fixed-endpoint
+// API-key path is Host-owned before any write happens.
+export const ApiKeyOnboardingInput: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+};
+
+export const ApiKeyOnboardingModels: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await expect(canvas.findByText('选择此连接使用的模型')).resolves.toBeTruthy();
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingBackInvalidatesVerification: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const key = await findApiKeyInput(canvasElement);
+    await userEvent.type(key, 'sk-first');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '返回修改' }));
+    await userEvent.clear(await findApiKeyInput(canvasElement));
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-second');
+    await expect(canvas.queryByText('选择此连接使用的模型')).toBeNull();
+    await expect(canvas.findByRole('button', { name: '验证并选择模型' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingAdoptsExactConnection: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture();
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByRole('region', { name: 'DeepSeek · deepseek-2' })).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingRefreshWarning: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ failRefreshAfterSave: true });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByText('连接已添加，但暂时无法刷新连接列表。')).resolves.toBeTruthy();
+  },
+};
+
+export const ApiKeyOnboardingOutcomeUnknown: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ save: 'outcome_unknown' });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await expect(canvas.findByText('保存结果暂时无法确认')).resolves.toBeTruthy();
+    await userEvent.click(await canvas.findByRole('button', { name: '重新加载连接列表' }));
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeDisabled();
+    await expect(canvas.findByRole('button', { name: '仍要添加另一个连接' })).resolves.toBeTruthy();
+    const row = canvasElement.querySelector<HTMLElement>('[data-connection-slug="deepseek"]');
+    await expect(row).not.toBeNull();
+    await userEvent.click(within(row!).getByRole('button'));
+    await userEvent.click(await canvas.findByRole('button', { name: '返回模型连接' }));
+    await expect(canvas.findByText('保存结果暂时无法确认')).resolves.toBeTruthy();
+    await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeDisabled();
+  },
+};
+
+export const ApiKeyOnboardingOutcomeUnknownEmptyCatalog: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({
+      save: 'outcome_unknown',
+      emptyCatalog: true,
+    });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '重新加载连接列表' }));
+    const addButtons = await canvas.findAllByRole('button', { name: '添加连接' });
+    for (const button of addButtons) await expect(button).toBeDisabled();
+  },
+};
+
+export const ApiKeyOnboardingSaveAuthFailure: Story = {
+  render: () => {
+    const fixture = createApiKeyOnboardingFixture({ save: 'auth_failed' });
+    return (
+      <ProviderStory
+        bridge={fixture.bridge}
+        apiKeyOnboardingBridge={fixture.apiKeyOnboardingBridge}
+        autoOpen="add"
+      />
+    );
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.type(await findApiKeyInput(canvasElement), 'sk-storybook');
+    await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
+    await userEvent.click(await canvas.findByRole('button', { name: '添加连接' }));
+    const key = await findApiKeyInput(canvasElement);
+    await waitFor(() => {
+      expect(canvas.queryAllByText('密钥验证失败，请检查后重试。')).toHaveLength(1);
+    });
+    await expect(key).toHaveValue('sk-storybook');
+  },
 };

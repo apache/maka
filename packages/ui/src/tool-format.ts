@@ -21,7 +21,7 @@ import type { UiLocale } from './locale-helpers.js';
 import { redactSecrets } from './redact.js';
 import { getToolActivityCopy } from './tool-activity/copy.js';
 
-/** Locale-aware display name for the group-activation connector. */
+/** Locale-aware display name for the tool-discovery connector. */
 export function loadToolDisplayName(locale: UiLocale): string {
   return getToolActivityCopy(locale).loadTools.displayName;
 }
@@ -47,18 +47,16 @@ export interface LoadToolResultDescription {
 }
 
 /**
- * Turn a `load_tools` call + result into friendly, locale-aware card copy.
- * Current results carry presentation metadata; historical `{ loaded: [...] }`
- * results are inferred from the call args and tool ids so replayed sessions
- * still render. Returns `null` for unexpected shapes so the caller falls back
- * to the generic preview.
+ * Turn a `tool_search` result or historical `load_tools` result into friendly,
+ * locale-aware card copy. Returns `null` for unexpected shapes.
  */
 export function describeLoadToolResult(
   args: unknown,
   value: unknown,
   locale: UiLocale,
 ): LoadToolResultDescription | null {
-  const loaded = (value as { loaded?: unknown } | null | undefined)?.loaded;
+  const record = value as { activated?: unknown; loaded?: unknown } | null | undefined;
+  const loaded = record?.activated ?? record?.loaded;
   if (!Array.isArray(loaded) || !loaded.every((name) => typeof name === 'string')) {
     return null;
   }

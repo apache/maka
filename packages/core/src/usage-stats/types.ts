@@ -63,6 +63,23 @@ export interface UsageSummaryV2 {
   cacheHitRequests: number;
   cacheCreateRequests: number;
   errorRequests: number;
+  /**
+   * Recorded model-call time, summed over the same rows as `totalTokens`.
+   *
+   * Every summary writes it, and the protocol epoch refuses peers that predate
+   * it at the handshake, so a total without a time basis cannot cross the wire.
+   */
+  totalDurationMs: number;
+  /**
+   * Recorded tool executions behind the same query, from the tool-invocation
+   * ledger — the model-call ledger does not describe them, so there is no
+   * canonical source to merge and this comes from the store alone.
+   *
+   * Optional because tool rows that predate connection attribution cannot
+   * answer a `connectionSlug` filter honestly: the Host omits the split for
+   * that query rather than drawing a ring from rows it cannot scope.
+   */
+  toolUsage?: { requests: number; durationMs: number };
 }
 
 export interface UsageBucket {
@@ -205,16 +222,15 @@ export type ToolSchemaChangeReason =
 
 /**
  * Diagnostic shell describing the provider-visible (active) tool subset for a
- * turn, produced by the unified `ToolAvailabilityRuntime`. A "source" id here is
- * a catalog *group* id — the shell retains the historical `*SourceIds` field
- * names while the config-side vocabulary is `groups`.
+ * turn, produced by `ToolAvailabilityRuntime`. A "source" id here is a catalog
+ * group id; the historical field names remain stable for telemetry readers.
  */
 export interface ToolAvailabilityDiagnostic {
   /**
-   * Always `'economy'`: a diagnostic is only produced when economy gates the
-   * tool surface. The full-surface case emits no diagnostic at all.
+   * `'search'` is the current provider-independent lazy-loading policy.
+   * `'economy'` remains readable for historical telemetry.
    */
-  mode: 'economy';
+  mode: 'economy' | 'search';
   enabledSourceIds: ToolSourceId[];
   availableSourceIds?: ToolSourceId[];
   connectorToolName?: string;
@@ -235,6 +251,7 @@ export type PromptSegmentKind =
   | 'tool_schema'
   | 'prior_history'
   | 'current_user'
+  /** Historical usage rows only; no current request builder emits this segment. */
   | 'turn_tail';
 
 export interface PromptSegmentEstimate {
@@ -284,7 +301,6 @@ export interface CompactionDecisionDiagnostic {
 export interface ContextBudgetDiagnostic {
   enabled: boolean;
   policyName?: string;
-  maxHistoryEstimatedTokens?: number;
   estimatedTokensBefore: number;
   estimatedTokensAfter: number;
   keptTurns: number;

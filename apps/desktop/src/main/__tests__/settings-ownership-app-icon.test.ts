@@ -47,3 +47,20 @@ test('the rest of appearance still travels', () => {
   const patch = clientOwnedSettingsPatch({ appearance: { theme: 'light', palette: 'nord' } });
   assert.deepEqual(patch.appearance, { theme: 'light', palette: 'nord' });
 });
+
+test('the dark slot cannot travel on the generic channel either', () => {
+  // It names artwork on exactly the same terms as `appIcon`, so leaving it
+  // unfiltered reopens the removal/write race through the other slot.
+  const patch = clientOwnedSettingsPatch({
+    appearance: { theme: 'dark', appIconDark: `custom:${'b'.repeat(32)}` },
+  });
+
+  assert.deepEqual(patch.appearance, { theme: 'dark' });
+});
+
+test('an appearance patch of only icon slots drops out entirely', () => {
+  assert.equal(
+    clientOwnedSettingsPatch({ appearance: { appIcon: 'sky', appIconDark: 'ink' } }).appearance,
+    undefined,
+  );
+});

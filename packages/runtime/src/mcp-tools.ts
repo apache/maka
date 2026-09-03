@@ -26,7 +26,10 @@ import type {
   McpToolDescriptor,
   McpToolSnapshot,
 } from '@maka/core/mcp';
-import type { ToolCategory } from '@maka/core/permission';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
+import type { PermissionMode, ToolCategory } from '@maka/core/permission';
+import { truncateUtf16Safe } from '@maka/core/text-sanitize';
+import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
 import type { ToolResultContentPart, ToolResultOutput } from './model-protocol.js';
 import type { MakaTool } from './tool-runtime.js';
@@ -41,6 +44,11 @@ const TRUNCATION_MARKER = '\n…[truncated by Maka]';
 
 export interface McpToolProvider {
   toolSnapshot(): McpToolSnapshot;
+  prepareTool?(
+    binding: McpToolBinding,
+    args: Record<string, unknown>,
+    options: Omit<McpToolCallOptions, 'emitProgress'>,
+  ): Promise<McpPreparedToolCall>;
   callTool(
     binding: McpToolBinding,
     args: Record<string, unknown>,
@@ -48,23 +56,39 @@ export interface McpToolProvider {
   ): Promise<McpCallResult>;
 }
 
+export interface McpPreparedToolCall {
+  execute(options?: {
+    readonly emitProgress?: (current: number, total: number) => void;
+    readonly requestInteraction?: McpToolCallOptions['requestInteraction'];
+  }): Promise<McpCallResult>;
+  cancel(): Promise<void> | void;
+}
+
 export interface McpToolCallOptions {
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
   readonly emitProgress?: (current: number, total: number) => void;
+  readonly requestInteraction?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
 }
 
 export interface McpToolInvocationContext {
   readonly sessionId: string;
+  readonly runId?: string;
   readonly turnId: string;
   readonly toolCallId: string;
   readonly cwd: string;
+  readonly executionBoundary?: ExecutionBoundary;
+  readonly permissionMode?: PermissionMode;
 }
 
 export interface BuildMcpToolsOptions {
   callTimeoutMs?: number;
   categoryHint?: ToolCategory;
+  hostAdmission?: MakaTool['hostAdmission'];
   recoveryMode?: ToolRecoveryMode;
   executionLocation?: 'host' | 'remote';
   activityKindForDescriptor?: (descriptor: McpToolDescriptor) => ToolActivityKind | undefined;
@@ -95,8 +119,43 @@ export function buildMcpTools(
       // The trusted composition may select a stricter open-world category;
       // ordinary MCP servers retain the side-effecting network default.
       categoryHint: options.categoryHint ?? 'network_send',
+      ...(options.hostAdmission ? { hostAdmission: options.hostAdmission } : {}),
       ...(options.recoveryMode ? { recoveryMode: options.recoveryMode } : {}),
       parameters: jsonSchema(descriptor.inputSchema),
+      ...(provider.prepareTool
+        ? {
+            prepareExecution: async (args: unknown, context) => {
+              const prepared = await provider.prepareTool!(binding, asArguments(args), {
+                signal: context.abortSignal,
+                timeoutMs: options.callTimeoutMs,
+                context: {
+                  sessionId: context.sessionId,
+                  runId: context.runId,
+                  turnId: context.turnId,
+                  toolCallId: context.toolCallId,
+                  cwd: context.cwd,
+                  executionBoundary: context.executionBoundary,
+                  permissionMode: context.permissionMode,
+                },
+              });
+              return {
+                execute: (executionContext) =>
+                  prepared.execute({
+                    ...(executionContext.emitProgress
+                      ? { emitProgress: executionContext.emitProgress }
+                      : {}),
+                    ...(executionContext.requestUserForm
+                      ? {
+                          requestInteraction: (form, interactionOptions) =>
+                            executionContext.requestUserForm!(form, interactionOptions),
+                        }
+                      : {}),
+                  }),
+                cancel: () => prepared.cancel(),
+              };
+            },
+          }
+        : {}),
       impl: async (args: unknown, context) => {
         // Managed network authority applies equally to Direct and nested CodeMode dispatch.
         if (
@@ -125,6 +184,14 @@ export function buildMcpTools(
             cwd: context.cwd,
           },
           ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
+          ...(context.requestUserForm
+            ? {
+                requestInteraction: (
+                  form: InteractionFormInput,
+                  interactionOptions?: { readonly cancellationSignal?: AbortSignal },
+                ) => context.requestUserForm!(form, interactionOptions),
+              }
+            : {}),
         });
       },
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),
@@ -238,8 +305,9 @@ function summarizeNonVisualBlock(block: McpCallResult['content'][number]): unkno
 
 function clipModelText(value: string, limit: number): string {
   if (value.length <= limit) return value;
+  // The marker is all-BMP, so slicing it can't split a pair.
   if (limit <= TRUNCATION_MARKER.length) return TRUNCATION_MARKER.slice(0, limit);
-  return `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  return `${truncateUtf16Safe(value, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function safeJsonStringify(value: unknown): string {

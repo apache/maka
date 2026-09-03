@@ -27,7 +27,7 @@ import type { StoredMessage } from '@maka/core/session';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
 
 import { ToolRuntime, formatDeferredNotLoadedText, type MakaTool } from '../tool-runtime.js';
-import { mapSessionEventToRuntimeEvent } from '../ai-sdk-flow.js';
+import { mapSessionEventToRuntimeEvent } from '../session-event-runtime-mapper.js';
 
 // The execute-boundary guard rejects a *gated* tool whose name is absent from
 // the current step's active snapshot before the real impl.
@@ -186,17 +186,6 @@ describe('tool-availability execute-boundary guard', () => {
       invocationId: 'inv-1',
       runId: 'run-1',
       turnId: 'turn-1',
-      source: 'test',
-      startedAt: 1,
-      request: {
-        sessionId: 'session-1',
-        invocationId: 'inv-1',
-        runId: 'run-1',
-        turnId: 'turn-1',
-        text: 'test',
-        source: 'test',
-      },
-      newId: () => 'runtime-event-1',
       now: () => 1,
     });
     assert.equal(runtimeEvent.content?.kind, 'function_call');
@@ -213,11 +202,11 @@ describe('tool-availability execute-boundary guard', () => {
   test('rejects a gated tool absent from the step snapshot before implementation', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
-    // The same-step trap: the browser group was just requested via load_tools
+    // The same-step trap: browser_click was just returned by tool_search
     // but is not yet active this step, so browser_click must be rejected.
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools']),
+      activeNames: () => new Set(['Read', 'tool_search']),
     });
 
     const result = await run(h, tool('browser_click', implCalls));
@@ -240,7 +229,7 @@ describe('tool-availability execute-boundary guard', () => {
     const implCalls: string[] = [];
     h.runtime.setGating({
       gatedNames: new Set(['browser_click']),
-      activeNames: () => new Set(['Read', 'load_tools', 'browser_click']),
+      activeNames: () => new Set(['Read', 'tool_search', 'browser_click']),
     });
 
     const t = tool('browser_click', implCalls);
@@ -253,7 +242,7 @@ describe('tool-availability execute-boundary guard', () => {
     );
   });
 
-  test('is inert when no gating is installed (economy off)', async () => {
+  test('is inert when no gating is installed', async () => {
     const h = makeHarness();
     const implCalls: string[] = [];
     // No setGating call: any tool must execute as before.

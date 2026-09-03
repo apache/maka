@@ -187,7 +187,7 @@ describe('Usage/Pricing client response correlation', () => {
           const request = requestUnchecked(connection, mismatch.operation, mismatch.input);
           await assert.rejects(request, isInvalidFrame);
           await connection.closed;
-          await assert.rejects(requestUnchecked(connection, 'host.status', {}), isInvalidFrame);
+          await assert.rejects(connection.status(REQUEST_TIMEOUT_MS), isInvalidFrame);
         },
       );
     });

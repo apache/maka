@@ -20,6 +20,7 @@
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import {
   decodeMessageContent as decodeCanonicalMessageContent,
+  DIRECTORY_REFERENCE_MAX_COUNT,
   isCanonicalAttachmentRef,
   type ContextCompactionOutcome,
   type MessageContent,
@@ -119,7 +120,9 @@ export const TURN_RESUME_PARK_REASONS = [
   'continuation_already_exists',
   'continuation_repair_required',
   'continuation_started_indeterminate',
-  'continuation_unavailable',
+  'resume_feature_disabled',
+  'continuation_authority_unavailable',
+  'safety_observation_unavailable',
   'session_busy',
 ] as const;
 
@@ -167,6 +170,12 @@ export type TurnProviderRetry =
       attempt: number;
       maxAttempts: number;
       delayMs: number;
+      /**
+       * Host-clock time the wait was scheduled at, kept so a re-projection
+       * mid-wait can recompute the authoritative remaining duration. Absent
+       * from snapshots written by older runtimes.
+       */
+      ts?: number;
       reason: ProviderRetryReason;
     }
   | {
@@ -333,7 +342,7 @@ export const TURN_OPERATION_SPECS = {
   }),
 } as const;
 
-function decodeTurnStartInput(value: unknown): TurnStartInput {
+export function decodeTurnStartInput(value: unknown): TurnStartInput {
   const record = requireShapedRecord(
     value,
     'turn.start input',
@@ -344,7 +353,7 @@ function decodeTurnStartInput(value: unknown): TurnStartInput {
   return {
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     turnId: requireEntityId(record.turnId, 'turnId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(record.turnOrchestration !== undefined
       ? { turnOrchestration: decodeTurnOrchestration(record.turnOrchestration) }
@@ -361,7 +370,7 @@ function requirePositiveSafeInteger(value: unknown, label: string): number {
   return decoded;
 }
 
-function decodeSkillIds(value: unknown): string[] {
+export function decodeSkillIds(value: unknown): string[] {
   if (value === undefined) return [];
   if (
     !Array.isArray(value) ||
@@ -379,7 +388,7 @@ function decodeSkillIds(value: unknown): string[] {
   return [...value];
 }
 
-function decodeTurnOrchestration(value: unknown): TurnOrchestration {
+export function decodeTurnOrchestration(value: unknown): TurnOrchestration {
   const record = requireExactRecord(value, 'Turn orchestration', ['mode', 'source']);
   if (!isOrchestrationMode(record.mode) || !isTurnOrchestrationSource(record.source)) {
     throw invalidProtocolFrame('Invalid Turn orchestration');
@@ -403,6 +412,9 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
       true,
     );
   }
+  if ((content.directoryReferences?.length ?? 0) > DIRECTORY_REFERENCE_MAX_COUNT) {
+    throw invalidProtocolFrame('Too many directory references');
+  }
   if ((content.attachments?.length ?? 0) > MAX_ATTACHMENT_COUNT) {
     throw invalidProtocolFrame('Invalid Message attachments');
   }
@@ -420,14 +432,16 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     if (attachment.bytes > MAX_ATTACHMENT_BYTES) {
       throw invalidProtocolFrame('Invalid AttachmentRef bytes');
     }
-    if (attachment.ref.kind === 'session_file') {
+    if (attachment.ref.kind === 'session_file' || attachment.ref.kind === 'session_context') {
       requireEntityId(attachment.ref.sessionId, 'AttachmentRef sessionId');
     }
-    const path =
+    const identity =
       attachment.ref.kind === 'external_file'
         ? attachment.ref.absolutePath
-        : attachment.ref.relativePath;
-    requireUtf8String(path, 'AttachmentRef path', ATTACHMENT_PATH_MAX_BYTES, false);
+        : attachment.ref.kind === 'session_context'
+          ? attachment.ref.refId
+          : attachment.ref.relativePath;
+    requireUtf8String(identity, 'AttachmentRef identity', ATTACHMENT_PATH_MAX_BYTES, false);
   }
   if ((content.quotes?.length ?? 0) > TURN_MESSAGE_QUOTE_MAX_COUNT) {
     throw invalidProtocolFrame('Invalid Message quotes');
@@ -442,6 +456,18 @@ export function decodeMessageContent(value: unknown, allowEmptyText = false): Me
     }
   }
   requireEncodedByteLimit(content, 'Message content', TURN_MESSAGE_CONTENT_MAX_BYTES);
+  return content;
+}
+
+/** Client-authored Messages cannot claim Host-owned Session context references. */
+export function decodeMessageAdmissionContent(
+  value: unknown,
+  allowEmptyText = false,
+): MessageContent {
+  const content = decodeMessageContent(value, allowEmptyText);
+  if (content.attachments?.some((attachment) => attachment.ref.kind === 'session_context')) {
+    throw invalidProtocolFrame('Session context references are Host-owned');
+  }
   return content;
 }
 
@@ -732,18 +758,18 @@ export function decodeTurnProviderRetry(value: unknown): TurnProviderRetry {
   if (attempt > maxAttempts) throw invalidProtocolFrame('Invalid Turn provider retry');
   const reason = requireProviderRetryReason(record.reason);
   if (phase === 'scheduled') {
-    assertExactKeys(record, 'scheduled Turn provider retry', [
-      'phase',
-      'attempt',
-      'maxAttempts',
-      'delayMs',
-      'reason',
-    ]);
+    const requiredKeys = ['phase', 'attempt', 'maxAttempts', 'delayMs', 'reason'] as const;
+    assertExactKeys(
+      record,
+      'scheduled Turn provider retry',
+      record.ts === undefined ? requiredKeys : [...requiredKeys, 'ts'],
+    );
     return {
       phase,
       attempt,
       maxAttempts,
       delayMs: requireCount(record.delayMs, 'delayMs'),
+      ...(record.ts !== undefined ? { ts: requireCount(record.ts, 'ts') } : {}),
       reason,
     };
   }

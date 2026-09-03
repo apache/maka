@@ -29,8 +29,9 @@ import type {
   EmittedAgentRunEvent,
 } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { createSessionStore } from '@maka/storage';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
+import { createSessionStore } from '@maka/storage/session-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
 
 describe('versioned execution inspect documents', () => {

@@ -296,7 +296,7 @@ function isToolAvailability(input: unknown): boolean {
   return (
     isRecord(input) &&
     hasOnlyKeys(input, TOOL_AVAILABILITY_KEYS) &&
-    input.mode === 'economy' &&
+    (input.mode === 'economy' || input.mode === 'search') &&
     isStringArray(input.enabledSourceIds) &&
     optionalStringArray(input.availableSourceIds) &&
     optionalString(input.connectorToolName) &&

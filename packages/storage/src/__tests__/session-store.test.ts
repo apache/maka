@@ -25,17 +25,174 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
-import type { StoredMessage } from '@maka/core/session';
+import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+  type StoredMessage,
+} from '@maka/core/session';
 import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_RECENT_SESSION_IDS,
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
   createSessionStore,
   isSessionNotFoundError,
+  normalizeSessionHeader,
 } from '../session-store.js';
+import type { SessionConversationCopy, SessionHeader } from '@maka/core/session';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
 describe('SQLite SessionStore', () => {
+  test('requires the reserved WorkHub Coordination identity and role together', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-identity-role-'));
+    const store = createSessionStore(root);
+    try {
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          requestFingerprint: `sha256:${'a'.repeat(64)}`,
+          input: makeInput({ cwd: root, projectId: null, name: 'Reserved without role' }),
+        }),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createStableSession({
+          sessionId: 'ordinary-with-coordination-role',
+          requestFingerprint: `sha256:${'b'.repeat(64)}`,
+          input: {
+            ...makeInput({ cwd: root, projectId: null, name: 'Role without identity' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          },
+        }),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+
+      // The invariant lives in the header builder, so the creators that share
+      // it inherit it even though their inputs carry no role today.
+      await assert.rejects(
+        store.createSubagent({
+          ...makeInput({ cwd: root, name: 'Subagent claiming the role' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        } as Parameters<typeof store.createSubagent>[0]),
+        /identity and role must be claimed together/,
+      );
+      await assert.rejects(
+        store.createAgentGraphOperator(
+          {
+            ...makeInput({ cwd: root, name: 'Operator claiming the role' }),
+            role: WORKHUB_COORDINATION_SESSION_ROLE,
+          } as Parameters<typeof store.createAgentGraphOperator>[0],
+          {
+            schemaVersion: 1,
+            provisionId: `graph_provision_${'4'.repeat(32)}`,
+            provisionFingerprint: `sha256:${'5'.repeat(64)}`,
+            graphId: 'graph-1',
+            workId: `graph_work_${'3'.repeat(32)}`,
+            agentId: 'local-read',
+            operatorId: `graph_operator_${'6'.repeat(32)}`,
+            initialTurnId: 'graph-turn',
+            initialRunId: 'graph-run',
+            edges: [],
+          },
+          0,
+        ),
+        /identity and role must be claimed together/,
+      );
+      assert.deepEqual(await store.listHeaders(), []);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('keeps the WorkHub Coordination Session durable but outside ordinary catalogs and route candidates', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-session-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      assert.equal(created.kind, 'created');
+
+      assert.deepEqual(await store.list(), []);
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(page.records, []);
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+
+      const recovery = await store.listForRecovery();
+      assert.equal(recovery.length, 1);
+      assert.equal(recovery[0]?.id, WORKHUB_COORDINATION_SESSION_ID);
+      assert.equal(recovery[0]?.role, WORKHUB_COORDINATION_SESSION_ROLE);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('quarantines the reserved Coordination identity when its role is missing', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-coordination-missing-role-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ name: 'Keep me' }));
+      await store.createStableSession({
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        input: {
+          ...makeInput({ cwd: root, projectId: null, name: 'WorkHub' }),
+          role: WORKHUB_COORDINATION_SESSION_ROLE,
+        },
+      });
+      const database = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE session_metadata
+             SET payload_json = json_remove(payload_json, '$.role')
+             WHERE session_id = ?`,
+          )
+          .run(WORKHUB_COORDINATION_SESSION_ID);
+      } finally {
+        database.close();
+      }
+
+      assert.deepEqual(
+        (await store.list()).map((session) => session.id),
+        [ordinary.id],
+      );
+      const page = await store.listCatalogPage(undefined, undefined, 10);
+      assert.equal(page.kind, 'page');
+      if (page.kind !== 'page') assert.fail('expected a catalog page');
+      assert.deepEqual(
+        page.records.map((record) => record.header.id),
+        [ordinary.id],
+      );
+      await assert.rejects(store.readCatalogRecord(WORKHUB_COORDINATION_SESSION_ID), (error) =>
+        isSessionNotFoundError(error),
+      );
+      assert.deepEqual(
+        (await store.listForRecovery()).map((session) => session.id),
+        [ordinary.id],
+      );
+      assert.equal(
+        (await store.readHeaderSnapshot(WORKHUB_COORDINATION_SESSION_ID)).name,
+        'WorkHub',
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('ordinary Sessions have no external origin and provenance metadata is immutable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-external-origin-'));
     const store = createSessionStore(root);
@@ -313,6 +470,123 @@ describe('SQLite SessionStore', () => {
     }
   });
 
+  test('a generated title fills an absence and never overwrites a rename', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-generated-title-'));
+    const store = createSessionStore(root);
+    try {
+      const unnamed = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(unnamed.id, 'draft the release notes'))?.name,
+        'draft the release notes',
+      );
+      assert.equal((await store.readHeaderSnapshot(unnamed.id)).name, 'draft the release notes');
+      // An already-named Session is never renamed by a later generation.
+      assert.equal(await store.setGeneratedTitleIfAbsent(unnamed.id, 'a second guess'), null);
+
+      // A rename landing between the check and the write wins: the write is
+      // conditional on the revision the check read.
+      const raced = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      const readHeaderRecordSnapshot = store.readHeaderRecordSnapshot.bind(store);
+      let renamed = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === raced.id && !renamed) {
+          renamed = true;
+          await store.rename(sessionId, '我自己起的名字');
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(raced.id, 'generated loses'), null);
+      const header = await readHeaderRecordSnapshot(raced.id);
+      assert.equal(header.header.name, '我自己起的名字');
+      assert.equal(header.header.titleIsManual, true);
+
+      // A revision that moved for any other reason is re-read, not mistaken
+      // for a rename.
+      const flagged = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flaggedOnce = false;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === flagged.id && !flaggedOnce) {
+          flaggedOnce = true;
+          await store.setFlagged(sessionId, true);
+        }
+        return record;
+      };
+      assert.equal(
+        (await store.setGeneratedTitleIfAbsent(flagged.id, 'generated survives'))?.name,
+        'generated survives',
+      );
+
+      // A Session whose revision moves under every attempt answers null like any
+      // other lost race, so a caller reading null never has to also expect a throw.
+      const busy = await store.create(makeInput({ cwd: root, name: DEFAULT_SESSION_NAME }));
+      let flips = 0;
+      store.readHeaderRecordSnapshot = async (sessionId: string) => {
+        const record = await readHeaderRecordSnapshot(sessionId);
+        if (sessionId === busy.id) {
+          flips += 1;
+          await store.setFlagged(sessionId, flips % 2 === 1);
+        }
+        return record;
+      };
+      assert.equal(await store.setGeneratedTitleIfAbsent(busy.id, 'never lands'), null);
+      assert.equal((await readHeaderRecordSnapshot(busy.id)).header.name, DEFAULT_SESSION_NAME);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a Session freezes its route on the first user message, a subagent at birth', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-route-freeze-'));
+    const store = createSessionStore(root);
+    try {
+      const ordinary = await store.create(makeInput({ cwd: root }));
+      assert.equal(ordinary.connectionLocked, false);
+
+      // A subagent's route is chosen by the spawn that created it and is never
+      // re-targeted, so it needs no first Message to be frozen.
+      const child = await store.createSubagent(
+        makeInput({
+          cwd: root,
+          name: 'Child',
+          subagentParent: {
+            kind: 'subagent',
+            parentSessionId: ordinary.id,
+            spawnedBy: {
+              parentRunId: 'parent-run',
+              parentTurnId: 'parent-turn',
+              toolCallId: 'tool-call',
+            },
+            lifecycle: 'foreground',
+          },
+          subagentRuntime: {
+            schemaVersion: 1,
+            definitionVersion: 1,
+            agentId: 'local-read',
+            agentName: 'Local Read',
+            profile: 'local_read',
+            systemPrompt: 'Read the assigned workspace task.',
+            toolNames: ['Read'],
+            categoryPolicy: { read: 'allow' },
+          },
+          subagentSpawn: {
+            schemaVersion: 1,
+            requestFingerprint: 'a'.repeat(64),
+            initialTurnId: 'child-turn',
+            initialRunId: 'child-run',
+          },
+        }),
+      );
+      assert.equal(child.header.connectionLocked, true);
+      assert.equal((await store.readHeaderSnapshot(child.header.id)).connectionLocked, true);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('appending the first user message locks the session before any read', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-session-lock-heal-'));
     const store = createSessionStore(root);
@@ -388,6 +662,15 @@ describe('SQLite SessionStore', () => {
         [3, 2],
       );
       assert.deepEqual(tail.next, { position: 1, byteOffset: null });
+
+      const decodedTail = await store.readTranscriptRecordsSnapshot(session.id, {
+        direction: 'older',
+        maxStoredBytes: 1,
+        maxMessages: 2,
+      });
+      assert.equal(decodedTail.throughSequence, 3);
+      assert.deepEqual(decodedTail.records, [{ sequence: 3, message: messages[3] }]);
+      assert.equal(decodedTail.nextPosition, 2);
 
       await store.appendMessage(session.id, {
         type: 'user',
@@ -573,6 +856,7 @@ describe('SQLite SessionStore', () => {
       )
       .run(legacyRecord, sessionId);
     legacy.exec(`
+      DROP INDEX session_metadata_one_workhub_coordination_session;
       DROP TABLE agent_graph_epochs;
       DROP TABLE session_message_chunks;
       DROP TABLE session_message_payloads;
@@ -1130,10 +1414,33 @@ describe('SQLite SessionStore', () => {
     try {
       const [header] = await reopened.listHeaders();
       assert.equal(header?.backend, 'fake');
+      assert.equal(header?.llmConnectionId, undefined);
       assert.equal(header?.llmConnectionSlug, 'fake');
       assert.equal((await reopened.readHeaderSnapshot(sessionId)).backend, 'fake');
     } finally {
       await reopened.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('persists an immutable Connection identity when supplied by Host admission', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-session-connection-identity-'));
+    const store = createSessionStore(root);
+    try {
+      const created = await store.create(
+        makeInput({ llmConnectionId: '11111111-1111-4111-8111-111111111111' }),
+      );
+      assert.equal(created.llmConnectionId, '11111111-1111-4111-8111-111111111111');
+      assert.equal(
+        (await store.readHeader(created.id)).llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+      assert.equal(
+        (await store.readCatalogRecord(created.id)).summary.llmConnectionId,
+        '11111111-1111-4111-8111-111111111111',
+      );
+    } finally {
+      await store.close?.();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -1159,6 +1466,74 @@ describe('SQLite SessionStore', () => {
         assert.equal(isSessionNotFoundError(error), true);
         return true;
       });
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('normalizeSessionHeader accepts an empty side-conversation copy but rejects a fabricated branch turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-empty-copy-lineage-'));
+    const store = createSessionStore(root);
+    try {
+      const source = await store.create(makeInput({ cwd: root, name: 'Source' }));
+      const base = await store.create(makeInput({ cwd: root, name: 'Side chat' }));
+      const emptyCopy: SessionConversationCopy = {
+        kind: 'branch',
+        sourceSessionId: source.id,
+        // sourceTurnId intentionally absent: an empty copy carries no source turn.
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        state: 'committed',
+        intent: 'side_conversation',
+      };
+      const emptyHeader: SessionHeader = {
+        ...base,
+        parentSessionId: source.id,
+        conversationCopy: emptyCopy,
+      };
+
+      // An empty side-conversation copy records provenance (parentSessionId)
+      // without fabricating a branchOfTurnId, and round-trips unchanged.
+      const normalized = normalizeSessionHeader(emptyHeader);
+      assert.equal(normalized.conversationCopy?.sourceTurnId, undefined);
+      assert.equal(normalized.branchOfTurnId, undefined);
+      assert.equal(normalized.parentSessionId, source.id);
+
+      // An empty copy must not fabricate a branchOfTurnId.
+      assert.throws(
+        () => normalizeSessionHeader({ ...emptyHeader, branchOfTurnId: 'fabricated-turn' }),
+        /malformed fields/,
+      );
+
+      // An empty copy is only valid for the side_conversation intent.
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, intent: undefined },
+          }),
+        /malformed fields/,
+      );
+
+      // A through-turn copy must anchor its branchOfTurnId to the source turn:
+      // absent here, so it is rejected...
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+          }),
+        /malformed fields/,
+      );
+      // ...and accepted once the header anchors to the same turn.
+      assert.equal(
+        normalizeSessionHeader({
+          ...emptyHeader,
+          branchOfTurnId: 'source-turn',
+          conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+        }).conversationCopy?.sourceTurnId,
+        'source-turn',
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

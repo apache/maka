@@ -32,7 +32,12 @@ test('hosted execution tool profiles are durable Session creation inputs', () =>
     executionId: '00000000-0000-4000-8000-000000000001',
     session: {
       workspace: { kind: 'host_path', path: '/workspace' },
-      modelTarget: { kind: 'explicit', connectionSlug: 'provider', model: 'model' },
+      modelTarget: {
+        kind: 'explicit',
+        connectionId: 'connection-1',
+        connectionSlug: 'provider',
+        model: 'model',
+      },
       toolProfile: 'headless-coding-v1',
     },
     content: { text: 'solve' },
@@ -116,4 +121,21 @@ test('the headless coding profile freezes prompt, tools, memory, and foreground 
     false,
   );
   assert.equal((await schema.safeParseAsync({ command: 'true', pty: true })).success, false);
+});
+
+test('the WorkHub coordination profile has conversational authority but zero tools', () => {
+  const profile = hostedExecutionRunProfile('workhub-coordination-v1');
+  assert.ok(profile);
+  assert.deepEqual(profile.toolNames, []);
+  assert.equal(profile.memoryExtraction, false);
+  assert.match(profile.systemPrompt, /conversational coordinator for WorkHub/u);
+  assert.match(profile.systemPrompt, /no tools, filesystem authority/u);
+
+  const productTool: MakaTool = {
+    name: 'Read',
+    description: 'Read files',
+    parameters: z.object({}),
+    impl: async () => 'not reachable',
+  };
+  assert.deepEqual(projectHostedExecutionTools([productTool], 'workhub-coordination-v1'), []);
 });

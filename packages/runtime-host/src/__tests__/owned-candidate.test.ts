@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -31,7 +32,11 @@ import {
   connectOwnedRuntimeHostWithDependencies,
 } from '../client/connect-or-spawn.js';
 import { runHostedExecution } from '../client/hosted-execution.js';
-import { launchOwnedRuntimeHostCandidate, type OwnedCandidateAttempt } from '../client/launcher.js';
+import {
+  launchOwnedRuntimeHostCandidate,
+  type CandidateExitDetails,
+  type OwnedCandidateAttempt,
+} from '../client/launcher.js';
 
 test('owned connection keeps a fresh Host alive for its full election window', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-first-connection-'));
@@ -220,7 +225,7 @@ test('a late owned candidate stays alive after another client adopts it', {
       assert.equal(released, 1);
       assert.equal(settled, 0);
 
-      const diagnostics = await adopted.connection.queryHostDiagnostics();
+      const diagnostics = await adopted.connection.request('host.diagnostics.query', {});
       assert.equal(diagnostics.pid, host.pid);
       assert.doesNotThrow(() => process.kill(host.pid, 0));
     } finally {
@@ -253,7 +258,11 @@ test('owned Host exits promptly after its first connection closes', async () => 
   assert.equal(result.kind, 'connected', connectFailure(result));
   if (result.kind !== 'connected') return;
   await result.connection.close();
-  assert.equal(await result.host.settle(500), true);
+  // Prompt means the owned launch's idleGraceMs of 0, as opposed to the 30 s
+  // default grace, so the bound only has to sit well below that. Shutdown takes
+  // about 30 ms on an idle machine and stretches past 500 ms under a full CI
+  // suite while still exiting cleanly: the Host is starved, not stuck.
+  assert.equal(await result.host.settle(5_000), true);
 });
 
 test('an exited owned Candidate permits one real successor in the same election', {
@@ -335,6 +344,37 @@ test('owned candidate settlement requires a clean process exit', async () => {
   });
 });
 
+test('reports unexpected candidate exit through the caller-provided onExit sink', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-on-exit-'));
+  const exited = deferred<CandidateExitDetails>();
+  const launch = launchOwnedRuntimeHostCandidate({
+    rootPath,
+    expectedRootId: '00000000-0000-4000-8000-000000000001',
+    entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+    env: { MAKA_TEST_EXIT_CODE: '1' },
+    onExit: (details) => exited.resolve(details),
+  });
+
+  const candidate = await launch.spawned;
+  assert.equal(await candidate.settle(2_000), false);
+  assert.deepEqual(await exited.promise, { pid: candidate.pid, code: 1, signal: null });
+});
+
+test('reports clean candidate exit through the caller-provided onExit sink', async () => {
+  const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-on-exit-clean-'));
+  const exited = deferred<CandidateExitDetails>();
+  const launch = launchOwnedRuntimeHostCandidate({
+    rootPath,
+    expectedRootId: '00000000-0000-4000-8000-000000000001',
+    entrypoint: new URL('./fixtures/owned-candidate-exit.js', import.meta.url),
+    onExit: (details) => exited.resolve(details),
+  });
+
+  const candidate = await launch.spawned;
+  assert.equal(await candidate.settle(2_000), true);
+  assert.deepEqual(await exited.promise, { pid: candidate.pid, code: 0, signal: null });
+});
+
 test('owned candidate can be released to the enclosing environment without termination', async () => {
   const rootPath = await mkdtemp(join(tmpdir(), 'maka-owned-candidate-'));
   const launch = launchOwnedRuntimeHostCandidate({
@@ -359,7 +399,11 @@ test('owned hosted execution closes its fresh Host after configuration fails', a
       executionId: '00000000-0000-4000-8000-000000000002',
       session: {
         workspace: { kind: 'host_path', path: rootPath },
-        modelTarget: { kind: 'explicit', connectionSlug: 'missing', model: 'missing' },
+        modelTarget: {
+          kind: 'explicit',
+          connectionSlug: 'missing',
+          model: 'missing',
+        },
       },
       content: { text: 'This request must not reach a provider.' },
     },

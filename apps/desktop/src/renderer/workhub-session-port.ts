@@ -17,14 +17,21 @@
  * under the License.
  */
 
-import { deriveTurnRecords, type StoredMessage } from '@maka/core/session';
+import {
+  deriveTurnRecords,
+  type StoredMessage,
+  type TurnRecord,
+} from '@maka/core/session';
 import type {
   DesktopTranscriptBatch,
   DesktopTranscriptHandle,
 } from '../preload/transcript-contract.js';
+import { parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import { DesktopTranscriptRangeStore } from './desktop-transcript-range-store.js';
 import type {
   WorkHubProjectedTurn,
+  WorkHubDelegationFeedback,
+  WorkHubDelegationReference,
   WorkHubSessionFacts,
   WorkHubSessionPort,
   WorkHubSessionState,
@@ -49,18 +56,23 @@ export interface WorkHubDesktopSession {
 
 export interface WorkHubDesktopSessionBridge {
   list(): Promise<readonly WorkHubDesktopSession[]>;
-  listTurns(sessionId: string): Promise<readonly { userPromptPreview?: string }[]>;
-  create(input: { name: string }): Promise<WorkHubDesktopSession>;
-  send(
+  listWithCoverage?(): Promise<{
+    sessions: readonly WorkHubDesktopSession[];
+    completeHostIds: readonly string[];
+  }>;
+  listTurns(
     sessionId: string,
-    command: { type: 'send'; turnId: string; text: string },
-  ): Promise<
-    { ok: true; turnId: string; steered?: true } | { ok: false; reason: string }
-  >;
-  stop(
+  ): Promise<readonly Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource' | 'userPromptPreview'>>[]>;
+  queryMessageExecutions(
     sessionId: string,
-    input?: { source?: 'stop_button'; expectedTurnId?: string },
-  ): Promise<void>;
+    messageIds: readonly string[],
+  ): Promise<{
+    readonly resolutions: readonly (
+      | { messageId: string; state: 'pending' }
+      | { messageId: string; state: 'cancelled' }
+      | { messageId: string; state: 'owned'; turnId: string; runId: string }
+    )[];
+  }>;
   subscribeChanges(handler: () => void): () => void;
 }
 
@@ -76,11 +88,12 @@ const WORKHUB_TIMELINE_SESSION_LIMIT = 10;
 const WORKHUB_TIMELINE_TURN_LIMIT = 40;
 const WORKHUB_TRANSCRIPT_READY_TIMEOUT_MS = 5_000;
 
-export function createDesktopWorkHubSessionPort(deps: {
-  sessions: WorkHubDesktopSessionBridge;
+export function createDesktopWorkHubSessionPort<
+  Sessions extends WorkHubDesktopSessionBridge,
+>(deps: {
+  sessions: Sessions;
   transcripts: WorkHubDesktopTranscriptBridge;
   projectName(projectId: string): string | undefined;
-  newTurnId(): string;
 }): WorkHubSessionPort {
   // The first prompt is immutable Session-log evidence. This cache is only a
   // rebuildable read optimization; it is never an authority or a write path.
@@ -104,15 +117,34 @@ export function createDesktopWorkHubSessionPort(deps: {
         : 'ordinary',
     archived: session.isArchived,
     state: projectState(session),
+    ...(session.runningTurnIds !== undefined
+      ? { runningTurnIds: [...session.runningTurnIds] }
+      : {}),
     ...(session.lastMessagePreview
       ? { latestResult: session.lastMessagePreview }
       : {}),
     updatedAt: session.lastMessageAt ?? session.statusUpdatedAt ?? 0,
   });
+  const projectCatalog = async () => {
+    const snapshot = deps.sessions.listWithCoverage
+      ? await deps.sessions.listWithCoverage()
+      : { sessions: await deps.sessions.list(), completeHostIds: [] };
+    const completeHostIds = new Set(snapshot.completeHostIds);
+    return {
+      sessions: snapshot.sessions.map(projectSession),
+      isCompleteFor(target: WorkHubSessionTarget) {
+        try {
+          return completeHostIds.has(parseDesktopSessionKey(target.sessionId).hostId);
+        } catch {
+          return false;
+        }
+      },
+    };
+  };
 
   return {
     async list() {
-      return (await deps.sessions.list()).map(projectSession);
+      return (await projectCatalog()).sessions;
     },
     async recentTurns(targets) {
       const turnsBySession = await Promise.all(
@@ -136,6 +168,82 @@ export function createDesktopWorkHubSessionPort(deps: {
         )
         .slice(-WORKHUB_TIMELINE_TURN_LIMIT);
     },
+    async delegationFeedback(references) {
+      let catalog: Awaited<ReturnType<typeof projectCatalog>> | undefined;
+      try {
+        catalog = await projectCatalog();
+      } catch {
+        // Exact Turn reads below may still recover terminal or running facts.
+      }
+      const sessionById = new Map(
+        catalog?.sessions.map((session) => [session.target.sessionId, session]) ?? [],
+      );
+      const referencesBySessionId = new Map<string, WorkHubDelegationReference[]>();
+      for (const reference of references) {
+        const grouped = referencesBySessionId.get(reference.targetSessionId) ?? [];
+        grouped.push(reference);
+        referencesBySessionId.set(reference.targetSessionId, grouped);
+      }
+      const projected = await Promise.all(
+        [...referencesBySessionId.entries()].map(async ([sessionId, grouped]) => {
+          let turns: readonly Partial<
+            Pick<TurnRecord, 'turnId' | 'status' | 'statusSource' | 'userPromptPreview'>
+          >[] = [];
+          let turnReadFailed = false;
+          try {
+            turns = await deps.sessions.listTurns(sessionId);
+          } catch {
+            turnReadFailed = true;
+          }
+          let executionReadFailed = false;
+          let resolutions: readonly (
+            | { messageId: string; state: 'pending' }
+            | { messageId: string; state: 'cancelled' }
+            | { messageId: string; state: 'owned'; turnId: string; runId: string }
+          )[] = [];
+          try {
+            const result = await deps.sessions.queryMessageExecutions(
+              sessionId,
+              grouped.map(({ targetMessageId }) => targetMessageId),
+            );
+            resolutions = result.resolutions;
+          } catch {
+            executionReadFailed = true;
+          }
+          const turnById = new Map(
+            turns.flatMap((turn) => turn.turnId ? [[turn.turnId, turn] as const] : []),
+          );
+          const resolutionByMessageId = new Map(
+            resolutions.map((resolution) => [resolution.messageId, resolution]),
+          );
+          const session = sessionById.get(sessionId);
+          return grouped.map((reference): WorkHubDelegationFeedback => {
+            const resolution = resolutionByMessageId.get(reference.targetMessageId);
+            const executionTurnId = resolution?.state === 'owned'
+              ? resolution.turnId
+              : undefined;
+            return {
+              delegationId: reference.delegationId,
+              state: projectDelegationExecutionState({
+                resolutionState: resolution?.state,
+                executionTurnId,
+                session,
+                turn: executionTurnId ? turnById.get(executionTurnId) : undefined,
+                turnReadFailed,
+                executionReadFailed,
+              }),
+            };
+          });
+        }),
+      );
+      const feedbackByDelegationId = new Map(
+        projected.flat().map((feedback) => [feedback.delegationId, feedback]),
+      );
+      return references.flatMap((reference) => {
+        const feedback = feedbackByDelegationId.get(reference.delegationId);
+        return feedback ? [feedback] : [];
+      });
+    },
     async routingEvidence(targets) {
       return Promise.all(targets.map(async (target) => {
         const cached = originPromptCache.get(target.sessionId);
@@ -153,28 +261,6 @@ export function createDesktopWorkHubSessionPort(deps: {
           return { target };
         }
       }));
-    },
-    async create({ name }) {
-      return projectSession(await deps.sessions.create({ name }));
-    },
-    async submit(target: WorkHubSessionTarget, text: string) {
-      const turnId = deps.newTurnId();
-      const result = await deps.sessions.send(target.sessionId, {
-        type: 'send',
-        turnId,
-        text,
-      });
-      if (!result.ok) throw new Error(`WorkHub Session send failed: ${result.reason}`);
-      return {
-        turnId: result.turnId,
-        ...(result.steered ? { steered: true as const } : {}),
-      };
-    },
-    async stop(target, expectedTurnId) {
-      await deps.sessions.stop(target.sessionId, {
-        source: 'stop_button',
-        expectedTurnId,
-      });
     },
     subscribe(handler) {
       return deps.sessions.subscribeChanges(handler);
@@ -273,4 +359,32 @@ function projectState(session: WorkHubDesktopSession): WorkHubSessionState {
     return 'running';
   }
   return session.status;
+}
+
+function projectDelegationExecutionState(input: {
+  resolutionState: 'pending' | 'cancelled' | 'owned' | undefined;
+  executionTurnId: string | undefined;
+  session: WorkHubSessionFacts | undefined;
+  turn: Partial<Pick<TurnRecord, 'turnId' | 'status' | 'statusSource'>> | undefined;
+  turnReadFailed: boolean;
+  executionReadFailed: boolean;
+}): WorkHubDelegationFeedback['state'] {
+  const { executionTurnId, session, turn } = input;
+  if (input.executionReadFailed) return 'recovering';
+  if (!input.resolutionState) return 'recovering';
+  if (input.resolutionState === 'cancelled') return 'aborted';
+  if (input.resolutionState === 'pending') return 'accepted';
+  if (!executionTurnId) return 'recovering';
+  if (turn?.statusSource === 'recorded' && turn.status && turn.status !== 'running') {
+    return turn.status;
+  }
+  const liveTurnIds = session?.runningTurnIds;
+  const ownsLiveTurn = liveTurnIds?.includes(executionTurnId) === true;
+  if (ownsLiveTurn && session?.state === 'waiting_for_user') return 'waiting_for_user';
+  if (ownsLiveTurn) return 'running';
+  if (liveTurnIds === undefined && turn?.statusSource === 'recorded' && turn.status === 'running') {
+    return 'running';
+  }
+  if (input.turnReadFailed || !session) return 'recovering';
+  return 'accepted';
 }

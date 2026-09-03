@@ -34,8 +34,12 @@ export type SettingsTasksCopy = {
   purgeAllConfirmTitle(count: number): string;
   purgeMatchesConfirmTitle(count: number): string;
   purgeConfirmBody: string;
+  /** Appended to the purge confirm: a bulk delete keeps linked subtasks. */
+  purgeSubtaskNote: string;
   purgeConfirmAction: string;
   purgedToast(count: number): string;
+  /** Toast suffix after a purge that moved linked subtasks to the archive. */
+  purgedSubtaskNote(count: number): string;
   /**
    * Tasks a sweep kept because they were restored while it ran. Reads after
    * either outcome, so a sweep never has to choose between reporting a failure
@@ -66,8 +70,10 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
     purgeAllConfirmTitle: (count: number) => `清空全部 ${count} 条已归档任务？`,
     purgeMatchesConfirmTitle: (count: number) => `删除搜索到的 ${count} 条任务？`,
     purgeConfirmBody: '这些任务及其全部消息会被永久删除，无法撤销。',
+    purgeSubtaskNote: '其中的普通子任务不会被删除，将保留并移入归档。',
     purgeConfirmAction: '永久删除',
     purgedToast: (count: number) => `已删除 ${count} 条任务`,
+    purgedSubtaskNote: (count: number) => `${count} 个子任务已移入归档`,
     purgeKeptRestored: (count: number) => `另有 ${count} 条在此期间被恢复，已保留。`,
     purgeFailedTitle: '删除任务失败',
     purgeFailedBody: (count: number) => `${count} 条仍在，请重试。`,
@@ -94,8 +100,11 @@ const SETTINGS_TASKS_COPY_BY_LOCALE = {
       count === 1 ? 'Delete the 1 task you searched for?' : `Delete the ${count} tasks you searched for?`,
     purgeConfirmBody:
       'The tasks and all of their messages are removed permanently. This cannot be undone.',
+    purgeSubtaskNote: 'Any ordinary subtasks are kept and moved to Archived.',
     purgeConfirmAction: 'Delete permanently',
     purgedToast: (count: number) => (count === 1 ? 'Deleted 1 task' : `Deleted ${count} tasks`),
+    purgedSubtaskNote: (count: number) =>
+      count === 1 ? '1 subtask moved to Archived' : `${count} subtasks moved to Archived`,
     purgeKeptRestored: (count: number) =>
       count === 1
         ? '1 more was restored meanwhile and kept.'

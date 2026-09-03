@@ -81,6 +81,10 @@ export interface RuntimeHostSessionChannelOptions {
    * channel for goal state — the same one the desktop observer diffs.
    */
   onGoalChanged: (goal: GoalProjection | null) => void;
+  /** Optional read-only projection observer; the channel remains the sole folder. */
+  onSnapshotChanged?: (snapshot: SessionContinuitySnapshot) => void;
+  /** Fired only after the channel's bounded recovery policy is exhausted. */
+  onFailed?: (error: Error) => void;
   onRecovered: () => void;
 }
 
@@ -97,6 +101,8 @@ export class RuntimeHostSessionChannel {
   readonly #onTranscriptSettlement: (turnId: string) => void;
   readonly #onTranscriptReplaced: (turnId: string, messages: readonly StoredMessage[]) => void;
   readonly #onGoalChanged: (goal: GoalProjection | null) => void;
+  readonly #onSnapshotChanged: ((snapshot: SessionContinuitySnapshot) => void) | undefined;
+  readonly #onFailed: ((error: Error) => void) | undefined;
   readonly #onRecovered: () => void;
   readonly #turns = new Map<string, SessionEventQueue>();
   readonly #pendingFrames: SubscriptionFrame[] = [];
@@ -135,6 +141,8 @@ export class RuntimeHostSessionChannel {
     this.#onTranscriptSettlement = options.onTranscriptSettlement;
     this.#onTranscriptReplaced = options.onTranscriptReplaced;
     this.#onGoalChanged = options.onGoalChanged;
+    this.#onSnapshotChanged = options.onSnapshotChanged;
+    this.#onFailed = options.onFailed;
     this.#onRecovered = options.onRecovered;
   }
 
@@ -280,6 +288,8 @@ export class RuntimeHostSessionChannel {
     };
     if (answered.outcome.kind === 'question_answer') {
       this.#emit({ type: 'user_question_answer_ack', ...base });
+    } else if (answered.outcome.kind === 'form_answer') {
+      this.#emit({ type: 'form_answer_ack', ...base });
     } else if (answered.outcome.kind === 'sandbox_boundary_decision') {
       this.#emit({
         type: 'sandbox_boundary_decision_ack',
@@ -441,6 +451,7 @@ export class RuntimeHostSessionChannel {
       this.#now,
       this.#subscription.activeAssistantStreams,
     );
+    this.#onSnapshotChanged?.(structuredClone(this.#projector.snapshot));
     // A canonical replacement is a sequence cut. No queued event from the
     // retired subscription may replay after the transcript/snapshot has
     // established newer state; active, terminal, and interaction state is
@@ -598,6 +609,7 @@ export class RuntimeHostSessionChannel {
     const update = this.#projector?.accept(frame);
     if (!update || !this.#projector) return;
     const snapshot = this.#projector.snapshot;
+    this.#onSnapshotChanged?.(structuredClone(snapshot));
     if (!sameGoalProjection(previousGoal, snapshot.goal)) {
       // Clone like the canonical-replacement path above: listeners receive
       // their own copy, so a mutating listener cannot corrupt the live
@@ -669,6 +681,7 @@ export class RuntimeHostSessionChannel {
     if (this.#failure) return;
     this.#failure = error instanceof Error ? error : new Error(String(error));
     for (const queue of this.#turns.values()) queue.fail(this.#failure);
+    this.#onFailed?.(this.#failure);
   }
 }
 

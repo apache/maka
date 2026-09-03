@@ -26,10 +26,12 @@ import {
   type TurnRecord,
 } from "@maka/core/session";
 import { markPersisted } from "@maka/core/persisted-value";
-import type { Task } from "@maka/core/task-ledger";
+import {
+  projectSessionTodoItemsForDisplay,
+  type SessionTodoItem,
+} from "@maka/core/session-todo";
 
 import type {
-  ConnectionCatalogSnapshot,
   ConnectionVersionBasis,
   CredentialLocator,
   CredentialStatus,
@@ -46,11 +48,16 @@ import {
   type DecodedSessionTranscriptPage,
   type DirectRequestOperationKey,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
+  type RuntimeHostRetirementMode,
+  type RuntimeHostRetirementPreparation,
   type RuntimeHostSessionSubscription,
   RuntimeHostCatalogReadError,
   RuntimeHostOperationError,
+  prepareConnectedRuntimeHostRetirement,
   readRuntimeHostAgentGraphEpochs,
   readRuntimeHostConnectionCatalog,
+  type RuntimeHostConnectionCatalogSnapshot,
   readRuntimeHostInvocableSkills,
   readRuntimeHostResources,
   readRuntimeHostProjectDetails,
@@ -77,6 +84,7 @@ import {
   type MemoryQueryInput,
   type MemoryQueryResult,
   type GoalControlAction,
+  type HostStatusResult,
   type GoalProjection,
   type OperationInput,
   type OperationOutput,
@@ -94,13 +102,26 @@ import {
   type QueueEntriesReorderInput,
   type QueueEntryPromoteInput,
   type QueueEntryRetractInput,
+  type QueueEntryUpdateInput,
   type QueueMutationResult,
   SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES,
   type SessionCatalogChangedFrame,
   type ScheduledTaskChangedFrame,
   type SessionCatalogItem,
   type SessionCatalogProjection,
-  type SessionConfiguration,
+  type SharedSessionCatalogProjection,
+  type CollaborationAccessQueryResult,
+  type CollaborationGrantRevokeResult,
+  type CollaborationInvitationPrepareResult,
+  type CollaborationPrincipalRevokeResult,
+  type CollaborationTurnRequestAcknowledgeResult,
+  type CollaborationTurnRequestDecideResult,
+  type CollaborationTurnRequestQueryResult,
+  type CollaborationTurnRequestWithdrawResult,
+  type SessionCollaborationGrantKind,
+  type SessionTurnAccessRequest,
+  type SessionTurnRequestIntent,
+  type SessionConfigurationPatch,
   type SessionAssistantStreamIdentity,
   type SessionContinuitySnapshot,
   type SessionTranscriptBootstrap,
@@ -139,13 +160,24 @@ const MAX_OPTIMISTIC_ATTEMPTS = 3;
 const MAX_SESSION_REVISION_ATTEMPTS = 8;
 const MAX_PRICING_SNAPSHOT_ATTEMPTS = 3;
 
-export type DesktopSessionConfigurationPatch = Partial<SessionConfiguration>;
+export type DesktopSessionConfigurationPatch = SessionConfigurationPatch;
 
 /**
  * How a remove settled. `restored` is not a failure: the task left the state
  * the caller decided against, so nothing was destroyed and nothing is wrong.
  */
 export type SessionRemoveDisposition = "removed" | "restored";
+
+/**
+ * How a remove settled together with what it archived. `archivedSubtaskCount`
+ * is the Host's executed count of ordinary linked subtasks moved to the archive
+ * — 0 when the delete was called off (`restored`) or archived nothing — so the
+ * renderer's toast reports a fact rather than a renderer-side estimate.
+ */
+export interface SessionRemoveOutcome {
+  readonly disposition: SessionRemoveDisposition;
+  readonly archivedSubtaskCount: number;
+}
 
 export type DesktopRuntimeHostClientErrorCode =
   | "catalog_unstable"
@@ -254,11 +286,23 @@ export class DesktopRuntimeHostClient {
   }
 
   get hostId(): string {
+    return this.rootId;
+  }
+
+  get rootId(): string {
     return this.connection.rootId;
+  }
+
+  get peerPath(): RuntimeHostPeerConnectionPath | undefined {
+    return this.connection.peerPath;
   }
 
   get lifecycleState(): 'ready' | 'unavailable' {
     return this.#connectionClosed || this.#closeTask ? 'unavailable' : 'ready';
+  }
+
+  status(): Promise<HostStatusResult> {
+    return this.connection.status();
   }
 
   finalizeAccessCredential(
@@ -267,9 +311,73 @@ export class DesktopRuntimeHostClient {
     return this.request('access.credential.finalize', {}, timeoutMs);
   }
 
+  prepareCollaborationInvitation(
+    sessionId: string,
+    grantKinds: readonly SessionCollaborationGrantKind[],
+  ): Promise<CollaborationInvitationPrepareResult> {
+    return this.request('collaboration.invitation.prepare', { sessionId, grantKinds });
+  }
+
+  queryCollaborationAccess(sessionId?: string): Promise<CollaborationAccessQueryResult> {
+    return this.request(
+      'collaboration.access.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  revokeCollaborationGrant(grantId: string): Promise<CollaborationGrantRevokeResult> {
+    return this.request('collaboration.grant.revoke', { grantId });
+  }
+
+  revokeCollaborationPrincipal(
+    principalId: string,
+  ): Promise<CollaborationPrincipalRevokeResult> {
+    return this.request('collaboration.principal.revoke', { principalId });
+  }
+
+  createCollaborationTurnRequest(
+    intent: SessionTurnRequestIntent,
+  ): Promise<SessionTurnAccessRequest> {
+    return this.request('collaboration.turn-request.create', { intent });
+  }
+
+  queryCollaborationTurnRequests(sessionId?: string): Promise<CollaborationTurnRequestQueryResult> {
+    return this.request(
+      'collaboration.turn-request.query',
+      sessionId === undefined ? {} : { sessionId },
+    );
+  }
+
+  acknowledgeCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestAcknowledgeResult> {
+    return this.request('collaboration.turn-request.acknowledge', { requestId });
+  }
+
+  withdrawCollaborationTurnRequest(
+    requestId: string,
+  ): Promise<CollaborationTurnRequestWithdrawResult> {
+    return this.request('collaboration.turn-request.withdraw', { requestId });
+  }
+
+  decideCollaborationTurnRequest(
+    requestId: string,
+    decision: 'approve' | 'reject',
+  ): Promise<CollaborationTurnRequestDecideResult> {
+    return this.request('collaboration.turn-request.decide', {
+      requestId,
+      decision,
+    });
+  }
+
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void {
     this.#assertOpen();
     return this.connection.subscribeConfigurationChanges(listener);
+  }
+
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#assertOpen();
+    return this.connection.subscribeConnectionCatalogChanges(listener);
   }
 
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
@@ -291,7 +399,7 @@ export class DesktopRuntimeHostClient {
     return this.connection.subscribeScheduledTaskChanges(listener);
   }
 
-  async loadConnectionCatalog(): Promise<ConnectionCatalogSnapshot> {
+  async loadConnectionCatalog(): Promise<RuntimeHostConnectionCatalogSnapshot> {
     this.#assertOpen();
     try {
       return await readRuntimeHostConnectionCatalog(this.connection);
@@ -328,6 +436,12 @@ export class DesktopRuntimeHostClient {
       if (result.kind === "committed") return this.queryRuntimePolicy();
     }
     throw revisionConflict("Runtime Policy update", "workspace");
+  }
+
+  updateNetworkProxy(
+    input: OperationInput<"runtime.policy.network-proxy.update">,
+  ): Promise<OperationOutput<"runtime.policy.network-proxy.update">> {
+    return this.request("runtime.policy.network-proxy.update", input);
   }
 
   queryMemory(input: MemoryQueryInput): Promise<MemoryQueryResult> {
@@ -412,11 +526,23 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  verifyConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.verify">,
+  ): Promise<OperationOutput<"connection.onboarding.verify">> {
+    return this.request("connection.onboarding.verify", input);
+  }
+
+  saveConnectionOnboarding(
+    input: OperationInput<"connection.onboarding.save">,
+  ): Promise<OperationOutput<"connection.onboarding.save">> {
+    return this.request("connection.onboarding.save", input);
+  }
+
   startOAuthLogin(
     attemptId: string,
-    connectionId: string,
+    target: OperationInput<"oauth.login.start">["target"],
   ): Promise<OperationOutput<"oauth.login.start">> {
-    return this.request("oauth.login.start", { attemptId, connectionId });
+    return this.request("oauth.login.start", { attemptId, target });
   }
 
   queryOAuthLogin(
@@ -429,6 +555,12 @@ export class DesktopRuntimeHostClient {
     attemptId: string,
   ): Promise<OperationOutput<"oauth.login.cancel">> {
     return this.request("oauth.login.cancel", { attemptId });
+  }
+
+  queryOAuthEnrollment(
+    provider: OperationInput<"oauth.enrollment.query">["provider"],
+  ): Promise<OperationOutput<"oauth.enrollment.query">> {
+    return this.request("oauth.enrollment.query", { provider });
   }
 
   async loadSkillCatalog(
@@ -566,6 +698,11 @@ export class DesktopRuntimeHostClient {
         "Session catalog kept changing while Desktop read it",
       );
     }
+  }
+
+  async getSharedSession(): Promise<SharedSessionCatalogProjection | null> {
+    this.#assertOpen();
+    return (await this.request('session.shared.query', {})).session;
   }
 
   async listProjects(
@@ -826,6 +963,32 @@ export class DesktopRuntimeHostClient {
     );
   }
 
+  resolveWorkHubCoordinationSession() {
+    return this.request("workhub.coordination.resolve", {});
+  }
+
+  listWorkHubCoordinationCandidates() {
+    return this.request("workhub.coordination.candidates", {});
+  }
+
+  actWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.act">,
+  ): Promise<OperationOutput<"workhub.coordination.act">> {
+    return this.request("workhub.coordination.act", input);
+  }
+
+  answerWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.answer">,
+  ): Promise<OperationOutput<"workhub.coordination.answer">> {
+    return this.request("workhub.coordination.answer", input);
+  }
+
+  recordWorkHubCoordination(
+    input: OperationInput<"workhub.coordination.record">,
+  ): Promise<OperationOutput<"workhub.coordination.record">> {
+    return this.request("workhub.coordination.record", input);
+  }
+
   listExternalSessionSources(): Promise<ExternalSessionSourceQueryResult> {
     return this.request("external-session.source.query", {});
   }
@@ -870,23 +1033,7 @@ export class DesktopRuntimeHostClient {
       this.request("session.configuration.update", {
         sessionId,
         expectedRevision: current.revision,
-        configuration: {
-          // An unlocked Session still follows the Host-owned default route.
-          // Once execution or an explicit model change locks it, the resolved
-          // catalog route is the explicit target that must survive this patch.
-          modelTarget: current.connectionLocked
-            ? {
-                kind: "explicit",
-                connectionSlug: current.llmConnectionSlug,
-                model: current.model,
-              }
-            : { kind: "default" },
-          thinkingLevel: current.thinkingLevel ?? null,
-          permissionMode: current.permissionMode,
-          collaborationMode: current.collaborationMode,
-          orchestrationMode: current.orchestrationMode,
-          ...definedPatch,
-        },
+        patch: definedPatch,
       }),
     );
   }
@@ -937,17 +1084,32 @@ export class DesktopRuntimeHostClient {
   async removeSession(
     sessionId: string,
     options: { requireArchived?: boolean } = {},
-  ): Promise<SessionRemoveDisposition> {
+  ): Promise<SessionRemoveOutcome> {
     for (let attempt = 0; attempt < MAX_SESSION_REVISION_ATTEMPTS; attempt += 1) {
       const current = await this.#requireSession(sessionId);
-      if (options.requireArchived && !current.isArchived) return "restored";
+      if (options.requireArchived && !current.isArchived) {
+        return { disposition: "restored", archivedSubtaskCount: 0 };
+      }
       const result = await this.request("session.remove", {
         sessionId,
         expectedRevision: current.revision,
       });
-      if (result.kind === "removed") return "removed";
+      if (result.kind === "removed") {
+        return { disposition: "removed", archivedSubtaskCount: result.archivedSubtaskCount ?? 0 };
+      }
     }
     throw revisionConflict("remove", sessionId);
+  }
+
+  /**
+   * How many linked subtasks a delete of this parent would move to the archive,
+   * per the Host's own removal plan. The delete confirm warns off this so the
+   * renderer never re-derives the plan from a catalog projection that omits the
+   * operator marker and copy state.
+   */
+  async previewSessionRemoval(sessionId: string): Promise<number> {
+    const result = await this.request("session.remove.preview", { sessionId });
+    return result.archivableSubtaskCount;
   }
 
   async removeSessionCopy(sessionId: string): Promise<'removed' | 'retained'> {
@@ -1064,6 +1226,18 @@ export class DesktopRuntimeHostClient {
     });
   }
 
+  queryMessages(
+    input: OperationInput<'turn.message.query'>,
+  ): Promise<OperationOutput<'turn.message.query'>> {
+    return this.request('turn.message.query', input);
+  }
+
+  queryMessageExecutions(
+    input: OperationInput<'turn.message.execution.query'>,
+  ): Promise<OperationOutput<'turn.message.execution.query'>> {
+    return this.request('turn.message.execution.query', input);
+  }
+
   retractQueueEntry(
     input: Omit<QueueEntryRetractInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {
@@ -1077,6 +1251,15 @@ export class DesktopRuntimeHostClient {
     input: Omit<QueueEntryPromoteInput, "originHostEpoch">,
   ): Promise<QueueMutationResult> {
     return this.request("queue.entry.promote", {
+      ...input,
+      originHostEpoch: this.connection.hostEpoch,
+    });
+  }
+
+  updateQueueEntry(
+    input: Omit<QueueEntryUpdateInput, "originHostEpoch">,
+  ): Promise<QueueMutationResult> {
+    return this.request("queue.entry.update", {
       ...input,
       originHostEpoch: this.connection.hostEpoch,
     });
@@ -1137,16 +1320,13 @@ export class DesktopRuntimeHostClient {
   }
 
   queryHostDiagnostics(): Promise<OperationOutput<"host.diagnostics.query">> {
-    return this.connection.queryHostDiagnostics(2_000);
+    return this.connection.request('host.diagnostics.query', {}, 2_000);
   }
 
-  prepareHostUpgrade(
-    allowInterruptActiveTasks: boolean,
-  ): Promise<OperationOutput<"host.upgrade.prepare">> {
-    return this.request("host.upgrade.prepare", {
-      expectedHostEpoch: this.connection.hostEpoch,
-      allowInterruptActiveTasks,
-    });
+  prepareHostRetirement(
+    mode: RuntimeHostRetirementMode,
+  ): Promise<RuntimeHostRetirementPreparation> {
+    return prepareConnectedRuntimeHostRetirement(this.connection, mode);
   }
 
   stopTurn(
@@ -1185,35 +1365,10 @@ export class DesktopRuntimeHostClient {
     return this.request("context.compact", input);
   }
 
-  async listTasks(sessionId: string): Promise<Task[]> {
-    const projection = await collectStableProjection({
-      name: "Task ledger",
-      sessionId,
-      start: () =>
-        this.request("task.ledger.query", { kind: "list_start", sessionId }),
-      continue: (first, cursor) =>
-        this.request("task.ledger.query", {
-          kind: "list_continue",
-          sessionId,
-          revision: first.revision,
-          cursor,
-        }),
-      page(result, first) {
-        if (
-          result.kind !== "page" ||
-          result.sessionId !== sessionId ||
-          (first !== undefined && result.revision !== first.revision)
-        ) {
-          throw invalidProjection("Task ledger");
-        }
-        return {
-          source: result,
-          items: result.tasks,
-          nextCursor: result.nextCursor,
-        };
-      },
-    });
-    return projection.items;
+  async querySessionTodo(sessionId: string): Promise<SessionTodoItem[]> {
+    const result = await this.request("session.todo.query", { sessionId });
+    if (result.sessionId !== sessionId) throw invalidProjection("SessionTodo");
+    return projectSessionTodoItemsForDisplay(result.items);
   }
 
   queryUsage(

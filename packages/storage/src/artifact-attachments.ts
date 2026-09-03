@@ -23,12 +23,20 @@ import {
   READ_IMAGE_TOO_LARGE_MESSAGE,
   type AttachmentByteReader,
 } from '@maka/core/attachments';
+import {
+  isArtifactTurnKey,
+  isCanonicalArtifactEntityId,
+  normalizeArtifactImagePreviewMime,
+} from '@maka/core/artifacts';
+import { createHash } from 'node:crypto';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
+import type { ReadImageSnapshotReader } from '@maka/core/context-offload';
 import type {
   ArtifactAuthorityStore,
   ArtifactStore,
   DurableArtifactAttachmentReader,
 } from './artifact-store.js';
+import { sanitizeArtifactName } from './artifact-store.js';
 
 export interface ArtifactAttachmentResourceReader {
   readAttachmentResource(
@@ -86,10 +94,25 @@ export function createArtifactAttachmentResourceReader(input: {
 export function createAttachmentByteReader(input: {
   artifactStore: DurableArtifactAttachmentReader;
   sessionId: string;
+  readImageSnapshots?: ReadImageSnapshotReader;
+  readImageSnapshotsUnavailable?: boolean;
   maxBytes?: number;
 }): AttachmentByteReader {
   const maxBytes = input.maxBytes ?? MAX_ATTACHMENT_BYTES;
   return async (ref) => {
+    if (ref.kind === 'session_context') {
+      if (ref.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
+      if (!input.readImageSnapshots) {
+        return {
+          ok: false,
+          reason: input.readImageSnapshotsUnavailable ? 'unavailable' : 'unsupported_ref_kind',
+        };
+      }
+      const result = await input.readImageSnapshots.read(ref);
+      return result.ok
+        ? { ok: true, bytes: new Uint8Array(result.bytes) }
+        : { ok: false, reason: result.reason };
+    }
     if (ref.kind !== 'session_file') return { ok: false, reason: 'unsupported_ref_kind' };
     if (ref.sessionId !== input.sessionId) return { ok: false, reason: 'session_mismatch' };
     const result = await input.artifactStore.readDurableAttachmentBinary({
@@ -103,30 +126,132 @@ export function createAttachmentByteReader(input: {
   };
 }
 
-export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
-  return async (input: {
-    sessionId: string;
-    turnId: string;
-    name: string;
-    bytes: Uint8Array;
-    mimeType: string;
-  }): Promise<Extract<StorageRef, { kind: 'session_file' }>> => {
+interface ReadImageSnapshotInput {
+  sessionId: string;
+  turnId: string;
+  name: string;
+  bytes: Uint8Array;
+  mimeType: string;
+}
+
+export interface ReadImageSnapshotPlan {
+  ref: Extract<StorageRef, { kind: 'session_file' }>;
+  persist(): Promise<void>;
+  /**
+   * Undo a publication whose projection was never admitted (#4283).
+   *
+   * A Tool Result projection carrying several images publishes them one at a
+   * time; if a later one fails, the projection is rejected and the earlier
+   * publications become artifacts no durable record will ever name. Retracting
+   * them is best-effort by design: failing to retract only delays reclamation,
+   * while failing to reject would put an unreferenced artifact in front of the
+   * user as if the tool had produced it.
+   */
+  retract(): Promise<void>;
+}
+
+export interface ReadImageSnapshotArtifactStore extends Pick<ArtifactStore, 'create'> {
+  /** Create with a receipt saying whether this call published the artifact. */
+  createOwned?: (input: Parameters<ArtifactStore['create']>[0]) => Promise<{
+    record: Awaited<ReturnType<ArtifactStore['create']>>;
+    publishedByThisCall: boolean;
+  }>;
+}
+
+export function createReadImageSnapshotPlanner(
+  artifactStore: ReadImageSnapshotArtifactStore,
+  /**
+   * Narrow reclaim for a `tool_result_projection` artifact this planner
+   * published. Optional so callers that cannot reclaim still get the planner;
+   * without it `retract()` is a no-op and reclamation waits for reachability.
+   */
+  retractPublished?: (sessionId: string, artifactId: string) => Promise<void>,
+) {
+  return (input: ReadImageSnapshotInput): ReadImageSnapshotPlan => {
     if (input.bytes.byteLength > MAX_READ_IMAGE_BYTES) {
       throw new Error(READ_IMAGE_TOO_LARGE_MESSAGE);
     }
-    const artifact = await artifactStore.create({
+    if (normalizeArtifactImagePreviewMime(input.mimeType) !== input.mimeType) {
+      throw new Error('Image media type is not canonical or safe');
+    }
+    if (!isCanonicalArtifactEntityId(input.sessionId)) {
+      throw new Error('Image Session id is not canonical');
+    }
+    if (!isArtifactTurnKey(input.turnId)) {
+      throw new Error('Image turn id is not canonical');
+    }
+    const accepted = Object.freeze({
       sessionId: input.sessionId,
       turnId: input.turnId,
-      name: input.name,
-      kind: 'image',
-      content: input.bytes,
+      name: sanitizeArtifactName(input.name),
+      bytes: input.bytes.slice(),
       mimeType: input.mimeType,
-      source: 'tool_result',
     });
-    return {
-      kind: 'session_file',
-      sessionId: input.sessionId,
-      relativePath: artifact.id,
-    };
+    const id = `image_${createHash('sha256')
+      .update(accepted.sessionId, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.turnId, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.name, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.mimeType, 'utf8')
+      .update('\0', 'utf8')
+      .update(accepted.bytes)
+      .digest('hex')}`;
+    let publication: Promise<void> | undefined;
+    // Ownership, not success. The id is derived from the bytes, so a create for
+    // an image an earlier projection already published succeeds by replaying
+    // that record — and reclaiming it would delete content that is still in
+    // use. Only a create that actually published may be retracted.
+    let owned = false;
+    const ref = Object.freeze({
+      kind: 'session_file' as const,
+      sessionId: accepted.sessionId,
+      relativePath: id,
+    });
+    return Object.freeze({
+      ref,
+      persist() {
+        const input = {
+          id,
+          sessionId: accepted.sessionId,
+          turnId: accepted.turnId,
+          name: accepted.name,
+          kind: 'image' as const,
+          content: accepted.bytes,
+          mimeType: accepted.mimeType,
+          source: 'tool_result_projection' as const,
+        };
+        publication ??= (
+          artifactStore.createOwned
+            ? artifactStore.createOwned(input)
+            : artifactStore.create(input).then((record) => ({
+                record,
+                publishedByThisCall: false,
+              }))
+        ).then(({ record, publishedByThisCall }) => {
+          if (record.id !== id) throw new Error('Artifact publication changed its planned id');
+          owned = publishedByThisCall;
+        });
+        return publication;
+      },
+      async retract() {
+        if (!owned || !retractPublished) return;
+        owned = false;
+        publication = undefined;
+        await retractPublished(accepted.sessionId, id).catch(() => undefined);
+      },
+    });
+  };
+}
+
+export function createReadImageSnapshotter(artifactStore: Pick<ArtifactStore, 'create'>) {
+  const planSnapshot = createReadImageSnapshotPlanner(artifactStore);
+  return async (
+    input: ReadImageSnapshotInput,
+  ): Promise<Extract<StorageRef, { kind: 'session_file' }>> => {
+    const plan = planSnapshot(input);
+    await plan.persist();
+    return plan.ref;
   };
 }

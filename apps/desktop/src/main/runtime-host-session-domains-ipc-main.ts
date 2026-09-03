@@ -46,6 +46,7 @@ import {
   type ReconnectableReadIpcMain,
 } from './ipc-reconnect-policy.js';
 import {
+  registerRuntimeHostShellRunQueriesIpc,
   registerRuntimeHostShellRunsIpc,
   type RuntimeHostShellRunsClient,
 } from './runtime-host-shell-runs-ipc-main.js';
@@ -62,7 +63,7 @@ type RuntimeHostSessionDomainClient = RuntimeHostShellRunsClient &
   | 'listRuntimeResources'
   | 'listAgentGraphEpochs'
   | 'listCurrentAgentGraphEpochs'
-  | 'listTasks'
+  | 'querySessionTodo'
   | 'queryAgentGraph'
   | 'queryAgentGraphOperator'
   | 'queryDeepResearch'
@@ -104,9 +105,17 @@ export function registerRuntimeHostSessionDomainsIpc(
     { client: deps.client, newId, sessionObserver: deps.sessionObserver },
     ipcMain,
   );
+  const shellRunQueries = registerRuntimeHostShellRunQueriesIpc(
+    {
+      client: deps.client,
+      sendToRenderer: deps.sendToRenderer,
+      onError: deps.onError,
+    },
+    ipcMain,
+  );
 
-  handleReconnectableRead(ipcMain, 'tasks:list', (_event, sessionId: unknown) =>
-    deps.client.listTasks(requiredId(sessionId, 'Session')),
+  handleReconnectableRead(ipcMain, 'todo:read', (_event, sessionId: unknown) =>
+    deps.client.querySessionTodo(requiredId(sessionId, 'Session')),
   );
   handleReconnectableRead(ipcMain, 'deepResearch:get', async (_event, sessionId: unknown) =>
     projectHostedDeepResearch(
@@ -320,10 +329,9 @@ export function registerRuntimeHostSessionDomainsIpc(
 
   const sessionDomainChanged = (change: SessionDomainChange): void => {
     switch (change.domain) {
-      case 'task':
-        deps.sendToRenderer?.('tasks:changed', {
+      case 'todo':
+        deps.sendToRenderer?.('todo:changed', {
           sessionId: change.sessionId,
-          taskIds: [],
           at: now(),
         });
         break;
@@ -340,7 +348,7 @@ export function registerRuntimeHostSessionDomainsIpc(
         deps.sendToRenderer?.('usage:changed', { sessionId: change.sessionId });
         break;
       case 'runtime_resource':
-        void refreshRuntimeResources(deps, change.sessionId, change.resources);
+        shellRunQueries.sessionDomainChanged(change);
         break;
     }
   };
@@ -354,30 +362,15 @@ export function registerRuntimeHostSessionDomainsIpc(
       deps.sendToRenderer?.('graphs:changed', event);
     },
     sessionSubscriptionRecovered(sessionId) {
-      sessionDomainChanged({ sessionId, domain: 'task' });
+      sessionDomainChanged({ sessionId, domain: 'todo' });
       sessionDomainChanged({ sessionId, domain: 'deep_research' });
       sessionDomainChanged({ sessionId, domain: 'plan' });
       sessionDomainChanged({ sessionId, domain: 'usage' });
       deps.sendToRenderer?.('graphs:resync', { rootSessionId: sessionId });
-      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
+      shellRunQueries.sessionSubscriptionRecovered(sessionId);
     },
     close: () => shellRuns.close(),
   };
-}
-
-async function refreshRuntimeResources(
-  deps: RuntimeHostSessionDomainsIpcDeps,
-  sessionId: string,
-  resources: readonly { ref: string }[],
-): Promise<void> {
-  for (const resource of resources) {
-    try {
-      const update = await deps.client.getRuntimeResource(sessionId, resource.ref);
-      if (update) deps.sendToRenderer?.('shell-runs:update', update);
-    } catch (error) {
-      deps.onError?.(error);
-    }
-  }
 }
 
 interface CanonicalGoalArmRequest {

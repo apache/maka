@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,12 +27,12 @@ import type { AgentRunEvent, EmittedAgentRunEvent, AgentRunHeader } from '@maka/
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
-  createSessionStore,
   type DurableAgentRunStore,
   type DurableRuntimeEventStore,
-  type SessionAuthorityStore,
-} from '@maka/storage';
-import { createSqliteAgentRunStore, createWorkspaceRuntimeStore } from '@maka/storage';
+} from '@maka/storage/agent-run-store';
+import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/session-store';
+import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 
 /**
@@ -258,12 +259,6 @@ function sessionInput(cwd: string): CreateSessionInput {
     labels: [],
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 1_000;
   return () => ++value;

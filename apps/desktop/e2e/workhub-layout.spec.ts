@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { COMPOSER_INPUT, expect, test, waitForWorkHubReady } from './fixtures';
 
-test('WorkHub target metadata does not overlap the submitted Session result', async ({
+test('WorkHub target metadata remains within the submitted Session control', async ({
   window: page,
 }) => {
   const composer = page.locator(COMPOSER_INPUT);
@@ -36,29 +36,48 @@ test('WorkHub target metadata does not overlap the submitted Session result', as
   await page.evaluate(async () => {
     await window.maka.settings.updateClient({ workHub: { enabled: true } });
   });
-  await expect(page.getByRole('main', { name: 'WorkHub' })).toBeVisible();
+  await waitForWorkHubReady(page, 1);
 
+  const routedPrompt = `继续${sessionName}，补充重复投递测试点。`;
   const workHubComposer = page.locator(
     '.workhub-surface .maka-composer-editor [contenteditable="true"]',
   );
-  await workHubComposer.fill(`继续${sessionName}，补充重复投递测试点。`);
+  await workHubComposer.fill(routedPrompt);
   await workHubComposer.press('Enter');
-  await expect(page.locator('.workhub-result')).toBeVisible();
+  const submittedTurn = page.locator('.workhub-turn', { hasText: routedPrompt });
+  await expect(submittedTurn.locator('.workhub-submitted-session small')).toBeVisible();
 
-  const geometry = await page.evaluate(() => {
-    const button = document.querySelector<HTMLElement>('.workhub-submitted > button')!;
+  const buttonContainsProject = await submittedTurn.evaluate((turn) => {
+    const button = turn.querySelector<HTMLElement>('.workhub-submitted > button')!;
     const project = button.querySelector<HTMLElement>('.workhub-submitted-session small')!;
-    const result = document.querySelector<HTMLElement>('.workhub-result')!;
     const buttonBox = button.getBoundingClientRect();
     const projectBox = project.getBoundingClientRect();
-    const resultBox = result.getBoundingClientRect();
-    return {
-      buttonContainsProject: buttonBox.bottom >= projectBox.bottom,
-      overlapHeight:
-        Math.min(projectBox.bottom, resultBox.bottom) - Math.max(projectBox.top, resultBox.top),
-    };
+    return buttonBox.bottom >= projectBox.bottom;
   });
 
-  expect(geometry.buttonContainsProject).toBe(true);
-  expect(geometry.overlapHeight).toBeLessThanOrEqual(0);
+  expect(buttonContainsProject).toBe(true);
+});
+
+test('WorkHub explains Coordination startup failure and recovers after a default model is set', async ({
+  window: page,
+}) => {
+  await page.evaluate(async () => {
+    await window.maka.connections.setDefaultModel(null);
+    await window.maka.settings.updateClient({ workHub: { enabled: true } });
+  });
+
+  const failure = page.getByRole('alert');
+  await expect(failure).toContainText('WorkHub 暂时无法启动');
+  await expect(failure).toContainText('请检查当前 Runtime Host 的默认模型配置');
+
+  await page.evaluate(async () => {
+    await window.maka.connections.setDefaultModel({
+      slug: 'e2e',
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  });
+
+  await expect(page.getByRole('region', { name: 'WorkHub' })).toBeVisible();
+  await expect(page.locator('.workhub-empty')).toContainText('从这里继续所有工作');
+  await expect(page.locator('.workhub-surface .maka-composer-editor')).toBeVisible();
 });

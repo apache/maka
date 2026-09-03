@@ -22,7 +22,7 @@ import { describe, test } from 'node:test';
 import type { OperationKey, OperationOutcome, RequestFrame } from '../protocol/index.js';
 import {
   composeOperationHandlers,
-  createUnavailableAccessAuthorityOperationHandlers,
+  createUnavailableHostCoreOperationHandlers,
   createUnavailableDomainOperationHandlers,
   dispatchOperation,
   type ConnectionContext,
@@ -192,7 +192,7 @@ function validHandlers(): OperationHandlerMap {
     'host.status': unavailable,
     'host.diagnostics.query': unavailable,
     'host.upgrade.prepare': unavailable,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createUnavailableDomainOperationHandlers(),
   };
 }

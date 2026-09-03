@@ -1,0 +1,5 @@
+{
+  "epoch": 50,
+  "files": ["packages/runtime-host/src/protocol/project-catalog.ts"],
+  "reason": "Adds shared non-wire Project root syntax helpers without changing any protocol codec or message shape"
+}

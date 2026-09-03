@@ -20,6 +20,7 @@
 import type {
   ConnectionCatalogMutationResult,
   ConnectionCatalogSnapshot,
+  ConnectionCredentialTarget,
   CreateCatalogConnectionInput,
   CredentialLocator,
   CredentialMutationResult,
@@ -58,13 +59,20 @@ export type {
   CompareAndSetOAuthCredentialResult,
   ConnectionEffectChangedDomain,
   ConnectionEffectCompletionResult,
+  BeginConnectionOnboardingInput,
+  BeginConnectionOnboardingResult,
   CommitConnectionOnboardingInput,
   CommitConnectionOnboardingResult,
   ConnectionEffectPreparationFailure,
+  ConnectionOnboardingTicket,
   ConnectionTestTicket,
   InteractiveOAuthLoginCompletionResult,
   InteractiveOAuthLoginProvider,
+  InteractiveOAuthLoginInput,
+  InteractiveOAuthLoginTarget,
+  InteractiveOAuthConnectionIdentity,
   InteractiveOAuthLoginTicket,
+  QueryInteractiveOAuthLoginResult,
   CredentialStatusQueryResult,
   ModelFetchTicket,
   ProviderAuthKind,
@@ -77,8 +85,7 @@ export type {
   ResolveNetworkProxyExecutionResult,
   ResolveWebSearchExecutionInput,
   ResolveWebSearchExecutionResult,
-  ResolveWebFetchExecutionResult,
-  UnavailableProviderActionAvailability,
+  ResolveHostOutboundExecutionResult,
 } from './runtime-policy/operations.js';
 
 const readerBrand: unique symbol = Symbol('RuntimePolicyStoresReader');
@@ -230,25 +237,35 @@ function createWriterFacade(coordinator: RuntimePolicyCoordinator): RuntimePolic
       delete: (input) => coordinator.deleteCredential(input),
     },
     operations: {
-      exportCredentialMaterial: (locator) => coordinator.exportCredentialMaterial(locator),
+      updateNetworkProxy: (input) => coordinator.updateNetworkProxy(input),
+      exportCredentialMaterial: ((
+        locator: CredentialLocator,
+        expectedConnection?: ConnectionCredentialTarget,
+      ) =>
+        expectedConnection
+          ? coordinator.exportCredentialMaterial(locator, expectedConnection)
+          : coordinator.exportCredentialMaterial(
+              locator,
+            )) as OperationCoordinator['exportCredentialMaterial'],
       getConnectionRequestHeaders: (connectionId) =>
         coordinator.getConnectionRequestHeaders(connectionId),
       replaceConnectionRequestHeaders: (connectionId, updates) =>
         coordinator.replaceConnectionRequestHeaders(connectionId, updates),
-      resolveExecutionConnection: (connectionSlug) =>
-        coordinator.resolveExecutionConnection(connectionSlug),
+      resolveExecutionConnection: (ref) => coordinator.resolveExecutionConnection(ref),
       resolveWebSearchExecution: (input) => coordinator.resolveWebSearchExecution(input),
-      resolveWebFetchExecution: () => coordinator.resolveWebFetchExecution(),
+      resolveHostOutboundExecution: () => coordinator.resolveHostOutboundExecution(),
       resolveNetworkProxyExecution: (input) => coordinator.resolveNetworkProxyExecution(input),
       compareAndSetOAuthCredential: (input) => coordinator.compareAndSetOAuthCredential(input),
       importConnectionCredential: (input) => coordinator.importConnectionCredential(input),
-      beginInteractiveOAuthLogin: (connectionId) =>
-        coordinator.beginInteractiveOAuthLogin(connectionId),
+      beginInteractiveOAuthLogin: (input) => coordinator.beginInteractiveOAuthLogin(input),
+      queryInteractiveOAuthLogin: (attemptId) => coordinator.queryInteractiveOAuthLogin(attemptId),
       completeInteractiveOAuthLogin: (ticket, secret) =>
         coordinator.completeInteractiveOAuthLogin(ticket, secret),
       beginModelFetch: (connectionId) => coordinator.beginModelFetch(connectionId),
       completeModelFetch: (ticket, result) => coordinator.completeModelFetch(ticket, result),
-      commitConnectionOnboarding: (input) => coordinator.commitConnectionOnboarding(input),
+      beginConnectionOnboarding: (input) => coordinator.beginConnectionOnboarding(input),
+      completeConnectionOnboarding: (ticket, input) =>
+        coordinator.completeConnectionOnboarding(ticket, input),
       beginConnectionTest: (connectionId, modelId) =>
         coordinator.beginConnectionTest(connectionId, modelId),
       completeConnectionTest: (ticket, result) =>

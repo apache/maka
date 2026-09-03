@@ -19,16 +19,14 @@
 
 import {
   MODEL_CALL_ATTEMPT_SCHEMA_VERSION,
+  type HistoryCompactRoute,
   type ModelCallAttempt,
   type ModelCallKind,
   type ModelCallUsageBasis,
+  type PreparedRequestObservation,
 } from '@maka/core/model-call-attempt';
 import type { PricingConfig } from '@maka/core/usage-stats/types';
-import {
-  capturePreparedProviderRequest,
-  type PreparedProviderRequestCapture,
-  type PreparedRequestSegment,
-} from './request-shape.js';
+import { prepareRequestObservation, type PreparedRequestMaterial } from './request-shape.js';
 import { rawFinishReasonString } from './model-protocol.js';
 import {
   providerFailureDiagnostic,
@@ -67,7 +65,7 @@ export interface ProviderRequestUsageLike {
 
 export type ProviderRequestAttemptStatus = 'completed' | 'failed' | 'interrupted' | 'aborted';
 
-export interface ProviderRequestCaptureRecord extends PreparedProviderRequestCapture {
+export interface PreparedRequestArtifactInput extends PreparedRequestMaterial {
   traceId: string;
   captureId: string;
   turnId: string;
@@ -76,37 +74,20 @@ export interface ProviderRequestCaptureRecord extends PreparedProviderRequestCap
   modelId: string;
 }
 
-export interface ProviderRequestCaptureRef {
-  captureId: string;
+export interface PreparedRequestArtifactRef {
   artifactId: string;
 }
 
-export type ProviderRequestCaptureLedgerRecord = Omit<
-  ProviderRequestCaptureRecord,
-  'serializedRequest'
-> & {
-  artifactId: string;
-};
-
-export interface ProviderRequestAttemptRecord extends ProviderRequestUsage {
+interface SettledProviderAttempt extends ProviderRequestUsage {
   traceId: string;
   attemptId: string;
   turnId: string;
   step: number;
   attempt: number;
-  /**
-   * Present only when a capture sink is wired. The request shape below is
-   * computed locally and always present; these two are the join keys to the
-   * persisted artifact, so they are absent when there is nothing to join to.
-   */
-  captureId?: string;
   captureArtifactId?: string;
   providerId: string;
   modelId: string;
   contextWindow?: number;
-  requestHash: string;
-  requestBytes: number;
-  segments: PreparedRequestSegment[];
   startedAt: number;
   completedAt: number;
   status: ProviderRequestAttemptStatus;
@@ -134,14 +115,10 @@ export interface ProviderRequestTrackerInput {
   now: () => number;
   newId: () => string;
   /**
-   * Request-body capture sink. Optional because capture is a diagnostic, and
-   * metering must not depend on one: a deployment with capture switched off
-   * still settles canonical records, it just has no artifact to join them to.
+   * Optional private artifact sink. Failure leaves the canonical observation
+   * intact and the attempt explicitly has no artifact join.
    */
-  persistCapture?: (
-    capture: ProviderRequestCaptureRecord,
-  ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
-  recordAttempt: (attempt: ProviderRequestAttemptRecord) => void | Promise<void>;
+  persistArtifact?: (input: PreparedRequestArtifactInput) => Promise<PreparedRequestArtifactRef>;
   /**
    * Durable run metadata that must exist before any physical provider call.
    * Kept outside accounting because a dispatch gate is an execution contract,
@@ -194,13 +171,6 @@ export interface ModelCallAccountingInput {
   assertReady?: () => void;
 }
 
-export interface ProviderRequestCaptureRecorderInput {
-  persistArtifact: (
-    capture: ProviderRequestCaptureRecord,
-  ) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>>;
-  recordLedger: (capture: ProviderRequestCaptureLedgerRecord) => Promise<void>;
-}
-
 export interface TrackProviderStreamInput {
   providerId: string;
   modelId: string;
@@ -217,6 +187,8 @@ export interface TrackProviderStreamInput {
    * may never have seen.
    */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
 }
 
 export interface TrackProviderGenerateInput {
@@ -224,6 +196,8 @@ export interface TrackProviderGenerateInput {
   modelId: string;
   /** As `TrackProviderStreamInput.historyCompactBoundary`. */
   historyCompactBoundary?: ContextDiagnosticsCompaction;
+  /** Physical history-compaction route used by this provider request. */
+  historyCompactRoute?: HistoryCompactRoute;
   params: Record<string, unknown>;
   abortSignal?: AbortSignal;
   doGenerate: () => PromiseLike<ProviderGenerateResult>;
@@ -255,6 +229,7 @@ export function withProviderGenerateTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -265,6 +240,7 @@ export function withProviderGenerateTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           doGenerate,
         }),
     },
@@ -277,6 +253,7 @@ export function withProviderStreamTracking(input: {
   wrapLanguageModel: (input: Record<string, unknown>) => unknown;
   tracker: ProviderRequestTracker;
   abortSignal?: AbortSignal;
+  historyCompactRoute?: HistoryCompactRoute;
 }): unknown {
   return input.wrapLanguageModel({
     model: input.model,
@@ -287,23 +264,11 @@ export function withProviderStreamTracking(input: {
           modelId: model.modelId,
           params,
           ...(input.abortSignal ? { abortSignal: input.abortSignal } : {}),
+          ...(input.historyCompactRoute ? { historyCompactRoute: input.historyCompactRoute } : {}),
           doStream,
         }),
     },
   });
-}
-
-export function createProviderRequestCaptureRecorder(
-  input: ProviderRequestCaptureRecorderInput,
-): (
-  capture: ProviderRequestCaptureRecord,
-) => Promise<Pick<ProviderRequestCaptureRef, 'artifactId'>> {
-  return async (capture) => {
-    const artifact = await input.persistArtifact(capture);
-    const { serializedRequest: _serializedRequest, ...metadata } = capture;
-    await input.recordLedger({ ...metadata, artifactId: artifact.artifactId });
-    return artifact;
-  };
 }
 
 export interface ProviderStreamResult {
@@ -321,9 +286,9 @@ export interface ProviderGenerateResult {
 }
 
 interface StoredCapture {
-  capture: ProviderRequestCaptureRecord;
-  /** Absent when no capture sink is wired: there is no artifact to point at. */
-  ref?: ProviderRequestCaptureRef;
+  material: PreparedRequestMaterial;
+  /** Absent when artifact persistence is unavailable or failed. */
+  artifactId?: string;
 }
 
 const CANONICAL_USAGE_FIELDS = [
@@ -363,7 +328,7 @@ function modelCallUsageFields(
 export class ProviderRequestTracker {
   private step = 0;
   private readonly attemptsByStep = new Map<number, number>();
-  private readonly captures = new Map<string, Promise<StoredCapture>>();
+  private readonly captures = new Map<string, StoredCapture>();
   /**
    * One logical call per step. Retries of the same step are further attempts of
    * that call, not new calls, so they share this id.
@@ -386,7 +351,7 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = await this.capture(step, input);
+    const capture = this.capture(step, input);
     throwIfAbortedBeforeDispatch(input.abortSignal);
     let sawOutput = false;
     const attempt = this.beginAttempt(step, capture, input);
@@ -455,7 +420,7 @@ export class ProviderRequestTracker {
     throwIfAbortedBeforeDispatch(input.abortSignal);
     this.input.accounting?.assertReady?.();
     const step = this.step;
-    const capture = await this.capture(step, input);
+    const capture = this.capture(step, input);
     throwIfAbortedBeforeDispatch(input.abortSignal);
     const attempt = this.beginAttempt(step, capture, input);
     try {
@@ -476,7 +441,7 @@ export class ProviderRequestTracker {
     capture: StoredCapture,
     input: Pick<
       TrackProviderStreamInput | TrackProviderGenerateInput,
-      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary'
+      'providerId' | 'modelId' | 'abortSignal' | 'historyCompactBoundary' | 'historyCompactRoute'
     >,
   ): {
     observeOutput(): void;
@@ -522,24 +487,16 @@ export class ProviderRequestTracker {
       const contextWindow = positiveInteger(this.input.contextWindow);
       const failure =
         finish?.error !== undefined ? providerFailureDiagnostic(finish.error) : undefined;
-      const record: ProviderRequestAttemptRecord = {
+      const record: SettledProviderAttempt = {
         traceId: this.input.traceId,
         attemptId,
         turnId: this.input.turnId,
         step,
         attempt,
-        ...(capture.ref
-          ? {
-              captureId: capture.ref.captureId,
-              captureArtifactId: capture.ref.artifactId,
-            }
-          : {}),
+        ...(capture.artifactId ? { captureArtifactId: capture.artifactId } : {}),
         providerId: input.providerId,
         modelId: input.modelId,
         ...(contextWindow !== undefined ? { contextWindow } : {}),
-        requestHash: capture.capture.requestHash,
-        requestBytes: capture.capture.requestBytes,
-        segments: capture.capture.segments,
         startedAt,
         completedAt,
         status,
@@ -550,19 +507,17 @@ export class ProviderRequestTracker {
         ...(usage ?? {}),
       };
       accountingSettlement = accountingSettlement.then(async () => {
-        try {
-          await this.input.recordAttempt(record);
-        } catch {
-          // Attempt telemetry is diagnostic. The provider outcome remains authoritative.
-        }
         await this.emitModelCallAttempt(record, {
           logicalCallId,
           usage,
           contextWindow,
+          requestObservation: capture.material.observation,
           // Frozen when THIS request was prepared, so a checkpoint published
           // mid-flight by another turn cannot be sealed into a prompt built
           // before it existed.
           historyCompactBoundary: input.historyCompactBoundary,
+          historyCompactRoute:
+            input.historyCompactRoute ?? this.input.accounting?.historyCompactRoute,
         });
       });
       await accountingSettlement;
@@ -595,12 +550,14 @@ export class ProviderRequestTracker {
    * reported, not raised.
    */
   private async emitModelCallAttempt(
-    record: ProviderRequestAttemptRecord,
+    record: SettledProviderAttempt,
     context: {
       logicalCallId: string;
       usage: ProviderRequestUsage | undefined;
       contextWindow: number | undefined;
+      requestObservation: PreparedRequestObservation;
       historyCompactBoundary: ContextDiagnosticsCompaction | undefined;
+      historyCompactRoute: HistoryCompactRoute | undefined;
     },
   ): Promise<void> {
     const accounting = this.input.accounting;
@@ -629,8 +586,8 @@ export class ProviderRequestTracker {
       step: Math.max(0, record.step),
       attempt: Math.max(0, record.attempt - 1),
       callKind: accounting.callKind,
-      ...(accounting.historyCompactRoute !== undefined
-        ? { historyCompactRoute: accounting.historyCompactRoute }
+      ...(context.historyCompactRoute !== undefined
+        ? { historyCompactRoute: context.historyCompactRoute }
         : {}),
       providerId: accounting.providerId ?? record.providerId,
       modelId: record.modelId,
@@ -638,6 +595,7 @@ export class ProviderRequestTracker {
       ...(record.captureArtifactId !== undefined
         ? { captureArtifactId: record.captureArtifactId }
         : {}),
+      requestObservation: context.requestObservation,
       startedAt: record.startedAt,
       completedAt: record.completedAt,
       latencyMs: record.latencyMs,
@@ -666,7 +624,11 @@ export class ProviderRequestTracker {
     // call commits its metering alone and leaves the last answer standing.
     const latestContext =
       attempt.callKind === 'main' && attempt.status === 'completed'
-        ? latestContextProjectionInput(attempt, record.segments, context.historyCompactBoundary)
+        ? latestContextProjectionInput(
+            attempt,
+            attempt.requestObservation?.segments,
+            context.historyCompactBoundary,
+          )
         : undefined;
 
     try {
@@ -677,41 +639,43 @@ export class ProviderRequestTracker {
     }
   }
 
-  private async capture(
+  private capture(
     step: number,
     input: TrackProviderStreamInput | TrackProviderGenerateInput,
-  ): Promise<StoredCapture> {
-    const prepared = preparedCapture(input.providerId, input.modelId, input.params);
-    const key = `${step}:${prepared.requestHash}`;
+  ): StoredCapture {
+    const material = preparedRequestMaterial(input.params);
+    const key = `${step}:${input.providerId}:${input.modelId}:${material.observation.digest}`;
     const existing = this.captures.get(key);
-    if (existing) return await existing;
+    if (existing) return existing;
 
-    const persistCapture = this.input.persistCapture;
-    const pending = (async (): Promise<StoredCapture> => {
-      const captureId = this.input.newId();
-      const capture: ProviderRequestCaptureRecord = {
-        ...prepared,
+    const persistArtifact = this.input.persistArtifact;
+    const capture: StoredCapture = { material };
+    this.captures.set(key, capture);
+    if (persistArtifact) {
+      const artifactInput: PreparedRequestArtifactInput = {
+        ...material,
         traceId: this.input.traceId,
-        captureId,
+        captureId: this.input.newId(),
         turnId: this.input.turnId,
         step,
         providerId: input.providerId,
         modelId: input.modelId,
       };
-      // The request shape on `capture` is computed here and needs no sink. Only
-      // the artifact join keys depend on one, so without it the attempt still
-      // carries hash, bytes, and segments — it just points at nothing.
-      if (!persistCapture) return { capture };
-      const persisted = await persistCapture(capture);
-      return { capture, ref: { captureId, artifactId: persisted.artifactId } };
-    })();
-    this.captures.set(key, pending);
-    try {
-      return await pending;
-    } catch (error) {
-      this.captures.delete(key);
-      throw error;
+      // Persist the private body in parallel. Dispatch and canonical accounting
+      // are both allowed to finish without it; the bounded observation already
+      // lives on the canonical attempt. If persistence wins the race, the
+      // attempt also carries the optional artifact join.
+      try {
+        void persistArtifact(artifactInput)
+          .then((ref) => {
+            capture.artifactId = ref.artifactId;
+          })
+          .catch(() => undefined);
+      } catch {
+        // A synchronous adapter failure is the same optional-artifact miss.
+      }
     }
+    return capture;
   }
 }
 
@@ -721,31 +685,9 @@ function throwIfAbortedBeforeDispatch(signal: AbortSignal | undefined): void {
   }
 }
 
-function preparedCapture(
-  providerId: string,
-  modelId: string,
-  params: Record<string, unknown>,
-): PreparedProviderRequestCapture {
+function preparedRequestMaterial(params: Record<string, unknown>): PreparedRequestMaterial {
   const safeParams = secretFreeParams(params);
-  const prompt = Array.isArray(safeParams.prompt) ? safeParams.prompt : [];
-  const instructions: unknown[] = [];
-  const messages: unknown[] = [];
-  for (const item of prompt) {
-    const record = asRecord(item);
-    if (record?.role === 'system') instructions.push(record.content);
-    else messages.push(item);
-  }
-  const tools = Array.isArray(safeParams.tools) ? safeParams.tools : [];
-  const providerOptions = asRecord(safeParams.providerOptions);
-  return capturePreparedProviderRequest({
-    providerId,
-    modelId,
-    instructions,
-    messages,
-    tools,
-    ...(providerOptions ? { providerOptions } : {}),
-    requestPayload: safeParams,
-  });
+  return prepareRequestObservation(safeParams);
 }
 
 function secretFreeParams(params: Record<string, unknown>): Record<string, unknown> {

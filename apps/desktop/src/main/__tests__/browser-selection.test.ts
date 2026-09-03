@@ -17,20 +17,10 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createBrowserSelectionCoordinator } from '../../preload/browser-selection.js';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 const flush = () => new Promise<void>((resolve) => queueMicrotask(resolve));
 
 describe('browser selection ordering', () => {

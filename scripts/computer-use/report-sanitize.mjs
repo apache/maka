@@ -54,43 +54,26 @@ const SAFE_TRACE_TYPES = new Set([
 ]);
 const SAFE_ACTION_TYPES = new Set([
   'list_apps',
+  'launch_app',
   'observe',
   'click_element',
   'set_value',
   'select_text',
   'secondary_action',
+  'scroll_element',
+  'element_sequence',
+  'window_action',
   'press_key',
   'screenshot',
-  'cursor_position',
-  'mouse_move',
-  'left_click',
-  'right_click',
-  'middle_click',
-  'double_click',
-  'triple_click',
-  'left_mouse_down',
-  'left_mouse_up',
-  'left_click_drag',
   'type',
   'key',
-  'hold_key',
-  'scroll',
   'wait',
-  'zoom',
   'unknown',
 ]);
 const SAFE_TRACE_PATHS = new Set(['ax', 'cdp', 'cgevent', 'screenshot-detail']);
 const SAFE_TRACE_EFFECTS = new Set(['confirmed', 'unverifiable']);
 const SAFE_DISPATCH_ADDRESSES = new Set(['ax', 'px', 'semantic', 'none']);
-const SAFE_DISPATCH_TOOLS = new Set([
-  'click',
-  'set_value',
-  'page',
-  'press_key',
-  'scroll',
-  'drag',
-  'zoom',
-]);
+const SAFE_DISPATCH_TOOLS = new Set(['click', 'set_value', 'page', 'press_key', 'scroll']);
 
 function safeUrlOrigin(value) {
   try {

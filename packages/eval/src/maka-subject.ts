@@ -19,10 +19,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { isSessionToolProfile, type SessionToolProfile } from '@maka/core/session';
-import {
-  decodeHostedExecutionProjection,
-  type HostedExecutionStartInput,
-} from '@maka/runtime-host/protocol';
+import { decodeHostedExecutionProjection } from '@maka/runtime-host/protocol';
+import type { RunHostedExecutionInput } from '@maka/runtime-host/client';
 import type { JsonObject } from './experiment.js';
 import {
   MAKA_RUNTIME_ARTIFACT_PATH,
@@ -40,7 +38,7 @@ export function createMakaSubjectAdapter(): SubjectAdapter {
     async execute({ cell, context }) {
       const config = decodeConfig(cell.subject.config);
       const executionId = randomUUID();
-      const input: HostedExecutionStartInput = {
+      const input: RunHostedExecutionInput['execution'] = {
         executionId,
         session: {
           workspace: { kind: 'host_path', path: context.cwd },
@@ -268,10 +266,10 @@ interface MakaConfig {
   readonly baseUrl: string;
   readonly connectionSlug: string;
   readonly model: string;
-  readonly thinkingLevel: HostedExecutionStartInput['session']['thinkingLevel'];
-  readonly permissionMode: HostedExecutionStartInput['session']['permissionMode'];
-  readonly collaborationMode: HostedExecutionStartInput['session']['collaborationMode'];
-  readonly orchestrationMode: HostedExecutionStartInput['session']['orchestrationMode'];
+  readonly thinkingLevel: RunHostedExecutionInput['execution']['session']['thinkingLevel'];
+  readonly permissionMode: RunHostedExecutionInput['execution']['session']['permissionMode'];
+  readonly collaborationMode: RunHostedExecutionInput['execution']['session']['collaborationMode'];
+  readonly orchestrationMode: RunHostedExecutionInput['execution']['session']['orchestrationMode'];
   readonly toolProfile: SessionToolProfile;
 }
 

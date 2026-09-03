@@ -18,7 +18,6 @@
  */
 
 import { useRef } from 'react';
-import { useHotkeys } from '@astryxdesign/core/hooks';
 import type { ChatDefaultPermissionMode, SettingsSection, ThemePalette, ThemePreference } from '@maka/core/settings';
 import type { ProviderType } from '@maka/core/llm-connections';
 import type { DesktopSessionSummary } from '../../preload/bridge-contract.js';
@@ -32,7 +31,7 @@ import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 export { SETTINGS_NAV } from './settings-nav';
 export type { SettingsNavGroup } from './settings-nav';
 
-export function SettingsModal(props: {
+export default function SettingsModal(props: {
   onClose(): void;
   themePref: ThemePreference;
   onThemeChange(pref: ThemePreference): void;
@@ -50,11 +49,10 @@ export function SettingsModal(props: {
   onUserLabelChange?(label: string): void;
   onDefaultPermissionModeChange(mode: ChatDefaultPermissionMode): void;
   /**
-   * Force the modal to a specific section when it (re-)mounts or when the
-   * value changes while already open. Used by the command palette so
-   * ⌘K → "网络" jumps straight to the section without an extra click.
+   * Force the modal to a specific section and Runtime Host when it mounts.
+   * Section changes while already open remain live for command-palette jumps.
    */
-  requestedSection?: SettingsSection;
+  request?: { readonly section?: SettingsSection; readonly profileId?: string };
   openProviderCatalog?: boolean;
   initialConnectionSlug?: string;
   initialCreateProviderType?: ProviderType;
@@ -88,20 +86,6 @@ export function SettingsModal(props: {
   // focus away from anything open inside Settings while a session streams.
   const activeNavRef = useRef<HTMLButtonElement>(null);
 
-  // useHotkeys keeps its entries in a ref it refreshes every render, so Escape
-  // always calls the current `onClose` without the listener churning on that
-  // prop's identity (it is recreated on every AppShell render, i.e. per
-  // streamed token). It also skips defaultPrevented events, which is what the
-  // old `!event.defaultPrevented` check bought: a nested dialog that already
-  // consumed Escape closes itself, not the whole Settings surface.
-  //
-  // `allowInInputs` because Escape must close Settings from inside its own
-  // fields — the hook's default would have made Escape dead in every text box
-  // on the page.
-  useHotkeys([
-    { keys: 'escape', allowInInputs: true, onPress: () => props.onClose() },
-  ]);
-
   return (
     <div
       ref={pageRef}
@@ -120,7 +104,7 @@ export function SettingsModal(props: {
         uiLocaleUpdateGate={props.uiLocaleUpdateGate}
         onUserLabelChange={props.onUserLabelChange}
         onDefaultPermissionModeChange={props.onDefaultPermissionModeChange}
-        requestedSection={props.requestedSection}
+        request={props.request}
         openProviderCatalog={props.openProviderCatalog}
         initialConnectionSlug={props.initialConnectionSlug}
         initialCreateProviderType={props.initialCreateProviderType}

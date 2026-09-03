@@ -171,22 +171,17 @@ describe('tool activity presentation', () => {
     );
   });
 
-  it('renders a client capability activation as a localized capability summary', () => {
+  it('renders a tool_search activation as a localized capability summary', () => {
     const item: ToolActivityItem = {
-      toolUseId: 'load-computer-use',
-      toolName: 'load_tools',
+      toolUseId: 'search-computer-use',
+      toolName: 'tool_search',
       activityKind: 'tool',
       status: 'completed',
-      args: { group: 'client_a5b9af66b60c5f5c_desktop_computer_use' },
+      args: { query: 'operate local desktop application' },
       result: {
         kind: 'json',
         value: {
-          loaded: ['mcp__desktop_computer_use__maka_computer'],
-          group: {
-            id: 'client_a5b9af66b60c5f5c_desktop_computer_use',
-            label: 'Computer Use',
-            description: 'Observe and operate the desktop through this Desktop client.',
-          },
+          activated: ['mcp__desktop_computer_use__maka_computer'],
         },
       },
     };
@@ -196,10 +191,9 @@ describe('tool activity presentation', () => {
     const detail = renderToStaticMarkup(createElement(ToolCallDetail, { item }));
     assert.match(detail, /桌面操作已启用/);
     assert.match(detail, /可以查看和操作已授权的本地应用/);
-    assert.match(detail, /Computer Use/);
     assert.match(detail, /1 项能力可用/);
     assert.match(detail, /技术详情/);
-    assert.match(detail, /client_a5b9af66b60c5f5c_desktop_computer_use/);
+    assert.match(detail, /mcp__desktop_computer_use__maka_computer/);
   });
 
   it('keeps legacy Computer Use activations friendly without result metadata', () => {
@@ -472,5 +466,75 @@ describe('tool activity presentation', () => {
     assert.match(zhMarkup, /aria-label="复制：BetaTool"/);
     assert.match(enMarkup, /aria-label="Copy: AlphaTool"/);
     assert.match(enMarkup, /aria-label="Copy: BetaTool"/);
+  });
+});
+
+describe('collapsed tool row target', () => {
+  const baseItem = {
+    toolUseId: 'tool-collapsed',
+    toolName: 'Bash',
+    status: 'running' as const,
+  };
+
+  it('shows the invocation line derived from args when no intent exists', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'git status --porcelain' },
+      }],
+    }));
+    assert.match(markup, /git status --porcelain/);
+  });
+
+  it('prefers the runtime-authored intent over the args-derived line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        intent: '检查渲染入口',
+        args: { command: 'rg renderEntry' },
+      }],
+    }));
+    assert.match(markup, /检查渲染入口/);
+  });
+
+  it('names a live call from the wire args preview before full args arrive', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: undefined,
+        argsPreview: { command: 'npm test' },
+      }],
+    }));
+    assert.match(markup, /npm test/);
+  });
+
+  it('caps a long command so the collapsed row stays single-line', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: `echo ${'x'.repeat(300)}` },
+      }],
+    }));
+    const matches = markup.match(/x{100,}/g) ?? [];
+    for (const run of matches) {
+      assert.ok(run.length <= 119, `expected a capped run, got ${run.length}`);
+    }
+    assert.match(markup, /…/);
+  });
+
+  it('redacts secrets in the collapsed target', async () => {
+    const { ToolTrow } = await import('../tool-activity.js');
+    const markup = renderToStaticMarkup(createElement(ToolTrow, {
+      items: [{
+        ...baseItem,
+        args: { command: 'curl -H "Authorization: Bearer live-secret-token" https://example.com' },
+      }],
+    }));
+    assert.doesNotMatch(markup, /live-secret-token/);
+    assert.match(markup, /redacted/i);
   });
 });

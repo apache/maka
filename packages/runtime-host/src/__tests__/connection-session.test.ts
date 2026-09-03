@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred, type Deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -41,7 +42,9 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_MAX_IN_FLIGHT_DOMAIN_REQUESTS,
   RUNTIME_HOST_PROTOCOL_VERSION,
+  SESSION_CONTINUITY_SCHEMA_VERSION,
   type ClientFrame,
+  type EncodedProtocolMessage,
   type HostFrame,
   type ResponseFrame,
   type TurnSnapshot,
@@ -53,8 +56,9 @@ import type {
   ClientCapabilityService,
 } from '../server/client-capability-service.js';
 import { RuntimeHostConnectionSession } from '../server/connection-session.js';
+import type { SessionContinuityService } from '../server/session-continuity-service.js';
 import {
-  createUnavailableAccessAuthorityOperationHandlers,
+  createUnavailableHostCoreOperationHandlers,
   createUnavailableDomainOperationHandlers,
   type OperationHandlerMap,
 } from '../server/operation-dispatcher.js';
@@ -68,6 +72,7 @@ import {
   RuntimeHostOutboundQueueError,
 } from '../server/serial-outbound-writer.js';
 import { FramedTransport } from '../transport/framed-transport.js';
+import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
 
 const CURRENT_PROTOCOL = {
   min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -102,7 +107,7 @@ test('concurrent responses remain framed and correlated in reverse completion or
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `turn-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `turn-${index}` }, 5_000),
       );
       try {
         await withTimeout(
@@ -151,7 +156,7 @@ test('transcript pages are serialized per connection before their responses are 
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -174,6 +179,8 @@ test('transcript pages are serialized per connection before their responses are 
           throughSequence: input.throughSequence,
           rawBytes: 0,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: null,
         },
       };
@@ -257,7 +264,7 @@ test('the Client backpressures a healthy request burst at the Host connection li
     async ({ connectClient }) => {
       const client = await connectClient();
       const requests = Array.from({ length: requestCount }, (_, index) =>
-        client.queryTurn({ sessionId: 'session', turnId: `burst-${index}` }, 5_000),
+        client.request('turn.query', { sessionId: 'session', turnId: `burst-${index}` }, 5_000),
       );
       try {
         await withTimeout(firstWaveEntered.promise, 1_000, 'first request wave was not admitted');
@@ -358,6 +365,191 @@ test('serial outbound writer reports its 2 MiB byte bound before its frame bound
   } finally {
     writer.close();
     await pair.close();
+  }
+});
+
+test('flushes concurrent subscription opens before activating their live frame streams', async () => {
+  const releaseWrites = deferred();
+  const requestsEntered = deferred();
+  const allWrites = deferred();
+  const inbound = Array.from({ length: 16 }, (_, index) => ({
+    requestId: `open-${index}`,
+    operation: 'subscription.open',
+    input: { sessionId: `session-${index}`, transcript: { kind: 'none' } },
+  }));
+  const written: EncodedProtocolMessage[] = [];
+  let aborted = false;
+  let resolveClosed!: () => void;
+  let rejectRead: ((error: Error) => void) | undefined;
+  const closed = new Promise<void>((resolve) => {
+    resolveClosed = resolve;
+  });
+  const transport: RuntimeHostMessageTransport = {
+    closed,
+    read: async () => {
+      const frame = inbound.shift();
+      if (frame) return frame;
+      return new Promise<never>((_resolve, reject) => {
+        rejectRead = reject;
+      });
+    },
+    write: async (message) => {
+      await releaseWrites.promise;
+      written.push(message);
+      if (written.length === 32) allWrites.resolve();
+    },
+    closeAfterFlush: () => {
+      resolveClosed();
+    },
+    abort: (error) => {
+      if (aborted) return;
+      aborted = true;
+      rejectRead?.(error ?? new Error('in-memory transport aborted'));
+      resolveClosed();
+    },
+  };
+  let openCalls = 0;
+  let sink: Parameters<SessionContinuityService['attachConnection']>[1] | undefined;
+  const largeSnapshot = (sessionId: string) => {
+    const snapshot = canonicalProjection(sessionId);
+    return {
+      ...snapshot,
+      schemaVersion: SESSION_CONTINUITY_SCHEMA_VERSION,
+      projectionRevision: 1,
+      queue: {
+        ...snapshot.queue,
+        followup: Array.from({ length: 2 }, (_, index) => ({
+          entryId: `entry-${sessionId}-${index}`,
+          messageId: `message-${sessionId}-${index}`,
+          content: { text: 'q'.repeat(25 * 1024), quotes: [] },
+          placement: 'next_turn' as const,
+          state: 'queued' as const,
+        })),
+      },
+    };
+  };
+  const continuity: SessionContinuityService = {
+    handlers: {
+      'subscription.open': async (input) => {
+        openCalls += 1;
+        if (openCalls === 16) requestsEntered.resolve();
+        return {
+          ok: true,
+          result: {
+            hostEpoch: 'host-epoch',
+            subscriptionId: `subscription-${input.sessionId}`,
+            nextSequence: 1,
+            snapshot: largeSnapshot(input.sessionId),
+            activeAssistantStreams: Array.from({ length: 180 }, (_, index) => ({
+              kind: 'text' as const,
+              turnId: `turn-${input.sessionId}`,
+              messageId: `stream-${input.sessionId}-${index}`,
+            })),
+            transcript: transcriptBootstrapFor(input.sessionId),
+          },
+        };
+      },
+      'subscription.close': async (input) => ({
+        ok: true,
+        result: { subscriptionId: input.subscriptionId },
+      }),
+      'session.transcript.overlay.release': async () => ({
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'not used' },
+      }),
+      'session.transcript.page': async () => ({
+        ok: false,
+        error: { code: 'operation_unavailable', message: 'not used' },
+      }),
+    },
+    attachConnection: (_connectionId, attachedSink) => {
+      sink = attachedSink;
+      return {
+        activate: (subscriptionId) => {
+          const sessionId = subscriptionId.slice('subscription-'.length);
+          void sink
+            ?.send({
+              kind: 'subscription.session_projection',
+              hostEpoch: 'host-epoch',
+              subscriptionId,
+              sequence: 1,
+              snapshot: largeSnapshot(sessionId),
+            })
+            .catch(() => undefined);
+        },
+        abort() {},
+        close() {},
+      };
+    },
+  };
+  const handlers: OperationHandlerMap = {
+    'host.status': async () => ({
+      ok: true,
+      result: {
+        hostEpoch: 'host-epoch',
+        compositionId: 'maka.interactive',
+        compositionRevision: '1',
+        state: 'ready',
+        connections: 1,
+        activeOperations: 0,
+        activeResidencies: 0,
+      },
+    }),
+    ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
+    ...createUnavailableHostCoreOperationHandlers(),
+    ...createHandlers(async (input) => ({
+      ok: true,
+      result: runningSnapshot(input.sessionId, input.turnId),
+    })),
+    ...continuity.handlers,
+  };
+  const session = new RuntimeHostConnectionSession({
+    transport,
+    connection: acceptedConnection('concurrent-subscription-opens'),
+    resolveHandlers: () => handlers,
+    resolveContinuity: () => continuity,
+    beginOperation: async () => ({
+      acquireResidency: () => ({ release() {} }),
+      seal() {},
+      finish() {},
+    }),
+    onTeardown() {},
+  });
+  const run = session.run();
+  try {
+    await withTimeout(requestsEntered.promise, 1_000, 'subscription opens were not dispatched');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(aborted, false);
+
+    releaseWrites.resolve();
+    await withTimeout(allWrites.promise, 2_000, 'subscription frames were not flushed');
+    const frames = written.map((message) =>
+      decodeHostFrame(JSON.parse(message.toString('utf8')) as unknown),
+    );
+    const openResponseBytes = written.reduce(
+      (total, message, index) =>
+        !('kind' in frames[index]!) && frames[index]!.operation === 'subscription.open'
+          ? total + message.byteLength
+          : total,
+      0,
+    );
+    assert.ok(openResponseBytes < 2 * 1024 * 1024);
+    assert.ok(written.reduce((total, message) => total + message.byteLength, 0) > 2 * 1024 * 1024);
+    assert.equal(
+      frames.filter((frame) => !('kind' in frame) && frame.operation === 'subscription.open')
+        .length,
+      16,
+    );
+    assert.equal(
+      frames.filter((frame) => 'kind' in frame && frame.kind === 'subscription.session_projection')
+        .length,
+      16,
+    );
+    assert.equal(aborted, false);
+  } finally {
+    releaseWrites.resolve();
+    transport.abort();
+    await run;
   }
 });
 
@@ -490,7 +682,7 @@ test('connection reset while operation admission is pending does not execute the
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => {
       handlerCalls += 1;
       return {
@@ -579,7 +771,7 @@ test('a ready composition attaches the authenticated Client identity once', asyn
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createUnavailableDomainOperationHandlers(),
     }),
     resolveContinuity: () => undefined,
@@ -656,7 +848,7 @@ test('an admitted operation settles without connection or residency leakage afte
     async ({ connectClient }) => {
       const client = await connectClient();
       const requestFailure = client
-        .queryTurn({ sessionId: 'session', turnId: 'disconnect' }, 5_000)
+        .request('turn.query', { sessionId: 'session', turnId: 'disconnect' }, 5_000)
         .then(
           () => undefined,
           (error: unknown) => error,
@@ -698,7 +890,7 @@ test('an admitted command reports an unknown outcome when its connection closes'
     }),
     async ({ connectClient }) => {
       const client = await connectClient();
-      const command = client.startTurn({
+      const command = client.request('turn.start', {
         sessionId: 'session',
         turnId: 'interrupted-command',
         content: { text: 'start' },
@@ -877,7 +1069,7 @@ test('an in-flight status does not consume the final domain request slot', async
       };
     },
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => {
       const index = Number(input.turnId.slice('turn-'.length));
       domainEntered[index]?.resolve();
@@ -975,7 +1167,7 @@ test('evicting one slow subscription keeps sibling subscriptions and requests us
       },
     }),
     ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-    ...createUnavailableAccessAuthorityOperationHandlers(),
+    ...createUnavailableHostCoreOperationHandlers(),
     ...createHandlers(async (input) => ({
       ok: true,
       result: runningSnapshot(input.sessionId, input.turnId),
@@ -1213,7 +1405,7 @@ async function openHalfClosedDispatchedSession(
         },
       }),
       ...UNUSED_HOST_DIAGNOSTICS_HANDLER,
-      ...createUnavailableAccessAuthorityOperationHandlers(),
+      ...createUnavailableHostCoreOperationHandlers(),
       ...createHandlers(async (input) => {
         handlerEntered.resolve();
         await releaseHandler.promise;
@@ -1301,7 +1493,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
       message: 'not available in this test composition',
     },
   } as const;
-  const taskLedgerUnavailable: Awaited<ReturnType<OperationHandlerMap['task.ledger.query']>> = {
+  const sessionTodoUnavailable: Awaited<ReturnType<OperationHandlerMap['session.todo.query']>> = {
     ok: false,
     error: {
       code: 'operation_unavailable',
@@ -1337,7 +1529,7 @@ function createHandlers(queryTurn: TurnQueryHandler): RuntimeHostComposition['ha
     'interaction.answer': async () => interactionUnavailable,
     'subscription.open': async () => subscriptionUnavailable,
     'subscription.close': async () => subscriptionUnavailable,
-    'task.ledger.query': async () => taskLedgerUnavailable,
+    'session.todo.query': async () => sessionTodoUnavailable,
   };
 }
 
@@ -1439,6 +1631,48 @@ function canonicalProjection(sessionId: string): CanonicalSessionProjection {
   };
 }
 
+function transcriptBootstrapFor(sessionId: string) {
+  const contents = Buffer.from('t'.repeat(16 * 1024));
+  return {
+    throughSequence: 0,
+    durableCoverage: 'complete' as const,
+    overlayMessageCount: 0,
+    durable: {
+      kind: 'page' as const,
+      sessionId,
+      source: 'durable' as const,
+      direction: 'older' as const,
+      throughSequence: 0,
+      rawBytes: contents.byteLength,
+      fragments: [
+        {
+          kind: 'durable' as const,
+          sequence: 0,
+          byteOffset: 0,
+          totalBytes: contents.byteLength,
+          payloadDigest: null,
+          data: contents.toString('base64'),
+        },
+      ],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor: null,
+    },
+    overlay: {
+      kind: 'page' as const,
+      sessionId,
+      source: 'overlay' as const,
+      direction: 'older' as const,
+      throughSequence: 0,
+      rawBytes: 0,
+      fragments: [],
+      rangeBoundarySequence: null,
+      protectedTurnSequence: null,
+      nextCursor: null,
+    },
+  };
+}
+
 function connectionTextEvent(sessionId: string, index: number, messageId?: string) {
   return {
     type: 'text_delta' as const,
@@ -1463,34 +1697,6 @@ async function waitForStatus(
   assert.equal(predicate(status), true, 'Host operation counters did not settle');
   return status;
 }
-
-interface Deferred {
-  promise: Promise<void>;
-  resolve(): void;
-}
-
-function deferred(): Deferred {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}
-
 function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }

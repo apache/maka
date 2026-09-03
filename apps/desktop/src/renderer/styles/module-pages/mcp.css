@@ -98,7 +98,7 @@
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-control);
   background: var(--muted);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-mcp-stderr {
@@ -108,7 +108,7 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
   color: var(--destructive-text);
   white-space: pre-wrap;
 }
@@ -122,6 +122,11 @@
 
 .maka-mcp-choice-icon {
   margin-inline-start: var(--space-1);
+  /* The icon shares Item's startContent flex slot with the 24px radio circle.
+     That slot defaults to align-items: stretch, which top-aligns a definite-height
+     child, leaving the 14px icon riding above the radio dot and the centered label.
+     Center it so all three sit on the same axis. */
+  align-self: center;
 }
 
 .maka-mcp-manual-form,
@@ -151,6 +156,10 @@
      slug. Equal halves squeezed the field that actually carries content. */
   grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
   gap: var(--space-3);
+}
+
+.maka-mcp-advanced-fields {
+  padding-block-start: var(--space-3);
 }
 
 .maka-mcp-json-field {

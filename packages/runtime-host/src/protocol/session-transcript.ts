@@ -32,6 +32,8 @@ import { defineOperation } from './operation-spec.js';
 export const SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES = 16 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_BYTES = 512 * 1024;
 export const SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES = 256;
+export const SESSION_TRANSCRIPT_RANGE_MAX_BYTES = 16 * 1024 * 1024;
+export const SESSION_TRANSCRIPT_RANGE_MAX_MESSAGES = SESSION_TRANSCRIPT_PAGE_MAX_MESSAGES;
 export const SESSION_TRANSCRIPT_OVERLAY_MAX_MESSAGES = 4_096;
 export const SESSION_TRANSCRIPT_PAGE_RESULT_MAX_BYTES = 744 * 1024;
 export const SESSION_TRANSCRIPT_CURSOR_MAX_BYTES = 1024;
@@ -64,11 +66,17 @@ export interface SessionTranscriptPage {
   readonly throughSequence: number | null;
   readonly rawBytes: number;
   readonly fragments: readonly SessionTranscriptFragment[];
+  /** Host-selected far edge that the client must assemble before publishing this range. */
+  readonly rangeBoundarySequence: number | null;
+  /** Host-selected Turn identity that bounded consumers must retain while trimming this range. */
+  readonly protectedTurnSequence: number | null;
   readonly nextCursor: string | null;
 }
 
 export interface SessionTranscriptBootstrap {
   readonly throughSequence: number | null;
+  /** Whether every durable sequence is present or policy projection may leave gaps. */
+  readonly durableCoverage: 'complete' | 'projected';
   readonly overlayMessageCount: number;
   readonly durable: SessionTranscriptPage;
   readonly overlay: SessionTranscriptPage;
@@ -186,6 +194,7 @@ export function decodeSessionTranscriptPageInput(value: unknown): SessionTranscr
 export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscriptBootstrap {
   const bootstrap = requireExactRecord(value, 'Session transcript bootstrap', [
     'throughSequence',
+    'durableCoverage',
     'overlayMessageCount',
     'durable',
     'overlay',
@@ -194,6 +203,9 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
     bootstrap.throughSequence === null
       ? null
       : requireCount(bootstrap.throughSequence, 'Session transcript watermark');
+  if (bootstrap.durableCoverage !== 'complete' && bootstrap.durableCoverage !== 'projected') {
+    throw invalidProtocolFrame('Invalid Session transcript durable coverage');
+  }
   const overlayMessageCount = requireCount(
     bootstrap.overlayMessageCount,
     'Session transcript overlay message count',
@@ -216,7 +228,13 @@ export function decodeSessionTranscriptBootstrap(value: unknown): SessionTranscr
   if (durable.rawBytes + overlay.rawBytes > SESSION_TRANSCRIPT_BOOTSTRAP_MAX_BYTES) {
     throw invalidProtocolFrame('Session transcript bootstrap exceeds byte limit');
   }
-  return { throughSequence, overlayMessageCount, durable, overlay };
+  return {
+    throughSequence,
+    durableCoverage: bootstrap.durableCoverage,
+    overlayMessageCount,
+    durable,
+    overlay,
+  };
 }
 
 export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPage {
@@ -233,6 +251,8 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     'throughSequence',
     'rawBytes',
     'fragments',
+    'rangeBoundarySequence',
+    'protectedTurnSequence',
     'nextCursor',
   ]);
   if (result.kind !== 'page') throw invalidProtocolFrame('Invalid Session transcript page kind');
@@ -270,6 +290,28 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
           'Session transcript cursor',
           SESSION_TRANSCRIPT_CURSOR_MAX_BYTES,
         );
+  const rangeBoundarySequence =
+    result.rangeBoundarySequence === null
+      ? null
+      : requireCount(result.rangeBoundarySequence, 'Session transcript range boundary sequence');
+  const protectedTurnSequence =
+    result.protectedTurnSequence === null
+      ? null
+      : requireCount(result.protectedTurnSequence, 'Session transcript protected Turn sequence');
+  if (
+    (rangeBoundarySequence !== null && source !== 'durable') ||
+    (rangeBoundarySequence !== null &&
+      (throughSequence === null || rangeBoundarySequence > throughSequence))
+  ) {
+    throw invalidProtocolFrame('Invalid Session transcript range boundary');
+  }
+  if (
+    (protectedTurnSequence !== null && source !== 'durable') ||
+    (protectedTurnSequence !== null &&
+      (throughSequence === null || protectedTurnSequence > throughSequence))
+  ) {
+    throw invalidProtocolFrame('Invalid Session transcript protected Turn sequence');
+  }
   if (fragments.length === 0 && (rawBytes !== 0 || nextCursor !== null)) {
     throw invalidProtocolFrame('Invalid empty Session transcript page');
   }
@@ -281,6 +323,8 @@ export function decodeSessionTranscriptPage(value: unknown): SessionTranscriptPa
     throughSequence,
     rawBytes,
     fragments,
+    rangeBoundarySequence,
+    protectedTurnSequence,
     nextCursor,
   };
 }

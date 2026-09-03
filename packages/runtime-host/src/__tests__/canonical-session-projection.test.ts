@@ -29,11 +29,11 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import type { StoredInteractionRequest } from '@maka/storage/interaction-store';
-import { acquireOperationalStateDatabase } from '@maka/storage';
+import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
-} from '@maka/runtime/ai-sdk-flow';
+} from '@maka/runtime/session-event-runtime-mapper';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import {
   TURN_MESSAGE_TEXT_MAX_BYTES,
@@ -333,11 +333,13 @@ test('preflights the worst-case failed Turn before accepting more queued content
         Number.MAX_SAFE_INTEGER,
       ),
     );
+    const worstCaseFailedTurn = worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!);
+    assert.equal(worstCaseFailedTurn.status, 'failed');
     assert.throws(() =>
       createSessionContinuitySnapshot(
         {
           ...capacityCanonical,
-          rootTurn: worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!),
+          rootTurn: worstCaseFailedTurn,
           queue: currentQueue,
         },
         Number.MAX_SAFE_INTEGER,
@@ -417,6 +419,74 @@ test('projects a failed Turn message from the canonical terminal event', async (
         canonical.rootTurn.failureMessage,
         'canonical provider failure api_key=[redacted]',
       );
+    }
+  });
+});
+
+test('a legacy context_budget_exhausted terminal event still projects, as a context overflow', async () => {
+  await withStores(async (root, stores) => {
+    const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
+    const context = {
+      sessionId,
+      invocationId: 'run-1',
+      runId: 'run-1',
+      turnId: 'turn-1',
+      source: 'test',
+      startedAt: 10,
+      request: {
+        sessionId,
+        invocationId: 'run-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        text: 'hello',
+        source: 'test',
+      },
+      newId: () => 'unused',
+      now: () => 12,
+    } as const;
+    // Exactly what a session written before this outcome was retired holds: the
+    // runtime can no longer emit it, so the durable shape is rebuilt here.
+    const mapped = mapSessionEventToRuntimeEvent(
+      {
+        type: 'complete',
+        id: 'terminal-context-budget-1',
+        turnId: 'turn-1',
+        ts: 13,
+        stopReason: 'error',
+      },
+      context,
+      createSessionEventMapMemory(),
+    );
+    const terminalEvent = {
+      ...mapped,
+      actions: {
+        ...mapped.actions,
+        stateDelta: {
+          stopReason: 'context_budget_exhausted',
+          failureClass: 'context_budget_exhausted',
+          contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+        },
+      },
+    };
+    await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
+    await stores.agentRunStore.updateRun(sessionId, 'run-1', {
+      status: 'failed',
+      updatedAt: 13,
+      completedAt: 13,
+      failureClass: 'context_budget_exhausted',
+    });
+
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions,
+      messages: {
+        projection: () => ({ hostEpoch: 'epoch-1', queueRevision: 0, steering: [], followup: [] }),
+      },
+    });
+    const canonical = await reader.read(sessionId);
+    assert.equal(canonical?.rootTurn?.status, 'failed');
+    if (canonical?.rootTurn?.status === 'failed') {
+      assert.equal(canonical.rootTurn.failureClass, 'context_overflow');
     }
   });
 });
@@ -530,7 +600,11 @@ function createMessages(
     startFromMessage: async () => {
       throw new Error('unexpected root start');
     },
-    prepareMessage: async (input) => ({ kind: 'ready', content: input.content }),
+    prepareMessage: async (input) => ({
+      kind: 'ready',
+      content: input.content,
+      skillInvocation: { loaded: [], failed: [], receipts: [] },
+    }),
     claimStop: async () => {
       throw new Error('unexpected root stop');
     },
@@ -544,7 +618,7 @@ function createMessages(
       readImmutableSteeringMessageProof: (requestedSessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(requestedSessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: new SessionAdmissionGate(),
     acquireResidency: () => ({ release: () => undefined }),
     preflightSessionSnapshot: () => true,
@@ -556,6 +630,7 @@ function sessionInput(root: string) {
   return {
     cwd: root,
     backend: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask' as const,
@@ -570,6 +645,7 @@ function runHeader(sessionId: string): AgentRunHeader {
     turnId: 'turn-1',
     status: 'created',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/private/runtime-cwd',
@@ -650,7 +726,6 @@ async function withStores(
   if (!owner) throw new Error('Unable to acquire test root');
   try {
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
-    await stores.messageReceiptStore.beginHostEpoch('epoch-1');
     await run(capability.canonicalPath, stores);
   } finally {
     await owner.close();

@@ -19,7 +19,6 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expect } from '../test-helpers.js';
 import { createDefaultSettings } from '@maka/core/settings';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { createConfiguredSubagentCatalog } from '../configured-subagent-catalog.js';
@@ -60,22 +59,29 @@ describe('configured subagent catalog', () => {
     ];
     const catalog = createConfiguredSubagentCatalog({
       getPresets: async () => settings.subagents.presets,
-      getConnection: async (slug) => (slug === connection.slug ? connection : null),
+      getConnection: async (slug) =>
+        slug === connection.slug
+          ? { ...connection, connectionId: '11111111-1111-4111-8111-111111111111' }
+          : null,
     });
 
-    expect(
+    assert.deepStrictEqual(
       (await catalog.list()).map(({ id, availability }) => ({
         id,
         availability,
       })),
-    ).toEqual([
-      { id: 'fast-reader', availability: { status: 'available' } },
-      {
-        id: 'missing-model',
-        availability: { status: 'unavailable', reason: 'model_disabled' },
-      },
-    ]);
-    expect(await catalog.resolve('fast-reader')).toEqual(settings.subagents.presets[0]);
+      [
+        { id: 'fast-reader', availability: { status: 'available' } },
+        {
+          id: 'missing-model',
+          availability: { status: 'unavailable', reason: 'model_disabled' },
+        },
+      ],
+    );
+    assert.deepStrictEqual(await catalog.resolve('fast-reader'), {
+      ...settings.subagents.presets[0],
+      connectionId: '11111111-1111-4111-8111-111111111111',
+    });
     await assert.rejects(catalog.resolve('missing-model'), /model_disabled/);
     await assert.rejects(catalog.resolve('invented'), /Call agent_list/);
   });
@@ -107,10 +113,13 @@ describe('configured subagent catalog', () => {
     ];
     const catalog = createConfiguredSubagentCatalog({
       getPresets: async () => settings.subagents.presets,
-      getConnection: async (slug) => (slug === retired.slug ? retired : null),
+      getConnection: async (slug) =>
+        slug === retired.slug
+          ? { ...retired, connectionId: '22222222-2222-4222-8222-222222222222' }
+          : null,
     });
 
-    expect((await catalog.list())[0]?.availability).toEqual({
+    assert.deepStrictEqual((await catalog.list())[0]?.availability, {
       status: 'unavailable',
       reason: 'provider_retired',
     });

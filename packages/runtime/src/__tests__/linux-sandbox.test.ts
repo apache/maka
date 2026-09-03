@@ -402,6 +402,26 @@ describe('discoverNestedProtectedMetadataPaths', () => {
 });
 
 describe('LinuxBubblewrapBackend', () => {
+  it('fails when protected-metadata discovery fails during transform', () => {
+    let scans = 0;
+    const backend = new LinuxBubblewrapBackend({
+      capability: { available: true, bwrapPath: '/usr/bin/bwrap' },
+      discoverProtectedMetadataPaths: () => {
+        scans += 1;
+        throw new Error('workspace changed during enumeration');
+      },
+    });
+    const request = workspaceRequest(protectedMetadataProfile());
+
+    const transformed = backend.transform(request);
+    assert.equal(scans, 1);
+    assert.equal(transformed.ok, false);
+    if (!transformed.ok) {
+      assert.equal(transformed.reason, 'backend_not_available');
+      assert.match(transformed.message ?? '', /enumerate protected metadata/i);
+    }
+  });
+
   it('wraps a managed restricted command when bwrap is available', () => {
     const backend = new LinuxBubblewrapBackend({
       capability: { available: true, bwrapPath: '/usr/bin/bwrap' },

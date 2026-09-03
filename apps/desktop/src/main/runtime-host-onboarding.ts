@@ -28,10 +28,13 @@ import type {
   DesktopRuntimeHostOnboardingSnapshot,
 } from '../preload/bridge-contract.js';
 import type { DesktopRuntimeHostProfileService } from './runtime-host-profile-service.js';
+import type { DesktopRuntimeHostSshSetupInput } from './runtime-host-ssh-terminal.js';
+import type { DesktopRuntimeHostWslSetupInput } from './runtime-host-wsl-controller.js';
 import type {
+  DesktopRuntimeHostDevelopmentPeerTarget,
   DesktopRuntimeHostSetupPackage,
-  DesktopRuntimeHostSshSetupInput,
-} from './runtime-host-ssh-terminal.js';
+} from './runtime-host-setup-package.js';
+import { requireProjectDirectoryRoots } from '../shared/runtime-host-project-directory-policy.js';
 
 type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapshot
   ? Snapshot extends DesktopRuntimeHostOnboardingSnapshot
@@ -42,7 +45,10 @@ type OnboardingState = DesktopRuntimeHostOnboardingSnapshot extends infer Snapsh
 export function createDesktopRuntimeHostOnboarding(input: {
   readonly ipcMain: Pick<IpcMain, 'handle' | 'removeHandler'>;
   readonly clientInstanceId: string;
-  readonly profiles: Pick<DesktopRuntimeHostProfileService, 'addAndEnableVerified'>;
+  readonly profiles: Pick<
+    DesktopRuntimeHostProfileService,
+    'addManagedEnvironmentAndEnable' | 'addAndEnableVerified'
+  >;
   readonly runSetup: (
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
@@ -51,12 +57,34 @@ export function createDesktopRuntimeHostOnboarding(input: {
     readonly rootId: string;
     readonly rootPath: string;
     readonly serviceId: string;
+    readonly deploymentId: string;
     readonly operatorPath: string;
     readonly endpoint: string;
     readonly credential: string;
   }>;
+  readonly runWslSetup: (
+    input: DesktopRuntimeHostWslSetupInput,
+    onProgress: (frame: { readonly phase: RuntimeHostSetupPhase }) => void,
+    onComplete: () => void,
+  ) => Promise<{
+    readonly rootId: string;
+    readonly rootPath: string;
+    readonly serviceId: string;
+    readonly deploymentId: string;
+    readonly operatorPath: string;
+  }>;
+  readonly listWslDistributions: () => Promise<readonly string[]>;
   readonly send: (snapshot: DesktopRuntimeHostOnboardingSnapshot) => void;
-  readonly resolveSetupPackage: () => DesktopRuntimeHostSetupPackage;
+  readonly setupPackageMode: 'published' | 'development';
+  readonly resolveSshDevelopmentPeerTarget: (input: {
+    readonly destination: string;
+    readonly sshPort?: number;
+    readonly signal?: AbortSignal;
+  }) => Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
+  readonly resolveSetupPackage: (
+    peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ) => DesktopRuntimeHostSetupPackage | Promise<DesktopRuntimeHostSetupPackage>;
 }): { close(): Promise<void> } {
   let revision = 0;
   let snapshot: DesktopRuntimeHostOnboardingSnapshot = { kind: 'idle', revision };
@@ -89,7 +117,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
       }));
     }
     const abort = new AbortController();
-    publish({ kind: 'running', phase: 'connecting_ssh' });
+    publish({ kind: 'running', phase: 'preparing_cli' });
     const task = Promise.resolve().then(() => run(request, abort.signal)).finally(() => {
       if (active?.task === task) active = undefined;
     });
@@ -102,6 +130,17 @@ export function createDesktopRuntimeHostOnboarding(input: {
     signal: AbortSignal,
   ): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
     try {
+      if (request.kind === 'wsl') {
+        const setupPackage = await input.resolveSetupPackage('none', signal);
+        return await runWsl(request, setupPackage, signal);
+      }
+      const peerTarget = input.setupPackageMode === 'development'
+        ? await resolveSshDevelopmentPeerTarget(request, signal)
+        : 'none';
+      const setupPackage = await input.resolveSetupPackage(peerTarget, signal);
+      const lifecycle = setupPackage.kind === 'npm' ? 'on_demand' : 'supervised';
+      signal.throwIfAborted();
+      publish({ kind: 'running', phase: 'connecting_ssh' });
       let commitStarted = false;
       const beginCommit = () => {
         if (commitStarted) return;
@@ -116,8 +155,12 @@ export function createDesktopRuntimeHostOnboarding(input: {
         {
           destination: request.destination,
           ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-          setupPackage: input.resolveSetupPackage(),
+          setupPackage,
+          lifecycle,
           principalId: `desktop:${input.clientInstanceId}`,
+          ...(request.projectDirectoryRoots
+            ? { projectDirectoryRoots: request.projectDirectoryRoots }
+            : {}),
           signal,
         },
         (progress) => {
@@ -144,15 +187,30 @@ export function createDesktopRuntimeHostOnboarding(input: {
             kind: 'ssh',
             destination: request.destination,
             ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
-            remotePort: endpoint.port,
-            websocketPath: endpoint.websocketPath,
+            ...(lifecycle === 'on_demand'
+              ? {
+                  activation: {
+                    kind: 'ssh_operator' as const,
+                    operatorPath: complete.operatorPath,
+                  },
+                }
+              : {
+                  remotePort: endpoint.port,
+                  websocketPath: endpoint.websocketPath,
+                }),
           },
         },
         credential: complete.credential,
         managedService: {
-          id: complete.serviceId,
-          rootPath: complete.rootPath,
-          operatorPath: complete.operatorPath,
+          deployment: {
+            id: complete.serviceId,
+            rootPath: complete.rootPath,
+            deploymentId: complete.deploymentId,
+          },
+          control: {
+            kind: 'ssh_operator',
+            operatorPath: complete.operatorPath,
+          },
         },
       });
       return publish({
@@ -168,11 +226,77 @@ export function createDesktopRuntimeHostOnboarding(input: {
     }
   };
 
+  const resolveSshDevelopmentPeerTarget = async (
+    request: Extract<DesktopRuntimeHostOnboardingInput, { readonly kind: 'ssh' }>,
+    signal: AbortSignal,
+  ): Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>> => {
+    publish({ kind: 'running', phase: 'connecting_ssh' });
+    const target = await input.resolveSshDevelopmentPeerTarget({
+      destination: request.destination,
+      ...(request.sshPort === undefined ? {} : { sshPort: request.sshPort }),
+      signal,
+    });
+    publish({ kind: 'running', phase: 'preparing_cli' });
+    return target;
+  };
+
+  const runWsl = async (
+    request: Extract<DesktopRuntimeHostOnboardingInput, { readonly kind: 'wsl' }>,
+    setupPackage: DesktopRuntimeHostSetupPackage,
+    signal: AbortSignal,
+  ): Promise<DesktopRuntimeHostOnboardingSnapshot> => {
+    publish({ kind: 'running', phase: 'connecting_wsl' });
+    let commitStarted = false;
+    const beginCommit = () => {
+      if (commitStarted) return;
+      commitStarted = true;
+      if (active) active.cancellable = false;
+      publish({ kind: 'running', phase: 'connecting_host' });
+    };
+    const complete = await input.runWslSetup(
+      {
+        distribution: request.distribution,
+        setupPackage,
+        principalId: `desktop:${input.clientInstanceId}`,
+        ...(request.projectDirectoryRoots
+          ? { projectDirectoryRoots: request.projectDirectoryRoots }
+          : {}),
+        signal,
+      },
+      (progress) => {
+        if (!commitStarted) publish({ kind: 'running', phase: progress.phase });
+      },
+      beginCommit,
+    );
+    beginCommit();
+    const profileId = `environment-${randomUUID()}`;
+    const profile = {
+      id: profileId,
+      name: request.name?.trim() || request.distribution,
+      kind: 'environment' as const,
+      provider: { kind: 'wsl' as const, distribution: request.distribution },
+      rootId: complete.rootId,
+      operatorPath: complete.operatorPath,
+    };
+    const connected = await input.profiles.addManagedEnvironmentAndEnable({
+      profile,
+      managedService: {
+        deployment: {
+          id: complete.serviceId,
+          rootPath: complete.rootPath,
+          deploymentId: complete.deploymentId,
+        },
+      },
+    });
+    return publish({ kind: 'complete', profileId: connected.profileId });
+  };
+
   const channels = [
     'runtime-host-onboarding:getSnapshot',
     'runtime-host-onboarding:start',
     'runtime-host-onboarding:cancel',
     'runtime-host-onboarding:reset',
+    'runtime-host-onboarding:listWslDistributions',
   ] as const;
   input.ipcMain.handle(channels[0], () => snapshot);
   input.ipcMain.handle(channels[1], (_event, value: unknown) => start(value));
@@ -189,6 +313,7 @@ export function createDesktopRuntimeHostOnboarding(input: {
     await active?.task;
     publish({ kind: 'idle' });
   });
+  input.ipcMain.handle(channels[4], () => input.listWslDistributions());
 
   return {
     close: async () => {
@@ -205,22 +330,42 @@ function requireOnboardingInput(value: unknown): DesktopRuntimeHostOnboardingInp
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('Remote Runtime Host setup input is invalid');
   }
-  const input = value as Partial<DesktopRuntimeHostOnboardingInput>;
+  const input = value as Record<string, unknown>;
+  if (input.name !== undefined &&
+    (typeof input.name !== 'string' || input.name.trim().length > 128)) {
+    throw new Error('Remote Runtime Host setup input is invalid');
+  }
+  const roots = input.projectDirectoryRoots === undefined
+    ? undefined
+    : requireProjectDirectoryRoots(input.projectDirectoryRoots);
+  if (input.kind === 'wsl') {
+    if (
+      typeof input.distribution !== 'string' ||
+      input.distribution.trim() !== input.distribution ||
+      input.distribution.length === 0 ||
+      input.distribution.length > 128
+    ) throw new Error('WSL Runtime Host setup input is invalid');
+    return {
+      kind: 'wsl',
+      distribution: input.distribution,
+      ...(typeof input.name === 'string' && input.name.trim() ? { name: input.name.trim() } : {}),
+      ...(roots ? { projectDirectoryRoots: roots } : {}),
+    };
+  }
   if (
+    input.kind !== 'ssh' ||
     typeof input.destination !== 'string' ||
     input.destination.trim() !== input.destination ||
     input.destination.length === 0 ||
     input.destination.length > 512 ||
-    (input.name !== undefined &&
-      (typeof input.name !== 'string' || input.name.trim().length > 128)) ||
     (input.sshPort !== undefined &&
-      (!Number.isInteger(input.sshPort) || input.sshPort < 1 || input.sshPort > 65_535))
-  ) {
-    throw new Error('Remote Runtime Host setup input is invalid');
-  }
+      (!Number.isInteger(input.sshPort) || Number(input.sshPort) < 1 || Number(input.sshPort) > 65_535))
+  ) throw new Error('Remote Runtime Host setup input is invalid');
   return {
+    kind: 'ssh',
     destination: input.destination,
-    ...(input.name?.trim() ? { name: input.name.trim() } : {}),
-    ...(input.sshPort === undefined ? {} : { sshPort: input.sshPort }),
+    ...(typeof input.name === 'string' && input.name.trim() ? { name: input.name.trim() } : {}),
+    ...(input.sshPort === undefined ? {} : { sshPort: Number(input.sshPort) }),
+    ...(roots ? { projectDirectoryRoots: roots } : {}),
   };
 }

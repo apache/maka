@@ -42,14 +42,20 @@ export interface PrepareHostedExecutionRecoveryInput {
   readonly rootAdmissions: RootAdmissionOwner;
   readonly projection: HostedExecutionProjectionReader;
   readonly runtime: Pick<SessionManager, 'closePendingHostedAdmission'>;
-  readonly assertScheduledTaskAdmission?: (admission: RootTurnAdmission) => Promise<void>;
+  readonly assertScheduledTaskAdmission?: (
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ) => Promise<void>;
 }
 
 /** Validates and repairs durable admission/message relationships before execution replay. */
 export async function prepareHostedExecutionRecovery(
   input: PrepareHostedExecutionRecoveryInput,
 ): Promise<readonly HostedExecutionRecoveryPlan[]> {
-  const sessions = await input.stores.sessionStore.listForRecovery();
+  // listHeaders() avoids listForRecovery()'s discarded per-Session message
+  // pre-read; the per-Session readMessagesForRecovery below remains the single
+  // decode that validates durable messages before replay.
+  const sessions = await input.stores.sessionStore.listHeaders();
   const prepared: PreparedRecoverySession[] = [];
   for (const session of sessions) {
     const admissions = await input.rootAdmissions.recoverSession(session.id);
@@ -69,7 +75,7 @@ export async function prepareHostedExecutionRecovery(
       const run = runsById.get(admission.runId);
       const rootUserMessages = (
         messageIndex.userMessagesByTurnId.get(admission.turnId) ?? []
-      ).filter((message) => message.steeringEventId === undefined);
+      ).filter((message) => message.id === admission.userMessageId);
       const messageIdOwners = admission.userMessageId
         ? (messageIndex.messagesById.get(admission.userMessageId) ?? [])
         : [];
@@ -80,19 +86,28 @@ export async function prepareHostedExecutionRecovery(
             'ScheduledTask recovery admission has no canonical authority validator',
           );
         }
-        await input.assertScheduledTaskAdmission(admission);
+        await input.assertScheduledTaskAdmission(
+          admission,
+          run === undefined ? 'pending_fire_required' : 'run_recorded',
+        );
       }
       if (!executionContract.allowsQueueSources && admission.sourceMessages.length !== 0) {
         throw new Error(
           `Admitted Turn ${admission.turnId} has queue-independent execution with Message queue sources`,
         );
       }
-      if (executionContract.requiresUserMessage !== (admission.userMessageId !== null)) {
+      const requiresUserMessage =
+        executionContract.requiresUserMessage &&
+        !(admission.execution.kind === 'external_message' && admission.sourceMessages.length > 1);
+      if (requiresUserMessage !== (admission.userMessageId !== null)) {
         throw new Error(
           `Admitted Turn ${admission.turnId} has an invalid UserMessage execution contract`,
         );
       }
       if (admission.userMessageId === null) {
+        if (admission.sourceMessages.length > 0) {
+          await verifyQueueSourceMessages(admission, messageIndex, input.stores.agentRunStore);
+        }
         if (rootUserMessages.length > 0) {
           throw new Error(`Admitted Turn ${admission.turnId} must not record a UserMessage`);
         }
@@ -145,7 +160,16 @@ export async function prepareHostedExecutionRecovery(
         continue;
       }
       if (!run) {
-        if (rootUserMessages.length > 0 || messageIdOwner) {
+        if (executionContract.pendingWithoutRun === 'root_replay') {
+          verifyOrRecoverUserMessage(
+            admission,
+            rootUserMessages,
+            messageIdOwner,
+            missingMessages,
+            messageIndex,
+            false,
+          );
+        } else if (rootUserMessages.length > 0 || messageIdOwner) {
           throw new Error(`Admitted Turn ${admission.turnId} has a UserMessage but no Run`);
         }
         replayAdmissions.push(admission);
@@ -263,6 +287,7 @@ function verifyOrRecoverUserMessage(
   messageIdOwner: StoredMessage | undefined,
   missingMessages: RecoveryUserMessage[],
   index: RecoveryMessageIndex,
+  materializeMissing = true,
 ): void {
   if (rootUserMessages.length > 1) {
     throw new Error(`Admitted Turn ${admission.turnId} has multiple UserMessages`);
@@ -285,9 +310,52 @@ function verifyOrRecoverUserMessage(
   if (messageIdOwner) {
     throw new Error(`Admitted Turn ${admission.turnId} reuses another message identity`);
   }
+  if (!materializeMissing) return;
   const recoveredMessage = recoveryUserMessage(admission);
   missingMessages.push(recoveredMessage);
   indexRecoveryMessage(index, recoveredMessage);
+}
+
+async function verifyQueueSourceMessages(
+  admission: RootTurnAdmission,
+  index: RecoveryMessageIndex,
+  proofReader: Pick<
+    ExecutionStoresWriter<'interactive'>['agentRunStore'],
+    'readRootTurnSourceMessageReceipt'
+  >,
+): Promise<void> {
+  for (const source of admission.sourceMessages) {
+    const owners = index.messagesById.get(source.messageId) ?? [];
+    if (owners.length === 0) {
+      const proof = await proofReader.readRootTurnSourceMessageReceipt(
+        admission.sessionId,
+        source.messageId,
+      );
+      if (
+        !proof ||
+        proof.admission.sessionId !== admission.sessionId ||
+        proof.admission.turnId !== admission.turnId ||
+        proof.admission.runId !== admission.runId ||
+        proof.sourceMessage.messageId !== source.messageId ||
+        !messageContentsEqual(proof.sourceMessage.content, source.content)
+      ) {
+        throw new Error(
+          `Admitted Turn ${admission.turnId} has no durable proof for queue source ${source.messageId}`,
+        );
+      }
+      continue;
+    }
+    if (
+      owners.length !== 1 ||
+      owners[0]?.type !== 'user' ||
+      owners[0].turnId !== admission.turnId ||
+      !messageContentsEqual(normalizeMessageContent(owners[0]), source.content)
+    ) {
+      throw new Error(
+        `Admitted Turn ${admission.turnId} does not match queue source ${source.messageId}`,
+      );
+    }
+  }
 }
 
 function recoveryUserMessage(admission: RootTurnAdmission): RecoveryUserMessage {
@@ -317,6 +385,8 @@ function recoveryExecutionContract(execution: RootExecutionDescriptor): Recovery
   switch (execution.kind) {
     case 'external_message':
       return contract(true, true, 'root_replay');
+    case 'workhub_coordination':
+      return contract(false, true, 'root_replay');
     case 'regenerate':
       return contract(false, true, 'root_replay');
     case 'context_compact':

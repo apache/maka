@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -31,7 +32,11 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '../client/index.js';
-import { RUNTIME_HOST_PROTOCOL_VERSION, type SubscriptionFrame } from '../protocol/index.js';
+import {
+  RUNTIME_HOST_PROTOCOL_VERSION,
+  type OperationOutput,
+  type SubscriptionFrame,
+} from '../protocol/index.js';
 import { FakeBackend } from '@maka/runtime/test-only/fake-backend';
 import { createExecutionRuntimeHostComposition } from '../server/execution-composition.js';
 import { RuntimeHostKernel, type RuntimeHostCompositionFactory } from '../server/host-kernel.js';
@@ -56,6 +61,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     const planStore = await openInteractivePlanStoreForWrite(owner.lease);
     const session = await setupStores.sessionStore.create({
       cwd: root,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'explore',
@@ -90,7 +96,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       transcript: { kind: 'none' },
     });
 
-    const first = await desktop.queryPlan({ kind: 'list_start', sessionId: session.id });
+    const first = await desktop.request('plan.query', {
+      kind: 'list_start',
+      sessionId: session.id,
+    });
     assert.equal(first.kind, 'page');
     if (first.kind !== 'page') return;
     const approval = {
@@ -101,7 +110,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       expectedStoreVersion: first.storeVersion,
       turnId: 'approve-turn',
     };
-    const started = await tui.startPlanTurn(approval);
+    const started = await tui.request('plan.turn.start', approval);
     const approved = started.plan;
     assert.equal(approved.eventType, 'plan_approved');
     assert.ok(approved.executionId);
@@ -114,7 +123,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     assert.equal(changed.sessionId, session.id);
     assert.equal(changed.domain, 'plan');
 
-    const shared = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    const shared = await tui.request('plan.query', { kind: 'list_start', sessionId: session.id });
     assert.equal(shared.kind, 'page');
     if (shared.kind === 'page') {
       assert.equal(shared.activeExecutionId, approved.executionId);
@@ -139,11 +148,14 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     owner = undefined;
     tui = await connect(root);
 
-    const replayed = await tui.startPlanTurn(approval);
+    const replayed = await tui.request('plan.turn.start', approval);
     assert.equal(replayed.plan.executionId, approved.executionId);
     assert.equal(replayed.plan.storeVersion, approved.storeVersion);
     assert.equal(replayed.turn.turnId, approval.turnId);
-    const recovered = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    const recovered = await tui.request('plan.query', {
+      kind: 'list_start',
+      sessionId: session.id,
+    });
     assert.equal(recovered.kind, 'page');
     if (recovered.kind !== 'page') return;
     assert.equal(recovered.activeExecutionId, null);
@@ -153,7 +165,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     assert.equal(execution.execution.status, 'interrupted');
 
     await assert.rejects(
-      tui.startPlanTurn({
+      tui.request('plan.turn.start', {
         kind: 'resume_execution',
         sessionId: session.id,
         executionId: execution.execution.executionId,
@@ -162,7 +174,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       (error: unknown) =>
         error instanceof Error && 'code' in error && error.code === 'operation_conflict',
     );
-    const unchanged = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    const unchanged = await tui.request('plan.query', {
+      kind: 'list_start',
+      sessionId: session.id,
+    });
     assert.equal(unchanged.kind, 'page');
     assert.equal(
       unchanged.kind === 'page'
@@ -171,7 +186,7 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
       'interrupted',
     );
 
-    const resumed = await tui.startPlanTurn({
+    const resumed = await tui.request('plan.turn.start', {
       kind: 'resume_execution',
       sessionId: session.id,
       executionId: execution.execution.executionId,
@@ -181,7 +196,10 @@ test('two Clients and a restarted production Host share one retry-safe Plan auth
     assert.equal(resumed.plan.executionId, execution.execution.executionId);
     assert.equal(resumed.turn.turnId, 'resume-turn');
     await waitForTerminal(tui, resumed.turn);
-    const afterResume = await tui.queryPlan({ kind: 'list_start', sessionId: session.id });
+    const afterResume = await tui.request('plan.query', {
+      kind: 'list_start',
+      sessionId: session.id,
+    });
     assert.equal(afterResume.kind, 'page');
     assert.equal(
       afterResume.kind === 'page' ? afterResume.activeExecutionId : undefined,
@@ -204,7 +222,7 @@ async function connect(rootPath: string): Promise<RuntimeHostConnection> {
 
 async function waitForTerminal(
   connection: RuntimeHostConnection,
-  initial: Awaited<ReturnType<RuntimeHostConnection['startPlanTurn']>>['turn'],
+  initial: OperationOutput<'plan.turn.start'>['turn'],
 ): Promise<void> {
   let snapshot = initial;
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -216,7 +234,7 @@ async function waitForTerminal(
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, 10));
-    snapshot = await connection.queryTurn({
+    snapshot = await connection.request('turn.query', {
       sessionId: snapshot.sessionId,
       turnId: snapshot.turnId,
     });
@@ -235,23 +253,6 @@ async function nextFrameOfKind<K extends SubscriptionFrame['kind']>(
   }
   throw new Error(`Session subscription ended before ${kind}`);
 }
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
-}
-
 /**
  * The production composition registers no test backend; the deterministic one
  * rides the same `primaryBackendFactory` seam Desktop E2E uses.

@@ -51,6 +51,69 @@ async function createSession(page: Page, prompt: string) {
   return { composer, sessionId: sessionId!, sidebar };
 }
 
+test('a collapsed workbar never flashes during the first send', async ({
+  window: page,
+}) => {
+  await page.evaluate(() => {
+    const watch = { visibleRightWorkbar: false };
+    const inspect = () => {
+      const panel = document.querySelector<HTMLElement>(
+        '.maka-session-workbar[data-placement="right"]',
+      );
+      if (
+        panel &&
+        getComputedStyle(panel).display !== 'none' &&
+        panel.getBoundingClientRect().width > 0
+      ) {
+        watch.visibleRightWorkbar = true;
+      }
+    };
+    const observer = new MutationObserver(inspect);
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+    });
+    (
+      window as typeof window & {
+        __makaFirstSendWorkbarWatch?: typeof watch;
+        __makaFirstSendWorkbarWatchStop?: () => void;
+      }
+    ).__makaFirstSendWorkbarWatch = watch;
+    (
+      window as typeof window & {
+        __makaFirstSendWorkbarWatchStop?: () => void;
+      }
+    ).__makaFirstSendWorkbarWatchStop = () => {
+      inspect();
+      observer.disconnect();
+    };
+  });
+
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill('create a session without opening the workbar');
+  await page.getByRole('button', { name: '发送' }).click();
+  const expandWorkbar = page.getByRole('button', { name: '展开任务工作栏' });
+  await expect(expandWorkbar).toBeVisible({
+    timeout: 20_000,
+  });
+
+  const watch = await page.evaluate(() => {
+    const target = window as typeof window & {
+      __makaFirstSendWorkbarWatch?: { visibleRightWorkbar: boolean };
+      __makaFirstSendWorkbarWatchStop?: () => void;
+    };
+    target.__makaFirstSendWorkbarWatchStop?.();
+    return target.__makaFirstSendWorkbarWatch;
+  });
+  expect(watch?.visibleRightWorkbar, 'the collapsed right workbar stayed hidden').toBe(false);
+
+  await expandWorkbar.evaluate((button) => button.click());
+  await expect(
+    page.locator('.maka-session-workbar[data-placement="right"]'),
+  ).toBeVisible();
+});
+
 async function waitForCompanionForkId(page: Page, sourceSessionId: string) {
   let forkId: string | undefined;
   await expect
@@ -338,6 +401,14 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
 
   const companion = page.locator('.maka-quote-companion');
   await expect(companion).toBeVisible();
+
+  // The companion forks lazily on the first send, not when the panel opens.
+  const sideComposer = companion.locator(COMPOSER_INPUT);
+  await sideComposer.fill('inspect this source without changing it');
+  await sideComposer.press('Enter');
+  await expect(companion).toContainText(
+    'Fake backend received: inspect this source without changing it',
+  );
   const firstForkId = await waitForCompanionForkId(page, sessionId);
   await expect(sidebar.locator(`[data-session-id=${JSON.stringify(firstForkId)}]`)).toHaveCount(0);
 
@@ -352,13 +423,6 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
     .toBe(true);
   await page.getByRole('button', { name: '展开任务工作栏' }).click();
   await expect(companion).toBeVisible();
-
-  const sideComposer = companion.locator(COMPOSER_INPUT);
-  await sideComposer.fill('inspect this source without changing it');
-  await sideComposer.press('Enter');
-  await expect(companion).toContainText(
-    'Fake backend received: inspect this source without changing it',
-  );
 
   const workbarToolbar = page.getByRole('toolbar', { name: '任务工作栏标签' }).first();
   const closeActiveSideChat = () =>
@@ -386,6 +450,13 @@ test('Side Chat survives collapse, confirms close, and cleans up on source switc
   await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
   await openSideChat.click();
   await expect(companion).toBeVisible();
+  // Fork again on the reopened panel's first send.
+  const reopenedComposer = companion.locator(COMPOSER_INPUT);
+  await reopenedComposer.fill('inspect once more before switching away');
+  await reopenedComposer.press('Enter');
+  await expect(companion).toContainText(
+    'Fake backend received: inspect once more before switching away',
+  );
   const secondForkId = await waitForCompanionForkId(page, sessionId);
 
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();

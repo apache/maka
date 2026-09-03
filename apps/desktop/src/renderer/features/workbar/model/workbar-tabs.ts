@@ -24,6 +24,7 @@ export type SessionWorkbarTabKind =
   | 'review'
   | 'terminal'
   | 'tasks'
+  | 'work-board'
   | 'browser'
   | 'files'
   | 'inspector'
@@ -133,6 +134,7 @@ const STATIC_TAB_IDS: Record<Exclude<SessionWorkbarTabKind, 'side-chat'>, string
   review: 'workbar:review',
   terminal: 'workbar:terminal',
   tasks: 'workbar:tasks',
+  'work-board': 'workbar:work-board',
   browser: 'workbar:browser',
   files: 'workbar:files',
   inspector: 'workbar:inspector',
@@ -582,51 +584,10 @@ export function readSessionWorkbarPanels(): SessionWorkbarPanelsState {
         );
       }
     } catch {
-      // Fall through to the v2 right-panel migration.
+      // Fall through to an empty topology.
     }
   }
-  return createSessionWorkbarPanelsState(readLegacySessionWorkbarTabs());
-}
-
-function readLegacySessionWorkbarTabs(): SessionWorkbarTabsState {
-  const raw = safeLocalStorageGet('maka-session-workbar-tabs-v2');
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw) as Partial<PersistedSessionWorkbarTabs>;
-      if (parsed.version === 2 && Array.isArray(parsed.tabs)) {
-        const tabs = parsed.tabs.flatMap((candidate) => {
-          if (
-            !candidate ||
-            typeof candidate.id !== 'string' ||
-            !isSessionWorkbarTabKind(candidate.kind) ||
-            !isPersistedWorkbarTool(candidate.kind)
-          ) {
-            return [];
-          }
-          return [{ id: candidate.id, kind: candidate.kind }];
-        });
-        return createSessionWorkbarTabsState(
-          tabs,
-          typeof parsed.activeTabId === 'string' ? parsed.activeTabId : null,
-        );
-      }
-    } catch {
-      // Fall through to the v1 active-tab migration.
-    }
-  }
-
-  const legacy = safeLocalStorageGet('maka-session-workbar-tab-v1');
-  if (
-    legacy === 'review' ||
-    legacy === 'terminal' ||
-    legacy === 'tasks' ||
-    legacy === 'browser' ||
-    legacy === 'files' ||
-    legacy === 'inspector'
-  ) {
-    return openStaticSessionWorkbarTab(createSessionWorkbarTabsState(), legacy);
-  }
-  return createSessionWorkbarTabsState();
+  return createSessionWorkbarPanelsState();
 }
 
 function readPersistedPanel(
@@ -657,6 +618,7 @@ export function isSessionWorkbarTabKind(value: unknown): value is SessionWorkbar
     value === 'review' ||
     value === 'terminal' ||
     value === 'tasks' ||
+    value === 'work-board' ||
     value === 'browser' ||
     value === 'files' ||
     value === 'inspector' ||

@@ -39,7 +39,7 @@ import { basename, dirname, isAbsolute } from 'node:path';
 import { compilePermissionProfile } from '@maka/core/permission-profile-compiler';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { type SandboxBoundaryExpansion } from '@maka/core/sandbox-boundary';
-import { type StorageRef, type ToolResultContent } from '@maka/core/events';
+import { isStorageRef, type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { type PermissionProfile } from '@maka/core/permission-profile';
 import { bashToolResultToModelOutput } from './bash-model-output.js';
 import { fileWriteToolResultToModelOutput } from './file-tool-model-output.js';
@@ -85,8 +85,13 @@ import type { ChildFdInput } from './child-fd-input.js';
 import { normalizeSandboxBoundaryPath } from './sandbox-boundary-path.js';
 import type { FilesystemWorkerClient } from './filesystem-worker/client.js';
 import {
+  BASH_REQUIRED_BOUNDARY_DESCRIPTION,
+  bashBoundaryIntentSchema,
   preflightDeclaredSandboxBoundary,
+  preprocessBashBoundaryDeclaration,
+  refineBashBoundaryDeclaration,
   sandboxBoundaryExpansionSchema,
+  selectedBashBoundaryExpansion,
 } from './sandbox-boundary-declaration.js';
 
 // Generous wall-clock cap for the ripgrep-backed Grep tool. A search should be
@@ -175,17 +180,15 @@ export interface BuildBuiltinToolsOptions {
   sandboxManager?: SandboxManager;
   /** Sandboxed worker used for all local filesystem tools. */
   filesystemWorker?: Pick<FilesystemWorkerClient, 'execute'>;
-  /** Host-surface gate for Edit. Defaults to enabled. */
-  includeEdit?: boolean;
   /** Test/embedding override. Production callers use the current process platform. */
   sandboxPlatform?: SandboxPlatform;
   snapshotImage?: (input: {
     sessionId: string;
-    turnId: string;
-    name: string;
+    ownerId: string;
     bytes: Uint8Array;
     mimeType: string;
-  }) => Promise<Extract<StorageRef, { kind: 'session_file' }>>;
+  }) => Promise<Extract<StorageRef, { kind: 'session_context' }>>;
+  releaseImageSnapshot?: (input: { sessionId: string; refId: string }) => Promise<void>;
 }
 
 export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaTool[] {
@@ -353,6 +356,35 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       description: readDescription,
       parameters: readParameters,
       executionFacts,
+      ...(options.releaseImageSnapshot
+        ? {
+            compensateDurableOutcomeCommitFailure: async (input: {
+              readonly result: unknown;
+              readonly sessionId: string;
+            }) => {
+              const result = input.result;
+              if (
+                !result ||
+                typeof result !== 'object' ||
+                (result as { kind?: unknown }).kind !== 'image'
+              ) {
+                return;
+              }
+              const ref = (result as { ref?: unknown }).ref;
+              if (
+                !isStorageRef(ref) ||
+                ref.kind !== 'session_context' ||
+                ref.sessionId !== input.sessionId
+              ) {
+                return;
+              }
+              await options.releaseImageSnapshot!({
+                sessionId: ref.sessionId,
+                refId: ref.refId,
+              });
+            },
+          }
+        : {}),
       impl: async (input, ctx) => {
         const { cwd, sessionId, abortSignal } = ctx;
         if ('ref' in input) {
@@ -395,10 +427,12 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
         if (result.kind === 'read_image') {
           if (!options.snapshotImage)
             throw new Error('Read image snapshots are not available in this toolset.');
+          if (!ctx.operationId) {
+            throw new Error('Read image snapshots require a durable tool operation identity.');
+          }
           const ref = await options.snapshotImage({
             sessionId,
-            turnId: ctx.turnId,
-            name: basename(path),
+            ownerId: ctx.operationId,
             bytes: result.bytes,
             mimeType: result.mimeType,
           });
@@ -595,7 +629,7 @@ export function buildBuiltinTools(options: BuildBuiltinToolsOptions = {}): MakaT
       },
     },
   ];
-  return tools.filter((tool) => options.includeEdit !== false || tool.name !== 'Edit');
+  return tools;
 }
 
 /** The per-call context every file tool hands to the filesystem authority. */
@@ -627,23 +661,26 @@ function buildExecutorBashTool(
     description:
       withTurnShellGuidance('Run a shell command in the session cwd.', shell) +
       ' Enforced by the current session sandbox boundary.',
-    parameters: z
-      .object({
-        command: z.string().describe('The shell command to execute'),
-        timeout_ms: z.number().int().positive().max(600_000).optional(),
-        required_boundary: sandboxBoundaryExpansionSchema
-          .optional()
-          .describe(
-            'Declare the exact filesystem or network sandbox authority this command requires. Do not infer it from command text.',
-          ),
-      })
-      .strict(),
+    parameters: preprocessBashBoundaryDeclaration(
+      z
+        .object({
+          command: z.string().describe('The shell command to execute'),
+          timeout_ms: z.number().int().positive().max(600_000).optional(),
+          boundary_intent: bashBoundaryIntentSchema,
+          required_boundary: sandboxBoundaryExpansionSchema
+            .optional()
+            .describe(BASH_REQUIRED_BOUNDARY_DESCRIPTION),
+        })
+        .strict()
+        .superRefine(refineBashBoundaryDeclaration),
+    ),
     toModelOutput: ({ output }) => bashToolResultToModelOutput(output),
     executionFacts: executor.facts,
-    impl: async ({ command, timeout_ms, required_boundary }, ctx) => {
+    impl: async (input, ctx) => {
+      const { command, timeout_ms } = input;
       throwIfShellSetupFailed(shell);
       const normalizedRequiredBoundary = await preflightDeclaredSandboxBoundary(
-        required_boundary,
+        selectedBashBoundaryExpansion(input),
         ctx,
       );
       const { cwd, abortSignal, emitOutput } = ctx;

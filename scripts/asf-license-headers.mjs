@@ -130,6 +130,7 @@ const coveredExtensions = new Map([
 /** Covered files whose name carries no extension. */
 const coveredNames = new Map([
   ['Dockerfile', 'hash'],
+  ['pre-commit', 'hash'],
   // A POSIX shell script that the Eval egress sidecar invokes by name.
   ['network-policy', 'hash'],
 ]);
@@ -187,6 +188,8 @@ export const exclusionRules = [
       'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
       'apps/desktop/resources/licenses/renderer/TDESIGN_ICONS_LICENSE.txt',
       'apps/desktop/src/renderer/public/THIRD_PARTY_LICENSES.txt',
+      'packages/cli/RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
+      'packages/cli/RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
       'packages/cli/THIRD_PARTY_NOTICES.txt',
     ),
   },
@@ -219,9 +222,9 @@ export const exclusionRules = [
       'docs/astryx-surface-file-inventory.md',
       'docs/astryx-surface-file-inventory.paths',
       'docs/windows-test-inventory.md',
-      'packages/core/src/model-metadata.generated.ts',
+      'native/gitoxide-helper/Cargo.lock',
+      'native/runtime-host-peer/Cargo.lock',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',
-      'packages/runtime/src/telemetry/model-pricing.generated.ts',
     ),
   },
   {
@@ -323,6 +326,10 @@ const reviewedProvenance = new Map([
   [
     'scripts/generate-third-party-notices.mjs',
     'Maka-authored generator that emits upstream copyright lines into THIRD_PARTY_NOTICES.txt. The copyright it names is its output, not its own.',
+  ],
+  [
+    'scripts/generate-runtime-host-peer-notices.mjs',
+    'Maka-authored generator that emits upstream copyright lines into the Runtime Host peer notices. The copyright it names is its output, not its own.',
   ],
   [
     'scripts/sync-model-metadata.mjs',
@@ -611,6 +618,38 @@ export function auditTree({ root = defaultRepoRoot } = {}) {
   return { ...result, mode: listing.mode, root };
 }
 
+export function auditStaged({ root = defaultRepoRoot } = {}) {
+  const output = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=A', '-z'], {
+    cwd: root,
+    encoding: 'utf8',
+    maxBuffer: maxCommandBuffer,
+  });
+  const files = output.split('\0').filter(Boolean);
+  const result = auditSourceFiles({ files, mode: 'staged' });
+  for (const path of files) {
+    const classification = classifyPath(path);
+    if (classification.status !== 'covered') continue;
+    const contents = execFileSync('git', ['show', `:${path}`], {
+      cwd: root,
+      encoding: 'utf8',
+      maxBuffer: maxCommandBuffer,
+    });
+    const status = classifyHeader(contents, classification.style, {
+      textAsData: licenseTextAsData.has(path),
+    });
+    if (status === 'absent') result.missing.push(path);
+    else if (status === 'duplicated') result.duplicated.push(path);
+    else if (status === 'unrecognized') result.unrecognized.push(path);
+    if (
+      !reviewedProvenance.has(path) &&
+      provenanceMarkers.some((marker) => marker.test(contents))
+    ) {
+      result.unreviewedProvenance.push(path);
+    }
+  }
+  return { ...result, mode: 'staged', root };
+}
+
 export function writeHeaders({ root = defaultRepoRoot } = {}) {
   const { files } = listSourceFiles(root);
   const changed = [];
@@ -645,8 +684,8 @@ function reportExclusions(result) {
   }
 }
 
-function runCheck({ report, root }) {
-  const result = auditTree({ root });
+function runCheck({ report, root, staged = false }) {
+  const result = staged ? auditStaged({ root }) : auditTree({ root });
   const excluded = [...result.excludedByRule.values()].reduce(
     (total, paths) => total + paths.length,
     0,
@@ -724,6 +763,10 @@ function main() {
   if (!statSync(root).isDirectory()) throw new Error(`Not a directory: ${root}`);
   if (command === 'check') {
     runCheck({ report, root });
+    return;
+  }
+  if (command === 'check-staged') {
+    runCheck({ report, root, staged: true });
     return;
   }
   if (command === 'write') {

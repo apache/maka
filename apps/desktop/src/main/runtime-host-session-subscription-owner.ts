@@ -17,7 +17,10 @@
  * under the License.
  */
 
-import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
+import {
+  RuntimeHostOperationError,
+  RuntimeHostSubscriptionError,
+} from "@maka/runtime-host/client";
 import type {
   SessionAssistantStreamIdentity,
   SessionContinuitySnapshot,
@@ -401,19 +404,28 @@ export class RuntimeHostSessionSubscriptionOwner {
 }
 
 function subscriptionClosedError(
-  reason: "slow_consumer" | "session_removed",
+  reason: "slow_consumer" | "session_removed" | 'access_revoked',
 ): Error {
-  return reason === "session_removed"
-    ? new SessionRemovedSubscriptionError(
-        "Runtime Host Session was removed while it was observed",
-      )
-    : new RuntimeHostSubscriptionError(
-        "slow_consumer",
-        "Runtime Host Session subscription closed for a slow consumer",
-      );
+  if (reason === 'session_removed') {
+    return new SessionRemovedSubscriptionError(
+      'Runtime Host Session was removed while it was observed',
+    );
+  }
+  if (reason === 'access_revoked') {
+    return new SessionRemovedSubscriptionError(
+      'Access to the shared Runtime Host Session was revoked',
+    );
+  }
+  return new RuntimeHostSubscriptionError(
+    'slow_consumer',
+    'Runtime Host Session subscription closed for a slow consumer',
+  );
 }
 
 function isRecoverableSubscriptionFailure(error: unknown): boolean {
+  if (error instanceof RuntimeHostOperationError) {
+    return error.operation === "session.transcript.page" && error.code === "not_found";
+  }
   if (!(error instanceof RuntimeHostSubscriptionError)) return false;
   return (
     error.reason === "slow_consumer" ||

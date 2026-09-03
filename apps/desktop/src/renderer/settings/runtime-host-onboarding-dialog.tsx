@@ -21,12 +21,21 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
-import { Banner, Button, FormLayout, Spinner, TextInput, useUiLocale } from '@maka/ui';
+import { Banner, Button, FormLayout, Selector, Spinner, TextInput, useUiLocale } from '@maka/ui';
 import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
+import {
+  canonicalProjectDirectoryRoots,
+  projectDirectoryRootsValid,
+} from '../../shared/runtime-host-project-directory-policy.js';
 import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
+import {
+  RuntimeHostProjectDirectoryEditor,
+  type ProjectDirectoryRootDraft,
+} from './runtime-host-project-directory-editor.js';
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
+  readonly initialTargetKind: 'ssh' | 'wsl';
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
@@ -38,8 +47,15 @@ export function RuntimeHostOnboardingDialog(props: {
     revision: 0,
   });
   const [name, setName] = useState('');
+  const targetKind = props.initialTargetKind;
   const [destination, setDestination] = useState('');
+  const [distribution, setDistribution] = useState('');
+  const [distributions, setDistributions] = useState<readonly string[]>([]);
   const [sshPort, setSshPort] = useState('');
+  const [projectDirectoryRoots, setProjectDirectoryRoots] = useState<
+    readonly ProjectDirectoryRootDraft[]
+  >([]);
+  const nextProjectDirectoryRootId = useRef(1);
 
   useEffect(() => {
     if (!props.isOpen) return;
@@ -57,15 +73,42 @@ export function RuntimeHostOnboardingDialog(props: {
     };
   }, [props.isOpen]);
 
+  useEffect(() => {
+    if (!props.isOpen || targetKind !== 'wsl') return;
+    let disposed = false;
+    void window.maka.runtimeHostOnboarding.listWslDistributions().then((available) => {
+      if (disposed) return;
+      setDistributions(available);
+      setDistribution((current) => current || available[0] || '');
+    }, () => undefined);
+    return () => { disposed = true; };
+  }, [props.isOpen, targetKind]);
+
   const running = snapshot.kind === 'running';
-  const canStart = destination.trim().length > 0 && validOptionalPort(sshPort);
+  const canStart =
+    (targetKind === 'wsl'
+      ? distribution.trim().length > 0
+      : destination.trim().length > 0 && validOptionalPort(sshPort)) &&
+    projectDirectoryRootsValid(projectDirectoryRoots);
 
   async function start(): Promise<void> {
-    const next = await window.maka.runtimeHostOnboarding.start({
-      destination: destination.trim(),
-      ...(name.trim() ? { name: name.trim() } : {}),
-      ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
-    });
+    const roots = projectDirectoryRoots.length === 0
+      ? {}
+      : { projectDirectoryRoots: canonicalProjectDirectoryRoots(projectDirectoryRoots) };
+    const next = await window.maka.runtimeHostOnboarding.start(targetKind === 'wsl'
+      ? {
+          kind: 'wsl',
+          distribution: distribution.trim(),
+          ...(name.trim() ? { name: name.trim() } : {}),
+          ...roots,
+        }
+      : {
+          kind: 'ssh',
+          destination: destination.trim(),
+          ...(name.trim() ? { name: name.trim() } : {}),
+          ...(sshPort.trim() ? { sshPort: Number(sshPort) } : {}),
+          ...roots,
+        });
     if (next.revision > revision.current) {
       revision.current = next.revision;
       setSnapshot(next);
@@ -101,7 +144,9 @@ export function RuntimeHostOnboardingDialog(props: {
         header={(
           <DialogHeader
             title={copy.setupTitle}
-            subtitle={copy.setupDescription}
+            subtitle={targetKind === 'wsl'
+              ? copy.setupWslDescription
+              : copy.setupSshDescription}
             onOpenChange={(open) => {
               if (!open) close();
             }}
@@ -129,20 +174,51 @@ export function RuntimeHostOnboardingDialog(props: {
                     isDisabled={running}
                     onChange={setName}
                   />
-                  <TextInput
-                    label={copy.sshDestination}
-                    value={destination}
-                    placeholder="user@host.example"
-                    isDisabled={running}
-                    onChange={setDestination}
-                  />
-                  <TextInput
-                    label={copy.setupSshPort}
-                    value={sshPort}
-                    placeholder="22"
-                    isDisabled={running}
-                    onChange={setSshPort}
-                  />
+                  {targetKind === 'wsl' ? (
+                    distributions.length > 0 ? (
+                      <Selector
+                        label={copy.wslDistribution}
+                        value={distribution}
+                        options={distributions.map((value) => ({ value, label: value }))}
+                        onChange={setDistribution}
+                      />
+                    ) : (
+                      <TextInput
+                        label={copy.wslDistribution}
+                        value={distribution}
+                        placeholder="Ubuntu"
+                        onChange={setDistribution}
+                      />
+                    )
+                  ) : (
+                    <>
+                      <TextInput
+                        label={copy.sshDestination}
+                        value={destination}
+                        placeholder="user@host.example"
+                        onChange={setDestination}
+                      />
+                      <TextInput
+                        label={copy.setupSshPort}
+                        value={sshPort}
+                        placeholder="22"
+                        onChange={setSshPort}
+                      />
+                    </>
+                  )}
+                  <div className="settingsRuntimeHostManagementDirectoryRoots">
+                    <Text type="body" weight="semibold">{copy.directoryRoots}</Text>
+                    <Text type="supporting" color="secondary">
+                      {copy.setupDirectoryRootsDescription}
+                    </Text>
+                    <RuntimeHostProjectDirectoryEditor
+                      roots={projectDirectoryRoots}
+                      isDisabled={running}
+                      nextId={() => nextProjectDirectoryRootId.current++}
+                      copy={copy}
+                      onChange={setProjectDirectoryRoots}
+                    />
+                  </div>
                 </>
               ) : null}
             </FormLayout>

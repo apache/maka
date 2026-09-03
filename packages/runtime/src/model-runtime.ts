@@ -18,10 +18,9 @@
  */
 
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   effectiveBaseUrl,
   type ModelInfo,
-  type ProviderResponsesContract,
   type ProviderRuntimeAdapter,
   type ProviderType,
 } from '@maka/core/llm-connections';
@@ -32,6 +31,12 @@ import {
 } from '@maka/core/model-metadata';
 import { isRetiredProvider } from '@maka/core/provider-registry';
 import { resolveApplyPatchProfile, type ApplyPatchProfile } from './apply-patch-profile.js';
+import {
+  resolveRuntimeProviderAdapter,
+  runtimeProviderName,
+  type RuntimeProviderAdapter,
+  type RuntimeProviderResponsesContract,
+} from './provider-runtime-policy.js';
 
 export type ModelRuntimeWire =
   | 'anthropic-messages'
@@ -44,10 +49,10 @@ export type ReasoningReplayContract =
   | { kind: 'none' }
   | { kind: 'anthropic-signed' }
   | { kind: 'openai-chat-plaintext'; requestField: 'observed' | 'reasoning' }
-  | { kind: 'responses'; contract: ProviderResponsesContract };
+  | { kind: 'responses'; contract: RuntimeProviderResponsesContract };
 
 export interface ResolvedModelRuntime {
-  adapter: ProviderRuntimeAdapter;
+  adapter: RuntimeProviderAdapter;
   baseUrl: string;
   /** Account-advertised request wire for adapters that route per model. */
   apiProtocol?: ModelInfo['apiProtocol'];
@@ -57,11 +62,16 @@ export interface ResolvedModelRuntime {
   reasoningReplay: ReasoningReplayContract;
   /** Effective parallel-tool-call support after model facts and wire defaults are resolved. */
   parallelToolCalls?: boolean;
+  /** Provider-options namespace used by durable plaintext-summary replay. */
+  responsesProviderOptionsKey?: string;
+  /** Stable connection identity that issued a durable plaintext-summary item. */
+  responsesReplayProfile?: string;
   /** Effective ApplyPatch contract after provider, model, and request wire are resolved. */
   applyPatchProfile: ApplyPatchProfile | null;
 }
 
 export interface ModelRuntimeConnection {
+  readonly slug?: string;
   readonly providerType: ProviderType;
   readonly baseUrl?: string;
   readonly models?: readonly ModelInfo[];
@@ -82,7 +92,7 @@ export function resolveModelRuntime(
     );
   }
   const override = lookupModelProviderOverride(connection.providerType, modelId);
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   // Unknown providerType with no per-model override → can't resolve an adapter.
   // Throw a clear error rather than crashing on `.runtimeAdapter`. Mirrors
   // `isRealConnection` in @maka/core/connection-readiness.ts.
@@ -102,7 +112,7 @@ export function resolveModelRuntime(
       `Kimi Coding Plan protocol must be openai-chat or anthropic-messages, received ${apiProtocol}`,
     );
   }
-  const adapter: ProviderRuntimeAdapter =
+  const baseAdapter: ProviderRuntimeAdapter =
     connection.providerType === 'kimi-coding-plan' && apiProtocol === 'openai-chat'
       ? ({
           kind: 'openai-compatible',
@@ -112,12 +122,14 @@ export function resolveModelRuntime(
       : override
         ? runtimeAdapterOverride(override.npm)
         : defaults.runtimeAdapter;
+  const adapter = resolveRuntimeProviderAdapter(baseAdapter);
   const configuredBaseUrl = connection.baseUrl?.trim();
   const resolvedBaseUrl = configuredBaseUrl
     ? effectiveBaseUrl(connection)
     : (override?.api ?? effectiveBaseUrl(connection));
   const wire = resolveModelRuntimeWire(connection.providerType, modelId, adapter, apiProtocol);
   const parallelToolCalls = resolveParallelToolCalls(connection, modelId, adapter);
+  const replay = reasoningReplayContract(adapter, wire);
   return {
     adapter,
     baseUrl:
@@ -126,8 +138,16 @@ export function resolveModelRuntime(
         : resolvedBaseUrl,
     ...(apiProtocol ? { apiProtocol } : {}),
     wire,
-    reasoningReplay: reasoningReplayContract(adapter, wire),
+    reasoningReplay: replay,
     ...(parallelToolCalls === undefined ? {} : { parallelToolCalls }),
+    ...(replay.kind === 'responses' &&
+    replay.contract.adapter === 'open-responses' &&
+    replay.contract.reasoningReplay === 'plaintext-summary'
+      ? {
+          responsesProviderOptionsKey: runtimeProviderName(adapter, connection),
+          responsesReplayProfile: connection.slug ?? connection.providerType,
+        }
+      : {}),
     applyPatchProfile: resolveApplyPatchProfile(
       {
         wire,
@@ -141,7 +161,7 @@ export function resolveModelRuntime(
 function resolveParallelToolCalls(
   connection: ModelRuntimeConnection,
   modelId: string,
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
 ): boolean | undefined {
   const stored = connection.models?.find((model) => model.id === modelId)?.capabilities
     ?.parallelToolCalls;
@@ -177,7 +197,7 @@ export function modelUsesNativeOpenAiResponses(
 function resolveModelRuntimeWire(
   providerType: ProviderType,
   modelId: string,
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   apiProtocol: ModelInfo['apiProtocol'] | undefined,
 ): ModelRuntimeWire {
   switch (adapter.kind) {
@@ -215,7 +235,7 @@ function resolveModelRuntimeWire(
 }
 
 function reasoningReplayContract(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   wire: ModelRuntimeWire,
 ): ReasoningReplayContract {
   switch (wire) {
@@ -224,11 +244,14 @@ function reasoningReplayContract(
     case 'openai-responses':
       return { kind: 'responses', contract: responsesContract(adapter) };
     case 'openai-chat':
-      return adapter.kind === 'openai-compatible'
+      return adapter.kind === 'openai-compatible' || adapter.kind === 'github-copilot'
         ? {
             kind: 'openai-chat-plaintext',
             requestField:
-              adapter.replayAssistantReasoningAs === 'reasoning' ? 'reasoning' : 'observed',
+              adapter.kind === 'openai-compatible' &&
+              adapter.replayAssistantReasoningAs === 'reasoning'
+                ? 'reasoning'
+                : 'observed',
           }
         : { kind: 'none' };
     case 'google-generate':
@@ -237,7 +260,7 @@ function reasoningReplayContract(
   }
 }
 
-function responsesContract(adapter: ProviderRuntimeAdapter): ProviderResponsesContract {
+function responsesContract(adapter: RuntimeProviderAdapter): RuntimeProviderResponsesContract {
   if (adapter.kind === 'openai-compatible' && adapter.responses) return adapter.responses;
   return { adapter: 'openai', reasoningReplay: 'encrypted-content' };
 }

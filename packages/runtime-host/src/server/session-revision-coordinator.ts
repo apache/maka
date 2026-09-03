@@ -18,24 +18,37 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { isDeepResearchSession } from '@maka/core/deep-research';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { CreateSessionInput } from '@maka/core/runtime-inputs';
 import {
+  isWorkHubCoordinationSessionId,
+  isWorkHubCoordinationSessionTarget,
   sessionRevisionFamilyId,
   type SessionConversationCopy,
   type SessionHeader,
   type StoredMessage,
 } from '@maka/core/session';
 import {
+  archivedToolResultContainsLinkedChildReferences,
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
+  collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
+  type ConversationCopySlice,
   type ConversationRuntimeLedgerCopyPlan,
 } from '@maka/runtime/conversation-copy';
 import { isArchivedToolResultPlaceholder } from '@maka/runtime/context-budget';
+import type { AgentRunEvent } from '@maka/core/agent-run';
+import {
+  decodeModelProjectionTransition,
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveArtifactStoreWriter,
@@ -47,9 +60,10 @@ import {
   type ExecutionStoresWriter,
 } from '@maka/storage/execution-stores';
 import {
-  authenticateInteractiveTaskLedgerWriter,
-  type InteractiveTaskLedgerWriter,
-} from '@maka/storage/task-ledger-authority';
+  authenticateInteractiveSessionTodoWriter,
+  type InteractiveSessionTodoWriter,
+} from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import type {
   OperationOutcome,
   SessionConversationCopyInput,
@@ -68,9 +82,14 @@ import {
   agentGraphRevisionAdmissionSessionIds,
   prepareAgentGraphRevisionReferences,
 } from './session-revision-graph-references.js';
+import {
+  conversationCopyCommitFailureDiagnostic,
+  conversationCopyCommitFailureMessage,
+} from './session-revision-diagnostics.js';
 import { purgeSessionSidecars } from './session-sidecar-purge.js';
 
 type ConversationCopyKind = 'branch' | 'revision';
+type ConversationCopySemanticKind = ConversationCopyKind | 'side_conversation';
 type ConversationCopyOperationKey = Exclude<
   SessionRevisionOperationKey,
   'session.revision.abandon'
@@ -89,7 +108,11 @@ type ConversationCopyCreateInput = CreateSessionInput & {
 export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
-  readonly taskLedger: InteractiveTaskLedgerWriter;
+  readonly sessionTodo: InteractiveSessionTodoWriter;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'copyReferences' | 'retireSession' | 'collectGarbage'
+  >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
@@ -111,12 +134,12 @@ export class HostSessionRevisionCoordinator {
 
   readonly #stores: ExecutionStoresWriter<'interactive'>;
   readonly #artifacts: InteractiveArtifactStoreWriter;
-  readonly #taskLedger: InteractiveTaskLedgerWriter;
+  readonly #sessionTodo: InteractiveSessionTodoWriter;
 
   constructor(private readonly options: HostSessionRevisionCoordinatorOptions) {
     this.#stores = authenticateExecutionStoresWriter(options.stores, 'interactive');
     this.#artifacts = authenticateInteractiveArtifactStoreWriter(options.artifacts);
-    this.#taskLedger = authenticateInteractiveTaskLedgerWriter(options.taskLedger);
+    this.#sessionTodo = authenticateInteractiveSessionTodoWriter(options.sessionTodo);
   }
 
   async recover(): Promise<void> {
@@ -124,7 +147,7 @@ export class HostSessionRevisionCoordinator {
       (header) => header.conversationCopy !== undefined,
     );
     for (const header of copies) {
-      if (header.conversationCopy!.state === 'preparing') await this.#discard(header);
+      if (header.conversationCopy!.state === 'preparing') await this.#discardDuringRecovery(header);
     }
 
     const committed = copies.filter((header) => header.conversationCopy!.state === 'committed');
@@ -163,8 +186,18 @@ export class HostSessionRevisionCoordinator {
       if (retained.has(header.id)) {
         await this.options.manager.commitRevisionVersion(header.id);
       } else {
-        await this.#discard(header);
+        await this.#discardDuringRecovery(header);
       }
+    }
+  }
+
+  async #discardDuringRecovery(header: SessionHeader): Promise<void> {
+    try {
+      await this.#discard(header);
+    } catch (error) {
+      console.error(
+        `[runtime-host] conversation copy cleanup deferred during recovery (${header.id}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
     }
   }
 
@@ -172,9 +205,22 @@ export class HostSessionRevisionCoordinator {
     kind: ConversationCopyKind,
     input: SessionConversationCopyInput,
   ): Promise<ConversationCopyOutcome> {
-    const requestFingerprint = conversationCopyFingerprint(kind, input);
+    if (isWorkHubCoordinationSessionId(input.targetSessionId)) {
+      return copyFailure(
+        'operation_conflict',
+        'Target Session identity is reserved for WorkHub coordination',
+      );
+    }
+    if (isWorkHubCoordinationSessionId(input.sourceSessionId)) {
+      return copyFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session cannot be copied as an ordinary conversation',
+      );
+    }
+    const semanticKind = conversationCopySemanticKind(kind, input);
+    const requestFingerprint = conversationCopyFingerprint(semanticKind, input);
     const retry = await this.options.admission.run(input.targetSessionId, async () =>
-      this.#resolveExistingTarget(kind, input, requestFingerprint, true),
+      this.#resolveExistingTarget(semanticKind, input, requestFingerprint, true),
     );
     if (retry) return retry;
 
@@ -200,7 +246,7 @@ export class HostSessionRevisionCoordinator {
     // lanes and keep the complete lease through validation and publication.
     for (let pass = 0; pass < CONVERSATION_COPY_ADMISSION_PASSES; pass += 1) {
       const result = await this.options.admission.runMany([...admittedSessionIds], (lease) =>
-        this.#copyAdmitted(kind, input, requestFingerprint, lease, admittedSessionIds),
+        this.#copyAdmitted(semanticKind, input, requestFingerprint, lease, admittedSessionIds),
       );
       if ('ok' in result) return result;
       for (const sessionId of result.sessionIds) admittedSessionIds.add(sessionId);
@@ -245,7 +291,7 @@ export class HostSessionRevisionCoordinator {
   }
 
   async #copyAdmitted(
-    kind: ConversationCopyKind,
+    kind: ConversationCopySemanticKind,
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     lease: SessionAdmissionLease,
@@ -281,6 +327,12 @@ export class HostSessionRevisionCoordinator {
         'Archived Session revision families cannot create active revisions',
       );
     }
+    if (isWorkHubCoordinationSessionTarget(sourceHeader)) {
+      return copyFailure(
+        'operation_conflict',
+        'WorkHub Coordination Session cannot be copied as an ordinary conversation',
+      );
+    }
     if (sourceHeader.subagentParent) {
       return copyFailure(
         'operation_conflict',
@@ -293,7 +345,7 @@ export class HostSessionRevisionCoordinator {
         'Deep Research Sessions cannot be copied without an exact research ledger boundary',
       );
     }
-    if (this.options.isSessionActive(input.sourceSessionId)) {
+    if (kind !== 'side_conversation' && this.options.isSessionActive(input.sourceSessionId)) {
       return copyFailure('session_busy', 'Source Session has an active Turn');
     }
 
@@ -303,13 +355,21 @@ export class HostSessionRevisionCoordinator {
     } catch {
       return copyFailure('persistence_failed', 'Source conversation ledger is unavailable');
     }
-    const slice = createConversationCopySlice(
-      source.messages,
-      input.sourceTurnId,
-      kind === 'branch' ? 'through' : 'before',
-    );
-    if (!slice) {
-      return copyFailure('invalid_request', 'Source turn does not exist');
+    // An empty copy carries no source transcript: skip the slice so a side
+    // conversation can fork before the source has any settled turn.
+    let slice: ConversationCopySlice;
+    if (input.sourceTurnId === undefined) {
+      slice = { messages: [], turnIds: [] };
+    } else {
+      const throughSlice = createConversationCopySlice(
+        source.messages,
+        input.sourceTurnId,
+        kind === 'revision' ? 'before' : 'through',
+      );
+      if (!throughSlice) {
+        return copyFailure('invalid_request', 'Source turn does not exist');
+      }
+      slice = throughSlice;
     }
     let plan: ConversationRuntimeLedgerCopyPlan;
     let sessionHeaders: SessionHeader[];
@@ -352,9 +412,16 @@ export class HostSessionRevisionCoordinator {
       plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       slice.messages,
       copyTurnIds,
+      plan.runs.flatMap(({ operationalEvents }) => operationalEvents),
     );
     if (!archivePreflight.ok) return archivePreflight.outcome;
     const linkedChildRequests = collectConversationCopyLinkedChildReferences({
+      messages: slice.messages,
+      runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+      archivedResults: archivePreflight.serializedResults,
+    });
+    const referencedSessionFileIds = collectConversationCopySessionFileRefs({
+      sourceSessionId: input.sourceSessionId,
       messages: slice.messages,
       runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
       archivedResults: archivePreflight.serializedResults,
@@ -388,6 +455,7 @@ export class HostSessionRevisionCoordinator {
       return copyFailure(linkedReferences.code, linkedReferences.message);
     }
     if (
+      kind !== 'side_conversation' &&
       archivePreflight.serializedResults.some((serializedResult) =>
         archivedToolResultContainsConversationOwnedReferences(
           serializedResult,
@@ -447,10 +515,60 @@ export class HostSessionRevisionCoordinator {
     }
 
     try {
+      const archivedSnapshotResults = new Map(
+        archivePreflight.results
+          .filter(
+            ({ serializedResult }) =>
+              archivedToolResultContainsLinkedChildReferences(serializedResult) ||
+              archivedToolResultContainsConversationOwnedReferences(
+                serializedResult,
+                input.sourceSessionId,
+                linkedReferences.references,
+              ),
+          )
+          .map(({ descriptor, serializedResult }) => [descriptor.artifactId, serializedResult]),
+      );
+      const sourceContextRefIds = collectConversationCopySessionContextRefIds({
+        sourceSessionId: input.sourceSessionId,
+        messages: slice.messages,
+        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+        archivedResults: archivePreflight.serializedResults,
+      });
+      if (sourceContextRefIds.length > 0 && !this.options.contextOffload) {
+        throw new Error('Session context copy authority is unavailable');
+      }
+      const contextCopy =
+        sourceContextRefIds.length === 0
+          ? { ok: true as const, copied: [] }
+          : await this.options.contextOffload!.copyReferences({
+              sourceSessionId: input.sourceSessionId,
+              targetSessionId: input.targetSessionId,
+              references: sourceContextRefIds.map((sourceRefId) => ({
+                sourceRefId,
+                targetOwner: { kind: 'read_image_snapshot', ownerId: sourceRefId },
+              })),
+            });
+      if (!contextCopy.ok) {
+        throw new Error(`Session context references could not be copied: ${contextCopy.reason}`);
+      }
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
         turnIds: copyTurnIds,
+        ...(referencedSessionFileIds.size > 0
+          ? { includeArtifactIds: [...referencedSessionFileIds] }
+          : {}),
+        ...(kind === 'side_conversation' && archivedSnapshotResults.size > 0
+          ? { excludeArtifactIds: [...archivedSnapshotResults.keys()] }
+          : {}),
+        ...(kind === 'side_conversation' && linkedReferences.references.size > 0
+          ? {
+              linkedArtifacts: [...linkedReferences.references].map(([sessionId, references]) => ({
+                sessionId,
+                artifactIds: [...references.artifactIds],
+              })),
+            }
+          : {}),
       });
       const references = {
         mode: 'exact' as const,
@@ -458,13 +576,21 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
+        contextRefs: new Map(
+          contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
+        ),
         linkedChildren:
-          linkedReferences.references.size > 0
+          kind === 'side_conversation'
             ? {
-                mode: 'preserve_validated' as const,
-                references: linkedReferences.references,
+                mode: 'snapshot' as const,
+                archivedResults: archivedSnapshotResults,
               }
-            : { mode: 'reject' as const },
+            : linkedReferences.references.size > 0
+              ? {
+                  mode: 'preserve_validated' as const,
+                  references: linkedReferences.references,
+                }
+              : { mode: 'reject' as const },
       };
       const runtimeCopy = await cloneConversationRuntimeLedger({
         plan,
@@ -475,12 +601,12 @@ export class HostSessionRevisionCoordinator {
         newId: randomUUID,
       });
       const copiedMessages = runtimeCopy.copiedMessages;
-      await this.#taskLedger.copyConversationTaskLedger({
+      await this.#sessionTodo.initializeCopy({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
-        turnIds: copyTurnIds,
-        ...(slice.beforeTs === undefined ? {} : { beforeTs: slice.beforeTs }),
-        runIdMap: runtimeCopy.runIdMap,
+        // An empty copy carries no source state, including no in-progress Todo.
+        copyCurrent:
+          kind === 'branch' && slice.beforeTs === undefined && input.sourceTurnId !== undefined,
       });
       if (copiedMessages.length > 0) {
         await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
@@ -507,12 +633,15 @@ export class HostSessionRevisionCoordinator {
           await this.#stores.sessionStore.readCatalogRecord(input.targetSessionId),
         ),
       });
-    } catch {
+    } catch (error) {
+      console.error(
+        `[runtime-host] ${kind} conversation copy commit failed (${input.sourceSessionId} -> ${input.targetSessionId}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
       return this.#rollbackIncompleteCopy(
         kind,
         input,
         requestFingerprint,
-        'Session conversation copy could not be committed',
+        conversationCopyCommitFailureMessage(error),
       );
     }
   }
@@ -522,14 +651,23 @@ export class HostSessionRevisionCoordinator {
     sourceEvents: readonly RuntimeEvent[],
     copiedMessages: readonly StoredMessage[],
     copyTurnIds: readonly string[],
+    operationalEvents: readonly AgentRunEvent[],
   ): Promise<
-    | { readonly ok: true; readonly serializedResults: readonly string[] }
+    | {
+        readonly ok: true;
+        readonly results: readonly {
+          readonly descriptor: ArchivedToolResultCopyDescriptor;
+          readonly serializedResult: string;
+        }[];
+        readonly serializedResults: readonly string[];
+      }
     | { readonly ok: false; readonly outcome: ConversationCopyOutcome }
   > {
     const archives = collectArchivedToolResultPlaceholders(
       sourceEvents,
       copiedMessages,
       copyTurnIds,
+      operationalEvents,
     );
     if (!archives) {
       return {
@@ -537,7 +675,10 @@ export class HostSessionRevisionCoordinator {
         outcome: copyFailure('persistence_failed', 'Archived tool result metadata is invalid'),
       };
     }
-    const serializedResults: string[] = [];
+    const results: Array<{
+      descriptor: ArchivedToolResultCopyDescriptor;
+      serializedResult: string;
+    }> = [];
     for (const archive of archives) {
       const read = await this.#artifacts
         .readTextInSession(sourceSessionId, archive.artifactId, {
@@ -557,13 +698,17 @@ export class HostSessionRevisionCoordinator {
           ),
         };
       }
-      serializedResults.push(read.text);
+      results.push({ descriptor: archive, serializedResult: read.text });
     }
-    return { ok: true, serializedResults };
+    return {
+      ok: true,
+      results,
+      serializedResults: results.map(({ serializedResult }) => serializedResult),
+    };
   }
 
   async #createInput(
-    kind: ConversationCopyKind,
+    kind: ConversationCopySemanticKind,
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     source: SessionHeader,
@@ -571,6 +716,7 @@ export class HostSessionRevisionCoordinator {
     const common: ConversationCopyCreateInput = {
       cwd: source.cwd,
       ...(source.projectId !== undefined ? { projectId: source.projectId } : {}),
+      ...(source.llmConnectionId === undefined ? {} : { llmConnectionId: source.llmConnectionId }),
       llmConnectionSlug: source.llmConnectionSlug,
       model: source.model,
       ...(source.thinkingLevel !== undefined ? { thinkingLevel: source.thinkingLevel } : {}),
@@ -578,23 +724,33 @@ export class HostSessionRevisionCoordinator {
       collaborationMode: source.collaborationMode ?? 'agent',
       orchestrationMode: source.orchestrationMode ?? 'default',
       name: source.name,
-      labels: [...source.labels],
+      labels:
+        kind === 'side_conversation'
+          ? [...new Set([...source.labels, SIDE_CONVERSATION_SESSION_LABEL])]
+          : [...source.labels],
       conversationCopy: {
-        kind,
+        kind: persistedConversationCopyKind(kind),
         sourceSessionId: input.sourceSessionId,
-        sourceTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
         requestFingerprint,
         state: 'preparing',
+        ...(kind === 'side_conversation' ? { intent: kind } : {}),
       },
       status: 'active',
     };
-    if (kind === 'branch') {
+    if (kind !== 'revision') {
+      // An empty copy records provenance but fabricates no branch turn.
       return {
         ...common,
         parentSessionId: input.sourceSessionId,
-        branchOfTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
       };
     }
+    // Revision copies always carry a turn boundary (enforced at decode).
+    if (input.sourceTurnId === undefined) {
+      throw new Error('Session revision copy requires a turn boundary');
+    }
+    const revisionOfTurnId = input.sourceTurnId;
     const revisionRootSessionId = source.revisionRootSessionId ?? input.sourceSessionId;
     const family = (await this.#stores.sessionStore.listHeaders()).filter(
       (candidate) =>
@@ -610,14 +766,14 @@ export class HostSessionRevisionCoordinator {
       ...(source.branchOfTurnId ? { branchOfTurnId: source.branchOfTurnId } : {}),
       revisionRootSessionId,
       revisionParentSessionId: input.sourceSessionId,
-      revisionOfTurnId: input.sourceTurnId,
+      revisionOfTurnId,
       revisionIndex,
       revisionState: 'preparing',
     };
   }
 
   async #resolveExistingTarget(
-    kind: ConversationCopyKind,
+    kind: ConversationCopySemanticKind,
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     discardPreparing: boolean,
@@ -640,7 +796,8 @@ export class HostSessionRevisionCoordinator {
     }
     const copy = probe.record.header.conversationCopy;
     if (
-      copy?.kind !== kind ||
+      copy?.kind !== persistedConversationCopyKind(kind) ||
+      copy.intent !== (kind === 'side_conversation' ? kind : undefined) ||
       copy.sourceSessionId !== input.sourceSessionId ||
       copy.sourceTurnId !== input.sourceTurnId ||
       copy.requestFingerprint !== requestFingerprint
@@ -679,7 +836,7 @@ export class HostSessionRevisionCoordinator {
   }
 
   async #rollbackIncompleteCopy(
-    kind: ConversationCopyKind,
+    kind: ConversationCopySemanticKind,
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     message: string,
@@ -703,7 +860,7 @@ export class HostSessionRevisionCoordinator {
   }
 
   async #unknownAfterCommitAttempt(
-    kind: ConversationCopyKind,
+    kind: ConversationCopySemanticKind,
     input: SessionConversationCopyInput,
     requestFingerprint: `sha256:${string}`,
     message: string,
@@ -720,7 +877,8 @@ export class HostSessionRevisionCoordinator {
     await purgeSessionSidecars(
       {
         artifacts: this.#artifacts,
-        taskLedger: this.#taskLedger,
+        sessionTodo: this.#sessionTodo,
+        ...(this.options.contextOffload ? { contextOffload: this.options.contextOffload } : {}),
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
       },
@@ -771,49 +929,70 @@ function isConversationRuntimeFactRewriteUnsupported(error: unknown): boolean {
 }
 
 function conversationCopyFingerprint(
-  kind: ConversationCopyKind,
+  kind: ConversationCopySemanticKind,
   input: SessionConversationCopyInput,
 ): `sha256:${string}` {
   // The optimistic source revision guards only the initial create. Once this
   // target exists, its stable identity must resolve the committed outcome even
   // if a reconnecting Client observes a newer source revision.
-  return `sha256:${createHash('sha256')
-    .update(
-      JSON.stringify([
-        'session.conversation-copy.v1',
-        kind,
-        input.sourceSessionId,
-        input.targetSessionId,
-        input.sourceTurnId,
-      ]),
-    )
-    .digest('hex')}`;
+  const identity = [
+    kind === 'side_conversation' ? 'session.conversation-copy.v2' : 'session.conversation-copy.v1',
+    kind,
+    input.sourceSessionId,
+    input.targetSessionId,
+    // Absent for an empty copy. JSON.stringify renders the missing element as
+    // null, so an empty copy gets a distinct identity while through_turn and
+    // revision hashes stay byte-identical to a required sourceTurnId.
+    input.sourceTurnId,
+  ];
+  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
 }
 
 function conversationCopyStartNote(
-  kind: ConversationCopyKind,
+  kind: ConversationCopySemanticKind,
   input: SessionConversationCopyInput,
   createInput: ConversationCopyCreateInput,
 ): StoredMessage {
-  return {
-    type: 'system_note',
+  const base = {
+    type: 'system_note' as const,
     id: randomUUID(),
     ts: Date.now(),
-    kind: 'session_start',
-    data:
-      kind === 'branch'
-        ? {
-            parentSessionId: input.sourceSessionId,
-            branchOfTurnId: input.sourceTurnId,
-          }
-        : {
-            revisionRootSessionId: createInput.revisionRootSessionId,
-            revisionParentSessionId: input.sourceSessionId,
-            revisionOfTurnId: input.sourceTurnId,
-            revisionIndex: createInput.revisionIndex,
-            revisionState: 'preparing',
-          },
+    kind: 'session_start' as const,
   };
+  if (kind !== 'revision') {
+    // Empty copies record provenance without a branch turn.
+    return {
+      ...base,
+      data: {
+        parentSessionId: input.sourceSessionId,
+        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
+      },
+    };
+  }
+  if (input.sourceTurnId === undefined) {
+    throw new Error('Session revision copy requires a turn boundary');
+  }
+  return {
+    ...base,
+    data: {
+      revisionRootSessionId: createInput.revisionRootSessionId,
+      revisionParentSessionId: input.sourceSessionId,
+      revisionOfTurnId: input.sourceTurnId,
+      revisionIndex: createInput.revisionIndex,
+      revisionState: 'preparing',
+    },
+  };
+}
+
+function conversationCopySemanticKind(
+  kind: ConversationCopyKind,
+  input: SessionConversationCopyInput,
+): ConversationCopySemanticKind {
+  return kind === 'branch' && input.intent === 'side_conversation' ? input.intent : kind;
+}
+
+function persistedConversationCopyKind(kind: ConversationCopySemanticKind): ConversationCopyKind {
+  return kind === 'revision' ? 'revision' : 'branch';
 }
 
 function isRevisionStartData(value: unknown): boolean {
@@ -829,6 +1008,7 @@ function collectArchivedToolResultPlaceholders(
   events: readonly RuntimeEvent[],
   messages: readonly StoredMessage[],
   copyTurnIds: readonly string[],
+  operationalEvents: readonly AgentRunEvent[],
 ): ArchivedToolResultCopyDescriptor[] | null {
   const retainedTurnIds = new Set(copyTurnIds);
   const archives = new Map<string, ArchivedToolResultCopyDescriptor>();
@@ -847,6 +1027,21 @@ function collectArchivedToolResultPlaceholders(
     if (retainedTurnIds.has(event.turnId) && event.content?.kind === 'function_response') {
       if (!add(event.content.result)) return null;
     }
+  }
+  // A pruned result's body is now named by its durable transition rather than
+  // by the RuntimeEvent, so the copy must reach the ledger to find it. Missing
+  // this is not a cosmetic gap: the target Session would carry a placeholder
+  // pointing at an artifact that was never copied.
+  for (const event of operationalEvents) {
+    if (event.type !== MODEL_PROJECTION_TRANSITION_EVENT_TYPE) continue;
+    let transition: ModelProjectionTransition;
+    try {
+      transition = decodeModelProjectionTransition(event.data?.transition, event.sessionId);
+    } catch {
+      return null;
+    }
+    if (transition.replacement.kind !== 'json') return null;
+    if (!add(transition.replacement.value)) return null;
   }
   for (const message of messages) {
     if (message.type !== 'tool_result') continue;

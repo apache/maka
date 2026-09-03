@@ -70,7 +70,7 @@ export const TranscriptTurn: Story = {
   render: () => (
     <ProseFrame>
       <div className="maka-turn">
-        <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+        <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
           <Markdown
             density="compact"
             text={[
@@ -88,11 +88,38 @@ export const TranscriptTurn: Story = {
               '',
               '#### 边界情况',
               '',
-              '按项目视图仍然保留项目折叠，扁平化只作用于按时间视图。',
+              '按项目视图仍然保留项目折叠，扁平化*只作用于按时间视图*，按`lastActiveAt`排序，PR #4580 的 3 个 executor 不受影响。',
               '',
               '> 注意：新增状态只需补一个行图标。',
               '',
               '如果后续要加新状态，只需补充对应的行图标，不再扩张侧栏信息架构。',
+            ].join('\n')}
+          />
+        </ChatMessageBubble>
+      </div>
+    </ProseFrame>
+  ),
+};
+
+// Real path: chat → an assistant turn containing source code. The wide frame
+// keeps the desktop chat measure, rather than the Storybook viewport, as the
+// visible limit so code-line regressions are easy to compare.
+export const TranscriptCodeBlock: Story = {
+  render: () => (
+    <ProseFrame width={1040}>
+      <div className="maka-turn">
+        <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+          <Markdown
+            density="compact"
+            text={[
+              '## Runtime connection',
+              '',
+              'The desktop keeps the full request readable without wrapping source code into short visual fragments.',
+              '',
+              '```ts',
+              'const connection = await runtimeHost.connect({ workspaceRoot, expectedRootId, initialConnectionTimeoutMs: 45_000 });',
+              'await connection.send({ type: \'session.message\', sessionId, content, attachments });',
+              '```',
             ].join('\n')}
           />
         </ChatMessageBubble>
@@ -108,7 +135,7 @@ export const TranscriptTurn: Story = {
 export const RichAssistantAnswer: Story = {
   render: () => (
     <ProseFrame>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '## 改动思路',
@@ -143,7 +170,7 @@ export const RichAssistantAnswer: Story = {
 export const LongFormArticle: Story = {
   render: () => (
     <ProseFrame width={680}>
-      <ChatMessageBubble variant="ghost" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
+      <ChatMessageBubble variant="ghost" width="100%" className="maka-chat-message-bubble maka-chat-message-bubble-assistant">
         <Markdown
           text={[
             '# Storybook 表面覆盖：为什么单独可看很重要',

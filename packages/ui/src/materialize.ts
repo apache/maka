@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { deriveTurnRecords } from '@maka/core/session';
+import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import {
   isInFlightToolStatus,
   toolResultActivityStatus,
@@ -56,6 +56,8 @@ export interface ChatItem {
   ts?: number;
   /** User-message attachments projected from StoredMessage; absent on assistant/system rows. */
   attachments?: AttachmentRef[];
+  /** Host-bound directory references projected from StoredMessage; user rows only. */
+  directoryReferences?: import('@maka/core/events').DirectoryReference[];
   /** Inline quoted excerpts projected from StoredMessage; user rows only. */
   quotes?: QuoteRef[];
   /** Frozen inline token metadata projected from StoredMessage; user rows only. */
@@ -85,6 +87,12 @@ export interface ToolActivityItem {
   activityKind?: ToolActivityKind;
   displayName?: string;
   intent?: string;
+  /**
+   * Live-only bounded/redacted args subset from the Runtime Host wire (full
+   * args arrive with the durable transcript at turn end). Display formatters
+   * read `args ?? argsPreview`; never rendered as raw JSON.
+   */
+  argsPreview?: unknown;
   origin?: 'provider' | 'code_mode';
   modelVisibility?: 'visible' | 'hidden';
   parentToolCallId?: string;
@@ -132,20 +140,49 @@ export interface ToolActivityItem {
   shellRunSource?: "owned" | "unavailable";
 }
 
-// system_note kinds that we surface inline to the user. Everything else
-// (session_resume, connection_locked, mode_change-as-internal-audit, …)
-// stays in the JSONL audit trail but is hidden from the chat surface so
-// the conversation reads like a conversation, not a debug log.
-const VISIBLE_SYSTEM_NOTES = new Set<string>([
-  "context_compacted",
-  "context_compaction_failed_open",
-  "step_limit",
-]);
-
-function systemNoteLabel(kind: string, locale: UiLocale): string {
+function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string {
   const copy = getConversationCopy(locale).messages.systemNotes;
   if (kind === "context_compacted") return copy.contextCompacted;
   if (kind === "context_compaction_failed_open") return copy.contextCompactionFailedOpen;
+  if (kind === "context_provider_dropping") {
+    const dropping = data as { inputTokens?: unknown; priorInputTokens?: unknown } | undefined;
+    const used = typeof dropping?.inputTokens === "number" ? dropping.inputTokens : 0;
+    const prior = typeof dropping?.priorInputTokens === "number" ? dropping.priorInputTokens : 0;
+    return copy.contextProviderDropping(used, prior);
+  }
+  if (kind === "context_overflow_after_compaction") return copy.contextOverflowAfterCompaction;
+  if (kind === "context_reported_window_exceeded") {
+    const exceeded = data as
+      | { usedTokens?: unknown; reportedContextWindow?: unknown }
+      | undefined;
+    const used = typeof exceeded?.usedTokens === "number" ? exceeded.usedTokens : 0;
+    const reported =
+      typeof exceeded?.reportedContextWindow === "number" ? exceeded.reportedContextWindow : 0;
+    return copy.contextReportedWindowExceeded(used, reported);
+  }
+  if (kind === "context_window_overrun") {
+    const overrun = data as
+      | { usedTokens?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const used = typeof overrun?.usedTokens === "number" ? overrun.usedTokens : 0;
+    const declared =
+      typeof overrun?.declaredContextWindow === "number" ? overrun.declaredContextWindow : 0;
+    return copy.contextWindowOverrun(used, declared);
+  }
+  if (kind === "context_window_suggestion") {
+    const suggestion = data as
+      | { suggestedContextWindow?: unknown; declaredContextWindow?: unknown }
+      | undefined;
+    const tokens =
+      typeof suggestion?.suggestedContextWindow === "number"
+        ? suggestion.suggestedContextWindow
+        : 0;
+    const declared =
+      typeof suggestion?.declaredContextWindow === "number"
+        ? suggestion.declaredContextWindow
+        : undefined;
+    return copy.contextWindowSuggestion(tokens, declared);
+  }
   if (kind === "step_limit") return copy.stepLimit;
   return kind;
 }
@@ -168,6 +205,7 @@ export function materializeChat(
         ...(message.quotes && message.quotes.length > 0
           ? { quotes: message.quotes }
           : {}),
+        ...(message.directoryReferences ? { directoryReferences: message.directoryReferences } : {}),
         ...(message.inlineReferences !== undefined
           ? { inlineReferences: message.inlineReferences }
           : {}),
@@ -183,12 +221,12 @@ export function materializeChat(
       });
     if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       items.push({
         id: message.id,
         role: "system",
-        text: systemNoteLabel(message.kind, locale),
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     }
@@ -424,6 +462,17 @@ export function overlayLiveTurn(
   );
   if (
     targetIndex >= 0
+    && liveTurn.steps.length === 0
+    && (liveTurn.pendingSteering?.length ?? 0) === 0
+  ) {
+    return turns;
+  }
+  // A send arm is only a presentation claim that the next message may still
+  // arrive. It is not a Turn record and must not manufacture one while the
+  // canonical transcript is catching up. A real live step (or steering
+  // message) is sufficient evidence to project a missing external Turn.
+  if (
+    targetIndex < 0
     && liveTurn.steps.length === 0
     && (liveTurn.pendingSteering?.length ?? 0) === 0
   ) {
@@ -757,12 +806,12 @@ export function materializeTurns(
       }
     } else if (
       message.type === "system_note" &&
-      VISIBLE_SYSTEM_NOTES.has(message.kind)
+      isUserVisibleSessionSystemNote(message.kind)
     ) {
       turn.notes.push({
         id: message.id,
         role: "system",
-        text: systemNoteLabel(message.kind, locale),
+        text: systemNoteLabel(message.kind, message.data, locale),
         ts: message.ts,
       });
     } else if (message.type === "token_usage") {
@@ -1084,6 +1133,7 @@ function chatItemFromContent(
     ...(content.quotes && content.quotes.length > 0
       ? { quotes: content.quotes }
       : {}),
+    ...(content.directoryReferences ? { directoryReferences: content.directoryReferences } : {}),
     ...(content.inlineReferences !== undefined
       ? { inlineReferences: content.inlineReferences }
       : {}),

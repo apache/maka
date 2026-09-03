@@ -41,13 +41,13 @@ import { spawn } from 'node:child_process';
 import { afterEach, test } from 'node:test';
 import { constants as zlibConstants, zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import {
-  createSessionBundleFileService,
-  decodeSessionBundleUstarHeaderV1,
-  encodeSessionBundleManifestV1,
   SessionBundleFileError,
   type SessionBundleArtifact,
   type SessionBundleLimits,
-} from '../index.js';
+} from '../session-bundle-contract.js';
+import { createSessionBundleFileService } from '../session-bundle-file-service.js';
+import { encodeSessionBundleManifestV1 } from '../session-bundle-manifest.js';
+import { decodeSessionBundleUstarHeaderV1 } from '../session-bundle-ustar.js';
 
 const roots: string[] = [];
 const identityBytes = Buffer.from('{"schemaVersion":1,"makaSessionId":"maka-α"}', 'utf8');

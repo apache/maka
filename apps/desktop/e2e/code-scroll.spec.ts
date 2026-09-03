@@ -100,12 +100,20 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     (element as HTMLElement).scrollLeft = 0;
     window.getSelection()?.removeAllRanges();
   });
-  const code = viewport.locator('code');
-  const codeBox = await code.boundingBox();
-  if (!codeBox) throw new Error('code line has no visible bounds');
-  const textY = codeBox.y + Math.min(codeBox.height / 2, 18);
-  await page.mouse.move(codeBox.x + 24, textY);
+  const line = viewport.locator('code > [data-line]').first();
+  // Font loading reflows the glyphs; measure only after it settles or the
+  // anchor can land outside the text and no selection ever forms.
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const lineBox = await line.boundingBox();
+  if (!lineBox) throw new Error('code line has no visible bounds');
+  const textY = lineBox.y + Math.min(lineBox.height / 2, 18);
+  await page.mouse.move(lineBox.x + 24, textY);
   await page.mouse.down();
+  // Prove the selection anchored before the long auto-scroll drag.
+  await page.mouse.move(lineBox.x + 90, textY, { steps: 6 });
+  await expect.poll(
+    () => viewport.evaluate(() => window.getSelection()?.toString().length ?? 0),
+  ).toBeGreaterThan(0);
   await page.mouse.move(metrics.rect.x + metrics.rect.width + 50, textY, { steps: 20 });
   await expect.poll(
     () => viewport.evaluate((element) => (element as HTMLElement).scrollLeft),

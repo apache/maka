@@ -125,6 +125,42 @@ describe('Provider error classification', () => {
       data: { error: { message: 'You do not have access to this model.' } },
     });
     assert.equal(classifyError(forbiddenModel), 'Auth');
+    const serverErrorOn403 = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { code: 'server_error' } },
+    });
+    assert.equal(classifyError(serverErrorOn403), 'Auth');
+  });
+
+  test('classifies exhausted Codex HTML edge 403 retries as provider unavailable', () => {
+    const exhaustedEdgeRejection = Object.assign(
+      new Error('Codex OAuth request failed: HTTP 403 Request rejected'),
+      {
+        name: 'OpenAiCodexEdgeRejectionError',
+        statusCode: 403,
+        data: { error: { code: 'openai_codex_edge_rejection' } },
+      },
+    );
+
+    assert.equal(classifyError(exhaustedEdgeRejection), 'ProviderUnavailable');
+    assert.deepEqual(providerRetryMetadata(exhaustedEdgeRejection), { retryable: false });
+    assert.deepEqual(providerFailureDiagnostic(exhaustedEdgeRejection), {
+      errorClass: 'ProviderUnavailable',
+      httpStatus: 403,
+      providerCode: 'openai_codex_edge_rejection',
+      retryable: false,
+    });
+    const spoofedProviderPayload = Object.assign(new Error('request failed'), {
+      name: 'AI_APICallError',
+      statusCode: 403,
+      data: { error: { code: 'openai_codex_edge_rejection' } },
+    });
+    assert.equal(classifyError(spoofedProviderPayload), 'Auth');
+    assert.notEqual(
+      classifyError({ code: 'openai_codex_edge_rejection', message: 'provider payload' }),
+      'ProviderUnavailable',
+    );
   });
 
   test('recovers structured Codex HTTP facts through an SDK wrapper and truncates identifiers', () => {
@@ -237,6 +273,46 @@ describe('Provider error classification', () => {
       providerCode: 'server_error',
       retryable: true,
     });
+  });
+
+  test('retries an AI SDK transport failure without an HTTP response', () => {
+    const failure = Object.assign(
+      new Error(
+        'Cannot connect to API: 80E1BDF601000000:error:0A000119:SSL routines:tls_get_more_records:decryption failed or bad record mac:../deps/openssl/openssl/ssl/record/methods/tls_common.c:869:',
+      ),
+      {
+        name: 'AI_APICallError',
+        isRetryable: true,
+        cause: Object.assign(new TypeError('fetch failed'), {
+          cause: Object.assign(new Error('decryption failed or bad record mac'), {
+            code: 'ERR_SSL_DECRYPTION_FAILED_OR_BAD_RECORD_MAC',
+          }),
+        }),
+      },
+    );
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+    assert.equal(providerFailureDiagnostic(failure).retryable, true);
+  });
+
+  test('retries a transport failure identified only by a cause code', () => {
+    const failure = Object.assign(new Error('request failed'), {
+      cause: { code: 'ECONNRESET' },
+    });
+
+    assert.equal(classifyError(failure), 'Network');
+    assert.deepEqual(providerRetryMetadata(failure), { retryable: true });
+  });
+
+  test('does not retry a bare rate limit marked retryable by the AI SDK', () => {
+    const rateLimit = Object.assign(new Error('Rate limit exceeded'), {
+      name: 'AI_APICallError',
+      isRetryable: true,
+      statusCode: 429,
+    });
+
+    assert.deepEqual(providerRetryMetadata(rateLimit), { retryable: false });
   });
 
   test('retries a rate limit only when the provider names a retry delay', () => {

@@ -22,6 +22,7 @@ import { appendFile, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
+import { desktopPublishedFeeds, desktopReleaseTargets } from './desktop-release-targets.mjs';
 import { parseProductReleaseVersion } from './release-version.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -59,7 +60,8 @@ export function parseAsfSourceReferenceTag(tag) {
     throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
   }
   try {
-    parseProductReleaseVersion(match[1]);
+    const product = parseProductReleaseVersion(match[1]);
+    if (product.prerelease.length > 0) throw new Error('prerelease');
   } catch {
     throw new Error('ASF source reference must match v<version>-incubating-rc<positive-integer>');
   }
@@ -68,6 +70,9 @@ export function parseAsfSourceReferenceTag(tag) {
 
 export function resolveProductManifestIdentity({ rootManifest, desktopManifest, cliManifest }) {
   const { version, prerelease } = parseProductReleaseVersion(rootManifest.version);
+  if (prerelease.length > 0) {
+    throw new Error('Formal product releases require a stable version');
+  }
   for (const [label, manifest] of [
     ['Desktop', desktopManifest],
     ['CLI', cliManifest],
@@ -84,7 +89,6 @@ export function resolveProductManifestIdentity({ rootManifest, desktopManifest, 
 
   return {
     version,
-    isPrerelease: prerelease.length > 0,
     runtimeHostSetupPackage: `maka-agent@${version}`,
     publicCommands: ['maka'],
   };
@@ -116,23 +120,35 @@ export function resolveProductReleaseIdentity({
   }
 
   const toolchain = releaseToolchainFromManifest(rootManifest);
-  const dmg = `Maka-${version}-mac-arm64.dmg`;
-  const macZip = `Maka-${version}-mac-arm64.zip`;
-  const exe = `Maka-${version}-win-x64.exe`;
-  const windowsZip = `Maka-${version}-win-x64.zip`;
+  const targets = desktopReleaseTargets(version, { nightly: false });
   const cliArchive = `Maka-${version}-cli-mac-arm64.zip`;
+  const cliGroup = [cliArchive, `${cliArchive}.sha256`];
+  const uploaded = (target) => [
+    ...target.payloads,
+    ...target.checksums.map((name) => `${name}.sha256`),
+  ];
+  // What each runner uploads, keyed by its staging group. The macOS runners
+  // upload their feeds under per-architecture names; the release publishes the
+  // one merged feed instead, so the staged set and the published set differ.
   const artifacts = {
-    'desktop-macos': [dmg, `${dmg}.sha256`, macZip, `${macZip}.blockmap`, 'latest-mac.yml'],
-    'desktop-windows': [
-      exe,
-      `${exe}.blockmap`,
-      `${exe}.sha256`,
-      windowsZip,
-      `${windowsZip}.sha256`,
-      'latest.yml',
-    ],
-    'cli-macos-arm64': [cliArchive, `${cliArchive}.sha256`],
+    ...Object.fromEntries(
+      targets.map((target) => [
+        `desktop-${target.name}`,
+        [...uploaded(target), target.feed].sort(),
+      ]),
+    ),
+    'cli-macos-arm64': cliGroup,
   };
+  // Each feed carries its own `mergedFrom`, because publication is the only
+  // step that can turn the per-architecture copies the runners upload into the
+  // one feed `releaseAssets` names, and it needs to be told which copies those
+  // are.
+  const updateFeeds = desktopPublishedFeeds(version, { nightly: false });
+  const releaseAssets = [
+    ...targets.flatMap(uploaded),
+    ...updateFeeds.map((feed) => feed.name),
+    ...cliGroup,
+  ].sort();
 
   return {
     ...toolchain,
@@ -140,31 +156,32 @@ export function resolveProductReleaseIdentity({
     tag: `v${version}`,
     sourceCommit: sha,
     sourceReferenceTag,
-    dmg,
-    exe,
     cliArchive,
     artifacts,
+    releaseAssets,
+    updateFeeds,
   };
 }
 
-async function readProductManifests() {
+async function readProductManifests(root = repoRoot) {
   const [rootManifest, desktopManifest, cliManifest] = await Promise.all([
-    readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
-    readFile(join(repoRoot, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
-    readFile(join(repoRoot, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'apps/desktop/package.json'), 'utf8').then(JSON.parse),
+    readFile(join(root, 'packages/cli/package.json'), 'utf8').then(JSON.parse),
   ]);
   return { rootManifest, desktopManifest, cliManifest };
 }
 
-export async function readProductManifestIdentity() {
-  return resolveProductManifestIdentity(await readProductManifests());
+export async function readProductManifestIdentity({ root = repoRoot } = {}) {
+  return resolveProductManifestIdentity(await readProductManifests(root));
 }
 
 export async function readProductReleaseIdentity({
   sha,
   sourceReferenceTag = process.env.SOURCE_REFERENCE_TAG,
+  root = process.env.PRODUCT_MANIFEST_ROOT ?? repoRoot,
 } = {}) {
-  const { rootManifest, desktopManifest, cliManifest } = await readProductManifests();
+  const { rootManifest, desktopManifest, cliManifest } = await readProductManifests(root);
   const sourceCommit =
     sha ??
     process.env.GITHUB_SHA ??
@@ -181,12 +198,9 @@ export async function readProductReleaseIdentity({
 function githubOutputEntries(identity) {
   return {
     version: identity.version,
-    is_prerelease: identity.isPrerelease,
     tag: identity.tag,
     source_commit: identity.sourceCommit,
     source_reference_tag: identity.sourceReferenceTag,
-    dmg: identity.dmg,
-    exe: identity.exe,
     cli_archive: identity.cliArchive,
     node_version: identity.nodeVersion,
     node_archive: identity.nodeArchive,

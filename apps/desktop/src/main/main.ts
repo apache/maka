@@ -23,9 +23,11 @@ import {
   developmentLaunchResultFile,
   shouldShowLoserDialog,
 } from '@maka/core/dev-single-instance';
-import { app, clipboard, dialog } from 'electron';
+import { app, clipboard, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
+import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
+import { desktopDiagnosticUpdateChannel } from './app-update-attestation.js';
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -36,15 +38,13 @@ import {
 import {
   appendUncaughtMainProcessError,
   createMainProcessRecoveryJournal,
-  presentPendingMainProcessRecovery,
   type MainProcessRecoveryJournal,
 } from './main-process-recovery-journal.js';
-import {
-  showFatalStartupError,
-  showPreviousMainProcessInterruptionDialog,
-} from './native-diagnostic-dialog.js';
+import { showFatalStartupError } from './native-diagnostic-dialog.js';
 import { isIsolatedE2e } from './startup-context.js';
 import { reportDevelopmentLaunchResult } from './dev-single-instance-result.js';
+import { registerPreviousMainProcessDiagnosticsIpc } from './desktop-diagnostics-ipc-main.js';
+import { showBrowserMessageBox } from './browser-message-box.js';
 
 let recoveryJournal: MainProcessRecoveryJournal | undefined;
 installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDirty());
@@ -59,6 +59,21 @@ installMainProcessLogCapture(mainProcessLogBuffer, () => recoveryJournal?.markDi
 // path logic. See https://github.com/maka-agent/maka-agent/issues/2252.
 app.setName(app.isPackaged ? 'Maka' : 'Maka Dev');
 
+// Electron otherwise quits implicitly when the last BrowserWindow closes.
+// Startup and fatal-recovery surfaces can be the only window, so keep process
+// lifetime explicit; runtime-host-boot installs the normal platform policy
+// after startup, and every early terminal path calls app.exit itself.
+app.on('window-all-closed', () => {});
+
+const updateTestUserData = resolveUpdateTestUserDataDirectory({
+  feedUrl: process.env.MAKA_UPDATE_TEST_FEED,
+  explicitDirectory: process.env.MAKA_UPDATE_TEST_USER_DATA_DIR,
+  isPackaged: app.isPackaged,
+  appPath: app.getAppPath(),
+  executablePath: process.execPath,
+});
+if (updateTestUserData) app.setPath('userData', updateTestUserData);
+
 // E2E isolation: redirect userData BEFORE the single-instance lock so the
 // lock judges the throwaway dir, not the real user data — otherwise a
 // developer with Maka open makes the E2E process exit as a "second instance".
@@ -69,9 +84,9 @@ if (isIsolatedE2e && process.env.MAKA_E2E_USER_DATA_DIR) {
 }
 
 // Electron does not enforce single-instance by default. Must run before any
-// workspace/store setup below -- a losing second process exits immediately,
-// before touching shared state. See the 'second-instance' listener in
-// runtime-host-boot.ts for what the surviving process does about it.
+// workspace/store setup below -- a losing second process never touches shared
+// state. See the 'second-instance' listener in runtime-host-boot.ts for what
+// the surviving process does about it.
 if (!app.requestSingleInstanceLock()) {
   if (!app.isPackaged) {
     // Dev: losing the lock must NOT pretend to have started (exit 0 would be
@@ -80,18 +95,46 @@ if (!app.requestSingleInstanceLock()) {
     // one-shot result file. A direct launcher explicitly promises to consume
     // the exit code; a TCC launcher proves it has a consumer only when the
     // result write succeeds. Any other entry (Dock, Spotlight, Quit & Reopen)
-    // gets a native box — fail toward the dialog. Linux pre-ready showErrorBox
-    // degrades to stderr (no GUI); documented in electron.d.ts. Packaged builds
-    // keep the existing UX (double-click focuses the first window) — the gate
-    // is a semantic boundary.
+    // waits for ready and gets the same product-styled temporary window as
+    // startup recovery. Packaged builds keep the existing UX (double-click
+    // focuses the first window) — the gate is a semantic boundary.
     const resultReported = reportDevelopmentLaunchResult(process.argv, { status: 'loser' });
     if (!resultReported && shouldShowLoserDialog(process.argv)) {
-      dialog.showErrorBox(
-        'Maka Dev',
-        `Another instance holds the Maka Dev profile (${app.getPath('userData')}). Quit it and retry.`,
-      );
-    }
-    app.exit(DEV_LOSER_EXIT_CODE);
+      const profilePath = app.getPath('userData');
+      void app
+        .whenReady()
+        .then(() => {
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+          const isChinese = locale === 'zh';
+          return showBrowserMessageBox(
+            {
+              type: 'warning',
+              title: isChinese ? 'Maka Dev 已在运行' : 'Maka Dev is already running',
+              message: isChinese
+                ? '另一个 Maka Dev 实例正在使用此开发配置。'
+                : 'Another Maka Dev instance is using this development profile.',
+              detail: isChinese
+                ? `开发配置：${profilePath}\n\n请先退出正在运行的实例，然后重试。`
+                : `Development profile: ${profilePath}\n\nQuit the running instance, then retry.`,
+              buttons: [isChinese ? '退出' : 'Exit'],
+              defaultId: 0,
+              cancelId: 0,
+            },
+            undefined,
+            { locale },
+          );
+        })
+        .catch((error) => {
+          console.error('[dev] styled single-instance dialog failed:', error);
+          dialog.showErrorBox(
+            'Maka Dev',
+            `Another instance holds the Maka Dev profile (${profilePath}). Quit it and retry.`,
+          );
+        })
+        .finally(() => {
+          app.exit(DEV_LOSER_EXIT_CODE);
+        });
+    } else app.exit(DEV_LOSER_EXIT_CODE);
   } else {
     app.exit(0);
   }
@@ -125,6 +168,28 @@ if (!app.requestSingleInstanceLock()) {
   } catch (error) {
     console.error('[diagnostics] main-process recovery unavailable:', error);
   }
+  if (isIsolatedE2e) recoveryJournal?.discardPending();
+  registerPreviousMainProcessDiagnosticsIpc({
+    ipcMain,
+    evidence: isIsolatedE2e ? undefined : recoveryJournal?.pending,
+    acknowledge: () => recoveryJournal?.discardPending(),
+    environment: () =>
+      captureDesktopDiagnosticEnvironment({
+        appVersion: app.getVersion(),
+        buildMode: buildInfo.mode,
+        updateChannel: desktopDiagnosticUpdateChannel({
+          isPackaged: app.isPackaged,
+          appPath: app.getAppPath(),
+        }),
+        buildCommit: buildInfo.commit,
+        locale: app.getLocale(),
+        workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
+      }),
+    mainLogs: () => mainProcessLogBuffer.snapshot(),
+    resolveActiveRuntimeHost: () => undefined,
+    resolveRuntimeHost: () => undefined,
+    writeClipboard: (report) => clipboard.writeText(report),
+  });
   // The full boot must not run in the top-level module-evaluation chain:
   // Electron ESM emits `ready` only after the entry module finishes
   // evaluating, so a top-level `await app.whenReady()` (which the
@@ -134,47 +199,8 @@ if (!app.requestSingleInstanceLock()) {
   // store/db write".
   app
     .whenReady()
-    .then(async () => {
+    .then(() => {
       console.log('[startup] app ready');
-      const journal = recoveryJournal;
-      if (journal?.pending) {
-        if (isIsolatedE2e) {
-          journal.discardPending();
-        } else {
-          await presentPendingMainProcessRecovery(
-            journal,
-            (pending) =>
-              showPreviousMainProcessInterruptionDialog({
-                locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
-                copyDiagnostics: () =>
-                  copyDesktopDiagnosticReport(
-                    {
-                      environment: () =>
-                        captureDesktopDiagnosticEnvironment({
-                          appVersion: app.getVersion(),
-                          buildMode: buildInfo.mode,
-                          buildCommit: buildInfo.commit,
-                          locale: app.getLocale(),
-                          workspacePath: join(
-                            app.getPath('userData'),
-                            'workspaces',
-                            'default',
-                          ),
-                        }),
-                      mainLogs: () => mainProcessLogBuffer.snapshot(),
-                      resolveActiveRuntimeHost: () => undefined,
-                      resolveRuntimeHost: () => undefined,
-                      writeClipboard: (report) => clipboard.writeText(report),
-                    },
-                    createDesktopPreviousMainProcessDiagnosticInput(pending),
-                  ),
-                showMessageBox: (options) => dialog.showMessageBox(options),
-              }),
-            (error) =>
-              console.error('[diagnostics] previous-session recovery dialog failed:', error),
-          );
-        }
-      }
       return import('./runtime-host-boot.js');
     })
     .catch(async (error: unknown) => {
@@ -184,19 +210,25 @@ if (!app.requestSingleInstanceLock()) {
         // fixture-fatal path in runtime-host-boot.ts: print a parseable line and exit fast).
         if (!isIsolatedE2e) {
           const buildInfo = resolveBuildInfo(app.isPackaged, app.getAppPath());
+          const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
           await showFatalStartupError(error, {
-            locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+            locale,
             environment: () =>
               captureDesktopDiagnosticEnvironment({
                 appVersion: app.getVersion(),
                 buildMode: buildInfo.mode,
+                updateChannel: desktopDiagnosticUpdateChannel({
+                  isPackaged: app.isPackaged,
+                  appPath: app.getAppPath(),
+                }),
                 buildCommit: buildInfo.commit,
                 locale: app.getLocale(),
                 workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
               }),
             mainLogs: () => mainProcessLogBuffer.snapshot(),
             writeClipboard: (report) => clipboard.writeText(report),
-            showMessageBox: (options) => dialog.showMessageBox(options),
+            showMessageBox: (options) =>
+              showBrowserMessageBox(options, undefined, { locale }),
           });
         }
       } finally {

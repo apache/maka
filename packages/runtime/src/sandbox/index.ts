@@ -19,23 +19,6 @@
 
 export { SandboxManager } from './sandbox-manager.js';
 export {
-  createSandboxDiagnosticsProvider,
-  toSandboxRunTraceProjection,
-} from './diagnostics.js';
-export type {
-  CreateSandboxDiagnosticsProviderInput,
-  ResolveSandboxDiagnosticsInput,
-  SandboxDiagnosticCapability,
-  SandboxDiagnosticCapabilityStatus,
-  SandboxDiagnosticFailureReason,
-  SandboxDiagnosticFailureStage,
-  SandboxDiagnosticFileSystemMode,
-  SandboxDiagnosticNetworkMode,
-  SandboxDiagnosticsProvider,
-  SandboxDiagnosticsSnapshot,
-  SandboxRunTraceProjection,
-} from './diagnostics.js';
-export {
   SandboxCommandError,
   sandboxErrorMetadata,
   serializeSandboxError,

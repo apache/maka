@@ -17,15 +17,13 @@
  * under the License.
  */
 
-import {
-  estimateTokens,
-  estimateRuntimeEventsTokens,
-  stableJsonLength,
-} from './context-budget-helpers.js';
+import { estimateTokens, stableJsonLength } from './context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 
 // Public re-export surface for @maka/runtime consumers. Explicit list keeps
 // the ./context-budget subpath from leaking leaf-internal collaboration symbols.
-export { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+export { estimateTokens } from './context-budget-helpers.js';
+export { estimateRuntimeEventsTokens } from './model-history.js';
 export {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -40,7 +38,6 @@ export type {
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadFailureReason,
   ToolResultArchiveReadResult,
-  ToolResultArchiveRef,
   ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
 export type { ArchivedToolResultReason } from './tool-result-archive.js';
@@ -48,32 +45,19 @@ export type {
   HistoryCompactionPolicy,
   HistoryCompactionReplayResult,
 } from './history-compaction.js';
-export { ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND } from './active-tool-result-prune.js';
-export type { ActiveArchivedToolResultPlaceholder } from './active-tool-result-prune.js';
-
-import {
-  collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow,
-  pruneStaleToolResultsBeforeCompact,
-  type StaleToolResultPrunePolicy,
-  type StaleToolResultArchiveCandidate,
-} from './tool-result-archive.js';
+import type { StaleToolResultPrunePolicy } from './tool-result-archive.js';
 import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
-  evaluateHistoryCompactCheckpointReplay as evaluateHistoryCompactCheckpointReplayNarrow,
   isHistoryCompactContentEvent,
   type HistoryCompactionPolicy,
-  type HistoryCompactionReplayOptions,
   type HistoryCompactionReplayResult,
-  type HistoryCompactionCheckpointReplayFit,
 } from './history-compaction.js';
 
-import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
   CompactionDecisionDiagnostic,
   ContextBudgetDiagnostic,
-  PromptSegmentEstimate,
 } from '@maka/core/usage-stats/types';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
@@ -81,11 +65,11 @@ import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
 export interface ContextBudgetPolicy {
   name?: string;
   /**
-   * Approximate max model-visible prior-history tokens. This is an estimate
-   * used for shaping, not provider billing.
+   * Chars-per-token conversion for the CONTENT policies below (how large one
+   * Tool Result may be before it is archived) and for diagnostics. It takes
+   * part in no context-fit decision: whether a request fits is the provider's
+   * answer (#4559). Defaults to 4.
    */
-  maxHistoryEstimatedTokens?: number;
-  /** Estimate conversion. Defaults to 4 chars/token, intentionally conservative for mixed text. */
   charsPerToken?: number;
   /** Optional replay-only pruning for stale oversized tool results before whole-turn compaction. */
   staleToolResultPrune?: StaleToolResultPrunePolicy;
@@ -103,25 +87,15 @@ export interface BudgetedRuntimeContext {
   diagnostic: ContextBudgetDiagnostic;
   /**
    * The checkpoint this projection was actually replayed through — present only
-   * when it passed the prefix match and the replay fit, i.e. when these events
-   * really are `[block, tail]` rather than the raw prefix.
+   * when the prefix matched and these events really are `[block, tail]` rather
+   * than the raw prefix. Whether the resulting request fits is the provider's
+   * decision.
    *
-   * A loaded checkpoint that failed either gate is a checkpoint the caller
+   * A loaded checkpoint whose prefix does not match is a checkpoint the caller
    * holds and the projection ignored; the two must not be confused by anyone
    * reporting what a prompt was built from (#2323).
    */
   historyCompactCheckpoint?: HistoryCompactCheckpoint;
-}
-
-export interface PromptSegmentInput {
-  systemPrompt?: string;
-  toolSchemaChars: number;
-  toolCount: number;
-  priorMessages: readonly ModelMessage[];
-  priorRuntimeEventCount?: number;
-  currentUserContent: string;
-  turnTailPrompt?: string;
-  charsPerToken?: number;
 }
 
 export function applyRuntimeEventContextBudget(
@@ -131,9 +105,7 @@ export function applyRuntimeEventContextBudget(
   const prunePolicy = policy?.staleToolResultPrune;
   const pruneEnabled = prunePolicy?.enabled === true;
   const historyCompactEnabled = policy?.historyCompact?.enabled === true;
-  const enabled = Boolean(
-    policy?.maxHistoryEstimatedTokens || pruneEnabled || historyCompactEnabled,
-  );
+  const enabled = pruneEnabled || historyCompactEnabled;
   if (!enabled) return undefined;
   if (!policy) return undefined;
   const charsPerToken = policy?.charsPerToken ?? 4;
@@ -141,25 +113,20 @@ export function applyRuntimeEventContextBudget(
   const compacted = applyRuntimeEventHistoryCompactNarrow(
     events,
     policy?.historyCompact,
-    policy?.charsPerToken,
-    policy?.maxHistoryEstimatedTokens,
-    { charsPerToken },
-  );
-  const pruned = pruneStaleToolResultsBeforeCompact(
-    compacted.events,
-    policy?.staleToolResultPrune,
     charsPerToken,
   );
-  const keptEvents = pruned.events;
+  // Stale Tool Result pruning is no longer a step of the budget: it is a
+  // durable projection transition committed before this projection runs, and
+  // the events arriving here have already been folded through the reducer
+  // (#4283). A second rewrite here could only disagree with the ledger about
+  // what the model is allowed to see.
+  const keptEvents = compacted.events;
   const keptTurnIds = new Set(keptEvents.map((event) => runtimeEventTurnKey(event)));
   const originalTurnIds = new Set(events.map((event) => runtimeEventTurnKey(event)));
 
   const diagnostic: ContextBudgetDiagnostic = {
     enabled: true,
     ...(policy?.name ? { policyName: policy.name } : {}),
-    ...(policy.maxHistoryEstimatedTokens !== undefined
-      ? { maxHistoryEstimatedTokens: policy.maxHistoryEstimatedTokens }
-      : {}),
     estimatedTokensBefore,
     estimatedTokensAfter: estimateRuntimeEventsTokens(keptEvents, charsPerToken),
     keptTurns: keptTurnIds.size,
@@ -167,90 +134,11 @@ export function applyRuntimeEventContextBudget(
     keptEvents: keptEvents.length,
     droppedEvents: Math.max(0, events.length - keptEvents.length),
     ...compacted.diagnosticPatch,
-    ...(pruned.prunedToolResults > 0
-      ? {
-          prunedToolResults: pruned.prunedToolResults,
-          prunedToolResultEstimatedTokensBefore: pruned.estimatedTokensBefore,
-          prunedToolResultEstimatedTokensAfter: pruned.estimatedTokensAfter,
-          archivePlaceholders: pruned.prunedToolResults,
-          archivePlaceholderReasonCounts: {
-            stale_tool_result_pruned_before_compact: pruned.prunedToolResults,
-          },
-        }
-      : {}),
-    ...(pruned.archiveWriteFailures > 0
-      ? {
-          archiveWriteFailures: pruned.archiveWriteFailures,
-          unarchivedToolResults: pruned.archiveWriteFailures,
-        }
-      : {}),
   };
   return {
     events: keptEvents,
     diagnostic,
     ...(compacted.checkpoint ? { historyCompactCheckpoint: compacted.checkpoint } : {}),
-  };
-}
-
-export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSegmentEstimate[] {
-  const charsPerToken = input.charsPerToken ?? 4;
-  return [
-    segment('system_prompt', input.systemPrompt?.length ?? 0, charsPerToken),
-    {
-      ...segment('tool_schema', input.toolSchemaChars, charsPerToken),
-      toolCount: input.toolCount,
-    },
-    {
-      ...segment('prior_history', estimateModelMessagesChars(input.priorMessages), charsPerToken),
-      messageCount: input.priorMessages.length,
-      ...(input.priorRuntimeEventCount !== undefined
-        ? { eventCount: input.priorRuntimeEventCount }
-        : {}),
-    },
-    segment('current_user', input.currentUserContent.length, charsPerToken),
-    segment('turn_tail', input.turnTailPrompt?.length ?? 0, charsPerToken),
-  ];
-}
-
-export function estimateModelMessagesChars(messages: readonly ModelMessage[]): number {
-  return messages.reduce((total, message) => total + estimateModelMessageChars(message), 0);
-}
-
-function estimateModelMessageChars(message: ModelMessage): number {
-  const raw = message as unknown as { content?: unknown };
-  return estimateContentChars(raw.content);
-}
-
-function estimateContentChars(content: unknown): number {
-  if (typeof content === 'string') return content.length;
-  if (Array.isArray(content)) {
-    return content.reduce((total, part) => total + estimatePartChars(part), 0);
-  }
-  return stableJsonLength(content);
-}
-
-function estimatePartChars(part: unknown): number {
-  if (!part || typeof part !== 'object') return stableJsonLength(part);
-  const value = part as Record<string, unknown>;
-  let total = 0;
-  for (const key of ['text', 'toolName', 'toolCallId'] as const) {
-    if (typeof value[key] === 'string') total += value[key].length;
-  }
-  for (const key of ['input', 'output'] as const) {
-    if (value[key] !== undefined) total += stableJsonLength(value[key]);
-  }
-  return total;
-}
-
-function segment(
-  kind: PromptSegmentEstimate['kind'],
-  chars: number,
-  charsPerToken: number,
-): PromptSegmentEstimate {
-  return {
-    kind,
-    chars,
-    estimatedTokens: estimateTokens(chars, charsPerToken),
   };
 }
 
@@ -294,9 +182,6 @@ export function buildContextBudgetDiagnosticShell(
   return {
     enabled: true,
     ...(policy?.name ? { policyName: policy.name } : {}),
-    ...(policy?.maxHistoryEstimatedTokens !== undefined
-      ? { maxHistoryEstimatedTokens: policy.maxHistoryEstimatedTokens }
-      : {}),
     estimatedTokensBefore: estimateRuntimeEventsTokens(before, charsPerToken),
     estimatedTokensAfter: estimateRuntimeEventsTokens(after, charsPerToken),
     keptTurns: turnCountAfter,
@@ -330,30 +215,36 @@ export function mergeContextBudgetDiagnosticPatches(
   return mergeContextBudgetDiagnostic(left as ContextBudgetDiagnostic, right);
 }
 
-export function shouldAppendContextCompactedNote(
+// A history fold reaches the user as one note per send, whichever stage
+// performed it: the replay of an existing checkpoint at turn start
+// (`priorReplay`) or a fold the request-projection hook made before a request
+// of this send (`activeStep`, pre_turn or mid_turn). Since #4486 every new fold
+// happens in the hook, so a note keyed on replay alone would arrive one turn
+// late — the turn that was compacted would show nothing (#4559).
+function hasHistoryCompactDecision(
   contextBudget: ContextBudgetDiagnostic | undefined,
+  decision: 'replaced' | 'failedOpen',
 ): boolean {
   return (
     contextBudget?.compactionDecisions?.some(
-      (decision) =>
-        decision.stage === 'priorReplay' &&
-        decision.boundaryKind === 'historyCompact' &&
-        decision.decision === 'replaced',
+      (candidate) =>
+        (candidate.stage === 'priorReplay' || candidate.stage === 'activeStep') &&
+        candidate.boundaryKind === 'historyCompact' &&
+        candidate.decision === decision,
     ) === true
   );
+}
+
+export function shouldAppendContextCompactedNote(
+  contextBudget: ContextBudgetDiagnostic | undefined,
+): boolean {
+  return hasHistoryCompactDecision(contextBudget, 'replaced');
 }
 
 export function shouldAppendContextCompactionFailedOpenNote(
   contextBudget: ContextBudgetDiagnostic | undefined,
 ): boolean {
-  return (
-    contextBudget?.compactionDecisions?.some(
-      (decision) =>
-        decision.stage === 'priorReplay' &&
-        decision.boundaryKind === 'historyCompact' &&
-        decision.decision === 'failedOpen',
-    ) === true
-  );
+  return hasHistoryCompactDecision(contextBudget, 'failedOpen');
 }
 
 export function minimalContextBudgetDiagnostic(): ContextBudgetDiagnostic {
@@ -389,42 +280,13 @@ function mergeCompactionDecisionDiagnostics(
 // Public compat wrappers: preserve the pre-split `(events, policy, options)`
 // signature for @maka/runtime consumers. Internal callers (this module and
 // ai-sdk-backend) import the narrow leaf API directly from the leaf modules.
-export function collectStaleToolResultArchiveCandidates(
-  events: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-): StaleToolResultArchiveCandidate[] {
-  return collectStaleToolResultArchiveCandidatesNarrow(
-    events,
-    policy?.staleToolResultPrune,
-    policy?.charsPerToken ?? 4,
-  );
-}
-
 export function applyRuntimeEventHistoryCompact(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
-  options: HistoryCompactionReplayOptions = {},
 ): HistoryCompactionReplayResult {
   return applyRuntimeEventHistoryCompactNarrow(
     events,
     policy?.historyCompact,
     policy?.charsPerToken,
-    policy?.maxHistoryEstimatedTokens,
-    options,
-  );
-}
-
-export function evaluateHistoryCompactCheckpointReplay(
-  checkpoint: HistoryCompactCheckpoint,
-  replayTail: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-  options: HistoryCompactionReplayOptions = {},
-): HistoryCompactionCheckpointReplayFit {
-  return evaluateHistoryCompactCheckpointReplayNarrow(
-    checkpoint,
-    replayTail,
-    policy?.charsPerToken,
-    policy?.maxHistoryEstimatedTokens,
-    options,
   );
 }

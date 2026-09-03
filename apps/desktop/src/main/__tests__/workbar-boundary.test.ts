@@ -67,7 +67,10 @@ describe('Workbar feature boundary', () => {
   });
 
   it('is consumed outside the feature only through public entries', () => {
-    const allowed = /\/features\/workbar\/(?:index|testing)(?:\.js)?$/;
+    // `stories` joins `index` and `testing` as a public entry: the surface it
+    // exposes is only resolvable by a bundler, so Storybook can import it and
+    // the node suites behind `testing` cannot.
+    const allowed = /\/features\/workbar\/(?:index|testing|stories)(?:\.js)?$/;
     const violations: string[] = [];
     for (const root of [join(desktopRoot, 'src'), join(desktopRoot, 'stories')]) {
       for (const path of sourceFiles(root)) {
@@ -110,6 +113,70 @@ describe('Workbar feature boundary', () => {
     }
     assert.equal(
       appShell.includes('<WorkbarHost model={workbar.host} />'),
+      true,
+    );
+  });
+
+  it('projects Work Board project identity through the controller-owned host model', () => {
+    const appShell = readFileSync(
+      join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
+      'utf8',
+    );
+    const controller = readFileSync(
+      join(featureRoot, 'controller', 'use-workbar-controller.ts'),
+      'utf8',
+    );
+    const host = readFileSync(
+      join(featureRoot, 'ui', 'workbar-host.tsx'),
+      'utf8',
+    );
+
+    assert.equal(appShell.includes('projectId: currentProjectId'), true);
+    assert.equal(
+      appShell.includes('projectAliases: currentProject?.aliases ?? []'),
+      true,
+    );
+    assert.equal(controller.includes('projectId: input.projectId'), true);
+    assert.equal(
+      controller.includes('projectAliases: input.projectAliases'),
+      true,
+    );
+    assert.equal(
+      host.includes('projectAliases={props.projectAliases}'),
+      true,
+    );
+  });
+
+  it('keeps Quote Companion catalog state and localized scroll copy at the seam', () => {
+    const quotePanel = readFileSync(
+      join(
+        featureRoot,
+        'tools',
+        'side-chat',
+        'quote-companion-panel.tsx',
+      ),
+      'utf8',
+    );
+    assert.equal(
+      quotePanel.includes(
+        'scrollToBottomLabel={copy.scrollToBottom}',
+      ),
+      true,
+    );
+    // The catalog reaches the panel through ComposerMentionsProvider rather
+    // than through props (#4109), so what this guards is the context read, not
+    // the prop names. Both facets still have to arrive together: a panel that
+    // showed the skills without their loading verdict would advertise a
+    // catalog it cannot honour.
+    assert.equal(quotePanel.includes('useComposerMentionsContext()'), true);
+    assert.equal(
+      quotePanel.includes(
+        'mentionSkillsUnavailable={mentions?.mentionSkillsUnavailable}',
+      ),
+      true,
+    );
+    assert.equal(
+      quotePanel.includes('mentionSkillsLoading={mentions?.mentionSkillsLoading}'),
       true,
     );
   });

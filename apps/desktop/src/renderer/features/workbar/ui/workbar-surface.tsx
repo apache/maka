@@ -42,16 +42,17 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import {
-  TaskLedgerPanel,
-  deriveTaskLedgerPanelModel,
+  SessionTodoPanel,
+  sessionTodoActiveCount,
   IconButton,
+  Composer,
   useUiLocale,
   type ChatModelChoice,
-  type Composer,
 } from '@maka/ui';
 import {
   ICON_SIZE,
   Activity,
+  Clipboard,
   FolderOpen,
   GitBranch,
   Globe,
@@ -85,8 +86,9 @@ import {
   sessionWorkbarTabsToRight,
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
-import { useSessionTasks } from '../tools/tasks/use-session-tasks';
+import { useSessionTodo } from '../tools/tasks/use-session-todo';
 import { WorkbarToggle } from './workbar-toggle';
+import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import type {
   CompanionQuoteTarget,
@@ -94,7 +96,6 @@ import type {
   QuoteCompanionPanelState,
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
-import { WORKBAR_TOOL_DEFINITIONS } from '../model/workbar-tool-definitions';
 
 const ArtifactPane = lazy(() =>
   import('../tools/artifacts/artifact-pane').then((module) => ({ default: module.ArtifactPane })),
@@ -184,6 +185,8 @@ function tabLabel(
         : copy.terminal;
     case 'tasks':
       return copy.tasks;
+    case 'work-board':
+      return copy.workBoard;
     case 'browser':
       return copy.browser;
     case 'files':
@@ -220,6 +223,8 @@ function tabIcon(tab: SessionWorkbarTab, active: boolean): ReactNode {
         ? Terminal
         : tab.kind === 'tasks'
           ? ListTodo
+          : tab.kind === 'work-board'
+            ? Clipboard
           : tab.kind === 'browser'
             ? Globe
             : tab.kind === 'files'
@@ -236,7 +241,6 @@ function WorkbarTabStrip(props: {
   activeTabId: string | null;
   taskCount: number;
   artifactCount: number;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   onActivate: (tabId: string) => void;
   onClose: (tab: SessionWorkbarTab) => void;
@@ -288,17 +292,6 @@ function WorkbarTabStrip(props: {
         ?.focus();
     });
   };
-  const busyTabIds = new Set(
-    props.tabs
-      .filter(
-        (tab) =>
-          tab.kind === 'side-chat' &&
-          props.preparingSideChatPanelIds?.has(
-            tab.id.slice('side-chat:'.length),
-          ) === true,
-      )
-      .map((tab) => tab.id),
-  );
   useEffect(() => {
     const tabList = tabListRef.current;
     if (!tabList || !props.activeTabId) return;
@@ -351,16 +344,12 @@ function WorkbarTabStrip(props: {
                 index={index}
                 tabs={props.tabs}
                 selected={tab.id === props.activeTabId}
-                busy={
-                  busyTabIds.has(tab.id)
-                }
                 running={
                   tab.kind === 'side-chat' &&
                   props.activeSideChatPanelIds?.has(
                     tab.id.slice('side-chat:'.length),
                   ) === true
                 }
-                busyTabIds={busyTabIds}
                 count={
                   tab.kind === 'tasks'
                     ? props.taskCount
@@ -408,9 +397,7 @@ function SortableWorkbarTab(props: {
   index: number;
   tabs: readonly SessionWorkbarTab[];
   selected: boolean;
-  busy: boolean;
   running: boolean;
-  busyTabIds: ReadonlySet<string>;
   count?: number;
   onActivate: (tabId: string) => void;
   onClose: (tab: SessionWorkbarTab) => void;
@@ -431,7 +418,7 @@ function SortableWorkbarTab(props: {
     setNodeRef,
     transform,
     transition,
-  } = useSortable({ id: props.tab.id, disabled: props.busy });
+  } = useSortable({ id: props.tab.id });
   const style = {
     transform: transform
       ? `translate3d(${Math.round(transform.x)}px, 0, 0)`
@@ -446,7 +433,7 @@ function SortableWorkbarTab(props: {
       activationHistory: [props.tab.id],
     },
     props.tab.id,
-  ).filter((tab) => !props.busyTabIds.has(tab.id));
+  );
   const tabsToRight = sessionWorkbarTabsToRight(
     {
       tabs: [...props.tabs],
@@ -455,7 +442,7 @@ function SortableWorkbarTab(props: {
       activationHistory: [props.tab.id],
     },
     props.tab.id,
-  ).filter((tab) => !props.busyTabIds.has(tab.id));
+  );
 
   return (
     <ContextMenu
@@ -474,12 +461,12 @@ function SortableWorkbarTab(props: {
           : []),
         {
           label: copy.moveLeft,
-          isDisabled: props.busy || props.index === 0,
+          isDisabled: props.index === 0,
           onClick: () => props.onMove(props.tab.id, 'left'),
         },
         {
           label: copy.moveRight,
-          isDisabled: props.busy || props.index === props.tabs.length - 1,
+          isDisabled: props.index === props.tabs.length - 1,
           onClick: () => props.onMove(props.tab.id, 'right'),
         },
         {
@@ -487,7 +474,6 @@ function SortableWorkbarTab(props: {
             props.placement === 'right'
               ? copy.moveToBottom
               : copy.moveToRight,
-          isDisabled: props.busy,
           onClick: () =>
             props.onMoveToPanel(
               props.tab.id,
@@ -497,7 +483,6 @@ function SortableWorkbarTab(props: {
         { type: 'divider' },
         {
           label: copy.close,
-          isDisabled: props.busy,
           onClick: () => props.onClose(props.tab),
         },
         {
@@ -518,7 +503,6 @@ function SortableWorkbarTab(props: {
         data-workbar-tab-id={props.tab.id}
         data-active={props.selected || undefined}
         data-dragging={isDragging || undefined}
-        data-preparing={props.busy || undefined}
         data-running={props.running || undefined}
         data-preview={props.tab.preview || undefined}
         style={style}
@@ -534,7 +518,7 @@ function SortableWorkbarTab(props: {
               : label
           }
           aria-selected={props.selected}
-          aria-busy={props.busy || props.running || undefined}
+          aria-busy={props.running || undefined}
           tabIndex={props.selected ? 0 : -1}
           className="maka-workbar-tab-select"
           onClick={() => props.onActivate(props.tab.id)}
@@ -543,7 +527,7 @@ function SortableWorkbarTab(props: {
           onDoubleClick={() => {
             if (props.tab.preview) props.onPin(props.tab.id);
           }}
-          icon={tabIcon(props.tab, props.busy || props.running)}
+          icon={tabIcon(props.tab, props.running)}
           endContent={props.count !== undefined ? <TabCount count={props.count} /> : undefined}
         >
           <span
@@ -553,18 +537,16 @@ function SortableWorkbarTab(props: {
             {label}
           </span>
         </Button>
-        {!props.busy ? (
-          <Tooltip content={copy.closeTab(label)}>
-            <IconButton
-              label={copy.closeTab(label)}
-              icon={<X size={ICON_SIZE.meta} aria-hidden />}
-              variant="ghost"
-              size="sm"
-              className="maka-workbar-tab-close"
-              onClick={() => props.onClose(props.tab)}
-            />
-          </Tooltip>
-        ) : null}
+        <Tooltip content={copy.closeTab(label)}>
+          <IconButton
+            label={copy.closeTab(label)}
+            icon={<X size={ICON_SIZE.meta} aria-hidden />}
+            variant="ghost"
+            size="sm"
+            className="maka-workbar-tab-close"
+            onClick={() => props.onClose(props.tab)}
+          />
+        </Tooltip>
       </div>
     </ContextMenu>
   );
@@ -575,42 +557,69 @@ function WorkbarLauncher(props: {
   sideChatAvailable: boolean;
 }) {
   const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const icons = {
-    activity: Activity,
-    folder: FolderOpen,
-    'git-branch': GitBranch,
-    globe: Globe,
-    'list-todo': ListTodo,
-    'message-circle-question': MessageCircleQuestion,
-    terminal: Terminal,
-  } as const;
-  const actions = WORKBAR_TOOL_DEFINITIONS.map((definition) => {
-    const presentation = (() => {
-      switch (definition.kind) {
-        case 'side-chat':
-          return { label: copy.sideChat, description: copy.launcher.sideChat };
-        case 'review':
-          return { label: copy.review, description: copy.launcher.review };
-        case 'terminal':
-          return { label: copy.terminal, description: copy.launcher.terminal };
-        case 'browser':
-          return { label: copy.browser, description: copy.launcher.browser };
-        case 'files':
-          return { label: copy.files, description: copy.launcher.files };
-        case 'tasks':
-          return { label: copy.tasks, description: copy.launcher.tasks };
-        case 'inspector':
-          return { label: copy.inspector, description: copy.launcher.inspector };
-      }
-    })();
-    return {
-      ...presentation,
-      kind: definition.kind,
-      icon: icons[definition.icon],
-      shortcut: 'shortcut' in definition ? definition.shortcut : undefined,
-      disabled: definition.kind === 'side-chat' && !props.sideChatAvailable,
-    };
-  });
+  const actions: Array<{
+    kind: SessionWorkbarTabKind;
+    label: string;
+    description: string;
+    icon: typeof Activity;
+    shortcut?: string;
+    disabled?: boolean;
+  }> = [
+    {
+      kind: 'side-chat',
+      label: copy.sideChat,
+      description: copy.launcher.sideChat,
+      icon: MessageCircleQuestion,
+      shortcut: 'mod+alt+s',
+      disabled: !props.sideChatAvailable,
+    },
+    {
+      kind: 'review',
+      label: copy.review,
+      description: copy.launcher.review,
+      icon: GitBranch,
+      shortcut: 'ctrl+shift+g',
+    },
+    {
+      kind: 'terminal',
+      label: copy.terminal,
+      description: copy.launcher.terminal,
+      icon: Terminal,
+      shortcut: 'ctrl+`',
+    },
+    {
+      kind: 'browser',
+      label: copy.browser,
+      description: copy.launcher.browser,
+      icon: Globe,
+      shortcut: 'mod+t',
+    },
+    {
+      kind: 'files',
+      label: copy.files,
+      description: copy.launcher.files,
+      icon: FolderOpen,
+      shortcut: 'mod+p',
+    },
+    {
+      kind: 'tasks',
+      label: copy.tasks,
+      description: copy.launcher.tasks,
+      icon: ListTodo,
+    },
+    {
+      kind: 'work-board',
+      label: copy.workBoard,
+      description: copy.launcher.workBoard,
+      icon: Clipboard,
+    },
+    {
+      kind: 'inspector',
+      label: copy.inspector,
+      description: copy.launcher.inspector,
+      icon: Activity,
+    },
+  ];
   return (
     <div className="maka-workbar-launcher">
       <div className="maka-workbar-launcher-frame">
@@ -642,6 +651,8 @@ function WorkbarLauncher(props: {
 
 export function WorkbarSurface(props: {
   sessionId: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
   hidden: boolean;
   onDismissPanel: (placement: SessionWorkbarPlacement) => void;
   panelsState: SessionWorkbarPanelsState;
@@ -675,22 +686,21 @@ export function WorkbarSurface(props: {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
+  confirmBypass: () => Promise<boolean>;
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const sessionTasks = useSessionTasks(props.sessionId);
-  const taskCount = deriveTaskLedgerPanelModel(sessionTasks.tasks).activeCount;
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workbar;
+  const sessionTodo = useSessionTodo(props.sessionId, {
+    locale,
+    loadFailed: copy.todoLoadFailed,
+  });
+  const taskCount = sessionTodoActiveCount(sessionTodo.items);
   const [artifactCount, setArtifactCount] = useState(0);
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
@@ -727,7 +737,6 @@ export function WorkbarSurface(props: {
               <WorkbarTabStrip
                 tabs={panel.tabs}
                 activeTabId={showingLauncher ? null : panel.activeTabId}
-                preparingSideChatPanelIds={props.preparingSideChatPanelIds}
                 activeSideChatPanelIds={props.activeSideChatPanelIds}
                 taskCount={taskCount}
                 artifactCount={artifactCount}
@@ -791,11 +800,18 @@ export function WorkbarSurface(props: {
           );
         } else if (tab.kind === 'tasks') {
           content = (
-            <TaskLedgerPanel
-              tasks={sessionTasks.tasks}
-              loading={sessionTasks.loading}
-              error={sessionTasks.error}
-              onRetry={sessionTasks.retry}
+            <SessionTodoPanel
+              items={sessionTodo.items}
+              loading={sessionTodo.loading}
+              error={sessionTodo.error}
+              onRetry={sessionTodo.retry}
+            />
+          );
+        } else if (tab.kind === 'work-board') {
+          content = (
+            <WorkBoardPanel
+              projectId={props.projectId ?? null}
+              projectAliases={props.projectAliases}
             />
           );
         } else if (tab.kind === 'browser') {
@@ -838,15 +854,11 @@ export function WorkbarSurface(props: {
                 initialPrompt={quote.initialPrompt}
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
-                mentionSkills={props.mentionSkills}
-                mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-                mentionSkillsLoading={props.mentionSkillsLoading}
-                onSearchMentionFiles={props.onSearchMentionFiles}
+                confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}
                 onContentStateChange={props.onContentStateChange}
-                onPreparingStateChange={props.onPreparingStateChange}
                 onInitialPromptStarted={props.onInitialPromptStarted}
                 onPromptAccepted={props.onPromptAccepted}
                 onActivityStateChange={props.onActivityStateChange}

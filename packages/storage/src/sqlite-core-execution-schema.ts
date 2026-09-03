@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 4;
+export const SQLITE_CORE_EXECUTION_SCHEMA_VERSION = 6;
 
 export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
   db.exec(`
@@ -34,9 +34,6 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS core_agent_runs_session_order
       ON core_agent_runs(session_id, created_at, run_id);
-
-    CREATE INDEX IF NOT EXISTS core_agent_runs_identity
-      ON core_agent_runs(run_id, session_id);
 
     CREATE TABLE IF NOT EXISTS core_agent_run_events (
       session_id TEXT NOT NULL,
@@ -115,22 +112,24 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
         ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS core_message_host_epochs (
-      host_epoch TEXT PRIMARY KEY
+    CREATE TABLE IF NOT EXISTS core_client_capability_session_grants (
+      session_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      scope_kind TEXT NOT NULL,
+      scope_value TEXT NOT NULL,
+      granted_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (
+        session_id, provider_id, contract_id, capability, scope_kind, scope_value
+      )
     );
 
-    CREATE TABLE IF NOT EXISTS core_message_receipts (
-      host_epoch TEXT NOT NULL,
-      operation TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      operation_id TEXT NOT NULL,
-      payload_json TEXT NOT NULL,
-      result_json TEXT NOT NULL,
-      PRIMARY KEY (host_epoch, operation, session_id, operation_id),
-      FOREIGN KEY (host_epoch)
-        REFERENCES core_message_host_epochs(host_epoch)
-        ON DELETE CASCADE
-    );
+    CREATE INDEX IF NOT EXISTS core_client_capability_session_grants_session
+      ON core_client_capability_session_grants(session_id, granted_at);
 
     CREATE TABLE IF NOT EXISTS core_shell_runs (
       session_id TEXT NOT NULL,
@@ -170,6 +169,11 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS core_agent_runs_model_call_high_water
       ON core_agent_runs(session_id, latest_model_call_sequence, run_id)
       WHERE latest_model_call_sequence IS NOT NULL;
+
+    DROP INDEX IF EXISTS core_agent_runs_identity;
+
+    DROP TABLE IF EXISTS core_message_receipts;
+    DROP TABLE IF EXISTS core_message_host_epochs;
   `);
 }
 

@@ -24,6 +24,7 @@ import type {
   DeleteCredentialInput,
   SetCredentialInput,
 } from '../runtime-policy.js';
+import { decodeConnectionCredentialTarget } from './connection-catalog-codec.js';
 import { WEB_SEARCH_CREDENTIAL_PROVIDERS } from '../web-search.js';
 import {
   parseRequestHeaders,
@@ -124,7 +125,12 @@ export function decodeCredentialStatus(value: unknown): CredentialStatus {
 }
 
 export function normalizeSetCredentialInput(value: unknown): SetCredentialInput {
-  const input = exactRecord(value, 'set credential input', ['locator', 'expected', 'secret']);
+  const input = exactRecord(
+    value,
+    'set credential input',
+    ['locator', 'expected', 'expectedConnection', 'secret'],
+    ['locator', 'expected', 'secret'],
+  );
   let expected: SetCredentialInput['expected'];
   if (input.expected === null) {
     expected = null;
@@ -139,10 +145,18 @@ export function normalizeSetCredentialInput(value: unknown): SetCredentialInput 
     };
   }
   const locator = decodeCredentialLocator(input.locator);
+  const expectedConnection =
+    input.expectedConnection === undefined
+      ? undefined
+      : decodeConnectionCredentialTarget(input.expectedConnection);
+  if (expectedConnection && locator.scope !== 'connection') {
+    throw domainError('only connection credentials accept a connection target basis');
+  }
   const secret = normalizeCredentialSecret(input.secret);
   return {
     locator,
     expected,
+    ...(expectedConnection === undefined ? {} : { expectedConnection }),
     secret:
       locator.scope === 'connection' && locator.kind === 'request_headers'
         ? normalizeRequestHeadersSecret(secret)

@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-07-28
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
@@ -31,6 +31,8 @@ owners:
 -->
 
 # Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Facts
+
+Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/issues/4319), [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > This chapter answers a deceptively dangerous question: when Maka crashes while a model is calling a tool, how can a restart tell what happened, what may continue, and what must stop for human attention? The answer is: **recover facts from immutable RuntimeEvents, let one RecoveryResolver classify tool state, and create a new Run only when history, execution, and workspace boundaries are all provably safe. Resume never resurrects the old process or disguises “try again” as recovery.**
 
@@ -465,7 +467,7 @@ sequenceDiagram
   participant Planner as RuntimeContinuationPlanner
   participant Kernel as RuntimeKernel
   participant Run as New AgentRun
-  participant Runner as RuntimeRunner
+  participant Kernel as RuntimeKernel
   participant Provider as Model provider
 
   User->>UI: click Safe resume
@@ -482,14 +484,37 @@ sequenceDiagram
     SM->>Kernel: resumeSafeBoundaryContinuation
     Kernel->>Kernel: reread and revalidate every boundary
     Kernel->>Run: create new Run with continuationSource
-    Run->>Runner: begin continuation
-    Runner->>Run: durable continuation-start RuntimeEvent
-    Runner->>Provider: replay history without duplicate user message
+    Run->>Kernel: return durable continuation-start proof
+    Kernel->>Kernel: consume one-shot start proof
+    Kernel->>Provider: replay history without duplicate user message
     Provider-->>UI: stream the new Turn
   end
 ```
 
 CLI/TUI `/resume` uses the same `SessionManager` plan/execute seam. Desktop startup auto-resume also reuses it.
+
+### Current parked-reason boundary
+
+Runtime Host projects Runtime planner rejection reasons into the closed
+`TurnResumeParkReason` wire union. A CLI must not infer the Host's internal
+state again. The current Host preserves three previously conflated causes:
+
+- `resume_feature_disabled`: the feature flag is off;
+- `continuation_authority_unavailable`: the Host cannot obtain continuation authority;
+- `safety_observation_unavailable`: the Host cannot obtain authoritative safety observations.
+
+The current wire contract no longer contains `continuation_unavailable`. The
+`/resume` driver carries the exact reason in `SafeBoundaryResumeParkedError`.
+The TUI renders only expected user states as informational notices:
+`resume_feature_disabled`, `resume_candidate_missing`, and `session_busy`.
+Authority, safety, and other recovery failures remain red errors with the raw
+reason preserved for diagnosis.
+
+Because this changes a closed protocol union, Runtime Host compatibility epoch
+57 rejects mixed old/new Client-Host pairs during handshake instead of letting
+a Client misclassify a recovery failure as a disabled feature. This change only
+corrects Host projection and CLI presentation; it does not move ownership of
+the planner, durable continuation claim, or feature flag.
 
 ## Why continuation does not duplicate the user message
 
@@ -585,7 +610,7 @@ Write/Edit recovery first needs durable evidence bound to:
 | Observation | Action |
 |---|---|
 | `matches_expected_state` | Cleanup/finalize only; synthesize outcome and commit completed bundle |
-| `matches_prior_state` | Park with `redo_disabled_pending_cas` |
+| `matches_prior_state` | Park with `reconcile_matches_prior_state` |
 | `diverged` | Park; do not overwrite outside changes |
 | `unreadable` | Park; do not guess |
 
@@ -596,7 +621,7 @@ flowchart TD
   Expected -->|"Yes"| Finalize["Finalize only<br/>do not write the file again"]
   Finalize --> Completed["Commit recovered outcome<br/>+ completed decision"]
   Expected -->|"No"| Prior{"current == before?"}
-  Prior -->|"Yes"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"Yes"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"No, content diverged"| ParkDiverged["Park<br/>protect outside writes"]
   Prior -->|"Unreadable"| ParkUnreadable["Park<br/>do not guess"]
 ```
@@ -689,7 +714,7 @@ flowchart LR
     RP["RuntimeContinuationPlanner"]
     CS["Continuation safety inspector"]
     RK["RuntimeKernel"]
-    AR["AgentRun / RuntimeRunner"]
+    AR["AgentRun"]
     TR["ToolRuntime"]
   end
 
@@ -753,18 +778,6 @@ Layer responsibilities:
 ### Runtime host
 
 The Runtime host uses strict recovery stores. It does not silently turn an unreadable ledger into best-effort fallback before admitting new writes.
-
-### Managed workspace execution admission (M1.1)
-
-The workspace plane now has a storage-owned execution-admission foundation, but it is not yet wired into the Runtime host:
-
-- baseline open returns an opaque handle bound to its `ManagedWorkspaceOwner`, never a raw cwd;
-- every admission reproves storage-root identity, the exact Git receipt/binding/HEAD/tree/ownership, and the exact SQLite canonical head; the ordinary path performs its slow Git verification first, then makes the immutable SQLite head the final durable reread before the DB identity guard and pure in-memory comparisons;
-- one admission issues one callback-scoped opaque scope with `workspaceEffect: none`; the same handle may have multiple concurrent read-only scopes;
-- `close()` rejects new admissions and drains every active scope; a scope expires when its callback exits, with typed `managed_workspace_execution_scope_invalid` and `managed_workspace_execution_scope_expired` codes for forged and retained scopes;
-- the crash harness may enable a preliminary-verification failpoint, but that test path must still pass the final verification before any scope is issued.
-
-M1.2 adds the owner-bound storage worker bridge and its runtime-host lifecycle composition in one delivery. It limits managed execution to Read/Glob/Grep, demotes unchecked scope inspection to explicit test support, rejects reentrant owner close, keeps attached and managed profiles structurally distinct, and orders shutdown as tool operations → managed owner → root owner. Desktop and CLI do not enable it by default in this slice; Write/Edit/Format/Bash/unknown tools fail closed, and managed mode never silently falls back to the attached checkout. See [Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md) for the detailed contract.
 
 ### Eval
 
@@ -915,8 +928,7 @@ The two most important follow-ups are:
 4. `packages/runtime/src/continuation-safety.ts`
 5. `packages/runtime/src/session-manager.ts`
 6. `packages/runtime/src/runtime-kernel.ts`
-7. `packages/runtime/src/runtime-runner.ts`
-8. `packages/runtime/src/agent-run.ts`
+7. `packages/runtime/src/agent-run.ts`
 
 ### Product wiring
 

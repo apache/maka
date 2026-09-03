@@ -230,13 +230,13 @@ Astryx
 
 Source: https://github.com/facebook/astryx
 ChatReasoning revision: c9fe4379e9959b9ba5eeff56def34c752223450e
-Theme revision: 110987b4505dc44119b94bed53d92b9840088a61
+Theme revision: ea888ef33283ea44e37817d36bc8e84a0568bc30
 Copyright (c) 2026 Meta Platforms, Inc.
 License: MIT
 
 Maka includes an ejected adaptation of Astryx ChatReasoning v0.1.9 and generated
-theme artifacts based on Astryx theme-neutral v0.4.5. Maka also redistributes
-`patches/@astryxdesign+core+0.4.5.patch`, which modifies the MIT-licensed Astryx
+theme artifacts based on Astryx theme-neutral v0.5.2. Maka also redistributes
+`patches/@astryxdesign+core+0.5.2.patch`, which modifies the MIT-licensed Astryx
 core package. The following MIT License applies to that material:
 
 MIT License
@@ -260,6 +260,53 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+Sigstore dependency patch
+
+Source: https://www.npmjs.com/package/@sigstore/core/v/4.0.1
+Repository: https://github.com/sigstore/sigstore-js/tree/main/packages/core
+Version: 4.0.1
+Dependency patch: patches/@sigstore+core+4.0.1.patch
+Copyright 2023 The Sigstore Authors
+License: Apache-2.0
+
+Maka redistributes a source patch that selects the signature digest in
+@sigstore/core. The patch modifies Apache-2.0 source and is covered by the
+Apache License, Version 2.0 reproduced above.
+
+TUF metadata models dependency patch
+
+Source: https://www.npmjs.com/package/@tufjs/models/v/5.0.0
+Repository: https://github.com/theupdateframework/tuf-js/tree/main/packages/models
+Version: 5.0.0
+Dependency patch: patches/@tufjs+models+5.0.0.patch
+Copyright (c) 2022 GitHub and the TUF Contributors
+License: MIT
+
+Maka redistributes a source patch that selects the signature digest in
+@tufjs/models. The following MIT License applies to that material:
+
+MIT License
+
+Copyright (c) 2022 GitHub and the TUF Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
 
 node-pty dependency patch
 
@@ -450,14 +497,18 @@ License: MIT
 
 packages/core/src/model-metadata.generated.ts and
 packages/runtime/src/telemetry/model-pricing.generated.ts are generated from the
-models.dev catalog by scripts/sync-model-metadata.mjs and are redistributed with
-Maka. The exact selected input projection is stored at
+models.dev catalog by scripts/sync-model-metadata.mjs during installation or
+build and are redistributed with compiled Maka packages, but are not tracked as
+source. The exact selected input projection is stored at
 scripts/model-metadata/models-dev-api.snapshot.json. Its origin record either
 binds a refresh to the downloaded response digest or identifies the exact Maka
 commit whose generated outputs seeded the migration snapshot. The snapshot
-also carries a digest of its normalized projection; the generated-file headers
-bind each output to that digest. They copy and transform selected model and
-provider metadata from that catalog, including upstream display names and
+is the sole build input for a particular repository revision and release;
+models.dev remains the upstream source used by an explicit refresh. Normal
+installation and build paths do not fetch the latest catalog implicitly. The
+snapshot also carries a digest of its normalized projection; the generated-file
+headers bind each output to that digest. They copy and transform selected model
+and provider metadata from that catalog, including upstream display names and
 descriptive text, lifecycle status values, reasoning effort options, context
 and output limits, modalities, and prices. Which providers are kept, which
 fields are kept, and the order they appear in are decided by the generator. The

@@ -24,6 +24,7 @@ import {
   openAiAdapterApiProtocol,
   resolveModelVisionSupport,
 } from '../model-metadata.js';
+import { PROVIDER_REGISTRY, providerFallbackModelIds } from '../provider-registry.js';
 import type { ModelInfo, ProviderType } from '../llm-connections.js';
 
 describe('model-metadata vision capability', () => {
@@ -103,5 +104,106 @@ describe('openAiAdapterApiProtocol', () => {
     );
     assert.equal(openAiAdapterApiProtocol('muse-spark-1.2-contributor', 'opencode'), 'openai-chat');
     assert.equal(openAiAdapterApiProtocol('minimax-m3', 'opencode-go'), 'openai-chat');
+  });
+
+  it('routes only Qwen3.8 Max through Alibaba Token Plan Responses', () => {
+    for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
+      assert.equal(openAiAdapterApiProtocol('qwen3.8-max', providerType), 'openai-responses');
+      assert.equal(openAiAdapterApiProtocol('qwen3.7-max', providerType), 'openai-chat');
+    }
+    assert.equal(openAiAdapterApiProtocol('qwen3.8-max', 'alibaba-cn'), 'openai-chat');
+  });
+});
+
+describe('deepseek v4 flash vision exp metadata regression', () => {
+  it('resolves the bare model id with vision support', () => {
+    assert.equal(
+      resolveModelVisionSupport('deepseek', undefined, 'deepseek-v4-flash-vision-exp'),
+      true,
+    );
+  });
+
+  it('keeps the model present in the deepseek shipped baseline', () => {
+    assert.ok(
+      providerFallbackModelIds(PROVIDER_REGISTRY.deepseek).includes('deepseek-v4-flash-vision-exp'),
+    );
+  });
+
+  it('returns expected metadata from lookupModelMetadata', () => {
+    const modelId = 'deepseek-v4-flash-vision-exp';
+    const metadata = lookupModelMetadata('deepseek', modelId);
+
+    assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+    assert.equal(
+      metadata.description,
+      'Experimental DeepSeek V4 Flash model for image understanding and multimodal agent tasks',
+    );
+    assert.equal(metadata.contextWindow, 1_000_000);
+    assert.equal(metadata.maxOutputTokens, 384_000);
+    assert.equal(metadata.structuredOutput, true);
+    assert.equal(metadata.lastUpdated, '2026-08-21');
+    assert.deepEqual(metadata.thinkingOptions, {
+      efforts: ['low', 'high', 'max'],
+      toggle: true,
+    });
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.deepEqual(metadata.modalities, { input: ['text', 'image'], output: ['text'] });
+  });
+
+  it('is recognized from a bare discovered id', () => {
+    const modelId = 'deepseek-v4-flash-vision-exp';
+    const discovered: ModelInfo[] = [{ id: modelId }];
+    const metadata = lookupModelMetadata('deepseek', modelId);
+
+    assert.equal(metadata.displayName, 'DeepSeek-V4-Flash-Vision-Exp');
+    assert.equal(metadata.capabilities?.vision, true);
+    assert.equal(resolveModelVisionSupport('deepseek', discovered, modelId), true);
+    assert.equal(
+      resolveModelVisionSupport('deepseek', [{ id: 'deepseek-v4-flash' }], 'deepseek-v4-flash'),
+      false,
+    );
+  });
+});
+
+// The Agent Plan gateway has no model-list endpoint its key can reach and has
+// no models.dev snapshot, so its catalog is a hand-maintained mirror of the
+// official plan page (volcengine docs 2366394) and its model release and
+// retirement announcements. These tests pin that mirror to the facts those
+// pages published as of 2026-09.
+describe('Volcengine Agent Plan official catalog mirror', () => {
+  it('offers glm-5.3-flash with the facts the plan page publishes', () => {
+    assert.ok(
+      providerFallbackModelIds(PROVIDER_REGISTRY['volcengine-agent-plan']).includes(
+        'glm-5.3-flash',
+      ),
+    );
+    const metadata = lookupModelMetadata('volcengine-agent-plan', 'glm-5.3-flash');
+    assert.equal(metadata.displayName, 'GLM-5.3-Flash');
+    assert.equal(metadata.contextWindow, 1_024_000);
+    assert.equal(metadata.maxOutputTokens, 128_000);
+    assert.equal(metadata.capabilities?.vision, true);
+  });
+
+  it('pins glm-5.3 to the plan page table literals', () => {
+    const metadata = lookupModelMetadata('volcengine-agent-plan', 'glm-5.3');
+    assert.equal(metadata.contextWindow, 1_024_000);
+    assert.equal(metadata.maxOutputTokens, 128_000);
+  });
+
+  it('carries the official 1M context window for minimax-m3', () => {
+    assert.equal(
+      lookupModelMetadata('volcengine-agent-plan', 'minimax-m3').contextWindow,
+      1_024_000,
+    );
+  });
+
+  it('records the upstream retirement of glm-5.2, kimi-k2.6 and minimax-m2.7', () => {
+    for (const modelId of ['glm-5.2', 'kimi-k2.6', 'minimax-m2.7']) {
+      assert.equal(
+        lookupModelMetadata('volcengine-agent-plan', modelId).lifecycle,
+        'deprecated',
+        modelId,
+      );
+    }
   });
 });

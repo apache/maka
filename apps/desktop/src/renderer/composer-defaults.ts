@@ -30,7 +30,7 @@ import { safeLocalStorageGet, safeLocalStorageSet } from './browser-storage';
 const STORAGE_KEY = 'maka-composer-defaults-v1';
 
 export interface ComposerDefaults {
-  model: { llmConnectionSlug: string; model: string } | null;
+  model: { llmConnectionId?: string; llmConnectionSlug: string; model: string } | null;
 }
 
 const EMPTY: ComposerDefaults = {
@@ -40,10 +40,18 @@ const EMPTY: ComposerDefaults = {
 function isString(value: unknown): value is string {
   return typeof value === 'string';
 }
-function isModel(value: unknown): value is { llmConnectionSlug: string; model: string } {
+function isModel(value: unknown): value is {
+  llmConnectionId?: string;
+  llmConnectionSlug: string;
+  model: string;
+} {
   if (!value || typeof value !== 'object') return false;
   const record = value as Record<string, unknown>;
-  return isString(record.llmConnectionSlug) && isString(record.model);
+  return (
+    (record.llmConnectionId === undefined || isString(record.llmConnectionId)) &&
+    isString(record.llmConnectionSlug) &&
+    isString(record.model)
+  );
 }
 
 function parse(raw: string | null): ComposerDefaults | null {

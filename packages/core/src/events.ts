@@ -26,6 +26,8 @@
  * Connection-setup events live in ./connections.ts (separate channel).
  */
 
+import * as nodeCrypto from 'node:crypto';
+import { CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS, type SessionContextRef } from './context-offload.js';
 import type {
   AdditionalPermissionRequest,
   PermissionMode,
@@ -34,7 +36,12 @@ import type {
   SandboxEscalationRequest,
 } from './permission.js';
 import type { SandboxBoundaryExpansion, SandboxBoundaryRequestStatus } from './sandbox-boundary.js';
+import type { InteractionFormField, InteractionRequesterProjection } from './interaction.js';
 import type { UserQuestionRequest } from './user-question.js';
+import type {
+  ClientCapabilityGrantCapability,
+  ClientCapabilityGrantScope,
+} from './client-capability-grant.js';
 import type {
   PipeShellOutput,
   PtyShellOutput,
@@ -46,6 +53,7 @@ import type {
 export { SHELL_RUN_SOURCE_TOOL_CALL_ID_MAX_BYTES } from './shell-run.js';
 import { type TokenUsageFields } from './usage-record-schema.js';
 import { defineObjectShape, hasExactShape, isRecord } from './record-schema.js';
+import type { DurableToolResultProjection } from './durable-tool-result-projection.js';
 
 export const TOOL_OUTPUT_STREAMS = ['stdout', 'stderr'] as const;
 export const TOOL_OUTPUT_DELTA_MAX_CHARS = 8192;
@@ -73,6 +81,7 @@ type TerminalToolResultStatus = Exclude<ShellRunTerminalStatus, 'orphaned'>;
 // ============================================================================
 
 export type StorageRef =
+  | SessionContextRef
   | { kind: 'session_file'; sessionId: string; relativePath: string }
   | { kind: 'workspace_file'; relativePath: string }
   | { kind: 'external_file'; absolutePath: string };
@@ -83,6 +92,26 @@ export interface AttachmentRef {
   mimeType: string;
   bytes: number;
   ref: StorageRef;
+}
+
+/** A live directory on the originating Host, not a saved file or an access grant. */
+export interface DirectoryReference {
+  hostId: string;
+  path: string;
+}
+
+export const DIRECTORY_REFERENCE_MAX_COUNT = 4;
+
+export function isDirectoryReference(value: unknown): value is DirectoryReference {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 2 &&
+    typeof value.hostId === 'string' &&
+    /^[A-Za-z0-9_-]{1,128}$/.test(value.hostId) &&
+    typeof value.path === 'string' &&
+    value.path.length <= 4096 &&
+    isCanonicalAbsolutePath(value.path)
+  );
 }
 
 /**
@@ -126,6 +155,7 @@ export interface MessageContent {
   displayText?: string;
   /** Ordered attachment references; omit when empty. Attachment bytes never travel here. */
   attachments?: AttachmentRef[];
+  directoryReferences?: DirectoryReference[];
   /** Ordered inline excerpts; omit when empty. Provenance remains part of content identity. */
   quotes?: QuoteRef[];
   /** Sent inline tokens; an empty array marks a current-format plain message. Never model-visible. */
@@ -134,7 +164,7 @@ export interface MessageContent {
 
 const MESSAGE_CONTENT_SHAPE = defineObjectShape<MessageContent>()(
   ['text'],
-  ['displayText', 'attachments', 'quotes', 'inlineReferences'],
+  ['displayText', 'attachments', 'directoryReferences', 'quotes', 'inlineReferences'],
 );
 const ATTACHMENT_REF_SHAPE = defineObjectShape<AttachmentRef>()(
   ['kind', 'name', 'mimeType', 'bytes', 'ref'],
@@ -153,6 +183,9 @@ const SESSION_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'se
   ['kind', 'sessionId', 'relativePath'],
   [],
 );
+const SESSION_CONTEXT_REF_SHAPE = defineObjectShape<
+  Extract<StorageRef, { kind: 'session_context' }>
+>()(['kind', 'sessionId', 'refId'], []);
 const WORKSPACE_FILE_REF_SHAPE = defineObjectShape<
   Extract<StorageRef, { kind: 'workspace_file' }>
 >()(['kind', 'relativePath'], []);
@@ -164,6 +197,9 @@ const EXTERNAL_FILE_REF_SHAPE = defineObjectShape<Extract<StorageRef, { kind: 'e
 export function normalizeMessageContent(content: MessageContent): MessageContent {
   return {
     text: content.text,
+    ...(content.directoryReferences?.length
+      ? { directoryReferences: content.directoryReferences.map((ref) => ({ ...ref })) }
+      : {}),
     ...(content.displayText !== undefined && content.displayText !== content.text
       ? { displayText: content.displayText }
       : {}),
@@ -197,6 +233,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
   const text = contents.map((content) => content.text).join('\n\n');
   const displayText = contents.map((content) => content.displayText ?? content.text).join('\n\n');
   const attachments = contents.flatMap((content) => content.attachments ?? []);
+  const directoryReferences = contents.flatMap((content) => content.directoryReferences ?? []);
   const quotes = contents.flatMap((content) => content.quotes ?? []);
   const inlineReferences: InlineReference[] = [];
   const hasInlineReferenceMarker = contents.some(
@@ -214,6 +251,7 @@ export function aggregateMessageContents(contents: readonly MessageContent[]): M
     text,
     ...(displayText !== text ? { displayText } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    ...(directoryReferences.length > 0 ? { directoryReferences } : {}),
     ...(quotes.length > 0 ? { quotes } : {}),
     ...(hasInlineReferenceMarker ? { inlineReferences } : {}),
   });
@@ -229,6 +267,9 @@ export function isMessageContent(value: unknown): value is MessageContent {
     isRecord(value) &&
     hasExactShape(value, MESSAGE_CONTENT_SHAPE) &&
     typeof value.text === 'string' &&
+    (value.directoryReferences === undefined ||
+      (Array.isArray(value.directoryReferences) &&
+        value.directoryReferences.every(isDirectoryReference))) &&
     (value.displayText === undefined || typeof value.displayText === 'string') &&
     (value.attachments === undefined ||
       (Array.isArray(value.attachments) && value.attachments.every(isAttachmentRef))) &&
@@ -327,6 +368,13 @@ export function isStorageRef(value: unknown): value is StorageRef {
       typeof value.relativePath === 'string'
     );
   }
+  if (value.kind === 'session_context') {
+    return (
+      hasExactShape(value, SESSION_CONTEXT_REF_SHAPE) &&
+      typeof value.sessionId === 'string' &&
+      typeof value.refId === 'string'
+    );
+  }
   if (value.kind === 'workspace_file') {
     return hasExactShape(value, WORKSPACE_FILE_REF_SHAPE) && typeof value.relativePath === 'string';
   }
@@ -340,8 +388,14 @@ export function isStorageRef(value: unknown): value is StorageRef {
 export function isCanonicalStorageRef(value: unknown): value is StorageRef {
   if (!isStorageRef(value)) return false;
   if (value.kind === 'external_file') return isCanonicalAbsolutePath(value.absolutePath);
-  if (value.kind === 'session_file' && !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId)) {
+  if (
+    (value.kind === 'session_file' || value.kind === 'session_context') &&
+    !/^[A-Za-z0-9_-]{1,128}$/.test(value.sessionId)
+  ) {
     return false;
+  }
+  if (value.kind === 'session_context') {
+    return value.refId.length > 0 && [...value.refId].length <= CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS;
   }
   return isCanonicalRelativePath(value.relativePath);
 }
@@ -376,6 +430,12 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
   return (
     left.text === right.text &&
     leftDisplayText === rightDisplayText &&
+    (left.directoryReferences?.length ?? 0) === (right.directoryReferences?.length ?? 0) &&
+    (left.directoryReferences ?? []).every(
+      (ref, index) =>
+        ref.hostId === right.directoryReferences?.[index]?.hostId &&
+        ref.path === right.directoryReferences?.[index]?.path,
+    ) &&
     ((leftAttachments === undefined && rightAttachments === undefined) ||
       (leftAttachments !== undefined &&
         rightAttachments !== undefined &&
@@ -395,6 +455,24 @@ export function messageContentsEqual(left: MessageContent, right: MessageContent
         leftInlineReferences.every((reference, index) =>
           inlineReferencesEqual(reference, rightInlineReferences[index]!),
         )))
+  );
+}
+
+export function messageContentDigest(content: MessageContent): `sha256:${string}` {
+  return `sha256:${nodeCrypto
+    .createHash('sha256')
+    .update(JSON.stringify(canonicalizeMessageContent(normalizeMessageContent(content))))
+    .digest('hex')}`;
+}
+
+function canonicalizeMessageContent(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeMessageContent);
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([key, entry]) => [key, canonicalizeMessageContent(entry)]),
   );
 }
 
@@ -426,6 +504,12 @@ function attachmentRefsEqual(left: AttachmentRef, right: AttachmentRef): boolean
     return false;
   }
   switch (left.ref.kind) {
+    case 'session_context':
+      return (
+        right.ref.kind === 'session_context' &&
+        left.ref.sessionId === right.ref.sessionId &&
+        left.ref.refId === right.ref.refId
+      );
     case 'session_file':
       return (
         right.ref.kind === 'session_file' &&
@@ -478,14 +562,19 @@ export type SessionEvent =
   | AnyPermissionRequestEvent
   | SandboxBoundaryRequestEvent
   | SandboxBoundaryDecisionAckEvent
+  | ClientCapabilityRequestEvent
+  | ClientCapabilityDecisionAckEvent
   | PermissionAnswerAckEvent
   | PermissionClosureAckEvent
   | PermissionDecisionAckEvent
   | UserQuestionRequestEvent
   | UserQuestionAnswerAckEvent
+  | FormRequestEvent
+  | FormAnswerAckEvent
   | PlanSubmittedEvent
   | TokenUsageEvent
   | SteeringMessageEvent
+  | MessageAdmissionEvent
   | QueueUpdateEvent
   | ProviderRetryEvent
   | ErrorEvent
@@ -543,6 +632,12 @@ export interface ToolStartEvent extends BaseEvent, ToolActivityIdentity {
   providerExecuted?: boolean;
   displayName?: string;
   intent?: string;
+  /**
+   * Transient, never persisted: a bounded/redacted args subset synthesized at
+   * the Runtime Host client seam (live `tool_start` frames omit full args).
+   * Display formatters read `args ?? argsPreview`; durable replay never has it.
+   */
+  argsPreview?: unknown;
   /**
    * Id of the assistant step this tool call belongs to (equals the step's
    * AssistantMessage id / the step's text+thinking messageId). Lets model
@@ -648,6 +743,8 @@ export interface ToolResultEvent extends BaseEvent, ToolActivityIdentity {
   providerExecuted?: boolean;
   /** Raw provider result retained for provider-native replay; never rendered directly. */
   providerOutput?: unknown;
+  /** Provider-neutral model-visible output computed before durable publication. */
+  modelProjection?: DurableToolResultProjection;
   /** The transport omitted durable result content; consumers must not treat the placeholder as authoritative. */
   contentOmitted?: true;
   isError: boolean;
@@ -741,7 +838,13 @@ export type ToolResultContent =
       originalEstimatedTokens: number;
       originalBytes: number;
       rewriteVersion: number;
-      reason: 'stale_tool_result_pruned_before_compact';
+      /**
+       * Both prune paths now record the same durable projection transition
+       * (#4283), so the archived-result read model spans both reasons.
+       */
+      reason:
+        | 'stale_tool_result_pruned_before_compact'
+        | 'active_current_turn_tool_result_pruned_before_next_step';
     }
   | {
       kind: 'terminal';
@@ -785,45 +888,6 @@ export type ToolResultContent =
       reason: string;
       message: string;
       credentialSource?: string;
-    }
-  | {
-      kind: 'explore_agent';
-      ok: boolean;
-      partial?: boolean;
-      terminalStatus?: 'completed' | 'completed_empty' | 'failed' | 'canceled' | 'canceled_partial';
-      mode: 'read_only';
-      objective: string;
-      roots: string[];
-      queries: string[];
-      ignoredPaths?: string[];
-      stoppingCondition?: string;
-      limitReasons?: ReadonlyArray<
-        'candidate_budget' | 'file_budget' | 'match_budget' | 'byte_budget'
-      >;
-      filesDiscovered?: number;
-      filesInspected: number;
-      filesSkipped: number;
-      sensitiveFilesSkipped?: number;
-      bytesRead: number;
-      startedAt?: number;
-      completedAt?: number;
-      durationMs?: number;
-      progress: string[];
-      recentEvents?: ReadonlyArray<{ type: string; at: number; message: string }>;
-      evidence?: ReadonlyArray<{
-        type: 'match' | 'candidate';
-        path: string;
-        line?: number;
-        label: string;
-        score?: number;
-      }>;
-      summary?: string;
-      report?: string;
-      candidateFiles: ReadonlyArray<{ path: string; score: number; reasons: string[] }>;
-      matches: ReadonlyArray<{ path: string; line: number; query: string; snippet: string }>;
-      notes: string[];
-      reason?: 'invalid_objective' | 'invalid_root' | 'no_readable_roots' | 'aborted';
-      message?: string;
     }
   | {
       kind: 'subagent';
@@ -953,6 +1017,15 @@ export interface UserQuestionRequestEvent extends BaseEvent, UserQuestionRequest
   type: 'user_question_request';
 }
 
+export interface FormRequestEvent extends BaseEvent {
+  type: 'form_request';
+  requestId: string;
+  toolUseId: string;
+  message: string;
+  requester: InteractionRequesterProjection;
+  fields: readonly InteractionFormField[];
+}
+
 export interface SandboxBoundaryRequestEvent extends BaseEvent {
   type: 'sandbox_boundary_request';
   requestId: string;
@@ -961,12 +1034,24 @@ export interface SandboxBoundaryRequestEvent extends BaseEvent {
   expansion: SandboxBoundaryExpansion;
 }
 
+export interface ClientCapabilityRequestEvent extends BaseEvent {
+  type: 'client_capability_request';
+  requestId: string;
+  toolUseId: string;
+  capability: ClientCapabilityGrantCapability;
+  scope: ClientCapabilityGrantScope;
+}
+
 /**
  * The requests a session can park on while it waits for the user. Both are
  * registered by RuntimeKernel while unanswered, so a surface that missed the
  * live event can rehydrate the prompt instead of stranding the run.
  */
-export type ActiveInteractionRequestEvent = SandboxBoundaryRequestEvent | UserQuestionRequestEvent;
+export type ActiveInteractionRequestEvent =
+  | SandboxBoundaryRequestEvent
+  | UserQuestionRequestEvent
+  | FormRequestEvent
+  | ClientCapabilityRequestEvent;
 
 export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   type: 'sandbox_boundary_decision_ack';
@@ -977,12 +1062,26 @@ export interface SandboxBoundaryDecisionAckEvent extends BaseEvent {
   revision: number;
 }
 
+export interface ClientCapabilityDecisionAckEvent extends BaseEvent {
+  type: 'client_capability_decision_ack';
+  requestId: string;
+  toolUseId: string;
+  decision: 'allow' | 'deny';
+}
+
 /**
  * Echo that the backend accepted a user-question answer.
  * The canonical answer remains owned by InteractionStore.
  */
 export interface UserQuestionAnswerAckEvent extends BaseEvent {
   type: 'user_question_answer_ack';
+  requestId: string;
+  toolUseId: string;
+}
+
+/** Echo that the hosted runtime accepted a form answer. */
+export interface FormAnswerAckEvent extends BaseEvent {
+  type: 'form_answer_ack';
   requestId: string;
   toolUseId: string;
 }
@@ -1065,13 +1164,18 @@ export interface SteeringMessageEvent extends BaseEvent {
 }
 
 /**
- * Result of enqueuing a steering / followup message. `fallback` means there was
- * no active run to attach to (the turn just ended) and the caller should open a
- * fresh turn with the text instead, so a message is never silently dropped.
- * Queue contents travel on ONE path only: the `queue_update` event.
+ * Transient Host projection fact: a submitted message now belongs to this
+ * Turn. It is emitted by the session projector, not by a backend or durable
+ * event ledger, so a client can bind a queued admission without guessing from
+ * timing or Turn ids returned by a stale command response.
  */
-export type QueueEnqueueOutcome = { kind: 'queued' } | { kind: 'fallback' };
+export interface MessageAdmissionEvent extends BaseEvent {
+  type: 'message_admission';
+  messageId: string;
+  outcome: 'admitted' | 'retracted';
+}
 
+/** Host-owned placement for a submitted message projected through `queue_update`. */
 export type MessageQueuePlacement = 'current_turn' | 'next_turn';
 export type MessageQueueEntryState = 'queued' | 'in_flight';
 export type FollowUpMode = 'queue' | 'steer';
@@ -1121,6 +1225,16 @@ export interface ProviderRetryScheduledEvent extends BaseEvent {
   attempt: number;
   maxAttempts: number;
   delayMs: number;
+  /**
+   * Authoritative remaining wait at emission, as a DURATION — unlike `ts`,
+   * it carries no clock domain, so a client on another machine (remote
+   * Runtime Host) can count it down from its own receipt time without being
+   * skewed against the host clock. Runtime sets it to `delayMs` at
+   * scheduling; a host re-projection mid-wait recomputes it from the stored
+   * schedule time. Absent from older emitters; clients fall back to
+   * `delayMs`.
+   */
+  remainingMs?: number;
   reason: ProviderRetryReason;
 }
 
@@ -1153,14 +1267,7 @@ export interface CompleteEvent extends BaseEvent {
     | 'graph_yield'
     | 'permission_handoff'
     | 'step_limit'
-    | 'max_tokens'
-    | 'context_budget_exhausted';
-  /**
-   * Detail for `stopReason: 'context_budget_exhausted'` — the runtime could not
-   * produce a provider-safe request even after mid-turn compaction. A first-class
-   * outcome, not a provider context-length error.
-   */
-  contextBudgetExhaustedDetail?: ContextBudgetExhaustedDetail;
+    | 'max_tokens';
   /** Durable result of an explicit context-compaction execution. */
   contextCompactionOutcome?: ContextCompactionOutcome;
 }
@@ -1170,20 +1277,14 @@ export type ContextCompactionOutcome =
   | { kind: 'unchanged'; reason: string }
   | { kind: 'failed'; reason: string };
 
-export type ContextBudgetExhaustedDetail =
-  | 'no_safe_completed_span'
-  | 'summarizer_failed'
-  | 'head_anchor_exceeds_capacity';
-
 export type CompleteStopReason = CompleteEvent['stopReason'];
 
 /** Stable failure taxonomy for complete events that did not finish the turn. */
 export function failureClassFromCompleteStopReason(
   reason: CompleteStopReason,
-): 'runtime_error' | 'tool_step_cap_reached' | 'context_budget_exhausted' | undefined {
+): 'runtime_error' | 'tool_step_cap_reached' | undefined {
   if (reason === 'error') return 'runtime_error';
   if (reason === 'step_limit') return 'tool_step_cap_reached';
-  if (reason === 'context_budget_exhausted') return 'context_budget_exhausted';
   return undefined;
 }
 

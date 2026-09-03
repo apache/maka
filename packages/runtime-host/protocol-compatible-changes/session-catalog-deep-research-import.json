@@ -1,0 +1,8 @@
+{
+  "epoch": 68,
+  "files": [
+    "packages/runtime-host/src/protocol/session-catalog.ts",
+    "packages/runtime-host/src/protocol/session-continuity.ts"
+  ],
+  "reason": "Renames an internal Deep Research import and removes a retired tool from a comment without changing any wire codec or message shape"
+}

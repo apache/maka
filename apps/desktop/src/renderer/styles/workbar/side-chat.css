@@ -53,11 +53,6 @@
   min-height: 1px;
 }
 
-.maka-quote-companion-preparing {
-  justify-content: center;
-  min-height: 32px;
-}
-
 .maka-session-workbar-panel[data-placement="right"] .maka-quote-companion .composer {
   padding-inline: var(--space-2);
   padding-bottom: var(--space-2);

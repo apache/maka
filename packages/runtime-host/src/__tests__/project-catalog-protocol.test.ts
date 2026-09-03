@@ -26,6 +26,8 @@ import {
   decodeProjectCatalogQueryResult,
   HOST_OPERATION_SPECS,
   PROJECT_CATALOG_PAGE_MAX_ITEMS,
+  projectDirectoryPosixRootSpecValid,
+  projectDirectoryRootSpecValid,
   REMOTE_OWNER_OPERATION_GRANTS,
 } from '../protocol/index.js';
 
@@ -34,6 +36,13 @@ const foreignHostPath = process.platform === 'win32' ? '/workspace' : 'C:\\works
 const revision = `sha256:${'a'.repeat(64)}` as const;
 
 describe('Project catalog protocol', () => {
+  test('keeps Host-native root shape separate from SSH POSIX policy', () => {
+    const windowsRoot = { label: 'Work', path: 'C:\\workspace' };
+    assert.equal(projectDirectoryRootSpecValid(windowsRoot), true);
+    assert.equal(projectDirectoryPosixRootSpecValid(windowsRoot), false);
+    assert.equal(projectDirectoryPosixRootSpecValid({ label: 'Work', path: '/workspace' }), true);
+  });
+
   test('decodes exact invalidations', () => {
     const frame = { kind: 'project.catalog.changed' as const, revision: 1 };
     assert.deepEqual(decodeHostFrame(frame), frame);
@@ -106,6 +115,23 @@ describe('Project catalog protocol', () => {
         path: projectPath,
       }),
       true,
+    );
+  });
+
+  test('decodes an optional project registration preference and rejects non-booleans', () => {
+    const frame = {
+      requestId: 'request-register-preference',
+      operation: 'project.catalog.mutate' as const,
+      input: { kind: 'register' as const, path: projectPath, prefer: false },
+    };
+    assert.deepEqual(decodeClientFrame(frame), frame);
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          ...frame,
+          input: { ...frame.input, prefer: 'false' },
+        }),
+      isProtocolError,
     );
   });
 

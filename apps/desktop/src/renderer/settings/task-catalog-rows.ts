@@ -18,7 +18,7 @@
  */
 
 import type { SessionSummary } from '@maka/core/session';
-import { deriveSessionRail } from '../session-rail.js';
+import { deriveSessionRail } from '../features/session-navigation/index.js';
 
 /**
  * The archived tasks, counted the way the rail counts tasks.

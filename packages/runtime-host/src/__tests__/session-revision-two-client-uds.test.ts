@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -28,6 +29,12 @@ import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-
 import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
 import { type AgentRunHeader } from '@maka/core/agent-run';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
+import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
+import {
+  buildHistoryCompactCheckpoint,
+  matchHistoryCompactCheckpointPrefix,
+  validateHistoryCompactCheckpointShape,
+} from '@maka/runtime/history-compact-checkpoint';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { FAKE_ASK_USER_QUESTION_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
@@ -39,7 +46,7 @@ import {
   tryAcquireInteractiveRootOwner,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import { removePosixEndpointDirectories } from './fixtures/endpoint-hygiene.js';
 import { requireStartedTurn } from './fixtures/execution-host-suite.js';
 import {
@@ -63,6 +70,10 @@ const ADMITTED_REVISION_TARGET_ID = 'admitted-revision-target';
 const LINEAGE_REVISION_TARGET_ID = 'lineage-revision-target';
 const LINEAGE_BRANCH_TARGET_ID = 'lineage-branch-target';
 const GRAPH_REVISION_TARGET_ID = 'graph-revision-target';
+const GRAPH_SIDE_CONVERSATION_TARGET_ID = 'graph-side-conversation-target';
+const GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID = 'graph-side-conversation-removal-target';
+const ARCHIVED_SIDE_CONVERSATION_TARGET_ID = 'archived-side-conversation-target';
+const ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID = 'active-source-side-conversation-target';
 
 test('two Clients share exact retryable Session branch and revision authority', {
   skip: process.platform === 'win32' ? 'Windows SQLite shutdown lifecycle' : false,
@@ -98,6 +109,7 @@ test('two Clients share exact retryable Session branch and revision authority', 
     await stopHost(host);
     host = undefined;
 
+    await seedDurableOrderCheckpoint(capability, sourceSessionId);
     host = await startHost(root, capability.rootId);
     await verifyRestartRecoveryAndAdmission(root, sourceSessionId);
     await stopHost(host);
@@ -116,6 +128,9 @@ test('two Clients share exact retryable Session branch and revision authority', 
       LINEAGE_REVISION_TARGET_ID,
       LINEAGE_BRANCH_TARGET_ID,
       GRAPH_REVISION_TARGET_ID,
+      GRAPH_SIDE_CONVERSATION_TARGET_ID,
+      ARCHIVED_SIDE_CONVERSATION_TARGET_ID,
+      ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
       graphChildSessionId,
     );
   } finally {
@@ -144,6 +159,35 @@ async function verifyConcurrentRevisionAuthority(
   const tui = await connectClient(root);
   try {
     const source = await querySession(desktop, sourceSessionId);
+    for (const operation of ['session.branch.create', 'session.revision.create'] as const) {
+      await assert.rejects(
+        desktop.request(operation, {
+          sourceSessionId,
+          targetSessionId: WORKHUB_COORDINATION_SESSION_ID,
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: source.revision,
+        }),
+        operationError('operation_conflict'),
+      );
+      // The reservation holds on both sides: the Coordination transcript cannot
+      // be lifted out into an ordinary Session that would then be executable.
+      await assert.rejects(
+        desktop.request(operation, {
+          sourceSessionId: WORKHUB_COORDINATION_SESSION_ID,
+          targetSessionId: 'coordination-copy-target',
+          sourceTurnId: 'turn-1',
+          expectedSourceRevision: source.revision,
+        }),
+        operationError('operation_conflict'),
+      );
+    }
+    assert.deepEqual(
+      await tui.request('session.catalog.query', {
+        kind: 'get',
+        sessionId: 'coordination-copy-target',
+      }),
+      { kind: 'session', session: null },
+    );
     const continuationSource = await querySession(desktop, continuationSourceSessionId);
     await assert.rejects(
       desktop.request('session.branch.create', {
@@ -178,6 +222,79 @@ async function verifyConcurrentRevisionAuthority(
       }),
       { kind: 'session', session: null },
     );
+    const sideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: linkedChildSourceSessionId,
+      targetSessionId: GRAPH_SIDE_CONVERSATION_TARGET_ID,
+      sourceTurnId: 'linked-turn',
+      expectedSourceRevision: linkedChildSource.revision,
+      intent: 'side_conversation',
+    });
+    assert.equal(sideConversation.kind, 'committed');
+    if (sideConversation.kind !== 'committed') {
+      assert.fail('Side Conversation must commit');
+    }
+    const sideConversationSession = requireSessionProjection(sideConversation.session);
+    assert.ok(sideConversationSession.labels.includes('mode:side_conversation'));
+    await assert.rejects(
+      desktop.request('session.branch.create', {
+        sourceSessionId: linkedChildSourceSessionId,
+        targetSessionId: GRAPH_SIDE_CONVERSATION_TARGET_ID,
+        sourceTurnId: 'linked-turn',
+        expectedSourceRevision: linkedChildSource.revision,
+      }),
+      operationError('operation_conflict'),
+    );
+    const removableSideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: linkedChildSourceSessionId,
+      targetSessionId: GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID,
+      sourceTurnId: 'linked-turn',
+      expectedSourceRevision: linkedChildSource.revision,
+      intent: 'side_conversation',
+    });
+    assert.equal(removableSideConversation.kind, 'committed');
+    if (removableSideConversation.kind !== 'committed') {
+      assert.fail('Removable Side Conversation must commit');
+    }
+    const removableSideConversationSession = requireSessionProjection(
+      removableSideConversation.session,
+    );
+    assert.deepEqual(
+      await desktop.request('session.remove', {
+        sessionId: GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID,
+        expectedRevision: removableSideConversationSession.revision,
+      }),
+      { kind: 'removed', sessionId: GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID },
+    );
+    // An empty copy (no sourceTurnId) forks a side conversation before the
+    // source has a settled turn: it commits (the lineage invariant accepts it),
+    // inherits the side-conversation label, records provenance, and fabricates
+    // no branch turn.
+    const emptySideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: linkedChildSourceSessionId,
+      targetSessionId: 'graph-side-conversation-empty-target',
+      expectedSourceRevision: linkedChildSource.revision,
+      intent: 'side_conversation',
+    });
+    assert.equal(emptySideConversation.kind, 'committed');
+    if (emptySideConversation.kind !== 'committed') {
+      assert.fail('Empty Side Conversation must commit');
+    }
+    const emptySideConversationSession = requireSessionProjection(emptySideConversation.session);
+    assert.ok(emptySideConversationSession.labels.includes('mode:side_conversation'));
+    assert.equal(emptySideConversationSession.parentSessionId, linkedChildSourceSessionId);
+    assert.equal(emptySideConversationSession.branchOfTurnId, undefined);
+    // An empty copy carries none of the source's current state — including no
+    // in-progress Todo (copyCurrent is false when sourceTurnId is absent), even
+    // though the source below has one.
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: 'graph-side-conversation-empty-target',
+        })
+      ).items,
+      [],
+    );
+    assert.equal((await querySession(tui, graphChildSessionId)).id, graphChildSessionId);
     const graphRevision = await desktop.request('session.revision.create', {
       sourceSessionId: linkedChildSourceSessionId,
       targetSessionId: GRAPH_REVISION_TARGET_ID,
@@ -196,7 +313,7 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(sourceGraph.status, 'completed');
     assert.equal(sourceGraph.operators[0]?.childSessionId, graphChildSessionId);
-    await desktop.startTurn({
+    await desktop.request('turn.start', {
       sessionId: GRAPH_REVISION_TARGET_ID,
       turnId: 'graph-revision-new-turn',
       content: { text: 'continue independently' },
@@ -240,6 +357,22 @@ async function verifyConcurrentRevisionAuthority(
       }),
       operationError('operation_unavailable'),
     );
+    const archivedSideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: archivedOwnedSourceSessionId,
+      targetSessionId: ARCHIVED_SIDE_CONVERSATION_TARGET_ID,
+      sourceTurnId: 'archived-owned-turn',
+      expectedSourceRevision: archivedOwnedSource.revision,
+      intent: 'side_conversation',
+    });
+    assert.equal(archivedSideConversation.kind, 'committed');
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: ARCHIVED_SIDE_CONVERSATION_TARGET_ID,
+        })
+      ).items,
+      [],
+    );
     for (const sessionId of ['metadata-linked-copy-target', 'archived-owned-copy-target']) {
       assert.deepEqual(
         await tui.request('session.catalog.query', {
@@ -274,18 +407,27 @@ async function verifyConcurrentRevisionAuthority(
     });
     assert.equal(artifactPage.kind, 'page');
     if (artifactPage.kind !== 'page') assert.fail('Branch Artifact query must return a page');
-    assert.equal(artifactPage.artifacts.length, 2);
+    assert.equal(artifactPage.artifacts.length, 3);
     assert.notEqual(artifactPage.artifacts[0]?.id, 'source-artifact');
-    const taskPage = await tui.request('task.ledger.query', {
-      kind: 'list_start',
-      sessionId: branch.id,
+    const todo = await tui.request('session.todo.query', { sessionId: branch.id });
+    assert.deepEqual(todo.items, []);
+
+    const latestBranch = await desktop.request('session.branch.create', {
+      ...branchInput,
+      targetSessionId: 'latest-branch-target',
+      sourceTurnId: 'turn-2',
     });
-    assert.equal(taskPage.kind, 'page');
-    if (taskPage.kind !== 'page') assert.fail('Branch Task Ledger query must return a page');
-    assert.deepEqual(taskPage.tasks.map((task) => task.subject).sort(), [
-      'Legacy child task',
-      'Retained task',
-    ]);
+    assert.equal(latestBranch.kind, 'committed');
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: 'latest-branch-target',
+        })
+      ).items
+        .map((item) => item.content)
+        .sort(),
+      ['Legacy child task', 'Retained task'],
+    );
 
     const renamed = await desktop.request('session.metadata.update', {
       sessionId: sourceSessionId,
@@ -363,7 +505,7 @@ async function verifyConcurrentRevisionAuthority(
     );
 
     const busyTurn = requireStartedTurn(
-      await desktop.startTurn({
+      await desktop.request('turn.start', {
         sessionId: busySessionId,
         turnId: 'busy-turn',
         content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
@@ -390,7 +532,8 @@ async function verifyConcurrentRevisionAuthority(
       assertionError = error;
     }
     try {
-      const stopped = await desktop.stopTurn(
+      const stopped = await desktop.request(
+        'turn.stop',
         {
           sessionId: busySessionId,
           turnId: 'busy-turn',
@@ -404,6 +547,67 @@ async function verifyConcurrentRevisionAuthority(
         throw new AggregateError(
           [assertionError, cleanupError],
           'session_busy check failed and parked-turn cleanup failed',
+        );
+      }
+      throw cleanupError;
+    }
+    if (assertionError !== undefined) throw assertionError;
+
+    const activeSourceTurn = requireStartedTurn(
+      await desktop.request('turn.start', {
+        sessionId: sourceSessionId,
+        turnId: 'active-source-turn',
+        content: { text: FAKE_ASK_USER_QUESTION_PROMPT },
+      }),
+    );
+    assertionError = undefined;
+    try {
+      const activeSource = await querySession(desktop, sourceSessionId);
+      const historicalCopyInput = {
+        sourceSessionId,
+        sourceTurnId: 'turn-2',
+        expectedSourceRevision: activeSource.revision,
+      };
+      await assert.rejects(
+        tui.request('session.branch.create', {
+          ...historicalCopyInput,
+          targetSessionId: 'active-source-ordinary-branch-target',
+        }),
+        operationError('session_busy'),
+      );
+      const sideConversation = await tui.request('session.branch.create', {
+        ...historicalCopyInput,
+        targetSessionId: ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
+        intent: 'side_conversation',
+      });
+      assert.equal(sideConversation.kind, 'committed');
+      if (sideConversation.kind !== 'committed') {
+        assert.fail('Side Conversation must fork a settled Turn while the source keeps running');
+      }
+      assert.ok(
+        requireSessionProjection(sideConversation.session).labels.includes(
+          'mode:side_conversation',
+        ),
+      );
+    } catch (error) {
+      assertionError = error;
+    }
+    try {
+      const stopped = await desktop.request(
+        'turn.stop',
+        {
+          sessionId: sourceSessionId,
+          turnId: 'active-source-turn',
+          runId: activeSourceTurn.runId,
+        },
+        PROCESS_TIMEOUT_MS,
+      );
+      assert.equal(stopped.status, 'cancelled');
+    } catch (cleanupError) {
+      if (assertionError !== undefined) {
+        throw new AggregateError(
+          [assertionError, cleanupError],
+          'active-source Side Conversation check failed and parked-turn cleanup failed',
         );
       }
       throw cleanupError;
@@ -447,7 +651,7 @@ async function verifyRestartRecoveryAndAdmission(
     assert.equal(admitted.kind, 'committed');
     if (admitted.kind !== 'committed') assert.fail('Admitted revision must commit');
     assert.equal(requireSessionProjection(admitted.session).revisionIndex, 3);
-    await restarted.startTurn({
+    await restarted.request('turn.start', {
       sessionId: ADMITTED_REVISION_TARGET_ID,
       turnId: 'turn-3',
       content: { text: 'commit this revision' },
@@ -598,11 +802,12 @@ async function seedSource(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
     const source = await execution.sessionStore.create({
       cwd: root,
       name: 'Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -610,6 +815,7 @@ async function seedSource(
     const busy = await execution.sessionStore.create({
       cwd: root,
       name: 'Busy Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -617,6 +823,7 @@ async function seedSource(
     const linkedChildSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Linked Child Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -624,6 +831,7 @@ async function seedSource(
     const metadataLinkedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Metadata-linked Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -631,6 +839,7 @@ async function seedSource(
     const archivedOwnedSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Archived-owned Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -638,6 +847,7 @@ async function seedSource(
     const continuationSource = await execution.sessionStore.create({
       cwd: root,
       name: 'Continuation Source Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -713,13 +923,27 @@ async function seedSource(
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
-      turnId: 'turn-1',
+      // A user upload carries the uploadId sentinel as its turnId, not a
+      // conversation turn — so it is not selected by the turn-scoped artifact
+      // copy and must be carried by the referenced-attachment include path.
+      turnId: 'upload-source-artifact',
       name: 'source.txt',
       kind: 'file',
       content: 'retained bytes',
       mimeType: 'text/plain',
       source: 'user_upload',
       now: 1,
+    });
+    const projectionArtifact = await artifacts.create({
+      id: 'source-projection-artifact',
+      sessionId: source.id,
+      turnId: 'turn-1',
+      name: 'projection.png',
+      kind: 'file',
+      content: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+      mimeType: 'image/png',
+      source: 'tool_result',
+      now: 2,
     });
     await artifacts.create({
       id: 'legacy-child-artifact',
@@ -748,7 +972,7 @@ async function seedSource(
             ref: {
               kind: 'session_file',
               sessionId: source.id,
-              relativePath: artifact.relativePath,
+              relativePath: artifact.id,
             },
           },
         ],
@@ -793,7 +1017,7 @@ async function seedSource(
     const sourceRuntimeEvents = [
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'user-1',
-        ts: 1,
+        ts: 2,
         role: 'user',
         author: 'user',
         content: {
@@ -808,7 +1032,7 @@ async function seedSource(
               ref: {
                 kind: 'session_file',
                 sessionId: source.id,
-                relativePath: artifact.relativePath,
+                relativePath: artifact.id,
               },
             },
           ],
@@ -816,10 +1040,57 @@ async function seedSource(
       }),
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'assistant-1',
-        ts: 2,
+        ts: 1,
         role: 'model',
         author: 'agent',
         content: { kind: 'text', text: 'first response' },
+      }),
+      runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
+        id: 'projection-call',
+        ts: 2.1,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'projection-tool-call',
+          name: 'Read',
+          args: { path: 'projection.png' },
+        },
+      }),
+      runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
+        id: 'projection-result',
+        ts: 2.2,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'projection-tool-call',
+          name: 'Read',
+          result: {
+            kind: 'image',
+            mimeType: 'image/png',
+            ref: {
+              kind: 'session_file',
+              sessionId: source.id,
+              relativePath: projectionArtifact.id,
+            },
+          },
+          modelProjection: {
+            version: 1,
+            kind: 'content',
+            parts: [
+              {
+                kind: 'artifact',
+                mediaType: 'image/png',
+                ref: {
+                  kind: 'session_file',
+                  sessionId: source.id,
+                  relativePath: projectionArtifact.id,
+                },
+              },
+            ],
+          },
+        },
       }),
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'terminal-1',
@@ -907,6 +1178,7 @@ async function seedSource(
       {
         cwd: root,
         name: 'Graph Worker',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -1144,6 +1416,7 @@ async function seedSource(
     const ordinaryLinkedChild = await execution.sessionStore.createSubagent({
       cwd: root,
       name: 'Metadata-linked Child Session',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1312,27 +1585,15 @@ async function seedSource(
     for (const event of archivedOwnedRuntimeEvents) {
       await execution.runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
-    await tasks.create(source.id, [{ subject: 'Retained task' }], {
-      turnId: 'turn-1',
-      source: 'tool',
-      actor: 'main_agent',
-    });
-    await tasks.create(source.id, [{ subject: 'Legacy child task' }], {
-      turnId: 'legacy-child-turn',
-      runId: 'legacy-child-run',
-      source: 'tool',
-      actor: 'child_agent',
-    });
-    await tasks.update(
-      source.id,
-      (await tasks.list(source.id))[0]!.id,
-      { status: 'in_progress' },
-      {
-        turnId: 'turn-2',
-        source: 'tool',
-        actor: 'main_agent',
-      },
-    );
+    await todos.replaceAll(source.id, [
+      { content: 'Retained task', status: 'in_progress' },
+      { content: 'Legacy child task', status: 'pending' },
+    ]);
+    // The empty side conversation forks from here before any settled turn; this
+    // in-progress Todo proves the empty copy inherits none of it.
+    await todos.replaceAll(linkedChildSource.id, [
+      { content: 'Linked child in-progress task', status: 'in_progress' },
+    ]);
     return {
       sourceSessionId: source.id,
       busySessionId: busy.id,
@@ -1349,6 +1610,51 @@ async function seedSource(
   }
 }
 
+async function seedDurableOrderCheckpoint(
+  capability: StorageRootCapability<'interactive'>,
+  sourceSessionId: string,
+): Promise<void> {
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) throw new Error('Unable to acquire execution root for checkpoint setup');
+  try {
+    const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const coveredRuntimeEvents = (
+      await execution.runtimeEventStore.readSessionRuntimeEventEntries(sourceSessionId)
+    )
+      .map(({ event }) => event)
+      .filter((event) => event.id === 'user-1' || event.id === 'assistant-1');
+    assert.deepEqual(
+      coveredRuntimeEvents.map((event) => event.id),
+      ['user-1', 'assistant-1'],
+    );
+    const checkpoint = buildHistoryCompactCheckpoint({
+      sessionId: sourceSessionId,
+      coveredRuntimeEvents,
+      summary: 'The first turn completed.',
+      summaryFormat: 'legacy_freeform',
+      highWaterSeq: 2,
+    });
+    await execution.agentRunStore.appendEvent(sourceSessionId, 'run-turn-1', {
+      type: 'history_compact_checkpoint_recorded',
+      id: 'checkpoint-turn-1',
+      runId: 'run-turn-1',
+      sessionId: sourceSessionId,
+      turnId: 'turn-1',
+      ts: 2,
+      data: {
+        checkpointId: checkpoint.checkpointId,
+        highWaterName: checkpoint.highWaterName,
+        highWaterSeq: checkpoint.highWaterSeq,
+        boundaryKind: 'historyCompact',
+        checkpoint,
+      },
+    });
+  } finally {
+    await owner.close();
+  }
+}
+
 async function verifyDurableBranch(
   capability: StorageRootCapability<'interactive'>,
   sourceSessionId: string,
@@ -1357,6 +1663,9 @@ async function verifyDurableBranch(
   lineageRevisionTargetId: string,
   lineageBranchTargetId: string,
   graphRevisionTargetId: string,
+  graphSideConversationTargetId: string,
+  archivedSideConversationTargetId: string,
+  activeSourceSideConversationTargetId: string,
   graphChildSessionId: string,
 ): Promise<void> {
   const owner = await tryAcquireInteractiveRootOwner(capability);
@@ -1365,23 +1674,51 @@ async function verifyDurableBranch(
   try {
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const tasks = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
+    const todos = await openInteractiveSessionTodoStoreForWrite(owner.lease);
     await artifacts.recover();
+    // Every copy kind that retains the upload turn must carry a rewritten,
+    // readable copy of the user-uploaded attachment (regression guard for the
+    // turn-scoped-only artifact selection that dropped user uploads).
+    const assertCopiedUpload = async (sessionId: string): Promise<void> => {
+      const sessionMessages = await execution.sessionStore.readMessagesSnapshot(sessionId);
+      const uploadMessage = sessionMessages.find(
+        (message) => message.type === 'user' && message.attachments?.[0],
+      );
+      const uploadRef =
+        uploadMessage?.type === 'user' ? uploadMessage.attachments?.[0]?.ref : undefined;
+      assert.equal(uploadRef?.kind, 'session_file', `${sessionId} must retain the upload`);
+      if (uploadRef?.kind !== 'session_file') return;
+      assert.equal(uploadRef.sessionId, sessionId);
+      assert.notEqual(uploadRef.relativePath, 'source-artifact');
+      assert.deepEqual(await artifacts.readTextInSession(sessionId, uploadRef.relativePath), {
+        ok: true,
+        text: 'retained bytes',
+      });
+    };
     const messages = await execution.sessionStore.readMessagesSnapshot(branchSessionId);
-    assert.equal(messages.length, 3);
+    assert.equal(messages.length, 5);
     const user = messages.find((message) => message.type === 'user');
     assert.ok(user?.attachments?.[0]);
     const ref = user?.attachments?.[0]?.ref;
     assert.equal(ref?.kind, 'session_file');
     if (ref?.kind !== 'session_file') assert.fail('Copied attachment must remain session-backed');
     assert.equal(ref.sessionId, branchSessionId);
-    assert.notEqual(ref.relativePath, `${sourceSessionId}/source-artifact-source.txt`);
-    assert.equal((await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 })).total, 2);
-    assert.deepEqual((await tasks.list(branchSessionId)).map((task) => task.subject).sort(), [
-      'Legacy child task',
-      'Retained task',
-    ]);
-    assert.ok((await tasks.list(branchSessionId)).every((task) => task.status === 'pending'));
+    // The user-upload attachment ref carries the source artifact id; the copy
+    // must rewrite it to a fresh target artifact id, never leave the source id.
+    assert.notEqual(ref.relativePath, 'source-artifact');
+    const branchArtifacts = await artifacts.listPage(branchSessionId, { offset: 0, limit: 10 });
+    assert.equal(branchArtifacts.total, 3);
+    assert.deepEqual(await artifacts.readTextInSession(branchSessionId, ref.relativePath), {
+      ok: true,
+      text: 'retained bytes',
+    });
+    assert.deepEqual(await todos.readOrBootstrap(branchSessionId), { items: [] });
+    assert.deepEqual(
+      (await todos.readOrBootstrap('latest-branch-target')).items
+        .map((item) => item.content)
+        .sort(),
+      ['Legacy child task', 'Retained task'],
+    );
     const copiedRuns = await execution.agentRunStore.listSessionRuns(branchSessionId);
     assert.equal(copiedRuns.length, 2);
     const copiedChild = copiedRuns.find((run) => run.turnId === 'legacy-child-turn');
@@ -1389,8 +1726,62 @@ async function verifyDurableBranch(
     assert.ok(copiedChild);
     assert.ok(copiedParent);
     assert.equal(copiedChild.parentRunId, copiedParent.runId);
+    const copiedProjectionResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(branchSessionId, copiedParent.runId)
+    ).find((event) => event.content?.kind === 'function_response');
+    assert.equal(copiedProjectionResult?.content?.kind, 'function_response');
+    if (copiedProjectionResult?.content?.kind !== 'function_response') {
+      assert.fail('Copied branch must retain the durable Tool Result projection');
+    }
+    const copiedProjection = copiedProjectionResult.content.modelProjection;
+    assert.equal(copiedProjection?.kind, 'content');
+    if (copiedProjection?.kind !== 'content') {
+      assert.fail('Copied Tool Result must retain artifact projection content');
+    }
+    const copiedProjectionPart = copiedProjection.parts[0];
+    assert.equal(copiedProjectionPart?.kind, 'artifact');
+    if (copiedProjectionPart?.kind !== 'artifact') {
+      assert.fail('Copied Tool Result must retain its projected artifact');
+    }
+    assert.equal(copiedProjectionPart.ref.kind, 'session_file');
+    if (copiedProjectionPart.ref.kind !== 'session_file') {
+      assert.fail('Copied Tool Result artifact must remain Session-backed');
+    }
+    assert.equal(copiedProjectionPart.ref.sessionId, branchSessionId);
+    const copiedProjectionArtifact = branchArtifacts.records.find(
+      (record) => record.name === 'projection.png',
+    );
+    assert.ok(copiedProjectionArtifact);
+    assert.equal(copiedProjectionPart.ref.relativePath, copiedProjectionArtifact.id);
+    const durableCopiedRuns =
+      await execution.agentRunStore.listSessionRuns(admittedRevisionTargetId);
+    const durableCopiedParent = durableCopiedRuns.find((run) => run.turnId === 'turn-1');
+    assert.ok(durableCopiedParent);
+    const copiedParentEvents = (
+      await execution.runtimeEventStore.readSessionRuntimeEventEntries(admittedRevisionTargetId)
+    )
+      .map(({ event }) => event)
+      .filter(
+        (event) => event.runId === durableCopiedParent.runId && event.content?.kind === 'text',
+      );
+    assert.deepEqual(
+      copiedParentEvents.map((event) => event.ts),
+      [2, 1],
+    );
+    const copiedCheckpoint = await execution.agentRunStore.readEventProjection?.(
+      admittedRevisionTargetId,
+      'history_compact_checkpoint_recorded',
+    );
+    const copiedCheckpointData = copiedCheckpoint?.data?.checkpoint;
+    assert.ok(
+      validateHistoryCompactCheckpointShape(copiedCheckpointData, admittedRevisionTargetId),
+    );
+    assert.equal(
+      matchHistoryCompactCheckpointPrefix(copiedCheckpointData, copiedParentEvents).reason,
+      undefined,
+    );
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
-    assert.deepEqual(await tasks.list('revision-target'), []);
+    assert.deepEqual(await todos.readOrBootstrap('revision-target'), { items: [] });
     assert.deepEqual(await execution.agentRunStore.listSessionRuns('revision-target'), []);
     await assert.rejects(
       () => execution.sessionStore.readHeaderSnapshot('revision-target'),
@@ -1400,6 +1791,7 @@ async function verifyDurableBranch(
       (await execution.sessionStore.readHeaderSnapshot(admittedRevisionTargetId)).revisionState,
       'committed',
     );
+    await assertCopiedUpload(admittedRevisionTargetId);
     assert.equal(
       (await execution.sessionStore.readHeaderSnapshot(lineageRevisionTargetId)).revisionState,
       'committed',
@@ -1408,6 +1800,113 @@ async function verifyDurableBranch(
       (await execution.sessionStore.readHeaderSnapshot(lineageBranchTargetId)).parentSessionId,
       lineageRevisionTargetId,
     );
+    const sideConversationHeader = await execution.sessionStore.readHeaderSnapshot(
+      graphSideConversationTargetId,
+    );
+    assert.equal(sideConversationHeader.conversationCopy?.intent, 'side_conversation');
+    assert.ok(sideConversationHeader.labels.includes('mode:side_conversation'));
+    const sideConversationMessages = await execution.sessionStore.readMessagesSnapshot(
+      graphSideConversationTargetId,
+    );
+    const sideConversationResult = sideConversationMessages.find(
+      (message) => message.type === 'tool_result' && message.content.kind === 'agent_swarm',
+    );
+    assert.ok(sideConversationResult?.type === 'tool_result');
+    if (
+      sideConversationResult?.type !== 'tool_result' ||
+      sideConversationResult.content.kind !== 'agent_swarm'
+    ) {
+      assert.fail('Side Conversation must retain the Agent Graph summary');
+    }
+    assert.equal(sideConversationResult.content.items[0]?.summary, 'done');
+    assert.equal(sideConversationResult.content.items[0]?.childSessionId, undefined);
+    assert.equal(sideConversationResult.content.items[0]?.runId, undefined);
+    const sideConversationArtifactId = sideConversationResult.content.items[0]?.artifactIds[0];
+    assert.ok(sideConversationArtifactId);
+    const activeSourceSideConversationMessages = await execution.sessionStore.readMessagesSnapshot(
+      activeSourceSideConversationTargetId,
+    );
+    assert.ok(activeSourceSideConversationMessages.some((message) => message.turnId === 'turn-2'));
+    assert.ok(
+      activeSourceSideConversationMessages.every(
+        (message) => message.turnId !== 'active-source-turn',
+      ),
+    );
+    await assertCopiedUpload(activeSourceSideConversationTargetId);
+    const sideConversationRuns = await execution.agentRunStore.listSessionRuns(
+      graphSideConversationTargetId,
+    );
+    const sideConversationRun = sideConversationRuns.find((run) => run.turnId === 'linked-turn');
+    assert.ok(sideConversationRun);
+    const sideConversationRuntimeResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(
+        graphSideConversationTargetId,
+        sideConversationRun.runId,
+      )
+    ).find((event) => event.content?.kind === 'function_response')?.content;
+    assert.ok(sideConversationRuntimeResult?.kind === 'function_response');
+    if (sideConversationRuntimeResult?.kind !== 'function_response') {
+      assert.fail('Side Conversation must retain its RuntimeEvent result snapshot');
+    }
+    const runtimeSideConversationResult = decodeCanonicalToolResultContent(
+      sideConversationRuntimeResult.result,
+    );
+    assert.equal(runtimeSideConversationResult.kind, 'agent_swarm');
+    if (runtimeSideConversationResult.kind !== 'agent_swarm') {
+      assert.fail('Copied RuntimeEvent result must remain an Agent Graph result');
+    }
+    assert.equal(runtimeSideConversationResult.items[0]?.childSessionId, undefined);
+    assert.equal(runtimeSideConversationResult.items[0]?.runId, undefined);
+    assert.deepEqual(runtimeSideConversationResult.items[0]?.artifactIds, [
+      sideConversationArtifactId,
+    ]);
+    assert.deepEqual(
+      await artifacts.readTextInSession(graphSideConversationTargetId, sideConversationArtifactId),
+      {
+        ok: true,
+        text: 'graph child result',
+      },
+    );
+    const archivedSideConversationRuns = await execution.agentRunStore.listSessionRuns(
+      archivedSideConversationTargetId,
+    );
+    const archivedSideConversationChildRun = archivedSideConversationRuns.find(
+      (run) => run.turnId === 'archived-owned-child-turn',
+    );
+    assert.ok(archivedSideConversationChildRun);
+    const archivedSideConversationResult = (
+      await execution.runtimeEventStore.readRuntimeEvents(
+        archivedSideConversationTargetId,
+        archivedSideConversationChildRun.runId,
+      )
+    ).find((event) => event.content?.kind === 'function_response')?.content;
+    assert.ok(archivedSideConversationResult?.kind === 'function_response');
+    if (archivedSideConversationResult?.kind !== 'function_response') {
+      assert.fail('Side Conversation must retain its archived tool result placeholder');
+    }
+    const archivedSideConversationContent = decodeCanonicalToolResultContent(
+      archivedSideConversationResult.result,
+    );
+    assert.equal(archivedSideConversationContent.kind, 'subagent');
+    if (archivedSideConversationContent.kind !== 'subagent') {
+      assert.fail('Copied archived child result must be restored as a static snapshot');
+    }
+    assert.notEqual(archivedSideConversationContent.runId, 'archived-owned-child-run');
+    assert.deepEqual(archivedSideConversationContent, {
+      kind: 'subagent',
+      agentName: 'Worker',
+      turnId: 'archived-owned-child-turn',
+      runId: archivedSideConversationChildRun.runId,
+      status: 'completed',
+      permissionMode: 'ask',
+      summary: 'done',
+      artifactIds: [],
+    });
+    const archivedSideConversationArtifacts = await artifacts.listPage(
+      archivedSideConversationTargetId,
+      { offset: 0, limit: 10 },
+    );
+    assert.equal(archivedSideConversationArtifacts.total, 0);
     const graphRevisionMessages =
       await execution.sessionStore.readMessagesSnapshot(graphRevisionTargetId);
     const graphResult = graphRevisionMessages.find(
@@ -1597,19 +2096,6 @@ function waitForExit(
     child.once('exit', onExit);
   });
 }
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 function operationError(code: RuntimeHostOperationError['code']) {
   return (error: unknown): boolean =>
     error instanceof RuntimeHostOperationError && error.code === code;
@@ -1629,6 +2115,7 @@ function agentRunHeader(
     turnId,
     status: 'completed',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd,

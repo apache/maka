@@ -19,9 +19,11 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import type { ArtifactBinaryReadResult } from '@maka/core/artifacts';
 import {
-  IMAGE_PAYLOAD_MAX_BYTES,
+  ARTIFACT_IMAGE_PREVIEW_MAX_BYTES,
+  type ArtifactBinaryReadResult,
+} from '@maka/core/artifacts';
+import {
   decideImageReadOutcome,
   resolvePreviewKind,
 } from '@maka/ui/artifact-preview-registry';
@@ -36,14 +38,17 @@ describe('artifact preview registry', () => {
 
   it('enforces the inclusive metadata size boundary before loading', () => {
     const base = { name: 'image.png', kind: 'image' as const, mimeType: 'image/png' };
-    assert.deepEqual(resolvePreviewKind({ ...base, sizeBytes: IMAGE_PAYLOAD_MAX_BYTES }), {
+    assert.deepEqual(resolvePreviewKind({ ...base, sizeBytes: ARTIFACT_IMAGE_PREVIEW_MAX_BYTES }), {
       kind: 'image',
       reason: 'mime_match',
     });
-    assert.deepEqual(resolvePreviewKind({ ...base, sizeBytes: IMAGE_PAYLOAD_MAX_BYTES + 1 }), {
-      kind: 'unsupported',
-      reason: 'oversize',
-    });
+    assert.deepEqual(
+      resolvePreviewKind({ ...base, sizeBytes: ARTIFACT_IMAGE_PREVIEW_MAX_BYTES + 1 }),
+      {
+        kind: 'unsupported',
+        reason: 'oversize',
+      },
+    );
   });
 
   it('routes IPC failures and malformed successful payloads without retaining base64', () => {

@@ -214,6 +214,7 @@ function session(id: string): SessionCatalogProjection {
     hasUnread: false,
     status: 'active',
     backend: 'ai-sdk',
+    llmConnectionId: 'connection-1',
     llmConnectionSlug: 'default',
     connectionLocked: true,
     model: 'gpt-5',

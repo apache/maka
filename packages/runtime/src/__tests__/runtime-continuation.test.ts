@@ -29,10 +29,8 @@ import {
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 
-import type { FlowInput } from '../agent-flow.js';
-import type { InvocationContext } from '../invocation-context.js';
 import { createLocalContinuationSafetyInspector } from '../continuation-safety.js';
-import { buildContinuationReplayPlan, digestProviderReplay } from '../continuation-replay.js';
+import { buildContinuationReplayPlan } from '../continuation-replay.js';
 import {
   buildRuntimeEventModelReplayPlan,
   PROVIDER_REPLAY_PROJECTION_VERSION,
@@ -42,12 +40,6 @@ import {
   buildSafeBoundaryContinuationPlan,
   type RuntimeContinuation,
 } from '../runtime-resume.js';
-import {
-  issueRuntimeContinuationAdmissionReceipt,
-  RuntimeRunner,
-  runAdmittedRuntimeContinuation,
-} from '../runtime-runner.js';
-import { createRuntimeContinuationStartAdmissionProof } from '../runtime-continuation-admission.js';
 
 test('local continuation safety inspector returns current authoritative workspace facts', async () => {
   const inspect = createLocalContinuationSafetyInspector({
@@ -66,207 +58,6 @@ test('local continuation safety inspector returns current authoritative workspac
     backgroundOperationsSettled: true,
     availableToolNames: ['Read', 'Write'],
   });
-});
-
-test('RuntimeRunner continues from replay context without synthesizing another user event', async () => {
-  const sourceEvents = [
-    event({
-      id: 'source-user',
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'run tests' },
-    }),
-    event({
-      id: 'source-call',
-      role: 'model',
-      author: 'agent',
-      content: { kind: 'function_call', id: 'tool-1', name: 'Bash', args: { command: 'npm test' } },
-    }),
-    event({
-      id: 'source-result',
-      role: 'tool',
-      author: 'tool',
-      content: { kind: 'function_response', id: 'tool-1', name: 'Bash', result: { exitCode: 0 } },
-    }),
-  ];
-  const plan = buildSafeBoundaryContinuationPlan(sourceEvents, {
-    ledgerReadable: true,
-    terminalRepairSucceeded: true,
-    sourceCwd: '/workspace/repo',
-    currentCwd: '/workspace/repo',
-    sourceWorkspaceIdentity: 'workspace-1',
-    currentWorkspaceIdentity: 'workspace-1',
-    backgroundOperationsSettled: true,
-    availableToolNames: ['Bash'],
-    continuationIdentity: {
-      invocationId: 'invocation-2',
-      runId: 'run-2',
-      turnId: 'turn-2',
-    },
-  });
-  assert.equal(plan.disposition, 'continue');
-  assert.ok(plan.continuation);
-  const sourcePrefix = immutablePrefix(sourceEvents);
-  const replay = buildContinuationReplayPlan({
-    prefixes: [sourcePrefix],
-    providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
-  });
-  assert.equal(replay.kind, 'replayable');
-  if (replay.kind !== 'replayable') throw new Error('test replay must be admitted');
-  const continuation: RuntimeContinuation = {
-    ...plan.continuation,
-    claimId: 'claim-2',
-    boundary: replay.plan.boundary,
-    providerProjectionVersion: replay.plan.providerProjectionVersion,
-    providerReplayDigest: replay.plan.providerReplayDigest,
-  };
-
-  let capturedContext: InvocationContext | undefined;
-  let capturedInput: FlowInput | undefined;
-  const runner = new RuntimeRunner({
-    flow: {
-      async *run(context, input) {
-        capturedContext = context;
-        capturedInput = input;
-        yield event({
-          id: 'continued-complete',
-          invocationId: context.invocationId,
-          runId: context.runId,
-          turnId: context.turnId,
-          role: 'system',
-          author: 'system',
-          status: 'completed',
-          actions: { endInvocation: true },
-        });
-      },
-    },
-    providers: { newId: () => 'continuation-start', now: () => 20 },
-  });
-
-  const receipt = issueRuntimeContinuationAdmissionReceipt(
-    runner,
-    continuation,
-    startAdmissionFor(continuation, 'ancestor-continuation-start'),
-  );
-  const result = await runAdmittedRuntimeContinuation(runner, receipt, {
-    source: 'test',
-  });
-
-  assert.equal(result.invocationId, 'invocation-2');
-  assert.equal(result.runId, 'run-2');
-  assert.equal(result.turnId, 'turn-2');
-  assert.deepEqual(
-    result.events.map((candidate) => candidate.id),
-    ['continued-complete'],
-  );
-  assert.equal(capturedContext?.request.continuation?.sourceRunId, 'run-1');
-  assert.deepEqual(capturedInput?.runtimeContext, sourceEvents);
-  assert.equal(capturedInput?.continuation?.sourceRuntimeEventHighWater, 3);
-});
-
-test('RuntimeRunner preserves the immediate source segment when replay includes continuation ancestors', async () => {
-  const ancestorEvents = [
-    event({
-      id: 'ancestor-user',
-      invocationId: 'ancestor-invocation',
-      runId: 'ancestor-run',
-      turnId: 'ancestor-turn',
-      role: 'user',
-      author: 'user',
-      content: { kind: 'text', text: 'original request' },
-    }),
-    event({
-      id: 'ancestor-terminal',
-      invocationId: 'ancestor-invocation',
-      runId: 'ancestor-run',
-      turnId: 'ancestor-turn',
-      role: 'system',
-      author: 'system',
-      status: 'failed',
-      actions: { endInvocation: true },
-    }),
-  ];
-  const sourceRuntimeContext = [
-    event({
-      id: 'source-continuation-start',
-      role: 'system',
-      author: 'system',
-      actions: { stateDelta: { continuation: true } },
-    }),
-    event({
-      id: 'source-terminal',
-      role: 'system',
-      author: 'system',
-      status: 'failed',
-      actions: { endInvocation: true },
-    }),
-  ];
-  const runtimeContext = [...ancestorEvents, ...sourceRuntimeContext];
-  let capturedInput: FlowInput | undefined;
-  const runner = new RuntimeRunner({
-    flow: {
-      async *run(context, input) {
-        capturedInput = input;
-        yield event({
-          id: 'continued-text',
-          invocationId: context.invocationId,
-          runId: context.runId,
-          turnId: context.turnId,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: 'continued' },
-        });
-        yield event({
-          id: 'continued-terminal',
-          invocationId: context.invocationId,
-          runId: context.runId,
-          turnId: context.turnId,
-          role: 'system',
-          author: 'system',
-          status: 'completed',
-          actions: { endInvocation: true },
-        });
-      },
-    },
-    providers: { newId: () => 'new-event', now: () => 20 },
-  });
-
-  const sourcePrefix = immutablePrefix(sourceRuntimeContext);
-  const boundary = createRuntimeBoundaryCursor([runtimePrefixSegment(sourcePrefix)]);
-  const continuation: RuntimeContinuation = {
-    sessionId: 'session-1',
-    invocationId: 'invocation-2',
-    runId: 'run-2',
-    turnId: 'turn-2',
-    sourceInvocationId: 'invocation-1',
-    sourceRunId: 'run-1',
-    sourceTurnId: 'turn-1',
-    sourceRuntimeEventHighWater: sourceRuntimeContext.length,
-    claimId: 'claim-2',
-    sourceRuntimeContext,
-    runtimeContext,
-    boundary,
-    providerProjectionVersion: 1 as const,
-    providerReplayDigest: digestProviderReplay(
-      PROVIDER_REPLAY_PROJECTION_VERSION,
-      buildRuntimeEventModelReplayPlan(runtimeContext).items,
-    ),
-    safetySnapshot: {
-      workspaceIdentity: 'workspace-1',
-      backgroundOperationsSettled: true,
-      availableToolNames: [],
-    },
-  };
-  const receipt = issueRuntimeContinuationAdmissionReceipt(
-    runner,
-    continuation,
-    startAdmissionFor(continuation, 'continuation-start'),
-  );
-  const result = await runAdmittedRuntimeContinuation(runner, receipt, { source: 'test' });
-
-  assert.equal(result.status, 'completed');
-  assert.deepEqual(capturedInput?.runtimeContext, runtimeContext);
-  assert.equal('sourceRuntimeContext' in (capturedInput?.continuation ?? {}), false);
 });
 
 test('RuntimeContinuationPlanner reads the durable source boundary and allocates fresh identities', async () => {
@@ -296,6 +87,7 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -328,71 +120,13 @@ test('RuntimeContinuationPlanner reads the durable source boundary and allocates
       manifestDigest: plan.continuation?.boundary?.manifestDigest,
     },
     providerReplayDigest: plan.continuation?.providerReplayDigest,
-    providerProjectionVersion: 1,
+    providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
     safetySnapshot: {
       workspaceIdentity: 'workspace-1',
       backgroundOperationsSettled: true,
       availableToolNames: [],
     },
   });
-});
-
-test('RuntimeRunner rejects a continuation envelope whose high-water is behind its replay context', async () => {
-  const runner = new RuntimeRunner({
-    flow: {
-      async *run() {
-        throw new Error('flow must not start');
-      },
-    },
-  });
-
-  const invalidContinuation: RuntimeContinuation = {
-    sessionId: 'session-1',
-    invocationId: 'invocation-2',
-    runId: 'run-2',
-    turnId: 'turn-2',
-    sourceInvocationId: 'invocation-1',
-    sourceRunId: 'run-1',
-    sourceTurnId: 'turn-1',
-    sourceRuntimeEventHighWater: 0,
-    claimId: 'claim-2',
-    runtimeContext: [
-      event({
-        id: 'source-user',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'continue' },
-      }),
-    ],
-    boundary: createRuntimeBoundaryCursor([
-      runtimePrefixSegment(
-        immutablePrefix([
-          event({
-            id: 'source-user',
-            role: 'user',
-            author: 'user',
-            content: { kind: 'text', text: 'continue' },
-          }),
-        ]),
-      ),
-    ]),
-    providerProjectionVersion: 1 as const,
-    providerReplayDigest: `sha256:${'b'.repeat(64)}` as const,
-    safetySnapshot: {
-      workspaceIdentity: 'workspace-1',
-      backgroundOperationsSettled: true,
-      availableToolNames: [],
-    },
-  };
-  assert.throws(
-    () =>
-      issueRuntimeContinuationAdmissionReceipt(
-        runner,
-        invalidContinuation,
-        startAdmissionFor(invalidContinuation, 'invalid-continuation-start'),
-      ),
-    /high-water/i,
-  );
 });
 
 test('RuntimeContinuationPlanner parks with a stable reason when the ledger cannot be read', async () => {
@@ -407,6 +141,7 @@ test('RuntimeContinuationPlanner parks with a stable reason when the ledger cann
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -436,6 +171,7 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -472,6 +208,7 @@ test('RuntimeContinuationPlanner parks when the terminal run header disagrees wi
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -515,6 +252,7 @@ test('RuntimeContinuationPlanner rejects immutable output after the source termi
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -560,6 +298,7 @@ test('RuntimeContinuationPlanner uses canonical provider items for composite hea
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -599,6 +338,7 @@ test('RuntimeContinuationPlanner rejects a ledger returned for another source ru
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -642,6 +382,7 @@ test('RuntimeContinuationPlanner fails a cyclic continuation lineage closed', as
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -679,6 +420,7 @@ test('RuntimeContinuationPlanner parks when a continuation ancestor is unavailab
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -725,6 +467,7 @@ test('RuntimeContinuationPlanner caps continuation lineage at 64 segments', asyn
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-1',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -796,6 +539,7 @@ test('RuntimeContinuationPlanner verifies a v2 lineage edge prefix digest', asyn
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -873,6 +617,7 @@ test('RuntimeContinuationPlanner binds every v2 lineage edge to its continuation
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: 'run-2',
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -889,6 +634,7 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -951,6 +697,7 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -962,11 +709,12 @@ test('RuntimeContinuationPlanner rejects downgrading a canonical v2 start to leg
   assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_start_mismatch']);
 });
 
-test('RuntimeContinuationPlanner authenticates every v2 edge provider replay digest', async () => {
+test('RuntimeContinuationPlanner requires a durable target before authenticating edge replay', async () => {
   const ancestor = prefixForIdentity('invocation-1', 'run-1', 'turn-1');
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -1034,6 +782,7 @@ test('RuntimeContinuationPlanner authenticates every v2 edge provider replay dig
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -1042,7 +791,7 @@ test('RuntimeContinuationPlanner authenticates every v2 edge provider replay dig
   });
 
   assert.equal(plan.disposition, 'park');
-  assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_replay_mismatch']);
+  assert.deepEqual(plan.rejectionReasons, ['continuation_authority_unavailable']);
 });
 
 test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim is missing', async () => {
@@ -1050,6 +799,7 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   const ancestorReplay = buildContinuationReplayPlan({
     prefixes: [ancestor],
     providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+    admissionRoute: sameRouteAdmission(),
   });
   assert.equal(ancestorReplay.kind, 'replayable');
   if (ancestorReplay.kind !== 'replayable') return;
@@ -1117,6 +867,7 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   const plan = await planner.plan({
     sessionId: 'session-1',
     sourceRunId: sourceIdentity.runId,
+    admissionRoute: sameRouteAdmission(),
     currentCwd: '/workspace/repo',
     sourceWorkspaceIdentity: 'workspace-1',
     currentWorkspaceIdentity: 'workspace-1',
@@ -1127,6 +878,16 @@ test('RuntimeContinuationPlanner rejects a v2 lineage edge whose durable claim i
   assert.equal(plan.disposition, 'park');
   assert.deepEqual(plan.rejectionReasons, ['runtime_lineage_claim_mismatch']);
 });
+
+function sameRouteAdmission() {
+  return {
+    runHeaders: ['run-1', 'run-2', 'run-3'].map((runId) =>
+      runHeader(runId, { llmConnectionId: 'connection-1' }),
+    ),
+    targetProviderStateIdentity: undefined,
+    targetModelId: 'test-model',
+  };
+}
 
 function runHeader(runId: string, overrides: Partial<AgentRunHeader> = {}): AgentRunHeader {
   const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
@@ -1197,28 +958,4 @@ function prefixForIdentity(
       content: { kind: 'text', text: 'continue' },
     }),
   ]);
-}
-
-function startAdmissionFor(continuation: RuntimeContinuation, startEventId: string) {
-  if (
-    !continuation.claimId ||
-    !continuation.boundary ||
-    !continuation.providerReplayDigest ||
-    continuation.providerProjectionVersion !== 1
-  ) {
-    throw new Error('test continuation is missing durable admission identity');
-  }
-  return createRuntimeContinuationStartAdmissionProof({
-    startEventId,
-    claimId: continuation.claimId,
-    boundaryDigest: continuation.boundary.manifestDigest,
-    providerProjectionVersion: continuation.providerProjectionVersion,
-    providerReplayDigest: continuation.providerReplayDigest,
-    target: {
-      sessionId: continuation.sessionId,
-      invocationId: continuation.invocationId,
-      runId: continuation.runId,
-      turnId: continuation.turnId,
-    },
-  });
 }

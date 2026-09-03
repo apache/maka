@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { requireCount, requireEntityId, requireExactRecord, requireRecord } from './codec.js';
+import {
+  requireCount,
+  requireEntityId,
+  requireExactRecord,
+  requireRecord,
+  requireShapedRecord,
+} from './codec.js';
 import { invalidProtocolFrame } from './errors.js';
 import { defineOperation } from './operation-spec.js';
 import { decodeSessionCatalogItem, type SessionCatalogItem } from './session-catalog.js';
@@ -38,8 +44,14 @@ const SESSION_COPY_ERRORS = [
 export interface SessionConversationCopyInput {
   readonly sourceSessionId: string;
   readonly targetSessionId: string;
-  readonly sourceTurnId: string;
+  /**
+   * Settled turn to branch through. Absent forks with an empty context — a side
+   * conversation opened before the source has any completed turn (valid only
+   * with `intent: 'side_conversation'`).
+   */
+  readonly sourceTurnId?: string;
   readonly expectedSourceRevision: number;
+  readonly intent?: 'side_conversation';
 }
 
 export type SessionConversationCopyResult =
@@ -82,7 +94,7 @@ export const SESSION_REVISION_OPERATION_SPECS = {
     mode: 'command',
     availability: 'ready',
     errors: SESSION_COPY_ERRORS,
-    decodeInput: decodeSessionConversationCopyInput,
+    decodeInput: decodeSessionRevisionCopyInput,
     decodeOutput: decodeSessionConversationCopyResult,
     assertOutputForInput: assertConversationCopyOutput,
   }),
@@ -104,6 +116,17 @@ export const SESSION_REVISION_OPERATION_SPECS = {
   }),
 } as const;
 
+function decodeSessionRevisionCopyInput(value: unknown): SessionConversationCopyInput {
+  const input = decodeSessionConversationCopyInput(value);
+  if (input.intent !== undefined) {
+    throw invalidProtocolFrame('Session revision copy does not support an intent');
+  }
+  // A revision never carries an intent, so the shared decoder above already
+  // rejected a missing `sourceTurnId` (an empty copy requires the
+  // side_conversation intent); reaching here guarantees a turn boundary.
+  return input;
+}
+
 function decodeSessionRevisionAbandonInput(value: unknown): SessionRevisionAbandonInput {
   const input = requireExactRecord(value, 'Session revision abandon input', ['targetSessionId']);
   return { targetSessionId: requireEntityId(input.targetSessionId, 'targetSessionId') };
@@ -124,25 +147,36 @@ function decodeSessionRevisionAbandonResult(value: unknown): SessionRevisionAban
 }
 
 export function decodeSessionConversationCopyInput(value: unknown): SessionConversationCopyInput {
-  const input = requireExactRecord(value, 'Session conversation-copy input', [
-    'sourceSessionId',
-    'targetSessionId',
-    'sourceTurnId',
-    'expectedSourceRevision',
-  ]);
+  const input = requireShapedRecord(
+    value,
+    'Session conversation-copy input',
+    ['sourceSessionId', 'targetSessionId', 'expectedSourceRevision'],
+    ['sourceTurnId', 'intent'],
+  );
   const sourceSessionId = requireEntityId(input.sourceSessionId, 'sourceSessionId');
   const targetSessionId = requireEntityId(input.targetSessionId, 'targetSessionId');
   if (sourceSessionId === targetSessionId) {
     throw invalidProtocolFrame('Session conversation copy requires distinct Sessions');
   }
+  if (input.intent !== undefined && input.intent !== 'side_conversation') {
+    throw invalidProtocolFrame('Invalid Session conversation-copy intent');
+  }
+  const sourceTurnId =
+    input.sourceTurnId === undefined
+      ? undefined
+      : requireEntityId(input.sourceTurnId, 'sourceTurnId');
+  if (sourceTurnId === undefined && input.intent !== 'side_conversation') {
+    throw invalidProtocolFrame('An empty conversation copy requires the side_conversation intent');
+  }
   return {
     sourceSessionId,
     targetSessionId,
-    sourceTurnId: requireEntityId(input.sourceTurnId, 'sourceTurnId'),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     expectedSourceRevision: positiveRevision(
       input.expectedSourceRevision,
       'expected source Session revision',
     ),
+    ...(input.intent === 'side_conversation' ? { intent: input.intent } : {}),
   };
 }
 

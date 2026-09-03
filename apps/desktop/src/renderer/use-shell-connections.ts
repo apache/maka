@@ -54,6 +54,37 @@ type ShellConnectionTarget =
   | { readonly kind: 'session'; readonly sessionId?: string };
 
 /**
+ * Stale-while-revalidate (#4611): a refresh keeps serving the last ready
+ * snapshot until the new read lands. Emptying the projection mid-refresh made
+ * the composer flash "no model connection" and block send on every
+ * `connection_list_changed` — and a failed refresh left it there permanently.
+ * The staleness window is one IPC round-trip; anything the stale catalog still
+ * names is re-validated by the Host on use (`NO_REAL_CONNECTION` path).
+ *
+ * `hostId` records which Host produced the snapshot. Session and new-task
+ * targets key by hostId, so their identity is stable per key — but the
+ * 'default' target uses one constant key while the Host behind it can change
+ * (profile switch). Carrying Host A's catalog into Host B's read window would
+ * let users act on connections that belong to the previous Host, so a default
+ * refresh whose resolved identity differs drops the old snapshot instead.
+ */
+type StoredShellConnectionProjection =
+  | {
+      readonly status: 'refreshing';
+      readonly snapshot?: DesktopConnectionSnapshot;
+      readonly hostId?: string;
+    }
+  | {
+      readonly status: 'ready';
+      readonly snapshot: DesktopConnectionSnapshot;
+      readonly hostId?: string;
+    };
+
+export type ShellConnectionProjection =
+  | { readonly status: 'unrequested' }
+  | StoredShellConnectionProjection;
+
+/**
  * Owns one Host's atomic connection projection and refresh lifecycle.
  */
 export function useShellConnections(options: {
@@ -62,7 +93,7 @@ export function useShellConnections(options: {
   target: ShellConnectionTarget;
 }): {
   snapshot: DesktopConnectionSnapshot;
-  hasSnapshot: boolean;
+  projection: ShellConnectionProjection;
   seedSnapshot: (next: DesktopConnectionSnapshot) => void;
   refreshConnections: () => Promise<void>;
   handleConnectionEvent: (event: ConnectionEvent) => void;
@@ -74,8 +105,8 @@ export function useShellConnections(options: {
   useLayoutEffect(() => {
     currentKey.current = snapshotKey;
   }, [snapshotKey]);
-  const [snapshots, setSnapshots] = useState(
-    () => new Map<string, DesktopConnectionSnapshot>(),
+  const [projections, setProjections] = useState(
+    () => new Map<string, StoredShellConnectionProjection>(),
   );
   const refreshSequence = useRef(new Map<string, number>());
 
@@ -84,8 +115,17 @@ export function useShellConnections(options: {
   }, [snapshotKey]);
 
   function seedSnapshot(next: DesktopConnectionSnapshot) {
-    setSnapshots((previous) =>
-      previous.has(snapshotKey) ? previous : new Map(previous).set(snapshotKey, next),
+    // Seed into any entry that has no snapshot yet — including an in-flight
+    // first refresh. The mount layout effect writes `{status:'refreshing'}`
+    // before the shell's passive seed effect can run, so guarding on key
+    // existence alone made the startup snapshot dead code and left the
+    // first-paint / failed-first-refresh windows reading EMPTY (#4611). A
+    // successful refresh still overwrites the seed; an entry that already has
+    // a snapshot (ready or stale-while-revalidate) keeps it.
+    setProjections((previous) =>
+      previous.get(snapshotKey)?.snapshot !== undefined
+        ? previous
+        : new Map(previous).set(snapshotKey, { status: 'ready', snapshot: next }),
     );
   }
 
@@ -95,21 +135,58 @@ export function useShellConnections(options: {
     if (key === NO_HOST_KEY) return;
     const sequence = (refreshSequence.current.get(key) ?? 0) + 1;
     refreshSequence.current.set(key, sequence);
+    // A refresh means the Host catalog may already have changed, so the read
+    // must land before its result is trusted — but the previous snapshot stays
+    // visible while it flies (#4611, see the type above). Only a successful
+    // current read replaces what consumers see. Session/new-task targets key
+    // by hostId, so the carry is always same-Host there; the default target
+    // gets its identity inside the read below.
+    const markRefreshing = (hostId?: string): void => {
+      setProjections((previous) => {
+        const prior = previous.get(key);
+        const carrySnapshot =
+          prior?.snapshot !== undefined &&
+          (hostId === undefined || prior.hostId === undefined || prior.hostId === hostId);
+        return new Map(previous).set(key, {
+          status: 'refreshing',
+          ...(carrySnapshot ? { snapshot: prior.snapshot } : {}),
+          ...(hostId === undefined ? {} : { hostId }),
+        });
+      });
+    };
     try {
       let next: DesktopConnectionSnapshot;
+      let nextHostId: string | undefined;
       if (target.kind === 'session' && target.sessionId) {
+        markRefreshing();
         next = await window.maka.connections.getSnapshot(target.sessionId);
       } else if (target.kind === 'new-task' && target.host) {
+        markRefreshing();
         next = await window.maka.newTasks.getConnections(target.host);
       } else if (target.kind === 'default') {
-        next = (
-          await runOnDefaultRuntimeHost((host) =>
-            window.maka.connections.getSnapshot(undefined, host),
-          )
-        ).value;
+        // The constant 'default' key outlives the Host behind it (profile
+        // switch), so the refreshing write waits for the resolved identity:
+        // a snapshot the previous default Host produced must not survive into
+        // the new one's read window (#4611 review). If the resolve itself
+        // fails, no refreshing write happens and the last snapshot stays put;
+        // the catch below toasts either way. A snapshot with unknown
+        // provenance (the startup seed) is still carried: it is the boot-time
+        // default catalog, and dropping it would reopen the first-paint flash.
+        const result = await runOnDefaultRuntimeHost(async (host) => {
+          markRefreshing(host.hostId);
+          return window.maka.connections.getSnapshot(undefined, host);
+        });
+        next = result.value;
+        nextHostId = result.host.hostId;
       } else return;
       if (refreshSequence.current.get(key) !== sequence) return;
-      setSnapshots((previous) => new Map(previous).set(key, next));
+      setProjections((previous) =>
+        new Map(previous).set(key, {
+          status: 'ready',
+          snapshot: next,
+          ...(nextHostId === undefined ? {} : { hostId: nextHostId }),
+        }),
+      );
     } catch (error) {
       if (
         refreshSequence.current.get(key) !== sequence ||
@@ -137,9 +214,13 @@ export function useShellConnections(options: {
     }
   }
 
+  const projection = projections.get(snapshotKey) ?? { status: 'unrequested' as const };
   return {
-    snapshot: snapshots.get(snapshotKey) ?? EMPTY_SNAPSHOT,
-    hasSnapshot: snapshots.has(snapshotKey),
+    snapshot:
+      projection.status === 'unrequested'
+        ? EMPTY_SNAPSHOT
+        : (projection.snapshot ?? EMPTY_SNAPSHOT),
+    projection,
     seedSnapshot,
     refreshConnections,
     handleConnectionEvent,

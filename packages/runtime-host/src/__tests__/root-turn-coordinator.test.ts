@@ -17,11 +17,13 @@
  * under the License.
  */
 
+import { deferred, withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
@@ -54,15 +56,23 @@ import type {
   BackendCompactHistoryInput,
   BackendSendInput,
 } from '@maka/core/backend-types';
-import type { SessionEvent } from '@maka/core/events';
+import { messageContentDigest, type SessionEvent } from '@maka/core/events';
+import {
+  WORKHUB_COORDINATION_SESSION_ID,
+  WORKHUB_COORDINATION_SESSION_ROLE,
+} from '@maka/core/session';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   openInteractiveExecutionStoresForWrite,
   type RootTurnAdmission,
   type RootTurnAdmissionStore,
 } from '@maka/storage/execution-stores';
 import { openInteractiveArtifactStoreForWrite } from '@maka/storage/artifact-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
 import type { SubscriptionFrame, TurnSnapshot } from '../protocol/index.js';
 import { HostAgentGraphExecutionCoordinator } from '../server/agent-graph-execution-coordinator.js';
@@ -70,6 +80,7 @@ import { HostArtifactCoordinator } from '../server/artifact-coordinator.js';
 import { HostCanonicalPermissionOutcomeReader } from '../server/canonical-permission-outcome-reader.js';
 import { CanonicalSessionProjectionReader } from '../server/canonical-session-projection.js';
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
+import { ClientCapabilityInvocationError } from '../server/client-capability-invocation-broker.js';
 import { HostContextCoordinator } from '../server/context-coordinator.js';
 import type { RuntimeHostResidency } from '../server/host-kernel.js';
 import type { HostedExecutionObserver } from '../server/hosted-execution-authority.js';
@@ -91,7 +102,8 @@ import { SessionContinuityCoordinator } from '../server/session-continuity-coord
 import type { SessionContinuityFrameSink } from '../server/session-continuity-service.js';
 import { HostTurnControlCoordinator } from '../server/turn-control-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { PROCESS_TIMEOUT_MS, withTimeout } from './fixtures/execution-host-suite.js';
+import { PROCESS_TIMEOUT_MS } from './fixtures/execution-host-suite.js';
+import { waitFor } from '@maka/core/test-only/async-primitives';
 
 const HOLD_EXTERNAL_PROMPT = 'hold external root before follow-up';
 const HOLD_CONTEXT_RECOVERY_FOLLOWUP_PROMPT = 'hold follow-up before context recovery';
@@ -114,6 +126,137 @@ function assertStartedTurn(outcome: TurnStartOutcome): asserts outcome is Starte
     assert.fail('Expected a started Turn outcome');
   }
 }
+
+test('turn.start rejects the reserved WorkHub Coordination Session identity', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (backendContext) => new FakeBackend(backendContext)),
+  });
+  try {
+    assert.deepEqual(fixture.coordinator.prepare(WORKHUB_COORDINATION_SESSION_ID), {
+      kind: 'unavailable',
+      reason: 'WorkHub Coordination Session execution requires WorkHub authority',
+    });
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: WORKHUB_COORDINATION_SESSION_ID,
+        turnId: 'coordination-turn',
+        content: { text: 'Run a tool from WorkHub.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'WorkHub Coordination Session execution requires WorkHub authority',
+      },
+    });
+    assert.deepEqual(
+      await fixture.coordinator.handlers['turn.resume.query'](
+        {
+          sessionId: WORKHUB_COORDINATION_SESSION_ID,
+          sourceRunId: 'source-run',
+          expectedRuntimeEventHighWater: 1,
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+      {
+        ok: false,
+        error: {
+          code: 'operation_unavailable',
+          message: 'WorkHub Coordination Session execution requires WorkHub authority',
+        },
+      },
+    );
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        WORKHUB_COORDINATION_SESSION_ID,
+        'coordination-turn',
+      ),
+      undefined,
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.start rejects a corrupt Coordination role on an ordinary identity', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (backendContext) => new FakeBackend(backendContext)),
+    corruptSessionRole: true,
+  });
+  try {
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'corrupt-coordination-role-turn',
+        content: { text: 'This must remain outside ordinary execution.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'WorkHub Coordination Session execution requires WorkHub authority',
+      },
+    });
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        'corrupt-coordination-role-turn',
+      ),
+      undefined,
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn.start rejects a legacy Session until an explicit account recovery binds it', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (backendContext) => new FakeBackend(backendContext)),
+    legacyConnectionIdentity: true,
+  });
+  try {
+    const outcome = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'legacy-connection-identity-turn',
+        content: { text: 'This cannot select a replacement account implicitly.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+
+    assert.deepEqual(outcome, {
+      ok: false,
+      error: {
+        code: 'operation_unavailable',
+        message: 'This Session requires an explicit account selection before it can run.',
+      },
+    });
+    assert.equal(
+      await fixture.stores.agentRunStore.readRootTurnAdmission(
+        fixture.sessionId,
+        'legacy-connection-identity-turn',
+      ),
+      undefined,
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 test('prepares a fresh Agent Graph epoch before durable external Turn admission', async () => {
   let fixture!: FailureFixture;
@@ -240,6 +383,35 @@ test('does not advance a finished graph for an ordinary default Turn', async () 
   }
 });
 
+test('uses the submitted Turn identity for the canonical external user message', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  try {
+    const turnId = 'turn-canonical-message';
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId,
+        content: { text: 'Keep this identity stable.' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assertStartedTurn(started);
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.turnId === turnId,
+    );
+    assert.equal(user?.id, turnId);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('startup recovery replays one admitted safe-boundary continuation without a UserMessage', async () => {
   const workspaceIdentity = 'workspace-safe-boundary-recovery';
   const fixture = await createFailureFixture({
@@ -311,8 +483,84 @@ test('startup recovery replays one admitted safe-boundary continuation without a
   }
 });
 
+test('startup recovery closes a ScheduledTask Run after its pending fire was settled', async () => {
+  const validations: Array<'pending_fire_required' | 'run_recorded'> = [];
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    assertScheduledTaskRecoveryAdmission: async (_admission, state) => {
+      validations.push(state);
+    },
+  });
+  const turnId = 'turn-scheduled-task-settled-fire';
+  const runId = 'run-scheduled-task-settled-fire';
+  const userMessageId = 'message-scheduled-task-settled-fire';
+  let recovery: RootTurnCoordinator | undefined;
+  try {
+    await fixture.coordinator.close();
+    const session = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
+    const admittedAt = Date.now();
+    const admission = await fixture.stores.agentRunStore.admitRootTurn({
+      sessionId: fixture.sessionId,
+      turnId,
+      proposedRunId: runId,
+      proposedUserMessageId: userMessageId,
+      execution: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
+      previousRootTurnId: null,
+      normalizedInput: { text: 'Continue the scheduled work.' },
+      sourceMessages: [],
+      admittedAt,
+    });
+    assert.equal(admission.kind, 'admitted');
+    await fixture.stores.sessionStore.appendMessage(fixture.sessionId, {
+      type: 'user',
+      id: userMessageId,
+      turnId,
+      ts: admittedAt,
+      text: 'Continue the scheduled work.',
+      origin: { kind: 'scheduled_task', scheduledTaskId: 'task-settled-fire' },
+    });
+    await fixture.stores.agentRunStore.createRun(
+      {
+        runId,
+        invocationId: runId,
+        sessionId: fixture.sessionId,
+        turnId,
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionId: session.llmConnectionId,
+        llmConnectionSlug: session.llmConnectionSlug,
+        modelId: session.model,
+        cwd: session.cwd,
+        scheduledTaskId: 'task-settled-fire',
+        permissionMode: session.permissionMode,
+        collaborationMode: session.collaborationMode,
+        createdAt: admittedAt,
+        updatedAt: admittedAt,
+      },
+      { durable: true },
+    );
+
+    recovery = fixture.createRecoveryCoordinator();
+    await recovery.prepareRecovery();
+    assert.deepEqual(validations, ['run_recorded']);
+    await fixture.manager.recoverInterruptedSessionsStrict(fixture.stores);
+    await recovery.recover();
+
+    const run = await fixture.stores.agentRunStore.readRun(fixture.sessionId, runId);
+    assert.equal(run.status, 'failed');
+    assert.equal(run.failureClass, 'app_restarted');
+    assert.deepEqual(recovery.readRootState(fixture.sessionId), { kind: 'idle' });
+  } finally {
+    await recovery?.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('a failed exact Capability retry does not poison the parked continuation binding', async () => {
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -456,6 +704,7 @@ test('a failed exact Capability retry does not poison the parked continuation bi
 test('resume query preserves Session-before-activation lock ordering', async () => {
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });
@@ -584,11 +833,112 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
   }
 });
 
+test('turn.start durably binds a Guest request approval to the admitted Turn', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const input = {
+    sessionId: fixture.sessionId,
+    turnId: 'turn-collaboration-request',
+    content: { text: 'Run the exact approved request.' },
+  };
+  const authorization = {
+    kind: 'session_turn_access_request' as const,
+    requestId: 'request-1',
+    principalId: 'session_guest:guest-1',
+    grantId: 'grant-1',
+    approvedAt: 1_788_000_000_000,
+    approvedBy: 'local_owner',
+  };
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](input, {
+      ...operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      principal: authorization.principalId,
+      turnAdmissionAuthorization: authorization,
+    });
+    assertStartedTurn(started);
+    assert.deepEqual(
+      (await fixture.stores.agentRunStore.readRootTurnAdmission(fixture.sessionId, input.turnId))
+        ?.authorization,
+      authorization,
+    );
+
+    const conflictingRetry = await fixture.interactiveTurns.handlers['turn.start'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflictingRetry.ok, false);
+    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('turn.regenerate durably binds a Guest request approval to the admitted Turn', async () => {
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+  });
+  const authorization = {
+    kind: 'session_turn_access_request' as const,
+    requestId: 'request-regenerate-1',
+    principalId: 'session_guest:guest-1',
+    grantId: 'grant-1',
+    approvedAt: 1_788_000_000_000,
+    approvedBy: 'local_owner',
+  };
+  const input = {
+    sessionId: fixture.sessionId,
+    sourceTurnId: 'turn-regenerate-source',
+    turnId: 'turn-regenerate-approved',
+  };
+  try {
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: input.sourceTurnId,
+          content: { text: 'Regenerate this approved request.' },
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](input, {
+      ...operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      principal: authorization.principalId,
+      turnAdmissionAuthorization: authorization,
+    });
+    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
+    const admission = await fixture.stores.agentRunStore.readRootTurnAdmission(
+      fixture.sessionId,
+      input.turnId,
+    );
+    assert.deepEqual(admission?.execution, {
+      kind: 'regenerate',
+      sourceTurnId: input.sourceTurnId,
+    });
+    assert.deepEqual(admission?.authorization, authorization);
+
+    const conflictingRetry = await fixture.interactiveTurns.handlers['turn.regenerate'](
+      input,
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(conflictingRetry.ok, false);
+    if (!conflictingRetry.ok) assert.equal(conflictingRetry.error.code, 'operation_conflict');
+  } finally {
+    await fixture.dispose();
+  }
+});
+
 test('turn.start resolves explicit Skills once before durable admission and replays the result', async () => {
   let preparationCount = 0;
   let blocked = false;
   let observedCapabilityPreview = false;
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -700,6 +1050,88 @@ test('turn.start resolves explicit Skills once before durable admission and repl
   }
 });
 
+test('queued Message preparation preserves partial and blocked Skill outcomes', async () => {
+  let blocked = false;
+  const readySkillInvocation = {
+    loaded: [{ id: 'writer', name: 'Writer' }],
+    failed: [{ request: 'typo', reason: 'not_found' as const }],
+    receipts: [
+      {
+        invocation: 'explicit' as const,
+        request: 'writer',
+        success: true as const,
+        ref: 'project:maka:writer',
+        id: 'writer',
+        name: 'Writer',
+        scope: 'project' as const,
+        source: 'maka' as const,
+        truncated: false,
+      },
+      {
+        invocation: 'explicit' as const,
+        request: 'typo',
+        success: false as const,
+        reason: 'not_found' as const,
+      },
+    ],
+  };
+  const blockedSkillInvocation = {
+    loaded: [],
+    failed: [{ request: 'missing', reason: 'not_found' as const }],
+    receipts: [],
+  };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async () =>
+      blocked
+        ? { disposition: 'blocked', skillInvocation: blockedSkillInvocation }
+        : {
+            disposition: 'ready',
+            sendText: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+            skillInvocation: readySkillInvocation,
+          },
+  });
+  try {
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:writer /skill:typo Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'ready',
+        content: {
+          text: '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.',
+          displayText: '/skill:writer /skill:typo Draft this.',
+          inlineReferences: [{ kind: 'skill', value: '/skill:writer', label: 'Writer', start: 0 }],
+        },
+        skillInvocation: readySkillInvocation,
+      },
+    );
+
+    blocked = true;
+    assert.deepEqual(
+      await fixture.coordinator.prepareMessage({
+        sessionId: fixture.sessionId,
+        turnId: 'turn-running',
+        content: { text: '/skill:missing Draft this.' },
+        placement: 'current_turn',
+      }),
+      {
+        kind: 'rejected',
+        error: 'Explicit Skill invocation could not be resolved',
+        skillInvocation: blockedSkillInvocation,
+      },
+    );
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('turn.start durably replays an all-failed invocation without creating a Turn', async () => {
   let preparationCount = 0;
   const skillInvocation = {
@@ -807,6 +1239,60 @@ test('idle turn.message.submit applies hosted Skill preparation before durable a
         : '',
       /^sha256:[a-f0-9]{64}$/,
     );
+  } finally {
+    await fixture.dispose();
+  }
+});
+
+test('idle Skill admission persists a canonical draft without history before root handoff', async () => {
+  const canonicalText = '<invoked-skill>Write clearly.</invoked-skill>\n\nDraft this.';
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    prepareSkillInvocation: async (): Promise<PreparedSkillInvocationMessage> => ({
+      disposition: 'ready',
+      sendText: canonicalText,
+      skillInvocation: {
+        loaded: [{ id: 'writer', name: 'Writer' }],
+        failed: [],
+        receipts: [],
+      },
+    }),
+    wrapAdmissionStore: (store) => ({
+      admitRootTurn: async () => {
+        throw new Error('injected root admission failure');
+      },
+      readRootTurnAdmission: (sessionId, turnId) => store.readRootTurnAdmission(sessionId, turnId),
+      readRootTurnSourceMessageReceipt: (sessionId, messageId) =>
+        store.readRootTurnSourceMessageReceipt(sessionId, messageId),
+      listRootTurnAdmissionsForRecovery: (sessionId) =>
+        store.listRootTurnAdmissionsForRecovery(sessionId),
+    }),
+  });
+  try {
+    await assert.rejects(
+      fixture.messages.handlers['turn.message.submit'](
+        {
+          originHostEpoch: fixture.hostEpoch,
+          sessionId: fixture.sessionId,
+          messageId: 'idle-skill-before-handoff',
+          content: { text: '/skill:writer Draft this.' },
+          placement: 'current_turn',
+        },
+        operationContext(fixture.hostEpoch, fixture.acquireResidency),
+      ),
+      /injected root admission failure/,
+    );
+    const admission = await fixture.stores.sessionStore.readMessageAdmission(
+      fixture.sessionId,
+      'idle-skill-before-handoff',
+    );
+    assert.deepEqual(admission?.content, {
+      text: canonicalText,
+      displayText: '/skill:writer Draft this.',
+      inlineReferences: [],
+    });
+    assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
   } finally {
     await fixture.dispose();
   }
@@ -1080,6 +1566,7 @@ test('linked child Sessions reject public safe-boundary continuation', async () 
     const parent = await fixture.stores.sessionStore.readHeaderSnapshot(fixture.sessionId);
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: parent.cwd,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1223,6 +1710,7 @@ test('worktree child Sessions reject roots outside managed child execution', asy
   try {
     const { header: child } = await fixture.stores.sessionStore.createSubagent({
       cwd: binding.worktreePath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1638,10 +2126,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   try {
-    for (const [index, text] of [
-      'provider context overflow',
-      'local context budget exhausted',
-    ].entries()) {
+    for (const [index, text] of ['provider context overflow'].entries()) {
       const turnId = `turn-graph-context-${index}`;
       const outcome = await graphExecutions(fixture).run(
         fixture.sessionId,
@@ -1663,7 +2148,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
       assert.deepEqual(outcome, {
         kind: 'context_overflow',
         turnId,
-        reason: index === 0 ? 'context_overflow' : 'context_budget_exhausted',
+        reason: 'context_overflow',
       });
     }
     assert.equal(fixture.drainRequested(), false);
@@ -2140,6 +2625,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const parent = await stores.sessionStore.create({
       cwd: capability.canonicalPath,
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -2159,14 +2645,13 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
       claimStopFence: (input, commitQueueFence, admission) =>
         requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
-      startFromMessage: (input, admission) =>
-        requireCoordinator(coordinator).startFromMessage(input, admission),
+      startFromMessage: (input, admission, commitAdmission) =>
+        requireCoordinator(coordinator).startFromMessage(input, admission, commitAdmission),
       prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
       claimStop: (input, commitQueueFence, admission) =>
         requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
     };
     const hostEpoch = 'epoch-linked-root';
-    await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
     const messages = new HostMessageCoordinator({
       hostEpoch,
       root: rootPort,
@@ -2176,7 +2661,7 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
         readImmutableSteeringMessageProof: (sessionId, messageId) =>
           stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
       },
-      receipts: stores.messageReceiptStore,
+      admissions: stores.sessionStore,
       sessionAdmission,
       acquireResidency,
       requestDrain: () => {
@@ -2422,116 +2907,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
       },
     });
 
-    const resumeAbort = new AbortController();
-    resumeAbort.abort();
-    const runsBeforeAbortedResume = await stores.agentRunStore.listSessionRuns(
-      child.childSessionId,
-    );
-    const sendsBeforeAbortedResume = linkedBackends.get(child.childSessionId)?.sendCount;
-    let abortedResumeReady = 0;
-    await assert.rejects(
-      manager.resumeChildAgent(parent.id, {
-        parentRunId: parentStarted.result.turn.runId,
-        sourceRunId: child.runId,
-        prompt: 'must not start',
-        abortSignal: resumeAbort.signal,
-        onReady: () => {
-          abortedResumeReady += 1;
-        },
-      }),
-      { name: 'AbortError' },
-    );
-    assert.equal(
-      (await stores.agentRunStore.listSessionRuns(child.childSessionId)).length,
-      runsBeforeAbortedResume.length,
-    );
-    assert.equal(linkedBackends.get(child.childSessionId)?.sendCount, sendsBeforeAbortedResume);
-    assert.equal(abortedResumeReady, 0);
-
-    let resumeReadyRunId: string | undefined;
-    let resumeEventCount = 0;
-    const resumed = await manager.resumeChildAgent(parent.id, {
-      parentRunId: parentStarted.result.turn.runId,
-      sourceRunId: child.runId,
-      prompt: 'rate limit this resumed child',
-      onReady: (ready) => {
-        resumeReadyRunId = ready.runId;
-      },
-      onEvent: () => {
-        resumeEventCount += 1;
-      },
-    });
-    assert.equal(resumed.status, 'failed');
-    assert.equal(resumed.failureClass, 'RateLimit');
-    assert.equal(resumed.resumedFromRunId, child.runId);
-    assert.equal(resumeReadyRunId, resumed.runId);
-    assert.equal(resumeEventCount, resumed.eventCount);
-
-    let retryReadyRunId: string | undefined;
-    let retryEventCount = 0;
-    const retried = await manager.retryChildAgent(parent.id, {
-      parentRunId: parentStarted.result.turn.runId,
-      sourceRunId: resumed.runId!,
-      execution: {
-        kind: 'child_session',
-        sessionId: child.childSessionId,
-        currentRunId: resumed.runId,
-      },
-      onReady: (ready) => {
-        retryReadyRunId = ready.runId;
-      },
-      onEvent: () => {
-        retryEventCount += 1;
-      },
-    });
-    assert.equal(retried.status, 'completed');
-    assert.equal(retried.retriedFromRunId, resumed.runId);
-    assert.equal(retryReadyRunId, retried.runId);
-    assert.equal(retryEventCount, retried.eventCount);
-    const admissions = await stores.agentRunStore.listRootTurnAdmissionsForRecovery(
-      child.childSessionId,
-    );
-    assert.equal(admissions.length, 3);
-    assert.equal(admissions[1]?.runId, resumed.runId);
-    assert.ok(admissions[1]?.userMessageId);
-    assert.deepEqual(admissions[1]?.execution, {
-      kind: 'linked_child_resume',
-      agentId: resumed.agentId,
-      agentName: resumed.agentName,
-      sourceRunId: child.runId,
-    });
-    assert.equal(admissions[2]?.runId, retried.runId);
-    assert.equal(admissions[2]?.userMessageId, null);
-    assert.deepEqual(admissions[2]?.execution, {
-      kind: 'linked_child_provider_retry',
-      agentId: retried.agentId,
-      agentName: retried.agentName,
-      sourceRunId: resumed.runId,
-    });
-    const retryMessages = (await stores.sessionStore.readMessages(child.childSessionId)).filter(
-      (message) => 'turnId' in message && message.turnId === retried.turnId,
-    );
-    assert.deepEqual(retryMessages, []);
-    const durableRetryRun = await stores.agentRunStore.readRun(
-      child.childSessionId,
-      retried.runId!,
-    );
-    const durableRetrySource = durableRetryRun.continuationSource;
-    assert.ok(durableRetrySource && 'protocol' in durableRetrySource);
-    if (!durableRetrySource || !('protocol' in durableRetrySource)) return;
-    assert.equal(durableRetrySource.sourceRunId, resumed.runId);
-    assert.equal(durableRetrySource.protocol, 'continuation_source_v2');
-    const continuationStart = (
-      await stores.runtimeEventStore.readImmutableRuntimeEvents(
-        child.childSessionId,
-        retried.runId!,
-      )
-    )[0]?.actions?.continuationStart;
-    assert.equal(continuationStart?.claimId, durableRetrySource.claimId);
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
-      kind: 'idle',
-    });
-
     const callbackAbortController = new AbortController();
     const stopClosureObserved = deferred<void>();
     stopClosureSignal = stopClosureObserved;
@@ -2599,60 +2974,6 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const followupState = coordinator.readRootState(child.childSessionId);
     assert.equal(followupState.kind, 'active');
     if (followupState.kind !== 'active') return;
-
-    await assert.rejects(
-      manager.resumeChildAgent(parent.id, {
-        parentRunId: parentStarted.result.turn.runId,
-        sourceRunId: retried.runId!,
-        prompt: 'internal resume racing the external follow-up',
-      }),
-      (error) => {
-        assert.ok(error instanceof RuntimeHostedRootConflictError);
-        assert.equal(error.code, 'session_busy');
-        assert.deepEqual(error.scope, {
-          kind: 'session',
-          sessionId: child.childSessionId,
-        });
-        return true;
-      },
-    );
-    assert.equal(drainRequested, false);
-    await coordinator.stopRoot(followupState);
-    assert.deepEqual(coordinator.readRootState(child.childSessionId), {
-      kind: 'idle',
-    });
-
-    const failedResume = await manager.resumeChildAgent(parent.id, {
-      parentRunId: parentStarted.result.turn.runId,
-      sourceRunId: retried.runId!,
-      prompt: 'rate limit one more linked child',
-    });
-    assert.equal(failedResume.status, 'failed');
-    const linkedBackend = linkedBackends.get(child.childSessionId);
-    assert.ok(linkedBackend);
-    const runsBeforeAbortedRetry = await stores.agentRunStore.listSessionRuns(child.childSessionId);
-    const sendsBeforeAbortedRetry = linkedBackend?.sendCount;
-    const retryAbort = new AbortController();
-    retryAbort.abort();
-    let abortedRetryReady = 0;
-    await assert.rejects(
-      manager.retryChildAgent(parent.id, {
-        parentRunId: parentStarted.result.turn.runId,
-        sourceRunId: failedResume.runId!,
-        abortSignal: retryAbort.signal,
-        onReady: () => {
-          abortedRetryReady += 1;
-        },
-      }),
-      { name: 'AbortError' },
-    );
-    assert.equal(
-      (await stores.agentRunStore.listSessionRuns(child.childSessionId)).length,
-      runsBeforeAbortedRetry.length,
-    );
-    assert.equal(linkedBackend?.sendCount, sendsBeforeAbortedRetry);
-    assert.equal(abortedRetryReady, 0);
-    assert.equal(drainRequested, false);
 
     const abortController = new AbortController();
     let joinedInitial: Promise<typeof child> | undefined;
@@ -3054,6 +3375,7 @@ test('shutdown contains a successor backend start rejected by Interaction drain'
 
 test('Client Capability ambiguity fails before durable root admission', async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3133,6 +3455,7 @@ test('an exact active retry preserves the Client Capability admission binding', 
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3224,10 +3547,11 @@ test('an exact active retry preserves the Client Capability admission binding', 
   }
 });
 
-test('mixed-Client queued follow-ups preserve each submitting connection through root handoff', {
+test('mixed-Client queued follow-ups use separate Session successors without connection-local tools', {
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3329,20 +3653,11 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
     const firstFollowup = fixture.coordinator.readRootState(fixture.sessionId);
     assert.equal(firstFollowup.kind, 'active');
     if (firstFollowup.kind !== 'active') return;
-    const firstFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
-    assert.deepEqual(firstFollowupSnapshot?.registrationIds, ['registration-b']);
-    firstFollowupSnapshot?.release();
+    const followupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
+    assert.equal(followupSnapshot, undefined);
 
     await waitUntil(() => backend?.sendCount === 2);
     backend?.release();
-    await waitUntil(() => {
-      const state = fixture.coordinator.readRootState(fixture.sessionId);
-      return state.kind === 'active' && state.turnId !== firstFollowup.turnId;
-    });
-    const secondFollowupSnapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
-    assert.deepEqual(secondFollowupSnapshot?.registrationIds, ['registration-a']);
-    secondFollowupSnapshot?.release();
-
     await waitUntil(() => backend?.sendCount === 3);
     backend?.release();
     await waitUntil(
@@ -3356,6 +3671,12 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
       admissions.map((admission) => admission.sourceMessages.map((source) => source.messageId)),
       [[], ['followup-from-provider-b'], ['followup-from-provider-a']],
     );
+    assert.deepEqual(
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId))
+        .filter((message) => message.type === 'user' && message.id.startsWith('followup-from-'))
+        .map((message) => message.id),
+      ['followup-from-provider-b', 'followup-from-provider-a'],
+    );
   } finally {
     first.close();
     second.close();
@@ -3364,15 +3685,18 @@ test('mixed-Client queued follow-ups preserve each submitting connection through
   }
 });
 
-test('queued follow-up degrades lost Session tools and rebinds ephemeral tools to its Client', {
+test('queued follow-up does not bind lost or ambiguous connection-local tools', {
   timeout: 20_000,
 }, async () => {
-  await assertFollowupCapabilityRebinding('call');
-  await assertFollowupCapabilityRebinding('turn');
+  await assertSessionSuccessorCapabilityDegradation('call');
+  await assertSessionSuccessorCapabilityDegradation('turn');
 });
 
-async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Promise<void> {
+async function assertSessionSuccessorCapabilityDegradation(
+  affinity: 'call' | 'turn',
+): Promise<void> {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3403,6 +3727,7 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
         previousProvider.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         previousProvider.accept({
           kind: 'client.capability.result',
@@ -3422,6 +3747,7 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
         followupProvider.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         followupProvider.accept({
           kind: 'client.capability.result',
@@ -3514,26 +3840,33 @@ async function assertFollowupCapabilityRebinding(affinity: 'call' | 'turn'): Pro
       return state.kind === 'active' && state.turnId !== firstTurnId;
     });
     const snapshot = clientCapabilities.snapshotForSession(fixture.sessionId);
-    assert.ok(snapshot);
-    assert.equal(
-      snapshot.tools.some((tool) => tool.name.endsWith('navigate_session')),
-      false,
-    );
-    const ephemeral = snapshot.tools.find((tool) => tool.name.endsWith('navigate_ephemeral'));
-    assert.ok(ephemeral);
-    await ephemeral.impl(
-      {},
-      {
-        sessionId: fixture.sessionId,
-        turnId: 'followup-turn',
-        cwd: '/tmp',
-        toolCallId: `followup-${affinity}`,
-        abortSignal: new AbortController().signal,
-        emitOutput: () => undefined,
-      },
-    );
-    assert.deepEqual(calls, ['provider-followup']);
-    snapshot.release();
+    if (affinity === 'turn') {
+      assert.equal(snapshot, undefined);
+    } else {
+      assert.ok(snapshot);
+      const ephemeral = snapshot.tools.find((tool) => tool.name.endsWith('navigate_ephemeral'));
+      assert.ok(ephemeral);
+      await assert.rejects(
+        () =>
+          Promise.resolve(
+            ephemeral.impl(
+              {},
+              {
+                sessionId: fixture.sessionId,
+                turnId: 'followup-turn',
+                cwd: '/tmp',
+                toolCallId: `followup-${affinity}`,
+                abortSignal: new AbortController().signal,
+                emitOutput: () => undefined,
+              },
+            ),
+          ),
+        (error: unknown) =>
+          error instanceof ClientCapabilityInvocationError && error.code === 'capability_ambiguous',
+      );
+      snapshot.release();
+    }
+    assert.deepEqual(calls, []);
 
     await waitUntil(() => backend?.sendCount === 2);
     backend?.release();
@@ -3565,6 +3898,7 @@ test('an exact terminal retry does not require a live Client Capability binding'
   timeout: 20_000,
 }, async () => {
   const clientCapabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -3928,6 +4262,74 @@ test('public turn.interrupt releases the Session lane while a queried Run is sti
   }
 });
 
+test('invalid WorkHub Stop provenance fails before the root fence mutates authority', async () => {
+  let backend: BlockingRootBackend | undefined;
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => {
+        backend = new BlockingRootBackend(context.sessionId);
+        return backend;
+      }),
+  });
+  try {
+    const started = await fixture.interactiveTurns.handlers['turn.start'](
+      {
+        sessionId: fixture.sessionId,
+        turnId: 'turn-invalid-workhub-stop',
+        content: { text: 'keep this root active' },
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    assertStartedTurn(started);
+    await backend?.started.promise;
+
+    const queued = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'queued-before-invalid-workhub-stop',
+        content: { text: 'preserve this follow-up' },
+        placement: 'next_turn',
+      },
+      operationContext(fixture.hostEpoch, fixture.acquireResidency),
+    );
+    assert.equal(queued.ok, true);
+    const before = fixture.messages.projection(fixture.sessionId);
+
+    const invalidInputs = [
+      { source: 'workhub_direct_stop' },
+      { source: 'workhub_direct_stop', workHubActionId: '' },
+      { source: 'stop_button', workHubActionId: 'wrong-source-action' },
+    ];
+    for (const input of invalidInputs) {
+      await assert.rejects(
+        async () =>
+          fixture.coordinator.stopRoot(
+            {
+              sessionId: fixture.sessionId,
+              turnId: 'turn-invalid-workhub-stop',
+              runId: started.result.turn.runId,
+            },
+            input as never,
+          ),
+        /WorkHub direct-stop/,
+      );
+    }
+
+    assert.deepEqual(fixture.messages.projection(fixture.sessionId), before);
+    assert.equal(fixture.coordinator.readRootState(fixture.sessionId).kind, 'active');
+    assert.equal(fixture.fallbackRunClosureClaims(), 0);
+    assert.equal(backend?.stopCount, 0);
+  } finally {
+    backend?.release();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
 test('Runtime stop lets a running admission publish before its exact-Run closure', {
   timeout: 20_000,
 }, async () => {
@@ -4012,6 +4414,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
   try {
     const unrelatedSession = await fixture.stores.sessionStore.create({
       cwd: '/tmp/unrelated-active-root',
+      llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -4588,6 +4991,7 @@ async function seedPendingSafeBoundaryContinuation(
     turnId: sourceTurnId,
     status: 'created' as const,
     backendKind: 'fake' as const,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: session.cwd,
@@ -4709,6 +5113,9 @@ async function registerSessionCapability(
 
 async function createFailureFixture(options: {
   registerBackend(backends: BackendRegistry): void;
+  directoryHostId?: string;
+  corruptSessionRole?: boolean;
+  legacyConnectionIdentity?: boolean;
   childTools?: MakaTool[];
   wrapAdmissionStore?(store: RootTurnAdmissionStore): RootTurnAdmissionStore;
   wrapMessageAuthority?(authority: RuntimeMessageAuthority): RuntimeMessageAuthority;
@@ -4730,6 +5137,10 @@ async function createFailureFixture(options: {
     text: string;
     skillIds: readonly string[];
   }): Promise<PreparedSkillInvocationMessage>;
+  assertScheduledTaskRecoveryAdmission?(
+    admission: RootTurnAdmission,
+    state: 'pending_fire_required' | 'run_recorded',
+  ): Promise<void>;
 }) {
   const base = await mkdtemp(join(tmpdir(), 'maka-root-turn-message-failure-'));
   const capability = await resolveStorageRoot({
@@ -4747,10 +5158,29 @@ async function createFailureFixture(options: {
   await artifacts?.recover();
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    ...(options.legacyConnectionIdentity
+      ? {}
+      : { llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc' }),
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
   });
+  if (options.corruptSessionRole) {
+    const database = new DatabaseSync(
+      join(capability.canonicalPath, OPERATIONAL_STATE_DATABASE_NAME),
+    );
+    try {
+      database
+        .prepare(
+          `UPDATE session_metadata
+           SET payload_json = json_set(payload_json, '$.role', ?)
+           WHERE session_id = ?`,
+        )
+        .run(WORKHUB_COORDINATION_SESSION_ROLE, session.id);
+    } finally {
+      database.close();
+    }
+  }
   const admissionStore = options.wrapAdmissionStore?.(stores.agentRunStore) ?? stores.agentRunStore;
   const rootAdmissionOwner = new RootAdmissionOwner(admissionStore);
   await rootAdmissionOwner.recoverSession(session.id);
@@ -4773,19 +5203,19 @@ async function createFailureFixture(options: {
   let canonicalProjection: CanonicalSessionProjectionReader | undefined;
   let messages!: HostMessageCoordinator;
   let interactions: HostInteractionCoordinator | undefined;
+  let fallbackRunClosureClaims = 0;
   const rootPort: HostMessageRootPort = {
     readSessionHeader: (sessionId) => requireCoordinator(coordinator).readSessionHeader(sessionId),
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, admission),
-    startFromMessage: (input, admission) =>
-      requireCoordinator(coordinator).startFromMessage(input, admission),
+    startFromMessage: (input, admission, commitAdmission) =>
+      requireCoordinator(coordinator).startFromMessage(input, admission, commitAdmission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, admission) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, admission),
   };
   const hostEpoch = 'epoch-message-failure';
-  await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
   const requestDrain = () => {
     drainRequested = true;
     messages?.beginDrain();
@@ -4800,7 +5230,7 @@ async function createFailureFixture(options: {
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission,
     acquireResidency,
     requestDrain,
@@ -4884,7 +5314,9 @@ async function createFailureFixture(options: {
       admissionOwner,
       interactions ?? {
         assertTerminalFence: async () => undefined,
-        claimRunClosure: async () => undefined,
+        claimRunClosure: async () => {
+          fallbackRunClosureClaims += 1;
+        },
       },
       messages,
       requireContinuity(continuity),
@@ -4892,10 +5324,12 @@ async function createFailureFixture(options: {
       requestDrain,
       options.clientCapabilities,
       () => NO_EXECUTION_OBSERVER,
-      undefined,
+      options.assertScheduledTaskRecoveryAdmission,
       artifactAuthority,
       options.prepareSkillInvocation,
       options.agentGraphEpochs,
+      undefined,
+      options.directoryHostId,
     );
   coordinator = createCoordinator(rootAdmissionOwner);
   const contextOperations = new HostContextCoordinator({
@@ -4962,13 +5396,215 @@ async function createFailureFixture(options: {
     },
     liveResidencies: () => liveResidencies,
     drainRequested: () => drainRequested,
+    fallbackRunClosureClaims: () => fallbackRunClosureClaims,
     dispose: async () => {
       requireContinuity(continuity).close();
+      artifacts?.close();
+      await stores.sessionStore.close?.();
       await owner.close();
       await rm(base, { recursive: true, force: true });
     },
   };
 }
+
+test('directory references enforce Host identity without reading the filesystem', async () => {
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register('ai-sdk', (context) => new FakeBackend(context)),
+    directoryHostId: reference.hostId,
+  });
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    await assert.rejects(
+      () =>
+        fixture.messages.handlers['turn.message.submit'](
+          {
+            originHostEpoch: fixture.hostEpoch,
+            sessionId: fixture.sessionId,
+            messageId: 'foreign-directory',
+            placement: 'next_turn',
+            content: {
+              text: 'inspect foreign directory',
+              directoryReferences: [{ ...reference, hostId: 'host-b' }],
+            },
+          },
+          context,
+        ),
+      RuntimeHostedRootUnavailableError,
+    );
+    assert.equal(fixture.messages.projection(fixture.sessionId).followup.length, 0);
+    assert.equal(fixture.drainRequested(), false);
+
+    const accepted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'local-directory',
+        placement: 'next_turn',
+        content: { text: 'inspect local directory', directoryReferences: [reference] },
+      },
+      context,
+    );
+    assert.equal(accepted.ok, true, JSON.stringify(accepted));
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.id === 'local-directory',
+    );
+    assert.equal(user?.type, 'user');
+    if (user?.type !== 'user') throw new Error('Expected directory user message');
+    assert.equal(user.text, 'inspect local directory');
+    assert.equal(user.displayText, undefined);
+    assert.deepEqual(user.directoryReferences, [reference]);
+    assert.equal(fixture.drainRequested(), false);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('turn start and regeneration preserve one Host-bound directory reference', async () => {
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const sendInputs: BackendSendInput[] = [];
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              sendInputs.push(input);
+              yield* super.send(input);
+            }
+          })(context),
+      ),
+    directoryHostId: reference.hostId,
+  });
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'directory-start',
+          content: { text: 'inspect', directoryReferences: [reference] },
+        },
+        context,
+      ),
+    );
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    const regenerated = await fixture.interactiveTurns.handlers['turn.regenerate'](
+      {
+        sessionId: fixture.sessionId,
+        sourceTurnId: 'directory-start',
+        turnId: 'directory-regenerated',
+      },
+      context,
+    );
+    assert.equal(regenerated.ok, true, JSON.stringify(regenerated));
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+
+    assert.equal(sendInputs.length, 2);
+    for (const input of sendInputs) {
+      assert.equal(input.text, 'inspect');
+      assert.deepEqual(input.directoryReferences, [reference]);
+    }
+    const regeneratedUser = (
+      await fixture.stores.sessionStore.readMessages(fixture.sessionId)
+    ).find((message) => message.type === 'user' && message.turnId === 'directory-regenerated');
+    assert.equal(regeneratedUser?.type, 'user');
+    if (regeneratedUser?.type !== 'user') throw new Error('Expected regenerated user message');
+    assert.equal(regeneratedUser.text, 'inspect');
+    assert.deepEqual(regeneratedUser.directoryReferences, [reference]);
+  } finally {
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
+
+test('queued directory references survive text editing and next-Turn delivery', async () => {
+  const entered = deferred<void>();
+  const release = deferred<void>();
+  const reference = { hostId: 'host-a', path: '/workspace/source' };
+  const fixture = await createFailureFixture({
+    registerBackend: (backends) =>
+      backends.register(
+        'ai-sdk',
+        (context) =>
+          new (class extends FakeBackend {
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              if (input.text === 'hold-directory-test') {
+                entered.resolve();
+                await release.promise;
+              }
+              yield* super.send(input);
+            }
+          })(context),
+      ),
+    directoryHostId: reference.hostId,
+  });
+  try {
+    const context = operationContext(fixture.hostEpoch, fixture.acquireResidency);
+    assertStartedTurn(
+      await fixture.interactiveTurns.handlers['turn.start'](
+        {
+          sessionId: fixture.sessionId,
+          turnId: 'held-directory-root',
+          content: { text: 'hold-directory-test' },
+        },
+        context,
+      ),
+    );
+    await entered.promise;
+    const submitted = await fixture.messages.handlers['turn.message.submit'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        messageId: 'queued-directory',
+        content: { text: 'inspect queued', directoryReferences: [reference] },
+        placement: 'next_turn',
+      },
+      context,
+    );
+    assert.equal(submitted.ok && submitted.result.disposition, 'followup');
+    const queue = fixture.messages.projection(fixture.sessionId);
+    const entry = queue.followup[0]!;
+    assert.deepEqual(entry.content.directoryReferences, [reference]);
+
+    const edited = await fixture.messages.handlers['queue.entry.update'](
+      {
+        originHostEpoch: fixture.hostEpoch,
+        sessionId: fixture.sessionId,
+        entryId: entry.entryId,
+        updateId: 'edit-directory',
+        expectedQueueRevision: queue.queueRevision,
+        text: 'edited inspection',
+      },
+      context,
+    );
+    assert.equal(edited.ok, true, JSON.stringify(edited));
+    release.resolve();
+    await fixture.coordinator.whenIdle(fixture.sessionId);
+    await waitUntil(async () =>
+      (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).some(
+        (message) => message.type === 'user' && message.text === 'edited inspection',
+      ),
+    );
+    const user = (await fixture.stores.sessionStore.readMessages(fixture.sessionId)).find(
+      (message) => message.type === 'user' && message.text === 'edited inspection',
+    );
+    assert.equal(user?.type, 'user');
+    if (user?.type !== 'user') throw new Error('Expected queued directory user message');
+    assert.deepEqual(user.directoryReferences, [reference]);
+  } finally {
+    release.resolve();
+    await fixture.coordinator.close();
+    await fixture.messages.close();
+    await fixture.dispose();
+  }
+});
 
 function requireCoordinator(coordinator: RootTurnCoordinator | undefined): RootTurnCoordinator {
   if (!coordinator) throw new Error('RootTurnCoordinator is not composed');
@@ -4998,20 +5634,10 @@ function operationContext(
     hostEpoch,
     connectionId,
     principal: 'local_os_user' as const,
+    principalKind: 'local_owner' as const,
     acquireResidency,
   };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 class ObservableSessionAdmissionGate extends SessionAdmissionGate {
   #nextQueuedRun: ReturnType<typeof deferred<void>> | undefined;
 
@@ -5038,11 +5664,11 @@ async function waitUntil(
   predicate: () => boolean | Promise<boolean>,
   timeoutMs = 2_000,
 ): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (!(await predicate())) {
-    if (Date.now() >= deadline) throw new Error('Timed out waiting for test condition');
-    await new Promise((resolve) => setTimeout(resolve, 5));
-  }
+  await waitFor(predicate, {
+    timeoutMs,
+    pollMs: 5,
+    message: 'Timed out waiting for test condition',
+  });
 }
 
 class LinkedChildAuthorityBackend implements AgentBackend {
@@ -5252,8 +5878,7 @@ class ContextFailureBackend implements AgentBackend {
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
-      stopReason: 'context_budget_exhausted',
-      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+      stopReason: 'error',
     };
   }
 

@@ -18,22 +18,56 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { IPty } from 'node-pty';
+import { type RuntimeHostSshProcessFactory } from '@maka/runtime-host/client';
 import {
-  type RuntimeHostSshProcessFactory,
-} from '@maka/runtime-host/client';
-import {
+  encodeRuntimeHostActivationFrame,
   encodeRuntimeHostAccessManagementFrame,
+  encodeRuntimeHostPeerManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostSetupFrame,
+  encodeRuntimeHostPeerMeshManagementFrame,
   runtimeHostAccessCredentialFingerprint,
+  RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
 } from '@maka/runtime-host/operator';
-import { createDesktopRuntimeHostSshTerminal } from '../runtime-host-ssh-terminal.js';
+import {
+  createDesktopRuntimeHostSshTerminal,
+  runtimeHostDevelopmentPeerTargetFromUname,
+} from '../runtime-host-ssh-terminal.js';
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+
+test('maps supported SSH uname identities to development peer targets', () => {
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'x86_64'), 'linux-x64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Linux', 'aarch64'), 'linux-arm64');
+  assert.equal(runtimeHostDevelopmentPeerTargetFromUname('Darwin', 'arm64'), 'darwin-arm64');
+  assert.throws(
+    () => runtimeHostDevelopmentPeerTargetFromUname('Linux', 'riscv64'),
+    /not available/u,
+  );
+});
+
+test('detects the development peer target through the bounded SSH preflight', async () => {
+  const harness = createHarness('pending');
+  const detection = harness.terminal.resolveDevelopmentPeerTarget({
+    destination: 'operator@example.com',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs[0]?.at(-1) ?? '';
+  const marker = command.match(/__MAKA_RUNTIME_HOST_TARGET_[0-9a-f]+__/u)?.[0];
+  assert.ok(marker);
+  harness.pty.emitData(`${marker}Linux:x86_64\r\n`);
+  harness.pty.exit(0);
+
+  assert.equal(await detection, 'linux-x64');
+  assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_TARGET/u);
+  await harness.terminal.close();
+});
 
 test('keeps a connecting SSH prompt observable across renderer presentation changes', async () => {
   const harness = createHarness('pending');
@@ -118,6 +152,7 @@ test('keeps setup credentials out of the interactive terminal projection', async
     kind: 'complete',
     version: '0.1.0-beta.1',
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
@@ -136,9 +171,11 @@ test('keeps setup credentials out of the interactive terminal projection', async
   assert.deepEqual(progress, ['installing_service']);
   assert.doesNotMatch(JSON.stringify(harness.events), /secret-access-token|MAKA_RUNTIME/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /mktemp -d/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /--prefix/u);
-  assert.match(harness.launchArgs.at(-1)?.at(-1) ?? '', /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /mktemp -d/u);
+  assert.match(remoteCommand, /--prefix/u);
+  assert.match(remoteCommand, /trap.*HUP.*trap.*INT.*trap.*TERM/u);
+  assert.doesNotMatch(remoteCommand, /--update-existing/u);
   await harness.terminal.close();
 });
 
@@ -183,6 +220,7 @@ test('keeps a completed setup process owned until it exits', async () => {
     kind: 'complete',
     version: '1.2.3',
     serviceId: 'b'.repeat(64),
+    deploymentId: '00000000-0000-4000-8000-000000000001',
     operatorPath: '/home/operator/.local/share/maka/operator',
     rootPath: '/home/operator/.config/Maka/workspaces/default',
     rootId: 'a'.repeat(64),
@@ -218,8 +256,35 @@ test('force-stops a cancelled setup when SSH ignores graceful termination', asyn
 
   await assert.rejects(setup, /aborted/u);
   assert.deepEqual(harness.pty.killSignals, ['SIGTERM', 'SIGKILL']);
+  assert.deepEqual(harness.terminatedProcesses, [
+    { pid: 42, signal: 'SIGTERM' },
+    { pid: 42, signal: 'SIGKILL' },
+  ]);
   assert.deepEqual(harness.eventKinds(), ['opened', 'data', 'dismissed']);
   assert.deepEqual(await harness.getSnapshot(), { kind: 'idle', revision: 3 });
+  await harness.terminal.close();
+});
+
+test('does not signal a reused process identity when cancellation races SSH exit', async () => {
+  const harness = createHarness('pending');
+  const controller = new AbortController();
+  const setup = harness.terminal.runSetup(
+    {
+      destination: 'operator@example.com',
+      setupPackage: { kind: 'npm', specifier: 'maka-agent@1.2.3' },
+      principalId: 'desktop:stable-client',
+      signal: controller.signal,
+    },
+    () => undefined,
+  );
+  await waitFor(() => harness.pty.hasDataListener());
+
+  controller.abort();
+  harness.pty.exit(0);
+
+  await assert.rejects(setup, /aborted/u);
+  await Promise.resolve();
+  assert.deepEqual(harness.pty.killSignals, []);
   await harness.terminal.close();
 });
 
@@ -229,6 +294,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
     destination: 'operator@example.com',
     operatorPath: '/home/operator/.local/share/maka/operator',
     action: 'status',
+    capabilityRequest: RUNTIME_HOST_OPERATOR_PEER_MANAGEMENT_CAPABILITY,
     expectedTarget: {
       serviceId: 'b'.repeat(64),
       rootPath: '/home/operator/.config/Maka/workspaces/default',
@@ -239,7 +305,7 @@ test('reads a framed service result without projecting it into the SSH terminal'
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /\.local\/share\/maka\/operator/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
-  assert.match(remoteCommand, /access-management-v1/u);
+  assert.match(remoteCommand, /peer-management-v1/u);
   assert.doesNotMatch(remoteCommand, /npx|maka-agent@/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -264,10 +330,80 @@ test('reads a framed service result without projecting it into the SSH terminal'
 
   const result = await management;
   assert.equal(result.kind, 'result');
-  if (result.kind !== 'result') assert.fail('expected service management result');
+  if (result.kind !== 'result' || result.action !== 'status') {
+    assert.fail('expected service status result');
+  }
   assert.equal(result.service.installedVersion, '1.2.3');
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   assert.match(JSON.stringify(harness.events), /Password/u);
+  await harness.terminal.close();
+});
+
+test('applies the complete remote Project root policy through the managed operator', async () => {
+  const harness = createHarness('pending');
+  const fingerprint = `sha256:${'c'.repeat(64)}`;
+  const management = harness.terminal.runServiceManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'configure',
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+    },
+    projectDirectoryRoots: [
+      { label: 'Work=Primary', path: '/srv/work trees' },
+      { label: 'Data', path: '/mnt/data' },
+    ],
+    expectedConfigFingerprint: fingerprint,
+    allowInterruptActiveTasks: true,
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(remoteCommand, /operator.*configure/u);
+  assert.match(remoteCommand, /--project-root-json/u);
+  assert.match(remoteCommand, /Work=Primary/u);
+  assert.match(remoteCommand, /srv\/work trees/u);
+  assert.match(remoteCommand, /Data/u);
+  assert.match(remoteCommand, /mnt\/data/u);
+  assert.match(remoteCommand, /--expected-config-fingerprint/u);
+  assert.match(remoteCommand, /--allow-interrupt-active-tasks/u);
+  assert.match(
+    remoteCommand,
+    /MAKA_RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST=1/u,
+  );
+  harness.pty.emitData(
+    encodeRuntimeHostServiceManagementFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      action: 'configure',
+      service: {
+        platform: 'linux',
+        arch: 'x64',
+        osRelease: '6.8.0',
+        state: 'running',
+        pid: 43,
+        lastExitCode: 0,
+        installedVersion: '1.2.3',
+        configurationFingerprint: `sha256:${'d'.repeat(64)}`,
+        projectDirectoryRoots: [
+          { label: 'Work=Primary', path: '/srv/work trees' },
+          { label: 'Data', path: '/mnt/data' },
+        ],
+      },
+      configuration: { kind: 'configured' },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind, 'result');
+  assert.equal(
+    result.kind === 'result' && result.action === 'configure'
+      ? result.configuration.kind
+      : undefined,
+    'configured',
+  );
   await harness.terminal.close();
 });
 
@@ -319,6 +455,7 @@ test('runs an exact update package and reports progress before an active-work re
         serviceId: 'b'.repeat(64),
         rootPath: '/srv/maka',
         rootId: 'a'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
       },
     },
     (phase) => phases.push(phase),
@@ -327,6 +464,9 @@ test('runs an exact update package and reports progress before an active-work re
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-agent@1\.3\.0/u);
   assert.match(remoteCommand, /runtime-host.*service.*update/u);
+  assert.match(remoteCommand, /--target.*1\.3\.0/u);
+  assert.match(remoteCommand, /--managed-root-id.*a{64}/u);
+  assert.doesNotMatch(remoteCommand, /--operator-deployment-id/u);
   assert.match(remoteCommand, /MAKA_RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST/u);
   harness.pty.emitData('Password: ');
   harness.pty.emitData(
@@ -370,6 +510,88 @@ test('runs an exact update package and reports progress before an active-work re
   assert.deepEqual(harness.events.map(({ kind }) => kind), ['opened', 'data', 'connected']);
   assert.doesNotMatch(JSON.stringify(harness.events), /MAKA_RUNTIME_HOST_SERVICE/u);
   await harness.terminal.close();
+});
+
+test('uses the managed operator for update policy and one-shot reconciliation', async () => {
+  const target = {
+    serviceId: 'b'.repeat(64),
+    rootPath: '/srv/maka',
+    rootId: 'a'.repeat(64),
+  };
+  const policyHarness = createHarness('pending');
+  const policy = policyHarness.terminal.runUpdatePolicy({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    policy: { kind: 'channel', channel: 'latest' },
+    expectedTarget: target,
+  });
+  await waitFor(() => policyHarness.pty.hasDataListener());
+  const policyCommand = policyHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(policyCommand, /operator.*update-policy.*--target.*latest/u);
+  assert.match(policyCommand, /--expected-service-id/u);
+  assert.match(policyCommand, /update-scheduler-v1/u);
+  policyHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'update_policy',
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+  }));
+  policyHarness.pty.exit(0);
+  assert.equal((await policy).kind, 'result');
+  await policyHarness.terminal.close();
+
+  const reconcileHarness = createHarness('pending');
+  const phases: string[] = [];
+  const reconciliation = reconcileHarness.terminal.runUpdateReconciliation(
+    {
+      destination: 'operator@example.com',
+      operatorPath: '/home/operator/.local/share/maka/operator',
+      expectedTarget: target,
+    },
+    (phase) => phases.push(phase),
+  );
+  await waitFor(() => reconcileHarness.pty.hasDataListener());
+  const reconcileCommand = reconcileHarness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(reconcileCommand, /operator.*reconcile-update.*--framed/u);
+  assert.match(reconcileCommand, /--expected-service-id/u);
+  assert.match(reconcileCommand, /update-scheduler-v1/u);
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'progress',
+    action: 'reconcile_update',
+    phase: 'checking',
+    currentVersion: '1.2.3',
+    targetVersion: '1.3.0',
+  }));
+  reconcileHarness.pty.emitData(encodeRuntimeHostServiceManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'reconcile_update',
+    updateSchedulerState: 'ready',
+    updatePolicy: {
+      policy: { kind: 'channel', channel: 'latest' },
+      target,
+    },
+    service: {
+      platform: 'linux',
+      arch: 'x64',
+      osRelease: '6.8.0',
+      state: 'running',
+      pid: 42,
+      lastExitCode: 0,
+      installedVersion: '1.2.3',
+      projectDirectoryRoots: [],
+    },
+    reconciliation: { kind: 'already_current', version: '1.2.3' },
+  }));
+  reconcileHarness.pty.exit(0);
+  assert.equal((await reconciliation).kind, 'result');
+  assert.deepEqual(phases, ['checking']);
+  await reconcileHarness.terminal.close();
 });
 
 test('keeps a prepared access credential out of the SSH terminal projection', async () => {
@@ -419,6 +641,156 @@ test('keeps a prepared access credential out of the SSH terminal projection', as
   await harness.terminal.close();
 });
 
+test('creates an owner connection code through the framed SSH operator channel', async () => {
+  const harness = createHarness('pending');
+  const connectionCode = 'maka-runtime-host:connect:v1:secret-code';
+  const management = harness.terminal.runAccessManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootPath: '/srv/maka',
+    expectedRootId: 'a'.repeat(64),
+    action: 'connection-code',
+    name: "Owner's Linux",
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(encodeRuntimeHostAccessManagementFrame({
+    schemaVersion: 1,
+    kind: 'result',
+    action: 'connection-code',
+    connectionCode,
+  }));
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(
+    result.kind === 'result' && result.action === 'connection-code'
+      ? result.connectionCode
+      : undefined,
+    connectionCode,
+  );
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /access.*connection-code/u);
+  assert.match(command, /--name/u);
+  assert.match(command, /Owner/u);
+  assert.doesNotMatch(JSON.stringify(harness.events), /secret-code|MAKA_RUNTIME/u);
+  await harness.terminal.close();
+});
+
+test('requests adaptive-connectivity status only on the peer-management frame', async () => {
+  const harness = createHarness('pending');
+  const management = harness.terminal.runPeerManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'status',
+    webRtcStunStatus: true,
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(
+    command,
+    /peer.*status.*--framed.*--relay-discovery-status.*--webrtc-stun-status/u,
+  );
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerManagementFrame({
+      kind: 'result',
+      action: 'status',
+      status: {
+        state: 'enabled',
+        serviceState: 'running',
+        peerId: '12D3KooWpeer',
+        rootId: 'a'.repeat(64),
+        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRelays: [],
+        automaticRelayDiscovery: true,
+        webRtcStunPolicy: { kind: 'default' },
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  const result = await management;
+  assert.equal(result.kind === 'result' && result.status.automaticRelayDiscovery, true);
+  assert.deepEqual(
+    result.kind === 'result' ? result.status.webRtcStunPolicy : undefined,
+    { kind: 'default' },
+  );
+  await harness.terminal.close();
+});
+
+test('sends a Mesh invitation only after the authenticated remote operator requests it', async () => {
+  const harness = createHarness('pending');
+  const invitation = JSON.stringify({ secret: 'one-time-mesh-secret' });
+  const management = harness.terminal.runPeerMeshManagement({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    action: 'join',
+    invitation,
+    expectedTarget: {
+      serviceId: 'b'.repeat(64),
+      rootPath: '/srv/maka',
+      rootId: 'a'.repeat(64),
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  const command = harness.launchArgs.at(-1)?.at(-1) ?? '';
+  assert.match(command, /mesh.*join.*--framed/u);
+  assert.doesNotMatch(command, /one-time-mesh-secret/u);
+  assert.deepEqual(harness.pty.writes, []);
+
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({ kind: 'input', action: 'join' }),
+  );
+  assert.deepEqual(harness.pty.writes, [`${invitation}\r`]);
+  harness.pty.emitData(
+    encodeRuntimeHostPeerMeshManagementFrame({
+      kind: 'result',
+      action: 'join',
+      result: {
+        localPeerId: 'peer-b',
+        available: true,
+        transit: {
+          meshId: null,
+          allowedMemberCount: 0,
+          activeReservationCount: 0,
+          activeCircuitCount: 0,
+          maxReservationCount: 32,
+          maxCircuitCount: 8,
+          maxCircuitsPerPeer: 2,
+          maxCircuitDurationSeconds: 7_200,
+          maxCircuitBytes: 256 * 1024 * 1024,
+        },
+        meshes: [
+          {
+            meshId: 'mesh-id',
+            role: 'member',
+            authorityPeerId: 'peer-a',
+            revision: 2,
+            closed: false,
+            members: [
+              { peerId: 'peer-a', state: 'reachable', expiresAt: Date.now() + 60_000 },
+              { peerId: 'peer-b', state: 'local' },
+            ],
+            pendingInvitationCount: 0,
+          },
+        ],
+      },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await management).kind, 'result');
+  assert.doesNotMatch(JSON.stringify(harness.events), /one-time-mesh-secret/u);
+  await harness.terminal.close();
+});
+
 test('rejects a framed service result for a different action', async () => {
   const harness = createHarness('pending');
   const management = harness.terminal.runServiceManagement({
@@ -455,7 +827,7 @@ test('rejects a framed service result for a different action', async () => {
   await harness.terminal.close();
 });
 
-test('requires an absent operator deployment root to be absent or empty', async () => {
+test('requires an absent operator deployment root to be absent', async () => {
   const harness = createHarness('pending');
   const cleanup = harness.terminal.cleanupManagedDeployment({
     destination: 'operator@example.com',
@@ -469,7 +841,7 @@ test('requires an absent operator deployment root to be absent or empty', async 
   await waitFor(() => harness.pty.hasDataListener());
   const remoteCommand = harness.launchArgs.at(-1)?.at(-1) ?? '';
   assert.match(remoteCommand, /if \[ ! -e/u);
-  assert.match(remoteCommand, /rmdir --/u);
+  assert.doesNotMatch(remoteCommand, /rmdir --/u);
   assert.match(remoteCommand, /home\/operator\/\.local\/share\/maka/u);
   assert.match(remoteCommand, /__cleanup-managed-deployment/u);
   assert.match(remoteCommand, /--expected-service-id/u);
@@ -508,11 +880,45 @@ test('does not launch a management process after the terminal owner closes', asy
   assert.equal(launches.length, 0);
 });
 
+test('runs interactive operator activation as one strict framed SSH command', async () => {
+  const harness = createHarness('pending');
+  const rootId = 'a'.repeat(64);
+  const activation = harness.terminal.activateSshOperator({
+    destination: 'operator@example.com',
+    operatorPath: '/home/operator/.local/share/maka/operator',
+    rootId,
+    interaction: 'terminal',
+  });
+  await waitFor(() => harness.pty.hasDataListener());
+  harness.pty.emitData(
+    encodeRuntimeHostActivationFrame({
+      schemaVersion: 1,
+      kind: 'result',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+      configRevision: 1,
+      rootId,
+      hostEpoch: 'host-epoch',
+      pid: 1234,
+      protocolVersion: 1,
+      endpoint: { host: '127.0.0.1', port: 43_210, websocketPath: '/runtime-host' },
+    }),
+  );
+  harness.pty.exit(0);
+
+  assert.equal((await activation).pid, 1234);
+  const remoteCommand = harness.launchArgs[0]?.at(-1) ?? '';
+  assert.match(remoteCommand, /'activate' '--framed' '--root-id'/u);
+  assert.match(remoteCommand, new RegExp(rootId, 'u'));
+  assert.doesNotMatch(remoteCommand, /credential|token/u);
+  await harness.terminal.close();
+});
+
 test('uploads a development release archive before running the same remote setup', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'maka-runtime-host-development-package-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const archive = join(directory, 'maka-agent-development.tgz');
   await writeFile(archive, 'development package');
+  const integrity = `sha512-${createHash('sha512').update('development package').digest('base64')}`;
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const launches: Array<{ file: string; args: string[]; pty: FakePty }> = [];
   const terminal = createDesktopRuntimeHostSshTerminal({
@@ -531,7 +937,11 @@ test('uploads a development release archive before running the same remote setup
 
   const setupInput = {
     destination: 'operator@example.com',
-    setupPackage: { kind: 'development_archive', path: archive } as const,
+    setupPackage: {
+      kind: 'development_archive',
+      path: archive,
+      integrity,
+    } as const,
     principalId: 'desktop:stable-client',
   };
   const setup = terminal.runSetup(setupInput, () => undefined);
@@ -548,7 +958,10 @@ test('uploads a development release archive before running the same remote setup
   assert.equal(launches[1]?.file, 'ssh');
   const remoteCommand = launches[1]?.args.at(-1) ?? '';
   assert.match(remoteCommand, /--package.*maka-runtime-host-setup-.+\.tgz/u);
+  assert.match(remoteCommand, /MAKA_RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY=/u);
+  assert.ok(remoteCommand.includes(integrity));
   assert.match(remoteCommand, /--defer-pairing-commit/u);
+  assert.match(remoteCommand, /--update-existing/u);
   assert.match(remoteCommand, /cd.*\$HOME/u);
   assert.match(remoteCommand, /rm -f/u);
   assert.match(remoteCommand, /exec \/bin\/sh -c/u);
@@ -562,6 +975,7 @@ function createHarness(
 ) {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
   const events: Array<{ kind: string }> = [];
+  const terminatedProcesses: Array<{ pid: number; signal: string }> = [];
   const pty = new FakePty();
   const launchArgs: string[][] = [];
   let releaseTunnel!: () => void;
@@ -582,6 +996,13 @@ function createHarness(
     revealDelayMs: 0,
     ...options,
     processStopGraceMs: 1,
+    terminateProcessTree: async ({ pid, signal, fallback, hasExited, beforeSignal }) => {
+      terminatedProcesses.push({ pid, signal });
+      await Promise.resolve();
+      if (hasExited?.() || beforeSignal?.() === false) return false;
+      fallback?.();
+      return true;
+    },
     openSshTunnel: async (input, overrides) => {
       const spawnProcess = overrides?.spawnProcess as RuntimeHostSshProcessFactory;
       const process = spawnProcess({ executable: 'ssh', args: [], interaction: input.interaction });
@@ -606,6 +1027,7 @@ function createHarness(
     releaseTunnel,
     eventKinds: () => events.map(({ kind }) => kind),
     events,
+    terminatedProcesses,
     getSnapshot: () => invoke('runtime-host-ssh-terminal:getSnapshot'),
     cancel: (sessionId: string) => invoke('runtime-host-ssh-terminal:cancel', sessionId),
   };
@@ -626,6 +1048,7 @@ class FakePty {
   deferKill = false;
   exitOnForceKill = false;
   readonly killSignals: Array<string | undefined> = [];
+  readonly writes: string[] = [];
   readonly #dataListeners = new Set<(data: string) => void>();
   readonly #exitListeners = new Set<(event: { exitCode: number; signal: number }) => void>();
   #resolveExit!: () => void;
@@ -662,7 +1085,9 @@ class FakePty {
     this.#resolveExit();
   }
 
-  write(): void {}
+  write(data: string): void {
+    this.writes.push(data);
+  }
   resize(): void {}
   kill(signal?: string): void {
     this.killSignals.push(signal);
@@ -671,9 +1096,5 @@ class FakePty {
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 1));
-  }
-  assert.fail('Condition was not reached');
+  await pollFor(predicate, { attempts: 100, pollMs: 1, message: 'Condition was not reached' });
 }

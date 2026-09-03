@@ -37,6 +37,20 @@ import { applyToolOutputChunk } from './tool-output-stream.js';
 
 type LiveTurnContentEvent = Extract<SessionEvent, { type: 'thinking_delta' | 'thinking_complete' | 'text_delta' | 'text_complete' | 'tool_start' | 'tool_output_delta' | 'tool_progress' | 'tool_result_preview' | 'tool_result' }>;
 
+/**
+ * A provider retry event plus the CLIENT-local time it entered this
+ * projection. Counting down from `receivedAtMs` keeps the whole countdown in
+ * one clock domain — the event's `ts` is stamped on the (possibly remote)
+ * Runtime Host clock, so subtracting it from a client clock would skew the
+ * display by the clock offset between the two machines. The countdown length
+ * itself comes from the skew-free `remainingMs` duration when the emitter
+ * provided one.
+ */
+export interface LiveProviderRetry {
+  event: ProviderRetryEvent;
+  receivedAtMs: number;
+}
+
 export interface LiveThinkingProjection {
   text: string;
   truncated: boolean;
@@ -93,7 +107,7 @@ export interface LiveTurnProjection {
    * settling it. Dropped for good once the answer arrives.
    */
   unconfirmed?: true;
-  providerRetry?: ProviderRetryEvent;
+  providerRetry?: LiveProviderRetry;
   steps: LiveTurnStepProjection[];
 }
 
@@ -213,7 +227,7 @@ export function applyLiveTurnEvent(
     const prior = current?.turnId === event.turnId
       ? current
       : { turnId: event.turnId, phase: 'waiting' as const, steps: [] };
-    return { ...confirmed(prior), providerRetry: event };
+    return { ...confirmed(prior), providerRetry: { event, receivedAtMs: Date.now() } };
   }
   if (event.type === 'error' || event.type === 'abort') {
     if (!current || current.turnId !== event.turnId) return current;
@@ -359,6 +373,7 @@ export function applyLiveTurnEvent(
       ...(event.activityKind !== undefined ? { activityKind: event.activityKind } : {}),
       ...(event.displayName !== undefined ? { displayName: event.displayName } : {}),
       ...(event.intent !== undefined ? { intent: event.intent } : {}),
+      ...(event.argsPreview !== undefined ? { argsPreview: event.argsPreview } : {}),
       ...projectToolActivityIdentity(event),
       ...(event.stepId !== undefined ? { stepId: event.stepId } : {}),
       status: 'running',
@@ -607,15 +622,24 @@ export function reconcileTerminalLiveTurn(
   const transcriptReachedTerminal = turnMessages.some(
     (message) => message.type === 'turn_state' && message.status !== 'running',
   );
+  let projection = current;
+  if (transcriptReachedTerminal && current.terminal !== true) {
+    const { providerRetry: _providerRetry, ...withoutRetry } = confirmed(current);
+    projection = {
+      ...withoutRetry,
+      terminal: true,
+      steps: terminalizeLiveSteps(current.steps),
+    };
+  }
   if (
-    current.terminal === true
-    && liveSteeringMessages(current).length > 0
+    projection.terminal === true
+    && liveSteeringMessages(projection).length > 0
     && !transcriptReachedTerminal
-  ) return current;
+  ) return projection;
   const assistantIds = new Set(turnMessages.flatMap((message) => message.type === 'assistant' ? [message.id] : []));
   const toolCallIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_call' ? [message.id] : []));
   const toolResultIds = new Set(turnMessages.flatMap((message) => message.type === 'tool_result' ? [message.toolUseId] : []));
-  let steps = current.steps.filter((step) => {
+  let steps = projection.steps.filter((step) => {
     if (step.text?.text.length) return true;
     if (step.thinking && !assistantIds.has(step.stepId)) return true;
     const toolsCovered = step.tools.every((tool) => {
@@ -633,9 +657,9 @@ export function reconcileTerminalLiveTurn(
   // Once persisted turn_state records the terminal handoff, the transcript is
   // authoritative for accepted steering; retaining the live copy would leave
   // a duplicate or a nacked ghost instruction on screen.
-  const steeringSettled = current.terminal === true
+  const steeringSettled = projection.terminal === true
     && transcriptReachedTerminal
-    && liveSteeringMessages(current).length > 0;
+    && liveSteeringMessages(projection).length > 0;
   if (steeringSettled) {
     steps = steps.map((step) => {
       if (!step.leadingSteering) return step;
@@ -643,9 +667,9 @@ export function reconcileTerminalLiveTurn(
       return withoutSteering;
     });
   }
-  if (steps.length === current.steps.length && !steeringSettled) return current;
-  if (steps.length === 0 && current.terminal) return undefined;
-  if (!steeringSettled) return { ...current, steps };
-  const { pendingSteering: _pendingSteering, ...withoutSteering } = current;
+  if (steps.length === projection.steps.length && !steeringSettled) return projection;
+  if (steps.length === 0 && projection.terminal) return undefined;
+  if (!steeringSettled) return { ...projection, steps };
+  const { pendingSteering: _pendingSteering, ...withoutSteering } = projection;
   return { ...withoutSteering, steps };
 }

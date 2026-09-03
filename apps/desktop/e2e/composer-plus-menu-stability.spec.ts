@@ -69,6 +69,21 @@ async function rejectBridgeLatch(
   );
 }
 
+// The fake echo can paint before Runtime Host publishes terminal turn ownership.
+// Use the catalog's known-empty live set as the barrier before latching its next read.
+async function waitForSessionTurnToSettle(
+  page: import('@playwright/test').Page,
+): Promise<void> {
+  await expect
+    .poll(async () =>
+      page.evaluate(async () => {
+        const sessions = await window.maka.sessions.list();
+        return sessions[0]?.runningTurnIds ?? null;
+      }),
+    )
+    .toEqual([]);
+}
+
 /**
  * Toggling Plan from the ＋ menu must not move the menu.
  *
@@ -266,6 +281,7 @@ test('two rapid Plan toggles land on the last requested state', async ({
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });
@@ -300,6 +316,7 @@ test('a failed catalog refresh keeps the committed Plan state visible', async ({
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });
@@ -322,6 +339,7 @@ test('latest Plan intent still reaches the Host after a catalog refresh fails', 
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const planRow = page.getByRole('menu', { name: '添加上下文' })
@@ -341,17 +359,23 @@ test('latest Plan intent still reaches the Host after a catalog refresh fails', 
   await expect(planRow).toHaveAttribute('aria-checked', 'false');
 });
 
-test('deleting the session while a toggle is pending settles clean', async ({
+test('removing the session while a toggle is pending settles clean', async ({
   invocableSkillsWindow: page,
 }) => {
   // pending → cleanup → settle: the Session's renderer lifecycle ends while a
   // mode commit (and a queued follow-up intent) is still in flight. Cleanup
   // must drop the queued ask with the rest of the Session state, so the
   // commit's tail has nothing to replay against the removed Session.
+  //
+  // Archiving is what ends that lifecycle from the rail now that deleting has
+  // moved to Settings. It is the same ending as far as this case is concerned:
+  // `archiveSession` clears the active id, the active messages and the whole
+  // family's renderer state, exactly as removal did.
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('alpha-marker');
   await composer.press('Enter');
   await expect(page.getByText(/Fake backend received: alpha-marker/)).toBeVisible();
+  await waitForSessionTurnToSettle(page);
 
   await page.getByRole('button', { name: '添加上下文' }).click();
   const menu = page.getByRole('menu', { name: '添加上下文' });
@@ -370,9 +394,7 @@ test('deleting the session while a toggle is pending settles clean', async ({
   const row = sidebar.locator('[data-maka-contract="session-row"]').first();
   await row.hover();
   await row.getByRole('button', { name: '任务操作' }).click();
-  await page.getByRole('menuitem', { name: '删除', exact: true }).click();
-  const confirm = page.getByRole('alertdialog');
-  await confirm.getByRole('button', { name: '删除', exact: true }).click();
+  await page.getByRole('menuitem', { name: '归档', exact: true }).click();
 
   await releaseBridgeLatch(page, 'sessions.list');
   await expect(sidebar.locator('[data-maka-contract="session-row"]')).toHaveCount(0);

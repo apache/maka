@@ -19,18 +19,99 @@
 
 import type { DesktopSessionSummary } from './bridge-contract.js';
 
-export async function collectRuntimeHostSessionCatalogs(
-  requests: readonly Promise<DesktopSessionSummary[]>[],
+export interface RuntimeHostSessionCatalogRequest {
+  readonly hostId: string;
+  readonly access: 'owner' | 'session_guest';
+  readonly sessions: Promise<DesktopSessionSummary[]>;
+}
+
+export interface RuntimeHostSessionCatalogCoverage {
+  readonly sessions: DesktopSessionSummary[];
+  readonly completeHostIds: string[];
+}
+
+export interface RuntimeHostSessionCatalogSnapshot extends RuntimeHostSessionCatalogCoverage {
+  /** Profiles still retained by Desktop, including unavailable Guest mounts. */
+  readonly knownProfileIds: string[];
+}
+
+export async function resolveRuntimeHostSessionCatalog(
+  current: readonly DesktopSessionSummary[],
+  coverage: Promise<RuntimeHostSessionCatalogCoverage>,
+  knownRuntimeProfileIds: () => readonly string[],
+  guestMountProfileIds: Promise<readonly string[]>,
 ): Promise<DesktopSessionSummary[]> {
-  const results = await Promise.allSettled(requests);
-  const groups = results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-  if (requests.length > 0 && groups.length === 0) {
+  const [snapshot, knownGuestProfileIds] = await Promise.all([
+    coverage,
+    guestMountProfileIds.catch(() =>
+      current.flatMap((session) => session.shared === true ? [session.profileId] : []),
+    ),
+  ]);
+  return reconcileRuntimeHostSessionCatalog(current, {
+    ...snapshot,
+    knownProfileIds: [...knownRuntimeProfileIds(), ...knownGuestProfileIds],
+  });
+}
+
+export async function collectRuntimeHostSessionCatalogsWithCoverage(
+  requests: readonly RuntimeHostSessionCatalogRequest[],
+): Promise<RuntimeHostSessionCatalogCoverage> {
+  const results = await Promise.allSettled(requests.map((request) => request.sessions));
+  const fulfilled = results.flatMap((result, index) => result.status === 'fulfilled'
+    ? [{ ...requests[index]!, sessions: result.value }]
+    : []);
+  const fulfilledRequests = new Set(
+    results.flatMap((result, index) => result.status === 'fulfilled' ? [requests[index]!] : []),
+  );
+  if (requests.length > 0 && fulfilled.length === 0) {
     throw new AggregateError(
       results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []),
       'Every Runtime Host Session Catalog request failed',
     );
   }
-  return groups.flat().sort((left, right) => {
+  const hostIds = [...new Set(requests.map((request) => request.hostId))];
+  return {
+    sessions: sortSessionCatalogs(fulfilled.flatMap((entry) => entry.sessions)),
+    completeHostIds: hostIds.filter((hostId) => {
+      const hostRequests = requests.filter((request) => request.hostId === hostId);
+      const ownerRequests = hostRequests.filter((request) => request.access === 'owner');
+      return ownerRequests.length > 0
+        ? ownerRequests.some((request) => fulfilledRequests.has(request))
+        : hostRequests.every((request) => fulfilledRequests.has(request));
+    }),
+  };
+}
+
+/**
+ * Commits complete Host catalogs authoritatively while retaining the last
+ * accepted rows for a Host that still exists but cannot answer this read.
+ * An explicitly removed profile is absent from knownProfileIds and therefore
+ * retires immediately; transport availability alone cannot change access.
+ */
+export function reconcileRuntimeHostSessionCatalog(
+  current: readonly DesktopSessionSummary[],
+  snapshot: RuntimeHostSessionCatalogSnapshot,
+): DesktopSessionSummary[] {
+  const completeHostIds = new Set(snapshot.completeHostIds);
+  const knownProfileIds = new Set(snapshot.knownProfileIds);
+  return sortSessionCatalogs([
+    ...snapshot.sessions,
+    ...current.filter(
+      (session) =>
+        knownProfileIds.has(session.profileId) && !completeHostIds.has(session.runtimeHostId),
+    ),
+  ]);
+}
+
+function sortSessionCatalogs(sessions: DesktopSessionSummary[]): DesktopSessionSummary[] {
+  const unique = new Map<string, DesktopSessionSummary>();
+  for (const session of sessions) {
+    const current = unique.get(session.id);
+    if (!current || (current.shared === true && session.shared !== true)) {
+      unique.set(session.id, session);
+    }
+  }
+  return [...unique.values()].sort((left, right) => {
     if (left.activityAt === undefined || right.activityAt === undefined) {
       throw new Error('Runtime Host Session Catalog activity is unavailable');
     }

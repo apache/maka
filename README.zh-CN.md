@@ -25,14 +25,11 @@
 
 <p align="center">
   <a href="https://github.com/apache/maka/stargazers"><img src="https://img.shields.io/github/stars/apache/maka?style=flat&label=%E2%98%85&color=4C8DFF" alt="GitHub stars" /></a>
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/github/downloads/apache/maka/total?style=flat&label=downloads&color=4C8DFF" alt="GitHub downloads" /></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-4C8DFF?style=flat" alt="License: Apache 2.0" /></a>
-  <img src="https://img.shields.io/badge/macOS-arm64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon" />
+  <img src="https://img.shields.io/badge/macOS-arm64%20%7C%20x64-4C8DFF?style=flat&logo=apple&logoColor=white" alt="macOS Apple Silicon 与 Intel" />
   <img src="https://img.shields.io/badge/Windows-preview-9BB8F0?style=flat&logo=windows&logoColor=white" alt="Windows 未签名预览" />
-  <img src="https://img.shields.io/badge/Linux-soon-D0D4DA?style=flat&logo=linux&logoColor=6B7280" alt="Linux 尚未支持" />
-</p>
-
-<p align="center">
+  <img src="https://img.shields.io/badge/Linux-preview-9BB8F0?style=flat&logo=linux&logoColor=white" alt="Linux 未签名预览" />
+  <a href="https://deepwiki.com/apache/maka"><img src="https://img.shields.io/badge/DeepWiki-%E7%AC%AC%E4%B8%89%E6%96%B9%20AI%20%E6%96%87%E6%A1%A3-9BB8F0?style=flat" alt="DeepWiki：第三方 AI 生成文档" /></a>
   <a href="./README.md"><img src="https://img.shields.io/badge/English-4C8DFF?style=flat" alt="English" /></a>
 </p>
 
@@ -41,13 +38,18 @@
   Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
 </p>
 
+<p align="center">
+  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
+  每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
+</p>
+
 ![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
 
 > [!IMPORTANT]
-> Maka 仍在活跃开发中。macOS Apple Silicon 桌面版是首个早期公开版本，数据格式、CLI 和实验能力仍可能变化。
+> Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。
 
 ## 为什么是 Maka
 
@@ -97,7 +99,7 @@ Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包�
 
 在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-在获批源码 release 出现之前，本 README 不推荐任何预构建下载，请按下文从源码构建并运行 Maka。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
+[Desktop Nightly](https://github.com/apache/maka/releases) 面向开发者和测试者，每天从 `main` 构建。请选择最新的 **Maka Desktop Nightly** prerelease；安装后，应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
 
 ### 环境要求
 
@@ -119,6 +121,15 @@ npm run dev
 
 ```sh
 npm run dev:full
+```
+
+开发 Direct Peer 和 Peer Mesh 还需要 Rust stable 1.98 或更高版本及平台 linker
+（macOS 使用 Xcode Command Line Tools，Windows 使用 MSVC Build Tools）。使用 Peer 开发入口，
+Desktop 会在启动前构建原生 addon：
+
+```sh
+npm run dev:peer       # HMR
+npm run dev:full:peer  # 完整构建
 ```
 
 如果安装时设置过 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`，启动前需要补装 Electron 平台二进制：
@@ -187,17 +198,20 @@ Experiment → Cells → Attempts → Results
 ## 仓库结构
 
 ```text
-apps/desktop/       Electron main / preload / React renderer
+apps/desktop/          Electron main / preload / React renderer
 
-packages/core/      Session、Event、Permission、Connection 等纯 contracts
-packages/storage/   SQLite 运行状态、配置与 payload stores
-packages/runtime/   AgentRun、模型适配、工具、上下文和恢复
-packages/eval/      Experiment cell、attempt、result 与 executor/subject adapter
-packages/cli/       TUI 和非交互 CLI
-packages/ui/        共享对话、Markdown、Artifact 与 UI primitives
+packages/core/         Session、Event、Permission、Connection 等纯 contracts
+packages/storage/      SQLite 运行状态、配置与 payload stores
+packages/mcp/          与提供商无关的 Model Context Protocol 客户端集成
+packages/runtime/      AgentRun、模型适配、工具、上下文和恢复
+packages/runtime-host/ 单一所有者的 Runtime Host 生命周期、协议和客户端启动
+packages/eval/         Experiment cell、attempt、result 与 executor/subject adapter
+packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
+packages/cli/          TUI 和非交互 CLI
+packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
 
-docs/               架构、产品、安全、隐私和测试契约
-scripts/            Build hygiene、视觉检查、smoke 和 release helpers
+docs/                  架构、产品、安全、隐私和测试契约
+scripts/               Build hygiene、视觉检查、smoke 和 release helpers
 ```
 
 ## 本地数据与恢复
@@ -236,16 +250,16 @@ npm run check:release
 针对单个 workspace：
 
 ```sh
-npm --workspace @maka/runtime test
-npm --workspace @maka/eval test
-npm --workspace @maka/desktop test
+npm --workspace @maka/runtime run test:dist
+npm --workspace @maka/eval run test:dist
+npm --workspace @maka/desktop run test:dist
 ```
 
 用 `refresh:model-metadata` 从 models.dev 获取当前目录、更新仓库内快照，并重新生成派生的 TypeScript 文件。已提交的模型、能力、provider override 或 pricing 字段消失时，refresh 会 fail closed；审查确认上游确实有意删除后，用 `npm run refresh:model-metadata -- --accept-upstream-removals` 显式确认。`sync:model-metadata` 刻意保持离线，只会从已提交快照重新生成这些文件。访问路径特有的 override 写在 `model-metadata.ts`，不要手动修改生成文件。
 
 ```sh
 npm run refresh:model-metadata
-npm --workspace @maka/core test
+npm --workspace @maka/core run test:dist
 ```
 
 Desktop 的真实窗口与视觉验证：

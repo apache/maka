@@ -40,19 +40,10 @@ import {
   type ClientCapabilityUnregisterResult,
   type ClientHello,
   type ConfigurationChangedFrame,
-  type ContextCompactInput,
-  type ContextCompactResult,
-  type ContextDiagnosticsQueryInput,
-  type ContextDiagnosticsResult,
-  type DeepResearchQueryInput,
-  type DeepResearchQueryResult,
-  type DailyReviewMutateInput,
-  type DailyReviewMutateResult,
-  type DailyReviewQueryInput,
-  type DailyReviewQueryResult,
-  type HostDiagnosticsResult,
+  type ConnectionCatalogChangedFrame,
   type HostOperationErrorCode,
   type HostIncompatible,
+  isHostActivityIdle,
   type HostRegistration,
   type HostStatusResult,
   HOST_OPERATION_SPECS,
@@ -63,12 +54,6 @@ import {
   type OperationInput,
   type OperationKey,
   type OperationOutput,
-  type PlanControlInput,
-  type PlanControlResult,
-  type PlanQueryInput,
-  type PlanQueryResult,
-  type PlanTurnStartInput,
-  type PlanTurnStartResult,
   type ProjectCatalogChangedFrame,
   type ProtocolRange,
   type RequestFrame,
@@ -77,20 +62,6 @@ import {
   type ScheduledTaskChangedFrame,
   type SubscriptionFrame,
   type SubscriptionOpenInput,
-  type SessionWorkspaceRelocateInput,
-  type SessionRecapGenerateInput,
-  type SessionRecapGenerateResult,
-  type SessionUpdateResult,
-  type TurnQueryInput,
-  type TurnRegenerateInput,
-  type TurnResumePlan,
-  type TurnResumeQueryInput,
-  type TurnResumeStartInput,
-  type TurnResumeStartResult,
-  type TurnSnapshot,
-  type TurnStartInput,
-  type TurnStartResult,
-  type TurnStopInput,
   requireClientInstanceId,
   requireHostCompositionId,
   requireHostGeneration,
@@ -99,6 +70,8 @@ import {
 } from '../protocol/index.js';
 import { FramedTransport, RuntimeHostTransportError } from '../transport/framed-transport.js';
 import type { RuntimeHostMessageTransport } from '../transport/message-transport.js';
+import type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
+export type { RuntimeHostPeerConnectionPath } from '../transport/peer-native.js';
 import { WebSocketTransport } from '../transport/websocket-transport.js';
 import type { OperationMode, OperationSpec } from '../protocol/operation-spec.js';
 import {
@@ -126,9 +99,12 @@ export interface ConnectRuntimeHostInput {
   connectTimeoutMs?: number;
   handshakeTimeoutMs?: number;
   /**
-   * Interval between liveness probes while a domain request is outstanding.
-   * Injectable so tests exercise requests that outlive a probe cycle without
-   * waiting the real cadence; defaults to DEFAULT_LIVENESS_INTERVAL_MS (2s).
+   * Maximum quiet interval before an end-to-end Host liveness probe.
+   * Any valid inbound frame restarts the quiet interval. A Host status
+   * observer additionally uses this as its periodic observation cadence;
+   * inbound traffic then extends an outstanding probe's progress deadline
+   * without suppressing future status observations. Injectable so tests can
+   * exercise the cadence without waiting the real default (2s).
    */
   livenessIntervalMs?: number;
   /**
@@ -139,6 +115,8 @@ export interface ConnectRuntimeHostInput {
    * connection health.
    */
   onLivenessProbe?: () => void;
+  /** Receives each identity-validated Host status observation. */
+  onHostStatus?: (status: HostStatusResult) => void;
 }
 
 export type RuntimeHostUnavailableReason =
@@ -192,7 +170,22 @@ export interface ConnectRemoteRuntimeHostInput {
   readonly handshakeTimeoutMs?: number;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+}
+
+export interface ConnectRuntimeHostMessageTransportInput {
+  readonly transport: RuntimeHostMessageTransport;
+  readonly expectedRootId: string;
+  readonly compositionId: string;
+  readonly protocol: ProtocolRange;
+  readonly clientInstanceId?: string;
+  readonly handshakeTimeoutMs?: number;
+  readonly livenessIntervalMs?: number;
+  readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
+  readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
 
 export interface RuntimeHostConnectionResource {
@@ -212,6 +205,7 @@ export type ConnectRemoteRuntimeHostResult =
         | 'unreachable'
         | 'connect_failed'
         | 'handshake_failed'
+        | 'handshake_timed_out'
         | 'root_mismatch'
         | 'composition_mismatch';
     };
@@ -249,6 +243,7 @@ export interface RuntimeHostConnection {
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
   readonly closed: Promise<void>;
   request<K extends DirectRequestOperationKey>(
     operation: K,
@@ -256,41 +251,6 @@ export interface RuntimeHostConnection {
     timeoutMs?: number,
   ): Promise<OperationOutput<K>>;
   status(timeoutMs?: number): Promise<HostStatusResult>;
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult>;
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult>;
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot>;
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult>;
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult>;
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult>;
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult>;
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult>;
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult>;
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult>;
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult>;
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult>;
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult>;
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan>;
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult>;
   openSessionSubscription(
     input: SubscriptionOpenInput,
     timeoutMs?: number,
@@ -302,6 +262,7 @@ export interface RuntimeHostConnection {
   ): Promise<ClientCapabilityReplaceResult>;
   unregisterClientCapabilities(timeoutMs?: number): Promise<ClientCapabilityUnregisterResult>;
   subscribeConfigurationChanges(listener: (revision: number) => void): () => void;
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void;
   subscribeSessionCatalogChanges(listener: (frame: SessionCatalogChangedFrame) => void): () => void;
   subscribeScheduledTaskChanges(listener: (frame: ScheduledTaskChangedFrame) => void): () => void;
@@ -309,6 +270,7 @@ export interface RuntimeHostConnection {
 
 export type DirectRequestOperationKey = Exclude<
   OperationKey,
+  | 'host.status'
   | 'subscription.open'
   | 'subscription.close'
   | 'client.capability.replace'
@@ -381,6 +343,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly selectedProtocol: number;
   readonly compositionId: string;
   readonly compositionRevision: string;
+  readonly peerPath: RuntimeHostPeerConnectionPath | undefined;
   readonly closed: Promise<void>;
   readonly #transport: RuntimeHostMessageTransport;
   readonly #pendingRequests = new Map<string, PendingRequest>();
@@ -390,15 +353,18 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   readonly #retiredSubscriptionIds = new Set<string>();
   readonly #clientCapabilities: ClientCapabilityChannel;
   readonly #configurationChangeListeners = new Set<(revision: number) => void>();
+  readonly #connectionCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #projectCatalogChangeListeners = new Set<(revision: number) => void>();
   readonly #sessionCatalogChangeListeners = new Set<(frame: SessionCatalogChangedFrame) => void>();
   readonly #scheduledTaskChangeListeners = new Set<(frame: ScheduledTaskChangedFrame) => void>();
   #livenessTimer: NodeJS.Timeout | undefined;
+  #livenessProbeDeadline: NodeJS.Timeout | undefined;
   #livenessProbePending = false;
   #inFlightDomainRequests = 0;
   #terminalError: Error | undefined;
   readonly #livenessIntervalMs: number;
   readonly #onLivenessProbe: (() => void) | undefined;
+  readonly #onHostStatus: ((status: HostStatusResult) => void) | undefined;
 
   constructor(
     transport: RuntimeHostMessageTransport,
@@ -415,11 +381,14 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     options?: {
       livenessIntervalMs?: number;
       onLivenessProbe?: () => void;
+      onHostStatus?: (status: HostStatusResult) => void;
       connectionResource?: RuntimeHostConnectionResource;
+      peerPath?: RuntimeHostPeerConnectionPath;
     },
   ) {
     this.#livenessIntervalMs = options?.livenessIntervalMs ?? DEFAULT_LIVENESS_INTERVAL_MS;
     this.#onLivenessProbe = options?.onLivenessProbe;
+    this.#onHostStatus = options?.onHostStatus;
     this.#transport = transport;
     this.rootId = accepted.rootId;
     this.hostEpoch = accepted.hostEpoch;
@@ -427,6 +396,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.selectedProtocol = accepted.selectedProtocol;
     this.compositionId = accepted.compositionId;
     this.compositionRevision = accepted.compositionRevision;
+    this.peerPath = options?.peerPath;
     const connectionResource = options?.connectionResource;
     if (connectionResource) {
       const abortForResourceClosure = (cause: Error) =>
@@ -464,6 +434,7 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       onFailure: (error) => this.#fail(error),
     });
     void this.#readResponses();
+    this.#scheduleLivenessCheck();
   }
 
   request<K extends DirectRequestOperationKey>(
@@ -471,18 +442,15 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     input: OperationInput<K>,
     timeoutMs?: number,
   ): Promise<OperationOutput<K>> {
+    if (isHostStatusOperation(operation)) {
+      return Promise.reject(new Error('Runtime Host status requires the validated status() API'));
+    }
     if (isClientCapabilityMutation(operation)) {
       return Promise.reject(
         new Error('Client Capability mutations require the dedicated capability channel'),
       );
     }
-    return this.#requestOperation(
-      operation,
-      input,
-      timeoutMs ?? (operation === 'host.status' ? DEFAULT_LIVENESS_TIMEOUT_MS : undefined),
-      (result) => result,
-      operation === 'host.status' ? 'connection' : 'request',
-    );
+    return this.#requestOperation(operation, input, timeoutMs, (result) => result, 'request');
   }
 
   #requestOperation<K extends OperationKey, Result>(
@@ -540,7 +508,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
         ...(isDomainRequest ? { domainState: 'queued' as const } : {}),
         timer,
       });
-      this.#scheduleLivenessCheck();
     });
     const frame = {
       requestId,
@@ -576,7 +543,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   async status(timeoutMs?: number): Promise<HostStatusResult> {
-    const status = await this.request('host.status', {}, timeoutMs);
+    return this.#requestOperation(
+      'host.status',
+      {},
+      timeoutMs ?? DEFAULT_LIVENESS_TIMEOUT_MS,
+      (status) => this.#validateHostStatusIdentity(status),
+      'connection',
+    );
+  }
+
+  #validateHostStatusIdentity(status: HostStatusResult): HostStatusResult {
     if (
       status.hostEpoch !== this.hostEpoch ||
       status.compositionId !== this.compositionId ||
@@ -586,93 +562,12 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       this.#fail(error);
       throw error;
     }
+    try {
+      this.#onHostStatus?.(status);
+    } catch {
+      // Observation cannot control the authenticated connection it watches.
+    }
     return status;
-  }
-
-  queryHostDiagnostics(timeoutMs?: number): Promise<HostDiagnosticsResult> {
-    return this.request('host.diagnostics.query', {}, timeoutMs);
-  }
-
-  startTurn(input: TurnStartInput, timeoutMs?: number): Promise<TurnStartResult> {
-    return this.request('turn.start', input, timeoutMs);
-  }
-
-  queryTurn(input: TurnQueryInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.query', input, timeoutMs);
-  }
-
-  stopTurn(input: TurnStopInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.stop', input, timeoutMs);
-  }
-
-  regenerateTurn(input: TurnRegenerateInput, timeoutMs?: number): Promise<TurnSnapshot> {
-    return this.request('turn.regenerate', input, timeoutMs);
-  }
-
-  queryContextDiagnostics(
-    input: ContextDiagnosticsQueryInput,
-    timeoutMs?: number,
-  ): Promise<ContextDiagnosticsResult> {
-    return this.request('context.diagnostics.query', input, timeoutMs);
-  }
-
-  compactContext(input: ContextCompactInput, timeoutMs?: number): Promise<ContextCompactResult> {
-    return this.request('context.compact', input, timeoutMs);
-  }
-
-  relocateSessionWorkspace(
-    input: SessionWorkspaceRelocateInput,
-    timeoutMs?: number,
-  ): Promise<SessionUpdateResult> {
-    return this.request('session.workspace.relocate', input, timeoutMs);
-  }
-
-  generateSessionRecap(
-    input: SessionRecapGenerateInput,
-    timeoutMs?: number,
-  ): Promise<SessionRecapGenerateResult> {
-    return this.request('session.recap.generate', input, timeoutMs);
-  }
-
-  queryPlan(input: PlanQueryInput, timeoutMs?: number): Promise<PlanQueryResult> {
-    return this.request('plan.query', input, timeoutMs);
-  }
-
-  controlPlan(input: PlanControlInput, timeoutMs?: number): Promise<PlanControlResult> {
-    return this.request('plan.control', input, timeoutMs);
-  }
-
-  startPlanTurn(input: PlanTurnStartInput, timeoutMs?: number): Promise<PlanTurnStartResult> {
-    return this.request('plan.turn.start', input, timeoutMs);
-  }
-
-  queryDeepResearch(
-    input: DeepResearchQueryInput,
-    timeoutMs?: number,
-  ): Promise<DeepResearchQueryResult> {
-    return this.request('deep-research.query', input, timeoutMs);
-  }
-
-  queryDailyReview(
-    input: DailyReviewQueryInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewQueryResult> {
-    return this.request('daily-review.query', input, timeoutMs);
-  }
-
-  mutateDailyReview(
-    input: DailyReviewMutateInput,
-    timeoutMs?: number,
-  ): Promise<DailyReviewMutateResult> {
-    return this.request('daily-review.mutate', input, timeoutMs);
-  }
-
-  queryTurnResume(input: TurnResumeQueryInput, timeoutMs?: number): Promise<TurnResumePlan> {
-    return this.request('turn.resume.query', input, timeoutMs);
-  }
-
-  startTurnResume(input: TurnResumeStartInput, timeoutMs?: number): Promise<TurnResumeStartResult> {
-    return this.request('turn.resume.start', input, timeoutMs);
   }
 
   openSessionSubscription(
@@ -751,6 +646,11 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     return () => this.#configurationChangeListeners.delete(listener);
   }
 
+  subscribeConnectionCatalogChanges(listener: (revision: number) => void): () => void {
+    this.#connectionCatalogChangeListeners.add(listener);
+    return () => this.#connectionCatalogChangeListeners.delete(listener);
+  }
+
   subscribeProjectCatalogChanges(listener: (revision: number) => void): () => void {
     this.#projectCatalogChangeListeners.add(listener);
     return () => this.#projectCatalogChangeListeners.delete(listener);
@@ -781,6 +681,9 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           switch (frame.kind) {
             case 'configuration.changed':
               this.#acceptConfigurationChanged(frame);
+              continue;
+            case 'connection.catalog.changed':
+              this.#acceptConnectionCatalogChanged(frame);
               continue;
             case 'project.catalog.changed':
               this.#acceptProjectCatalogChanged(frame);
@@ -819,7 +722,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       if (retired?.operation === frame.operation) {
         this.#retiredRequests.delete(frame.requestId);
         this.#releaseDomainSlot(retired);
-        this.#scheduleLivenessCheck();
         return;
       }
       this.#fail(new Error('Runtime Host returned an unmatched operation response'));
@@ -831,7 +733,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }
     this.#pendingRequests.delete(frame.requestId);
     if (pending.timer) clearTimeout(pending.timer);
-    this.#scheduleLivenessCheck();
     if (frame.ok) {
       try {
         const accepted = pending.accept(frame.result);
@@ -852,6 +753,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
   #acceptConfigurationChanged(frame: ConfigurationChangedFrame): void {
     for (const listener of this.#configurationChangeListeners) {
+      try {
+        listener(frame.revision);
+      } catch {
+        // A presentation listener cannot invalidate the Host connection.
+      }
+    }
+  }
+
+  #acceptConnectionCatalogChanged(frame: ConnectionCatalogChangedFrame): void {
+    for (const listener of this.#connectionCatalogChangeListeners) {
       try {
         listener(frame.revision);
       } catch {
@@ -900,7 +811,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       pending.reject(
         interruptedRequestError(pending.operation, 'not_dispatched', 'timeout', error),
       );
-      this.#scheduleLivenessCheck();
       return;
     }
     this.#retiredRequests.set(requestId, {
@@ -908,7 +818,6 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
       ...(pending.domainState === 'in_flight' ? { domainState: pending.domainState } : {}),
     });
     pending.reject(interruptedRequestError(pending.operation, 'dispatched', 'timeout', error));
-    this.#scheduleLivenessCheck();
   }
 
   #releaseDomainSlot(request: PendingRequest | RetiredRequest): void {
@@ -919,22 +828,19 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
   }
 
   #resetLivenessCheck(): void {
+    // Any authenticated Host frame proves the transport is still making
+    // progress, even when a periodic status observation is slow.
+    this.#resetLivenessProbeDeadline();
+    // A status observer needs periodic route observations even while other
+    // Session traffic keeps the connection active.
+    if (this.#onHostStatus) return;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
     this.#livenessTimer = undefined;
     this.#scheduleLivenessCheck();
   }
 
   #scheduleLivenessCheck(): void {
-    if (
-      this.#terminalError ||
-      this.#livenessTimer ||
-      this.#livenessProbePending ||
-      !this.#hasOutstandingDomainRequest()
-    ) {
-      if (!this.#hasOutstandingDomainRequest() && this.#livenessTimer) {
-        clearTimeout(this.#livenessTimer);
-        this.#livenessTimer = undefined;
-      }
+    if (this.#terminalError || this.#livenessTimer || this.#livenessProbePending) {
       return;
     }
     this.#livenessTimer = setTimeout(() => {
@@ -943,27 +849,16 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     }, this.#livenessIntervalMs);
   }
 
-  #hasOutstandingDomainRequest(): boolean {
-    if (this.#retiredRequests.size > 0) return true;
-    for (const pending of this.#pendingRequests.values()) {
-      if (pending.operation !== 'host.status') return true;
-    }
-    return false;
-  }
-
   #startLivenessProbe(): void {
-    if (this.#terminalError || this.#livenessProbePending || !this.#hasOutstandingDomainRequest()) {
-      return;
-    }
+    if (this.#terminalError || this.#livenessProbePending) return;
     this.#livenessProbePending = true;
+    this.#resetLivenessProbeDeadline();
     void this.#requestOperation(
       'host.status',
       {},
-      DEFAULT_LIVENESS_TIMEOUT_MS,
+      undefined,
       (status) => {
-        if (status.hostEpoch !== this.hostEpoch) {
-          throw new Error('Runtime Host returned status for a different Host Epoch');
-        }
+        this.#validateHostStatusIdentity(status);
         try {
           this.#onLivenessProbe?.();
         } catch {
@@ -971,13 +866,24 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
           // connection it is watching.
         }
       },
-      'connection',
+      'request',
     )
       .catch((error: unknown) => this.#fail(asError(error)))
       .finally(() => {
+        if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
+        this.#livenessProbeDeadline = undefined;
         this.#livenessProbePending = false;
         this.#scheduleLivenessCheck();
       });
+  }
+
+  #resetLivenessProbeDeadline(): void {
+    if (!this.#livenessProbePending || this.#terminalError) return;
+    if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
+    this.#livenessProbeDeadline = setTimeout(() => {
+      this.#livenessProbeDeadline = undefined;
+      this.#fail(requestTimeoutError('host.status'));
+    }, DEFAULT_LIVENESS_TIMEOUT_MS);
   }
 
   #acceptSubscriptionFrame(frame: SubscriptionFrame): void {
@@ -1044,6 +950,8 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
     this.#terminalError = error;
     if (this.#livenessTimer) clearTimeout(this.#livenessTimer);
     this.#livenessTimer = undefined;
+    if (this.#livenessProbeDeadline) clearTimeout(this.#livenessProbeDeadline);
+    this.#livenessProbeDeadline = undefined;
     this.#queuedDomainFrames.length = 0;
     this.#inFlightDomainRequests = 0;
     for (const pending of this.#pendingRequests.values()) {
@@ -1080,6 +988,10 @@ class RuntimeHostConnectionImpl implements RuntimeHostConnection {
 
 function isClientCapabilityMutation(operation: unknown): boolean {
   return operation === 'client.capability.replace' || operation === 'client.capability.unregister';
+}
+
+function isHostStatusOperation(operation: unknown): boolean {
+  return operation === 'host.status';
 }
 
 export async function connectRuntimeHost(
@@ -1125,12 +1037,8 @@ export async function connectExistingRuntimeHost(
 export async function connectRemoteRuntimeHost(
   input: ConnectRemoteRuntimeHostInput,
 ): Promise<ConnectRemoteRuntimeHostResult> {
-  const connectionResource = input.connectionResource;
-  let resourceTransferred = false;
   try {
     const normalized = normalizeConnectRuntimeHostInput(input);
-    const compositionId = requireHostCompositionId(input.compositionId);
-    const expectedRootId = requireHostRootId(input.expectedRootId);
     const url = normalizeRemoteRuntimeHostUrl(input.url, {
       allowInsecureRemote: input.allowInsecureRemote === true,
     });
@@ -1138,42 +1046,74 @@ export async function connectRemoteRuntimeHost(
     try {
       transport = await openWebSocketTransport(url, input.credential, normalized.connectTimeoutMs);
     } catch (error) {
+      await input.connectionResource?.close().catch(() => undefined);
       return { kind: 'unavailable', reason: classifyRemoteRuntimeHostConnectFailure(error) };
     }
-    const timer = setTimeout(() => {
-      transport.abort(new Error('Timed out handshaking with Runtime Host'));
+    return connectRuntimeHostMessageTransport({
+      transport,
+      expectedRootId: input.expectedRootId,
+      compositionId: input.compositionId,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      handshakeTimeoutMs: normalized.handshakeTimeoutMs,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
+      connectionResource: input.connectionResource,
+    });
+  } catch (error) {
+    await input.connectionResource?.close().catch(() => undefined);
+    throw error;
+  }
+}
+
+export async function connectRuntimeHostMessageTransport(
+  input: ConnectRuntimeHostMessageTransportInput,
+): Promise<ConnectRemoteRuntimeHostResult> {
+  let resourceTransferred = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let handshakeTimedOut = false;
+  try {
+    const normalized = normalizeConnectRuntimeHostInput(input);
+    const compositionId = requireHostCompositionId(input.compositionId);
+    const expectedRootId = requireHostRootId(input.expectedRootId);
+    timer = setTimeout(() => {
+      handshakeTimedOut = true;
+      input.transport.abort(new Error('Timed out handshaking with Runtime Host'));
     }, normalized.handshakeTimeoutMs);
-    try {
-      const result = await exchangeRuntimeHostHandshake({
-        transport,
-        protocol: input.protocol,
-        clientInstanceId: normalized.clientInstanceId,
-        compositionId,
-        expectedRootId,
-        livenessIntervalMs: normalized.livenessIntervalMs,
-        onLivenessProbe: input.onLivenessProbe,
-        connectionResource,
-      });
-      if (result.kind === 'connected') {
-        resourceTransferred = true;
-        return result;
-      }
-      transport.abort();
-      return result.kind === 'incompatible' ? result : { kind: 'draining' };
-    } catch (error) {
-      transport.abort();
-      if (error instanceof RuntimeHostRootMismatchError) {
-        return { kind: 'unavailable', reason: 'root_mismatch' };
-      }
-      if (error instanceof RuntimeHostCompositionMismatchError) {
-        return { kind: 'unavailable', reason: 'composition_mismatch' };
-      }
-      return { kind: 'unavailable', reason: 'handshake_failed' };
-    } finally {
-      clearTimeout(timer);
+    const result = await exchangeRuntimeHostHandshake({
+      transport: input.transport,
+      protocol: input.protocol,
+      clientInstanceId: normalized.clientInstanceId,
+      compositionId,
+      expectedRootId,
+      livenessIntervalMs: normalized.livenessIntervalMs,
+      onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
+      connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
+    });
+    if (result.kind === 'connected') {
+      resourceTransferred = true;
+      return result;
     }
+    input.transport.abort();
+    return result.kind === 'incompatible' ? result : { kind: 'draining' };
+  } catch (error) {
+    input.transport.abort();
+    if (error instanceof RuntimeHostRootMismatchError) {
+      return { kind: 'unavailable', reason: 'root_mismatch' };
+    }
+    if (error instanceof RuntimeHostCompositionMismatchError) {
+      return { kind: 'unavailable', reason: 'composition_mismatch' };
+    }
+    return {
+      kind: 'unavailable',
+      reason: handshakeTimedOut ? 'handshake_timed_out' : 'handshake_failed',
+    };
   } finally {
-    if (!resourceTransferred) await connectionResource?.close().catch(() => undefined);
+    if (timer) clearTimeout(timer);
+    if (!resourceTransferred) await input.connectionResource?.close().catch(() => undefined);
   }
 }
 
@@ -1361,6 +1301,7 @@ export async function connectResolvedRuntimeHost(
       hostProtocol: { min: registration.protocolMin, max: registration.protocolMax },
       livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
     });
     if (result.kind === 'connected') {
       if (
@@ -1384,9 +1325,7 @@ export async function connectResolvedRuntimeHost(
       return registration.lifecycleMode === 'ephemeral' &&
         result.handshake.state === 'ready' &&
         result.handshake.activity !== undefined &&
-        result.handshake.activity.connections === 0 &&
-        result.handshake.activity.activeOperations === 0 &&
-        result.handshake.activity.residencies.length === 0
+        isHostActivityIdle(result.handshake.activity)
         ? {
             kind: 'upgrade_required',
             registration,
@@ -1458,7 +1397,9 @@ interface ExchangeRuntimeHostHandshakeInput {
   readonly expectedCompositionRevision?: string;
   readonly livenessIntervalMs?: number;
   readonly onLivenessProbe?: () => void;
+  readonly onHostStatus?: (status: HostStatusResult) => void;
   readonly connectionResource?: RuntimeHostConnectionResource;
+  readonly peerPath?: RuntimeHostPeerConnectionPath;
 }
 
 interface LegacySurfaceClientHello extends ClientHello {
@@ -1537,7 +1478,9 @@ async function exchangeRuntimeHostHandshake(
     connection: new RuntimeHostConnectionImpl(input.transport, handshake, {
       livenessIntervalMs: input.livenessIntervalMs,
       onLivenessProbe: input.onLivenessProbe,
+      onHostStatus: input.onHostStatus,
       connectionResource: input.connectionResource,
+      ...(input.peerPath ? { peerPath: input.peerPath } : {}),
     }),
   };
 }

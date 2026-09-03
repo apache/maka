@@ -23,9 +23,15 @@ import type {
   ReviseBeforeTurnInput,
   TurnOrchestration,
 } from '@maka/core/runtime-inputs';
-import type { QuoteRef } from '@maka/core/events';
+import {
+  isDirectoryReference,
+  DIRECTORY_REFERENCE_MAX_COUNT,
+  type DirectoryReference,
+  type QuoteRef,
+} from '@maka/core/events';
 import type { UserQuestionResponse } from '@maka/core/user-question';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
+import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
 import { isAttachmentRef, isCanonicalStorageRef, type AttachmentRef } from '@maka/core/events';
 
@@ -52,6 +58,7 @@ export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId:
 
 interface NormalizedSendSessionCommand {
   type: 'send';
+  messageId?: string;
   turnId?: string;
   text: string;
   displayText?: string;
@@ -59,12 +66,14 @@ interface NormalizedSendSessionCommand {
   attachmentItems?: unknown;
   retainedAttachments?: AttachmentRef[];
   turnOrchestration?: TurnOrchestration;
+  directoryReferences?: DirectoryReference[];
   quotes?: QuoteRef[];
   workspaceFileReferences?: WorkspaceFileReferencePosition[];
 }
 type NormalizedStopSessionInput = {
   source?: 'stop_button';
   expectedTurnId?: string;
+  expectedAdmissionId?: string;
 };
 
 export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundaryResponse {
@@ -86,6 +95,24 @@ export function normalizeSandboxBoundaryResponse(input: unknown): SandboxBoundar
     requestId: value.requestId,
     decision: value.decision,
   };
+}
+
+export function normalizeClientCapabilityResponse(input: unknown): ClientCapabilityResponse {
+  if (!input || typeof input !== 'object') {
+    throw new Error('Invalid Client Capability response');
+  }
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value.requestId !== 'string' ||
+    value.requestId.length === 0 ||
+    value.requestId.length > MAX_PERMISSION_REQUEST_ID_LENGTH
+  ) {
+    throw new Error('Invalid Client Capability response requestId');
+  }
+  if (value.decision !== 'allow' && value.decision !== 'deny') {
+    throw new Error('Invalid Client Capability response decision');
+  }
+  return { requestId: value.requestId, decision: value.decision };
 }
 
 export function normalizeUserQuestionResponse(input: unknown): UserQuestionResponse {
@@ -127,8 +154,18 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
   if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
     throw new Error('Invalid branch sideConversation');
   }
+  // Absent sourceTurnId forks with an empty context (a side conversation opened
+  // before the source has any settled turn).
+  const sourceTurnId =
+    value.sourceTurnId === undefined
+      ? undefined
+      : normalizeRequiredString(
+          value.sourceTurnId,
+          'Invalid branch sourceTurnId',
+          MAX_TURN_ID_LENGTH,
+        );
   return {
-    sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };
@@ -177,6 +214,7 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
   }
   return {
     type: 'send',
+    ...normalizeOptionalSendMessageId(value.messageId),
     ...normalizeOptionalSendTurnId(value.turnId),
     text,
     ...(displayText !== undefined ? { displayText } : {}),
@@ -186,11 +224,19 @@ export function normalizeSessionSendCommand(input: unknown): NormalizedSendSessi
     ...(value.turnOrchestration !== undefined
       ? { turnOrchestration: normalizeTurnOrchestration(value.turnOrchestration) }
       : {}),
+    ...normalizeOptionalDirectoryReferences(value.directoryReferences),
     ...normalizeOptionalQuotes(value.quotes),
     ...normalizeOptionalWorkspaceFileReferences(
       value.workspaceFileReferences,
       displayText ?? text,
     ),
+  };
+}
+
+function normalizeOptionalSendMessageId(input: unknown): { messageId?: string } {
+  if (input === undefined) return {};
+  return {
+    messageId: normalizeRequiredString(input, 'Invalid send messageId', MAX_TURN_ID_LENGTH),
   };
 }
 
@@ -324,9 +370,17 @@ export function normalizeStopSessionInput(input: unknown): NormalizedStopSession
         'Invalid stop session expectedTurnId',
         MAX_TURN_ID_LENGTH,
       );
+  const expectedAdmissionId = value.expectedAdmissionId === undefined
+    ? undefined
+    : normalizeRequiredString(
+        value.expectedAdmissionId,
+        'Invalid stop session expectedAdmissionId',
+        MAX_TURN_ID_LENGTH,
+      );
   return {
     ...(value.source ? { source: 'stop_button' as const } : {}),
     ...(expectedTurnId ? { expectedTurnId } : {}),
+    ...(expectedAdmissionId ? { expectedAdmissionId } : {}),
   };
 }
 
@@ -368,4 +422,18 @@ function normalizeOptionalSendTurnId(input: unknown): { turnId?: string } {
   return {
     turnId: normalizeRequiredString(input, 'Invalid send turnId', MAX_TURN_ID_LENGTH),
   };
+}
+
+function normalizeOptionalDirectoryReferences(
+  input: unknown,
+): { directoryReferences?: DirectoryReference[] } {
+  if (input === undefined) return {};
+  if (
+    !Array.isArray(input) ||
+    input.length > DIRECTORY_REFERENCE_MAX_COUNT ||
+    !input.every(isDirectoryReference)
+  ) {
+    throw new Error('Invalid directory references');
+  }
+  return input.length ? { directoryReferences: input.map((ref) => ({ ...ref })) } : {};
 }

@@ -23,7 +23,7 @@ import {
   type TaskSubmissionReadinessDimension,
   type TaskSubmissionReadinessSnapshot,
 } from '@maka/core/task-submission-readiness';
-import { PROVIDER_DEFAULTS, type LlmConnection } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
 import { providerAuthRequiresSecret } from '@maka/core/llm-connections';
 import type { ConnectionCatalogEntry, ConnectionCatalogSnapshot } from '@maka/core/runtime-policy';
 import type { RuntimeHostConnection } from '@maka/runtime-host/client';
@@ -107,7 +107,6 @@ function catalogEntryAsLlmConnection(
     enabledModelIds: [...entry.enabledModelIds],
     models: [...entry.models],
     ...(entry.modelSource ? { modelSource: entry.modelSource } : {}),
-    ...(entry.modelsFetchedAt ? { modelsFetchedAt: entry.modelsFetchedAt } : {}),
     ...(entry.lastTest
       ? { lastTestStatus: entry.lastTest.status, lastTestAt: entry.lastTest.checkedAt }
       : {}),
@@ -121,7 +120,7 @@ async function readHasSecret(
   entry: ConnectionCatalogEntry,
 ): Promise<boolean | undefined> {
   if (!providerAuthRequiresSecret(entry.providerType)) return false;
-  const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+  const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
   const kind = authKind === 'oauth_token' ? 'oauth_token' : 'api_key';
   try {
     const result = await connection.request('credential.vault.query', {

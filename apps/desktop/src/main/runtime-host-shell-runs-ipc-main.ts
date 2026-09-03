@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { ShellRunPtySnapshot } from '@maka/runtime/shell-run-contract';
+import type { SessionDomainChange } from '@maka/runtime-host/protocol';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   handleReconnectableRead,
@@ -38,6 +39,38 @@ export type RuntimeHostShellRunsClient = Pick<
   | 'startRuntimeResource'
   | 'stopRuntimeResource'
 >;
+
+export type RuntimeHostShellRunQueriesClient = Pick<
+  DesktopRuntimeHostClient,
+  'getRuntimeResource' | 'listRuntimeResources'
+>;
+
+export interface RuntimeHostShellRunQueriesIpcHandle {
+  sessionDomainChanged(change: SessionDomainChange): void;
+  sessionSubscriptionRecovered(sessionId: string): void;
+}
+
+export function registerRuntimeHostShellRunQueriesIpc(
+  deps: {
+    client: RuntimeHostShellRunQueriesClient;
+    sendToRenderer?(channel: string, payload: unknown): void;
+    onError?(error: unknown): void;
+  },
+  ipcMain: ReconnectableReadIpcMain,
+): RuntimeHostShellRunQueriesIpcHandle {
+  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
+    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
+  );
+  return {
+    sessionDomainChanged(change) {
+      if (change.domain !== 'runtime_resource') return;
+      void refreshRuntimeResources(deps, change.sessionId, change.resources);
+    },
+    sessionSubscriptionRecovered(sessionId) {
+      deps.sendToRenderer?.('shell-runs:resync', { sessionId });
+    },
+  };
+}
 
 export function registerRuntimeHostShellRunsIpc(
   deps: {
@@ -59,10 +92,6 @@ export function registerRuntimeHostShellRunsIpc(
     deps.client,
     newId,
     deps.sessionObserver,
-  );
-
-  handleReconnectableRead(ipcMain, 'shell-runs:list', (_event, sessionId: unknown) =>
-    deps.client.listRuntimeResources(requiredId(sessionId, 'Session')),
   );
   ipcMain.handle('shell-runs:start', async (_event, sessionId: unknown) => {
     const normalizedSessionId = requiredId(sessionId, 'Session');
@@ -93,6 +122,25 @@ export function registerRuntimeHostShellRunsIpc(
   });
 
   return { close: () => controllers.close() };
+}
+
+async function refreshRuntimeResources(
+  deps: {
+    client: Pick<DesktopRuntimeHostClient, 'getRuntimeResource'>;
+    sendToRenderer?(channel: string, payload: unknown): void;
+    onError?(error: unknown): void;
+  },
+  sessionId: string,
+  resources: readonly { ref: string }[],
+): Promise<void> {
+  for (const resource of resources) {
+    try {
+      const update = await deps.client.getRuntimeResource(sessionId, resource.ref);
+      if (update) deps.sendToRenderer?.('shell-runs:update', update);
+    } catch (error) {
+      deps.onError?.(error);
+    }
+  }
 }
 
 interface RuntimeResourceIdentity {

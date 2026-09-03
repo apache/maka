@@ -18,12 +18,17 @@
  */
 
 import assert from 'node:assert/strict';
+import { fork } from 'node:child_process';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { MCP_CONFIG_VERSION, resolveMcpRemoteProtocolPreference } from '@maka/core/mcp';
-import { createMcpConfigStore, normalizeMcpConfig } from '../mcp-config-store.js';
+import { MCP_CONFIG_VERSION, resolveMcpProtocolPreference } from '@maka/core/mcp';
+import {
+  createMcpConfigStore,
+  normalizeMcpConfig,
+  normalizeMcpImport,
+} from '../mcp-config-store.js';
 
 const roots: string[] = [];
 afterEach(async () =>
@@ -33,7 +38,7 @@ afterEach(async () =>
 test('creates and atomically updates a Claude-compatible mcp.json', async () => {
   const root = await tempRoot();
   const store = createMcpConfigStore(root);
-  assert.deepEqual(await store.get(), { version: 2, mcpServers: {} });
+  assert.deepEqual(await store.get(), { version: MCP_CONFIG_VERSION, mcpServers: {} });
   const next = await store.upsert('filesystem', {
     command: 'npx',
     args: ['-y', 'server'],
@@ -53,7 +58,7 @@ test('creates and atomically updates a Claude-compatible mcp.json', async () => 
   assert.deepEqual((await store.get()).mcpServers, {});
 });
 
-test('reads version 1 without rewriting and persists version 2 on the next mutation', async () => {
+test('reads version 1 without rewriting and persists version 3 on the next mutation', async () => {
   const root = await tempRoot();
   const path = join(root, 'mcp.json');
   const legacyText = `${JSON.stringify(
@@ -70,7 +75,7 @@ test('reads version 1 without rewriting and persists version 2 on the next mutat
 
   const store = createMcpConfigStore(root);
   const migrated = await store.get();
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, MCP_CONFIG_VERSION);
   assert.deepEqual(migrated.mcpServers.remote, {
     enabled: false,
     url: 'https://example.com/mcp',
@@ -83,7 +88,7 @@ test('reads version 1 without rewriting and persists version 2 on the next mutat
     version: number;
     mcpServers: Record<string, Record<string, unknown>>;
   };
-  assert.equal(persisted.version, 2);
+  assert.equal(persisted.version, MCP_CONFIG_VERSION);
   assert.equal(Object.hasOwn(persisted.mcpServers.remote, 'protocol'), false);
 });
 
@@ -96,17 +101,32 @@ test('reads a missing wrapper version as version 1 without rewriting it', async 
   const migrated = await createMcpConfigStore(root).get();
   const remote = migrated.mcpServers.remote;
   assert.ok(remote && 'url' in remote);
-  assert.equal(migrated.version, 2);
+  assert.equal(migrated.version, MCP_CONFIG_VERSION);
   assert.equal(Object.hasOwn(remote, 'protocol'), false);
-  assert.equal(resolveMcpRemoteProtocolPreference(remote), 'legacy');
+  assert.equal(resolveMcpProtocolPreference(remote), 'legacy');
   assert.equal(await readFile(path, 'utf8'), legacyText);
 });
 
-test('round-trips every version 2 remote protocol preference', () => {
+test('reads version 2 remote pins without rewriting and projects them as version 3', async () => {
+  const root = await tempRoot();
+  const path = join(root, 'mcp.json');
+  const versionTwo =
+    '{"version":2,"mcpServers":{"local":{"command":"node"},"remote":{"url":"https://example.com/mcp","protocol":"2026-07-28"}}}\n';
+  await writeFile(path, versionTwo, 'utf8');
+
+  const migrated = await createMcpConfigStore(root).get();
+  assert.equal(migrated.version, MCP_CONFIG_VERSION);
+  assert.equal(resolveMcpProtocolPreference(migrated.mcpServers.local!), 'legacy');
+  assert.equal(resolveMcpProtocolPreference(migrated.mcpServers.remote!), '2026-07-28');
+  assert.equal(await readFile(path, 'utf8'), versionTwo);
+});
+
+test('round-trips every version 3 protocol preference for remote and stdio', () => {
   for (const protocol of ['legacy', 'auto', '2026-07-28'] as const) {
     const normalized = normalizeMcpConfig({
-      version: 2,
+      version: MCP_CONFIG_VERSION,
       mcpServers: {
+        local: { command: 'node', protocol },
         remote: {
           url: 'https://example.com/mcp',
           transport: 'streamable-http',
@@ -120,11 +140,16 @@ test('round-trips every version 2 remote protocol preference', () => {
       transport: 'streamable-http',
       protocol,
     });
+    assert.deepEqual(normalized.mcpServers.local, {
+      enabled: true,
+      command: 'node',
+      protocol,
+    });
   }
   assert.throws(
     () =>
       normalizeMcpConfig({
-        version: 2,
+        version: MCP_CONFIG_VERSION,
         mcpServers: {
           remote: { url: 'https://example.com/mcp', protocol: 'future' },
         },
@@ -194,7 +219,8 @@ test('allows SSE only with an omitted or explicit legacy protocol', () => {
 test('transform sees the latest committed config, not a caller snapshot', async () => {
   // The restore-plus-mutation seam: a marker-bearing write that derived its
   // restores from a stale snapshot could roll a rotated secret back. Inside
-  // transform, apply() must observe the concurrent writer's commit.
+  // transform, apply() must observe the concurrent writer's commit under the
+  // shared file transaction.
   const root = await tempRoot();
   const store = createMcpConfigStore(root);
   await store.upsert('local', { command: 'npx', env: { TOKEN: 'v1' } });
@@ -210,6 +236,65 @@ test('transform sees the latest committed config, not a caller snapshot', async 
   const final = (await store.get()).mcpServers.local;
   assert.ok(final && 'command' in final);
   assert.equal(final.env?.TOKEN, 'v2-rotated');
+});
+
+test('two independent stores preserve concurrent additions to one workspace', async () => {
+  const root = await tempRoot();
+  await createMcpConfigStore(root).get();
+  const desktop = createMcpConfigStore(root);
+  const tui = createMcpConfigStore(root);
+
+  await Promise.all([
+    desktop.upsert('desktop', { command: 'desktop-server' }),
+    tui.upsert('tui', { command: 'tui-server' }),
+  ]);
+
+  const saved = await createMcpConfigStore(root).get();
+  assert.equal(
+    saved.mcpServers.desktop && 'command' in saved.mcpServers.desktop
+      ? saved.mcpServers.desktop.command
+      : undefined,
+    'desktop-server',
+  );
+  assert.equal(
+    saved.mcpServers.tui && 'command' in saved.mcpServers.tui
+      ? saved.mcpServers.tui.command
+      : undefined,
+    'tui-server',
+  );
+});
+
+test('a new store commits after a killed MCP config writer releases its native lock', async (t) => {
+  const root = await tempRoot();
+  const holder = fork(new URL('./fixtures/mcp-config-lock-holder.js', import.meta.url), [root], {
+    stdio: ['ignore', 'ignore', 'inherit', 'ipc'],
+  });
+  t.after(() => {
+    if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGKILL');
+  });
+  await new Promise<void>((resolve, reject) => {
+    holder.once('message', (message) => {
+      if (message === 'locked') resolve();
+      else reject(new Error(`Unexpected child message: ${String(message)}`));
+    });
+    holder.once('error', reject);
+    holder.once('exit', (code, signal) => {
+      reject(new Error(`MCP config lock holder exited early (${String(code)}, ${signal})`));
+    });
+  });
+
+  holder.kill('SIGKILL');
+  await new Promise<void>((resolve) => holder.once('exit', () => resolve()));
+
+  const saved = await createMcpConfigStore(root).upsert('recovered', {
+    command: 'recovered-server',
+  });
+  const recovered = saved.mcpServers.recovered;
+  assert.ok(recovered && 'command' in recovered);
+  assert.equal(recovered.command, 'recovered-server');
+  const reopened = (await createMcpConfigStore(root).get()).mcpServers.recovered;
+  assert.ok(reopened && 'command' in reopened);
+  assert.equal(reopened.command, 'recovered-server');
 });
 
 test('serializes concurrent updates without corrupting the file', async () => {
@@ -260,74 +345,66 @@ test('rejects corrupt files and unsafe or invalid configs', async () => {
     }),
     /embedded credentials/u,
   );
-  assert.throws(() => normalizeMcpConfig({ version: 3, mcpServers: {} }), /Unsupported/u);
+  assert.throws(() => normalizeMcpConfig({ version: 4, mcpServers: {} }), /Unsupported/u);
 });
 
 test('leaves a higher-version file untouched when it is rejected', async () => {
   const root = await tempRoot();
   const path = join(root, 'mcp.json');
-  const futureText = '{"version":3,"mcpServers":{}}\n';
+  const futureText = '{"version":4,"mcpServers":{}}\n';
   await writeFile(path, futureText, 'utf8');
 
   const store = createMcpConfigStore(root);
-  await assert.rejects(store.get(), /Unsupported MCP config version: 3/u);
+  await assert.rejects(store.get(), /Unsupported MCP config version: 4/u);
   await assert.rejects(
-    store.set({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-    /Unsupported MCP config version: 3/u,
+    store.upsert('local', { command: 'node' }),
+    /Unsupported MCP config version: 4/u,
   );
   assert.equal(await readFile(path, 'utf8'), futureText);
 });
 
-test('full replacement preserves future wrappers but can repair malformed current data', async () => {
-  const root = await tempRoot();
-  const path = join(root, 'mcp.json');
-  const store = createMcpConfigStore(root);
-
-  for (const futureText of [
-    '{"version":"future","mcpServers":{}}\n',
-    '{"version":0,"mcpServers":{}}\n',
-  ]) {
-    await writeFile(path, futureText, 'utf8');
-    await assert.rejects(
-      store.set({ version: MCP_CONFIG_VERSION, mcpServers: {} }),
-      /Unsupported MCP config version/u,
-    );
-    assert.equal(await readFile(path, 'utf8'), futureText);
-  }
-
-  await writeFile(path, '{malformed', 'utf8');
-  await store.set({
+test('normalizes wrapped imports and direct maps without losing source-version rules', () => {
+  assert.deepEqual(
+    normalizeMcpImport(
+      '{"version":2,"mcpServers":{"remote":{"url":"https://example.com/mcp","protocol":"auto"}}}',
+    ),
+    {
+      version: MCP_CONFIG_VERSION,
+      mcpServers: {
+        remote: {
+          enabled: true,
+          url: 'https://example.com/mcp',
+          transport: 'auto',
+          protocol: 'auto',
+        },
+      },
+    },
+  );
+  assert.deepEqual(normalizeMcpImport('{"version":{"command":"node"}}'), {
     version: MCP_CONFIG_VERSION,
-    mcpServers: { repaired: { command: 'node' } },
+    mcpServers: { version: { enabled: true, command: 'node' } },
   });
-  assert.deepEqual(await store.get(), {
+  assert.deepEqual(normalizeMcpImport('{"mcpServers":{"command":"node"}}'), {
     version: MCP_CONFIG_VERSION,
-    mcpServers: { repaired: { enabled: true, command: 'node' } },
+    mcpServers: { mcpServers: { enabled: true, command: 'node' } },
   });
 });
 
-test('full replacement can migrate an existing version 1 wrapper to version 2', async () => {
-  const root = await tempRoot();
-  const path = join(root, 'mcp.json');
-  await writeFile(path, '{"version":1,"mcpServers":{"old":{"command":"node"}}}\n', 'utf8');
-
-  const store = createMcpConfigStore(root);
-  await store.set({
-    version: MCP_CONFIG_VERSION,
-    mcpServers: { remote: { url: 'https://example.com/mcp', protocol: 'auto' } },
+test('import rejects malformed wrappers and protocol fields from older eras', () => {
+  assert.throws(() => normalizeMcpImport('{bad'), { reason: 'invalid-json' });
+  assert.throws(() => normalizeMcpImport('[]'), { reason: 'not-object' });
+  assert.throws(() => normalizeMcpImport('{"version":3}'), { reason: 'missing-servers' });
+  assert.throws(() => normalizeMcpImport('{"version":4,"mcpServers":{}}'), {
+    reason: 'unsupported-version',
+    version: '4',
   });
-
-  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
-    version: MCP_CONFIG_VERSION,
-    mcpServers: {
-      remote: {
-        enabled: true,
-        url: 'https://example.com/mcp',
-        transport: 'auto',
-        protocol: 'auto',
-      },
-    },
-  });
+  for (const source of [
+    '{"remote":{"url":"https://example.com/mcp","protocol":"auto"}}',
+    '{"version":1,"mcpServers":{"remote":{"url":"https://example.com/mcp","protocol":"auto"}}}',
+    '{"version":2,"mcpServers":{"local":{"command":"node","protocol":"auto"}}}',
+  ]) {
+    assert.throws(() => normalizeMcpImport(source), { reason: 'protocol-version' });
+  }
 });
 
 test('refuses cleartext http for non-loopback hosts at the write boundary', async () => {

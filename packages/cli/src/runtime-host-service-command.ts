@@ -26,11 +26,14 @@ import {
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
 } from '@maka/runtime-host/protocol';
+import type { SignedPeerReachabilityLeaseV1 } from '@maka/runtime-host/peer-reachability';
+import type { RuntimeHostManagedLaunchClaim } from '@maka/runtime-host/operator';
 import { readFile } from 'node:fs/promises';
 
 export interface RuntimeHostServiceCliOptions {
   readonly rootPath: string;
   readonly json?: boolean;
+  readonly managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
   readonly websocket?: {
     readonly host: string;
@@ -40,6 +43,16 @@ export interface RuntimeHostServiceCliOptions {
     readonly tlsPrivateKeyPath?: string;
     readonly allowInsecureRemote?: boolean;
     readonly allowedOrigins?: readonly string[];
+  };
+  readonly peer?: {
+    readonly nativePath: string;
+    readonly keyPath: string;
+    readonly expectedPeerId?: string;
+    readonly listenAddresses?: readonly string[];
+    readonly coordinationRelays?: readonly string[];
+    readonly automaticRelayDiscovery?: boolean;
+    readonly webRtcStunUrls?: readonly string[];
+    readonly meshDataRoot?: string;
   };
 }
 
@@ -68,10 +81,12 @@ export async function runRuntimeHostServiceCli(
     : undefined;
   const host = await startExecutionRuntimeHostService({
     rootPath: options.rootPath,
+    ...(options.managedLaunchClaim ? { managedLaunchClaim: options.managedLaunchClaim } : {}),
     ...(options.projectDirectoryRoots
       ? { projectDirectoryRoots: options.projectDirectoryRoots }
       : {}),
     ...(websocket ? { websocket } : {}),
+    ...(options.peer ? { peer: options.peer } : {}),
   });
   let lifecycleEnd: Awaited<ReturnType<typeof runRuntimeHostProcessLifecycle>> | undefined;
   try {
@@ -84,6 +99,11 @@ export async function runRuntimeHostServiceCli(
         process.stdout.write(`Runtime Host service is ready at ${host.endpoint}\n`);
         for (const endpoint of host.websocketEndpoints) {
           process.stdout.write(`Runtime Host WebSocket is ready at ${endpoint}\n`);
+        }
+        for (const peer of host.peerListeners) {
+          process.stdout.write(
+            `Runtime Host direct peer is ready as ${peer.reachability.lease.peerId} at ${peer.reachability.lease.directRoutes.join(', ')}\n`,
+          );
         }
       },
     });
@@ -116,6 +136,11 @@ export interface RuntimeHostServiceReadyEvent {
         readonly port: number;
         readonly path: string;
       }
+    | {
+        readonly kind: 'libp2p_direct';
+        readonly peerId: string;
+        readonly listenAddresses: readonly string[];
+      }
   )[];
 }
 
@@ -124,6 +149,9 @@ export function createRuntimeHostServiceReadyEvent(host: {
   readonly hostEpoch: string;
   readonly endpoint: string;
   readonly websocketEndpoints: readonly string[];
+  readonly peerListeners: readonly {
+    readonly reachability: SignedPeerReachabilityLeaseV1;
+  }[];
   readonly compositionDescriptor: { readonly id: string; readonly revision: string };
 }): RuntimeHostServiceReadyEvent {
   return {
@@ -148,6 +176,11 @@ export function createRuntimeHostServiceReadyEvent(host: {
           path: url.pathname,
         };
       }),
+      ...host.peerListeners.map((peer) => ({
+        kind: 'libp2p_direct' as const,
+        peerId: peer.reachability.lease.peerId,
+        listenAddresses: peer.reachability.lease.directRoutes,
+      })),
     ],
   };
 }

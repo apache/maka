@@ -129,6 +129,11 @@ export interface ProjectRegistrationOptions {
    * its published boundary.
    */
   readonly withinRoot?: string;
+  /**
+   * Whether an additional location should be recorded as recently used. A new
+   * project still establishes its sole location as the initial preference.
+   */
+  readonly prefer?: boolean;
 }
 
 interface PersistedProject {
@@ -207,7 +212,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
     if (options?.withinRoot && !isPathWithin(options.withinRoot, resolved.canonicalPath)) {
       throw new ProjectPathBoundaryError(resolved.canonicalPath);
     }
-    return this.upsertResolvedProject(resolved, this.now());
+    return this.upsertResolvedProject(resolved, this.now(), options?.prefer !== false);
   }
 
   async resolveHistoricalPath(path: string, usedAt: number = this.now()): Promise<ProjectRecord> {
@@ -236,6 +241,7 @@ class SqliteProjectCatalog implements ProjectCatalog {
   private async upsertResolvedProject(
     resolved: ResolvedProjectLocation,
     timestamp: number,
+    prefer = true,
   ): Promise<ProjectRecord> {
     const registered = await this.mutate((file) => {
       const locationPath =
@@ -244,13 +250,13 @@ class SqliteProjectCatalog implements ProjectCatalog {
       if (existing) {
         const location = existing.locations.find((item) => item.path === locationPath);
         if (location) {
-          location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
+          if (prefer) location.lastUsedAt = Math.max(location.lastUsedAt, timestamp);
           location.isWorktree = resolved.git?.isWorktree ?? false;
         } else {
           existing.locations.push({
             path: locationPath,
             isWorktree: resolved.git?.isWorktree ?? false,
-            lastUsedAt: timestamp,
+            lastUsedAt: prefer ? timestamp : 0,
           });
         }
         existing.lastUsedAt = Math.max(existing.lastUsedAt, timestamp);

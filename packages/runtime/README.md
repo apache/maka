@@ -30,7 +30,7 @@ The package root barrel and the subpaths declared in `package.json` are supporte
 - `AiSdkBackend` for the shipped backend implementation. `FakeBackend` is test-only: it lives under `test-only/`, is exported as `@maka/runtime/test-only/fake-backend`, and release packaging drops that directory, so no production module may import it. Tests and the Desktop E2E run reach it through the composition's `primaryBackendFactory` seam.
 - Session execution-boundary APIs for managed sandbox expansion and explicit bypass.
 - `buildBuiltinTools()` and the workspace executor interfaces for tool composition.
-- `RuntimeRunner`, runtime events, projections, and recovery helpers for invocation lifecycle.
+- `RuntimeKernel`, runtime events, projections, and recovery helpers for execution lifecycle.
 
 Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients execute Maka through Runtime Host rather than composing Runtime directly.
 
@@ -38,7 +38,7 @@ Desktop composition lives in `apps/desktop/src/main/main.ts`. Other clients exec
 
 - Add backend behavior behind `AgentBackend` and register it through the existing registry.
 - Add tools through the builtin/tool composition seams; keep filesystem and shell effects behind `WorkspaceExecutor`.
-- Put shared pure contracts in `packages/core` and durable JSONL state in `packages/storage`.
+- Put shared pure contracts in `packages/core` and interactive Runtime state in the SQLite control plane owned by `packages/storage`.
 - Expose supported package APIs through the root barrel or a declared `package.json` subpath rather than importing internal files from another package.
 - Keep provider credentials and Electron IPC outside this package. The product shell resolves credentials and passes only the dependencies required for execution.
 

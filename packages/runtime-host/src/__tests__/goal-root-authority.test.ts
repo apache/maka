@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -540,6 +541,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
   const goalStore = await openInteractiveGoalAuthorityForWrite(owner.lease);
   const session = await stores.sessionStore.create({
     cwd: capability.canonicalPath,
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     model: 'fake-model',
     permissionMode: 'ask',
@@ -559,14 +561,13 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     readRootState: (sessionId) => requireCoordinator(coordinator).readRootState(sessionId),
     claimStopFence: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStopFence(input, commitQueueFence, lease),
-    startFromMessage: (input, lease) =>
-      requireCoordinator(coordinator).startFromMessage(input, lease),
+    startFromMessage: (input, lease, commitAdmission) =>
+      requireCoordinator(coordinator).startFromMessage(input, lease, commitAdmission),
     prepareMessage: (input) => requireCoordinator(coordinator).prepareMessage(input),
     claimStop: (input, commitQueueFence, lease) =>
       requireCoordinator(coordinator).claimStop(input, commitQueueFence, lease),
   };
   const hostEpoch = 'goal-root-epoch';
-  await stores.messageReceiptStore.beginHostEpoch(hostEpoch);
   const messages = new HostMessageCoordinator({
     hostEpoch,
     root: rootPort,
@@ -576,7 +577,7 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
       readImmutableSteeringMessageProof: (sessionId, messageId) =>
         stores.runtimeEventStore.readImmutableSteeringMessageProof(sessionId, messageId),
     },
-    receipts: stores.messageReceiptStore,
+    admissions: stores.sessionStore,
     sessionAdmission: admission,
     acquireResidency,
     requestDrain: () => {
@@ -674,7 +675,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
     admitTurn: (sessionId, text, checkpoint, controlLease) =>
       goalExecutions.admitTurn(sessionId, text, checkpoint, controlLease),
-    listActionableTaskKeys: async () => [],
     acquireResidency,
     onProjectionChanged: (sessionId) => {
       requireContinuity(continuity).enqueueCanonicalRefresh(sessionId);
@@ -734,15 +734,6 @@ async function createFixture(options: { recoverAdmissions?: boolean } = {}): Pro
     },
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((next) => {
-    resolve = next;
-  });
-  return { promise, resolve };
-}
-
 async function waitForGoalRun(
   fixture: Fixture,
   goalId: string,
@@ -765,6 +756,7 @@ function runHeader(overrides: Partial<AgentRunHeader>): AgentRunHeader {
     turnId: 'turn-1',
     status: 'created',
     backendKind: 'fake',
+    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
     llmConnectionSlug: 'fake',
     modelId: 'fake-model',
     cwd: '/workspace',

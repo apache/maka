@@ -27,6 +27,7 @@ export type E2eFixtureScenario =
   | 'turn-narrative'
   | 'turn-narrative-browser'
   | 'chat-prompt-rail'
+  | 'chat-partial-history'
   | 'settings-data'
   | 'settings-bots-onboarding'
   | 'settings-general'
@@ -36,6 +37,7 @@ export type E2eFixtureScenario =
   | 'module-mcp'
   | 'module-daily-review'
   | 'scheduled-tasks'
+  | 'agent-graph-layout'
   | 'sidebar-search-modal-open';
 
 export interface E2eFixtureState {

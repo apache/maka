@@ -21,7 +21,15 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { deriveMakaDataRoots, resolveMakaDataRoots } from './workspace-root.js';
-import { parseRuntimeHostCommand, type RuntimeHostCliCommand } from './runtime-host-cli.js';
+import {
+  configureRuntimeHostPeerClient,
+  resolveRuntimeHostPeerNativePath,
+} from './runtime-host-peer-artifact.js';
+import {
+  parseRuntimeHostCommand,
+  parseRuntimeHostInstalledUpdateCommand,
+  type RuntimeHostCliCommand,
+} from './runtime-host-cli.js';
 import { resolveCliUiLocale } from './cli-ui-locale.js';
 
 export type MakaCliCommand =
@@ -35,10 +43,11 @@ export type MakaCliCommand =
   | { kind: 'run'; args: string[] }
   | { kind: 'activate'; args: string[] }
   | { kind: 'eval'; args: string[] }
+  | { kind: 'acp' }
   | RuntimeHostCliCommand
   | { kind: 'help'; text: string }
   | { kind: 'version'; text: string }
-  | { kind: 'error'; message: string; exitCode: number };
+  | { kind: 'error'; message: string; exitCode: number; showHelp?: boolean };
 
 export interface MakaCliLaunchOptions {
   readonly dataProfileName: string;
@@ -61,10 +70,21 @@ export function parseMakaCliArgs(
   const [first] = argv;
   if (first === '--help' || first === '-h') return { kind: 'help', text: helpText(cliCommand) };
   if (first === '--version' || first === '-v') return { kind: 'version', text: version };
+  if (first === '--acp') {
+    return argv.length === 1
+      ? { kind: 'acp' }
+      : {
+          kind: 'error',
+          message: 'maka --acp does not accept arguments',
+          exitCode: 2,
+          showHelp: false,
+        };
+  }
   if (first?.startsWith('--')) return parseTuiArgs(argv);
   if (first === 'run' || first === '-p') return { kind: 'run', args: argv.slice(1) };
   if (first === 'activate') return { kind: 'activate', args: argv.slice(1) };
   if (first === 'eval') return { kind: 'eval', args: argv.slice(1) };
+  if (first === 'update') return parseRuntimeHostInstalledUpdateCommand(argv.slice(1));
   if (first === 'runtime-host') return parseRuntimeHostCommand(argv.slice(1));
   return {
     kind: 'error',
@@ -113,23 +133,39 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
     `  ${cliCommand} eval ...     Run one declarative multi-arm experiment`,
+    `  ${cliCommand} update --target <latest|next|version>  Update this npm-global CLI and its local Runtime Host`,
     `  ${cliCommand} runtime-host serve [options]  Run a Runtime Host service`,
+    `  ${cliCommand} runtime-host activate --framed --root-id <id>`,
     `  ${cliCommand} runtime-host setup --principal <id> --preset <desktop-client|terminal-client> [options]`,
     `  ${cliCommand} runtime-host service install [options]`,
-    `  ${cliCommand} runtime-host service status|start|stop|restart|logs|uninstall [--json]`,
+    `  ${cliCommand} runtime-host service configure (--project-root <label>=<path> ... | --no-project-roots) --expected-config-fingerprint <sha256:...> --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service status|start|stop|restart|logs [--json]`,
+    `  ${cliCommand} runtime-host service uninstall --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service peer enable|disable|status|rotate|descriptor [options]`,
+    `  ${cliCommand} runtime-host service mesh status|create|invite|join|remove|leave|close|reconcile [options]`,
     `  ${cliCommand} runtime-host service retire --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
-    `  ${cliCommand} runtime-host service update --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service check-update --target <latest|next|version> [--json]`,
+    `  ${cliCommand} runtime-host service update [--target <latest|next|version>] --expected-service-id <id> --expected-root-path <path> --expected-root-id <id> [--allow-interrupt-active-tasks]`,
+    `  ${cliCommand} runtime-host service update-policy [--target <manual|latest|next|version>] [--json]`,
+    `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access connection-code [--name <name>] [--root <path>]`,
     `  ${cliCommand} runtime-host access list`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
     `  ${cliCommand} runtime-host project list [--root <path>]`,
-    `  ${cliCommand} runtime-host project add <path> [--root <path>]`,
+    `  ${cliCommand} runtime-host project add <path> [--prefer] [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin status|list|inspect|failures [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin install|uninstall|reload <target> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin export <extension-id> <bundle-path> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin apply <operations.json> [--root <path>]`,
+    `  ${cliCommand} runtime-host plugin reconcile [--root <path>]`,
     `  ${cliCommand} runtime-host profile list`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
@@ -149,6 +185,7 @@ function helpText(cliCommand: string): string {
     'Runtime Host serve options:',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute project directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Enable an authenticated WebSocket listener',
     '  --websocket-host <host>       Bind host (default: 127.0.0.1)',
     '  --websocket-path <path>       Upgrade path (default: /runtime-host)',
@@ -156,11 +193,17 @@ function helpText(cliCommand: string): string {
     '  --tls-private-key <path>      TLS private key for WSS',
     '  --allow-insecure-remote       Allow plaintext WebSocket access beyond loopback',
     '  --allow-origin <origin>       Allow one browser Origin (repeatable)',
+    '  --peer-native-path <path>     Load the experimental direct-peer native module',
+    '  --peer-key <path>             Persist the direct-peer transport identity',
+    '  --peer-id <id>                Require an existing direct-peer transport identity',
+    '  --peer-listen <multiaddr>     Listen on a direct-peer address (repeatable)',
+    '  --peer-coordination-relay <multiaddr>  Use a DCUtR coordination relay (repeatable)',
     '  --json                        Emit one machine-readable ready event',
     '',
     'Managed Runtime Host service install options (Linux or macOS):',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit a machine-readable result',
@@ -170,9 +213,20 @@ function helpText(cliCommand: string): string {
     '  --preset <name>               Pair a desktop-client or terminal-client',
     '  --root <path>                 Select the canonical data root',
     '  --project-root <label>=<path> Publish an absolute directory root (repeatable)',
+    '  --no-project-roots            Disable remote project browsing and registration',
     '  --websocket-port <port>       Persist a loopback port (chosen automatically by default)',
     '  --websocket-path <path>       Persist the upgrade path (default: /runtime-host)',
     '  --json                        Emit framed machine-readable progress and result records',
+    '',
+    'Managed Runtime Host direct-peer options:',
+    '  --listen <multiaddr>          Persist a listener address (repeatable)',
+    '  --coordination-relay <addr>   Prefer a Circuit Relay v2 address (repeatable)',
+    '  --clear-coordination-relays   Remove every manually configured relay',
+    '  --automatic-relay-discovery   Enable best-effort public relay discovery',
+    '  --no-automatic-relay-discovery  Disable public discovery and retain manual relays',
+    '  --default-public-stun          Use the packaged best-effort public STUN policy',
+    '  --no-public-stun               Disable public STUN and keep host candidates only',
+    '  --webrtc-stun <stun-url>       Use a custom STUN endpoint (repeatable)',
     '',
     'Runtime Host access issue options:',
     '  --root <path>                 Select the canonical data root',
@@ -182,6 +236,7 @@ function helpText(cliCommand: string): string {
     '  --preset <name>               Grant the desktop-client or terminal-client operation set',
     '  --publish-client-capabilities Allow Client Capability publication',
     '  --allow-host-paths            Allow operations that submit Host paths',
+    '  --capability-owner-credential <id>  Bind a provider to one Client-bound owner credential',
     '',
     'Runtime Host capability provider options:',
     '  --url <ws-url>                Connect to an authenticated Runtime Host WebSocket',
@@ -198,15 +253,40 @@ export async function runMakaCli(
 ): Promise<number> {
   const version = await readPackageVersion();
   const command = parseMakaCliArgs(argv, version, options.cliCommand);
-  const dataRoots = resolveMakaDataRoots({ profileName: options.dataProfileName });
+  const dataRoots = resolveMakaDataRoots({
+    profileName: options.dataProfileName,
+  });
+  await configureRuntimeHostPeerClient({
+    cliPath: process.argv[1] ?? '',
+    clientDataRoot: dataRoots.clientDataRoot,
+  });
   switch (command.kind) {
+    case 'runtime-host-managed-activate': {
+      const { runRuntimeHostManagedActivationCli } = await import(
+        './runtime-host-activation-command.js'
+      );
+      return runRuntimeHostManagedActivationCli({
+        rootId: command.rootId,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+      });
+    }
+    case 'runtime-host-managed-connect': {
+      const { runRuntimeHostManagedConnectCli } = await import('./runtime-host-connect-command.js');
+      return runRuntimeHostManagedConnectCli({
+        rootId: command.rootId,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+      });
+    }
     case 'run': {
       const { runRuntimeHostTextCli } = await import('./runtime-host-run-command.js');
       return runRuntimeHostTextCli(
         command.args,
         { workspaceRoot: () => dataRoots.workspaceRoot },
         {},
-        { clientDataRoot: dataRoots.clientDataRoot, cliCommand: options.cliCommand },
+        {
+          clientDataRoot: dataRoots.clientDataRoot,
+          cliCommand: options.cliCommand,
+        },
       );
     }
     case 'activate': {
@@ -219,8 +299,66 @@ export async function runMakaCli(
       const { runMakaEvalCli } = await import('@maka/eval');
       return runMakaEvalCli(command.args);
     }
+    case 'acp': {
+      const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
+      return runMakaAcpStdioServer({
+        workspaceRoot: dataRoots.workspaceRoot,
+        clientDataRoot: dataRoots.clientDataRoot,
+        version,
+      });
+    }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
+      if (command.managedDeployment) {
+        const {
+          resolveRuntimeHostManagedDeployment,
+          resolveRuntimeHostNpmDeploymentLayout,
+          resolveRuntimeHostWebRtcStunUrls,
+        } = await import('@maka/runtime-host/operator');
+        const { config } = await resolveRuntimeHostManagedDeployment(
+          command.managedDeployment.rootId,
+        );
+        const peer = config.listeners.directPeer?.enabled ? config.listeners.directPeer : undefined;
+        const packageLayout = resolveRuntimeHostNpmDeploymentLayout(
+          config.deploymentRoot,
+          config.launch.package.integrity,
+        );
+        return runRuntimeHostServiceCli({
+          rootPath: config.root.path,
+          json: command.json,
+          managedLaunchClaim: {
+            deploymentId: command.managedDeployment.deploymentId,
+            configRevision: command.managedDeployment.configRevision,
+          },
+          projectDirectoryRoots: config.projectDirectoryRoots,
+          ...(config.listeners.websocket ? { websocket: config.listeners.websocket } : {}),
+          ...(peer
+            ? {
+                peer: {
+                  nativePath: await resolveRuntimeHostPeerNativePath(packageLayout.cliPath),
+                  keyPath: peer.keyPath,
+                  expectedPeerId: peer.peerId,
+                  listenAddresses: peer.listenAddresses,
+                  coordinationRelays: peer.coordinationRelays,
+                  automaticRelayDiscovery: peer.automaticRelayDiscovery,
+                  webRtcStunUrls: resolveRuntimeHostWebRtcStunUrls(peer.webRtcStunPolicy),
+                  meshDataRoot: join(config.deploymentRoot, 'peer-mesh'),
+                },
+              }
+            : {}),
+        });
+      }
+      if (command.managedServiceConfigPath) {
+        const { effectiveRuntimeHostProjectDirectoryRoots, readRuntimeHostManagedServiceConfig } =
+          await import('./runtime-host-service-manager.js');
+        const config = await readRuntimeHostManagedServiceConfig(command.managedServiceConfigPath);
+        return runRuntimeHostServiceCli({
+          rootPath: config.rootPath,
+          json: command.json,
+          projectDirectoryRoots: effectiveRuntimeHostProjectDirectoryRoots(config),
+          websocket: config.websocket,
+        });
+      }
       return runRuntimeHostServiceCli({
         rootPath: command.rootPath ?? dataRoots.workspaceRoot,
         json: command.json,
@@ -228,25 +366,98 @@ export async function runMakaCli(
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocket ? { websocket: command.websocket } : {}),
+        ...(command.peer ? { peer: command.peer } : {}),
+      });
+    }
+    case 'runtime-host-installed-update': {
+      const { runRuntimeHostInstalledUpdateBootstrap } = await import(
+        './runtime-host-installed-update-bootstrap.js'
+      );
+      return runRuntimeHostInstalledUpdateBootstrap({
+        rootPath: dataRoots.workspaceRoot,
+        selector: command.selector,
+        allowInterruptActiveTasks: command.allowInterruptActiveTasks,
+      });
+    }
+    case 'runtime-host-local-update-apply': {
+      const { runRuntimeHostInstalledUpdateCoordinator } = await import(
+        './runtime-host-installed-update-coordinator.js'
+      );
+      return runRuntimeHostInstalledUpdateCoordinator({
+        rootPath: command.rootPath,
+        archivePath: command.archivePath,
+        installedPackageRoot: command.installedPackageRoot,
+        installedCliPath: command.installedCliPath,
+        currentVersion: command.currentVersion,
+        target: {
+          kind: 'npm_registry',
+          version: command.targetVersion,
+          integrity: command.targetIntegrity,
+          ...(command.targetCompatibility === undefined
+            ? {}
+            : { compatibility: command.targetCompatibility }),
+        },
+        allowInterruptActiveTasks: command.allowInterruptActiveTasks,
+      });
+    }
+    case 'runtime-host-local-update-activate': {
+      const { runRuntimeHostInstalledUpdateActivator } = await import(
+        './runtime-host-installed-update-activator.js'
+      );
+      return runRuntimeHostInstalledUpdateActivator({
+        rootPath: command.rootPath,
+        expectedRootId: command.expectedRootId,
+        generation: command.generation,
+        candidateEntrypoint: command.candidateEntrypoint,
+        awaitCoordinatorCommit: command.awaitCoordinatorCommit,
+        ...(command.takeoverHostEpoch ? { takeoverHostEpoch: command.takeoverHostEpoch } : {}),
+        ...(command.expectedOwnerInstallationId
+          ? { expectedOwnerInstallationId: command.expectedOwnerInstallationId }
+          : {}),
+        ...(command.targetVersion ? { targetVersion: command.targetVersion } : {}),
+        ...(command.targetIntegrity ? { targetIntegrity: command.targetIntegrity } : {}),
+        ...(command.awaitCoordinatorCommit ? { inheritableAuthorityLeaseFd: 4 } : {}),
+      });
+    }
+    case 'runtime-host-local-source-retire': {
+      const { runRuntimeHostLocalSourceRetirement } = await import(
+        './runtime-host-local-source-retirement.js'
+      );
+      return runRuntimeHostLocalSourceRetirement({
+        rootPath: command.rootPath,
+        expectedRootId: command.expectedRootId,
+        expectedHostEpoch: command.expectedHostEpoch,
+        activeWorkPolicy: command.allowInterruptActiveTasks
+          ? 'interrupt_active_work'
+          : 'refuse_active_work',
       });
     }
     case 'runtime-host-setup': {
       const { runRuntimeHostSetupCli } = await import('./runtime-host-setup-command.js');
+      const { RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV } = await import(
+        '@maka/runtime-host/operator'
+      );
       return runRuntimeHostSetupCli({
         json: command.json,
-        clientDataRoot: dataRoots.clientDataRoot,
+        clientDataRoot: command.clientDataRoot ?? dataRoots.clientDataRoot,
         defaultRootPath: dataRoots.workspaceRoot,
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
         version,
+        sourcePackageIntegrity: process.env[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV],
         principalId: command.principalId,
         preset: command.preset,
+        lifecycle: command.lifecycle,
         deferPairingCommit: command.deferPairingCommit,
+        bindPairingToClient: command.bindPairingToClient,
+        ...(command.repairRootAfterRemount ? { repairRootAfterRemount: true } : {}),
+        updateExisting: command.updateExisting,
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
           : {}),
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
+        ...(command.directPeer ? { directPeer: command.directPeer } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
       });
     }
@@ -265,6 +476,10 @@ export async function runMakaCli(
         defaultRootPath: serviceDataRoots.workspaceRoot,
         nodePath: process.execPath,
         cliPath: process.argv[1] ?? '',
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
         ...(command.rootPath ? { rootPath: command.rootPath } : {}),
         ...(command.projectDirectoryRoots
           ? { projectDirectoryRoots: command.projectDirectoryRoots }
@@ -272,24 +487,154 @@ export async function runMakaCli(
         ...(command.websocketPort === undefined ? {} : { websocketPort: command.websocketPort }),
         ...(command.websocketPath ? { websocketPath: command.websocketPath } : {}),
         ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.expectedConfigFingerprint
+          ? { expectedConfigFingerprint: command.expectedConfigFingerprint }
+          : {}),
         ...(command.retainManagedDeployment ? { retainManagedDeployment: true } : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
       });
     }
-    case 'runtime-host-service-update': {
-      const { runManagedRuntimeHostUpdateCli } = await import('./runtime-host-update-command.js');
+    case 'runtime-host-service-peer': {
+      const { runRuntimeHostPeerManagementCli } = await import(
+        './runtime-host-peer-management-command.js'
+      );
       const serviceDataRoots = command.clientDataRoot
         ? deriveMakaDataRoots(command.clientDataRoot)
         : dataRoots;
+      return runRuntimeHostPeerManagementCli({
+        action: command.action,
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        nodePath: process.execPath,
+        cliPath: process.argv[1] ?? '',
+        managedRootId: command.managedRootId,
+        operatorDeploymentId: command.operatorDeploymentId,
+        listenAddresses: command.listenAddresses,
+        ...(command.coordinationRelays ? { coordinationRelays: command.coordinationRelays } : {}),
+        ...(command.automaticRelayDiscovery === undefined
+          ? {}
+          : { automaticRelayDiscovery: command.automaticRelayDiscovery }),
+        ...(command.relayDiscoveryStatus ? { relayDiscoveryStatus: true } : {}),
+        ...(command.webRtcStunPolicy ? { webRtcStunPolicy: command.webRtcStunPolicy } : {}),
+        ...(command.webRtcStunStatus ? { webRtcStunStatus: true } : {}),
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-peer-mesh': {
+      const { runRuntimeHostPeerMeshManagementCli } = await import(
+        './runtime-host-peer-mesh-management-command.js'
+      );
+      return runRuntimeHostPeerMeshManagementCli({
+        action: command.action,
+        json: command.json,
+        framed: command.framed ?? false,
+        managedRootId: command.managedRootId,
+        operatorDeploymentId: command.operatorDeploymentId,
+        cliPath: process.argv[1] ?? '',
+        expectedTarget: command.expectedTarget,
+        ...(command.meshId !== undefined ? { meshId: command.meshId } : {}),
+        ...(command.peerId ? { peerId: command.peerId } : {}),
+        ...(command.displayName !== undefined ? { displayName: command.displayName } : {}),
+      });
+    }
+    case 'runtime-host-service-update': {
+      const { runManagedRuntimeHostSelectedUpdateCli, runManagedRuntimeHostUpdateCli } =
+        await import('./runtime-host-update-command.js');
+      const { RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV } = await import(
+        '@maka/runtime-host/operator'
+      );
+      const sourcePackageIntegrity = process.env[RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV];
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      if (command.selector) {
+        return runManagedRuntimeHostSelectedUpdateCli({
+          json: command.json,
+          framed: command.framed ?? false,
+          clientDataRoot: serviceDataRoots.clientDataRoot,
+          defaultRootPath: serviceDataRoots.workspaceRoot,
+          selector: command.selector,
+          expectedTarget: command.expectedTarget,
+          ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
+          ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+          ...(command.operatorDeploymentId
+            ? { operatorDeploymentId: command.operatorDeploymentId }
+            : {}),
+          ...(command.allowManualUpdate ? { allowManualUpdate: true } : {}),
+          ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+        });
+      }
       return runManagedRuntimeHostUpdateCli({
         json: command.json,
         framed: command.framed ?? false,
         clientDataRoot: serviceDataRoots.clientDataRoot,
         defaultRootPath: serviceDataRoots.workspaceRoot,
         sourcePackageRoot: fileURLToPath(new URL('..', import.meta.url)),
+        ...(sourcePackageIntegrity ? { sourcePackageIntegrity } : {}),
         version,
         expectedTarget: command.expectedTarget,
+        ...(command.expectedHost ? { expectedHost: command.expectedHost } : {}),
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
         ...(command.allowInterruptActiveTasks ? { allowInterruptActiveTasks: true } : {}),
+      });
+    }
+    case 'runtime-host-service-check-update': {
+      const { runManagedRuntimeHostUpdateCheckCli } = await import(
+        './runtime-host-update-discovery.js'
+      );
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      return runManagedRuntimeHostUpdateCheckCli({
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        selector: command.selector,
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+      });
+    }
+    case 'runtime-host-service-update-policy':
+    case 'runtime-host-service-reconcile-update': {
+      const { runManagedRuntimeHostUpdatePolicyCli, runManagedRuntimeHostUpdateReconcileCli } =
+        await import('./runtime-host-update-reconciliation.js');
+      const serviceDataRoots = command.clientDataRoot
+        ? deriveMakaDataRoots(command.clientDataRoot)
+        : dataRoots;
+      if (command.kind === 'runtime-host-service-update-policy') {
+        return runManagedRuntimeHostUpdatePolicyCli({
+          json: command.json,
+          framed: command.framed ?? false,
+          clientDataRoot: serviceDataRoots.clientDataRoot,
+          defaultRootPath: serviceDataRoots.workspaceRoot,
+          ...(command.policy ? { policy: command.policy } : {}),
+          ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+          ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+          ...(command.operatorDeploymentId
+            ? { operatorDeploymentId: command.operatorDeploymentId }
+            : {}),
+        });
+      }
+      return runManagedRuntimeHostUpdateReconcileCli({
+        json: command.json,
+        framed: command.framed ?? false,
+        clientDataRoot: serviceDataRoots.clientDataRoot,
+        defaultRootPath: serviceDataRoots.workspaceRoot,
+        ...(command.expectedTarget ? { expectedTarget: command.expectedTarget } : {}),
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
       });
     }
     case 'runtime-host-managed-deployment-cleanup': {
@@ -302,6 +647,11 @@ export async function runMakaCli(
       return runManagedRuntimeHostDeploymentCleanupCli({
         clientDataRoot: serviceDataRoots.clientDataRoot,
         cliPath: process.argv[1] ?? '',
+        ...(command.managedRootId ? { managedRootId: command.managedRootId } : {}),
+        ...(command.operatorDeploymentId
+          ? { operatorDeploymentId: command.operatorDeploymentId }
+          : {}),
+        ...(command.finalize ? { finalize: true } : {}),
         expectedTarget: command.expectedTarget,
       });
     }
@@ -315,6 +665,9 @@ export async function runMakaCli(
         operationGrants: command.operationGrants,
         canPublishClientCapabilities: command.canPublishClientCapabilities,
         canUseHostPaths: command.canUseHostPaths,
+        ...(command.capabilityOwnerCredentialId
+          ? { capabilityOwnerCredentialId: command.capabilityOwnerCredentialId }
+          : {}),
         ...(command.preset ? { preset: command.preset } : {}),
       });
     }
@@ -325,6 +678,19 @@ export async function runMakaCli(
         ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
         currentCredentialFingerprint: command.currentCredentialFingerprint,
       });
+    }
+    case 'runtime-host-access-connection-code': {
+      const { runRuntimeHostAccessConnectionCodeCli } = await import(
+        './runtime-host-access-command.js'
+      );
+      return runRuntimeHostAccessConnectionCodeCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+          ...(command.name ? { name: command.name } : {}),
+        },
+        command.framed,
+      );
     }
     case 'runtime-host-access-list': {
       const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');
@@ -344,7 +710,9 @@ export async function runMakaCli(
           ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
           credentialId: command.credentialId,
           ...(command.currentCredentialFingerprint
-            ? { currentCredentialFingerprint: command.currentCredentialFingerprint }
+            ? {
+                currentCredentialFingerprint: command.currentCredentialFingerprint,
+              }
             : {}),
         },
         command.framed,
@@ -356,7 +724,24 @@ export async function runMakaCli(
       const rootPath = command.rootPath ?? dataRoots.workspaceRoot;
       return command.kind === 'runtime-host-project-list'
         ? runRuntimeHostProjectCli({ kind: 'list', rootPath })
-        : runRuntimeHostProjectCli({ kind: 'add', rootPath, path: command.path });
+        : runRuntimeHostProjectCli({
+            kind: 'add',
+            rootPath,
+            path: command.path,
+            prefer: command.prefer,
+          });
+    }
+    case 'runtime-host-plugin': {
+      const { runRuntimeHostPluginCli } = await import('./runtime-host-plugin-command.js');
+      return runRuntimeHostPluginCli({
+        rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+        action: command.action,
+        ...(command.subject ? { subject: command.subject } : {}),
+        ...(command.targetPath ? { targetPath: command.targetPath } : {}),
+        ...(command.rootId ? { rootId: command.rootId } : {}),
+        ...(command.cursor === undefined ? {} : { cursor: command.cursor }),
+        ...(command.limit === undefined ? {} : { limit: command.limit }),
+      });
     }
     case 'runtime-host-capability-provider-serve': {
       const { runRuntimeHostCapabilityProviderCli } = await import(
@@ -380,6 +765,7 @@ export async function runMakaCli(
     }
     case 'runtime-host-profile-list':
     case 'runtime-host-profile-set':
+    case 'runtime-host-profile-set-environment':
     case 'runtime-host-profile-remove': {
       const { runRuntimeHostProfileCommand } = await import('./runtime-host-profile-command.js');
       const profileOptions = { clientDataRoot: dataRoots.clientDataRoot };
@@ -388,6 +774,20 @@ export async function runMakaCli(
       }
       if (command.kind === 'runtime-host-profile-remove') {
         return runRuntimeHostProfileCommand({ kind: 'remove', id: command.id }, {}, profileOptions);
+      }
+      if (command.kind === 'runtime-host-profile-set-environment') {
+        return runRuntimeHostProfileCommand(
+          {
+            kind: 'set-environment',
+            id: command.id,
+            name: command.name,
+            distribution: command.distribution,
+            operatorPath: command.operatorPath,
+            expectedRootId: command.expectedRootId,
+          },
+          {},
+          profileOptions,
+        );
       }
       return runRuntimeHostProfileCommand(
         {
@@ -409,7 +809,11 @@ export async function runMakaCli(
       process.stdout.write(`${command.text}\n`);
       return 0;
     case 'error':
-      process.stderr.write(`${command.message}\n\n${helpText(options.cliCommand)}\n`);
+      process.stderr.write(
+        'showHelp' in command && command.showHelp === false
+          ? `${command.message}\n`
+          : `${command.message}\n\n${helpText(options.cliCommand)}\n`,
+      );
       return command.exitCode;
     case 'tui': {
       const locale = resolveCliUiLocale(process.env);
@@ -440,16 +844,28 @@ function parseTuiArgs(argv: string[]): MakaCliCommand {
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     if (!option || !supported.has(option)) {
-      return { kind: 'error', message: `Unexpected argument: ${option ?? ''}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `Unexpected argument: ${option ?? ''}`,
+        exitCode: 2,
+      };
     }
     if (values.has(option)) {
-      return { kind: 'error', message: `Option repeated: ${option}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `Option repeated: ${option}`,
+        exitCode: 2,
+      };
     }
     const value = argv[index + 1];
     if (!value || value.startsWith('-')) {
       const expected =
         option === '--resume' ? 'a session id' : option === '--cwd' ? 'a directory' : 'a value';
-      return { kind: 'error', message: `${option} requires ${expected}`, exitCode: 2 };
+      return {
+        kind: 'error',
+        message: `${option} requires ${expected}`,
+        exitCode: 2,
+      };
     }
     values.set(option, value);
     index += 1;
@@ -458,7 +874,11 @@ function parseTuiArgs(argv: string[]): MakaCliCommand {
     return { kind: 'error', message: '--cwd requires --resume', exitCode: 2 };
   }
   if (values.has('--project') && values.has('--resume')) {
-    return { kind: 'error', message: '--project cannot be used with --resume', exitCode: 2 };
+    return {
+      kind: 'error',
+      message: '--project cannot be used with --resume',
+      exitCode: 2,
+    };
   }
   if (values.has('--cwd') && values.has('--host') && values.get('--host') !== 'local') {
     return {

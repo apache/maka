@@ -31,7 +31,7 @@ export type DesktopWorkbarBridge = Pick<
   | 'inspector'
   | 'sessions'
   | 'shellRuns'
-  | 'tasks'
+  | 'todo'
   | 'transcripts'
 >;
 
@@ -54,19 +54,8 @@ export function createDesktopWorkbarServices(
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
-    terminal: {
-      start: (sessionId) => bridge.shellRuns.start(sessionId),
-      stop: (input) => bridge.shellRuns.stop(input),
-      attach: (input) => bridge.shellRuns.attach(input),
-      detach: (input) => bridge.shellRuns.detach(input),
-      write: (input) => bridge.shellRuns.write(input),
-      subscribePtyData: (handler) => bridge.shellRuns.subscribePtyData(handler),
-      subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
-    },
-    tasks: {
-      list: (sessionId) => bridge.tasks.list(sessionId),
-      subscribeChanges: (handler) => bridge.tasks.subscribeChanges(handler),
-    },
+    terminal: bridge.shellRuns,
+    todo: bridge.todo,
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
@@ -103,11 +92,7 @@ export function createDesktopWorkbarServices(
       subscribeUsageChanges: (sessionId, handler) =>
         bridge.inspector.subscribeUsageChanges(sessionId, handler),
     },
-    attachments: {
-      pickFiles: () => bridge.attachments.pickFiles(),
-      previewApproval: (approvalId) =>
-        bridge.attachments.previewApproval(approvalId),
-    },
+    attachments: bridge.attachments,
     sideChat: {
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
@@ -119,19 +104,53 @@ export function createDesktopWorkbarServices(
         bridge.sessions.cleanupSessionCopy(sessionId),
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
+      compact: (sessionId) => bridge.sessions.compact(sessionId),
       send: (sessionId, command) => bridge.sessions.send(sessionId, command),
-      stop: (sessionId) => bridge.sessions.stop(sessionId),
-      steer: (sessionId, text) => bridge.sessions.steer(sessionId, text),
+      stop: async (sessionId, target) => {
+        const result = await bridge.sessions.stop(
+          sessionId,
+          target?.kind === 'admission'
+            ? { source: 'stop_button', expectedAdmissionId: target.messageId }
+            : target?.kind === 'turn'
+              ? { source: 'stop_button', expectedTurnId: target.turnId }
+              : undefined,
+        );
+        return result?.kind === 'retracted' ? result : undefined;
+      },
+      // Steering is a Message placed at the current Turn's boundary, so it
+      // rides the one admission channel. Runtime Host names the outcome; this
+      // adapter only renames it for the Side Conversation port.
+      steer: async (sessionId, text, admissionId) => {
+        const messageId = admissionId ?? crypto.randomUUID();
+        const result = await bridge.sessions.submitMessage(sessionId, 'current_turn', {
+          messageId,
+          text,
+        });
+        if (!result.ok) {
+          if (result.reason === 'outcome_unknown') {
+            return { kind: 'outcome_unknown', messageId };
+          }
+          // No Turn opened and nothing was queued; the caller surfaces it as a
+          // failed send rather than waiting for an admission that never lands.
+          throw new Error('Runtime Host refused the steering Message');
+        }
+        return result.disposition === 'turn_started' && result.turnId
+          ? { kind: 'started', turnId: result.turnId }
+          : { kind: 'queued', messageId };
+      },
       setPermissionMode: (sessionId, mode) =>
         bridge.sessions.setPermissionMode(sessionId, mode),
       regenerateTurn: (sessionId, input) =>
         bridge.sessions.regenerateTurn(sessionId, input),
       respondToSandboxBoundary: (sessionId, response) =>
         bridge.sessions.respondToSandboxBoundary(sessionId, response),
+      respondToClientCapability: (sessionId, response) =>
+        bridge.sessions.respondToClientCapability(sessionId, response),
       respondToUserQuestion: (sessionId, response) =>
         bridge.sessions.respondToUserQuestion(sessionId, response),
-      subscribeEvents: (sessionId, handler) =>
-        bridge.sessions.subscribeEvents(sessionId, handler),
+      subscribeEvents: (sessionId, handler, onSeeded, onSeedError) =>
+        bridge.sessions.subscribeEvents(sessionId, handler, onSeeded, undefined, onSeedError),
+      subscribeSessionChanges: (handler) => bridge.sessions.subscribeChanges(handler),
     },
   };
 }

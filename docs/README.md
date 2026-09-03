@@ -25,6 +25,7 @@ This page is the authority map for Maka documentation. Code and contract tests r
 
 - Root and package READMEs describe stable product entry points, public seams, and local ownership.
 - `docs/` contains current cross-cutting architecture, security, product, and validation contracts.
+- `docs/blogs/` contains long-form explanations of Maka's design ideas; code and current contracts remain authoritative.
 - GitHub issues and pull requests contain implementation plans, migration progress, and time-sensitive TODOs.
 - `docs/archive/` preserves completed plans and superseded material for historical context. Archived documents are not current implementation guidance.
 
@@ -35,23 +36,34 @@ This page is the authority map for Maka documentation. Code and contract tests r
 - [Renderer architecture](../apps/desktop/src/renderer/README.md)
 - [Evaluation kernel](../packages/eval/README.md)
 - [Runtime package](../packages/runtime/README.md)
+- [Computer Use package](../packages/computer-use/README.md)
 - [UI package architecture](../packages/ui/README.md)
 - [Security policy](../SECURITY.md)
+
+## Blogs
+
+- [Log Is the Runtime: How Maka Uses an Append-Only Log to Manage Agent State and Context](./blogs/log-is-the-runtime.md) ([中文](./blogs/log-is-the-runtime.zh-CN.md))
 
 ## Current contracts
 
 ### Runtime and Eval
 
 - [Deep Research durable workspace](./deep-research-durable-workspace.md)
-- [Session task ledger lifecycle](./session-task-ledger-lifecycle.md)
+- [SessionTodo lifecycle](./session-todo-lifecycle.md)
+- [Desktop message queue](./desktop-message-queue.md)
 - [Work Board contract](./work-board-contract.md)
+- [Work Board Phase 1 surface](./work-board-phase1.md)
+- [WorkHub domain language](./workhub-domain-language.md)
+- [WorkHub Coordination Session ADR](./architecture/workhub-coordination-session-adr.md)
 - [Runtime resume architecture](./architecture/runtime-resume-architecture.md) ([中文](./architecture/runtime-resume-architecture.zh-CN.md))
 - [Runtime Host architecture](./architecture/runtime-host-architecture.md) ([中文](./architecture/runtime-host-architecture.zh-CN.md))
 - [Remote Runtime Host setup](./runtime-host-remote-access.md) ([中文](./runtime-host-remote-access.zh-CN.md))
 - [Runtime resume extraction ledger](./architecture/runtime-resume-extraction-ledger.zh-CN.md)
 - [Runtime resume Phase 3–4 implementation route](./architecture/runtime-resume-phase3-phase4-workspace-checkpoint-design.zh-CN.md)
 - [Skill catalog policy](./skill-catalog-policy.md)
+- [Provider-hosted web search capability](./web-search-provider-capability.md)
 - [Agent Swarm](./agent-swarm.md)
+- [Side Conversation](./side-conversation.md)
 - [Agent Graph stream scheduling](./architecture/agent-graph-stream-scheduling-draft.md) ([中文](./architecture/agent-graph-stream-scheduling-draft.zh-CN.md))
 - [IM 扫码接入 runtime architecture](./architecture/bot-onboarding-runtime.zh-CN.md)
 - [Backend architecture chapters](./architecture/)

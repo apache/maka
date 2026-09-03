@@ -25,9 +25,22 @@ import {
   candidateStartupFailureForExitCode,
   type CandidateStartupFailureReport,
 } from '../candidate-startup-failure.js';
+import {
+  RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV,
+  RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV,
+  RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV,
+  runtimeHostLaunchOwnerReleaseMessage,
+} from '../candidate-launch-owner-guard.js';
+import type { RuntimeHostManagedLaunchClaim } from '../operator/managed-deployment.js';
 import { RUNTIME_HOST_STDERR_PIPE_ENV } from '../process-diagnostics.js';
 
 const CANDIDATE_STDERR_MAX_BYTES = 4 * 1024;
+
+export interface CandidateExitDetails {
+  readonly pid: number | undefined;
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
 
 export interface DetachedCandidateInput {
   rootPath: string;
@@ -36,9 +49,18 @@ export interface DetachedCandidateInput {
   initialConnectionTimeoutMs?: number;
   idleGraceMs?: number;
   handshakeTimeoutMs?: number;
+  managedLaunchClaim?: RuntimeHostManagedLaunchClaim;
   executable?: string;
   entrypoint: string | URL;
   env?: NodeJS.ProcessEnv;
+  /** Existing authority lease inherited only by a launch-owner-supervised Candidate. */
+  inheritableAuthorityLeaseFd?: number;
+  /** Keep this Candidate bound to the launcher process for its whole lifetime. */
+  closeOnLauncherExit?: boolean;
+  /** Opaque Client identity admitted while the launch-owner lease remains held. */
+  launchOwnerClientInstanceId?: string;
+  /** Called with the candidate's exit details; the embedder owns the sink. */
+  readonly onExit?: (details: CandidateExitDetails) => void;
 }
 
 export interface DetachedCandidateAttempt {
@@ -70,8 +92,9 @@ export function launchDetachedRuntimeHostCandidate(
   input: DetachedCandidateInput,
 ): DetachedCandidateLaunch {
   const startupAttemptId = randomUUID();
-  const child = spawnCandidate(input, true, startupAttemptId);
+  const child = spawnCandidate(input, true, startupAttemptId, input.closeOnLauncherExit === true);
   const exited = observeCandidateExit(child);
+  notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
   const spawned = spawnedPid(child).then(({ pid }) => {
     child.unref();
@@ -84,9 +107,16 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
   readonly spawned: Promise<OwnedCandidateAttempt>;
 } {
   const startupAttemptId = randomUUID();
-  const child = spawnCandidate(input, false, startupAttemptId);
+  const guarded =
+    input.inheritableAuthorityLeaseFd !== undefined || input.closeOnLauncherExit === true;
+  if (input.inheritableAuthorityLeaseFd !== undefined && !input.launchOwnerClientInstanceId) {
+    throw new Error('A launch-owner-supervised Candidate requires its Client identity');
+  }
+  const child = spawnCandidate(input, false, startupAttemptId, guarded);
   const exited = observeCandidateExit(child);
+  notifyCandidateExit(child, exited, input.onExit);
   const startupFailure = readStartupFailure(exited, startupAttemptId);
+  let released = false;
   return {
     spawned: spawnedPid(child).then(({ pid }) => ({
       pid,
@@ -94,7 +124,16 @@ export function launchOwnedRuntimeHostCandidate(input: DetachedCandidateInput): 
       exited,
       startupFailure,
       releaseToEnvironment(): void {
-        child.unref();
+        if (released) return;
+        released = true;
+        if (!guarded || !child.connected) {
+          child.unref();
+          return;
+        }
+        child.send(runtimeHostLaunchOwnerReleaseMessage(), () => {
+          if (child.connected) child.disconnect();
+          child.unref();
+        });
       },
       async settle(timeoutMs: number): Promise<boolean> {
         const result = await within(exited, timeoutMs);
@@ -111,6 +150,7 @@ function spawnCandidate(
   input: DetachedCandidateInput,
   detached: boolean,
   startupAttemptId: string,
+  guarded: boolean,
 ): ChildProcess {
   const executable = input.executable ?? process.execPath;
   const args = [
@@ -126,18 +166,35 @@ function spawnCandidate(
   appendArgument(args, '--idle-grace-ms', input.idleGraceMs);
   appendArgument(args, '--handshake-timeout-ms', input.handshakeTimeoutMs);
   appendArgument(args, '--generation', input.generation);
+  if (input.managedLaunchClaim !== undefined) {
+    appendArgument(args, '--managed-deployment-id', input.managedLaunchClaim.deploymentId);
+    appendArgument(args, '--managed-config-revision', input.managedLaunchClaim.configRevision);
+  }
 
   // spawn() commits the side effect synchronously; spawned only reports that commit's outcome.
+  const inheritedLeaseFd = input.inheritableAuthorityLeaseFd;
+  const childLeaseFd = inheritedLeaseFd === undefined ? undefined : 4;
+  const guardedStdio: Array<number | 'ignore' | 'pipe' | 'ipc'> =
+    childLeaseFd === undefined
+      ? ['ignore', 'ignore', 'pipe', 'ipc']
+      : ['ignore', 'ignore', 'pipe', 'ipc', inheritedLeaseFd!];
   const child = spawn(executable, args, {
     cwd: dirname(isAbsolute(executable) ? executable : process.execPath),
     detached,
-    stdio: ['ignore', 'ignore', 'pipe'],
+    stdio: guarded ? guardedStdio : ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
     env: {
       ...process.env,
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
       ...input.env,
       [RUNTIME_HOST_STDERR_PIPE_ENV]: '1',
+      ...(guarded ? { [RUNTIME_HOST_LAUNCH_OWNER_GUARD_ENV]: '1' } : {}),
+      ...(childLeaseFd === undefined
+        ? {}
+        : {
+            [RUNTIME_HOST_LAUNCH_OWNER_LEASE_FD_ENV]: String(childLeaseFd),
+            [RUNTIME_HOST_LAUNCH_OWNER_CLIENT_ID_ENV]: input.launchOwnerClientInstanceId!,
+          }),
     },
   });
   const stderr = child.stderr as (NodeJS.ReadableStream & { unref?: () => void }) | null;
@@ -162,6 +219,21 @@ function spawnedPid(child: ReturnType<typeof spawn>): Promise<{ pid: number }> {
     };
     child.once('spawn', onSpawn);
     child.once('error', onError);
+  });
+}
+
+function notifyCandidateExit(
+  child: ChildProcess,
+  exited: Promise<CandidateProcessExit>,
+  onExit: DetachedCandidateInput['onExit'],
+): void {
+  if (!onExit) return;
+  void exited.then(({ code, signal }) => {
+    try {
+      onExit({ pid: child.pid, code, signal });
+    } catch {
+      // The embedder owns this diagnostics sink; it must not affect process settlement.
+    }
   });
 }
 

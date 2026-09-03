@@ -21,11 +21,16 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
+import type { UsageStats } from '@maka/core/settings';
+import { EMPTY_USAGE_PROVENANCE } from '@maka/core/usage-ledger-merge';
 import {
   projectDesktopSessionEvent,
   projectDesktopSessionSummary,
+  projectDesktopStoredMessage,
   projectDesktopTurnRecord,
+  projectDesktopUsageStats,
 } from '../../shared/desktop-session-projection.js';
+import { runtimeHostChangeRetiresSession } from '../../shared/runtime-host-identity.js';
 
 test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   const raw = summary('same-session');
@@ -49,8 +54,45 @@ test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   );
 
   assert.notEqual(local.id, remote.id);
+  assert.equal(local.revision, 7);
+  assert.equal(remote.revision, 7);
   assert.equal(local.profileKind, 'local');
   assert.equal(remote.profileName, 'Office');
+});
+
+test('retires an active Session only after it leaves the refreshed Host catalog', () => {
+  const owner = projectDesktopSessionSummary(
+    {
+      hostId: 'shared-root',
+      profileId: 'owner',
+      profileName: 'Owner',
+      profileKind: 'remote',
+    },
+    summary('shared-session'),
+  );
+  const guest = projectDesktopSessionSummary(
+    {
+      hostId: 'shared-root',
+      profileId: 'guest',
+      profileName: 'Guest',
+      profileKind: 'remote',
+    },
+    summary('shared-session'),
+  );
+  const removedGuest = {
+    epoch: 'guest-epoch',
+    profileId: 'guest',
+    profileName: 'Guest',
+    profileKind: 'remote',
+    profileAccess: 'session_guest',
+    readiness: 'unavailable',
+    hostId: 'shared-root',
+    isDefault: false,
+    removed: true,
+  } as const;
+
+  assert.equal(runtimeHostChangeRetiresSession(removedGuest, guest.id, [owner]), false);
+  assert.equal(runtimeHostChangeRetiresSession(removedGuest, guest.id, []), true);
 });
 
 test('projects typed linked Session ids without rewriting opaque tool data', () => {
@@ -145,9 +187,93 @@ test('projects queued Session attachments into the Desktop host namespace', () =
   );
 });
 
-function summary(id: string): SessionSummary {
+test('projects only present Usage Session ids into the Desktop host namespace', () => {
+  const stats: UsageStats = {
+    summary: {
+      totalRequests: 2,
+      totalCostUsd: 0,
+      totalTokens: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheTokens: 0,
+      cacheMiss: 0,
+      cacheRead: 0,
+      cacheCreation: 0,
+      reasoning: 0,
+    },
+    logs: [
+      {
+        id: 'with-session',
+        ts: 1,
+        kind: 'model',
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        provider: 'provider',
+        model: 'model',
+        inputTokens: 0,
+        outputTokens: 0,
+        status: 'success',
+      },
+      {
+        id: 'without-session',
+        ts: 2,
+        kind: 'model',
+        provider: 'provider',
+        model: 'model',
+        inputTokens: 0,
+        outputTokens: 0,
+        status: 'aborted',
+      },
+    ],
+    byProvider: [],
+    byModel: [],
+    byTool: [],
+    pricing: [],
+    provenance: EMPTY_USAGE_PROVENANCE,
+  };
+
+  const projected = projectDesktopUsageStats({ hostId: 'remote-root' }, stats);
+
+  assert.equal(projected.logs[0]?.sessionId, JSON.stringify(['remote-root', 'session-1']));
+  assert.equal(projected.logs[1]?.sessionId, undefined);
+});
+
+test('projects durable WorkHub delegation targets into the Desktop host namespace', () => {
+  const projected = projectDesktopStoredMessage(
+    { hostId: 'remote-root' },
+    {
+      type: 'workhub_coordination',
+      id: 'delegation-assignment-message',
+      turnId: 'coordination-turn',
+      ts: 2,
+      schemaVersion: 1,
+      kind: 'delegation_assigned',
+      actionId: 'action-id',
+      actionFingerprint: `sha256:${'a'.repeat(64)}`,
+      coordinationTurnId: 'coordination-turn',
+      targetSessionId: 'payments',
+      disposition: 'delegate_existing',
+      userText: 'Continue payment work',
+      delegationId: 'delegation-id',
+      targetTurnId: 'payments-turn',
+      targetMessageId: 'payments-message',
+      targetSessionName: 'Payments',
+    },
+  );
+
+  assert.equal(projected.type, 'workhub_coordination');
+  if (
+    projected.type === 'workhub_coordination' &&
+    projected.kind === 'delegation_assigned'
+  ) {
+    assert.equal(projected.targetSessionId, JSON.stringify(['remote-root', 'payments']));
+  }
+});
+
+function summary(id: string): SessionSummary & { revision: number } {
   return {
     id,
+    revision: 7,
     name: id,
     isFlagged: false,
     isArchived: false,

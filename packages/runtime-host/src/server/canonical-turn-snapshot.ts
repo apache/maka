@@ -18,7 +18,7 @@
  */
 
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import type { ContextCompactionOutcome } from '@maka/core/events';
+import { type ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';

@@ -302,8 +302,8 @@ async function smokePackagedEval(archiveRoot, sourceCommit, environment, run) {
           mounts: [],
           egressProxy: {
             composeSourceEnv: 'MAKA_EVAL_MAKA_BUNDLE_PATH',
-            composeRelativePath: 'packages/eval/harbor/docker-compose-egress-proxy.yaml',
-            networkPolicyRelativePath: 'packages/eval/harbor/egress-proxy/network-policy',
+            composeRelativePath: 'node_modules/@maka/eval/harbor/docker-compose-egress-proxy.yaml',
+            networkPolicyRelativePath: 'node_modules/@maka/eval/harbor/egress-proxy/network-policy',
             proxyUrl: 'http://maka-eval-mitmproxy:8080',
             allowedHost: 'maka-eval-mitmproxy',
             containerCaPath: '/opt/maka-egress/mitmproxy-ca-cert.pem',
@@ -669,7 +669,6 @@ export async function verifyMacosArm64Cli(
     const environment = {
       HOME: isolatedHome,
       LANG: 'en_US.UTF-8',
-      MAKA_DISABLE_DEFERRED_TOOLS: '1',
       PATH: '/usr/bin:/bin:/usr/sbin:/sbin',
       SHELL: '/bin/zsh',
       TMPDIR: extractionRoot,

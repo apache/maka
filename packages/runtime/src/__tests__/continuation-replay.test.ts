@@ -31,6 +31,21 @@ import {
 import { PROVIDER_REPLAY_PROJECTION_VERSION } from '../model-history.js';
 
 describe('continuation replay segment', () => {
+  it('rejects a persisted v1 admission under the route-bound v2 projection', () => {
+    const identity = runtimeIdentity();
+    const result = buildContinuationReplaySegment({
+      prefix: buildImmutableRuntimePrefix(identity, [
+        { eventSeq: 1, event: textEvent('legacy-user', 'user', identity) },
+      ]),
+      providerProjectionVersion: 1,
+    });
+
+    assert.equal(result.kind, 'blocked');
+    if (result.kind !== 'blocked') return;
+    assert.equal(result.reason, 'provider_replay_unsupported');
+    assert.match(result.diagnostics[0]?.message ?? '', /projection 1 is unsupported/);
+  });
+
   it('trims an interrupted assistant suffix after the last stable user boundary', () => {
     const identity = runtimeIdentity();
     const result = buildContinuationReplaySegment({
@@ -326,6 +341,11 @@ describe('continuation replay segment', () => {
     const result = buildContinuationReplayPlan({
       prefixes: [ancestor, source],
       providerProjectionVersion: PROVIDER_REPLAY_PROJECTION_VERSION,
+      admissionRoute: {
+        runHeaders: [],
+        targetProviderStateIdentity: undefined,
+        targetModelId: 'test-model',
+      },
     });
 
     assert.equal(result.kind, 'replayable');

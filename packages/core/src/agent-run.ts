@@ -80,9 +80,19 @@ export type RootExecutionDescriptor =
       inputDigest?: `sha256:${string}`;
       maxSteps?: number;
     }
+  | {
+      /** Tool-free conversational execution admitted only by WorkHub authority. */
+      kind: 'workhub_coordination';
+      inputDigest: `sha256:${string}`;
+    }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
-  | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | {
+      kind: 'scheduled_task';
+      scheduledTaskId: string;
+      /** Includes the immutable Connection target for Agent ScheduledTasks. */
+      executionFingerprint?: `sha256:${string}`;
+    }
   | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {
@@ -154,6 +164,14 @@ export interface AgentRunHeader {
   turnId: string;
   status: AgentRunStatus;
   backendKind: PersistedBackendKind;
+  /** Immutable Connection entity identity. Optional only on legacy run headers. */
+  llmConnectionId?: string;
+  /**
+   * Opaque identity of the provider endpoint and credential ownership frozen
+   * before this run's first provider dispatch. Optional only on legacy or
+   * non-provider run headers.
+   */
+  providerStateIdentity?: `sha256:${string}`;
   llmConnectionSlug: string;
   modelId: string;
   cwd: string;
@@ -371,7 +389,6 @@ export const AGENT_RUN_EVENT_TYPES = [
   'run_created',
   'run_started',
   'turn_started',
-  'sandbox_context_resolved',
   'plan_context_resolved',
   'plan_submitted',
   'plan_execution_started',
@@ -390,6 +407,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'model_stream_failed',
   'send_diagnostics_recorded',
   'tool_started',
+  'tool_searched',
   'tool_completed',
   'tool_failed',
   'skill_catalog_built',
@@ -413,6 +431,7 @@ export const AGENT_RUN_EVENT_TYPES = [
   'provider_request_attempt_recorded',
   'model_call_attempt_recorded',
   'history_compact_checkpoint_recorded',
+  'model_projection_transition_recorded',
   'task_gate_decided',
   'abort_requested',
   'run_completed',
@@ -560,6 +579,8 @@ const AGENT_RUN_HEADER_SHAPE = defineObjectShape<AgentRunHeader>()(
   ],
   [
     'invocationId',
+    'llmConnectionId',
+    'providerStateIdentity',
     'completedAt',
     'parentRunId',
     'resumedFromRunId',
@@ -636,6 +657,11 @@ export function decodeAgentRunHeader(value: unknown): AgentRunHeader {
     typeof value.turnId === 'string' &&
     (AGENT_RUN_STATUSES as readonly unknown[]).includes(value.status) &&
     isPersistedBackendKind(value.backendKind) &&
+    (value.llmConnectionId === undefined ||
+      (typeof value.llmConnectionId === 'string' && value.llmConnectionId.length > 0)) &&
+    (value.providerStateIdentity === undefined ||
+      (typeof value.providerStateIdentity === 'string' &&
+        /^sha256:[0-9a-f]{64}$/.test(value.providerStateIdentity))) &&
     typeof value.llmConnectionSlug === 'string' &&
     typeof value.modelId === 'string' &&
     typeof value.cwd === 'string' &&
@@ -784,12 +810,14 @@ export interface AgentRunStore {
     sessionId: string,
     type: AgentRunProjectionKey,
   ): Promise<AgentRunEvent | null | undefined>;
+  /** Opaque revision of the canonical event ledger used to guard a derived repair. */
+  readEventLedgerRevision?(sessionId: string): Promise<string>;
   /** Rewrites derived state after the canonical event ledger repairs an absent or damaged projection. */
   repairEventProjection?(
     sessionId: string,
     type: AgentRunProjectionKey,
     event: AgentRunEvent | null,
-    options?: { replaceEventId?: string },
+    options: { ifLedgerRevision: string; replaceEventId?: string },
   ): Promise<void>;
 }
 

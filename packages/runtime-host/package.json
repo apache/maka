@@ -9,9 +9,15 @@
     "./adapter": "./dist/adapter/index.js",
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
+    "./webrtc-stun-policy": "./dist/webrtc-stun-policy.js",
+    "./peer-reachability": "./dist/peer-reachability/index.js",
+    "./peer-mesh": "./dist/peer-mesh/index.js",
     "./operator": "./dist/operator/index.js",
+    "./operator/update-package-evidence": "./dist/operator/update-package-evidence.js",
+    "./profile-kind": "./dist/profile-kind.js",
     "./execution-candidate-main": "./dist/execution-candidate-main.js",
     "./server": "./dist/server/index.js",
+    "./test-only/client-capability-host": "./dist/test-only/client-capability-host.js",
     "./test-only/execution-candidate-e2e-main": "./dist/test-only/execution-candidate-e2e-main.js"
   },
   "scripts": {
@@ -19,7 +25,6 @@
     "build": "tsc -p tsconfig.json",
     "benchmark:transcript": "node scripts/transcript-data-plane-benchmark.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run clean && npm run build && npm run test:dist",
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
@@ -27,6 +32,7 @@
     "@maka/runtime": "0.1.0",
     "@maka/storage": "0.1.0",
     "ws": "^8.21.3",
+    "yaml": "^2.9.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {

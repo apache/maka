@@ -379,6 +379,10 @@ describe("flat timeline under tool projection (#1307 P1 regression)", () => {
 });
 
 describe("live content over persisted partial rows", () => {
+  test("does not create an empty renderer turn for a waiting send", () => {
+    assert.deepEqual(overlayLiveTurn([], armLiveTurn("t1")), []);
+  });
+
   test("replaces persisted thinking with its live projection instead of rendering it twice", () => {
     const settled = materializeTurns([
       userMsg("t1", 1, "inspect it"),

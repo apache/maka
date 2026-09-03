@@ -144,6 +144,14 @@ export function modelChoiceValue(connectionSlug: string, model: string): string 
   return `${encodeURIComponent(connectionSlug)}:${encodeURIComponent(model)}`;
 }
 
+export function exactModelChoiceValue(
+  connectionId: string,
+  connectionSlug: string,
+  model: string,
+): string {
+  return `${encodeURIComponent(connectionId)}:${modelChoiceValue(connectionSlug, model)}`;
+}
+
 export function parseModelChoiceValue(value: string): { llmConnectionSlug: string; model: string } | undefined {
   const idx = value.indexOf(':');
   if (idx <= 0) return undefined;

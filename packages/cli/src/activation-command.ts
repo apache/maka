@@ -26,7 +26,7 @@ import type { CreateSessionInput, UserMessageInput } from '@maka/core/runtime-in
 import type { SessionSummary } from '@maka/core/session';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { redactSecrets } from '@maka/core/redaction';
-import { assertSessionBundleRootLayout } from '@maka/storage';
+import { assertSessionBundleRootLayout } from '@maka/storage/session-bundle-policy';
 import { projectSessionCatalogSummary, readRuntimeHostSessions } from '@maka/runtime-host/client';
 import { connectRuntimeHostCli, resolveRuntimeHostCliTarget } from './runtime-host-cli-context.js';
 import { createRuntimeHostRunContext } from './runtime-host-run-command.js';

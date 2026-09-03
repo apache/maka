@@ -21,10 +21,10 @@ import { lazy, Suspense, type ComponentProps, type CSSProperties } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { ResizeHandle, type ResizableProps } from '@astryxdesign/core/Resizable';
 import { Spinner } from '@astryxdesign/core/Spinner';
-import { useUiLocale, type Composer } from '@maka/ui';
+import { Composer, useToast, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { SessionSummary } from '@maka/core/session';
-import { getShellCopy } from '../../../locales/shell-copy';
+import { confirmBypassPermission, getShellCopy } from '../../../locales/shell-copy';
 import type {
   SessionWorkbarPanelsState,
   SessionWorkbarPlacement,
@@ -45,30 +45,43 @@ const WorkbarSurface = lazy(() =>
   })),
 );
 
-function SessionWorkbarFallback() {
+function SessionWorkbarFallback(props: {
+  hidden: boolean;
+  rightCollapsed: boolean;
+  bottomOpen: boolean;
+}) {
   const copy = getShellCopy(useUiLocale()).app;
+  if (props.hidden || (props.rightCollapsed && !props.bottomOpen)) return null;
+  const placements: SessionWorkbarPlacement[] = [];
+  if (!props.rightCollapsed) placements.push('right');
+  if (props.bottomOpen) placements.push('bottom');
   return (
     <div className="maka-workbar-workspace-contents">
-      <Card
-        variant="transparent"
-        padding={0}
-        height="100%"
-        className="maka-session-workbar maka-session-workbar-frame"
-        data-placement="right"
-        role="status"
-        aria-busy="true"
-        aria-label={copy.loadingWorkbarLabel}
-      >
-        <div className="maka-lazy-fallback" data-surface="panel">
-          <Spinner size="sm" shade="subtle" label={copy.loadingWorkbar} />
-        </div>
-      </Card>
+      {placements.map((placement) => (
+        <Card
+          key={placement}
+          variant="transparent"
+          padding={0}
+          height="100%"
+          className="maka-session-workbar maka-session-workbar-frame"
+          data-placement={placement}
+          role="status"
+          aria-busy="true"
+          aria-label={copy.loadingWorkbarLabel}
+        >
+          <div className="maka-lazy-fallback" data-surface="panel">
+            <Spinner size="sm" shade="subtle" label={copy.loadingWorkbar} />
+          </div>
+        </Card>
+      ))}
     </div>
   );
 }
 
 export interface WorkbarHostModel {
   activeId?: string;
+  projectId?: string | null;
+  projectAliases?: readonly string[];
   rightCollapsed: boolean;
   bottomOpen: boolean;
   hidden: boolean;
@@ -106,18 +119,12 @@ export interface WorkbarHostModel {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
-  mentionSkills?: ComponentProps<typeof Composer>['mentionSkills'];
-  mentionSkillsUnavailable?: ComponentProps<typeof Composer>['mentionSkillsUnavailable'];
-  mentionSkillsLoading?: ComponentProps<typeof Composer>['mentionSkillsLoading'];
-  onSearchMentionFiles?: ComponentProps<typeof Composer>['onSearchMentionFiles'];
   closeConfirmation: {
     key: string;
     open: boolean;
@@ -128,7 +135,9 @@ export interface WorkbarHostModel {
 }
 
 export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
-  const copy = getShellCopy(useUiLocale()).app;
+  const locale = useUiLocale();
+  const toast = useToast();
+  const copy = getShellCopy(locale).app;
   const style = {
     '--maka-session-workbar-width': `${props.rightWidth}px`,
     '--maka-session-bottom-panel-height': `${props.bottomHeight}px`,
@@ -160,10 +169,20 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
       )}
       {props.activeId && (
         <div className="maka-workbar-layout-vars" style={style}>
-          <Suspense fallback={<SessionWorkbarFallback />}>
+          <Suspense
+            fallback={
+              <SessionWorkbarFallback
+                hidden={props.hidden}
+                rightCollapsed={props.rightCollapsed}
+                bottomOpen={props.bottomOpen}
+              />
+            }
+          >
             <WorkbarSurface
               key={props.activeId}
               sessionId={props.activeId}
+              projectId={props.projectId}
+              projectAliases={props.projectAliases}
               hidden={props.hidden}
               onDismissPanel={props.onDismissPanel}
               panelsState={props.panelsState}
@@ -183,18 +202,13 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
               onContentStateChange={props.onContentStateChange}
-              onPreparingStateChange={props.onPreparingStateChange}
               onInitialPromptStarted={props.onInitialPromptStarted}
               onPromptAccepted={props.onPromptAccepted}
               onActivityStateChange={props.onActivityStateChange}
-              preparingSideChatPanelIds={props.preparingSideChatPanelIds}
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}
-              mentionSkills={props.mentionSkills}
-              mentionSkillsUnavailable={props.mentionSkillsUnavailable}
-              mentionSkillsLoading={props.mentionSkillsLoading}
-              onSearchMentionFiles={props.onSearchMentionFiles}
+              confirmBypass={() => confirmBypassPermission(toast, locale)}
             />
           </Suspense>
         </div>

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -34,18 +35,22 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import type { AgentRunHeader } from '@maka/core/agent-run';
-import { normalizeMessageContent, type MessageContent } from '@maka/core/events';
+import {
+  aggregateMessageContents,
+  messageContentDigest,
+  normalizeMessageContent,
+  type MessageContent,
+} from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { BackendRegistry, SessionManager } from '@maka/runtime/session-manager';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -61,6 +66,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -69,7 +75,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import { resolveWorkspaceIdentity } from '@maka/storage/workspace-identity';
 import {
   connectRuntimeHost,
@@ -78,24 +83,22 @@ import {
   type RuntimeHostConnection,
   type RuntimeHostSessionSubscription,
 } from '../../client/index.js';
+
+const FAKE_CONNECTION_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 import {
   decodeHostFrame,
   encodeProtocolMessage,
   RUNTIME_HOST_COMPATIBILITY_EPOCH,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ClientFrame,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../../protocol/index.js';
 import { SessionAdmissionGate } from '../../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../../server/task-ledger-coordinator.js';
 import { continuationSafetyDigest } from '../../server/root-turn-coordinator.js';
 import { FramedTransport } from '../../transport/framed-transport.js';
 import { removePosixEndpointDirectories } from './endpoint-hygiene.js';
@@ -144,6 +147,7 @@ export class ExecutionFixture {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const session = await stores.sessionStore.create({
         cwd: this.root,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'ask',
@@ -179,6 +183,7 @@ export class ExecutionFixture {
         turnId: sourceTurnId,
         status: 'created',
         backendKind: 'fake',
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         modelId: 'fake-model',
         cwd: this.root,
@@ -321,7 +326,6 @@ export class ExecutionFixture {
         },
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
@@ -392,11 +396,15 @@ export class ExecutionFixture {
     try {
       stores = await openInteractiveExecutionStoresForWrite(owner.lease);
       const workspace = await resolveWorkspaceIdentity({ path: this.root });
+      const backends = new BackendRegistry();
+      backends.register('ai-sdk', () => {
+        throw new Error('pending continuation setup must not build a backend');
+      });
       const manager = new SessionManager({
         store: stores.sessionStore,
         runStore: stores.agentRunStore,
         runtimeEventStore: stores.runtimeEventStore,
-        backends: new BackendRegistry(),
+        backends,
         safeBoundaryResumeEnabled: true,
         inspectContinuationSafety: async () => ({
           workspaceIdentity: workspace.workspaceIdentity,
@@ -405,7 +413,6 @@ export class ExecutionFixture {
         }),
         newId: randomUUID,
         now: Date.now,
-        runtimeSource: 'test',
       });
       const plan = await manager.planAuthoritativeSafeBoundaryContinuation(this.sessionId, {
         sourceRunId: source.sourceRunId,
@@ -493,6 +500,7 @@ export class ExecutionFixture {
       const child = await stores.sessionStore.createSubagent({
         cwd: this.root,
         name: `${agentName} ${kind}`,
+        llmConnectionId: FAKE_CONNECTION_ID,
         llmConnectionSlug: 'fake',
         model: 'fake-model',
         permissionMode: 'explore',
@@ -548,6 +556,7 @@ export class ExecutionFixture {
           turnId: `source-turn-${kind}`,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -648,6 +657,7 @@ export class ExecutionFixture {
           turnId: graph.turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -672,6 +682,181 @@ export class ExecutionFixture {
     content: string | MessageContent,
   ): Promise<{ runId: string; userMessageId: string }> {
     return this.seedTurnState(turnId, content, false, false);
+  }
+
+  async seedAtomicRootAdmissionWithoutRun(input: {
+    turnId: string;
+    messageId: string;
+    content: MessageContent;
+  }): Promise<void> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for atomic root setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const admittedAt = Date.now();
+      const content = normalizeMessageContent(input.content);
+      const contentDigest = messageContentDigest(content);
+      const runId = randomUUID();
+      await stores.sessionStore.commitMessageAdmission({
+        sessionId: this.sessionId,
+        turnId: input.turnId,
+        runId,
+        messageId: input.messageId,
+        content,
+        submittedContentDigest: contentDigest,
+        submittedPlacement: 'current_turn',
+        placement: 'current_turn',
+        disposition: 'steering',
+        skillInvocation: { loaded: [], failed: [], receipts: [] },
+        admittedAt,
+      });
+      const result = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId: input.turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: input.messageId,
+        execution: { kind: 'external_message', inputDigest: contentDigest },
+        previousRootTurnId: null,
+        normalizedInput: content,
+        sourceMessages: [
+          {
+            messageId: input.messageId,
+            content,
+            submittedContentDigest: contentDigest,
+            placement: 'current_turn',
+            disposition: 'turn_started',
+          },
+        ],
+        admittedAt,
+      });
+      assert.equal(result.kind, 'admitted');
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+  }
+
+  async seedLegacyRootWithoutSourceTranscripts(
+    runState: 'missing' | 'created' | 'terminal' = 'terminal',
+  ): Promise<{
+    turnId: string;
+    runId: string;
+    sources: readonly [
+      { messageId: string; content: MessageContent; admittedAt: number },
+      { messageId: string; content: MessageContent; admittedAt: number },
+    ];
+  }> {
+    const owner = await tryAcquireInteractiveRootOwner(this.capability);
+    assert.ok(owner);
+    if (!owner) throw new Error('Unable to acquire execution root for legacy Root setup');
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForWrite(owner.lease);
+      const turnId = randomUUID();
+      const runId = randomUUID();
+      const admittedAt = Date.now();
+      const followup = {
+        messageId: randomUUID(),
+        content: { text: 'legacy follow-up source' },
+        admittedAt,
+      };
+      const steering = {
+        messageId: randomUUID(),
+        content: { text: 'legacy steering source' },
+        admittedAt,
+      };
+      const normalizedInput = aggregateMessageContents([followup.content, steering.content]);
+      const admission = await stores.agentRunStore.admitRootTurn({
+        sessionId: this.sessionId,
+        turnId,
+        proposedRunId: runId,
+        proposedUserMessageId: null,
+        execution: {
+          kind: 'external_message',
+          inputDigest: messageContentDigest(normalizedInput),
+        },
+        previousRootTurnId: null,
+        normalizedInput,
+        sourceMessages: [
+          {
+            messageId: followup.messageId,
+            content: followup.content,
+            submittedContentDigest: messageContentDigest(followup.content),
+            placement: 'next_turn',
+            disposition: 'followup',
+          },
+          {
+            messageId: steering.messageId,
+            content: steering.content,
+            submittedContentDigest: messageContentDigest(steering.content),
+            placement: 'current_turn',
+            disposition: 'steering',
+          },
+        ],
+        admittedAt,
+      });
+      assert.equal(admission.kind, 'admitted');
+      const run: AgentRunHeader = {
+        runId,
+        invocationId: runId,
+        sessionId: this.sessionId,
+        turnId,
+        status: 'created',
+        backendKind: 'fake',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+        cwd: this.root,
+        permissionMode: 'ask',
+        createdAt: admittedAt,
+        updatedAt: admittedAt,
+      };
+      if (runState !== 'missing') {
+        await stores.agentRunStore.createRun(run, { durable: true });
+      }
+      if (runState === 'terminal') {
+        const terminalAt = admittedAt + 1;
+        const terminal = buildRecoveredTerminalRuntimeEvent({
+          id: randomUUID(),
+          run,
+          status: 'failed',
+          ts: terminalAt,
+          failureClass: 'legacy_terminal',
+          recoveryReason: 'test_legacy_terminal_root',
+        });
+        await commitTerminalRunWithRuntimeFact({
+          runStore: stores.agentRunStore,
+          runtimeEventStore: stores.runtimeEventStore,
+          newId: randomUUID,
+          sessionId: this.sessionId,
+          runId,
+          turnId,
+          status: 'failed',
+          ts: terminalAt,
+          terminalEvent: terminal,
+          failureClass: 'legacy_terminal',
+        });
+      }
+      return { turnId, runId, sources: [followup, steering] };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await owner.close();
+    }
+  }
+
+  deleteRootSourceProof(messageId: string): void {
+    const database = new DatabaseSync(join(this.root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const result = database
+        .prepare(
+          'DELETE FROM core_root_source_message_proofs WHERE session_id = ? AND message_id = ?',
+        )
+        .run(this.sessionId, messageId);
+      assert.equal(result.changes, 1);
+    } finally {
+      database.close();
+    }
   }
 
   async archiveSession(): Promise<void> {
@@ -824,6 +1009,7 @@ export class ExecutionFixture {
           turnId,
           status: 'created',
           backendKind: 'fake',
+          llmConnectionId: FAKE_CONNECTION_ID,
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
           cwd: this.root,
@@ -879,9 +1065,10 @@ export class ExecutionFixture {
 
   async stopHost(
     host: ExecutionHostHandle,
+    shutdownMessage: { type: 'shutdown' | 'shutdown_question_admission' } = { type: 'shutdown' },
   ): Promise<{ code: number | null; signal: NodeJS.Signals | null }> {
     if (host.child.exitCode === null && host.child.signalCode === null) {
-      host.child.send({ type: 'shutdown' });
+      host.child.send(shutdownMessage);
     }
     const exit = await withTimeout(
       waitForExitResult(host.child),
@@ -939,6 +1126,46 @@ export class ExecutionFixture {
         terminalEvents: runtimeEvents.filter(isTerminalRuntimeEvent),
         classification: classifyTerminalRuntimeLedger(run, runtimeEvents),
       };
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readPendingInteractionCount(): Promise<number> {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.interactionStore.listSessionPending(this.sessionId)).length;
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readTurnRuns(turnId: string) {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.agentRunStore.listSessionRuns(this.sessionId)).filter(
+        (candidate) => candidate.turnId === turnId,
+      );
+    } finally {
+      await stores?.sessionStore.close?.();
+      await reader.close();
+    }
+  }
+
+  async readSessionUserMessages(): Promise<Array<Extract<StoredMessage, { type: 'user' }>>> {
+    const reader = await acquireReader(this.capability);
+    let stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForRead>> | undefined;
+    try {
+      stores = await openInteractiveExecutionStoresForRead(reader.lease);
+      return (await stores.sessionStore.readMessages(this.sessionId)).filter(
+        (message): message is Extract<StoredMessage, { type: 'user' }> => message.type === 'user',
+      );
     } finally {
       await stores?.sessionStore.close?.();
       await reader.close();
@@ -1041,6 +1268,7 @@ export async function withExecutionRoot(
     stores = await openInteractiveExecutionStoresForWrite(owner.lease);
     const session = await stores.sessionStore.create({
       cwd: root,
+      llmConnectionId: FAKE_CONNECTION_ID,
       llmConnectionSlug: 'fake',
       model: 'fake-model',
       permissionMode: 'ask',
@@ -1186,7 +1414,7 @@ export async function waitForTurn(
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
     try {
-      return await connection.queryTurn({ sessionId, turnId });
+      return await connection.request('turn.query', { sessionId, turnId });
     } catch (error) {
       if (!(error instanceof RuntimeHostOperationError) || error.code !== 'not_found') throw error;
       if (Date.now() >= deadline) throw new Error('Turn admission was not observed');
@@ -1277,7 +1505,7 @@ export async function waitForTerminalTurn(
   try {
     return await withTimeout(
       (async () => {
-        const current = await connection.queryTurn({ sessionId, turnId });
+        const current = await connection.request('turn.query', { sessionId, turnId });
         if (isTerminalTurnSnapshot(current)) return current;
         for await (const frame of subscription) {
           if (frame.kind !== 'subscription.session_projection') continue;
@@ -1309,7 +1537,7 @@ export async function waitForRunningTurn(
 ): Promise<TurnSnapshot> {
   const deadline = Date.now() + PROCESS_TIMEOUT_MS;
   while (true) {
-    const snapshot = await connection.queryTurn({ sessionId, turnId });
+    const snapshot = await connection.request('turn.query', { sessionId, turnId });
     if (snapshot.status === 'running' || snapshot.status === 'waiting_for_user') return snapshot;
     if (Date.now() >= deadline) throw new Error('Turn did not become active');
     await sleep(20);
@@ -1505,22 +1733,6 @@ async function acquireReader(capability: StorageRootCapability<'interactive'>) {
       throw new Error('Interactive root reader could not acquire the released root');
     await sleep(20);
   }
-}
-
-export function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  message: string,
-): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<T>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
 }
 
 function sleep(ms: number): Promise<void> {

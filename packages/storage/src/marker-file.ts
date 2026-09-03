@@ -18,13 +18,12 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { constants as fsConstants, type BigIntStats } from 'node:fs';
-import { link, lstat, open, rename, unlink } from 'node:fs/promises';
+import fs from 'node:fs';
+import { link, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
+import { readStableBoundedFile, type StableBoundedFileHandle } from './stable-storage.js';
 
-export interface MarkerFileHandle {
-  stat(options: { bigint: true }): Promise<BigIntStats>;
-  readFile(encoding: 'utf8'): Promise<string>;
+export interface MarkerFileHandle extends StableBoundedFileHandle {
   writeFile(data: string, encoding: 'utf8'): Promise<void>;
   sync(): Promise<void>;
   close(): Promise<void>;
@@ -35,8 +34,12 @@ export interface MarkerFileDependencies {
   randomUUID(): string;
 }
 
+const openMarkerFile = fs.promises.open.bind(fs.promises);
 const defaultDependencies: MarkerFileDependencies = {
-  open: async (path, flags, mode) => open(path, flags, mode),
+  // Capture once so later-loaded code cannot replace the marker authority's
+  // filesystem primitive. Race fixtures interpose before dynamically importing
+  // this module and are captured at the same boundary.
+  open: openMarkerFile,
   randomUUID,
 };
 
@@ -51,25 +54,8 @@ export async function readBoundedMarkerFile(
   dependencies: Partial<MarkerFileDependencies> = {},
 ): Promise<string> {
   const deps = { ...defaultDependencies, ...dependencies };
-  const handle = await deps.open(input.path, markerReadFlags());
-  try {
-    const [handleStat, pathStat] = await Promise.all([
-      handle.stat({ bigint: true }),
-      lstat(input.path, { bigint: true }),
-    ]);
-    if (
-      !handleStat.isFile() ||
-      !pathStat.isFile() ||
-      handleStat.size > BigInt(input.maxBytes) ||
-      handleStat.dev !== pathStat.dev ||
-      handleStat.ino !== pathStat.ino
-    ) {
-      throw input.invalidFile();
-    }
-    return await handle.readFile('utf8');
-  } finally {
-    await handle.close();
-  }
+  const contents = await readStableBoundedFile(input, { open: deps.open });
+  return contents.toString('utf8');
 }
 
 export interface PublishMarkerFileInput {
@@ -141,11 +127,6 @@ async function syncDirectory(path: string, deps: MarkerFileDependencies): Promis
   } finally {
     await handle.close();
   }
-}
-
-function markerReadFlags(): string | number {
-  if (process.platform === 'win32') return 'r';
-  return fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 }
 
 function isNodeError(error: unknown, code: string): boolean {

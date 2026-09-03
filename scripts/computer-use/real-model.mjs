@@ -29,7 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { evaluateCuE2eScenarioState, getCuE2eScenario } from './e2e-scenarios.mjs';
 import { validateRealReport } from './provider-matrix.mjs';
 import { sanitizeCuActionRecord, sanitizeCuReport, sanitizeCuTrace } from './report-sanitize.mjs';
-import { createSqliteAgentRunStore } from '../../packages/storage/dist/index.js';
+import { createSqliteAgentRunStore } from '../../packages/storage/dist/agent-run-store.js';
 import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
@@ -408,7 +408,7 @@ async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
 function safeEvent(event) {
   if (event.type === 'tool_start') {
     const safeToolName =
-      event.toolName === 'load_tools' || event.toolName === 'maka_computer'
+      event.toolName === 'tool_search' || event.toolName === 'maka_computer'
         ? event.toolName
         : 'other';
     return {
@@ -593,7 +593,7 @@ async function run() {
       .filter(
         (action) =>
           action.success === true &&
-          !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action.type),
+          !['list_apps', 'launch_app', 'observe', 'screenshot', 'wait'].includes(action.type),
       )
       .map((action) => action.toolCallId)
       .filter((toolCallId) => typeof toolCallId === 'string');
@@ -765,7 +765,7 @@ async function handleRunFailure(error) {
 
 function requiredDispatchPathPassed(scenario, traces) {
   const mutationActions = scenario.allowedActions.filter(
-    (action) => !['list_apps', 'observe', 'screenshot', 'cursor_position', 'wait'].includes(action),
+    (action) => !['list_apps', 'launch_app', 'observe', 'screenshot', 'wait'].includes(action),
   );
   if (mutationActions.length === 0) return true;
   return traces.some(
@@ -807,7 +807,7 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
   );
   const consumed = new Set();
   return actions.map((action) => {
-    if (['list_apps', 'wait', 'cursor_position'].includes(action.type)) {
+    if (['list_apps', 'launch_app', 'wait'].includes(action.type)) {
       return { ...action, targetOwned: false };
     }
     const index = dispatches.findIndex(
@@ -849,7 +849,7 @@ export function bindActionTargets(actions, traces, fixtureIdentity) {
 export function allActionTargetsOwned(actions) {
   return actions.every(
     (action) =>
-      ['list_apps', 'wait', 'cursor_position'].includes(action.type) || action.targetOwned === true,
+      ['list_apps', 'launch_app', 'wait'].includes(action.type) || action.targetOwned === true,
   );
 }
 

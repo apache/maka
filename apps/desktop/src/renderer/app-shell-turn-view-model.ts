@@ -21,16 +21,21 @@ import { useRef } from 'react';
 import type { UiLocale } from '@maka/core/ui-locale';
 import {
   deriveTurnLineageMap,
+  finalAssistantReplyText,
   formatTurnDuration,
   isSandboxDeniedTool,
   type TurnFooterActionMeta,
   type TurnLineageBadge,
   type TurnLineageTarget,
   type TurnPresentation,
-  type TurnPresentationDeriver,
   type TurnViewModel,
 } from '@maka/ui';
-import { deriveFailedTurnRecovery, describeTurnErrorClass } from './session-status-presentation.js';
+import {
+  type FailedTurnSeverity,
+  describeFailedTurnExecutionState,
+  describeTurnErrorClass,
+  deriveFailedTurnSeverity,
+} from './session-status-presentation.js';
 import { deriveTurnFooterActions } from './turn-footer-actions.js';
 import { deriveTurnLineageBadges } from './derive-turn-lineage-badges.js';
 import { latestInterruptedResumeTurnId } from './interrupted-resume.js';
@@ -40,7 +45,6 @@ export interface AppShellTurnPresentationContext {
   activeId: string | undefined;
   pendingTurnActions: ReadonlySet<string>;
   uiLocale: UiLocale;
-  pendingKeyOf(sessionId: string, turnId: string, actionId: TurnFooterActionMeta['id']): string;
 }
 
 export interface AppShellTurnPresentationDerivation {
@@ -52,7 +56,8 @@ interface TurnPresentationEntry {
   footerActions: ReadonlyArray<TurnFooterActionMeta>;
   lineageBadges?: TurnLineageBadge[];
   failedReasonLabel?: string;
-  failedRecoveryLabel?: string;
+  failedSeverity?: FailedTurnSeverity;
+  failedExecutionStateLabel?: string;
 }
 
 const PENDING_ACTION_IDS = ['regenerate', 'branch', 'copy'] as const;
@@ -115,14 +120,18 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     const existsTurn = (id: string) => turnIds.has(id);
     const footerActionsByTurn: Record<string, ReadonlyArray<TurnFooterActionMeta>> = {};
     const failedReasonLabels: Record<string, string> = {};
-    const failedRecoveryLabels: Record<string, string> = {};
+    const failedSeverities: Record<string, FailedTurnSeverity> = {};
+    const failedExecutionStateLabels: Record<string, string> = {};
     const lineageBadgesByTurn: Record<string, TurnLineageBadge[]> = {};
 
     for (const turn of turns) {
       const lineageEntry = lineage.get(turn.turnId);
       const pendingForTurn = new Set<TurnFooterActionMeta['id']>();
       for (const id of PENDING_ACTION_IDS) {
-        if (context.activeId && context.pendingTurnActions.has(context.pendingKeyOf(context.activeId, turn.turnId, id))) {
+        if (
+          context.activeId &&
+          context.pendingTurnActions.has(`${context.activeId}:${turn.turnId}:${id}`)
+        ) {
           pendingForTurn.add(id);
         }
       }
@@ -154,7 +163,10 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       footerActionsByTurn[turn.turnId] = entry.footerActions;
       if (entry.lineageBadges) lineageBadgesByTurn[turn.turnId] = entry.lineageBadges;
       if (entry.failedReasonLabel !== undefined) failedReasonLabels[turn.turnId] = entry.failedReasonLabel;
-      if (entry.failedRecoveryLabel !== undefined) failedRecoveryLabels[turn.turnId] = entry.failedRecoveryLabel;
+      if (entry.failedSeverity !== undefined) failedSeverities[turn.turnId] = entry.failedSeverity;
+      if (entry.failedExecutionStateLabel !== undefined) {
+        failedExecutionStateLabels[turn.turnId] = entry.failedExecutionStateLabel;
+      }
     }
 
     const resumeCandidateTurnId = latestInterruptedResumeTurnId(turns);
@@ -165,7 +177,8 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
     lastResult = {
       footerActionsByTurn,
       failedReasonLabels,
-      failedRecoveryLabels,
+      failedSeverities,
+      failedExecutionStateLabels,
       lineageBadgesByTurn,
       ...(resumeCandidateTurnId ? { resumeCandidateTurnId } : {}),
     };
@@ -194,7 +207,7 @@ function deriveTurnPresentationEntry(input: {
   const footerActions = deriveTurnFooterActions({
     status: turn.status,
     locale: uiLocale,
-    hasContent: Boolean(turn.assistant?.text && turn.assistant.text.trim().length > 0),
+    hasContent: finalAssistantReplyText(turn).trim().length > 0,
     // Match the badge lineage rule (regenerate ?? legacy retry) so a turn
     // that already has a parallel answer hints at it in the tooltip too.
     ...((lineageEntry?.regeneratedToTurnId ?? lineageEntry?.retriedToTurnId)
@@ -208,12 +221,13 @@ function deriveTurnPresentationEntry(input: {
 
   if (turn.status === 'failed' && !isSandboxOnlyToolFailure(turn)) {
     entry.failedReasonLabel = describeTurnErrorClass(turn.errorClass, uiLocale);
-    entry.failedRecoveryLabel = deriveFailedTurnRecovery({
-      errorClass: turn.errorClass,
+    entry.failedSeverity = deriveFailedTurnSeverity(turn.errorClass);
+    const executionState = describeFailedTurnExecutionState({
       partialOutputRetained: turn.partialOutputRetained,
       toolActivityCount: turn.tools.length,
       erroredToolCount: turn.tools.filter((tool) => tool.status === 'errored').length,
-    }, uiLocale).label;
+    }, uiLocale);
+    if (executionState) entry.failedExecutionStateLabel = executionState;
   }
 
   const lineageBadges = deriveTurnLineageBadges({
@@ -253,7 +267,7 @@ export function deriveAppShellTurnPresentation(
  */
 export function useAppShellTurnPresentation(
   context: AppShellTurnPresentationContext,
-): TurnPresentationDeriver {
+): (turns: readonly TurnViewModel[]) => TurnPresentation {
   const derivation = useRef<AppShellTurnPresentationDerivation>(undefined);
   derivation.current ??= createAppShellTurnPresentationDerivation();
   return (turns) => derivation.current!.derive(turns, context);

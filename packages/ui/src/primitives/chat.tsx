@@ -23,19 +23,18 @@ import type React from "react";
 import { cn } from "../utils.js";
 
 /**
- * `Marker` — the per-turn status / lineage / footer chrome (issue #332, PR2).
+ * `Marker` — the per-turn lineage / footer chrome (issue #332, PR2).
  *
- * Retires the bespoke `.maka-turn-summary*`, `.maka-turn-aborted-marker`,
- * `.maka-turn-failed-*`, `.maka-turn-lineage-*`, and `.maka-turn-footer*` shell
+ * Retires the bespoke `.maka-turn-summary*`, `.maka-turn-lineage-*`, and
+ * `.maka-turn-footer*` shell
  * CSS (spread across `maka-tokens.css`, `styles/settings/models.css`, and the
  * re-anchored measure-column block in `styles/tool-output.css`), moving each
  * onto package-owned semantic classes.
  *
  * The measure-column geometry the old `tool-output.css` re-anchor applied to
- * the summary / lineage rows / footer (`max-width:var(--maka-chat-measure)`,
- * `margin-right:auto`) is folded directly into those container variants here,
- * so the layout is location-independent instead of coupled to a
- * `[data-role="assistant"]` descendant selector.
+ * the summary / lineage rows / footer is gone rather than moved: `.maka-turn`
+ * is the column, and every `Marker` renders inside one, so a second cap on the
+ * chrome could only ever be the same edge stated twice.
  *
  * `markerVariants` is exported from THIS module as a local variant recipe
  * so the lineage badge + footer action — which render as `UiButton` and can't
@@ -47,11 +46,7 @@ import { cn } from "../utils.js";
  *
  */
 export type MarkerVariant =
-  | "aborted"
   | "host-origin"
-  | "failed-banner"
-  | "failed-icon"
-  | "failed-recovery"
   | "lineage-row"
   | "lineage-row-reverse"
   | "lineage-badge"
@@ -59,11 +54,7 @@ export type MarkerVariant =
   | "footer-action";
 
 const MARKER_CLASSES: Record<MarkerVariant, string> = {
-  aborted: "maka-turn-aborted-marker",
   "host-origin": "maka-turn-host-origin",
-  "failed-banner": "maka-turn-failed-banner",
-  "failed-icon": "maka-turn-failed-icon",
-  "failed-recovery": "maka-turn-failed-recovery",
   "lineage-row": "maka-turn-lineage-row",
   "lineage-row-reverse": "maka-turn-lineage-row maka-turn-lineage-row-reverse",
   "lineage-badge": "maka-turn-lineage-badge",
@@ -79,9 +70,9 @@ export { markerVariants };
 
 export interface MarkerProps extends React.ComponentPropsWithoutRef<"div"> {
   variant: MarkerVariant;
-  // The summary chips and the failed-banner sub-spans were authored as inline
-  // `<span>`s; the containers/markers as `<div>`s. Keep the original tag so the
-  // semantic-class conversion is structurally identical (zero behavioral change).
+  // The summary chips were authored as inline `<span>`s; the containers /
+  // markers as `<div>`s. Keep the original tag so the semantic-class
+  // conversion is structurally identical (zero behavioral change).
   as?: "div" | "span";
 }
 
@@ -111,7 +102,6 @@ export function Marker({
  * Retires the bespoke `OverlayPreview` family shell CSS — the shared
  * height-bounded `.maka-overlay-preview` base + `.maka-overlay-close`, the
  * structured cards (`.maka-tool-diff*`, `.maka-tool-terminal*`,
- * `.maka-explore-agent-*` / `.maka-subagent-preview`,
  * `.maka-web-search-*`), and the separate `.maka-load-tool-*` result card —
  * represented by package-owned semantic classes in `styles.css`.
  *
@@ -122,7 +112,7 @@ export function Marker({
  *      The kind class follows the shared base and may refine it by normal CSS
  *      source order.
  *   2. Leaf rules authored as descendant selectors on bare tags (e.g.
- *      `.maka-explore-agent-section li`, `.maka-web-search-preview > header strong`)
+ *      `.maka-web-search-preview > header strong`)
  *      remain descendants of the stable semantic container class.
  *
  * Unlike the other tables, `previewVariants` IS exported on the `@maka/ui` barrel
@@ -187,39 +177,6 @@ const PREVIEW_PART_CLASSES = {
       // `.maka-tool-terminal-copy` (UiButton) + the shared copy-state tints.
       "terminal-copy":
         "maka-tool-terminal-copy",
-
-      // ── explore agent / subagent (shared shell) ───────────────────────────
-      // `.maka-explore-agent-preview, .maka-subagent-preview` (+ the fault
-      // border, keyed on explore's `[data-ok=false]` or subagent's failed /
-      // cancelled `[data-status]`).
-      agent:
-        "maka-agent-preview",
-      // `.maka-explore-agent-head` (+ its `strong` title and `small` caption,
-      // the latter shared with the nested summary-line small).
-      "agent-head":
-        "maka-agent-preview-head",
-      // `.maka-explore-agent-summary-line` (+ its `small` ellipsis, layered over
-      // the head's caption styling above).
-      "agent-summary-line":
-        "maka-agent-preview-summary-line",
-      // `.maka-explore-agent-actions`
-      "agent-actions": "maka-agent-preview-actions",
-      // `.maka-explore-agent-message`
-      "agent-message":
-        "maka-agent-preview-message",
-      // `.maka-explore-agent-meta` (+ its `div` cells, `dt` labels, `dd` values).
-      "agent-meta":
-        "maka-agent-preview-meta",
-      // `.maka-explore-agent-section` (+ its direct `> strong`, list `ul`/`li`
-      // rows, leading `li` reset, `code` / `small` / `p` / `span` leaves).
-      "agent-section":
-        "maka-agent-preview-section",
-      // `.maka-explore-agent-section-head` (+ its `> strong`).
-      "agent-section-head":
-        "maka-agent-preview-section-head",
-      // `.maka-explore-agent-copy` (UiButton) + the copied / shared copy-state tints.
-      "agent-copy":
-        "maka-agent-preview-copy",
 
       // ── web search ────────────────────────────────────────────────────────
       // `.maka-web-search-preview` (+ its bare `> header` / list leaves; the

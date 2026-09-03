@@ -22,10 +22,10 @@ import { dirname, join } from 'node:path';
 import type { SessionHeader, StoredMessage } from '@maka/core/session';
 import {
   acquireOperationalStateDatabase,
-  createSqliteSessionMetadataStore,
   OPERATIONAL_STATE_DATABASE_NAME,
-  projectSessionCatalogMessages,
-} from '@maka/storage';
+} from '@maka/storage/operational-state-store';
+import { projectSessionCatalogMessages } from '@maka/storage/session-store';
+import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-metadata-store';
 
 // Fixed clock for the e2e-fixture. All seeded timestamps and
 // transient fixture state derive from this value unless tests explicitly
@@ -33,9 +33,13 @@ import {
 export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
+export const AGENT_GRAPH_SESSION_ID = 'e2e-fixture-agent-graph';
 export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
-/** Exceeds both the 64-tick rail and 100-turn mounted-window bounds. */
-export const PROMPT_RAIL_PROMPT_COUNT = 120;
+export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
+/** Exceeds both the 64-tick rail and the bounded active transcript range. */
+export const PROMPT_RAIL_PROMPT_COUNT = process.env.MAKA_TRANSCRIPT_STRESS === '1'
+  ? 640
+  : 120;
 export const LONG_SIDEBAR_SESSION_PREFIX = 'e2e-fixture-sidebar-long-';
 export const LONG_SIDEBAR_SESSION_COUNT = 60;
 export const LONG_SIDEBAR_PROJECT_ID = 'e2e-fixture-project';
