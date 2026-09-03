@@ -32,6 +32,7 @@ import { AgentRun } from '../agent-run.js';
 import { RuntimeLedgerRepair } from '../runtime-ledger-repair.js';
 import { buildStatusPatch } from '../session-projection-helpers.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { seedInvocation } from './invocation-fixture.js';
 
 test('rejects an invalid tool mode before a durable AgentRun can be created', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-tool-mode-'));
@@ -339,6 +340,13 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
       ],
       steering: true as const,
     };
+    await seedInvocation(runtimeEventStore, {
+      sessionId: session.id,
+      invocationId: 'invocation-steering-crash-cut',
+      runId,
+      turnId,
+      openedAt: 1,
+    });
     const runtimeEvent: RuntimeEvent = {
       id: 'runtime-steering-crash-cut',
       invocationId: 'invocation-steering-crash-cut',
@@ -402,6 +410,12 @@ test('awaits the durable settlement fact before accepting an interaction resume'
     const runId = 'run-status-barrier';
     const turnId = 'turn-status-barrier';
     await store.updateHeader(session.id, buildStatusPatch('waiting_for_user', 1));
+    const { invocationId } = await seedInvocation(runtimeEventStore, {
+      sessionId: session.id,
+      runId,
+      turnId,
+      openedAt: 1,
+    });
     const appendStarted = deferred<void>();
     const allowAppend = deferred<void>();
     const delayedRuntimeEventStore = {
@@ -443,14 +457,29 @@ test('awaits the durable settlement fact before accepting an interaction resume'
     });
     let accepted = false;
     const accepting = run
-      .recordSessionEvent({
-        type: 'user_question_answer_ack',
-        id: 'answer-ack',
-        turnId,
-        ts: 2,
-        requestId: 'question-1',
-        toolUseId: 'tool-1',
-      })
+      .acceptMappedEvent(
+        {
+          type: 'user_question_answer_ack',
+          id: 'answer-ack',
+          turnId,
+          ts: 2,
+          requestId: 'question-1',
+          toolUseId: 'tool-1',
+        },
+        {
+          id: 'status-event',
+          invocationId,
+          runId,
+          sessionId: session.id,
+          turnId,
+          ts: 2,
+          partial: false,
+          role: 'system',
+          author: 'user',
+          actions: { userQuestionAnswerAccepted: { requestId: 'question-1' } },
+          refs: { toolCallId: 'tool-1' },
+        } satisfies RuntimeEvent,
+      )
       .then(() => {
         accepted = true;
       });
