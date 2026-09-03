@@ -34,18 +34,15 @@
 </p>
 
 <p align="center">
-  <strong>A local-first Agent workspace built for real work.</strong><br/>
-  Maka inspects projects, runs tools under a sandbox boundary, and records
-  model messages and tool calls as recoverable execution facts — on your
-  machine, through one Runtime Host.
+  <strong>Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.</strong><br/>
+  An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/Download%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="Download Desktop Nightly" /></a><br/>
-  Daily builds from <code>main</code> for developers and testers. Not an ASF release, not intended for production use.
+  <a href="https://maka.apache.org/en/">Website</a> &nbsp;·&nbsp; <a href="https://maka.apache.org/en/downloads/">Downloads</a>
 </p>
 
-![Maka — Your work. Your agent.](./.github/assets/maka-hero.en.png)
+![Maka keeps a complete record of everything it did.](./.github/assets/maka-hero.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
@@ -53,55 +50,23 @@
 > [!IMPORTANT]
 > Maka is under active development. Data formats, CLI commands, and experimental capabilities may still change.
 
-## Why Maka
+## What Maka is
 
-- **Your machine, your data.** Sessions, settings, and run records stay local by default. You bring the model: a cloud API, a local model, or a compatible gateway.
-- **The record is kept.** Model messages, tool calls, tool results, and how a turn ended are written down. The UI and the next model call are views of that record, not the only copy.
-- **Shorter context is not deleted history.** Maka can omit old tool output from the next prompt without throwing away the saved evidence.
-- **One place runs the agent.** Desktop, the terminal, and Maka evaluation all go through Runtime Host. Eval only owns the experiment and its scores.
+Maka runs on your local machine with your own model connection. The record of model messages, tool calls, tool results, and run terminations is kept, and the UI and subsequent model calls are views of that record rather than the only copy. Shorter context is not deleted history, as previous tool output can be omitted from prompt context without discarding saved evidence. The [Maka website](https://maka.apache.org/en/) explains why and links the published runs.
 
-Read [Maka Backend Architecture](./ARCHITECTURE.md) for the design.
+Desktop, TUI/CLI, and Eval are separate entry points that execute through a single Runtime Host. Desktop is for daily interaction, file and Artifact workflows, and model and permission setup; the TUI and CLI use Maka in the current project directory or run one non-interactive Turn; Eval runs reproducible benchmark experiments across Maka and external subjects. [ARCHITECTURE.md](./ARCHITECTURE.md) has the system map and the host protocol.
 
-## Surfaces
+Current capabilities include built-in tools (`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`), sandbox approval for operations that leave the workspace boundary, a durable execution record with crash recovery and turn resume, session branching and search, and declarative multi-arm eval expanded across tasks, repetitions, and subjects. See [docs/README.md](./docs/README.md) for documentation and authority maps.
 
-| Entry point | Best for | Current capability |
-|---|---|---|
-| **Desktop** | Daily interaction, file and Artifact workflows, model and permission setup | Electron + React with streaming sessions, tool timelines, branching, search, and recovery |
-| **TUI / CLI** | Using Maka in the current project directory or running one non-interactive Turn | `maka`, `maka run`; shares workspace and model connections with Desktop |
-| **Eval** | Reproducible benchmark experiments across Maka and external subjects | `maka eval run <spec> --out <directory>` |
+## Get Maka
 
-## Current capabilities
+**Apache Releases**: Maka has not made an Apache release yet. When one exists, the signed source archive will be the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
 
-### Agent Runtime
+**Desktop Nightly**: Built daily from `main` for developers and testers. Apple Silicon Macs now; Windows is an unsigned preview. It is not an ASF release and is not intended for production use. The [downloads page](https://maka.apache.org/en/downloads/) has the installers and the platform status.
 
-- Multiple model connections, streaming output, thinking, usage, and clearer provider errors;
-- Built-in tools: `Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`. Computer Use and catalog skills are optional and not on by default;
-- Tools that leave the sandbox must be approved; runs can be aborted; failures are classified;
-- A durable execution record, crash recovery, and optional resume of an interrupted turn.
+**Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
 
-### Desktop workspace
-
-- Create, archive, search, rename, retry, regenerate, and branch sessions from a Turn;
-- Artifact lists and previews, workspace instructions, model settings, and sandbox settings;
-- Local memory and web search when configured;
-- Chat apps (IM bots) are experimental. See [IM onboarding](./docs/architecture/bot-onboarding-runtime.zh-CN.md).
-
-### Evaluation
-
-- Declarative multi-arm experiments expanded into task × repetition × subject cells;
-- Immutable per-cell attempts with targeted infrastructure replacement and earliest-valid selection;
-- A small result kernel for score, normalized usage, attributable cost, duration, status, failure reason, and artifacts;
-- Maka subjects execute only through Runtime Host; external subjects use generic external subject adapters.
-
-## Quick start
-
-### Releases and downloads
-
-Apache Maka has not made an Apache release yet. Everything currently published from this repository or from a package registry was produced before or during incubation, is not an Apache Software Foundation release, and has not been reviewed or voted on by the Incubator PMC.
-
-Once Apache releases exist, the official release is the source release published by the ASF and approved by the podling PPMC and the Incubator PMC. A package built from that source and distributed elsewhere, for example through a package registry or as a Desktop installer, is a convenience artifact rather than the release itself, and it is valid only when it is built from an approved source release. [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) holds the candidate contract, signing path, and verification steps.
-
-[Desktop Nightly](https://github.com/apache/maka/releases) is built daily from `main` for developers and testers. Choose the newest **Maka Desktop Nightly** prerelease; after installation, the app updates automatically on the Nightly channel. It is not an ASF release and is not intended for production use. Desktop currently targets Apple Silicon Macs (`arm64`). Intel Macs and Linux are not supported yet. [Windows](docs/windows-support.md) is an unsigned preview, not a supported release tier.
+## Build from source
 
 ### Requirements
 
@@ -212,6 +177,7 @@ packages/eval/         Experiment cells, attempts, results, and executor/subject
 packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
 packages/cli/          TUI and non-interactive CLI
 packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
+website/               Astro source for maka.apache.org
 
 docs/                  Architecture, product, security, privacy, and test contracts
 scripts/               Build hygiene, visual checks, smoke tests, and release helpers
@@ -276,6 +242,7 @@ Before submitting code, run typecheck, build, and focused tests proportionate to
 
 ## Documentation
 
+- [Website](https://maka.apache.org/en/)
 - [Documentation index and authority map](./docs/README.md)
 - [Backend architecture](./ARCHITECTURE.md)
 - [Product design](./DESIGN.md)

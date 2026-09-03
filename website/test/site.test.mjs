@@ -103,6 +103,22 @@ test('the English homepage uses the positioning sentence unchanged', () => {
   assert.ok(page('en/index.html').includes(positioning));
 });
 
+// #4307 settled one sentence for the homepage, the READMEs and the repository
+// description. The description is a folded YAML scalar, so compare it unfolded.
+test('the READMEs and the repository description open with the same sentence', () => {
+  const root = new URL('../../', import.meta.url);
+  const read = (path) => readFileSync(new URL(path, root), 'utf8');
+  assert.ok(read('README.md').includes(positioning), 'README.md');
+  assert.ok(
+    read('README.zh-CN.md').includes(
+      'Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。',
+    ),
+    'README.zh-CN.md',
+  );
+  const [, description] = read('.asf.yaml').match(/description: >-\n((?: {4}.*\n)+)/u);
+  assert.equal(description.replace(/\s+/gu, ' ').trim(), positioning);
+});
+
 test('both languages link the same documents', () => {
   for (const path of pages) {
     const [en, zh] = locales.map((locale) =>

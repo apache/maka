@@ -43,7 +43,14 @@ export function checkStagedWithBiome({
   const paths = output.toString('utf8').split('\0').filter(Boolean);
 
   for (const path of paths) {
-    const contents = execFileSync('git', ['show', `:${path}`], { cwd: root });
+    // Every staged blob passes through here, images included. Node's default
+    // 1 MiB buffer would kill the commit for anything larger, and Biome reads
+    // stdin as UTF-8, so a binary is skipped by git's own NUL-byte heuristic.
+    const contents = execFileSync('git', ['show', `:${path}`], {
+      cwd: root,
+      maxBuffer: Number.POSITIVE_INFINITY,
+    });
+    if (contents.includes(0)) continue;
     const result = spawnSync(
       biomePath,
       [
@@ -53,7 +60,7 @@ export function checkStagedWithBiome({
         '--files-ignore-unknown=true',
         '--no-errors-on-unmatched',
       ],
-      { cwd: root, input: contents },
+      { cwd: root, input: contents, maxBuffer: Number.POSITIVE_INFINITY },
     );
     if (result.error) throw result.error;
     if (result.status !== 0) {
@@ -61,6 +68,9 @@ export function checkStagedWithBiome({
       if (result.stderr.length > 0) process.stderr.write(result.stderr);
       return false;
     }
+    // Biome echoes the input for files it formats or ignores, but prints
+    // nothing for a language it parses without formatting, such as Markdown.
+    if (result.stdout.length === 0) continue;
     if (!result.stdout.equals(contents)) {
       process.stderr.write(`${path}: staged content is not formatted by Biome\n`);
       return false;

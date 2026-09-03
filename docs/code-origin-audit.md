@@ -220,13 +220,12 @@ The exact boundary, locally authored divergences, and artifact reproducibility l
 
 A maintainer confirmed that the following assets were AI-generated and that no third-party image, logo, or artwork was uploaded as input:
 
-- `.github/assets/maka-hero.en.png`
-- `.github/assets/maka-hero.zh-CN.png`
+- `.github/assets/maka-hero.png`
 - `apps/desktop/assets/icon.png`
 - `apps/desktop/resources/status/cu-status.png`
 - `apps/desktop/resources/status/cu-status@2x.png`
 
-The first three used ChatGPT Image. The status PNGs were exported from an AI-generated SVG. Exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
+`maka-hero.png` was generated on 2026-09-04 with OpenAI's image generation through Codex CLI, from a text prompt only, with the repository's own earlier hero and app icon viewed for character continuity but not uploaded as image input; the prompt is recorded in the pull request that added the file. It replaced `maka-hero.en.png` and `maka-hero.zh-CN.png`, which were made with ChatGPT Image, as was `icon.png`. The status PNGs were exported from an AI-generated SVG. For the earlier assets exact prompts were not retained and may have requested a visual style reference, so this confirmation is provenance evidence rather than a guarantee that no style or IP concern exists.
 
 ### Source archive non-text inventory
 

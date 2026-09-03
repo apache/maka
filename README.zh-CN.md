@@ -34,16 +34,15 @@
 </p>
 
 <p align="center">
-  <strong>一个为真实工作而生的本地优先 Agent 工作台。</strong><br/>
-  Maka 在沙箱边界下阅读项目、执行工具，并把模型消息和工具调用保存为可恢复的运行事实——数据在本机，执行走同一个 Runtime Host。
+  <strong>Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</strong><br/>
+  Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
 </p>
 
 <p align="center">
-  <a href="https://github.com/apache/maka/releases"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%20Desktop%20Nightly-1F6FEB?style=for-the-badge" alt="下载 Desktop Nightly" /></a><br/>
-  每天从 <code>main</code> 构建，面向开发者和测试者。不是 ASF release，也不适合生产使用。
+  <a href="https://maka.apache.org/zh-CN/">官网</a> &nbsp;·&nbsp; <a href="https://maka.apache.org/zh-CN/downloads/">下载</a>
 </p>
 
-![Maka——你的工作，你的 Agent。](./.github/assets/maka-hero.zh-CN.png)
+![Maka 完整记录它做过的每一件事。](./.github/assets/maka-hero.png)
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
@@ -51,55 +50,23 @@
 > [!IMPORTANT]
 > Maka 仍在活跃开发中。数据格式、CLI 和实验能力仍可能变化。
 
-## 为什么是 Maka
+## 什么是 Maka
 
-- **数据在你的机器上。** 会话、设置和运行记录默认保存在本机。模型由你接：云 API、本地模型或兼容网关。
-- **做过的事会留下来。** 模型消息、工具调用、工具结果、这一轮怎么结束，都会记下来。界面和下一次模型请求只是这份记录的视图，不是唯一副本。
-- **缩短上下文不等于删掉历史。** Maka 可以不把旧的工具输出送进下一轮提示，但不会扔掉已保存的证据。
-- **Agent 只在一处跑。** 桌面、终端和 Maka 评测都走 Runtime Host。Eval 只负责实验和分数。
+Maka 在本机运行，连接你自己的模型。模型消息、工具调用、工具结果与终止状态都会被完整记录；界面与下一次模型请求只是这份记录的视图，而非唯一副本。缩短上下文不等于删除历史，旧的工具输出可以从后续 prompt 中省略，但保存的证据始终完整保留。完整背景与设计考量参见 [Maka 官网](https://maka.apache.org/zh-CN/)。
 
-完整设计见 [Maka Backend Architecture](./ARCHITECTURE.zh-CN.md)。
+Desktop、TUI/CLI 与 Eval 是不同的运行入口，统一通过同一个 Runtime Host 执行。Desktop 负责日常交互、文件与 Artifact 工作流、模型和权限配置；TUI 和 CLI 在当前工程目录中使用 Maka，或执行单次非交互 Turn；Eval 在 Maka 与外部 subject 之间运行可复现的基准实验。系统地图与宿主协议见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
 
-## 运行形态
+系统当前具备内置工具（`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`）、越出沙箱边界的工具审批、具备崩溃恢复与回合续跑能力的持久化执行记录、会话分支与搜索，以及按 task × repetition × subject 展开的声明式多臂评测能力。完整文档与权威来源映射参见 [docs/README.md](./docs/README.md)。
 
-| 入口 | 适合什么 | 当前能力 |
-|---|---|---|
-| **Desktop** | 日常交互、文件与 Artifact 工作流、模型和权限配置 | Electron + React，支持流式会话、工具时间线、分支、搜索和恢复 |
-| **TUI / CLI** | 在当前工程目录中使用 Maka，或执行单次非交互 Turn | `maka`、`maka run`，复用 Desktop 的 workspace 和模型连接 |
-| **Eval** | Maka 与外部 subject 的可复现实验 | `maka eval run <spec> --out <directory>` |
+## 获取 Maka
 
-## 当前能力
+**Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选契约、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-### Agent Runtime
+**Desktop Nightly**：每天从 `main` 构建，面向开发者和测试者。目前支持 Apple Silicon Mac，Windows 是未签名预览。它不是 ASF release，不适合生产使用。安装包与平台状态见[下载页面](https://maka.apache.org/zh-CN/downloads/)。
 
-- 多模型连接、流式输出、thinking、用量统计，以及更清楚的 provider 错误；
-- 内置工具：`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`。Computer Use 和目录里的 skill 是可选的，默认不开；
-- 越出沙箱的工具需要批准；运行可以中止；失败会被分类；
-- 有一份可恢复的执行记录，进程崩溃后可以收敛状态，中断的回合可以按需续跑。
+**从源码构建**：要从源码 checkout 直接构建并运行 Desktop、TUI 或 CLI，见下方的[从源码构建](#从源码构建)一节。
 
-### Desktop Workspace
-
-- 会话创建、归档、搜索、重命名、重试、重新生成和从 Turn 分支；
-- Artifact 列表与预览、工作区说明、模型和沙箱设置；
-- 配置后可使用本地记忆和联网搜索；
-- 聊天应用（IM bot）仍是实验能力，见 [IM 接入](./docs/architecture/bot-onboarding-runtime.zh-CN.md)。
-
-### Evaluation
-
-- 声明式多臂 Experiment 展开为 task × repetition × subject cell；
-- 每个 cell 使用 immutable attempt，基础设施失败只替换该 cell，并选择最早有效 attempt；
-- 通用结果只包含 score、normalized usage、可归因 cost、duration、status/failure reason 与 artifacts；
-- Maka subject 只通过 Runtime Host 执行，外部 subject 使用 generic external subject adapter。
-
-## 快速开始
-
-### Release 与下载
-
-Apache Maka 目前还没有发布过 Apache release。当前从本仓库或包管理器分发的一切内容，都是在进入孵化器之前或孵化期间产生的，不是 Apache 软件基金会的 release，也没有经过 Incubator PMC 审查和投票。
-
-在 Apache release 出现之后，官方 release 指的是由 ASF 发布、并经 podling PPMC 和 Incubator PMC 批准的源码 release。由该源码构建并通过其他渠道分发的包，例如包管理器中的包或 Desktop 安装程序，属于 convenience artifact，本身不是 release，并且只有在由获批源码 release 构建时才有效。候选契约、签名路径和验包步骤见 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
-
-[Desktop Nightly](https://github.com/apache/maka/releases) 面向开发者和测试者，每天从 `main` 构建。请选择最新的 **Maka Desktop Nightly** prerelease；安装后，应用会在 Nightly 渠道自动更新。它不是 ASF release，不适合生产使用。Desktop 目前面向 Apple Silicon Mac（`arm64`）。暂不支持 Intel Mac 和 Linux。[Windows](docs/windows-support.md) 是未签名预览，不是正式支持的发布层级。
+## 从源码构建
 
 ### 环境要求
 
@@ -209,6 +176,7 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
+website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约
 scripts/               Build hygiene、视觉检查、smoke 和 release helpers
@@ -273,6 +241,7 @@ npm --workspace @maka/desktop run smoke:real-window
 
 ## 文档入口
 
+- [官网](https://maka.apache.org/zh-CN/)
 - [文档索引与权威来源说明](./docs/README.md)
 - [后端架构总览](./ARCHITECTURE.zh-CN.md)
 - [产品设计](./DESIGN.md)

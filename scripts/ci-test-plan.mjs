@@ -197,6 +197,8 @@ function isReleaseContractPath(path) {
 
 const DEDICATED_WORKSPACE_LANES = new Set(['packages/runtime-host']);
 
+const SITE_SENTENCE_FILES = new Set(['README.md', 'README.zh-CN.md']);
+
 // Scripts the Electron e2e job runs. Editing one of these changes what that
 // job verifies, so it has to re-run — a unit test on the runner is not
 // evidence that the run it drives still works.
@@ -431,6 +433,14 @@ export function planTests(changedFiles, options = {}) {
   let code = false;
   let unknownCode = false;
   for (const path of files) {
+    // The READMEs must open with the sentence the website uses, and the
+    // website's test is what checks that, so a README change runs that
+    // workspace even though it is documentation.
+    if (SITE_SENTENCE_FILES.has(path)) {
+      code = true;
+      directWorkspaces.add('website');
+      continue;
+    }
     // Documentation can live inside a workspace. Classify it before generic
     // workspace and product-surface membership; dedicated legal, release, and
     // generated-authority gates still inspect the complete file list below.

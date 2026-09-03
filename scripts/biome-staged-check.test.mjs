@@ -58,6 +58,33 @@ test('checks staged bytes when the working tree was formatted afterward', () => 
   }
 });
 
+test('skips a staged binary larger than the default child-process buffer', () => {
+  const root = fixture();
+  try {
+    const binary = Buffer.alloc(2 * 1024 * 1024);
+    binary.write('\x89PNG\r\n\x1a\n', 'latin1');
+    binary.fill(0xff, 64, 96);
+    writeFileSync(join(root, 'large.png'), binary);
+    execFileSync('git', ['add', 'large.png'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath }), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('passes a language Biome parses but does not format', () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, 'notes.md'), '# Notes\n\n*   loosely   formatted\n');
+    execFileSync('git', ['add', 'notes.md'], { cwd: root });
+
+    assert.equal(checkStagedWithBiome({ root, biomePath }), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('ignores unstaged formatting drift when staged bytes are formatted', () => {
   const root = fixture();
   try {
