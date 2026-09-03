@@ -24,42 +24,74 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import {
+  createInMemoryImmutableObjectStore,
   createInMemorySessionRepository,
+  createSessionCheckpointManifestV1,
+  encodeSessionCheckpointManifestV1,
+  publishSessionCheckpointV1,
+  SESSION_BUNDLE_OBJECT_MEDIA_TYPE,
+  SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE,
   SessionRepositoryError,
-  type SessionBundleBlobStore,
+  type ImmutableObjectInput,
+  type ImmutableObjectRef,
+  type ImmutableObjectStore,
+  type SessionCheckpointManifestV1,
   type SessionRepository,
-  type StoredSessionBundle,
+  type StoredSessionCheckpoint,
 } from '../session-repository.js';
 import type { SessionBundleArtifact, Sha256Digest } from '../session-bundle-contract.js';
 
-test('publishes immutable Bundle bytes before creating an exactly-checkoutable head', async () => {
+test('publishes and verifies Bundle then Manifest before creating an exact head', async () => {
   await withTemporaryDirectory(async (directory) => {
-    const repository = createInMemorySessionRepository();
+    const base = createInMemoryImmutableObjectStore();
+    const events: string[] = [];
+    const objectStore: ImmutableObjectStore = {
+      publish: async (input) => {
+        events.push(`publish:${input.mediaType}`);
+        return base.publish(input);
+      },
+      assertReadable: async (ref) => {
+        events.push(`assert:${ref.mediaType}`);
+        await base.assertReadable(ref);
+      },
+    };
+    const repository = createInMemorySessionRepository({ objectStore });
     const artifact = await writeArtifact(directory, 'initial.tar.zst', 'initial Bundle bytes');
-    const bundle = await repository.publishBundle(artifact);
+    const checkpoint = await publishCheckpoint(objectStore, artifact);
+
+    assert.deepEqual(events, [
+      `publish:${SESSION_BUNDLE_OBJECT_MEDIA_TYPE}`,
+      `assert:${SESSION_BUNDLE_OBJECT_MEDIA_TYPE}`,
+      `publish:${SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE}`,
+      `assert:${SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE}`,
+    ]);
+    assert.equal(checkpoint.value.schemaVersion, 1);
+    assert.equal(checkpoint.value.compatibilityBundle.digest, artifact.archiveDigest);
+
     const created = await repository.createSession({
       sessionId: 'session-a',
       agentId: 'agent-a',
-      bundle,
+      checkpoint,
       lastCommittedActivationId: 'activation-a',
     });
 
     assert.equal(repository.forkIdempotencyRetention, 'indefinite');
     assert.equal(created.ref.revision, 'r1');
-    assert.equal(created.bundle.archiveDigest, artifact.archiveDigest);
+    assert.deepEqual(created.checkpoint, checkpoint);
     assert.deepEqual(await repository.checkoutExact(created.ref), created);
   });
 });
 
-test('retains only the current revision and never falls forward during exact checkout', async () => {
-  await withReadySession(async ({ repository, directory, created }) => {
-    const bundle = await repository.publishBundle(
+test('retains only the current Manifest revision and never falls forward', async () => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
+    const checkpoint = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'next.tar.zst', 'next Bundle bytes'),
     );
     const committed = await repository.commit({
       sessionId: created.ref.sessionId,
       expectedRevision: created.ref.revision,
-      bundle,
+      checkpoint,
     });
 
     await assert.rejects(
@@ -70,9 +102,10 @@ test('retains only the current revision and never falls forward during exact che
   });
 });
 
-test('a source-head race returns requested bytes rather than a newer head', async () => {
+test('a source-head race returns the requested Manifest and Bundle rather than a newer head', async () => {
   await withTemporaryDirectory(async (directory) => {
-    let blockNextRead = false;
+    const base = createInMemoryImmutableObjectStore();
+    let blockNextBundleRead = false;
     let reading: (() => void) | undefined;
     let releaseRead: (() => void) | undefined;
     const readStarted = new Promise<void>((resolve) => {
@@ -81,38 +114,38 @@ test('a source-head race returns requested bytes rather than a newer head', asyn
     const readReleased = new Promise<void>((resolve) => {
       releaseRead = resolve;
     });
-    const blobStore: SessionBundleBlobStore = {
-      publish: async (artifact) => ({
-        bundleRef: `test://${artifact.archiveDigest}`,
-        archiveDigest: artifact.archiveDigest,
-        compressedBytes: artifact.compressedBytes,
-      }),
-      assertReadable: async () => {
-        if (!blockNextRead) return;
-        blockNextRead = false;
+    const objectStore: ImmutableObjectStore = {
+      publish: (input) => base.publish(input),
+      assertReadable: async (ref) => {
+        await base.assertReadable(ref);
+        if (!blockNextBundleRead || ref.mediaType !== SESSION_BUNDLE_OBJECT_MEDIA_TYPE) return;
+        blockNextBundleRead = false;
         reading?.();
         await readReleased;
       },
     };
-    const repository = createInMemorySessionRepository({ bundleStore: blobStore });
-    const initialArtifact = await writeArtifact(directory, 'initial.tar.zst', 'initial');
-    const initialBundle = await repository.publishBundle(initialArtifact);
+    const repository = createInMemorySessionRepository({ objectStore });
+    const initial = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'initial.tar.zst', 'initial'),
+    );
     const created = await repository.createSession({
       sessionId: 'session-a',
       agentId: 'agent-a',
-      bundle: initialBundle,
+      checkpoint: initial,
     });
-    const nextBundle = await repository.publishBundle(
+    const next = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'next.tar.zst', 'next'),
     );
 
-    blockNextRead = true;
+    blockNextBundleRead = true;
     const exactRead = repository.checkoutExact(created.ref);
     await readStarted;
     const committed = await repository.commit({
       sessionId: created.ref.sessionId,
       expectedRevision: created.ref.revision,
-      bundle: nextBundle,
+      checkpoint: next,
     });
     releaseRead?.();
 
@@ -122,23 +155,25 @@ test('a source-head race returns requested bytes rather than a newer head', asyn
 });
 
 test('rejects stale concurrent writers without overwriting the winning head', async () => {
-  await withReadySession(async ({ repository, directory, created }) => {
-    const left = await repository.publishBundle(
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
+    const left = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'left.tar.zst', 'left'),
     );
-    const right = await repository.publishBundle(
+    const right = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'right.tar.zst', 'right'),
     );
     const results = await Promise.allSettled([
       repository.commit({
         sessionId: created.ref.sessionId,
         expectedRevision: created.ref.revision,
-        bundle: left,
+        checkpoint: left,
       }),
       repository.commit({
         sessionId: created.ref.sessionId,
         expectedRevision: created.ref.revision,
-        bundle: right,
+        checkpoint: right,
       }),
     ]);
 
@@ -161,68 +196,127 @@ test('rejects stale concurrent writers without overwriting the winning head', as
   });
 });
 
-test('reconciles a completed commit identity without allocating another revision', async () => {
-  await withReadySession(async ({ repository, directory, created }) => {
-    const firstBundle = await repository.publishBundle(
+test('reconciles concurrent and later retries of one commit identity', async () => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
+    const checkpoint = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'first.tar.zst', 'first'),
     );
-    const firstInput = {
+    const input = {
       sessionId: created.ref.sessionId,
       expectedRevision: created.ref.revision,
-      bundle: firstBundle,
+      checkpoint,
       commitId: 'commit-a',
     };
-    const first = await repository.commit(firstInput);
-    const secondBundle = await repository.publishBundle(
+    const [first, concurrentRetry] = await Promise.all([
+      repository.commit(input),
+      repository.commit(input),
+    ]);
+
+    assert.deepEqual(concurrentRetry, first);
+    assert.deepEqual(await repository.commit(input), first);
+    const nextCheckpoint = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'second.tar.zst', 'second'),
     );
     const second = await repository.commit({
       sessionId: created.ref.sessionId,
       expectedRevision: first.ref.revision,
-      bundle: secondBundle,
+      checkpoint: nextCheckpoint,
     });
-
-    assert.deepEqual(await repository.commit(firstInput), first);
-    assert.equal((await repository.checkoutExact(second.ref)).ref.revision, 'r3');
+    assert.equal(second.ref.revision, 'r3');
     await assert.rejects(
-      repository.commit({ ...firstInput, bundle: secondBundle }),
+      repository.commit({ ...input, checkpoint: nextCheckpoint }),
       hasRepositoryCode('idempotency_conflict'),
     );
   });
 });
 
-test('never makes a head visible for an unpublished Bundle reference', async () => {
-  await withReadySession(async ({ repository, created }) => {
-    const unpublished: StoredSessionBundle = {
-      bundleRef: 'memory://session-bundles/not-published',
-      archiveDigest: digest('unpublished'),
-      compressedBytes: 11,
+test('never makes a head visible for an unpublished Manifest', async () => {
+  await withReadySession(async ({ repository, created, checkpoint }) => {
+    const manifestBytes = encodeSessionCheckpointManifestV1(checkpoint.value);
+    const unpublished: StoredSessionCheckpoint = {
+      manifest: {
+        objectRef: 'memory://immutable-objects/not-published',
+        digest: digest(manifestBytes),
+        bytes: manifestBytes.byteLength,
+        mediaType: SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE,
+      },
+      value: checkpoint.value,
     };
     await assert.rejects(
       repository.commit({
         sessionId: created.ref.sessionId,
         expectedRevision: created.ref.revision,
-        bundle: unpublished,
+        checkpoint: unpublished,
       }),
-      hasRepositoryCode('bundle_not_found'),
+      hasRepositoryCode('object_not_found'),
     );
     assert.deepEqual(await repository.checkoutExact(created.ref), created);
   });
 });
 
-test('fails closed when archive bytes do not match the claimed digest', async () => {
+test('never makes a head visible when a Manifest names an unreadable Bundle', async () => {
+  await withReadySession(async ({ repository, objectStore, created }) => {
+    const missingBundle: ImmutableObjectRef = {
+      objectRef: 'memory://immutable-objects/missing-bundle',
+      digest: digest('missing Bundle bytes'),
+      bytes: Buffer.byteLength('missing Bundle bytes'),
+      mediaType: SESSION_BUNDLE_OBJECT_MEDIA_TYPE,
+    };
+    const value = createSessionCheckpointManifestV1(missingBundle);
+    const checkpoint = await publishManifest(objectStore, value);
+
+    await assert.rejects(
+      repository.commit({
+        sessionId: created.ref.sessionId,
+        expectedRevision: created.ref.revision,
+        checkpoint,
+      }),
+      hasRepositoryCode('object_not_found'),
+    );
+    assert.deepEqual(await repository.checkoutExact(created.ref), created);
+  });
+});
+
+test('fails closed when Bundle bytes do not match their trusted archive digest', async () => {
   await withTemporaryDirectory(async (directory) => {
-    const repository = createInMemorySessionRepository();
+    const objectStore = createInMemoryImmutableObjectStore();
     const artifact = await writeArtifact(directory, 'corrupt.tar.zst', 'real bytes');
     await assert.rejects(
-      repository.publishBundle({ ...artifact, archiveDigest: digest('different bytes') }),
+      publishSessionCheckpointV1({
+        objectStore,
+        compatibilityBundle: { ...artifact, archiveDigest: digest('different bytes') },
+      }),
+      hasRepositoryCode('integrity_mismatch'),
+    );
+  });
+});
+
+test('rejects a Manifest value that does not match its immutable reference', async () => {
+  await withReadySession(async ({ repository, objectStore, directory, created, checkpoint }) => {
+    const other = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'other.tar.zst', 'other'),
+    );
+    const mismatched: StoredSessionCheckpoint = {
+      manifest: checkpoint.manifest,
+      value: other.value,
+    };
+
+    await assert.rejects(
+      repository.commit({
+        sessionId: created.ref.sessionId,
+        expectedRevision: created.ref.revision,
+        checkpoint: mismatched,
+      }),
       hasRepositoryCode('integrity_mismatch'),
     );
   });
 });
 
 test('claims Fork identity before target creation and resumes both crash windows', async () => {
-  await withReadySession(async ({ repository, bundle, created }) => {
+  await withReadySession(async ({ repository, checkpoint, created }) => {
     const request = {
       forkId: 'fork-a',
       source: created.ref,
@@ -237,7 +331,7 @@ test('claims Fork identity before target creation and resumes both crash windows
     const target = await repository.createSession({
       sessionId: request.targetSessionId,
       agentId: created.agentId,
-      bundle,
+      checkpoint,
       forkedFrom: created.ref,
       createdByForkId: request.forkId,
     });
@@ -249,7 +343,7 @@ test('claims Fork identity before target creation and resumes both crash windows
       await repository.createSession({
         sessionId: request.targetSessionId,
         agentId: created.agentId,
-        bundle,
+        checkpoint,
         forkedFrom: created.ref,
         createdByForkId: request.forkId,
       }),
@@ -268,7 +362,7 @@ test('claims Fork identity before target creation and resumes both crash windows
 });
 
 test('never adopts a target created by a different Fork operation', async () => {
-  await withReadySession(async ({ repository, bundle, created }) => {
+  await withReadySession(async ({ repository, checkpoint, created }) => {
     await repository.claimFork({
       forkId: 'fork-owner',
       source: created.ref,
@@ -282,7 +376,7 @@ test('never adopts a target created by a different Fork operation', async () => 
     await repository.createSession({
       sessionId: 'session-b',
       agentId: created.agentId,
-      bundle,
+      checkpoint,
       forkedFrom: created.ref,
       createdByForkId: 'fork-owner',
     });
@@ -291,7 +385,7 @@ test('never adopts a target created by a different Fork operation', async () => 
       repository.createSession({
         sessionId: 'session-b',
         agentId: created.agentId,
-        bundle,
+        checkpoint,
         forkedFrom: created.ref,
         createdByForkId: 'fork-contender',
       }),
@@ -304,8 +398,54 @@ test('never adopts a target created by a different Fork operation', async () => 
   });
 });
 
+test('keeps a Fork pending until its target checkpoint is readable', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const base = createInMemoryImmutableObjectStore();
+    let failedObjectRef: string | undefined;
+    const objectStore: ImmutableObjectStore = {
+      publish: (input) => base.publish(input),
+      assertReadable: async (ref) => {
+        if (ref.objectRef === failedObjectRef) {
+          throw new SessionRepositoryError('integrity_mismatch', 'Fork target is damaged');
+        }
+        await base.assertReadable(ref);
+      },
+    };
+    const repository = createInMemorySessionRepository({ objectStore });
+    const checkpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
+    const source = await repository.createSession({
+      sessionId: 'session-a',
+      agentId: 'agent-a',
+      checkpoint,
+    });
+    await repository.claimFork({
+      forkId: 'fork-a',
+      source: source.ref,
+      targetSessionId: 'session-b',
+    });
+    await repository.createSession({
+      sessionId: 'session-b',
+      agentId: source.agentId,
+      checkpoint,
+      forkedFrom: source.ref,
+      createdByForkId: 'fork-a',
+    });
+
+    failedObjectRef = checkpoint.manifest.objectRef;
+    await assert.rejects(
+      repository.completeFork({ forkId: 'fork-a' }),
+      hasRepositoryCode('integrity_mismatch'),
+    );
+    failedObjectRef = undefined;
+    assert.equal((await repository.completeFork({ forkId: 'fork-a' })).state, 'completed');
+  });
+});
+
 test('uses independent CAS sequences for source and Fork target Sessions', async () => {
-  await withReadySession(async ({ repository, directory, bundle, created }) => {
+  await withReadySession(async ({ repository, objectStore, directory, checkpoint, created }) => {
     await repository.claimFork({
       forkId: 'fork-a',
       source: created.ref,
@@ -314,17 +454,18 @@ test('uses independent CAS sequences for source and Fork target Sessions', async
     const target = await repository.createSession({
       sessionId: 'session-b',
       agentId: created.agentId,
-      bundle,
+      checkpoint,
       forkedFrom: created.ref,
       createdByForkId: 'fork-a',
     });
-    const targetBundle = await repository.publishBundle(
+    const targetCheckpoint = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'target-next.tar.zst', 'target next'),
     );
     const advancedTarget = await repository.commit({
       sessionId: target.ref.sessionId,
       expectedRevision: target.ref.revision,
-      bundle: targetBundle,
+      checkpoint: targetCheckpoint,
     });
 
     assert.equal(advancedTarget.ref.revision, 'r2');
@@ -332,34 +473,38 @@ test('uses independent CAS sequences for source and Fork target Sessions', async
   });
 });
 
-test('fails closed when a published Blob later disappears or no longer verifies', async () => {
+test('fails closed when a published Manifest or Bundle disappears or changes', async () => {
   await withTemporaryDirectory(async (directory) => {
-    for (const code of ['bundle_not_found', 'integrity_mismatch'] as const) {
-      let readable = true;
-      const artifact = await writeArtifact(directory, `${code}.tar.zst`, code);
-      const stored: StoredSessionBundle = {
-        bundleRef: `test://${code}`,
-        archiveDigest: artifact.archiveDigest,
-        compressedBytes: artifact.compressedBytes,
-      };
-      const blobStore: SessionBundleBlobStore = {
-        publish: async () => stored,
-        assertReadable: async () => {
-          if (!readable) {
-            throw new SessionRepositoryError(code, 'Bundle changed after publication');
-          }
-        },
-      };
-      const repository = createInMemorySessionRepository({ bundleStore: blobStore });
-      const bundle = await repository.publishBundle(artifact);
-      const created = await repository.createSession({
-        sessionId: `session-${code}`,
-        agentId: 'agent-a',
-        bundle,
-      });
-      readable = false;
+    for (const target of ['manifest', 'bundle'] as const) {
+      for (const code of ['object_not_found', 'integrity_mismatch'] as const) {
+        const base = createInMemoryImmutableObjectStore();
+        let failedObjectRef: string | undefined;
+        const objectStore: ImmutableObjectStore = {
+          publish: (input) => base.publish(input),
+          assertReadable: async (ref) => {
+            if (ref.objectRef === failedObjectRef) {
+              throw new SessionRepositoryError(code, 'Object changed after publication');
+            }
+            await base.assertReadable(ref);
+          },
+        };
+        const repository = createInMemorySessionRepository({ objectStore });
+        const checkpoint = await publishCheckpoint(
+          objectStore,
+          await writeArtifact(directory, `${target}-${code}.tar.zst`, `${target}-${code}`),
+        );
+        const created = await repository.createSession({
+          sessionId: `session-${target}-${code}`,
+          agentId: 'agent-a',
+          checkpoint,
+        });
+        failedObjectRef =
+          target === 'manifest'
+            ? checkpoint.manifest.objectRef
+            : checkpoint.value.compatibilityBundle.objectRef;
 
-      await assert.rejects(repository.checkoutExact(created.ref), hasRepositoryCode(code));
+        await assert.rejects(repository.checkoutExact(created.ref), hasRepositoryCode(code));
+      }
     }
   });
 });
@@ -367,23 +512,49 @@ test('fails closed when a published Blob later disappears or no longer verifies'
 async function withReadySession(
   operation: (context: {
     repository: SessionRepository;
+    objectStore: ImmutableObjectStore;
     directory: string;
-    bundle: StoredSessionBundle;
+    checkpoint: StoredSessionCheckpoint;
     created: Awaited<ReturnType<SessionRepository['createSession']>>;
   }) => Promise<void>,
 ): Promise<void> {
   await withTemporaryDirectory(async (directory) => {
-    const repository = createInMemorySessionRepository();
-    const bundle = await repository.publishBundle(
+    const objectStore = createInMemoryImmutableObjectStore();
+    const repository = createInMemorySessionRepository({ objectStore });
+    const checkpoint = await publishCheckpoint(
+      objectStore,
       await writeArtifact(directory, 'initial.tar.zst', 'initial Bundle bytes'),
     );
     const created = await repository.createSession({
       sessionId: 'session-a',
       agentId: 'agent-a',
-      bundle,
+      checkpoint,
     });
-    await operation({ repository, directory, bundle, created });
+    await operation({ repository, objectStore, directory, checkpoint, created });
   });
+}
+
+function publishCheckpoint(
+  objectStore: ImmutableObjectStore,
+  compatibilityBundle: SessionBundleArtifact,
+): Promise<StoredSessionCheckpoint> {
+  return publishSessionCheckpointV1({ objectStore, compatibilityBundle });
+}
+
+async function publishManifest(
+  objectStore: ImmutableObjectStore,
+  value: SessionCheckpointManifestV1,
+): Promise<StoredSessionCheckpoint> {
+  const bytes = encodeSessionCheckpointManifestV1(value);
+  const input: ImmutableObjectInput = {
+    digest: digest(bytes),
+    bytes: bytes.byteLength,
+    mediaType: SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE,
+    source: { kind: 'bytes', value: bytes },
+  };
+  const manifest = await objectStore.publish(input);
+  await objectStore.assertReadable(manifest);
+  return { manifest, value };
 }
 
 async function withTemporaryDirectory(

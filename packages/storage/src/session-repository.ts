@@ -27,11 +27,16 @@ import {
 } from './session-bundle-contract.js';
 
 const MAX_IDENTIFIER_LENGTH = 512;
-const MAX_BUNDLE_REF_LENGTH = 2_048;
+const MAX_OBJECT_REF_LENGTH = 2_048;
+
+export const SESSION_BUNDLE_OBJECT_MEDIA_TYPE =
+  'application/vnd.maka.session-bundle+tar;version=1;compression=zstd' as const;
+export const SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE =
+  'application/vnd.maka.session-checkpoint-manifest+json;version=1' as const;
 
 /**
  * A Repository revision is opaque to callers. Revisions are scoped to one
- * Cloud Session and must never be reused as Bundle digests or across Sessions.
+ * Cloud Session and must never be reused as object digests or across Sessions.
  */
 export type SessionRepositoryRevision = string;
 
@@ -40,20 +45,64 @@ export interface SessionRevisionRef {
   readonly revision: SessionRepositoryRevision;
 }
 
+/** Trusted metadata for one immutable object. */
+export interface ImmutableObjectRef {
+  readonly objectRef: string;
+  readonly digest: Sha256Digest;
+  readonly bytes: number;
+  readonly mediaType: string;
+}
+
+export type ImmutableObjectSource =
+  | {
+      readonly kind: 'file';
+      readonly path: string;
+    }
+  | {
+      readonly kind: 'bytes';
+      readonly value: Uint8Array;
+    };
+
+export interface ImmutableObjectInput {
+  readonly digest: Sha256Digest;
+  readonly bytes: number;
+  readonly mediaType: string;
+  readonly source: ImmutableObjectSource;
+}
+
 /**
- * Trusted immutable-object metadata. `bundleRef` is resolved only through the
- * Repository's configured Bundle Blob Store; it is not a local archive path.
+ * Large immutable bytes live behind this port. Its publication semantics are
+ * deliberately distinct from the Repository's head-CAS semantics.
  */
-export interface StoredSessionBundle {
-  readonly bundleRef: string;
-  readonly archiveDigest: Sha256Digest;
-  readonly compressedBytes: number;
+export interface ImmutableObjectStore {
+  /**
+   * Publishes bytes under a non-overwritable reference. Returning an existing
+   * reference for identical input is allowed, but the exact bytes and declared
+   * metadata must already be durably readable before this method returns.
+   */
+  publish(input: ImmutableObjectInput): Promise<ImmutableObjectRef>;
+  /** Verifies the exact reference, byte count, media type, and digest. */
+  assertReadable(ref: ImmutableObjectRef): Promise<void>;
+}
+
+export interface SessionCheckpointManifestV1 {
+  readonly schemaVersion: 1;
+  readonly compatibilityBundle: ImmutableObjectRef;
+}
+
+/**
+ * The value is carried with its immutable reference so a Repository can
+ * validate the canonical Manifest digest without acquiring a general read API.
+ */
+export interface StoredSessionCheckpoint {
+  readonly manifest: ImmutableObjectRef;
+  readonly value: SessionCheckpointManifestV1;
 }
 
 export interface CommittedSessionRevision {
   readonly ref: SessionRevisionRef;
   readonly agentId: string;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   readonly forkedFrom?: SessionRevisionRef;
 }
@@ -61,7 +110,7 @@ export interface CommittedSessionRevision {
 export interface CommitSessionRevisionInput {
   readonly sessionId: string;
   readonly expectedRevision: SessionRepositoryRevision;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   /**
    * Optional caller operation identity. Retrying the same identity and input
@@ -73,7 +122,7 @@ export interface CommitSessionRevisionInput {
 export interface CreateSessionInput {
   readonly sessionId: string;
   readonly agentId: string;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   readonly forkedFrom?: SessionRevisionRef;
   /** Required for a Fork-created target Session. */
@@ -112,31 +161,14 @@ export type ForkOperation = PendingForkOperation | CompletedForkOperation;
 export type ForkIdempotencyRetention = 'indefinite';
 
 /**
- * The Repository stores Session metadata and head CAS state. The Blob Store
- * owns immutable Bundle bytes. Keeping these ports separate lets a future
- * control plane choose an object store without weakening Repository semantics.
+ * Strongly consistent Session metadata and operation records live behind this
+ * port. Immutable object publication remains a separate prerequisite.
  */
-export interface SessionBundleBlobStore {
-  /**
-   * Writes archive bytes under a non-overwritable reference. It may return an
-   * existing reference for the identical content, but must not return until the
-   * exact bytes and declared digest are durably readable.
-   */
-  publish(input: SessionBundleArtifact): Promise<StoredSessionBundle>;
-  /**
-   * Verifies that this exact immutable reference remains readable with its
-   * declared byte count and archive digest. Missing or changed bytes must fail
-   * with a bounded Repository error rather than substituting another object.
-   */
-  assertReadable(bundle: StoredSessionBundle): Promise<void>;
-}
-
 export interface SessionRepository {
   readonly forkIdempotencyRetention: ForkIdempotencyRetention;
   checkoutExact(ref: SessionRevisionRef): Promise<CommittedSessionRevision>;
-  publishBundle(input: SessionBundleArtifact): Promise<StoredSessionBundle>;
-  commit(input: CommitSessionRevisionInput): Promise<CommittedSessionRevision>;
   createSession(input: CreateSessionInput): Promise<CommittedSessionRevision>;
+  commit(input: CommitSessionRevisionInput): Promise<CommittedSessionRevision>;
   claimFork(input: ClaimForkInput): Promise<ForkOperation>;
   completeFork(input: CompleteForkInput): Promise<CompletedForkOperation>;
 }
@@ -147,7 +179,7 @@ export type SessionRepositoryErrorCode =
   | 'revision_conflict'
   | 'session_already_exists'
   | 'idempotency_conflict'
-  | 'bundle_not_found'
+  | 'object_not_found'
   | 'integrity_mismatch'
   | 'quota_exceeded'
   | 'io_failure';
@@ -163,9 +195,75 @@ export class SessionRepositoryError extends Error {
   }
 }
 
+export interface PublishSessionCheckpointV1Input {
+  readonly objectStore: ImmutableObjectStore;
+  readonly compatibilityBundle: SessionBundleArtifact;
+}
+
+/**
+ * Publishes and verifies the compatibility Bundle before publishing and
+ * verifying the immutable Manifest that names it. The returned checkpoint is
+ * suitable for a later Repository create or head-CAS operation.
+ */
+export async function publishSessionCheckpointV1(
+  input: PublishSessionCheckpointV1Input,
+): Promise<StoredSessionCheckpoint> {
+  if (!isRecord(input))
+    throw new TypeError('Session checkpoint publication input must be an object');
+  const objectStore = requireImmutableObjectStore(input.objectStore);
+  const artifact = admitSessionBundleArtifact(input.compatibilityBundle);
+  const compatibilityBundle = await publishVerifiedObject(objectStore, {
+    digest: artifact.archiveDigest,
+    bytes: artifact.compressedBytes,
+    mediaType: SESSION_BUNDLE_OBJECT_MEDIA_TYPE,
+    source: { kind: 'file', path: artifact.path },
+  });
+  const value = createSessionCheckpointManifestV1(compatibilityBundle);
+  const manifestBytes = encodeSessionCheckpointManifestV1(value);
+  const manifest = await publishVerifiedObject(objectStore, {
+    digest: digestBytes(manifestBytes),
+    bytes: manifestBytes.byteLength,
+    mediaType: SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE,
+    source: { kind: 'bytes', value: manifestBytes },
+  });
+  return storedSessionCheckpoint({ manifest, value });
+}
+
+export function createSessionCheckpointManifestV1(
+  compatibilityBundle: ImmutableObjectRef,
+): SessionCheckpointManifestV1 {
+  const admitted = admitImmutableObjectRef(compatibilityBundle);
+  if (admitted.mediaType !== SESSION_BUNDLE_OBJECT_MEDIA_TYPE) {
+    throw new TypeError('V1 compatibility Bundle has an unsupported media type');
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    compatibilityBundle: copyImmutableObjectRef(admitted),
+  });
+}
+
+/** RFC 8785/JCS V1 encoding used to bind a Manifest value to its object digest. */
+export function encodeSessionCheckpointManifestV1(input: SessionCheckpointManifestV1): Uint8Array {
+  const value = admitSessionCheckpointManifestV1(input);
+  return new TextEncoder().encode(
+    JSON.stringify({
+      compatibilityBundle: {
+        bytes: value.compatibilityBundle.bytes,
+        digest: value.compatibilityBundle.digest,
+        mediaType: value.compatibilityBundle.mediaType,
+        objectRef: value.compatibilityBundle.objectRef,
+      },
+      schemaVersion: value.schemaVersion,
+    }),
+  );
+}
+
+export function createInMemoryImmutableObjectStore(): ImmutableObjectStore {
+  return new InMemoryImmutableObjectStore();
+}
+
 export interface CreateInMemorySessionRepositoryOptions {
-  /** Defaults to an immutable in-memory Blob Store that verifies archive bytes. */
-  readonly bundleStore?: SessionBundleBlobStore;
+  readonly objectStore: ImmutableObjectStore;
 }
 
 /**
@@ -174,9 +272,10 @@ export interface CreateInMemorySessionRepositoryOptions {
  * durable control-plane backend.
  */
 export function createInMemorySessionRepository(
-  options: CreateInMemorySessionRepositoryOptions = {},
+  options: CreateInMemorySessionRepositoryOptions,
 ): SessionRepository {
-  return new InMemorySessionRepository(options.bundleStore ?? new InMemorySessionBundleBlobStore());
+  if (!isRecord(options)) throw new TypeError('In-memory Repository options must be an object');
+  return new InMemorySessionRepository(requireImmutableObjectStore(options.objectStore));
 }
 
 class InMemorySessionRepository implements SessionRepository {
@@ -186,7 +285,7 @@ class InMemorySessionRepository implements SessionRepository {
   private readonly commitsBySession = new Map<string, Map<string, CommitRecord>>();
   private readonly forks = new Map<string, InternalForkOperation>();
 
-  constructor(private readonly bundleStore: SessionBundleBlobStore) {}
+  constructor(private readonly objectStore: ImmutableObjectStore) {}
 
   async checkoutExact(ref: SessionRevisionRef): Promise<CommittedSessionRevision> {
     const requested = admitRevisionRef(ref, 'Session revision reference');
@@ -199,44 +298,19 @@ class InMemorySessionRepository implements SessionRepository {
       );
     }
 
-    // Capture the exact record before the asynchronous Blob read. A later head
+    // Capture the exact record before asynchronous object reads. A later head
     // advance may make this revision non-current, but cannot substitute bytes.
     const committed = copyCommittedSessionRevision(session.head);
-    await this.assertBundleReadable(committed.bundle);
+    await this.assertCheckpointReadable(committed.checkpoint);
     return committed;
-  }
-
-  async publishBundle(input: SessionBundleArtifact): Promise<StoredSessionBundle> {
-    const artifact = admitSessionBundleArtifact(input);
-    try {
-      const published = admitStoredSessionBundle(await this.bundleStore.publish(artifact));
-      if (
-        published.archiveDigest !== artifact.archiveDigest ||
-        published.compressedBytes !== artifact.compressedBytes
-      ) {
-        throw repositoryError(
-          'integrity_mismatch',
-          'Published Bundle metadata does not match archive',
-        );
-      }
-      await this.assertBundleReadable(published);
-      return published;
-    } catch (error) {
-      throw normalizeBlobStoreError(error);
-    }
   }
 
   async commit(input: CommitSessionRevisionInput): Promise<CommittedSessionRevision> {
     const admitted = admitCommitSessionRevisionInput(input);
-    const prior = this.priorCommit(admitted);
+    const prior = this.reconcilePriorCommit(admitted);
     if (prior) {
-      if (!sameCommitInput(prior.input, admitted)) {
-        throw repositoryError(
-          'idempotency_conflict',
-          'Commit identity was reused with different input',
-        );
-      }
-      return copyCommittedSessionRevision(prior.result);
+      await this.assertCheckpointReadable(prior.checkpoint);
+      return prior;
     }
 
     const initial = this.sessions.get(admitted.sessionId);
@@ -245,10 +319,12 @@ class InMemorySessionRepository implements SessionRepository {
       throw repositoryError('revision_conflict', 'Cloud Session head changed before commit');
     }
 
-    await this.assertBundleReadable(admitted.bundle);
+    await this.assertCheckpointReadable(admitted.checkpoint);
 
-    // Blob verification may yield. Recheck the linearization precondition after
-    // it returns so a concurrent commit cannot be overwritten.
+    // Object verification may yield. Reconcile an identical concurrent retry,
+    // then recheck CAS so another commit cannot be overwritten.
+    const admittedWhileReading = this.reconcilePriorCommit(admitted);
+    if (admittedWhileReading) return admittedWhileReading;
     const session = this.sessions.get(admitted.sessionId);
     if (!session) throw repositoryError('session_not_found', 'Cloud Session was not found');
     if (session.head.ref.revision !== admitted.expectedRevision) {
@@ -259,7 +335,7 @@ class InMemorySessionRepository implements SessionRepository {
       sessionId: admitted.sessionId,
       revision: nextRevision(session),
       agentId: session.agentId,
-      bundle: admitted.bundle,
+      checkpoint: admitted.checkpoint,
       lastCommittedActivationId: admitted.lastCommittedActivationId,
       forkedFrom: session.forkedFrom,
     });
@@ -278,21 +354,29 @@ class InMemorySessionRepository implements SessionRepository {
   async createSession(input: CreateSessionInput): Promise<CommittedSessionRevision> {
     const admitted = admitCreateSessionInput(input);
     const existing = this.sessions.get(admitted.sessionId);
-    if (existing) return this.reconcileExistingSessionCreate(existing, admitted);
+    if (existing) {
+      const reconciled = this.reconcileExistingSessionCreate(existing, admitted);
+      await this.assertCheckpointReadable(reconciled.checkpoint);
+      return reconciled;
+    }
 
-    await this.assertBundleReadable(admitted.bundle);
+    await this.assertCheckpointReadable(admitted.checkpoint);
 
-    // Blob verification may yield. Create-if-absent is therefore decided only
-    // after it returns, at this method's synchronous linearization point.
+    // Object verification may yield. Create-if-absent is decided only after it
+    // returns, at this method's synchronous linearization point.
     const afterVerification = this.sessions.get(admitted.sessionId);
-    if (afterVerification) return this.reconcileExistingSessionCreate(afterVerification, admitted);
+    if (afterVerification) {
+      const reconciled = this.reconcileExistingSessionCreate(afterVerification, admitted);
+      await this.assertCheckpointReadable(reconciled.checkpoint);
+      return reconciled;
+    }
 
     if (admitted.createdByForkId !== undefined) this.assertPendingForkCreate(admitted);
     const initial = committedRevision({
       sessionId: admitted.sessionId,
       revision: 'r1',
       agentId: admitted.agentId,
-      bundle: admitted.bundle,
+      checkpoint: admitted.checkpoint,
       lastCommittedActivationId: admitted.lastCommittedActivationId,
       forkedFrom: admitted.forkedFrom,
     });
@@ -344,6 +428,7 @@ class InMemorySessionRepository implements SessionRepository {
     ) {
       throw repositoryError('idempotency_conflict', 'Fork target was created by another operation');
     }
+    await this.assertCheckpointReadable(target.createdRevision.checkpoint);
 
     const completed: InternalCompletedForkOperation = {
       ...operation,
@@ -354,9 +439,19 @@ class InMemorySessionRepository implements SessionRepository {
     return copyCompletedForkOperation(completed);
   }
 
-  private priorCommit(input: InternalCommitSessionRevisionInput): CommitRecord | undefined {
+  private reconcilePriorCommit(
+    input: InternalCommitSessionRevisionInput,
+  ): CommittedSessionRevision | undefined {
     if (input.commitId === undefined) return undefined;
-    return this.commitsBySession.get(input.sessionId)?.get(input.commitId);
+    const prior = this.commitsBySession.get(input.sessionId)?.get(input.commitId);
+    if (!prior) return undefined;
+    if (!sameCommitInput(prior.input, input)) {
+      throw repositoryError(
+        'idempotency_conflict',
+        'Commit identity was reused with different input',
+      );
+    }
+    return copyCommittedSessionRevision(prior.result);
   }
 
   private reconcileExistingSessionCreate(
@@ -389,64 +484,81 @@ class InMemorySessionRepository implements SessionRepository {
     }
   }
 
-  private async assertBundleReadable(bundle: StoredSessionBundle): Promise<void> {
+  private async assertCheckpointReadable(
+    input: StoredSessionCheckpoint,
+  ): Promise<StoredSessionCheckpoint> {
+    const checkpoint = admitStoredSessionCheckpoint(input);
     try {
-      await this.bundleStore.assertReadable(bundle);
+      await this.objectStore.assertReadable(checkpoint.manifest);
+      await this.objectStore.assertReadable(checkpoint.value.compatibilityBundle);
+      return checkpoint;
     } catch (error) {
-      throw normalizeBlobStoreError(error);
+      throw normalizeObjectStoreError(error);
     }
   }
 }
 
-class InMemorySessionBundleBlobStore implements SessionBundleBlobStore {
-  private readonly blobs = new Map<string, InMemoryBlob>();
+class InMemoryImmutableObjectStore implements ImmutableObjectStore {
+  private readonly objects = new Map<string, InMemoryObject>();
 
-  async publish(input: SessionBundleArtifact): Promise<StoredSessionBundle> {
-    const artifact = admitSessionBundleArtifact(input);
+  async publish(input: ImmutableObjectInput): Promise<ImmutableObjectRef> {
+    const admitted = admitImmutableObjectInput(input);
     let bytes: Uint8Array;
     try {
-      bytes = await readFile(artifact.path);
+      bytes =
+        admitted.source.kind === 'file'
+          ? await readFile(admitted.source.path)
+          : Uint8Array.from(admitted.source.value);
     } catch (error) {
-      throw repositoryError('io_failure', 'Bundle publication could not read archive bytes', error);
+      throw repositoryError(
+        'io_failure',
+        'Immutable object publication could not read bytes',
+        error,
+      );
     }
-    const digest = digestBytes(bytes);
-    if (digest !== artifact.archiveDigest || bytes.byteLength !== artifact.compressedBytes) {
+    if (bytes.byteLength !== admitted.bytes || digestBytes(bytes) !== admitted.digest) {
       throw repositoryError(
         'integrity_mismatch',
-        'Bundle archive bytes do not match declared metadata',
+        'Immutable object bytes do not match declared metadata',
       );
     }
 
-    const stored = storedSessionBundle({
-      bundleRef: `memory://session-bundles/${artifact.archiveDigest.slice('sha256:'.length)}`,
-      archiveDigest: artifact.archiveDigest,
-      compressedBytes: artifact.compressedBytes,
+    const mediaTypeKey = digestBytes(new TextEncoder().encode(admitted.mediaType)).slice(
+      'sha256:'.length,
+      'sha256:'.length + 16,
+    );
+    const ref = immutableObjectRef({
+      objectRef: `memory://immutable-objects/${admitted.digest.slice('sha256:'.length)}/${mediaTypeKey}`,
+      digest: admitted.digest,
+      bytes: admitted.bytes,
+      mediaType: admitted.mediaType,
     });
-    const existing = this.blobs.get(stored.bundleRef);
+    const existing = this.objects.get(ref.objectRef);
     if (existing) {
-      if (!sameBytes(existing.bytes, bytes) || !sameStoredSessionBundle(existing.bundle, stored)) {
+      if (!sameImmutableObjectRef(existing.ref, ref) || !sameBytes(existing.bytes, bytes)) {
         throw repositoryError(
           'integrity_mismatch',
-          'Immutable Bundle reference already contains other bytes',
+          'Immutable object reference already contains different bytes or metadata',
         );
       }
-      return copyStoredSessionBundle(existing.bundle);
+      return copyImmutableObjectRef(existing.ref);
     }
-    this.blobs.set(stored.bundleRef, { bundle: stored, bytes: Uint8Array.from(bytes) });
-    return copyStoredSessionBundle(stored);
+    this.objects.set(ref.objectRef, { ref, bytes: Uint8Array.from(bytes) });
+    return copyImmutableObjectRef(ref);
   }
 
-  async assertReadable(input: StoredSessionBundle): Promise<void> {
-    const bundle = admitStoredSessionBundle(input);
-    const blob = this.blobs.get(bundle.bundleRef);
-    if (!blob) throw repositoryError('bundle_not_found', 'Published Bundle was not found');
+  async assertReadable(input: ImmutableObjectRef): Promise<void> {
+    const ref = admitImmutableObjectRef(input);
+    const stored = this.objects.get(ref.objectRef);
+    if (!stored) throw repositoryError('object_not_found', 'Immutable object was not found');
     if (
-      !sameStoredSessionBundle(blob.bundle, bundle) ||
-      digestBytes(blob.bytes) !== bundle.archiveDigest
+      !sameImmutableObjectRef(stored.ref, ref) ||
+      stored.bytes.byteLength !== ref.bytes ||
+      digestBytes(stored.bytes) !== ref.digest
     ) {
       throw repositoryError(
         'integrity_mismatch',
-        'Published Bundle bytes no longer match metadata',
+        'Immutable object bytes no longer match their trusted metadata',
       );
     }
   }
@@ -461,15 +573,15 @@ interface SessionState {
   readonly createdRevision: CommittedSessionRevision;
 }
 
-interface InMemoryBlob {
-  readonly bundle: StoredSessionBundle;
+interface InMemoryObject {
+  readonly ref: ImmutableObjectRef;
   readonly bytes: Uint8Array;
 }
 
 interface InternalCommitSessionRevisionInput {
   readonly sessionId: string;
   readonly expectedRevision: SessionRepositoryRevision;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   readonly commitId?: string;
 }
@@ -477,7 +589,7 @@ interface InternalCommitSessionRevisionInput {
 interface InternalCreateSessionInput {
   readonly sessionId: string;
   readonly agentId: string;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   readonly forkedFrom?: SessionRevisionRef;
   readonly createdByForkId?: string;
@@ -500,11 +612,36 @@ interface InternalPendingForkOperation extends PendingForkOperation {}
 
 interface InternalCompletedForkOperation extends CompletedForkOperation {}
 
+async function publishVerifiedObject(
+  objectStore: ImmutableObjectStore,
+  input: ImmutableObjectInput,
+): Promise<ImmutableObjectRef> {
+  const expected = admitImmutableObjectInput(input);
+  try {
+    const published = admitImmutableObjectRef(await objectStore.publish(expected));
+    if (
+      published.digest !== expected.digest ||
+      published.bytes !== expected.bytes ||
+      published.mediaType !== expected.mediaType
+    ) {
+      throw repositoryError(
+        'integrity_mismatch',
+        'Published immutable object metadata does not match its input',
+      );
+    }
+    await objectStore.assertReadable(published);
+    return copyImmutableObjectRef(published);
+  } catch (error) {
+    throw normalizeObjectStoreError(error);
+  }
+}
+
 function admitSessionBundleArtifact(input: SessionBundleArtifact): SessionBundleArtifact {
   if (!isRecord(input)) throw new TypeError('Session Bundle artifact must be an object');
-  const path = requireIdentifier(input.path, 'Bundle archive path', MAX_BUNDLE_REF_LENGTH);
-  if (!isSha256Digest(input.archiveDigest))
+  const path = requireIdentifier(input.path, 'Bundle archive path', MAX_OBJECT_REF_LENGTH);
+  if (!isSha256Digest(input.archiveDigest)) {
     throw new TypeError('Bundle archive digest must be SHA-256');
+  }
   if (!isByteCount(input.compressedBytes)) {
     throw new TypeError('Bundle compressed byte count must be a non-negative safe integer');
   }
@@ -516,19 +653,84 @@ function admitSessionBundleArtifact(input: SessionBundleArtifact): SessionBundle
   };
 }
 
-function admitStoredSessionBundle(input: StoredSessionBundle): StoredSessionBundle {
-  if (!isRecord(input)) throw new TypeError('Stored Session Bundle must be an object');
-  const bundleRef = requireIdentifier(input.bundleRef, 'Bundle reference', MAX_BUNDLE_REF_LENGTH);
-  if (!isSha256Digest(input.archiveDigest))
-    throw new TypeError('Bundle archive digest must be SHA-256');
-  if (!isByteCount(input.compressedBytes)) {
-    throw new TypeError('Bundle compressed byte count must be a non-negative safe integer');
+function admitImmutableObjectInput(input: ImmutableObjectInput): ImmutableObjectInput {
+  if (!isRecord(input)) throw new TypeError('Immutable object input must be an object');
+  if (!isSha256Digest(input.digest)) throw new TypeError('Immutable object digest must be SHA-256');
+  if (!isByteCount(input.bytes)) {
+    throw new TypeError('Immutable object byte count must be a non-negative safe integer');
   }
-  return storedSessionBundle({
-    bundleRef,
-    archiveDigest: input.archiveDigest,
-    compressedBytes: input.compressedBytes,
+  const mediaType = requireIdentifier(input.mediaType, 'Immutable object media type');
+  if (!isRecord(input.source)) throw new TypeError('Immutable object source must be an object');
+  if (input.source.kind === 'file') {
+    return Object.freeze({
+      digest: input.digest,
+      bytes: input.bytes,
+      mediaType,
+      source: Object.freeze({
+        kind: 'file' as const,
+        path: requireIdentifier(
+          input.source.path,
+          'Immutable object source path',
+          MAX_OBJECT_REF_LENGTH,
+        ),
+      }),
+    });
+  }
+  if (input.source.kind === 'bytes' && input.source.value instanceof Uint8Array) {
+    return Object.freeze({
+      digest: input.digest,
+      bytes: input.bytes,
+      mediaType,
+      source: Object.freeze({ kind: 'bytes' as const, value: Uint8Array.from(input.source.value) }),
+    });
+  }
+  throw new TypeError('Immutable object source must contain file or byte content');
+}
+
+function admitImmutableObjectRef(input: ImmutableObjectRef): ImmutableObjectRef {
+  if (!isRecord(input)) throw new TypeError('Immutable object reference must be an object');
+  const objectRef = requireIdentifier(
+    input.objectRef,
+    'Immutable object reference',
+    MAX_OBJECT_REF_LENGTH,
+  );
+  if (!isSha256Digest(input.digest)) throw new TypeError('Immutable object digest must be SHA-256');
+  if (!isByteCount(input.bytes)) {
+    throw new TypeError('Immutable object byte count must be a non-negative safe integer');
+  }
+  return immutableObjectRef({
+    objectRef,
+    digest: input.digest,
+    bytes: input.bytes,
+    mediaType: requireIdentifier(input.mediaType, 'Immutable object media type'),
   });
+}
+
+function admitSessionCheckpointManifestV1(
+  input: SessionCheckpointManifestV1,
+): SessionCheckpointManifestV1 {
+  if (!isRecord(input)) throw new TypeError('Session checkpoint Manifest must be an object');
+  if (input.schemaVersion !== 1) {
+    throw new TypeError('Session checkpoint Manifest schema version must be 1');
+  }
+  return createSessionCheckpointManifestV1(input.compatibilityBundle);
+}
+
+function admitStoredSessionCheckpoint(input: StoredSessionCheckpoint): StoredSessionCheckpoint {
+  if (!isRecord(input)) throw new TypeError('Stored Session checkpoint must be an object');
+  const manifest = admitImmutableObjectRef(input.manifest);
+  const value = admitSessionCheckpointManifestV1(input.value);
+  if (manifest.mediaType !== SESSION_CHECKPOINT_MANIFEST_MEDIA_TYPE) {
+    throw new TypeError('Session checkpoint Manifest has an unsupported media type');
+  }
+  const encoded = encodeSessionCheckpointManifestV1(value);
+  if (manifest.digest !== digestBytes(encoded) || manifest.bytes !== encoded.byteLength) {
+    throw repositoryError(
+      'integrity_mismatch',
+      'Session checkpoint Manifest value does not match its immutable reference',
+    );
+  }
+  return storedSessionCheckpoint({ manifest, value });
 }
 
 function admitCommitSessionRevisionInput(
@@ -538,7 +740,7 @@ function admitCommitSessionRevisionInput(
   return Object.freeze({
     sessionId: requireIdentifier(input.sessionId, 'Session identity'),
     expectedRevision: requireIdentifier(input.expectedRevision, 'Expected revision'),
-    bundle: admitStoredSessionBundle(input.bundle),
+    checkpoint: admitStoredSessionCheckpoint(input.checkpoint),
     ...(input.lastCommittedActivationId === undefined
       ? {}
       : {
@@ -567,7 +769,7 @@ function admitCreateSessionInput(input: CreateSessionInput): InternalCreateSessi
   return Object.freeze({
     sessionId: requireIdentifier(input.sessionId, 'Session identity'),
     agentId: requireIdentifier(input.agentId, 'Agent identity'),
-    bundle: admitStoredSessionBundle(input.bundle),
+    checkpoint: admitStoredSessionCheckpoint(input.checkpoint),
     ...(input.lastCommittedActivationId === undefined
       ? {}
       : {
@@ -602,14 +804,14 @@ function committedRevision(input: {
   readonly sessionId: string;
   readonly revision: SessionRepositoryRevision;
   readonly agentId: string;
-  readonly bundle: StoredSessionBundle;
+  readonly checkpoint: StoredSessionCheckpoint;
   readonly lastCommittedActivationId?: string;
   readonly forkedFrom?: SessionRevisionRef;
 }): CommittedSessionRevision {
   return Object.freeze({
     ref: copyRevisionRef({ sessionId: input.sessionId, revision: input.revision }),
     agentId: input.agentId,
-    bundle: copyStoredSessionBundle(input.bundle),
+    checkpoint: copyStoredSessionCheckpoint(input.checkpoint),
     ...(input.lastCommittedActivationId === undefined
       ? {}
       : { lastCommittedActivationId: input.lastCommittedActivationId }),
@@ -617,16 +819,31 @@ function committedRevision(input: {
   });
 }
 
-function storedSessionBundle(input: StoredSessionBundle): StoredSessionBundle {
+function immutableObjectRef(input: ImmutableObjectRef): ImmutableObjectRef {
   return Object.freeze({
-    bundleRef: input.bundleRef,
-    archiveDigest: input.archiveDigest,
-    compressedBytes: input.compressedBytes,
+    objectRef: input.objectRef,
+    digest: input.digest,
+    bytes: input.bytes,
+    mediaType: input.mediaType,
   });
 }
 
-function copyStoredSessionBundle(input: StoredSessionBundle): StoredSessionBundle {
-  return storedSessionBundle(input);
+function copyImmutableObjectRef(input: ImmutableObjectRef): ImmutableObjectRef {
+  return immutableObjectRef(input);
+}
+
+function storedSessionCheckpoint(input: StoredSessionCheckpoint): StoredSessionCheckpoint {
+  return Object.freeze({
+    manifest: copyImmutableObjectRef(input.manifest),
+    value: Object.freeze({
+      schemaVersion: 1,
+      compatibilityBundle: copyImmutableObjectRef(input.value.compatibilityBundle),
+    }),
+  });
+}
+
+function copyStoredSessionCheckpoint(input: StoredSessionCheckpoint): StoredSessionCheckpoint {
+  return storedSessionCheckpoint(input);
 }
 
 function copyRevisionRef(input: SessionRevisionRef): SessionRevisionRef {
@@ -638,7 +855,7 @@ function copyCommittedSessionRevision(input: CommittedSessionRevision): Committe
     sessionId: input.ref.sessionId,
     revision: input.ref.revision,
     agentId: input.agentId,
-    bundle: input.bundle,
+    checkpoint: input.checkpoint,
     ...(input.lastCommittedActivationId === undefined
       ? {}
       : { lastCommittedActivationId: input.lastCommittedActivationId }),
@@ -655,13 +872,7 @@ function copyForkOperation(input: InternalForkOperation): ForkOperation {
       targetSessionId: input.targetSessionId,
     });
   }
-  return Object.freeze({
-    state: 'completed',
-    forkId: input.forkId,
-    source: copyRevisionRef(input.source),
-    targetSessionId: input.targetSessionId,
-    target: copyRevisionRef(input.target),
-  });
+  return copyCompletedForkOperation(input);
 }
 
 function copyCompletedForkOperation(input: InternalCompletedForkOperation): CompletedForkOperation {
@@ -674,11 +885,32 @@ function copyCompletedForkOperation(input: InternalCompletedForkOperation): Comp
   });
 }
 
-function sameStoredSessionBundle(left: StoredSessionBundle, right: StoredSessionBundle): boolean {
+function sameImmutableObjectRef(left: ImmutableObjectRef, right: ImmutableObjectRef): boolean {
   return (
-    left.bundleRef === right.bundleRef &&
-    left.archiveDigest === right.archiveDigest &&
-    left.compressedBytes === right.compressedBytes
+    left.objectRef === right.objectRef &&
+    left.digest === right.digest &&
+    left.bytes === right.bytes &&
+    left.mediaType === right.mediaType
+  );
+}
+
+function sameSessionCheckpointManifestV1(
+  left: SessionCheckpointManifestV1,
+  right: SessionCheckpointManifestV1,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    sameImmutableObjectRef(left.compatibilityBundle, right.compatibilityBundle)
+  );
+}
+
+function sameStoredSessionCheckpoint(
+  left: StoredSessionCheckpoint,
+  right: StoredSessionCheckpoint,
+): boolean {
+  return (
+    sameImmutableObjectRef(left.manifest, right.manifest) &&
+    sameSessionCheckpointManifestV1(left.value, right.value)
   );
 }
 
@@ -693,7 +925,7 @@ function sameCommitInput(
   return (
     left.sessionId === right.sessionId &&
     left.expectedRevision === right.expectedRevision &&
-    sameStoredSessionBundle(left.bundle, right.bundle) &&
+    sameStoredSessionCheckpoint(left.checkpoint, right.checkpoint) &&
     left.lastCommittedActivationId === right.lastCommittedActivationId &&
     left.commitId === right.commitId
   );
@@ -708,7 +940,7 @@ function sameCreateInput(
   return (
     created.agentId === agentId &&
     created.agentId === input.agentId &&
-    sameStoredSessionBundle(created.bundle, input.bundle) &&
+    sameStoredSessionCheckpoint(created.checkpoint, input.checkpoint) &&
     created.lastCommittedActivationId === input.lastCommittedActivationId &&
     sameOptionalRevisionRef(forkedFrom, input.forkedFrom)
   );
@@ -745,6 +977,17 @@ function requireIdentifier(
   return value;
 }
 
+function requireImmutableObjectStore(value: unknown): ImmutableObjectStore {
+  if (
+    !isRecord(value) ||
+    typeof value.publish !== 'function' ||
+    typeof value.assertReadable !== 'function'
+  ) {
+    throw new TypeError('Immutable Object Store must implement publish and assertReadable');
+  }
+  return value as unknown as ImmutableObjectStore;
+}
+
 function isByteCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -765,9 +1008,9 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return true;
 }
 
-function normalizeBlobStoreError(error: unknown): SessionRepositoryError {
+function normalizeObjectStoreError(error: unknown): SessionRepositoryError {
   if (error instanceof SessionRepositoryError) return error;
-  return repositoryError('io_failure', 'Bundle Blob Store operation failed', error);
+  return repositoryError('io_failure', 'Immutable Object Store operation failed', error);
 }
 
 function repositoryError(
