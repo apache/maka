@@ -185,7 +185,12 @@ describe('Work Board contract', () => {
   });
 
   test('drops malformed stored link entries instead of hiding the whole item', () => {
-    const valid = { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 };
+    const valid = {
+      profileId: 'profile-1',
+      hostId: 'host-1',
+      sessionId: 'session-1',
+      linkedAt: 10,
+    };
     const decoded = decodeWorkBoardItem({
       ...baseItem,
       linkedSessions: [
