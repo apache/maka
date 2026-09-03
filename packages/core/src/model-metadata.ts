@@ -285,6 +285,13 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'kimi-k2.6': planModel('Kimi-K2.6', true, 256_000, 32_000),
   'kimi-k2.7-code': planModel('Kimi-K2.7-Code', true, 256_000, 32_000),
 };
+// Hand-maintained mirror of the official Agent Plan personal plan page
+// (docs.volcengine.com/docs/82379/2366394) and its model release/retirement
+// announcements (82379/2578669, 82379/2578673): the gateway has no
+// model-list endpoint its plan key can reach and models.dev has no snapshot.
+// The page's table lists windows as "1024k"/"128k"; transcribe those
+// literals as 1_024_000/128_000 (its prose "1M" is the same figure rounded).
+// Re-check the page before editing an entry here.
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
   // The plan page lists "glm-5.3 (glm-latest)": thinking is on by default and

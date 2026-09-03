@@ -184,6 +184,12 @@ describe('Volcengine Agent Plan official catalog mirror', () => {
     assert.equal(metadata.capabilities?.vision, true);
   });
 
+  it('pins glm-5.3 to the plan page table literals', () => {
+    const metadata = lookupModelMetadata('volcengine-agent-plan', 'glm-5.3');
+    assert.equal(metadata.contextWindow, 1_024_000);
+    assert.equal(metadata.maxOutputTokens, 128_000);
+  });
+
   it('carries the official 1M context window for minimax-m3', () => {
     assert.equal(
       lookupModelMetadata('volcengine-agent-plan', 'minimax-m3').contextWindow,
