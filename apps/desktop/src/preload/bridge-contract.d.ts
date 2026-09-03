@@ -105,7 +105,12 @@ import type {
   DesktopTranscriptHandle,
 } from './transcript-contract.js';
 import type { PetPackManifestV1 } from '@maka/core/pet';
-import type { WorkBoardItem, WorkBoardListQuery, WorkBoardPage } from '@maka/core/work-board';
+import type {
+  WorkBoardItem,
+  WorkBoardLinkedSession,
+  WorkBoardListQuery,
+  WorkBoardPage,
+} from '@maka/core/work-board';
 import type { WorkBoardMutationOptions } from '@maka/storage/work-board-store';
 import type {
   OperationInput,
@@ -1008,6 +1013,11 @@ export interface MakaBridge {
       options?: WorkBoardMutationOptions,
     ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     remove(id: string, options?: WorkBoardMutationOptions): Promise<WorkBoardIpcResult<null>>;
+    linkSession(
+      id: string,
+      link: WorkBoardLinkedSession,
+      options?: WorkBoardMutationOptions,
+    ): Promise<WorkBoardIpcResult<WorkBoardItem>>;
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void;
   };
 

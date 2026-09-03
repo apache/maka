@@ -90,6 +90,30 @@ describe('Work Board store', () => {
     });
   });
 
+  test('persists an idempotent Host-scoped Session link without changing item state', async () => {
+    await withTempRoot(async (root) => {
+      const store = createWorkBoardStore(root);
+      try {
+        const item = await store.create(itemInput(), 100);
+        const link = {
+          profileId: 'profile-1',
+          hostId: 'host-1',
+          sessionId: 'session-1',
+          linkedAt: 101,
+        };
+        const linked = await store.linkSession(item.id, link, {}, 101);
+        assert.equal(linked.revision, 2);
+        assert.equal(linked.state, 'todo');
+        assert.deepEqual(linked.linkedSessions, [link]);
+        const repeated = await store.linkSession(item.id, link, { expectedRevision: 2 }, 102);
+        assert.equal(repeated.revision, 2);
+        assert.deepEqual(repeated.linkedSessions, [link]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   test('archive, reopen, and permanent delete follow the intended lifecycle', async () => {
     await withTempRoot(async (root) => {
       const store = createWorkBoardStore(root);

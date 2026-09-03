@@ -96,6 +96,7 @@ describe('Work Board IPC', () => {
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
+        validateLinkedSession: async () => true,
       });
       try {
         const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
@@ -128,6 +129,7 @@ describe('Work Board IPC', () => {
           'workBoard:archive',
           'workBoard:unarchive',
           'workBoard:remove',
+          'workBoard:linkSession',
         ]);
       } finally {
         registration.close();
@@ -143,6 +145,7 @@ describe('Work Board IPC', () => {
         ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
         workspaceRoot: root,
         mainWindowController: window,
+        validateLinkedSession: async () => true,
       });
       try {
         const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
@@ -152,11 +155,19 @@ describe('Work Board IPC', () => {
         assert.ok(created.ok);
         const id = created.ok ? created.value.id : '';
 
-        const renamed = await ipc.invoke<
+      const renamed = await ipc.invoke<
           WorkBoardIpcResult<{ title: string; revision: number; state: string }>
         >('workBoard:update', id, { title: 'Review auth v2' });
         assert.ok(renamed.ok);
-        assert.equal(renamed.ok && renamed.value.revision, 2);
+      assert.equal(renamed.ok && renamed.value.revision, 2);
+
+      const linked = await ipc.invoke<WorkBoardIpcResult<{ linkedSessions: unknown[] }>>(
+        'workBoard:linkSession',
+        id,
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 103 },
+      );
+      assert.equal(linked.ok, true);
+      assert.equal(linked.ok && linked.value.linkedSessions.length, 1);
 
         const staleRename = await ipc.invoke<WorkBoardIpcResult<unknown>>(
           'workBoard:update',
@@ -214,11 +225,40 @@ describe('Work Board IPC', () => {
       assert.ok(page.ok);
       assert.equal(page.ok && page.value.items.length, 0);
 
-        // create, update, archive, unarchive, archive, remove = 6 mutations
+        // create, update, link, archive, unarchive, archive, remove = 7 mutations
         const changed = window.events.filter(
           (event) => event.channel === 'workBoard:changed',
         );
-        assert.equal(changed.length, 6);
+        assert.equal(changed.length, 7);
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('rejects a linked Session that the Host validator cannot prove', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async () => false,
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.ok(created.ok);
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'missing', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
       } finally {
         registration.close();
       }

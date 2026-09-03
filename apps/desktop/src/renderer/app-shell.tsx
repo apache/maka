@@ -34,6 +34,9 @@ import type {
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
+import type { SessionSummary } from '@maka/core/session';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
+import { desktopSessionKey, parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -216,6 +219,8 @@ import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
+import { taskEntryDraftKey } from './features/task-entry/index.js';
+import { markNewTaskReloadIntent, writeNewTaskReloadDraft } from './new-task-reload-intent.js';
 
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
@@ -237,6 +242,7 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
+const WORK_BOARD_START_TASK_EXPERIMENT_ENABLED = import.meta.env.VITE_MAKA_WORK_BOARD_START_TASK === '1';
 const { useSessionCollaborationDialog } = SessionCollaboration;
 type FirstSendObservationWaiter = {
   promise: Promise<void>;
@@ -1492,6 +1498,7 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
+    pendingWorkBoardStartRef.current = undefined;
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
     startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
@@ -1503,6 +1510,93 @@ function AppShellContent({
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
+
+  const pendingWorkBoardStartRef = useRef<{
+    itemId: string;
+    target: { profileId: string; hostId: string; projectId: string };
+  } | undefined>(undefined);
+  const resolveWorkBoardStartTask = useCallback(
+    (item: WorkBoardItem) => {
+      const result = taskEntry.commands.resolveWorkBoardTarget(item);
+      return result.ok ? { ok: true } : { ok: false, message: result.message };
+    },
+    [taskEntry.commands],
+  );
+  const startWorkBoardTask = useCallback(
+    (item: WorkBoardItem) => {
+      if (pendingWorkBoardStartRef.current) {
+        toastApi.info(
+          getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
+          'Finish sending the current Work Board task before starting another one.',
+        );
+        return;
+      }
+      const result = taskEntry.commands.resolveWorkBoardTarget(item);
+      if (!result.ok) {
+        toastApi.info(getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed, result.message);
+        return;
+      }
+      if (!taskEntry.commands.selectTarget(result.target)) {
+        toastApi.info(getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed, 'The selected Runtime Host target is no longer available.');
+        return;
+      }
+      const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
+      markNewTaskReloadIntent();
+      writeNewTaskReloadDraft(taskEntryDraftKey(result.target), draft);
+      openNewTaskSurface();
+      pendingWorkBoardStartRef.current = { itemId: item.id, target: result.target };
+      window.requestAnimationFrame(() => {
+        composerRef.current?.setDraft(taskEntryDraftKey(result.target), draft);
+        composerRef.current?.focus();
+      });
+    },
+    [composerRef, openNewTaskSurface, taskEntry.commands, toastApi, uiLocale],
+  );
+  const openWorkBoardSession = useCallback(
+    (link: WorkBoardLinkedSession) => {
+      openSessionInChatRef.current(desktopSessionKey({ hostId: link.hostId, sessionId: link.sessionId }));
+    },
+    [],
+  );
+  const linkWorkBoardSession = useCallback(
+    (sessionId: string) => {
+      const pending = pendingWorkBoardStartRef.current;
+      if (!pending) return;
+      // Consume the claim before crossing the asynchronous IPC boundary. This
+      // lets a new Work Board task be prepared while the previous link writes,
+      // without allowing the previous completion to claim the new task.
+      pendingWorkBoardStartRef.current = undefined;
+      void window.maka.workBoard
+        .linkSession(pending.itemId, {
+          profileId: pending.target.profileId,
+          hostId: pending.target.hostId,
+          sessionId: (() => {
+            try {
+              return parseDesktopSessionKey(sessionId).sessionId;
+            } catch {
+              return sessionId;
+            }
+          })(),
+          linkedAt: Date.now(),
+        })
+        .then((result) => {
+          if (!result.ok) {
+            toastApi.error(
+              getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
+              result.message,
+            );
+            return;
+          }
+        })
+        .catch((error) => {
+          toastApi.error(
+            getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
+            error instanceof Error ? error.message : String(error),
+          );
+        });
+    },
+    [toastApi, uiLocale],
+  );
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1602,6 +1696,10 @@ function AppShellContent({
     shellObscured,
     modelChoices: chatModelChoices,
     reportError: reportWorkbarError,
+    onStartWorkBoardTask: startWorkBoardTask,
+    resolveWorkBoardStartTask: resolveWorkBoardStartTask,
+    onOpenWorkBoardSession: openWorkBoardSession,
+    workBoardStartTaskEnabled: WORK_BOARD_START_TASK_EXPERIMENT_ENABLED,
   });
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
@@ -1773,6 +1871,10 @@ function AppShellContent({
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatOrchestrationMode,
     newTaskTarget: taskEntry.selectors.target,
+    onNewTaskSessionResolved: linkWorkBoardSession,
+    onNewTaskSessionNotProjected: () => {
+      pendingWorkBoardStartRef.current = undefined;
+    },
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {

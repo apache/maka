@@ -47,6 +47,8 @@ export function registerWorkBoardIpc(input: {
   readonly workspaceRoot: string;
   readonly mainWindowController: MainWindowController;
   readonly store?: WorkBoardStore;
+  /** Proves that a linked Session belongs to the live Host target. */
+  readonly validateLinkedSession: (link: unknown) => Promise<boolean>;
   readonly now?: () => number;
 }): WorkBoardIpcRegistration {
   const store = input.store ?? createWorkBoardStore(input.workspaceRoot);
@@ -147,6 +149,29 @@ export function registerWorkBoardIpc(input: {
         await store.remove(requireWorkBoardId(id), options as WorkBoardMutationOptions | undefined);
         emitChanged();
         return { ok: true, value: null };
+      } catch (error) {
+        return { ok: false, ...workBoardFailure(error) };
+      }
+    },
+  );
+
+  input.ipcMain.handle(
+    'workBoard:linkSession',
+    async (_event, id: unknown, link: unknown, options?: unknown): Promise<WorkBoardIpcResult<WorkBoardItem>> => {
+      try {
+        if (!(await input.validateLinkedSession(link))) {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Work Board linked Session does not belong to an available Runtime Host',
+          );
+        }
+        const linked = await store.linkSession(
+          requireWorkBoardId(id),
+          link,
+          options as WorkBoardMutationOptions | undefined,
+        );
+        emitChanged();
+        return { ok: true, value: linked };
       } catch (error) {
         return { ok: false, ...workBoardFailure(error) };
       }

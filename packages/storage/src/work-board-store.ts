@@ -26,10 +26,12 @@ import {
   decodeWorkBoardItem,
   isSafeWorkBoardId,
   normalizeCreateWorkBoardItemInput,
+  normalizeWorkBoardLinkedSession,
   normalizeUpdateWorkBoardItemInput,
   normalizeWorkBoardListQuery,
   unarchiveWorkBoardItem,
   type WorkBoardItem,
+  type WorkBoardLinkedSession,
   type WorkBoardPage,
 } from '@maka/core/work-board';
 import {
@@ -68,6 +70,12 @@ export interface WorkBoardStore {
   archive(id: string, options?: WorkBoardMutationOptions, now?: number): Promise<WorkBoardItem>;
   unarchive(id: string, options?: WorkBoardMutationOptions, now?: number): Promise<WorkBoardItem>;
   remove(id: string, options?: WorkBoardMutationOptions): Promise<void>;
+  linkSession(
+    id: string,
+    link: unknown,
+    options?: WorkBoardMutationOptions,
+    now?: number,
+  ): Promise<WorkBoardItem>;
   close(): void;
 }
 
@@ -142,6 +150,7 @@ class SqliteWorkBoardStore implements WorkBoardStore {
       archived: false,
       creator: value.creator,
       provenance: value.provenance,
+      linkedSessions: [],
       createdAt: now,
       updatedAt: now,
     };
@@ -248,6 +257,41 @@ class SqliteWorkBoardStore implements WorkBoardStore {
           .run(id);
       });
     });
+  }
+
+  async linkSession(
+    id: string,
+    link: unknown,
+    options: WorkBoardMutationOptions = {},
+    now = Date.now(),
+  ): Promise<WorkBoardItem> {
+    const normalized = normalizeWorkBoardLinkedSession(link);
+    if (!normalized.ok) throw storeError('invalid_input', normalized.message);
+    const expectedRevision = normalizeExpectedRevision(options);
+    assertValidNow(now);
+    let result: WorkBoardItem | undefined;
+    await chainWrite(this.writeQueues, WORK_BOARD_WRITE_KEY, async () => {
+      this.#lease.transaction('write', () => {
+        const current = this.#requireItem(id);
+        assertExpectedRevision(expectedRevision, current);
+        const key = linkedSessionKey(normalized.value);
+        const linkedSessions = current.linkedSessions ?? [];
+        if (linkedSessions.some((entry) => linkedSessionKey(entry) === key)) {
+          result = current;
+          return;
+        }
+        const effectiveNow = Math.max(now, current.updatedAt);
+        const next: WorkBoardItem = {
+          ...current,
+          linkedSessions: [...linkedSessions, normalized.value],
+          updatedAt: effectiveNow,
+          revision: current.revision + 1,
+        };
+        this.#writeItem(next);
+        result = next;
+      });
+    });
+    return result!;
   }
 
   #readRow(id: string): WorkBoardRow | undefined {
@@ -364,4 +408,8 @@ function assertExpectedRevision(expected: number | undefined, item: WorkBoardIte
 
 function storeError(code: WorkBoardStoreErrorCode, message: string): WorkBoardStoreError {
   return new WorkBoardStoreError(code, message);
+}
+
+function linkedSessionKey(link: WorkBoardLinkedSession): string {
+  return `${link.profileId}\u0000${link.hostId}\u0000${link.sessionId}`;
 }

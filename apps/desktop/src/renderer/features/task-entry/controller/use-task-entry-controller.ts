@@ -25,6 +25,7 @@ import {
   useState,
 } from 'react';
 import { findProjectByIdentity, type ProjectRecord } from '@maka/core/project';
+import type { WorkBoardItem } from '@maka/core/work-board';
 import {
   runtimeHostProfileUsesHostWorkspace,
   type RuntimeHostProfileKind,
@@ -45,6 +46,7 @@ import {
   taskEntryDraftKey,
   type ReadyTaskEntryHost,
 } from '../model/task-entry-selection.js';
+import { resolveWorkBoardStartTarget, type WorkBoardStartTargetResult } from '../model/work-board-target.js';
 import type {
   TaskEntryCatalog,
   TaskEntryHostRef,
@@ -88,6 +90,8 @@ export interface TaskEntryControllerCommands {
   selectLocalProject(projectId: string): boolean;
   addProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
+  resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
+  selectTarget(target: TaskEntryTarget): boolean;
 }
 
 export interface TaskEntryController {
@@ -493,6 +497,25 @@ export function useTaskEntryController(
     selectProject(localHost, projectId);
     return true;
   }, [localHost, selectProject]);
+  const resolveWorkBoardTarget = useCallback(
+    (item: WorkBoardItem): WorkBoardStartTargetResult =>
+      resolveWorkBoardStartTarget(item, catalog),
+    [catalog],
+  );
+  const selectTarget = useCallback((target: TaskEntryTarget): boolean => {
+    const host = catalog.hosts.find(
+      (candidate): candidate is ReadyTaskEntryHost =>
+        candidate.profile.id === target.profileId &&
+        isReadyTaskEntryHost(candidate) &&
+        candidate.hostId === target.hostId,
+    );
+    if (!host || target.projectId === null) return false;
+    const project = findProjectByIdentity(host.projects, target.projectId);
+    if (!project?.available || project.archivedAt !== undefined) return false;
+    setSelectedProfileId(host.profile.id);
+    setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
+    return true;
+  }, [catalog.hosts]);
   const addSelectedProject = useCallback(() => {
     if (selectedHost) void addProjectForHost(selectedHost);
   }, [addProjectForHost, selectedHost]);
@@ -533,6 +556,8 @@ export function useTaskEntryController(
       selectLocalProject,
       addProject: addSelectedProject,
       chooseProjectForProfile,
+      resolveWorkBoardTarget,
+      selectTarget,
     },
     selectors: {
       ...(target ? { target } : {}),
@@ -561,6 +586,8 @@ export function useTaskEntryController(
     projectPath,
     refreshCatalog,
     selectLocalProject,
+    resolveWorkBoardTarget,
+    selectTarget,
     selectedHost,
     selectedHostProjection,
     selectedProfileId,

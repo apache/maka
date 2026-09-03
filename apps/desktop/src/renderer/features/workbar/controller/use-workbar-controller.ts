@@ -30,6 +30,7 @@ import type { ClientCapabilityResponse } from '@maka/core/client-capability-gran
 import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import { Composer, useUiLocale } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
@@ -97,6 +98,10 @@ export interface UseWorkbarControllerInput {
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
   reportError(title: string, description: string, sessionId: string): void;
+  onStartWorkBoardTask?: (item: WorkBoardItem) => void;
+  resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
+  onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
+  workBoardStartTaskEnabled?: boolean;
 }
 
 export interface WorkbarController {
@@ -757,6 +762,10 @@ export function useWorkbarController(
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
       modelChoices: input.modelChoices,
+      onStartWorkBoardTask: input.onStartWorkBoardTask,
+      resolveWorkBoardStartTask: input.resolveWorkBoardStartTask,
+      onOpenWorkBoardSession: input.onOpenWorkBoardSession,
+      workBoardStartTaskEnabled: input.workBoardStartTaskEnabled,
       closeConfirmation: {
         key:
           pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed',
