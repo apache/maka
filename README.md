@@ -34,11 +34,6 @@
 </p>
 
 <p align="center">
-  <strong>Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.</strong><br/>
-  An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
-</p>
-
-<p align="center">
   <a href="https://maka.apache.org/en/"><img src="https://img.shields.io/badge/Website-maka.apache.org-1F6FEB?style=for-the-badge" alt="Website: maka.apache.org" /></a>
   <a href="https://maka.apache.org/en/downloads/"><img src="https://img.shields.io/badge/Downloads-1F6FEB?style=for-the-badge" alt="Downloads" /></a>
 </p>
@@ -56,12 +51,14 @@
 
 ## What Maka is
 
-- **Your machine, your data.** Sessions, settings and run records stay local. You bring the model: a cloud API, a local model or a compatible gateway.
-- **The record is kept.** Model messages, tool calls, tool results and how a turn ended are written down. The UI and the next model call are views of that record, not the only copy.
-- **Shorter context is not deleted history.** Old tool output can be left out of the next prompt without throwing away the saved evidence.
-- **One place runs the agent.** Desktop, the TUI and CLI, and Eval all go through Runtime Host; Eval owns only the experiment and its scores.
+Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did. An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.
 
-The [website](https://maka.apache.org/en/) shows one turn of that record and links the published runs. [ARCHITECTURE.md](./ARCHITECTURE.md) has the system map.
+- **Measured, not claimed.** Maka is benchmarked against other harnesses on the same model with the official verifier, and the per-task results ship with every report in [`docs/eval/`](./docs/eval).
+- **The log is the runtime.** Every model message, tool call, permission decision and termination is an append-only RuntimeEvent. The UI, the next prompt and crash recovery are projections of that log, never the only copy. Old tool output can leave the next prompt without leaving the log.
+- **Your machine, your model.** Sessions, settings and run records stay local. You bring the model: a cloud API, a local model or a compatible gateway.
+- **One Runtime Host.** Desktop, the TUI and CLI, and Eval are thin clients of one execution authority; Eval owns only the experiment and its scores.
+
+The [website](https://maka.apache.org/en/) walks through one turn of the log and links the published runs. [ARCHITECTURE.md](./ARCHITECTURE.md) has the system map.
 
 ## Get Maka
 

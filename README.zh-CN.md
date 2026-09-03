@@ -34,11 +34,6 @@
 </p>
 
 <p align="center">
-  <strong>Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。</strong><br/>
-  Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
-</p>
-
-<p align="center">
   <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-1F6FEB?style=for-the-badge" alt="官网：maka.apache.org" /></a>
   <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-1F6FEB?style=for-the-badge" alt="下载" /></a>
 </p>
@@ -56,12 +51,14 @@
 
 ## 什么是 Maka
 
-- **数据在你的机器上。** 会话、设置和运行记录保存在本机。模型由你接：云 API、本地模型或兼容网关。
-- **做过的事会留下来。** 模型消息、工具调用、工具结果、这一轮怎么结束，都会记下来。界面和下一次模型请求只是这份记录的视图，不是唯一副本。
-- **缩短上下文不等于删掉历史。** 旧的工具输出可以不送进下一轮提示，但已保存的证据不会丢。
-- **Agent 只在一处跑。** Desktop、TUI 和 CLI、Eval 都走 Runtime Host；Eval 只负责实验和分数。
+Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。Agent harness 的本职就是把任务做完。衡量它的标准只有一条：完成了多少，花了多少。我们公开每一次运行：同一个模型，同一个官方验证器，逐任务的完整记录。
 
-[官网](https://maka.apache.org/zh-CN/)展示了这份记录中的一轮，并链接到公开的运行结果。系统地图见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
+- **靠测量，不靠宣称。** Maka 与其他 harness 在同一个模型、同一个官方验证器下对比跑分，每份报告都附逐任务结果，见 [`docs/eval/`](./docs/eval)。
+- **日志就是运行时。** 每条模型消息、工具调用、权限决定和终止都是一条只追加的 RuntimeEvent。界面、下一轮提示和崩溃恢复都是这份日志的投影，从不是唯一副本。旧的工具输出可以不进下一轮提示，但不会离开日志。
+- **数据在你的机器上，模型由你接。** 会话、设置和运行记录保存在本机；云 API、本地模型或兼容网关都可以。
+- **一个 Runtime Host。** Desktop、TUI 和 CLI、Eval 都是这一个执行权威的瘦客户端；Eval 只负责实验和分数。
+
+[官网](https://maka.apache.org/zh-CN/)演示了日志中的一轮，并链接到公开的运行结果。系统地图见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
 
 ## 获取 Maka
 
