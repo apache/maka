@@ -25,6 +25,30 @@ import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('forwards the stable Session identity to the model factory', () => {
+    let observedSessionId: string | undefined;
+    const model = {};
+    const adapter = new ModelAdapter({
+      sessionId: 'session-opencode-go',
+      connection: {
+        slug: 'opencode-go',
+        providerType: 'opencode-go',
+        defaultModel: 'kimi-k2.7-code',
+      },
+      apiKey: 'opencode-go-token',
+      modelId: 'kimi-k2.7-code',
+      modelFactory: (input) => {
+        observedSessionId = (input as { sessionId?: string }).sessionId;
+        return model;
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(adapter.resolveModel(), model);
+    assert.equal(observedSessionId, 'session-opencode-go');
+  });
+
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;

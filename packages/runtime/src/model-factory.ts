@@ -62,11 +62,13 @@ import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-run
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
 import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
+import { withOpenCodeSessionHeader } from './opencode-session-header.js';
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
+  sessionId?: string;
   fetch?: typeof globalThis.fetch;
   requestHeaders?: Readonly<Record<string, string>>;
   resolvedRuntime?: ResolvedModelRuntime;
@@ -80,6 +82,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     connection,
     apiKey,
     modelId,
+    sessionId,
     fetch,
     requestHeaders,
     resolvedRuntime,
@@ -88,12 +91,17 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
+  const effectiveRequestHeaders = withOpenCodeSessionHeader(
+    connection.providerType,
+    sessionId,
+    requestHeaders,
+  );
   const hasRequestCustomization =
-    Object.keys(requestHeaders ?? {}).length > 0 ||
+    Object.keys(effectiveRequestHeaders ?? {}).length > 0 ||
     Object.keys(connection.requestBodyOverlay ?? {}).length > 0;
   const baseFetch = fetch ?? globalThis.fetch;
   const requestCustomization = {
-    headers: requestHeaders,
+    headers: effectiveRequestHeaders,
     bodyOverlay: connection.requestBodyOverlay,
   } as const;
   const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);

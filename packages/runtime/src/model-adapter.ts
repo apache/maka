@@ -210,6 +210,7 @@ export class ModelAdapter {
       throw new Error(`No API key stored for connection "${this.input.connection.slug}"`);
     }
     return this.input.modelFactory({
+      sessionId: this.input.sessionId,
       connection: this.input.connection,
       apiKey: this.input.apiKey,
       modelId: this.input.modelId,

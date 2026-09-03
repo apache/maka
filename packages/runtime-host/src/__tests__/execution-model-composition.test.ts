@@ -2852,7 +2852,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       connection: {
         slug: 'goal-evaluator-provider',
         name: 'Goal evaluator provider',
-        providerType: 'moonshot',
+        providerType: 'opencode-go',
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
@@ -2957,6 +2957,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
@@ -2974,6 +2975,9 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(dailyReviewLog);
     assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
     assert.equal(dailyReviewLog.sessionId, undefined);
+    const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
+    assert.ok(dailyReviewRequest);
+    assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
@@ -3021,6 +3025,8 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const [proposalRequest, canonicalizeRequest] = provider.requests.slice(memoryRequestsBefore);
     assert.ok(proposalRequest);
     assert.ok(canonicalizeRequest);
+    assert.equal(proposalRequest.sessionHeader, session.id);
+    assert.equal(canonicalizeRequest.sessionHeader, session.id);
     assert.deepEqual(toolNames(proposalRequest.body), ['memory_remember']);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_SYSTEM_SENTINEL/);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_USER_SENTINEL/);
@@ -4336,6 +4342,7 @@ interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
   readonly customHeader: string | undefined;
+  readonly sessionHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -4448,6 +4455,7 @@ async function handleProviderRequest(
     url: request.url ?? '',
     authorization: request.headers.authorization,
     customHeader: request.headers['x-maka-test'] as string | undefined,
+    sessionHeader: request.headers['x-opencode-session'] as string | undefined,
     body,
   });
   if (request.url === '/v1/responses') {
