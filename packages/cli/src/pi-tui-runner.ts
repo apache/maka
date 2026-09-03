@@ -34,7 +34,11 @@ import {
 } from '@earendil-works/pi-tui';
 import type { PermissionMode } from '@maka/core/permission';
 import { isThinkingLevel, type ThinkingLevel } from '@maka/core/model-thinking';
-import { type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
+import {
+  deriveConnectionSlug,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type {
   SkillInvocationFailureReason,
@@ -74,6 +78,7 @@ import type {
   MakaOnboardingSurface,
   MakaPiTuiTurnActivitySurface,
   ModelChoice,
+  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   SessionRecapGenerator,
 } from './pi-tui-contracts.js';
@@ -1238,6 +1243,10 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
   // The existing connection the picked provider resolved to, so saving edits
   // it in place (a Desktop-created relay may live under a custom slug).
   let wizardTarget: OnboardingProviderEntry['target'] | undefined;
+  // The identity step's answer for a create target. Null halves keep the wire
+  // target bare so any Host vintage accepts it; an edited slug/name rides on
+  // the target and gets `slug_taken` back when it loses.
+  let wizardIdentity: OnboardingIdentityChoice = { slug: null, name: null };
   let wizardModels: readonly ModelInfo[] = [];
   // Authoritative ready model choices for `/model`. A startup snapshot refreshed
   // in place after `/setup` saves so newly configured models are immediately
@@ -2149,6 +2158,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     wizardApiKey = '';
     wizardBaseUrl = '';
     wizardTarget = undefined;
+    wizardIdentity = { slug: null, name: null };
     wizardModels = [];
   };
 
@@ -2177,7 +2187,12 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
       (result) => {
         if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
         if (result.kind !== 'ok') {
-          wizard.setKeyError(onboardingFailureMessage(result, locale));
+          // A rejected slug is the identity step's to fix, not the key's.
+          if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+            wizard.setIdentityError(onboardingFailureMessage(result, locale));
+          } else {
+            wizard.setKeyError(onboardingFailureMessage(result, locale));
+          }
           requestRender();
           return;
         }
@@ -2220,7 +2235,11 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         (result) => {
           if (result.kind !== 'ok') {
             if (closed || wizard !== targetWizard || attempt !== wizardAttempt) return;
-            wizard.setModelError(onboardingFailureMessage(result, locale));
+            if (result.kind === 'rejected' && result.reason === 'slug_taken') {
+              wizard.setIdentityError(onboardingFailureMessage(result, locale));
+            } else {
+              wizard.setModelError(onboardingFailureMessage(result, locale));
+            }
             requestRender();
             return;
           }
@@ -2280,6 +2299,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         ...provider,
         target: { kind: 'create' as const, providerType: provider.providerType },
         label: provider.label,
+        suggestedSlug: deriveConnectionSlug(provider.providerType),
         enabledModelIds: [],
       }));
     }
@@ -2301,10 +2321,23 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
         // reselects the same catalog row. A late save may converge only the
         // exact target object captured by its own submit.
         wizardTarget = { ...provider.target };
+        wizardIdentity = { slug: null, name: null };
         wizardApiKey = '';
         wizardBaseUrl = '';
         wizardModels = [];
         wizardAttempt += 1; // a new pick supersedes any in-flight attempt
+        requestRender();
+      },
+      onSubmitIdentity: (identity) => {
+        wizardIdentity = identity;
+        if (wizardTarget?.kind === 'create') {
+          wizardTarget = {
+            kind: 'create',
+            providerType: wizardTarget.providerType,
+            ...(identity.slug === null ? {} : { slug: identity.slug }),
+            ...(identity.name === null ? {} : { name: identity.name }),
+          };
+        }
         requestRender();
       },
       onSubmitBaseUrl: (baseUrl) => {

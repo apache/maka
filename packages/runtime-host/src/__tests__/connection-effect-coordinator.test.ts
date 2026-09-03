@@ -187,6 +187,118 @@ test('two create tickets cannot commit the same planned slug', async () => {
   });
 });
 
+test('onboards a caller-named connection with the requested slug and display name', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: {
+          kind: 'create',
+          providerType: 'openai',
+          slug: 'openai-work',
+          name: 'Work OpenAI',
+        },
+        apiKey: 'sk-live',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(saved);
+    assert.equal(saved.result.connection.slug, 'openai-work');
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    const created = catalog.connections.find(({ slug }) => slug === 'openai-work');
+    assert.equal(created?.name, 'Work OpenAI');
+
+    // An unnamed follow-up still derives its identity from the catalog — the
+    // requested slug never collides with it because the catalog did take it.
+    const derived = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(derived);
+    assert.equal(derived.result.connection.slug, 'openai');
+  });
+});
+
+test('rejects a requested slug that is already taken, before any discovery runs', async () => {
+  await withFixture(async ({ stores }) => {
+    const coordinator = onboardingCoordinator(stores, () => undefined, 'gpt-5');
+    const saved = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assertSaved(saved);
+
+    const verify = await coordinator.handlers['connection.onboarding.verify'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+      },
+      context,
+    );
+    assert.equal(verify.ok, true);
+    if (!verify.ok) return;
+    assert.deepEqual(verify.result, { kind: 'rejected', reason: 'slug_taken' });
+
+    const save = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'openai', slug: 'openai-work' },
+        apiKey: 'sk-live-2',
+        baseUrl: null,
+        enabledModelIds: ['gpt-5'],
+      },
+      context,
+    );
+    assert.equal(save.ok, true);
+    if (!save.ok) return;
+    assert.deepEqual(save.result, { kind: 'rejected', reason: 'slug_taken' });
+    // Nothing was created: the taken slug still names exactly one connection.
+    const catalog = await stores.connectionCatalog.getSnapshot();
+    assert.equal(catalog.connections.filter(({ slug }) => slug === 'openai-work').length, 1);
+  });
+});
+
+test('a requested slug lost mid-flight reports slug_taken, never a silent rename', async () => {
+  await withFixture(async ({ stores }) => {
+    const requested = {
+      target: { kind: 'create', providerType: 'openai', slug: 'openai-work' } as const,
+      baseUrl: null,
+    };
+    const first = await stores.operations.beginConnectionOnboarding(requested);
+    const second = await stores.operations.beginConnectionOnboarding(requested);
+    assert.equal(first.kind, 'ready');
+    assert.equal(second.kind, 'ready');
+    if (first.kind !== 'ready' || second.kind !== 'ready') return;
+    assert.equal(first.candidate.slug, 'openai-work');
+    assert.equal(second.candidate.slug, 'openai-work');
+
+    const completion = {
+      suppliedSecret: 'sk-live',
+      enabledModelIds: ['gpt-5'],
+      discovery: { models: [{ id: 'gpt-5' }], source: 'fetched' as const, fetchedAt: 1 },
+    };
+    const committed = await stores.operations.completeConnectionOnboarding(
+      first.ticket,
+      completion,
+    );
+    assert.equal(committed.kind, 'committed');
+    const lost = await stores.operations.completeConnectionOnboarding(second.ticket, completion);
+    assert.deepEqual(lost, { kind: 'slug_taken' });
+  });
+});
+
 test('reports catalog_full both before discovery and when the last slot fills before commit', async () => {
   await withFixture(async ({ root, stores }) => {
     const connections = Array.from(

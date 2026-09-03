@@ -47,13 +47,16 @@ import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
 import {
   providerDefaultsOf,
   providerMenuLabel,
+  validateSlug,
   type ModelInfo,
   type ProviderType,
 } from '@maka/core/llm-connections';
+import { CONNECTION_NAME_MAX_LENGTH } from '@maka/core/runtime-policy';
 import type {
   ModelChoice,
   OnboardingFailure,
   OnboardingFailureClass,
+  OnboardingIdentityChoice,
   OnboardingProviderEntry,
   OnboardingRejectionReason,
 } from './pi-tui-contracts.js';
@@ -77,6 +80,11 @@ interface TuiPickerCopy {
   readonly setupTitle: string;
   readonly baseUrlLabel: string;
   readonly apiKeyLabel: string;
+  readonly connectionNameLabel: string;
+  readonly connectionSlugLabel: string;
+  readonly identityHint: string;
+  readonly identitySlugInvalid: string;
+  readonly identityNameTooLong: string;
   readonly onboardingUnavailable: string;
   readonly onboardingRequestFailed: string;
   readonly onboardingRejections: Readonly<Record<OnboardingRejectionReason, string>>;
@@ -97,7 +105,7 @@ interface TuiPickerCopy {
   readonly providerSearchHint: string;
   readonly noMatchingProviders: string;
   readonly keyHints: Readonly<
-    Record<'reuse' | 'enter', Readonly<Record<'baseUrl' | 'provider', string>>>
+    Record<'reuse' | 'enter', Readonly<Record<'baseUrl' | 'identity' | 'provider', string>>>
   >;
   readonly submitAction: string;
   readonly verifyingKey: string;
@@ -988,14 +996,27 @@ function padLine(text: string, width: number): string {
 function keyEntryHint(
   copy: TuiPickerCopy,
   hasConnection: boolean,
-  returnsToBaseUrl: boolean,
+  returnsTo: 'baseUrl' | 'identity' | 'provider',
 ): string {
   const action = hasConnection ? 'reuse' : 'enter';
-  const destination = returnsToBaseUrl ? 'baseUrl' : 'provider';
-  return copy.keyHints[action][destination];
+  return copy.keyHints[action][returnsTo];
 }
 
-export type OnboardingWizardPhase = 'search' | 'baseUrl' | 'key' | 'models' | 'success';
+export type OnboardingWizardPhase =
+  | 'search'
+  | 'identity'
+  | 'baseUrl'
+  | 'key'
+  | 'models'
+  | 'success';
+
+/** The union's discriminant sits on `target.kind`, one level down — TS will
+ *  not narrow the entry from that check alone, so route through this guard. */
+function isCreateEntry(
+  entry: OnboardingProviderEntry,
+): entry is OnboardingProviderEntry & { suggestedSlug: string } {
+  return entry.target.kind === 'create';
+}
 
 export type OnboardingWizardStatus =
   | { kind: 'prompt' }
@@ -1010,6 +1031,10 @@ export interface OnboardingWizardInput {
    *   existing connection's identity, when the catalog resolved one — for
    *   verify/save, so saving edits that connection in place. */
   onPickProvider: (provider: OnboardingProviderEntry) => void;
+  /** identity submit (create targets only). `null` halves mean "keep the
+   *  Host-derived default", so a user who accepts the prefills sends a target
+   *  identical to one from a build without this step. */
+  onSubmitIdentity: (identity: OnboardingIdentityChoice) => void;
   /** baseUrl submit (only for `requiresBaseUrl` providers). Empty means "reuse
    *   the existing connection's persisted endpoint"; the wizard has already
    *   rejected an empty value for a provider with no connection. */
@@ -1045,7 +1070,11 @@ export class OnboardingWizard implements Component {
   private readonly searchEditor: Editor;
   private readonly baseUrlEditor: Editor;
   private readonly keyEditor: Editor;
+  private readonly nameEditor: Editor;
+  private readonly slugEditor: Editor;
   private readonly modelsSearchEditor: Editor;
+  private identityFocus: 'name' | 'slug' = 'name';
+  private identityNameDraft = '';
   private filtered: readonly OnboardingProviderEntry[];
   private list: SelectList;
   // Models phase state. Selection seeds from the picked provider's enabled set
@@ -1086,6 +1115,19 @@ export class OnboardingWizard implements Component {
     this.keyEditor.onSubmit = (value) => {
       if (this.picked) this.input.onSubmitKey(value);
     };
+    this.nameEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.nameEditor.onSubmit = (value) => {
+      // Enter on the optional name advances to the slug field in-frame. The
+      // Editor clears itself on submit, so capture the value here and restore
+      // the visible text — Esc back from the slug field must not find a blank
+      // name, and the slug submit reads the draft, not the editor.
+      this.identityNameDraft = value;
+      this.nameEditor.setText(value);
+      this.identityFocus = 'slug';
+      this.status = { kind: 'prompt' };
+    };
+    this.slugEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.slugEditor.onSubmit = (value) => this.submitIdentity(value);
     this.modelsSearchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.modelsSearchEditor.onChange = (text) => this.applyModelQuery(text);
   }
@@ -1109,9 +1151,19 @@ export class OnboardingWizard implements Component {
 
   private enterKeyPhase(provider: OnboardingProviderEntry): void {
     this.picked = provider;
-    // A relay has no registry endpoint, so the wizard must collect one
+    // A create target stops at the identity step first: name and slug come
+    // prefilled with the Host-derived defaults, and accepting them verbatim
+    // sends the same bare target a build without this step would send.
+    // A relay has no registry endpoint, so the wizard must still collect one
     // before the key — the deferred phase-2 step from #1254 (#3405).
-    this.phase = provider.requiresBaseUrl ? 'baseUrl' : 'key';
+    const create = isCreateEntry(provider);
+    this.phase = create ? 'identity' : provider.requiresBaseUrl ? 'baseUrl' : 'key';
+    if (create) {
+      this.identityFocus = 'name';
+      this.nameEditor.setText(provider.label);
+      this.identityNameDraft = provider.label;
+      this.slugEditor.setText(provider.suggestedSlug);
+    }
     this.status = { kind: 'prompt' };
     this.baseUrlEditor.setText('');
     this.keyEditor.setText('');
@@ -1126,6 +1178,41 @@ export class OnboardingWizard implements Component {
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
     this.input.onPickProvider(provider);
+  }
+
+  /**
+   * Slug submit on the identity step. The name field needs no validation of
+   * its own beyond the catalog's length cap: empty or untouched means the
+   * provider label stays. An empty or untouched slug likewise keeps the
+   * Host-derived identity — only a genuinely edited slug crosses the wire,
+   * and it must pass the same rule the catalog decoder enforces.
+   */
+  private submitIdentity(rawSlug: string): void {
+    const picked = this.picked;
+    if (!picked || !isCreateEntry(picked) || this.phase !== 'identity') return;
+    const slug = rawSlug.trim();
+    const name = this.identityNameDraft.trim();
+    if (name.length > CONNECTION_NAME_MAX_LENGTH) {
+      this.identityFocus = 'name';
+      this.status = { kind: 'error', text: this.copy.identityNameTooLong };
+      return;
+    }
+    const customSlug = slug.length > 0 && slug !== picked.suggestedSlug ? slug : null;
+    if (customSlug !== null) {
+      const error = validateSlug(customSlug);
+      if (error) {
+        this.identityFocus = 'slug';
+        this.status = { kind: 'error', text: this.copy.identitySlugInvalid };
+        return;
+      }
+    }
+    const defaultName = picked.label;
+    this.input.onSubmitIdentity({
+      slug: customSlug,
+      name: name.length > 0 && name !== defaultName ? name : null,
+    });
+    this.status = { kind: 'prompt' };
+    this.phase = picked.requiresBaseUrl ? 'baseUrl' : 'key';
   }
 
   private submitBaseUrl(value: string): void {
@@ -1193,6 +1280,17 @@ export class OnboardingWizard implements Component {
     this.modelScroll = 0;
   }
 
+  /** Runner hook: the Host rejected the requested slug — bounce back to the
+   *  identity step with the user's text intact so they can edit it. */
+  setIdentityError(text: string): void {
+    if (this.picked?.target.kind !== 'create') return;
+    this.phase = 'identity';
+    this.identityFocus = 'slug';
+    this.status = { kind: 'error', text };
+    this.keyEditor.setText('');
+    this.keyEditor.disableSubmit = false;
+  }
+
   /** Runner hook: verify is in flight. Lock the key field and show progress. */
   setVerifying(): void {
     if (this.phase !== 'key') return;
@@ -1254,19 +1352,38 @@ export class OnboardingWizard implements Component {
     this.searchEditor.invalidate();
     this.baseUrlEditor.invalidate();
     this.keyEditor.invalidate();
+    this.nameEditor.invalidate();
+    this.slugEditor.invalidate();
     this.modelsSearchEditor.invalidate();
     this.list.invalidate();
   }
 
-  /** Step label: relays have four steps (the base-URL one), the rest three. */
-  private step(position: number): string {
-    return `${position}/${this.picked?.requiresBaseUrl ? 4 : 3}`;
+  /** Step label: relays add a base-URL step, create targets an identity one. */
+  private stepFor(phase: 'search' | 'identity' | 'baseUrl' | 'key' | 'models'): string {
+    const create = this.picked?.target.kind === 'create';
+    const relay = this.picked?.requiresBaseUrl === true;
+    const total = 3 + (create ? 1 : 0) + (relay ? 1 : 0);
+    let position = 1;
+    if (phase === 'search') return `1/${total}`;
+    if (create) {
+      position += 1;
+      if (phase === 'identity') return `${position}/${total}`;
+    }
+    if (relay) {
+      position += 1;
+      if (phase === 'baseUrl') return `${position}/${total}`;
+    }
+    position += 1;
+    if (phase === 'key') return `${position}/${total}`;
+    return `${total}/${total}`;
   }
 
   handleInput(data: string): void {
     switch (this.phase) {
       case 'search':
         return this.handleSearchInput(data);
+      case 'identity':
+        return this.handleIdentityInput(data);
       case 'baseUrl':
         return this.handleBaseUrlInput(data);
       case 'key':
@@ -1278,14 +1395,40 @@ export class OnboardingWizard implements Component {
     }
   }
 
+  private handleIdentityInput(data: string): void {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      // One level back: slug field → name field → provider search.
+      if (this.identityFocus === 'slug') {
+        this.identityFocus = 'name';
+        this.status = { kind: 'prompt' };
+        return;
+      }
+      this.phase = 'search';
+      this.picked = undefined;
+      this.status = { kind: 'prompt' };
+      this.input.onBack();
+      return;
+    }
+    (this.identityFocus === 'name' ? this.nameEditor : this.slugEditor).handleInput(data);
+  }
+
   private handleBaseUrlInput(data: string): void {
     if (matchesKey(data, Key.ctrl('c'))) {
       this.input.onCancel();
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      this.phase = 'search';
-      this.picked = undefined;
+      // One level back: a create target returns to its identity step.
+      if (this.picked?.target.kind === 'create') {
+        this.phase = 'identity';
+      } else {
+        this.phase = 'search';
+        this.picked = undefined;
+      }
       this.status = { kind: 'prompt' };
       this.baseUrlEditor.setText('');
       this.input.onBack();
@@ -1323,10 +1466,12 @@ export class OnboardingWizard implements Component {
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      // One level back: a relay returns to its base-URL step, everything
-      // else to the provider search.
+      // One level back: a relay returns to its base-URL step, a create target
+      // to its identity step, everything else to the provider search.
       if (this.picked?.requiresBaseUrl) {
         this.phase = 'baseUrl';
+      } else if (this.picked?.target.kind === 'create') {
+        this.phase = 'identity';
       } else {
         this.phase = 'search';
         this.picked = undefined;
@@ -1426,6 +1571,8 @@ export class OnboardingWizard implements Component {
     switch (this.phase) {
       case 'search':
         return this.renderSearch(safeWidth);
+      case 'identity':
+        return this.renderIdentity(safeWidth);
       case 'baseUrl':
         return this.renderBaseUrl(safeWidth);
       case 'key':
@@ -1437,11 +1584,45 @@ export class OnboardingWizard implements Component {
     }
   }
 
+  private focusOnly(active: Editor | null): void {
+    for (const editor of [
+      this.searchEditor,
+      this.nameEditor,
+      this.slugEditor,
+      this.baseUrlEditor,
+      this.keyEditor,
+      this.modelsSearchEditor,
+    ]) {
+      editor.focused = editor === active;
+    }
+  }
+
+  private renderIdentity(width: number): string[] {
+    this.focusOnly(this.identityFocus === 'name' ? this.nameEditor : this.slugEditor);
+    const label = this.picked?.label ?? '';
+    return [
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('identity')}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(ansi.dim(this.copy.identityHint), width),
+      padLine('', width),
+      ...this.renderFieldRow(this.nameEditor, this.copy.connectionNameLabel, width),
+      padLine('', width),
+      ...this.renderFieldRow(this.slugEditor, this.copy.connectionSlugLabel, width),
+      padLine('', width),
+      padLine(
+        this.status.kind === 'error'
+          ? ansi.red(`✗ ${this.status.text}`)
+          : ansi.dim(this.copy.continueAction),
+        width,
+      ),
+      padLine(ansi.accent('-'.repeat(width)), width),
+    ];
+  }
+
   private renderBaseUrl(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = true;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(this.baseUrlEditor);
     const label = this.picked?.label ?? '';
     const hint =
       this.picked?.target.kind === 'existing'
@@ -1449,7 +1630,7 @@ export class OnboardingWizard implements Component {
         : this.copy.enterBaseUrlHint;
     return [
       padLine(
-        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('baseUrl')}`)} ${ansi.accent(label)}`,
         width,
       ),
       padLine(ansi.dim(hint), width),
@@ -1467,13 +1648,10 @@ export class OnboardingWizard implements Component {
   }
 
   private renderSearch(width: number): string[] {
-    this.searchEditor.focused = true;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(this.searchEditor);
     return [
       padLine(
-        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('search')}`)} ${ansi.accent(String(this.filtered.length))}`,
         width,
       ),
       padLine(ansi.dim(this.copy.providerSearchHint), width),
@@ -1488,19 +1666,22 @@ export class OnboardingWizard implements Component {
   }
 
   private renderKey(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = this.status.kind === 'prompt' || this.status.kind === 'error';
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(
+      this.status.kind === 'prompt' || this.status.kind === 'error' ? this.keyEditor : null,
+    );
     const label = this.picked?.label ?? '';
     const hint = keyEntryHint(
       this.copy,
       this.picked?.target.kind === 'existing',
-      this.picked?.requiresBaseUrl === true,
+      this.picked?.requiresBaseUrl === true
+        ? 'baseUrl'
+        : this.picked?.target.kind === 'create'
+          ? 'identity'
+          : 'provider',
     );
     return [
       padLine(
-        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('key')}`)} ${ansi.accent(label)}`,
         width,
       ),
       padLine(ansi.dim(hint), width),
@@ -1526,14 +1707,11 @@ export class OnboardingWizard implements Component {
   }
 
   private renderModels(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = this.status.kind !== 'saving';
+    this.focusOnly(this.status.kind !== 'saving' ? this.modelsSearchEditor : null);
     const label = this.picked?.label ?? '';
     const lines = [
       padLine(
-        `${this.copy.setupTitle} ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('models')}`)} ${ansi.accent(label)}`,
         width,
       ),
       padLine(ansi.dim(this.copy.modelSelectionHint), width),
@@ -1588,10 +1766,7 @@ export class OnboardingWizard implements Component {
   }
 
   private renderSuccess(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(null);
     const label = this.picked?.label ?? '';
     return [
       padLine(

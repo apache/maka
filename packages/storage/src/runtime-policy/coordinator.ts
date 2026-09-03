@@ -24,6 +24,7 @@ import {
   decodeConnectionModelId,
   connectionCredentialTarget,
   decodeConnectionCredentialTarget,
+  decodeConnectionName,
   decodeConnectionSlug,
   decodeProviderType,
   decodeRuntimePolicyEntityId,
@@ -236,6 +237,14 @@ interface ConnectionOnboardingBasis {
     | {
         readonly kind: 'create';
         readonly candidate: ConnectionOnboardingCandidateIdentity;
+        /**
+         * True when the caller chose the slug. A collision then reports
+         * `slug_taken` instead of `superseded`: the fix is the caller's
+         * (pick another slug), not a silent re-derivation.
+         */
+        readonly slugRequested: boolean;
+        /** Caller-chosen display name resolved at begin; falls back to the provider label. */
+        readonly name: string | null;
       }
     | {
         readonly kind: 'existing';
@@ -1219,16 +1228,27 @@ export class RuntimePolicyCoordinator {
         const providerType = decodeConnectionInput(() =>
           decodeProviderType(requestedTarget.providerType),
         );
+        const requestedSlug =
+          requestedTarget.slug === undefined
+            ? null
+            : decodeConnectionInput(() => decodeConnectionSlug(requestedTarget.slug));
         target = {
           kind: 'create',
           candidate: {
             connectionId: randomUUID(),
-            slug: deriveConnectionSlug(
-              providerType,
-              catalog.connections.map((connection) => connection.slug),
-            ),
+            slug:
+              requestedSlug ??
+              deriveConnectionSlug(
+                providerType,
+                catalog.connections.map((connection) => connection.slug),
+              ),
             providerType,
           },
+          slugRequested: requestedSlug !== null,
+          name:
+            requestedTarget.name === undefined
+              ? null
+              : decodeConnectionInput(() => decodeConnectionName(requestedTarget.name)),
         };
       } else if (requestedTarget.kind === 'existing') {
         const connectionId = decodeConnectionInput(() =>
@@ -1260,6 +1280,13 @@ export class RuntimePolicyCoordinator {
         catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS
       ) {
         return deepFreeze({ kind: 'catalog_full' as const });
+      }
+      if (
+        target.kind === 'create' &&
+        target.slugRequested &&
+        catalog.connections.some((connection) => connection.slug === target.candidate.slug)
+      ) {
+        return deepFreeze({ kind: 'slug_taken' as const });
       }
       const baseUrl =
         input.baseUrl === null
@@ -1353,6 +1380,9 @@ export class RuntimePolicyCoordinator {
           if (checked.kind === 'catalog_full') {
             return deepFreeze({ kind: 'catalog_full' as const });
           }
+          if (checked.kind === 'slug_taken') {
+            return deepFreeze({ kind: 'slug_taken' as const });
+          }
           return deepFreeze(
             checked.kind === 'target_missing'
               ? { kind: 'target_missing' as const }
@@ -1372,6 +1402,7 @@ export class RuntimePolicyCoordinator {
     | { readonly kind: 'unchanged' }
     | { readonly kind: 'target_missing' }
     | { readonly kind: 'catalog_full' }
+    | { readonly kind: 'slug_taken' }
     | { readonly kind: 'superseded'; readonly changed: ConnectionEffectChangedDomain[] }
   > {
     const changed: ConnectionEffectChangedDomain[] = [];
@@ -1405,6 +1436,20 @@ export class RuntimePolicyCoordinator {
           connection.slug === basis.target.candidate.slug,
       )
     ) {
+      // A caller-chosen slug losing the race is the caller's to fix, so it
+      // reports distinctly instead of as a generic basis change. A derived
+      // slug colliding still resolves by re-running the wizard, which simply
+      // derives again.
+      if (
+        basis.target.slugRequested &&
+        catalog.connections.some(
+          (connection) =>
+            connection.slug === basis.target.candidate.slug &&
+            connection.connectionId !== basis.target.candidate.connectionId,
+        )
+      ) {
+        return { kind: 'slug_taken' };
+      }
       changed.push('connection');
     } else if (catalog.connections.length >= CONNECTION_CATALOG_MAX_CONNECTIONS) {
       return { kind: 'catalog_full' };
@@ -1486,6 +1531,7 @@ export class RuntimePolicyCoordinator {
       connectionId,
       slug: candidate.slug,
       providerType: candidate.providerType,
+      name: basis.target.kind === 'create' ? basis.target.name : null,
       baseUrl: basis.baseUrl,
       invalidateLastTest,
     });
@@ -1494,12 +1540,16 @@ export class RuntimePolicyCoordinator {
       intent.connectionId,
       intent.slug,
       intent.providerType,
+      intent.name,
       intent.baseUrl,
       intent.enabledModelIds,
       intent.discovery,
       intent.invalidateLastTest,
     );
     if (catalogPreflight.kind === 'slug_conflict') {
+      if (basis.target.kind === 'create' && basis.target.slugRequested) {
+        return deepFreeze({ kind: 'slug_taken' as const });
+      }
       return deepFreeze({ kind: 'superseded' as const, changed: ['connection'] as const });
     }
     if (catalogPreflight.kind === 'catalog_full') {
@@ -2104,6 +2154,7 @@ export class RuntimePolicyCoordinator {
       intent.connectionId,
       slug,
       intent.providerType,
+      intent.name,
       intent.baseUrl,
       intent.enabledModelIds,
       intent.discovery,
