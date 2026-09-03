@@ -403,7 +403,7 @@
           "./locales/shell-copy.js": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 612
+        "nonTriviaTokens": 610
       },
       "src/renderer/app-shell-copy.ts": {
         "importDeclarations": 2,

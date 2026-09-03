@@ -25,7 +25,7 @@ import { cleanErrorMessage } from '../../application/contracts/connection-error-
 
 export type CredentialPresenceStatus = boolean | 'loading' | 'error';
 
-export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale = 'zh-CN'): string {
+export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale): string {
   const shared = getProviderSettingsCopy(locale).shared;
   // Electron wraps ipcMain.handle rejections as "Error invoking remote method
   // '<channel>': Error: <message>". Classify the original message, not the
@@ -59,7 +59,7 @@ export interface ConnectionTestTroubleshootingCopy {
 export function connectionTestFailureFallback(
   result: ConnectionTestResult,
   copy: ConnectionTestTroubleshootingCopy,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string {
   const shared = getProviderSettingsCopy(locale).shared;
   if (result.statusCode === 429) return shared.rateLimit;
@@ -77,14 +77,14 @@ export function connectionTestFailureFallback(
 export function connectionTestFailureMessage(
   result: ConnectionTestResult,
   copy: ConnectionTestTroubleshootingCopy,
-  locale: UiLocale = 'zh-CN',
+  locale: UiLocale,
 ): string {
   const fallback = connectionTestFailureFallback(result, copy, locale);
   if (!result.errorMessage) return fallback;
   return generalizedErrorMessageForLocale(new Error(result.errorMessage), fallback, locale);
 }
 
-export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale = 'zh-CN'): string | undefined {
+export function connectionLastTestMessageDisplay(message: string | undefined, locale: UiLocale): string | undefined {
   if (!message) return undefined;
   const trimmed = message.trim();
   if (!trimmed) return undefined;
