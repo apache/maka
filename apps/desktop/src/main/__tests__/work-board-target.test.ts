@@ -69,4 +69,41 @@ describe('Work Board Start task target resolution', () => {
     assert.equal(inbox.ok ? 'unexpected' : inbox.reason, 'inbox');
     assert.equal(missing.ok ? 'unexpected' : missing.reason, 'unavailable');
   });
+
+  test('rejects archived and ambiguous projects', () => {
+    const archived = resolveWorkBoardStartTarget(
+      item({ kind: 'project', projectId: 'old-project-id' }),
+      catalog([{ id: 'canonical-project', aliases: ['old-project-id'], name: 'Project', locations: [], available: true, archivedAt: 10 }]),
+    );
+    assert.equal(archived.ok ? 'unexpected' : archived.reason, 'unavailable');
+
+    const shared = { id: 'p1', aliases: ['shared-id'], name: 'Project', locations: [], available: true };
+    const multiHost: TaskEntryCatalog = {
+      defaultProfileId: 'profile-1',
+      hosts: [
+        {
+          profile: { id: 'profile-1', name: 'Local', kind: 'local' },
+          hostId: 'host-1',
+          readiness: 'ready',
+          state: 'available',
+          projects: [shared],
+          capabilities: { chooseClientDirectory: false, chooseHostDirectory: false, selectNoProject: true },
+          selectedProjectId: null,
+          chatDefaults: { permissionMode: 'ask', thinkingLevel: 'off' },
+        },
+        {
+          profile: { id: 'profile-2', name: 'Remote', kind: 'remote' },
+          hostId: 'host-2',
+          readiness: 'ready',
+          state: 'available',
+          projects: [{ ...shared, id: 'p2' }],
+          capabilities: { chooseClientDirectory: false, chooseHostDirectory: false, selectNoProject: true },
+          selectedProjectId: null,
+          chatDefaults: { permissionMode: 'ask', thinkingLevel: 'off' },
+        },
+      ],
+    };
+    const ambiguous = resolveWorkBoardStartTarget(item({ kind: 'project', projectId: 'shared-id' }), multiHost);
+    assert.equal(ambiguous.ok ? 'unexpected' : ambiguous.reason, 'ambiguous');
+  });
 });

@@ -101,7 +101,6 @@ export function createActionsDeps() {
       navSection: 'sessions' as const,
     }),
     checkTaskSubmissionReadiness: async () => true,
-    isNewChatSendSurfaceActive: () => true,
     isShellSurfaceOwnerActive: () => true,
     markSessionReadLocally: () => undefined,
     messageRetryPending: { claim: () => true, release: () => undefined },

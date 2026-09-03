@@ -33,9 +33,6 @@ import type {
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
-import type { SessionSummary } from '@maka/core/session';
-import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { desktopSessionKey, parseDesktopSessionKey } from '../shared/runtime-host-identity.js';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -216,8 +213,6 @@ import { useShellConnections } from './use-shell-connections';
 import { useShellChatModel } from './use-shell-chat-model';
 import { useShellLiveTurn } from './use-shell-live-turn';
 import { useShellResume } from './use-shell-resume';
-import { taskEntryDraftKey } from './features/task-entry/index.js';
-import { markNewTaskReloadIntent, writeNewTaskReloadDraft } from './new-task-reload-intent.js';
 
 import { useSettingsModal } from './use-settings-modal';
 import { useSystemUiLocale } from './use-system-ui-locale';
@@ -231,6 +226,7 @@ type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
   newTaskDraftKey?: string;
+  surfaceRevision?: number;
 };
 
 /**
@@ -239,7 +235,6 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
-const WORK_BOARD_START_TASK_EXPERIMENT_ENABLED = import.meta.env.VITE_MAKA_WORK_BOARD_START_TASK === '1';
 const { useSessionCollaborationDialog } = SessionCollaboration;
 type FirstSendObservationWaiter = {
   promise: Promise<void>;
@@ -352,6 +347,7 @@ function AppShellContent({
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     messages,
     transientMessages,
@@ -596,7 +592,7 @@ function AppShellContent({
   const refreshConnections = activeId
     ? sessionHostConnections.refreshConnections
     : newTaskConnections.refreshConnections;
-  function refreshConnectionProjections(): Promise<void> {
+  function refreshConnectionProjections() {
     return Promise.all([
       defaultHostConnections.refreshConnections(),
       newTaskConnections.refreshConnections(),
@@ -740,7 +736,7 @@ function AppShellContent({
       write: commitPlanMode,
     },
     captureOwner: captureComposerImportOwner,
-    isOwnerActive: isComposerImportOwnerActive,
+    isOwnerActive: isShellSurfaceOwnerActive,
     setNewTaskPermissionMode,
     confirmBypass: () => confirmBypassPermission(toastApi, uiLocale),
   });
@@ -1398,9 +1394,8 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
-    pendingWorkBoardStartRef.current = undefined;
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
-    startNewSession();
+    const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
     setNewChatPlanModeActive(false);
@@ -1408,95 +1403,9 @@ function AppShellContent({
     setSearchScrollTarget(null);
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
-    window.requestAnimationFrame(() => composerRef.current?.focus());
+    requestAnimationFrame(() => composerRef.current?.focus());
+    return ownerToken;
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
-
-  const pendingWorkBoardStartRef = useRef<{
-    itemId: string;
-    target: { profileId: string; hostId: string; projectId: string };
-  } | undefined>(undefined);
-  const resolveWorkBoardStartTask = useCallback(
-    (item: WorkBoardItem) => {
-      const result = taskEntry.commands.resolveWorkBoardTarget(item);
-      return result.ok ? { ok: true } : { ok: false, message: result.message };
-    },
-    [taskEntry.commands],
-  );
-  const startWorkBoardTask = useCallback(
-    (item: WorkBoardItem) => {
-      if (pendingWorkBoardStartRef.current) {
-        toastApi.info(
-          getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
-          'Finish sending the current Work Board task before starting another one.',
-        );
-        return;
-      }
-      const result = taskEntry.commands.resolveWorkBoardTarget(item);
-      if (!result.ok) {
-        toastApi.info(getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed, result.message);
-        return;
-      }
-      if (!taskEntry.commands.selectTarget(result.target)) {
-        toastApi.info(getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed, 'The selected Runtime Host target is no longer available.');
-        return;
-      }
-      const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
-      markNewTaskReloadIntent();
-      writeNewTaskReloadDraft(taskEntryDraftKey(result.target), draft);
-      openNewTaskSurface();
-      pendingWorkBoardStartRef.current = { itemId: item.id, target: result.target };
-      window.requestAnimationFrame(() => {
-        composerRef.current?.setDraft(taskEntryDraftKey(result.target), draft);
-        composerRef.current?.focus();
-      });
-    },
-    [composerRef, openNewTaskSurface, taskEntry.commands, toastApi, uiLocale],
-  );
-  const openWorkBoardSession = useCallback(
-    (link: WorkBoardLinkedSession) => {
-      openSessionInChatRef.current(desktopSessionKey({ hostId: link.hostId, sessionId: link.sessionId }));
-    },
-    [],
-  );
-  const linkWorkBoardSession = useCallback(
-    (sessionId: string) => {
-      const pending = pendingWorkBoardStartRef.current;
-      if (!pending) return;
-      // Consume the claim before crossing the asynchronous IPC boundary. This
-      // lets a new Work Board task be prepared while the previous link writes,
-      // without allowing the previous completion to claim the new task.
-      pendingWorkBoardStartRef.current = undefined;
-      void window.maka.workBoard
-        .linkSession(pending.itemId, {
-          profileId: pending.target.profileId,
-          hostId: pending.target.hostId,
-          sessionId: (() => {
-            try {
-              return parseDesktopSessionKey(sessionId).sessionId;
-            } catch {
-              return sessionId;
-            }
-          })(),
-          linkedAt: Date.now(),
-        })
-        .then((result) => {
-          if (!result.ok) {
-            toastApi.error(
-              getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
-              result.message,
-            );
-            return;
-          }
-        })
-        .catch((error) => {
-          toastApi.error(
-            getDesktopConversationCopy(uiLocale).workBoardPanel.actionFailed,
-            error instanceof Error ? error.message : String(error),
-          );
-        });
-    },
-    [toastApi, uiLocale],
-  );
 
   const createSession = useCallback(async () => {
     openNewTaskSurface();
@@ -1580,11 +1489,6 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const reportWorkbarError = useCallback(
-    (title: string, description: string, sessionId: string) =>
-      toastApi.error(title, description, undefined, { sessionId }),
-    [toastApi],
-  );
   const workbarAvailable =
     navSelection.section === 'sessions' && !workHubActive && Boolean(activeId);
   const workbar = useWorkbarController({
@@ -1595,11 +1499,12 @@ function AppShellContent({
     authoritativeSessionIds: authoritativeSessionIds ?? undefined,
     shellObscured,
     modelChoices: chatModelChoices,
-    reportError: reportWorkbarError,
-    onStartWorkBoardTask: startWorkBoardTask,
-    resolveWorkBoardStartTask: resolveWorkBoardStartTask,
-    onOpenWorkBoardSession: openWorkBoardSession,
-    workBoardStartTaskEnabled: WORK_BOARD_START_TASK_EXPERIMENT_ENABLED,
+    toastApi,
+    composerRef,
+    openNewTaskSurface,
+    openSessionInChat,
+    resolveWorkBoardTarget: taskEntry.commands.resolveWorkBoardTarget,
+    prepareWorkBoardDraft: taskEntry.commands.prepareWorkBoardDraft,
   });
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
@@ -1745,7 +1650,6 @@ function AppShellContent({
     activeIdRef,
     captureComposerImportOwner,
     checkTaskSubmissionReadiness: taskSubmissionReadyAtSend,
-    isNewChatSendSurfaceActive,
     isShellSurfaceOwnerActive,
     messageRetryPending: sessionUiController.messageRetryPending,
     refreshSessions,
@@ -1771,10 +1675,6 @@ function AppShellContent({
     newChatCollaborationMode: newChatPlanModeActive ? 'plan' : 'agent',
     newChatOrchestrationMode: newChatOrchestrationMode,
     newTaskTarget: taskEntry.selectors.target,
-    onNewTaskSessionResolved: linkWorkBoardSession,
-    onNewTaskSessionNotProjected: () => {
-      pendingWorkBoardStartRef.current = undefined;
-    },
   });
 
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
@@ -2026,6 +1926,7 @@ function AppShellContent({
       const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(swarmCommand.task, pending, {
         turnOrchestration: { mode: 'swarm', source: 'slash_command' },
+        onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
         ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
@@ -2075,6 +1976,7 @@ function AppShellContent({
       const quotes = pendingQuotes.length ? pendingQuotes : undefined;
       const ok = await send(graphCommand.task, pending, {
         turnOrchestration: { mode: 'graph', source: 'slash_command' },
+        onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
         ...directoryOptions,
         ...(quotes ? { quotes } : {}),
         ...(metadata?.workspaceFileReferences?.length
@@ -2100,6 +2002,7 @@ function AppShellContent({
       : undefined;
     const quotes = pendingQuotes.length ? pendingQuotes : undefined;
     const ok = await send(text, pending, {
+      onSessionResolved: workbar.commands.bindNewTaskSessionResolver(readSelectionRevision()),
       ...directoryOptions,
       ...(quotes ? { quotes } : {}),
       ...(workspaceFileReferences.length
@@ -2380,13 +2283,13 @@ function AppShellContent({
     sessionEventHealthBySessionRef: sessionUiController.sessionEventHealthBySessionRef,
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
   });
-  function captureComposerImportOwner(): ComposerImportOwner {
+  function captureComposerImportOwner() {
     return {
       sessionId: activeIdRef.current,
       navSection: navSelectionRef.current.section,
-      ...(activeIdRef.current === undefined
-        ? { newTaskDraftKey: currentNewTaskDraftKey }
-        : {}),
+      surfaceRevision: readSelectionRevision(),
+      newTaskDraftKey:
+        activeIdRef.current === undefined ? currentNewTaskDraftKey : undefined,
     };
   }
 
@@ -2403,22 +2306,15 @@ function AppShellContent({
    * id drifted: it lost the section half, which is exactly what let a failed
    * send pull a user out of 技能 and into 设置 · 模型.
    */
-  function isShellSurfaceOwnerActive(owner: ComposerImportOwner): boolean {
-    return navSelectionRef.current.section === owner.navSection &&
-      activeIdRef.current === owner.sessionId &&
+  function isShellSurfaceOwnerActive(owner: ComposerImportOwner) {
+    return owner.navSection === 'sessions' &&
+      navSelectionRef.current.section === owner.navSection &&
+      (owner.sessionId === undefined || activeIdRef.current === owner.sessionId) &&
+      (owner.sessionId !== undefined || owner.surfaceRevision === readSelectionRevision()) &&
       (owner.sessionId !== undefined || owner.newTaskDraftKey === currentNewTaskDraftKey);
   }
 
-  /** …and the owner was captured on the chat surface. */
-  function isComposerImportOwnerActive(owner: ComposerImportOwner): boolean {
-    return owner.navSection === 'sessions' && isShellSurfaceOwnerActive(owner);
-  }
-
   /** …and it was the new-chat surface, which by definition has no session. */
-  function isNewChatSendSurfaceActive(owner: ComposerImportOwner): boolean {
-    return owner.sessionId === undefined && isComposerImportOwnerActive(owner);
-  }
-
   async function bootstrapSessions() {
     const next = await refreshSessions();
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
@@ -3211,8 +3107,7 @@ function AppShellContent({
               </ChatSurfaceLayout>
               )}
             </div>
-            {/* Collapse hides the Workbar surface without unmounting its tools;
-                dynamic resources therefore keep their existing lifecycle. */}
+            {/* Collapse hides the Workbar surface without unmounting its tools. */}
             <WorkbarHost model={workbar.host} />
           </div>
           </MakaUriContext.Provider>

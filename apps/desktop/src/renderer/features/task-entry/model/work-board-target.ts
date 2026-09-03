@@ -35,7 +35,6 @@ export type WorkBoardStartTargetResult =
 export function resolveWorkBoardStartTarget(
   item: WorkBoardItem,
   catalog: TaskEntryCatalog,
-  preferredHost?: { readonly profileId: string; readonly hostId: string },
 ): WorkBoardStartTargetResult {
   if (item.scope.kind !== 'project') {
     return { ok: false, reason: 'inbox', message: 'Inbox items need a project target before they can start a task.' };
@@ -58,12 +57,6 @@ export function resolveWorkBoardStartTarget(
       reason: 'unavailable',
       message: 'The project is not available on a connected Runtime Host.',
     };
-  }
-  if (preferredHost) {
-    const preferred = matches.find(
-      (match) => match.target.profileId === preferredHost.profileId && match.target.hostId === preferredHost.hostId,
-    );
-    if (preferred) return { ok: true, ...preferred };
   }
   if (matches.length !== 1) {
     return {

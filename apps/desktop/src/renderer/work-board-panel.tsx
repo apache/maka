@@ -119,7 +119,7 @@ function WorkBoardRow(props: {
               isDisabled={!actions.canStart}
               tooltip={actions.canStart ? undefined : actions.startReason}
             />}
-            {item.linkedSessions?.map((link) => (
+            {actions.startTaskEnabled && item.linkedSessions?.map((link) => (
               <Button
                 key={`${link.profileId}:${link.hostId}:${link.sessionId}`}
                 size="sm"
@@ -348,7 +348,9 @@ export function WorkBoardPanel(props: {
                 />
               ) : (
                 <ul className="maka-work-board-list">
-              {activeItems.map((item) => (
+              {activeItems.map((item) => {
+                const resolution = props.resolveStartTask?.(item);
+                return (
                 <WorkBoardRow
                   key={item.id}
                   item={item}
@@ -379,14 +381,15 @@ export function WorkBoardPanel(props: {
                       ),
                     onArchive: () =>
                       void runAction(() => board.archive(item.id, { expectedRevision: item.revision })),
-                    canStart: props.resolveStartTask?.(item).ok ?? false,
-                    startReason: props.resolveStartTask?.(item).message,
+                    canStart: resolution?.ok ?? false,
+                    startReason: resolution?.message,
                     onStartTask: () => props.onStartTask?.(item),
                     onOpenSession: (link) => props.onOpenLinkedSession?.(link),
                     startTaskEnabled: props.startTaskEnabled ?? false,
                   }}
                 />
-              ))}
+                );
+              })}
               {archivedItems.map((item) => (
                 <WorkBoardRow
                   key={item.id}

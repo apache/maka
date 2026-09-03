@@ -40,6 +40,13 @@ export const WORK_BOARD_PROFILE_ID_MAX_CHARS = 160;
 export const WORK_BOARD_DEFAULT_PAGE_SIZE = 50;
 export const WORK_BOARD_PAGE_SIZE_MAX = 100;
 export const WORK_BOARD_CURSOR_MAX_CHARS = 1024;
+/**
+ * Single-link contract: a project-scoped item owns at most one started
+ * Session at a time. Linking a freshly started Session replaces any previous
+ * link, keeping `linkedSessions` bounded instead of growing on repeated
+ * starts. Read paths stay tolerant of legacy arrays with more entries.
+ */
+export const WORK_BOARD_MAX_LINKED_SESSIONS = 1;
 
 export const WORK_BOARD_ITEM_STATES = ['todo', 'in_progress', 'done'] as const;
 export type WorkBoardItemState = (typeof WORK_BOARD_ITEM_STATES)[number];
@@ -439,7 +446,33 @@ export function normalizeWorkBoardLinkedSessions(
     seen.add(key);
     result.push(normalized.value);
   }
+  if (result.length > WORK_BOARD_MAX_LINKED_SESSIONS) {
+    return fail(
+      `linkedSessions must hold at most ${WORK_BOARD_MAX_LINKED_SESSIONS} entry (single-link contract)`,
+    );
+  }
   return { ok: true, value: result };
+}
+
+/**
+ * Lenient read path for stored items: drop malformed or duplicate link entries
+ * instead of failing the whole item, so one corrupt reference cannot hide an
+ * otherwise valid board item. The strict {@link normalizeWorkBoardLinkedSessions}
+ * guard remains on the write path.
+ */
+function tolerantWorkBoardLinkedSessions(value: unknown): WorkBoardLinkedSession[] {
+  if (!Array.isArray(value)) return [];
+  const result: WorkBoardLinkedSession[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const normalized = normalizeWorkBoardLinkedSession(entry);
+    if (!normalized.ok) continue;
+    const key = `${normalized.value.profileId}\u0000${normalized.value.hostId}\u0000${normalized.value.sessionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized.value);
+  }
+  return result;
 }
 
 export function normalizeUpdateWorkBoardItemInput(
@@ -587,8 +620,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!creator.ok) return null;
   const provenance = normalizeWorkBoardProvenance(value.provenance);
   if (!provenance.ok) return null;
-  const linkedSessions = normalizeWorkBoardLinkedSessions(value.linkedSessions);
-  if (!linkedSessions.ok) return null;
+  const linkedSessions = tolerantWorkBoardLinkedSessions(value.linkedSessions);
   const createdAt = asSafeInteger(value.createdAt);
   const updatedAt = asSafeInteger(value.updatedAt);
   if (createdAt === null || updatedAt === null) return null;
@@ -609,7 +641,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
       archivedAt,
       creator: creator.value,
       provenance: provenance.value,
-      linkedSessions: linkedSessions.value,
+      linkedSessions,
       createdAt,
       updatedAt,
     };
@@ -626,7 +658,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
     archived: false,
     creator: creator.value,
     provenance: provenance.value,
-    linkedSessions: linkedSessions.value,
+    linkedSessions,
     createdAt,
     updatedAt,
   };

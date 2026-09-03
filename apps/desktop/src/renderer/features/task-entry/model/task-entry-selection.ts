@@ -18,7 +18,11 @@
  */
 
 import { findProjectByIdentity } from '@maka/core/project';
-import { UNRESOLVED_NEW_TASK_DRAFT_KEY } from '../../../new-task-reload-intent.js';
+import {
+  markNewTaskReloadIntent,
+  UNRESOLVED_NEW_TASK_DRAFT_KEY,
+  writeNewTaskReloadDraft,
+} from '../../../new-task-reload-intent.js';
 import type {
   TaskEntryCatalog,
   TaskEntryHost,
@@ -69,6 +73,18 @@ export function taskEntryDraftKey(target: TaskEntryTarget | undefined): string {
   return target
     ? JSON.stringify(['new-task', target.profileId, target.hostId, target.projectId])
     : UNRESOLVED_NEW_TASK_DRAFT_KEY;
+}
+
+/**
+ * Persist a draft for one explicit target and mark the new-task reload intent,
+ * so a renderer reload keeps the draft it was prepared for. Returns the draft
+ * key the composer should be opened with.
+ */
+export function prepareTaskEntryDraft(target: TaskEntryTarget, draft: string): string {
+  const draftKey = taskEntryDraftKey(target);
+  markNewTaskReloadIntent();
+  writeNewTaskReloadDraft(draftKey, draft);
+  return draftKey;
 }
 
 export function isReadyTaskEntryHost(host: TaskEntryHost): host is ReadyTaskEntryHost {
