@@ -33,7 +33,10 @@ import {
   type AgentGraphOperatorProvision,
 } from '@maka/core/agent-graph-topology';
 import { type AgentGraphScheduleUpdate } from '@maka/core/agent-graph-schedule';
-import { type AgentRunHeader } from '@maka/core/agent-run';
+import {
+  runtimeInvocationOutcome,
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSessionStore, isSessionNotFoundError } from '@maka/storage/session-store';
@@ -68,20 +71,45 @@ describe('host-managed agent graph coordinator', () => {
     const rootSessionId = 'root-session';
     const sourceGraphId = agentGraphIdForRootSession(rootSessionId);
     const currentGraphId = agentGraphIdForRootSessionEpoch(rootSessionId, 2);
-    const sourceRun: AgentRunHeader = {
+    const sourceRun: RuntimeInvocationRecord = {
       sessionId: 'source-child',
       runId: 'source-run',
       turnId: 'source-turn',
       invocationId: 'source-invocation',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake',
-      cwd: '/workspace',
-      permissionMode: 'explore',
-      status: 'completed',
-      createdAt: 1,
-      updatedAt: 2,
-      completedAt: 2,
+      openedAt: 1,
+      opening: {
+        kind: 'invocation_opened',
+        protocol: 'invocation_opened_v1',
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: {
+          cwd: '/workspace',
+          permissionMode: 'explore',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'user' },
+        source: { kind: 'fresh' },
+      },
+      terminalEvent: {
+        id: 'source-terminal',
+        sessionId: 'source-child',
+        invocationId: 'source-invocation',
+        runId: 'source-run',
+        turnId: 'source-turn',
+        ts: 2,
+        partial: false,
+        role: 'system',
+        author: 'system',
+        status: 'completed',
+      },
     };
     const sourceEvent: RuntimeEvent = {
       id: 'source-result-event',
@@ -152,11 +180,9 @@ describe('host-managed agent graph coordinator', () => {
         readHeader: async (sessionId: string) =>
           ({ id: sessionId, status: 'active', isArchived: false }) as never,
       },
-      runStore: {
-        listSessionRuns: async (sessionId: string) =>
-          sessionId === sourceRun.sessionId ? [sourceRun] : [],
-      },
       runtimeEventStore: {
+        listSessionInvocations: async (sessionId: string) =>
+          sessionId === sourceRun.sessionId ? [sourceRun] : [],
         readImmutableRuntimeEvents: async (sessionId, runId) =>
           sessionId === sourceRun.sessionId && runId === sourceRun.runId ? [sourceEvent] : [],
       },
@@ -307,7 +333,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the ordinary root turn so its source AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -329,11 +355,14 @@ describe('host-managed agent graph coordinator', () => {
           return { kind: 'completed', turnId: input.turnId };
         },
         inspectAttempt: async (sessionId, attemptId, turnId) => {
-          const run = (await runStore.listSessionRuns(sessionId)).find(
+          const run = (await runtimeEventStore.listSessionInvocations(sessionId)).find(
             (candidate) =>
-              candidate.agentGraphWakeAttemptId === attemptId && candidate.turnId === turnId,
+              candidate.opening.root.kind === 'agent_graph_supervisor_wake' &&
+              candidate.opening.root.attemptId === attemptId &&
+              candidate.turnId === turnId,
           );
-          return run?.status ?? 'missing';
+          if (!run) return 'missing';
+          return runtimeInvocationOutcome(run) ?? 'running';
         },
         newId: randomUUID,
         onError: (_rootSessionId, error) => {
@@ -424,12 +453,15 @@ describe('host-managed agent graph coordinator', () => {
         ),
         'the original root Agent must run again and produce a deliverable response',
       );
-      const wakeRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const wakeRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === graphWake.turnId,
       );
       assert.ok(wakeRun);
-      assert.equal(wakeRun.agentGraphWakeId, graphWake.origin.wakeId);
-      assert.equal(wakeRun.agentGraphWakeAttemptId, graphWake.origin.attemptId);
+      assert.deepEqual(wakeRun.opening.root, {
+        kind: 'agent_graph_supervisor_wake',
+        wakeId: graphWake.origin.wakeId,
+        attemptId: graphWake.origin.attemptId,
+      });
       const wakeEvents = await runtimeEventStore.readImmutableRuntimeEvents(
         rootSession.id,
         wakeRun.runId,
@@ -752,8 +784,10 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('wake must fail before reading the Session');
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => {
@@ -811,8 +845,10 @@ describe('host-managed agent graph coordinator', () => {
           } as never;
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => {
@@ -908,8 +944,10 @@ describe('host-managed agent graph coordinator', () => {
           throw new Error('removed Session header must not be read during cleanup');
         },
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => epochs[0]!,
@@ -965,8 +1003,10 @@ describe('host-managed agent graph coordinator', () => {
             orchestrationMode: 'graph',
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: controlStore,
       runtime: {
@@ -1042,8 +1082,10 @@ describe('host-managed agent graph coordinator', () => {
             orchestrationMode: 'graph',
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore,
       epochStore: controlStore,
       runtime: {
@@ -1132,7 +1174,7 @@ describe('host-managed agent graph coordinator', () => {
       })) {
         // Drain the source turn so its AgentRun is durable.
       }
-      const sourceRun = (await runStore.listSessionRuns(rootSession.id)).find(
+      const sourceRun = (await runtimeEventStore.listSessionInvocations(rootSession.id)).find(
         (run) => run.turnId === sourceTurnId,
       );
       assert.ok(sourceRun);
@@ -1146,7 +1188,6 @@ describe('host-managed agent graph coordinator', () => {
       const create = () =>
         new AgentGraphCoordinator({
           sessionStore,
-          runStore,
           runtimeEventStore,
           controlStore,
           runtime: failingRuntime,
@@ -1231,8 +1272,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: true,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       epochStore: {
         resolveCurrentAgentGraphEpoch: async () => ({
           schemaVersion: 1,
@@ -1401,19 +1444,33 @@ describe('host-managed agent graph coordinator', () => {
       targetRunId: runId,
       claimedAt: 12,
     };
-    const runningRun: AgentRunHeader = {
+    const runningRun: RuntimeInvocationRecord = {
       sessionId: childSessionId,
+      invocationId: 'child-invocation',
       runId,
       turnId,
-      invocationId: 'child-invocation',
-      backendKind: 'fake',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake',
-      cwd: '/workspace',
-      permissionMode: 'explore',
-      status: 'running',
-      createdAt: 12,
-      updatedAt: 12,
+      openedAt: 12,
+      opening: {
+        kind: 'invocation_opened',
+        protocol: 'invocation_opened_v1',
+        route: {
+          provenance: 'runtime',
+          backendKind: 'fake',
+          llmConnectionId: 'fake-connection',
+          llmConnectionSlug: 'fake',
+          modelId: 'fake',
+        },
+        configuration: {
+          cwd: '/workspace',
+          permissionMode: 'explore',
+          collaborationMode: 'agent',
+          orchestrationMode: 'default',
+          orchestrationSource: 'session',
+          toolMode: 'direct',
+        },
+        root: { kind: 'user' },
+        source: { kind: 'fresh' },
+      },
     };
     const runningEvent: RuntimeEvent = {
       id: 'child-started',
@@ -1430,7 +1487,7 @@ describe('host-managed agent graph coordinator', () => {
     let scheduleUpdates: AgentGraphScheduleUpdate[] = [];
     let provisions: AgentGraphOperatorProvision[] = [];
     let claims: AgentGraphIntentClaim[] = [];
-    let runs: AgentRunHeader[] = [runningRun];
+    let runs: RuntimeInvocationRecord[] = [runningRun];
     let runtimeEvents: RuntimeEvent[] = [runningEvent];
     let projection:
       | {
@@ -1511,7 +1568,23 @@ describe('host-managed agent graph coordinator', () => {
       assert.equal(await coordinator.readSessionState(rootSessionId), 'live');
       assert.equal(await coordinator.hasLiveSessionState(rootSessionId), true);
 
-      runs = [{ ...runningRun, status: 'completed', completedAt: 14, updatedAt: 14 }];
+      runs = [
+        {
+          ...runningRun,
+          terminalEvent: {
+            id: 'child-terminal',
+            sessionId: childSessionId,
+            invocationId: 'child-invocation',
+            runId,
+            turnId,
+            ts: 14,
+            partial: false,
+            role: 'system',
+            author: 'system',
+            status: 'completed',
+          },
+        },
+      ];
       runtimeEvents = [
         runningEvent,
         {
@@ -1547,8 +1620,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => {
           throw topologyFailure;
@@ -1597,8 +1672,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () =>
           ['a', 'b'].map((suffix, index) => ({
@@ -1677,8 +1754,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => [] },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => [] },
+      runtimeEventStore: {
+        listSessionInvocations: async () => [],
+        readImmutableRuntimeEvents: async () => [],
+      },
       controlStore: gatedStore,
       runtime: {
         provisionAgentGraphOperator: async () => {

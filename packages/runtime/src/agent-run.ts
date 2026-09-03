@@ -622,8 +622,8 @@ export class AgentRun {
     }
     if (this.requiresDurablePersistence() && isInteractionResumeAck(sessionEvent)) {
       // A hosted continuation may resume execution only after its identity-only
-      // settlement fact is durable. Run status advances next, then Session
-      // status; the queue consumer acknowledges the event only after all three.
+      // settlement fact is durable. Session status advances next, and the queue
+      // consumer acknowledges the event only after both.
       await this.recordRuntimeEvents([runtimeEvent], { requireDurableWrite: true });
       await this.recordSessionEvent(sessionEvent, options);
       return;
