@@ -24,6 +24,7 @@ import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
+import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
@@ -536,11 +537,4 @@ class HostAiSdkBackend extends AiSdkBackend {
   }
 }
 
-export function resolveCollaborationPermissionMode(input: {
-  readonly collaborationMode: 'agent' | 'plan';
-  readonly permissionMode: PermissionMode;
-}): PermissionMode {
-  return input.collaborationMode === 'plan' && input.permissionMode !== 'bypass'
-    ? 'explore'
-    : input.permissionMode;
-}
+export { resolveCollaborationPermissionMode };

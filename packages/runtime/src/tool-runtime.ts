@@ -20,9 +20,11 @@
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { projectAgentSwarmResult } from '@maka/core/agent-swarm';
 import { projectToolActivityArgs } from '@maka/core/tool-activity-args';
+import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
 import {
   type CreateSandboxBoundaryRequest,
   type ExecutionBoundary,
+  executionBoundaryDisplayMode,
   type SandboxBoundaryDecision,
   type SandboxBoundaryExpansion,
   type SandboxBoundaryRequest,
@@ -617,6 +619,24 @@ export class ToolRuntime {
     this.turnId = input.turnId;
     this.hostedInteraction = hosted;
     this.readExecutionBoundary = input.readExecutionBoundary;
+  }
+
+  /**
+   * The permission mode in force for this dispatch.
+   *
+   * The header carries the mode this backend was built with, which goes stale
+   * the moment the boundary widens under a live Session. The boundary is the
+   * authority, so read the mode off the boundary we are about to dispatch
+   * against; the header only answers for an externally isolated boundary,
+   * which projects to no local mode at all.
+   */
+  private livePermissionMode(boundary: ExecutionBoundary): PermissionMode {
+    const displayed = executionBoundaryDisplayMode(boundary);
+    if (displayed === undefined) return this.input.header.permissionMode;
+    return resolveCollaborationPermissionMode({
+      collaborationMode: this.input.header.collaborationMode ?? 'agent',
+      permissionMode: displayed,
+    });
   }
 
   async endTurn(reason: 'completed' | 'aborted' = 'completed'): Promise<void> {
@@ -1509,7 +1529,8 @@ export class ToolRuntime {
       }
       const admissionFailure = !tool.prepareExecution
         ? CLIENT_CAPABILITY_PREPARATION_MESSAGE
-        : clientCapabilityBoundary.kind !== 'bypass' && this.input.header.permissionMode !== 'ask'
+        : clientCapabilityBoundary.kind !== 'bypass' &&
+            this.livePermissionMode(clientCapabilityBoundary) !== 'ask'
           ? CLIENT_CAPABILITY_BOUNDARY_MESSAGE
           : undefined;
       if (admissionFailure) {
@@ -1538,7 +1559,7 @@ export class ToolRuntime {
           ...(runId ? { runId } : {}),
           cwd: this.input.header.cwd,
           executionBoundary: clientCapabilityBoundary,
-          permissionMode: this.input.header.permissionMode,
+          permissionMode: this.livePermissionMode(clientCapabilityBoundary),
           toolCallId: toolUseId,
           abortSignal: ctx.abortSignal,
         });
@@ -1669,7 +1690,7 @@ export class ToolRuntime {
             : {}),
           cwd: this.input.header.cwd,
           executionBoundary,
-          permissionMode: this.input.header.permissionMode,
+          permissionMode: this.livePermissionMode(executionBoundary),
           toolCallId: toolUseId,
           // The id the call event actually carries, not the candidate: by here
           // `prepareDurableToolAttempt` has pushed it on the dispatch lane.

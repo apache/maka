@@ -103,6 +103,90 @@ describe('ToolRuntime session sandbox boundary', () => {
     );
   });
 
+  // #3349: the header carries the mode the backend was built with. A picker
+  // switch to Bypass between two turns widens the boundary without rebuilding
+  // that header, so a dispatch that trusts the header keeps sandboxing and
+  // keeps prompting while the picker already reads Bypass.
+  test('reads the permission mode off the live boundary, not the header it was built with', async () => {
+    let boundary: ExecutionBoundary = {
+      kind: 'managed',
+      profile: createWorkspaceWritePermissionProfile(),
+      revision: 0,
+    };
+    const observed: Array<{ kind: string; permissionMode: string | undefined }> = [];
+    const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: header(),
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => boundary,
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+    const tool: MakaTool = {
+      name: 'Bash',
+      description: 'test',
+      parameters: {},
+      impl: (_args, context) => {
+        assert.ok(context.executionBoundary);
+        observed.push({
+          kind: context.executionBoundary.kind,
+          permissionMode: context.permissionMode,
+        });
+        return { ok: true };
+      },
+    };
+
+    await settle(runtime, tool, 'tool-1');
+    boundary = { kind: 'bypass', revision: 1 };
+    await settle(runtime, tool, 'tool-2');
+
+    assert.equal(header().permissionMode, 'ask');
+    assert.deepEqual(observed, [
+      { kind: 'managed', permissionMode: 'ask' },
+      { kind: 'bypass', permissionMode: 'bypass' },
+    ]);
+  });
+
+  test('holds Plan mode to read-only even when the live boundary allows writes', async () => {
+    let observed: string | undefined;
+    const runtime = new ToolRuntime({
+      turnId: 'turn-1',
+      sessionId: 'session-1',
+      header: { ...header(), collaborationMode: 'plan' },
+      connection: { providerType: 'openai', slug: 'test' } as never,
+      modelId: 'test',
+      appendMessage: async () => {},
+      readExecutionBoundary: async () => ({
+        kind: 'managed',
+        profile: createWorkspaceWritePermissionProfile(),
+        revision: 0,
+      }),
+      newId: nextId(),
+      now: () => 1,
+      getPermissionPauseTarget: () => null,
+    });
+
+    await settle(
+      runtime,
+      {
+        name: 'Bash',
+        description: 'test',
+        parameters: {},
+        impl: (_args, context) => {
+          observed = context.permissionMode;
+          return { ok: true };
+        },
+      },
+      'tool-1',
+    );
+
+    assert.equal(observed, 'explore');
+  });
+
   test('parks the dedicated tool and admits only one boundary request at a time', async () => {
     const events: SessionEvent[] = [];
     const managed: ExecutionBoundary = {
