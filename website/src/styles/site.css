@@ -978,6 +978,18 @@ h2 {
   color: var(--foreground);
   font-weight: 500;
 }
+.foot .inc {
+  display: inline-block;
+  margin-bottom: 16px;
+}
+.foot .inc img {
+  display: block;
+  height: 36px;
+  width: auto;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: light-dark(transparent, #fff);
+}
 .foot p {
   margin: 0;
 }

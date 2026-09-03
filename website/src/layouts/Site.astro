@@ -22,6 +22,7 @@ import '@fontsource-variable/geist-mono';
 import '../styles/site.css';
 import { Image } from 'astro:assets';
 import logo from '../../../apps/desktop/assets/app-icons/sky.png';
+import incubator from '../assets/incubator.png';
 import { links } from '../copy/links';
 import type { Copy, Locale } from '../copy/types';
 
@@ -117,6 +118,7 @@ const asf = [
 
       <footer class="foot">
         <div class="links">{asf.map(([href, label]) => <a href={href}>{label}</a>)}</div>
+        <a class="inc" href={links.incubator}><Image src={incubator} height={36} densities={[1, 2]} alt="Apache Incubator" /></a>
         <p class="disc">{copy.footer.disclaimer}</p>
         <p class="tm">{copy.footer.trademark}</p>
       </footer>
