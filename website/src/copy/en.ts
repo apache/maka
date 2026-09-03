@@ -93,7 +93,7 @@ export const en: Copy = {
   },
   paired: {
     h3: 'Head to head, same suite',
-    p: 'A paired single run against OpenCode on the same tasks. The gap holds up under an exact McNemar test on this suite, and cost per accepted task was at parity.',
+    p: 'A paired single run against OpenCode on the same tasks. The gap holds up under an exact McNemar test on this suite, and cost per accepted task came out about the same.',
     more: 'Read the paired report',
     stat: '+13.5',
     statSmall: 'pp · 68.5% vs 55.1%',

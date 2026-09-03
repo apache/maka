@@ -17,18 +17,42 @@
  * under the License.
  */
 
+import { copyFile, mkdir } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { defineConfig } from 'astro/config';
+
+const require = createRequire(import.meta.url);
+
+// The Geist faces are under the SIL Open Font License, which must travel with
+// the font files, so the build ships each package's LICENSE next to them.
+const fontLicenses = {
+  name: 'font-licenses',
+  hooks: {
+    'astro:build:done': async ({ dir }) => {
+      for (const pkg of ['geist', 'geist-mono']) {
+        const target = new URL(`licenses/${pkg}/`, dir);
+        await mkdir(target, { recursive: true });
+        await copyFile(
+          require.resolve(`@fontsource-variable/${pkg}/LICENSE`),
+          new URL('LICENSE', target),
+        );
+      }
+    },
+  },
+};
 
 export default defineConfig({
   site: 'https://maka.apache.org',
   trailingSlash: 'always',
-  // Both languages live under their own prefix; the root redirects to /en/.
+  integrations: [fontLicenses],
+  // Both languages live under their own prefix; src/pages/index.astro sends
+  // the root to /en/ itself.
   i18n: {
     defaultLocale: 'en',
     locales: ['en', 'zh-CN'],
     routing: {
       prefixDefaultLocale: true,
-      redirectToDefaultLocale: true,
+      redirectToDefaultLocale: false,
     },
   },
 });

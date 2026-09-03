@@ -36,16 +36,16 @@ npm --workspace @maka/website run test:dist
 
 ## Design
 
-Colour, radius and surface tokens are the desktop app's defaults, copied by value from `apps/desktop/src/renderer/maka-tokens.css` into `src/styles/site.css`. The site follows the viewer's colour scheme until they pick one with the toggle in the top bar, which is remembered in that browser. Fonts are Geist and Geist Mono (SIL Open Font License 1.1), self-hosted from the `@fontsource-variable` packages the desktop app already depends on; nothing loads from a third party. The logo is `apps/desktop/assets/app-icons/sky.png`, the same file the README uses. `src/assets/incubator.png` is the Apache Incubator logo as published at https://www.apache.org/logos/res/incubator/default.png, an ASF trademark used here as the Incubator branding guide asks; it is not edited.
+Colour, radius and surface tokens are the desktop app's defaults, copied by value from `apps/desktop/src/renderer/maka-tokens.css` into `src/styles/site.css`. The site follows the viewer's colour scheme until they pick one with the toggle in the top bar, which is remembered in that browser. Fonts are Geist and Geist Mono (SIL Open Font License 1.1), self-hosted from the `@fontsource-variable` packages the desktop app already depends on, with each package's OFL text published at `/licenses/<package>/LICENSE`; nothing loads from a third party. The logo is `apps/desktop/assets/app-icons/sky.png`, the same file the README uses. `src/assets/incubator.png` is the Apache Incubator logo as published at https://www.apache.org/logos/res/incubator/default.png, an ASF trademark used here as the Incubator branding guide asks; it is not edited.
 
 ## Publishing
 
-`.github/workflows/website.yml` builds the site and pushes `website/dist` plus `.asf.yaml`, `LICENSE` and `NOTICE` as an orphan commit:
+`.github/workflows/website.yml` builds the site and pushes `website/dist` plus `LICENSE`, `NOTICE` and a site-only `.asf.yaml` as an orphan commit:
 
 | Trigger | Branch | Served at |
 | --- | --- | --- |
 | Push to `main` touching the site | `asf-site` | https://maka.apache.org |
-| Push of a release-candidate tag (`v*rc*`) | `site/<tag>-staging` | https://maka-<tag>.staged.apache.org |
+| Push of a release-candidate tag (`v*-rc*`) | `site/<tag>-staging` | https://maka-<tag>.staged.apache.org |
 | `workflow_dispatch` with a `stage` name | `site/<stage>-staging` | https://maka-<stage>.staged.apache.org |
 
-`.asf.yaml` carries `publish: whoami: asf-site` and `staging: autostage: site/*`, the same layout Apache OpenDAL uses. Nothing else in the repository is published.
+A `workflow_dispatch` without a `stage` name publishes only from `main`; any other ref fails instead of overwriting the live site. The published `.asf.yaml` carries just `publish: whoami: asf-site` and `staging: autostage: site/*`, the same layout Apache OpenDAL uses; the repository settings in the root `.asf.yaml` stay on `main`, the only branch asfyaml reads them from. Nothing else in the repository is published.

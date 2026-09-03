@@ -74,7 +74,7 @@ export const zhCN: Copy = {
   },
   paired: {
     h3: '同一套任务，正面对比',
-    p: '与 OpenCode 在同一批任务上做配对单次运行。差距经得起精确 McNemar 检验，每个通过任务的成本持平。',
+    p: '与 OpenCode 在同一批任务上做配对单次运行。差距经得起精确 McNemar 检验，每个通过任务的成本基本相同。',
     more: '查看对比报告',
     stat: '+13.5',
     statSmall: 'pp · 68.5% 对 55.1%',

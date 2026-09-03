@@ -56,8 +56,14 @@ const hrefs = (html) => new Set([...html.matchAll(/href="([^"]+)"/gu)].map(([, h
 // document, and the site's own pages. Everything else must match.
 const normalize = (href) => href.replace(/\.zh-CN\.md$/u, '.md').replace(/^\/zh-CN\//u, '/en/');
 
-test('the root redirects to the English homepage', () => {
-  assert.match(page('index.html'), /url=\/en\//u);
+test('the root redirects to the English homepage without a delay', () => {
+  assert.match(page('index.html'), /content="0;url=\/en\/"/u);
+});
+
+test('the font licenses ship with the fonts', () => {
+  for (const pkg of ['geist', 'geist-mono']) {
+    assert.match(page(`licenses/${pkg}/LICENSE`), /SIL Open Font License/u);
+  }
 });
 
 test('every page identifies the podling and carries the Incubator disclaimer', () => {
@@ -94,14 +100,26 @@ test('both languages link the same documents', () => {
   }
 });
 
+// Every absolute URL a page fetches while loading: scripts, images and the
+// links that pull in a resource, but not the links a visitor clicks.
+const thirdPartyLoads = (html) =>
+  [...html.matchAll(/<(script|img|link)\b[^>]*>/gu)]
+    .filter(
+      ([tag, name]) =>
+        name !== 'link' || /rel="(?:stylesheet|preload|modulepreload|icon)"/u.test(tag),
+    )
+    .flatMap(([tag]) => [...tag.matchAll(/(?:src|href)="(https?:[^"]+)"/gu)].map(([, url]) => url));
+
 test('the site does not load anything from a third party', () => {
+  assert.deepEqual(
+    thirdPartyLoads(
+      '<script src="https://cdn.example/t.js"></script><link rel="stylesheet" href="https://fonts.example/a.css"><img src="https://img.example/a.png"><a href="https://www.apache.org/">ASF</a>',
+    ),
+    ['https://cdn.example/t.js', 'https://fonts.example/a.css', 'https://img.example/a.png'],
+  );
   for (const locale of locales) {
     for (const path of pages) {
-      const html = page(`${locale}/${path}`);
-      const loaded = [...html.matchAll(/(?:src|href)="(https?:[^"]+)"[^>]*>/gu)]
-        .filter(([tag]) => /<(?:link[^>]*rel="(?:stylesheet|preload|icon)"|script|img)/u.test(tag))
-        .map(([, url]) => url);
-      assert.deepEqual(loaded, [], `${locale}/${path}`);
+      assert.deepEqual(thirdPartyLoads(page(`${locale}/${path}`)), [], `${locale}/${path}`);
     }
   }
 });
