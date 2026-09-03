@@ -1909,6 +1909,9 @@ const makaBridge = {
     remove(id, options) {
       return ipcRenderer.invoke('workBoard:remove', id, options);
     },
+    linkSession(id, link, options) {
+      return ipcRenderer.invoke('workBoard:linkSession', id, link, options);
+    },
     subscribeChanges(handler: (event: WorkBoardChangedEvent) => void): () => void {
       const listener = (_event: Electron.IpcRendererEvent, payload: WorkBoardChangedEvent) =>
         handler(payload);

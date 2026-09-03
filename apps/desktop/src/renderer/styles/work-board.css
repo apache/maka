@@ -30,14 +30,56 @@
   gap: 8px;
 }
 
+/* The create block reads as one card, like the chat composer: the textarea
+   owns the top of the card and the submit button sits where a send button
+   would — bottom right. */
 .maka-work-board-create {
   display: flex;
-  gap: 8px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-radius: var(--radius-surface);
+  background: var(--background-elevated);
+  box-shadow: inset 0 0 0 var(--border-width-hairline) var(--border);
 }
 
+.maka-work-board-create:focus-within {
+  box-shadow:
+    inset 0 0 0 var(--border-width-hairline) var(--border),
+    0 0 0 var(--focus-ring-width) var(--focus-ring);
+}
+
+/* `field-sizing: content` grows the field with what is typed: it opens at two
+   rows, stretches to four, and only then does `overflow-y` take over and
+   scroll. The explicit `line-height` keeps the row math exact. */
 .maka-work-board-create-input {
-  flex: 1;
-  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  line-height: 20px;
+  resize: none;
+  field-sizing: content;
+  min-height: 40px;
+  max-height: 80px;
+  overflow-y: auto;
+}
+
+.maka-work-board-create-input::placeholder {
+  color: var(--muted-foreground);
+}
+
+.maka-work-board-create-input:disabled {
+  opacity: 0.6;
+}
+
+.maka-work-board-create-button {
+  align-self: flex-end;
 }
 
 .maka-work-board-list {

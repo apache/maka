@@ -24,4 +24,6 @@ export {
 } from './ui/task-entry-provider.js';
 export type { TaskEntryShellProjection } from './ui/task-entry-provider.js';
 export { TaskEntryServicesProvider } from './services-context.js';
+export { useTaskEntryController } from './controller/use-task-entry-controller.js';
+export { taskEntryDraftKey } from './model/task-entry-selection.js';
 export type { TaskEntryServices } from './ports.js';

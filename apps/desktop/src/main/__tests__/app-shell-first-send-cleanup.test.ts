@@ -47,6 +47,64 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('composer first-send cleanup', () => {
+  it('releases one-shot owners when a first send is refused', async () => {
+    let released = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => ({
+          ok: false as const,
+          reason: 'skill_invocation_failed' as const,
+          skillInvocation: { loaded: [], failed: [], receipts: [] },
+        }),
+        remove: async () => undefined,
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        onNewTaskSessionNotProjected: () => {
+          released += 1;
+        },
+      });
+      assert.equal(await actions.send('hello'), false);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(released, 1);
+  });
+
+  it('does not link a Work Board task when the first send outcome is unknown', async () => {
+    let released = 0;
+    let linked = 0;
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => ({ ok: false as const, reason: 'outcome_unknown' as const }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        onNewTaskSessionResolved: () => {
+          linked += 1;
+        },
+        onNewTaskSessionNotProjected: () => {
+          released += 1;
+        },
+      });
+      assert.equal(await actions.send('hello'), true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(linked, 0);
+    assert.equal(released, 1);
+  });
+
   it('cancels when the composer owner changes during the readiness check', async () => {
     const readiness = deferred<boolean>();
     const activeIdRef = { current: 'session-a' as string | undefined };
@@ -256,6 +314,7 @@ describe('composer first-send cleanup', () => {
 
   it('removes the just-created session when the first send REJECTS', async () => {
     const removed: string[] = [];
+    let released = 0;
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
@@ -268,12 +327,21 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      assert.equal(await createAppShellChatActions(createActionsDeps()).send('hello'), false);
+      assert.equal(
+        await createAppShellChatActions({
+          ...createActionsDeps(),
+          onNewTaskSessionNotProjected: () => {
+            released += 1;
+          },
+        }).send('hello'),
+        false,
+      );
     } finally {
       restoreWindow();
     }
 
     assert.deepEqual(removed, ['session-1']);
+    assert.equal(released, 1);
   });
 
   it('keeps the session once the first send lands', async () => {

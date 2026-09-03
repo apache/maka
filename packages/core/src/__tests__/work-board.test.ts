@@ -162,21 +162,25 @@ describe('Work Board contract', () => {
     assert.equal(unconfirmed.ok, false);
   });
 
-  test('rejects linkedSessions as a Phase 3 field in create input and stored records', () => {
+  test('rejects linked Sessions from create input but accepts Host-scoped stored links', () => {
     const createResult = normalizeCreateWorkBoardItemInput({
       scope: { kind: 'inbox' },
       title: 'x',
       creator: { kind: 'user' },
       provenance: { kind: 'manual' },
-      linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
+      linkedSessions: [
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 },
+      ],
     });
     assert.equal(createResult.ok, false);
-    assert.equal(
+    assert.deepEqual(
       decodeWorkBoardItem({
         ...baseItem,
-        linkedSessions: [{ sessionId: 'session-1', linkedAt: 10 }],
-      }),
-      null,
+        linkedSessions: [
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 },
+        ],
+      })?.linkedSessions,
+      [{ profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 }],
     );
   });
 

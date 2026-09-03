@@ -55,10 +55,12 @@ interface WorkBoardItem {
 }
 ```
 
-`linkedSessions` is deferred to Phase 3: Phase 0 has no consumer and no mutation
-path that writes it, so the Phase 0 contract rejects the field in create input
-and in stored records. It will be added together with the canonical continuity
-adapter when "start as task" lands.
+`linkedSessions` is added by the Phase 3 start-task spike as an additive record
+field. Existing records without the field decode as an empty list. Each entry
+is Host-scoped (`profileId`, `hostId`, `sessionId`, `linkedAt`) and is written
+only by the semantic `WorkBoardStore.linkSession` mutation after the normal
+Composer first-send has produced a durable Session/Turn outcome. Session state
+is never copied into the item.
 
 `Inbox` is a scope, not a status. State transitions are user-confirmed only:
 
@@ -148,12 +150,10 @@ produce one page of active items.
 
 ## Linked-session projection
 
-Deferred. Phase 0 does not ship a projection function: there is no production
-consumer yet, and the minimal DTO would have been a parallel contract instead
-of the canonical `SessionContinuitySnapshot` / `TurnSnapshot` used by the
-Runtime Host. It will be implemented beside the real continuity adapter when
-"start as task" lands in Phase 3, using only facts those authorities directly
-expose.
+Deferred. The Phase 3 spike stores links only; it does not ship an execution
+projection. A future projection must be implemented beside the real continuity
+adapter using only canonical `SessionContinuitySnapshot` / `TurnSnapshot`
+facts.
 
 ## Tests
 
