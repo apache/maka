@@ -25,6 +25,7 @@ import { after, describe, test } from 'node:test';
 
 import {
   analyzeTsx,
+  assertNoAstryxBlockers,
   assertAstryxComponentSet,
   loadAstryxComponents,
   loadMakaUiBarrel,
@@ -224,5 +225,62 @@ describe('analyzeTsx severity (#3868)', () => {
     const src = 'export function Bad() { return <button type="button">x</button>; }\n';
     const result = analyzeTsx('packages/ui/src/bad.tsx', src, base);
     assert.equal(result.severity, 'blocker');
+  });
+
+  test('blocks hand-written span and div actions with an actionable Astryx diagnostic', () => {
+    for (const src of [
+      'export function Bad() { return <span onClick={() => {}}>x</span>; }',
+      'export function Bad() { return <div role="button" tabIndex={0}>x</div>; }',
+    ]) {
+      const result = analyzeTsx('packages/ui/src/bad.tsx', src, base);
+      assert.equal(result.severity, 'aligned');
+      assert.match(result.admissionGaps.join('; '), /use Astryx `Button`/);
+      assert.match(result.admissionGaps.join('; '), /do not hand-write controls/);
+    }
+  });
+
+  test('allows non-interactive spans and divs used for layout or text', () => {
+    const src = 'export function Fine() { return <div><span>x</span></div>; }\n';
+    const result = analyzeTsx('packages/ui/src/fine.tsx', src, base);
+    assert.equal(result.severity, 'aligned');
+    assert.deepEqual(result.admissionGaps, []);
+  });
+
+  test('fails the CI gate even after a blocker inventory is regenerated', () => {
+    assert.throws(
+      () =>
+        assertNoAstryxBlockers({
+          blockers: [
+            {
+              path: 'packages/ui/src/bad.tsx',
+              gaps: 'hand-written interactive `<span>`; use Astryx `Button`; do not hand-write controls',
+            },
+          ],
+        }),
+      /Astryx surface blocker.*packages\/ui\/src\/bad\.tsx.*use Astryx `Button`.*do not hand-write controls/is,
+    );
+  });
+
+  test('permits only exact legacy blocker fingerprints, never new debt at the same path', () => {
+    const path = 'packages/ui/src/legacy.tsx';
+    const gaps =
+      'hand-written interactive `<div>` (1 occurrence); use Astryx `Button`; do not hand-write controls';
+    const baseline = new Map([[path, gaps]]);
+    assert.doesNotThrow(() => assertNoAstryxBlockers({ blockers: [{ path, gaps }] }, baseline));
+    assert.throws(
+      () =>
+        assertNoAstryxBlockers(
+          {
+            blockers: [
+              {
+                path,
+                gaps: 'hand-written interactive `<div>` (2 occurrences); use Astryx `Button`; do not hand-write controls',
+              },
+            ],
+          },
+          baseline,
+        ),
+      /Astryx surface blocker/,
+    );
   });
 });

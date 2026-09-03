@@ -31,11 +31,23 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { renderAstryxSurfaceInventory } from './generate-astryx-surface-inventory.mjs';
+import {
+  assertNoAstryxBlockers,
+  renderAstryxSurfaceInventory,
+} from './generate-astryx-surface-inventory.mjs';
 
 const root = join(fileURLToPath(new URL('..', import.meta.url)));
 const pathsFile = join(root, 'docs/astryx-surface-file-inventory.paths');
 const mdFile = join(root, 'docs/astryx-surface-file-inventory.md');
+// One pre-existing reasoning disclosure owns button semantics on a div. Keep
+// its full diagnostic as the baseline: another control, even in the same file,
+// changes the occurrence count and fails admission.
+const legacyBlockerBaseline = new Map([
+  [
+    'packages/ui/src/astryx-chat-reasoning.tsx',
+    'hand-written interactive `<div>` (1 occurrence); use Astryx `Button`; do not hand-write controls from raw elements or custom control CSS (API Use-the-System)',
+  ],
+]);
 
 function main() {
   if (!existsSync(pathsFile) || !existsSync(mdFile)) {
@@ -44,6 +56,7 @@ function main() {
   }
 
   const rendered = renderAstryxSurfaceInventory(root);
+  assertNoAstryxBlockers(rendered, legacyBlockerBaseline);
   const committedMd = readFileSync(mdFile, 'utf8');
   const committedPaths = readFileSync(pathsFile, 'utf8');
   const mdDrift = committedMd !== rendered.markdown;

@@ -59,8 +59,15 @@ test('the context usage action opens its host trace surface', async () => {
     const action = container.querySelector<HTMLButtonElement>(
       'button[aria-label="Open usage trace"]',
     );
-    assert.ok(action, 'usage is exposed as an Astryx action');
-    assert.equal(action.classList.contains('astryx-button'), true);
+    assert.ok(
+      action,
+      'context usage must be an action that opens Trace; do not render a read-only hand-written label',
+    );
+    assert.equal(
+      action.classList.contains('astryx-button'),
+      true,
+      'context usage must use Astryx Button; do not hand-write this control with raw JSX or custom control CSS',
+    );
 
     await act(() => action.dispatchEvent(new window.Event('click', { bubbles: true })));
     assert.equal(opened, true);
