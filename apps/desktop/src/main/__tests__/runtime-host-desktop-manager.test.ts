@@ -605,8 +605,8 @@ test('keeps independent shared-session credentials active for the same Host', as
     { startCandidate: async () => ready(candidates.shift()!) },
   );
 
-  await manager.mountGuest(remoteTarget('shared-one', 'shared', 'session_guest'));
-  await manager.mountGuest(remoteTarget('shared-two', 'shared', 'session_guest'));
+  await manager.mountGuest(remoteTarget('shared-one', 'shared', 'session_guest'), () => undefined);
+  await manager.mountGuest(remoteTarget('shared-two', 'shared', 'session_guest'), () => undefined);
   await manager.enable(remoteTarget('owner', 'shared'));
 
   assert.deepEqual(manager.entries().map(({ target }) => target.profile.id), [
@@ -642,6 +642,7 @@ test('aborts an in-flight Guest mount without publishing a late target', async (
   const abort = new AbortController();
   const mounting = manager.mountGuest(
     remoteTarget('shared-cancelled', 'shared', 'session_guest'),
+    () => undefined,
     abort.signal,
   );
   await started;
@@ -746,6 +747,7 @@ test('completes Guest import at credential activation while reconnect continues'
   );
   await manager.mountGuest(
     peerGuestTarget('shared-session'),
+    () => undefined,
     undefined,
     (phase) => phases.push(phase),
   );

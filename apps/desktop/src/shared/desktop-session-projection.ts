@@ -25,11 +25,7 @@ import type {
   StorageRef,
   ToolResultContent,
 } from '@maka/core/events';
-import type {
-  SessionSummary,
-  StoredMessage,
-  TurnRecord,
-} from '@maka/core/session';
+import type { SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { UsageStats } from '@maka/core/settings';
 import type { RuntimeHostProfileKind } from '@maka/runtime-host/profile-kind';
 import { desktopSessionKey, type DesktopHostRef } from './runtime-host-identity.js';

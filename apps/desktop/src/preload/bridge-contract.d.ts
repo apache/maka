@@ -766,6 +766,7 @@ export interface MakaBridge {
     /** Reads only after the user invokes the invitation paste action. */
     readInvitationClipboard(): Promise<string>;
     listMounts(): Promise<readonly DesktopGuestSessionMountSummary[]>;
+    subscribeMountChanges(handler: () => void): () => void;
     removeMount(mountId: string): Promise<void>;
     requestTurn(
       sessionId: string,

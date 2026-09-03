@@ -75,6 +75,7 @@ export interface RuntimeHostDesktopManager {
   ): Promise<void>;
   mountGuest(
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
+    onSessionCatalogChanged: () => void,
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onHostStatus?: (status: HostStatusResult) => void,
@@ -547,6 +548,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   mountGuest(
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
+    onSessionCatalogChanged: () => void,
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onHostStatus?: (status: HostStatusResult) => void,
@@ -555,7 +557,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       return Promise.reject(new Error('A Session Guest target is required'));
     }
     return this.#mutateTarget(profileTarget.profile.id, () =>
-      this.#enable(profileTarget, true, signal, onConnectionPhase, onHostStatus),
+      this.#enable(
+        profileTarget,
+        true,
+        signal,
+        onConnectionPhase,
+        onHostStatus,
+        onSessionCatalogChanged,
+      ),
     );
   }
 
@@ -565,6 +574,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     signal?: AbortSignal,
     onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
     onHostStatus?: (status: HostStatusResult) => void,
+    onGuestSessionCatalogChanged?: () => void,
   ): Promise<void> {
     signal?.throwIfAborted();
     if (this.#closed) throw new Error('Desktop Runtime Host manager is closed');
@@ -596,6 +606,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       ...withRuntimeHostTarget(this.#baseInput, profileTarget),
       ...(onConnectionPhase ? { onConnectionPhase } : {}),
       ...(onHostStatus ? { onHostStatus } : {}),
+      ...(onGuestSessionCatalogChanged ? { onGuestSessionCatalogChanged } : {}),
     });
     this.#targets.set(profileId, target);
     this.#publishState(target, {

@@ -31,6 +31,7 @@ import {
   DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
 } from '../../preload/transcript-contract.js';
 import {
+  createDesktopTranscriptReconnectRecovery,
   createDesktopTranscriptRangeController,
   DesktopTranscriptRangeStore,
 } from '../../renderer/desktop-transcript-range-store.js';
@@ -1322,6 +1323,44 @@ test('reopens a failed transcript range with a fresh generation', async () => {
   await controller.reload();
   assert.equal(store.range().generation, 'reloaded');
   await controller.close();
+});
+
+test('retries a failed transcript recovery after a newer observation becomes ready', async () => {
+  let rejectFirstReload!: (error: Error) => void;
+  const firstReload = new Promise<void>((_resolve, reject) => {
+    rejectFirstReload = reject;
+  });
+  let resolveSecondReload!: () => void;
+  const secondReload = new Promise<void>((resolve) => {
+    resolveSecondReload = resolve;
+  });
+  const reloads: Promise<void>[] = [firstReload, secondReload];
+  const errors: string[] = [];
+  const recovery = createDesktopTranscriptReconnectRecovery({
+    reload: () => {
+      const reload = reloads.shift();
+      if (!reload) throw new Error('unexpected transcript reload');
+      return reload;
+    },
+    onError(error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    },
+  });
+
+  recovery.transcriptFailed(new Error('initial open failed'));
+  recovery.observationChanged('ready');
+  await Promise.resolve();
+  recovery.observationChanged('pending');
+  recovery.observationChanged('ready');
+  rejectFirstReload(new Error('replaced transcript failed'));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(reloads.length, 0, 'the newer ready signal starts one trailing reload');
+  resolveSecondReload();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(errors, ['initial open failed', 'replaced transcript failed']);
+  recovery.close();
 });
 
 test('forwards a larger logical history range without changing batch size', async () => {

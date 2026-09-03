@@ -20,7 +20,10 @@
 import type { MakaBridge } from '../../../preload/bridge-contract.js';
 import type { SessionCollaborationServices } from '../../features/session-collaboration';
 
-export type DesktopSessionCollaborationBridge = Pick<MakaBridge, 'sessionCollaboration'>;
+export type DesktopSessionCollaborationBridge = Pick<
+  MakaBridge,
+  'sessionCollaboration'
+>;
 
 export function createDesktopSessionCollaborationServices(
   bridge: DesktopSessionCollaborationBridge = window.maka,
@@ -31,6 +34,8 @@ export function createDesktopSessionCollaborationServices(
     cancelImport: (operationId) => bridge.sessionCollaboration.cancelImport(operationId),
     readInvitationClipboard: () => bridge.sessionCollaboration.readInvitationClipboard(),
     listMounts: () => bridge.sessionCollaboration.listMounts(),
+    subscribeMountChanges: (handler) =>
+      bridge.sessionCollaboration.subscribeMountChanges(handler),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
     requestTurn: (sessionId, input) =>
       bridge.sessionCollaboration.requestTurn(sessionId, input),

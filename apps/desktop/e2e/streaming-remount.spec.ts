@@ -35,6 +35,7 @@ interface SessionObservationLatchWindow extends Window {
   /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
   makaE2eLatch?: {
     rejectNextSessionObservation(message: string): void;
+    rejectNextTranscriptOpen(message: string): void;
   };
 }
 
@@ -69,6 +70,41 @@ test('a failed first observation seed reconnects to the live Turn', async ({ win
   );
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
+});
+
+test('a failed transcript open recovers when its Session observation becomes ready', async ({
+  window: page,
+}) => {
+  const originalPrompt = 'transcript recovery source';
+  const composer = page.locator(COMPOSER_INPUT);
+  await composer.fill(originalPrompt);
+  await awaitSendReady(page);
+  await composer.press('Enter');
+  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
+    timeout: 20_000,
+  });
+
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await ensureSidebarExpanded(page);
+  const originalSessionId = await sidebar
+    .locator('[data-session-id]:has([aria-current="page"])')
+    .getAttribute('data-session-id');
+  expect(originalSessionId).toBeTruthy();
+
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+
+  const latchInstalled = await page.evaluate(() => {
+    const latch = (window as SessionObservationLatchWindow).makaE2eLatch;
+    if (!latch) return false;
+    latch.rejectNextTranscriptOpen('forced first transcript failure');
+    return true;
+  });
+  expect(latchInstalled, 'the preload E2E latch is installed').toBe(true);
+
+  await sessionRow(sidebar, originalSessionId!).click();
+  await expect(page.getByRole('log')).toContainText(`Fake backend received: ${originalPrompt}`, {
     timeout: 20_000,
   });
 });

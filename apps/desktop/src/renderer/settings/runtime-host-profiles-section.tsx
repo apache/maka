@@ -691,9 +691,7 @@ export function RuntimeHostProfilesSection(props: {
                           <span>
                             <Badge
                               variant="neutral"
-                              label={entry.peerPath.kind === 'direct'
-                                ? (locale.startsWith('zh') ? '直连' : 'Direct')
-                                : (locale.startsWith('zh') ? '成员转发' : 'Member transit')}
+                              label={peerPathLabel(entry.peerPath, locale)}
                             />
                           </span>
                         </Tooltip>
@@ -853,6 +851,19 @@ function peerPathDetail(
           ? '其他'
           : 'Other';
   return `${locale.startsWith('zh') ? '直连' : 'Direct'} · ${transport}`;
+}
+
+function peerPathLabel(
+  path: RuntimeHostPeerConnectionPath,
+  locale: string,
+): string {
+  if (path.kind === 'transit') {
+    return locale.startsWith('zh') ? '成员转发' : 'Member transit';
+  }
+  if (path.transport === 'webrtc') return 'WebRTC';
+  if (path.transport === 'quic') return 'QUIC';
+  if (path.transport === 'tcp') return 'TCP';
+  return locale.startsWith('zh') ? '直连' : 'Direct';
 }
 
 function abbreviatePeerId(peerId: string): string {

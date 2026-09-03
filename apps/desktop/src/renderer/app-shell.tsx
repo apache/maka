@@ -200,13 +200,7 @@ import {
   useSessionEventHealthPolling,
   useShellRunUpdates,
 } from './app-shell-effects';
-import {
-  EMPTY_LIVE_CONTENT_SEED,
-  beginLiveContentSeed,
-  completeLiveContentSeed,
-  liveContentSeedRevision,
-  type LiveContentSeed,
-} from './live-content-seed';
+import * as liveContent from './live-content-seed';
 import { loadComposerDefaults, saveComposerDefaults } from './composer-defaults';
 import { useTurnActionRegistry } from './use-turn-action-registry';
 import { useComposerAttachments } from './use-composer-attachments';
@@ -583,8 +577,7 @@ function AppShellContent({
     uiLocale,
     target: { kind: 'session', sessionId: ownerActiveId },
   });
-  const startupConnectionSnapshot =
-    initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
+  const startupConnectionSnapshot = onboarding.snapshot;
   const newTaskUsesDefaultHost = taskEntry.selectors.usesDefaultHost;
   let newTaskConnectionSnapshot = newTaskConnections.snapshot;
   if (newTaskConnections.projection.status !== 'ready' && newTaskUsesDefaultHost) {
@@ -1258,13 +1251,11 @@ function AppShellContent({
   // Re-entrancy lock only — a ref, not state, because nothing renders
   // from it (#1433 removed its last reader with the first-run hero).
   const sessionStartPendingRef = useRef(false);
-  // Seed sessions from the onboarding snapshot on first load — the snapshot
-  // already fetches the session list + connections internally, so separate
-  // Session and connection snapshot IPCs are redundant.
-  // This lets the UI show the sidebar + model picker immediately on first load.
+  // Seed a snapshot captured before React mounted so the sidebar can paint
+  // immediately. The subscription bootstrap reconciles once through the live
+  // Session catalog on the next frame; later onboarding pulls still own
+  // readiness and connection data, but never overwrite that catalog.
   const initialSnapshotSeededRef = useRef(false);
-  const mountedSnapshotSeededRef = useRef(false);
-  const bootstrapFallbackStartedRef = useRef(false);
   // useLayoutEffect, NOT useEffect: the snapshot render flips
   // `isOnboardingLoading` off while `sessions` is still []. A passive
   // effect seeds sessions AFTER the browser paints that frame, so users
@@ -1272,54 +1263,29 @@ function AppShellContent({
   // "配置页闪了一下" startup flash). Layout effects run before paint,
   // so the seeded sessions and the un-gated frame commit together.
   useLayoutEffect(() => {
-    // Snapshot IPC failed — the seed path will never run, so fall back
-    // to the classic boot pull or the sidebar stays empty forever.
-    if (
-      onboarding.error &&
-      !initialOnboardingSnapshot &&
-      !onboarding.mountedSnapshotHandoff &&
-      !bootstrapFallbackStartedRef.current
-    ) {
-      bootstrapFallbackStartedRef.current = true;
-      void bootstrapSessions();
-      void defaultHostConnections.refreshConnections();
-      return;
-    }
-    let snapshot: OnboardingSnapshot | null = null;
-    let releaseSelectionLease = false;
-    if (!initialSnapshotSeededRef.current && initialOnboardingSnapshot) {
-      initialSnapshotSeededRef.current = true;
-      snapshot = initialOnboardingSnapshot;
-    } else if (
-      !bootstrapFallbackStartedRef.current &&
-      !mountedSnapshotSeededRef.current &&
-      onboarding.mountedSnapshotHandoff
-    ) {
-      mountedSnapshotSeededRef.current = true;
-      snapshot = onboarding.mountedSnapshotHandoff;
-      releaseSelectionLease = true;
-    }
-    if (!snapshot) return;
-    // Seed sessions. Display normalization MUST run here too — this is
-    // Display normalization prevents legacy blocked/unknown
-    // sessions flash an 已阻塞 group on first paint until the first
-    // refreshSessions() overwrites the seed.
-    const next = seedSessions(snapshot.sessions);
+    if (initialSnapshotSeededRef.current || !initialOnboardingSnapshot) return;
+    initialSnapshotSeededRef.current = true;
+    // This prop settled before React mounted, so it is the only onboarding
+    // value allowed to seed the catalog. Later snapshots must go through the
+    // authoritative refresher or they can overwrite a newer Guest-inclusive
+    // catalog with an older point-in-time view.
+    const next = seedSessions(initialOnboardingSnapshot.sessions);
     bootstrapSelectionLease.reconcile(collapseSessionRevisions(next));
-    if (releaseSelectionLease) bootstrapSelectionLease.release();
-  }, [initialOnboardingSnapshot, onboarding.mountedSnapshotHandoff, onboarding.error]);
+  }, [initialOnboardingSnapshot]);
   useEffect(() => {
-    const snapshot = initialOnboardingSnapshot ?? onboarding.mountedSnapshotHandoff;
-    if (!snapshot) return;
-    defaultHostConnections.seedSnapshot({
-      connections: snapshot.connections,
-      defaultConnection: snapshot.defaultSlug,
-      chatModelChoices: snapshot.chatModelChoices,
-    });
-  }, [
-    initialOnboardingSnapshot,
-    onboarding.mountedSnapshotHandoff,
-  ]);
+    const snapshot = onboarding.snapshot;
+    if (snapshot) {
+      defaultHostConnections.seedSnapshot({
+        connections: snapshot.connections,
+        defaultConnection: snapshot.defaultSlug,
+        chatModelChoices: snapshot.chatModelChoices,
+      });
+    } else if (onboarding.error && !initialOnboardingSnapshot) {
+      // Session bootstrap is independent above. If onboarding itself failed,
+      // retain the previous connection-specific recovery path as well.
+      void defaultHostConnections.refreshConnections();
+    }
+  }, [initialOnboardingSnapshot, onboarding.error, onboarding.snapshot]);
   // PR110c (@kenji review): suppress hero AND the fallback EmptyChatHero
   // while the initial snapshot is in flight. Otherwise sessions.length===0
   // + snapshot===null flashes the prompt-suggestion EmptyChatHero before
@@ -2291,7 +2257,6 @@ function AppShellContent({
     bootstrapSessions,
     clearPendingTurnActionsForSession: turnActionRegistry.clearForSession,
     confirmLiveTurn: sessionUiController.confirmLiveTurn,
-    clearSessionRendererState,
     createSession,
     handleConnectionEvent,
     openHelp,
@@ -2306,8 +2271,11 @@ function AppShellContent({
     refreshShellSettings,
     refreshSessions,
     rendererMountedRef,
-    setActiveId,
-    setMessages,
+    retireSession: (sessionId) => {
+      setActiveId(undefined);
+      setMessages([]);
+      clearSessionRendererState(sessionId);
+    },
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
@@ -2316,11 +2284,13 @@ function AppShellContent({
     themePalette,
     themePref,
   });
-  const [activeEventSeed, setActiveEventSeed] = useState<LiveContentSeed>(EMPTY_LIVE_CONTENT_SEED);
+  const [activeEventSeed, setActiveEventSeed] = useState<liveContent.LiveContentSeed>(
+    liveContent.EMPTY_LIVE_CONTENT_SEED,
+  );
   const activeEventSeedRef = useRef(activeEventSeed);
   activeEventSeedRef.current = activeEventSeed;
   const beginObservationSeed = (sessionId: string) => {
-    const next = beginLiveContentSeed(activeEventSeedRef.current, sessionId);
+    const next = liveContent.beginLiveContentSeed(activeEventSeedRef.current, sessionId);
     activeEventSeedRef.current = next;
     markDisplayPending(sessionId);
     setActiveEventSeed(next);
@@ -2332,7 +2302,7 @@ function AppShellContent({
     if (current.sessionId !== sessionId || current.generation !== expected) return;
     flushDisplayEvents(sessionId);
     markDisplayReady(sessionId);
-    const next = completeLiveContentSeed(current, sessionId, expected);
+    const next = liveContent.completeLiveContentSeed(current, sessionId, expected);
     activeEventSeedRef.current = next;
     setActiveEventSeed(next);
     const firstSendWaiter = firstSendObservationWaitersRef.current.get(sessionId);
@@ -2343,10 +2313,16 @@ function AppShellContent({
     }
     void retireCancelledTransientMessages(sessionId);
   };
+  const observationAuthorityRef = useRef(liveContent.EMPTY_SESSION_OBSERVATION_AUTHORITY);
+  observationAuthorityRef.current = liveContent.advanceSessionObservationAuthority(
+    observationAuthorityRef.current,
+    activeId,
+    activeSession?.profileId,
+  );
   useActiveSessionEvents({
     uiLocale,
     activeId,
-    activeProfileId: activeSession?.profileId,
+    observationAuthorityRevision: observationAuthorityRef.current.revision,
     activeIdRef,
     handleEvent,
     beginObservationSeed,
@@ -3079,7 +3055,7 @@ function AppShellContent({
                 onLoadEarlierHistory={(anchorTurnId) =>
                   loadTranscriptHistory('earlier', anchorTurnId)}
                 onReturnToLatestHistory={() => loadTranscriptHistory('latest')}
-                liveContentSeedRevision={liveContentSeedRevision(activeEventSeed, activeId)}
+                liveContentSeedRevision={liveContent.liveContentSeedRevision(activeEventSeed, activeId)}
                 messages={messages}
                 transientMessages={transientMessages}
                 messageLoading={activeMessageLoading}

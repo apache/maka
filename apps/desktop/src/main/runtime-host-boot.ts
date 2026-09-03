@@ -601,15 +601,25 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
     runtimeHostManager.setDefaultProfile(profileId);
   },
 });
+const notifyGuestSessionMountsChanged = (): void => {
+  mainWindowController.send('session-collaboration:mounts:changed');
+};
 const guestSessionMountService = createDesktopGuestSessionMountService({
   store: createGuestSessionMountStore(runtimeHostCredentialStore),
-  mount: async (target, signal, onConnectionPhase, onPeerEndpoint) => {
+  mount: async (
+    target,
+    signal,
+    onConnectionPhase,
+    onPeerEndpoint,
+    onSessionCatalogChanged,
+  ) => {
     if (target.profile.kind !== 'remote' || !target.credential) {
       throw new Error('A shared Session requires a remote Guest target');
     }
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
     await runtimeHostManager.mountGuest(
       { profile: target.profile, credential: target.credential },
+      onSessionCatalogChanged,
       signal,
       onConnectionPhase,
       (status) => {
@@ -621,6 +631,26 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
     return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
   },
+  getSharedSession: async (mountId) => {
+    const current = runtimeHostManager?.current(mountId);
+    if (!current?.candidate) {
+      throw new Error('Shared Session Runtime Host is reconnecting');
+    }
+    return current.candidate.client.getSharedSession();
+  },
+  inspect: (mountId) => {
+    const state = runtimeHostManager?.entries().find(
+      (candidate) => candidate.target.profile.id === mountId,
+    );
+    if (!state) return undefined;
+    return {
+      readiness: state.readiness,
+      ...(state.readiness === 'ready' && state.candidate.client.peerPath
+        ? { peerPath: state.candidate.client.peerPath }
+        : {}),
+    };
+  },
+  onMountsChanged: notifyGuestSessionMountsChanged,
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;
     await runtimeHostManager.unmountGuest(mountId);
@@ -1095,6 +1125,7 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       showStartupDiagnosticDialog,
     ),
     onTargetStateChanged: (state) => {
+      const profileAccess = runtimeHostProfileAccess(state.target.profile);
       const hostId = state.readiness === "ready"
         ? state.candidate.client.hostId
         : state.hostId;
@@ -1103,13 +1134,23 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
-        profileAccess: runtimeHostProfileAccess(state.target.profile),
+        profileAccess,
         ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
           (runtimeHostManager?.defaultProfileId() ??
             runtimeHostStartup.preferences.defaultProfileId) === state.target.profile.id,
       });
+      if (profileAccess === 'session_guest') {
+        void guestSessionMountService
+          .connectionChanged(
+            state.target.profile.id,
+            state.readiness === 'unavailable' ? state.error : undefined,
+          )
+          .catch((error: unknown) =>
+            console.warn('[runtime-host] shared Session connection update failed:', error),
+          );
+      }
       if (state.readiness === "unavailable" && state.hostId) {
         void browserIpc.retireTarget({
           hostId: state.hostId,
