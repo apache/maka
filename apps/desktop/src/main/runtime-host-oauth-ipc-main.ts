@@ -22,7 +22,6 @@ import {
   decodeRuntimePolicyEntityId,
   type ConnectionCatalogEntry,
 } from '@maka/core/runtime-policy';
-import { isOAuthEnrollmentProviderEnabled } from '@maka/runtime/oauth-provider-contracts';
 import { RuntimeHostOperationError } from '@maka/runtime-host/client';
 import {
   OAUTH_LOGIN_PROVIDERS,
@@ -60,10 +59,9 @@ const SHARED_OAUTH_IPC_OPERATIONS = [
   'logout',
 ] as const;
 export const RUNTIME_HOST_OAUTH_IPC_CHANNELS = Object.freeze([
-  ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) => [
-    ...(provider === 'xai-oauth' ? [] : [`${provider}:is-experimental-enabled`]),
-    ...SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
-  ]),
+  ...OAUTH_LOGIN_PROVIDERS.flatMap((provider) =>
+    SHARED_OAUTH_IPC_OPERATIONS.map((operation) => `${provider}:${operation}`),
+  ),
 ]);
 
 type OAuthClient = RuntimeHostAccountConnectionClient & Pick<
@@ -79,7 +77,6 @@ export interface RuntimeHostOAuthIpcDeps {
   readonly client: OAuthClient;
   readonly presentation: RuntimeHostOAuthPresentation;
   readonly emitConnectionListChanged: () => void;
-  readonly isProviderEnabled?: (provider: OAuthLoginProvider) => boolean;
 }
 
 interface ActiveOAuthAttempt {
@@ -90,15 +87,10 @@ interface ActiveOAuthAttempt {
 /** Adapts the existing Desktop OAuth UI to the Host's provider-neutral OAuth operations. */
 export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void {
   const activeAttempts = new Map<string, ActiveOAuthAttempt>();
-  const providerEnabled = deps.isProviderEnabled ?? isOAuthEnrollmentProviderEnabled;
 
   for (const provider of OAUTH_LOGIN_PROVIDERS) {
     const channel = (operation: string) => `${provider}:${operation}`;
-    if (provider !== 'xai-oauth') {
-      deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
-    }
     deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawTarget: unknown) => {
-      if (!providerEnabled(provider)) return providerDisabled();
       const selection = decodeOAuthLoginSelection(rawTarget);
       if (selection.kind === 'invalid') return invalidConnectionIdentity();
       const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
@@ -162,9 +154,8 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     });
     handleReconnectableRead(deps.ipcMain, channel('get-enrollment-state'), async () => {
       // The renderer asks the selected Host whether this provider may enrol, so
-      // it can avoid presenting a primary sign-in that the install refuses. The
-      // authoritative answer is the Host's; the local flag above only fails
-      // fast before a round trip.
+      // it can avoid presenting a primary sign-in that the install refuses.
+      // Desktop keeps no second copy of the Host's gate.
       const enrollment = await deps.client.queryOAuthEnrollment(provider);
       return { enabled: enrollment.enabled };
     });
@@ -450,10 +441,6 @@ async function configuredOAuthAccountConnections(
     })),
   );
   return configured.filter(({ status }) => status?.configured).map(({ connection }) => connection);
-}
-
-function providerDisabled() {
-  return actionFailure('OAuth enrollment is disabled for this provider', 'experimental_disabled');
 }
 
 function actionFailure(

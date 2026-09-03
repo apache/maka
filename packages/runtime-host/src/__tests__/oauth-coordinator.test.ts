@@ -851,6 +851,7 @@ test('GitHub Copilot enrollment runs its device grant on the Host, not in a Clie
       },
       verifyGitHubCopilotEntitlement: async (input) => {
         entitlementChecks.push(input.tokens.access_token);
+        return [{ id: 'copilot-test-model' }];
       },
     });
 

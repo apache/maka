@@ -2916,9 +2916,6 @@ const makaBridge = {
   // `authRequestId`; the URL is held by main from the earlier `getAuthUrl`
   // call. Renderer can never hand `shell.openExternal` an arbitrary URL.
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');
-    },
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
       return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url', target);
     },
@@ -2991,9 +2988,6 @@ const makaBridge = {
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:connect-existing-login');
-    },
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:is-experimental-enabled');
     },
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
       return invokeSelectedRuntimeHost(host, 'github-copilot:get-auth-url', target);

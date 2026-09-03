@@ -26,7 +26,8 @@ import type {
 import type {
   RuntimeHostConnectionCatalogEntry as ConnectionCatalogEntry,
   RuntimeHostConnectionCatalogSnapshot as ConnectionCatalogSnapshot,
-} from '@maka/runtime-host/client';import {
+} from '@maka/runtime-host/client';
+import {
   registerRuntimeHostGitHubCopilotIpc,
   type RuntimeHostGitHubCopilotIpcDeps,
 } from '../runtime-host-github-copilot-ipc-main.js';

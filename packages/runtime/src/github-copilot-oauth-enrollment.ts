@@ -235,7 +235,7 @@ export async function pollGitHubCopilotDeviceAuthorization(
 export async function verifyGitHubCopilotModelEntitlement(input: {
   readonly tokens: OAuthSubscriptionTokens;
   readonly fetchFn: typeof fetch;
-}): Promise<void> {
+}): Promise<Awaited<ReturnType<typeof fetchGitHubCopilotModels>>> {
   let models: Awaited<ReturnType<typeof fetchGitHubCopilotModels>>;
   try {
     models = await fetchGitHubCopilotModels(
@@ -262,6 +262,7 @@ export async function verifyGitHubCopilotModelEntitlement(input: {
   }
   // A catalog the account could read, listing nothing it may use.
   if (models.length === 0) throw new GitHubCopilotEntitlementError();
+  return models;
 }
 
 /**

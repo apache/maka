@@ -50,11 +50,13 @@ describe('importGitHubCopilotLocalCredential', () => {
     }
   });
 
-  test('returns the credential to the caller instead of storing it anywhere local', async () => {
+  test('returns the credential and verified models from one provider request', async () => {
     let requestAuthorization = '';
+    let requests = 0;
     const imported = await importGitHubCopilotLocalCredential({
       resolveGitHubToken: async () => 'gho_existing_login\n',
       fetchFn: async (url, init) => {
+        requests += 1;
         assert.equal(String(url), 'https://api.githubcopilot.com/models');
         requestAuthorization = new Headers(init?.headers).get('authorization') ?? '';
         return copilotModelsResponse();
@@ -69,6 +71,7 @@ describe('importGitHubCopilotLocalCredential', () => {
       );
     }
     assert.equal(requestAuthorization, 'Bearer gho_existing_login');
+    assert.equal(requests, 1);
     // The Host vault is the only place this credential is written; the shape is
     // the one `setRuntimeHostAccountCredential` commits verbatim.
     assert.deepEqual(JSON.parse(imported.secret ?? ''), {

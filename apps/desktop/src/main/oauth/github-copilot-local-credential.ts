@@ -27,7 +27,6 @@ import {
   isSupportedGitHubCopilotAccountToken,
   serializeOAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
-import { fetchGitHubCopilotModels } from '@maka/runtime/model-fetcher';
 import {
   GitHubCopilotEntitlementError,
   GitHubCopilotEntitlementUnavailableError,
@@ -88,13 +87,10 @@ export async function importGitHubCopilotLocalCredential(
     const tokens = createGitHubCopilotAccountTokens(githubToken);
     let models: ModelInfo[];
     try {
-      await verifyGitHubCopilotModelEntitlement({
+      models = await verifyGitHubCopilotModelEntitlement({
         tokens,
         fetchFn: deps.fetchFn ?? fetch,
       });
-      // The verifier owns classification; this second read only obtains the
-      // model IDs needed by the Host connection catalog.
-      models = await fetchGitHubCopilotModels(tokens.base_url!, tokens.access_token, deps.fetchFn);
     } catch (error) {
       if (error instanceof GitHubCopilotEntitlementError) {
         return {
