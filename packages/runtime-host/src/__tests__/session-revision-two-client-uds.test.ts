@@ -1704,7 +1704,12 @@ async function verifyDurableBranch(
       });
     };
     const messages = await execution.sessionStore.readMessagesSnapshot(branchSessionId);
-    assert.equal(messages.length, 5);
+    // The copied invocation opens on the branch's own spine, so its transcript
+    // projects the copied turn as ended, exactly as the source reads.
+    assert.deepEqual(
+      messages.map((message) => message.type),
+      ['user', 'assistant', 'tool_call', 'tool_result', 'system_note', 'turn_state'],
+    );
     const user = messages.find((message) => message.type === 'user');
     assert.ok(user?.attachments?.[0]);
     const ref = user?.attachments?.[0]?.ref;

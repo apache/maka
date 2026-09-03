@@ -276,7 +276,9 @@ export class ExecutionFixture {
         sourceInvocationId,
         sourceRunId,
         sourceTurnId,
-        sourceRuntimeEventHighWater: requiredToolName ? 4 : 2,
+        // The opening fact is event 1 of the invocation, ahead of the user event,
+        // any tool pair, and the terminal event.
+        sourceRuntimeEventHighWater: requiredToolName ? 5 : 3,
       };
     } finally {
       await stores?.sessionStore.close?.();

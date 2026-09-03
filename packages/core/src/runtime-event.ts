@@ -602,7 +602,7 @@ export interface RuntimeEvent {
   id: string;
   /** Durable invocation spine id; groups every run/turn of one request. */
   invocationId: string;
-  /** Durable operational run identity (maps to AgentRunHeader.runId). */
+  /** Durable operational run identity; names one execution of the invocation. */
   runId: string;
   sessionId: string;
   /** Groups all events from one agent turn (maps to StoredMessage.turnId). */

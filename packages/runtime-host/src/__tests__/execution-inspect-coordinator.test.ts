@@ -149,7 +149,12 @@ describe('HostExecutionInspectCoordinator', () => {
       const first = await stores.sessionStore.create(sessionInput('First'));
       const second = await stores.sessionStore.create(sessionInput('Second'));
       await seedInvocation(stores.runtimeEventStore, runHeader(first.id, 'shared-run', 1));
-      await seedInvocation(stores.runtimeEventStore, runHeader(second.id, 'shared-run', 2));
+      // One invocation id names one execution everywhere, so two Sessions that
+      // reuse a run id still open separate invocations.
+      await seedInvocation(
+        stores.runtimeEventStore,
+        runHeader(second.id, 'shared-run', 2, 'shared-run-second'),
+      );
 
       const run = await coordinator.handlers['execution.inspect.query'](
         { kind: 'agent_run', sessionId: second.id, agentRunId: 'shared-run' },
@@ -531,23 +536,31 @@ describe('HostExecutionInspectCoordinator', () => {
         data: { payload: '' },
       };
       const baseBytes = Buffer.byteLength(JSON.stringify(baseEvent), 'utf8');
-      assert.ok(baseBytes < EXECUTION_INSPECT_EVIDENCE_MAX_BYTES);
+      // One query charges both ledgers to the same budget, and the invocation's
+      // opening fact is already on the RuntimeEvent ledger. The operational
+      // event is sized to exactly the rest.
+      const opening = await stores.runtimeEventStore.readRuntimeEventsBounded(
+        session.id,
+        'exact-run',
+        { maxRecords: 8, maxBytes: EXECUTION_INSPECT_EVIDENCE_MAX_BYTES },
+      );
+      assert.equal(opening.status, 'complete');
+      const operationalBytes = EXECUTION_INSPECT_EVIDENCE_MAX_BYTES - opening.storedBytes;
+      assert.ok(baseBytes < operationalBytes);
       const event = {
         ...baseEvent,
-        data: {
-          payload: 'x'.repeat(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES - baseBytes),
-        },
+        data: { payload: 'x'.repeat(operationalBytes - baseBytes) },
       };
       await stores.agentRunStore.appendEvent(session.id, 'exact-run', event);
 
       const exact = await stores.agentRunStore.readEventsBounded(session.id, 'exact-run', {
         maxRecords: 1,
-        maxBytes: EXECUTION_INSPECT_EVIDENCE_MAX_BYTES,
+        maxBytes: operationalBytes,
       });
       assert.equal(exact.status, 'complete');
       const oneByteShort = await stores.agentRunStore.readEventsBounded(session.id, 'exact-run', {
         maxRecords: 1,
-        maxBytes: EXECUTION_INSPECT_EVIDENCE_MAX_BYTES - 1,
+        maxBytes: operationalBytes - 1,
       });
       assert.equal(oneByteShort.status, 'limit_exceeded');
 
@@ -591,7 +604,12 @@ describe('HostExecutionInspectCoordinator', () => {
       );
       assert.equal(first.ok, true);
       if (!first.ok || first.result.kind !== 'session_trace_page') return;
-      assert.equal(first.result.turns.length, 0);
+      // Only the newer run's evidence fits one budget. Its page carries the turn
+      // its opening fact projects, and the older run waits behind the cursor.
+      assert.deepEqual(
+        first.result.turns.map((turn) => turn.runId),
+        ['aggregate-run-2'],
+      );
       assert.ok(first.result.nextCursor !== null);
     });
   });
@@ -609,10 +627,11 @@ function sessionInput(name: string) {
   } as const;
 }
 
-function runHeader(sessionId: string, runId: string, createdAt: number) {
+function runHeader(sessionId: string, runId: string, createdAt: number, invocationId?: string) {
   return {
     sessionId,
     runId,
+    ...(invocationId ? { invocationId } : {}),
     turnId: `turn-${runId}`,
     openedAt: createdAt,
     opening: {

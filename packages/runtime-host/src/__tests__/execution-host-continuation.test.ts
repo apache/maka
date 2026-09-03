@@ -96,7 +96,7 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
       if (admission?.execution.kind !== 'safe_boundary_continuation') return;
       assert.equal(admission.execution.sourceRunId, source.sourceRunId);
       assert.equal(admission.execution.sourceInvocationId, source.sourceInvocationId);
-      assert.equal(admission.execution.sourceRuntimeEventHighWater, 2);
+      assert.equal(admission.execution.sourceRuntimeEventHighWater, 3);
 
       const ledger = await fixture.readTurn(turnId);
       assert.equal(ledger.runs.length, 1);
