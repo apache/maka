@@ -25,14 +25,16 @@ import {
   type ClientCapabilityProvider,
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
-import type {
-  ClientCapabilityCallFrame,
-  ClientCapabilityCallResult,
-  ClientCapabilityContentBlock,
-  ClientCapabilityHostPathAccess,
-  ClientCapabilityOffer,
-  ClientCapabilityServiceCallFrame,
-  ClientCapabilityServiceOffer,
+import {
+  decodeClientCapabilityReplaceInput,
+  type ClientCapabilityCallFrame,
+  type ClientCapabilityCallResult,
+  type ClientCapabilityContentBlock,
+  type ClientCapabilityHostPathAccess,
+  type ClientCapabilityOffer,
+  type ClientCapabilityServiceCallFrame,
+  type ClientCapabilityServiceOffer,
+  type ClientCapabilityToolDescriptor,
 } from "@maka/runtime-host/protocol";
 import { toJSONSchema, z } from "zod";
 import { withBrowserOriginAdmission } from './browser/browser-origin-admission.js';
@@ -41,6 +43,9 @@ import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
 const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
+// Registration id used only to validate a single tool's descriptor against the
+// protocol before advertising it; never sent to a Runtime Host.
+const CAPABILITY_PROBE_REGISTRATION_ID = "desktop-capability-offer-probe";
 
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
@@ -115,7 +120,11 @@ export function createDesktopNativeCapabilityProvider(
   const groups = capabilityGroups(input);
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
   const offers = Object.freeze(
-    groups.map((group) => capabilityOffer(group, hostPathAccess)),
+    groups
+      .map((group) => capabilityOffer(group, hostPathAccess))
+      .filter(
+        (offer): offer is ClientCapabilityOffer => offer !== undefined,
+      ),
   );
   const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
@@ -421,29 +430,76 @@ function abortInvocations(
 function capabilityOffer(
   group: DesktopCapabilityGroup,
   hostPathAccess: ClientCapabilityHostPathAccess,
-): ClientCapabilityOffer {
-  return Object.freeze({
+): ClientCapabilityOffer | undefined {
+  const base = {
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
-    affinity: "session",
+    affinity: "session" as const,
     hostPathAccess,
     label: group.label,
     description: group.description,
-    tools: Object.freeze(
-      group.tools.map((tool) =>
-        Object.freeze({
-          serverId: group.offerId,
-          name: tool.name,
-          description: tool.description,
-          inputSchema: toolInputSchema(tool),
-          ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
-          ...(tool.displayName
-            ? { annotations: Object.freeze({ title: tool.displayName }) }
-            : {}),
-        }),
-      ),
-    ),
-  });
+  };
+  const tools = group.tools
+    .map((tool) => offerableToolDescriptor(group, tool, base))
+    .filter(
+      (tool): tool is ClientCapabilityToolDescriptor => tool !== undefined,
+    );
+  if (tools.length === 0) {
+    console.warn(
+      `[capabilities] Desktop capability ${group.offerId} has no representable tools; not advertising it`,
+    );
+    return undefined;
+  }
+  return Object.freeze({ ...base, tools: Object.freeze(tools) });
+}
+
+/**
+ * Build one tool's protocol descriptor, or skip it. `replace()` sends the whole
+ * registration as a single frame (`client-capability-channel.ts`), so a tool
+ * whose schema cannot be expressed — an unrepresentable Zod type, or a JSON
+ * Schema keyword outside the protocol's allowlist — must not throw from here:
+ * that would drop every Desktop capability at once (Browser, Computer Use,
+ * Client settings, Rive and MCP), which is exactly the #4591 outage. Each tool
+ * is validated on its own through the same decoder the Runtime Host runs, so an
+ * unrepresentable tool costs only itself and is logged rather than fatal.
+ */
+function offerableToolDescriptor(
+  group: DesktopCapabilityGroup,
+  tool: MakaTool,
+  base: {
+    readonly offerId: string;
+    readonly version: string;
+    readonly affinity: "session";
+    readonly hostPathAccess: ClientCapabilityHostPathAccess;
+    readonly label: string;
+    readonly description: string;
+  },
+): ClientCapabilityToolDescriptor | undefined {
+  try {
+    const descriptor: ClientCapabilityToolDescriptor = Object.freeze({
+      serverId: group.offerId,
+      name: tool.name,
+      description: tool.description,
+      inputSchema: toolInputSchema(tool),
+      ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),
+      ...(tool.displayName
+        ? { annotations: Object.freeze({ title: tool.displayName }) }
+        : {}),
+    });
+    // Validate this single tool exactly as the receiving side will, so an
+    // unrepresentable descriptor is dropped now instead of rejecting the frame.
+    decodeClientCapabilityReplaceInput({
+      registrationId: CAPABILITY_PROBE_REGISTRATION_ID,
+      offers: [{ ...base, tools: [descriptor] }],
+    });
+    return descriptor;
+  } catch (error) {
+    console.warn(
+      `[capabilities] Skipping Desktop tool ${group.offerId}/${tool.name}: its schema is not representable over the Client Capability protocol`,
+      error,
+    );
+    return undefined;
+  }
 }
 
 function toolInputSchema(tool: MakaTool): Record<string, unknown> {
@@ -474,41 +530,37 @@ function cloneNativeToolJsonSchema(tool: MakaTool): Record<string, unknown> {
       `Desktop native capability tool has an invalid schema: ${tool.name}`,
     );
   }
-  // Shallow clone so deleting $schema / freezing the offer never mutates the
-  // MCP descriptor's shared inputSchema object.
+  // Copy defensively before the offer deletes `$schema` and freezes the result,
+  // so we never mutate the source object. Today the only non-Zod source is an
+  // MCP tool, whose `inputSchema` is already `$schema`-stripped and deep-frozen
+  // upstream (`packages/mcp/src/index.ts`), so this copy is belt-and-suspenders
+  // rather than load-bearing — but Desktop must not depend on that invariant.
   return { ...json };
 }
 
 /**
  * Read the JSON Schema from an AI SDK `Schema` (e.g. an MCP tool built through
  * `jsonSchema()`), when it is synchronously available. Desktop offers are built
- * eagerly and frozen, so an async (thenable) schema cannot be resolved here.
+ * eagerly and frozen; an async (thenable) schema is not resolved here and is
+ * rejected downstream by `toolInputSchema`'s object-shape check.
  */
 function aiSchemaJson(
   parameters: unknown,
 ): Record<string, unknown> | undefined {
   if (!parameters || typeof parameters !== "object") return undefined;
   const json = (parameters as { jsonSchema?: unknown }).jsonSchema;
-  if (
-    json &&
-    typeof json === "object" &&
-    typeof (json as { then?: unknown }).then !== "function"
-  ) {
+  if (json && typeof json === "object") {
     return json as Record<string, unknown>;
   }
   return undefined;
 }
 
-type NativeToolValidation =
-  | { readonly success: true; readonly value: unknown }
-  | { readonly success: false; readonly error: unknown };
-
 /**
  * Coerce/validate incoming call arguments against a tool's declared parameters,
  * mirroring the runtime's `validateDeclaredToolArgs` precedence. Zod schemas
- * parse (applying defaults/transforms); AI SDK schemas validate when they carry
- * a `validate` member; JSON-schema-only tools (MCP) pass their arguments
- * through unchanged.
+ * parse (applying defaults/transforms); JSON-schema-only tools (MCP) carry no
+ * client-side validator, so their arguments pass through unchanged and are
+ * validated by the receiving Runtime Host against the same schema.
  */
 async function parseToolArguments(
   tool: MakaTool,
@@ -518,23 +570,9 @@ async function parseToolArguments(
   if (parameters instanceof z.ZodType) {
     return parameters.parseAsync(rawArgs);
   }
-  if (parameters && typeof parameters === "object") {
-    const validate = (
-      parameters as {
-        validate?: (
-          value: unknown,
-        ) => NativeToolValidation | PromiseLike<NativeToolValidation>;
-      }
-    ).validate;
-    if (typeof validate === "function") {
-      const result = await validate(rawArgs);
-      if (result.success) return result.value;
-      throw result.error;
-    }
-    if (aiSchemaJson(parameters)) return rawArgs;
-  }
+  if (aiSchemaJson(parameters)) return rawArgs;
   throw new Error(
-    `Desktop native capability tool has an invalid schema: ${tool.name}`,
+    `Desktop native capability tool cannot parse call arguments: ${tool.name}`,
   );
 }
 

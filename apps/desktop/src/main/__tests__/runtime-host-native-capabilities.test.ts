@@ -214,6 +214,94 @@ test('offers and dispatches MCP tools whose parameters are JSON Schema, not Zod'
   });
 });
 
+test('drops one unrepresentable tool instead of failing every Desktop capability', () => {
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'filesystem',
+            name: 'read_file',
+            description: 'Read a file',
+            inputSchema: {
+              type: 'object',
+              properties: { value: { type: 'string' } },
+            },
+          },
+          binding: 'binding-read' as McpToolBinding,
+        },
+        {
+          descriptor: {
+            serverId: 'filesystem',
+            name: 'read_tuple',
+            // `prefixItems` (a pydantic `tuple[...]` produces it) is outside the
+            // Client Capability schema allowlist, so this tool cannot be offered.
+            description: 'Uses a JSON Schema keyword the protocol rejects',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                pair: {
+                  type: 'array',
+                  prefixItems: [{ type: 'string' }, { type: 'number' }],
+                },
+              },
+            },
+          },
+          binding: 'binding-tuple' as McpToolBinding,
+        },
+      ],
+    }),
+    callTool: async () => ({ content: [] }),
+  };
+  const mcpTools = buildMcpTools(mcpProvider);
+  const survivingToolName = mcpTools[0]?.name;
+  const droppedToolName = mcpTools[1]?.name;
+  assert.ok(survivingToolName && droppedToolName);
+
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(String(args[0]));
+  };
+  let provider: ReturnType<typeof createDesktopNativeCapabilityProvider>;
+  try {
+    provider = createDesktopNativeCapabilityProvider({
+      browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        { offerId: 'desktop_mcp', label: 'MCP', description: 'MCP tools', tools: mcpTools },
+      ],
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  // The unrepresentable tool is dropped, yet its server and every other Desktop
+  // capability still register — the #4591 outage took all of them down at once.
+  assert.deepEqual(
+    provider.offers().map((offer) => offer.offerId),
+    ['desktop_browser', 'desktop_mcp'],
+  );
+  const mcpOffer = provider.offers().find((offer) => offer.offerId === 'desktop_mcp');
+  assert.deepEqual(
+    mcpOffer?.tools.map((descriptor) => descriptor.name),
+    [survivingToolName],
+  );
+  assert.equal(warnings.some((line) => line.includes(droppedToolName)), true);
+
+  // The surviving frame still encodes cleanly over the protocol.
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+});
+
 test('publishes every production Desktop-owned tool schema through the protocol', () => {
   const settingsTools = buildClientSettingsTools({
     async read() {
