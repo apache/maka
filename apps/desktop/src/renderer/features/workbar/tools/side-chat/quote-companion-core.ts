@@ -119,9 +119,10 @@ export function latestSettledTurnId(turns: readonly TurnRecord[]): string | unde
 
 /**
  * Sentinel boundary stored in the retry lease for an empty copy. Turn ids match
- * /^[A-Za-z0-9_-]{1,128}$/, so the NUL-prefixed token can never be one. This
- * lets the retry lease keep a plain string field while still representing the
- * absent (empty) source turn.
+ * /^[A-Za-z0-9_-]{1,128}$/, so the NUL-prefixed token can never be one. It lets
+ * the shared `SessionCopyAttempt.sourceTurnId` stay a required string (revision
+ * copies still need it) while still representing the absent (empty) source turn
+ * for a side conversation.
  */
 const EMPTY_SOURCE_TURN_SENTINEL = '\0empty';
 

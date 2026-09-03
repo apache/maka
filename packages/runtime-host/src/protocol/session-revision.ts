@@ -121,9 +121,9 @@ function decodeSessionRevisionCopyInput(value: unknown): SessionConversationCopy
   if (input.intent !== undefined) {
     throw invalidProtocolFrame('Session revision copy does not support an intent');
   }
-  if (input.sourceTurnId === undefined) {
-    throw invalidProtocolFrame('Session revision copy requires a turn boundary');
-  }
+  // A revision never carries an intent, so the shared decoder above already
+  // rejected a missing `sourceTurnId` (an empty copy requires the
+  // side_conversation intent); reaching here guarantees a turn boundary.
   return input;
 }
 

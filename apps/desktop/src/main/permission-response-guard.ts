@@ -53,13 +53,7 @@ interface WorkspaceFileReferencePosition {
   start: number;
 }
 
-/** Branch input after normalization. Absent `sourceTurnId` forks empty. */
-export type NormalizedBranchFromTurnInput = {
-  sourceTurnId?: string;
-  name?: string;
-  sideConversation?: boolean;
-};
-export type RuntimeHostBranchFromTurnInput = NormalizedBranchFromTurnInput & { copyId: string };
+export type RuntimeHostBranchFromTurnInput = BranchFromTurnInput & { copyId: string };
 export type RuntimeHostReviseBeforeTurnInput = ReviseBeforeTurnInput & { copyId: string };
 
 interface NormalizedSendSessionCommand {
@@ -151,7 +145,7 @@ export function normalizeRegenerateTurnInput(input: unknown): RegenerateTurnInpu
   };
 }
 
-export function normalizeBranchFromTurnInput(input: unknown): NormalizedBranchFromTurnInput {
+export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInput {
   const value = requireObject(input, 'Invalid branch turn input');
   const name =
     value.name === undefined
