@@ -518,7 +518,6 @@ interface OrderedRuntimeEvent {
   runIndex: number;
   eventIndex: number;
   ordinal?: number;
-  ordinalPhase?: -1 | 0 | 1;
 }
 
 function appendOrderedEvents(
@@ -539,12 +538,11 @@ function appendOrderedEvents(
     const durableOrdinal = ordinals?.get(event.id);
     if (durableOrdinal !== undefined) previousOrdinal = durableOrdinal;
     const ordinal = durableOrdinal ?? previousOrdinal ?? nextOrdinals[eventIndex];
-    const ordinalPhase = durableOrdinal !== undefined ? 0 : previousOrdinal !== undefined ? 1 : -1;
     ordered.push({
       event,
       runIndex,
       eventIndex,
-      ...(ordinal !== undefined ? { ordinal, ordinalPhase } : {}),
+      ...(ordinal !== undefined ? { ordinal } : {}),
     });
   }
 }
@@ -554,10 +552,7 @@ function compareOrderedRuntimeEvents(a: OrderedRuntimeEvent, b: OrderedRuntimeEv
     if (a.ordinal === undefined) return 1;
     if (b.ordinal === undefined) return -1;
     return (
-      a.ordinal - b.ordinal ||
-      a.ordinalPhase! - b.ordinalPhase! ||
-      a.eventIndex - b.eventIndex ||
-      a.event.id.localeCompare(b.event.id)
+      a.ordinal - b.ordinal || a.eventIndex - b.eventIndex || a.event.id.localeCompare(b.event.id)
     );
   }
   return (
