@@ -382,39 +382,21 @@ export class WorkHubCoordinationActionGate {
         assertStopReplay(existing, input, source, stopFingerprint);
         return this.#stop(existing, source);
       }
-      const [sessions, activeAssignments] = await Promise.all([
-        this.#effects.listSessions(),
-        this.#effects.listActiveAssignments(),
-      ]);
+      const sessions = await this.#effects.listSessions();
       const sessionNameById = new Map(sessions.map((session) => [session.id, session.name]));
       // Only this delegation's target has to be visible. A delegation whose
       // Session the user deleted stays in the active set forever — nothing
       // retires it — so proving visibility over the whole set would let one
       // deleted Session block every stop in the system from then on.
+      //
+      // Sole active delegation is not reproved here. `#stopSource` derived this
+      // `source` from the active links a moment ago by that same rule, and the
+      // replay branch above returned before reaching this line, so a second
+      // pass would re-read the transcript to reach the answer it started from.
+      // The proof that decides is the coordinator's, under the admission lease.
       const currentTargetName = sessionNameById.get(source.targetSessionId);
       if (!currentTargetName) {
         throw new WorkHubActionGateFailure('action_conflict', 'WorkHub stop target is unavailable');
-      }
-      // Authority is the opaque delegation identity, never the display name the
-      // Resolver recalled it by. This is the advisory read; the coordinator
-      // reproves it from durable state under the admission lease.
-      //
-      // A delegation link ends only by supersession or a resolved stop, so a
-      // delegation whose work already finished is still linked. It is not a
-      // competing stop target though — there is nothing left in it to stop —
-      // and counting it would make a Session that was delegated to twice
-      // permanently unstoppable once the first delegation completed.
-      if (!activeAssignments.some((assignment) => assignment.actionId === source.actionId)) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub stop target is no longer an active durable delegation',
-        );
-      }
-      if (await this.#hasCompetingWork(activeAssignments, source)) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub stop target does not identify one active durable delegation',
-        );
       }
       if (await this.#effects.readSupersession(source.delegationId)) {
         throw new WorkHubActionGateFailure(
@@ -611,26 +593,6 @@ export class WorkHubCoordinationActionGate {
       );
     }
     return holdingWork[0]!;
-  }
-
-  /**
-   * Whether any other delegation on the stop target's Session still holds work.
-   * A retirement read that cannot see the owner yet fails the stop closed
-   * rather than guessing that the other delegation is finished.
-   */
-  async #hasCompetingWork(
-    activeAssignments: readonly WorkHubDelegationAssignedMessage[],
-    source: WorkHubDelegationAssignedMessage,
-  ): Promise<boolean> {
-    const competitors = activeAssignments.filter(
-      (assignment) =>
-        assignment.targetSessionId === source.targetSessionId &&
-        assignment.delegationId !== source.delegationId,
-    );
-    for (const competitor of competitors) {
-      if ((await this.#effects.readDelegationRetirement(competitor)) !== 'retired') return true;
-    }
-    return false;
   }
 
   async #stop(

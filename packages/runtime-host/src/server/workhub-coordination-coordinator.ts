@@ -258,13 +258,14 @@ export class HostWorkHubCoordinationCoordinator {
   async #prepareStop(
     input: Parameters<WorkHubActionGateEffects['prepareStop']>[0],
   ): Promise<WorkHubDelegationStopRequestedMessage> {
-    const initiallyActive = await this.#listActiveAssignments();
-    const admittedTargetSessionIds = new Set(
-      initiallyActive.map((assignment) => assignment.targetSessionId),
-    );
     const suffix = workHubDestructiveClaimIdentitySuffix(input.stopsDelegationId);
     return this.#commitCoordinationFact({
-      admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, ...admittedTargetSessionIds],
+      // Only the two Sessions this stop can change: the one whose delegation
+      // ends, and the Coordination Session that records it. Holding a lane for
+      // every Session with an active delegation would serialize unrelated
+      // delegation traffic behind one stop, and the proof below needs no lane
+      // it does not already hold.
+      admissionSessionIds: [WORKHUB_COORDINATION_SESSION_ID, input.targetSessionId],
       read: () => this.#stores.readWorkHubStopRequest(input.stopsDelegationId),
       build: (existing) => ({
         type: 'workhub_coordination',
@@ -299,16 +300,6 @@ export class HostWorkHubCoordinationCoordinator {
         }
         const visibleSessionIds = new Set(headers.map((header) => header.id));
         const activeAssignments = activeWorkHubAssignments(messages);
-        if (
-          activeAssignments.some(
-            (assignment) => !admittedTargetSessionIds.has(assignment.targetSessionId),
-          )
-        ) {
-          throw new WorkHubActionGateFailure(
-            'action_conflict',
-            'WorkHub active delegation set changed during stop admission',
-          );
-        }
         // Held lanes make this the last moment the one-target proof can change.
         // It is proved from opaque delegation identity, so a concurrent rename
         // is harmless while a concurrent delegation to the same Session is not.
