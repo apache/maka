@@ -149,7 +149,13 @@ export interface RuntimeHostServiceDeployment {
 }
 
 export interface RuntimeHostManagedServiceStatus extends RuntimeHostServiceObservedStatus {
-  readonly manager: 'systemd_user' | 'launch_agent' | 'on_demand' | 'none';
+  readonly manager:
+    | 'systemd_user'
+    | 'launch_agent'
+    | 'openrc_user'
+    | 'openrc_system'
+    | 'on_demand'
+    | 'none';
   readonly config: RuntimeHostManagedServiceConfig | null;
   readonly installedVersion: string | null;
   readonly lifecycle?: {

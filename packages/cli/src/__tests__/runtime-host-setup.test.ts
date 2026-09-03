@@ -63,13 +63,9 @@ import { runRuntimeHostSetupCli } from '../runtime-host-setup-command.js';
 import { RuntimeHostAccessUnavailableError } from '../runtime-host-access-command.js';
 import { replaceRuntimeHostLifecycle } from '../runtime-host-lifecycle-transaction.js';
 import { manageRuntimeHostManagedLifecycle } from '../runtime-host-managed-lifecycle-manager.js';
-import {
-  resolveRuntimeHostLifecycleProvider,
-  selectRuntimeHostLifecycleProvider,
-} from '../runtime-host-service-management-command.js';
+import { resolveRuntimeHostLifecycleProvider } from '../runtime-host-service-management-command.js';
 import {
   resolveRuntimeHostManagedServiceId,
-  RuntimeHostServiceManagerError,
   type RuntimeHostServiceBackend,
 } from '../runtime-host-service-manager.js';
 
@@ -337,6 +333,82 @@ test('on-demand setup installs one exact deployment without a service backend', 
   assert.equal(uninstalled.retirement.kind, 'stopped');
 });
 
+test('fresh supervised setup discovers its provider before constructing a legacy backend', async (t) => {
+  const base = await realpath(await mkdtemp(join(tmpdir(), 'maka-runtime-host-supervised-setup-')));
+  const stateRoot = join(base, 'state');
+  const clientDataRoot = join(base, 'client');
+  let rootId = '';
+  t.after(async () => {
+    await Promise.all([
+      rm(base, { recursive: true, force: true }),
+      rootId
+        ? rm(join(resolveRootControlNamespace(), rootId), { recursive: true, force: true })
+        : Promise.resolve(),
+      rootId
+        ? rm(join(resolveRootOwnershipNamespace(), `${rootId}.lock`), { force: true })
+        : Promise.resolve(),
+    ]);
+  });
+
+  const result = await runRuntimeHostSetupCli(
+    {
+      json: true,
+      lifecycle: 'supervised',
+      clientDataRoot,
+      defaultRootPath: stateRoot,
+      sourcePackageRoot: base,
+      version: '1.2.3',
+      principalId: 'desktop:client-1',
+      preset: 'desktop-client',
+    },
+    {
+      createBackend: () => assert.fail('a fresh canonical setup has no legacy backend'),
+      discoverLifecycleProvider: async (discoveredRootId) => {
+        rootId = discoveredRootId;
+        return {
+          provider: resolveRuntimeHostLifecycleProvider(rootId, 'openrc_user'),
+          availability: 'session',
+        };
+      },
+      resolveRegistryCandidate: async () => ({
+        kind: 'npm_registry',
+        version: '1.2.3',
+        integrity: PACKAGE_INTEGRITY,
+      }),
+      withRegistryPackage: async (_candidate, use) => use('/verified/package'),
+      prepareDeployment: async ({ serviceId }) => ({
+        version: '1.2.3',
+        root: join(base, 'deployment'),
+        cliPath: '/verified/package/dist/cli.js',
+        operatorPath: '/opt/maka/operator',
+        activate: async () => undefined,
+        cleanup: async () => undefined,
+        rollback: async () => undefined,
+      }),
+      allocateLoopbackPort: async () => 43_210,
+      replaceLifecycle: async ({ desired }) => {
+        assert.equal(desired.lifecycle.mode, 'supervised');
+        assert.equal(desired.lifecycle.provider, 'openrc_user');
+        return { kind: 'replaced', config: desired };
+      },
+      prunePackages: async () => undefined,
+      replaceCredential: async () => ({
+        rootId,
+        credential: 'secret-token',
+        credentialId: 'credential-1',
+        principalKind: 'remote_owner',
+        principalId: 'desktop:client-1',
+        operationGrants: [],
+        canPublishClientCapabilities: false,
+        canUseHostPaths: false,
+      }),
+      verifyCredential: async () => undefined,
+      writeOutput: () => undefined,
+    },
+  );
+  assert.equal(result, 0);
+});
+
 test('managed setup frames reject malformed machine output', () => {
   assert.equal(
     decodeRuntimeHostSetupFrame(
@@ -368,20 +440,10 @@ test('managed setup frames reject malformed machine output', () => {
   );
 });
 
-test('lifecycle discovery records environment scope and persisted providers are never reselected', () => {
-  assert.deepEqual(
-    selectRuntimeHostLifecycleProvider({
-      platform: 'linux',
-      environment: { WSL_DISTRO_NAME: 'Ubuntu' },
-    }),
-    { provider: 'systemd_user', availability: 'environment' },
-  );
-  assert.throws(
-    () => resolveRuntimeHostLifecycleProvider('a'.repeat(64), 'openrc_user'),
-    (error: unknown) =>
-      error instanceof RuntimeHostServiceManagerError &&
-      error.code === 'service_manager_unavailable',
-  );
+test('persisted OpenRC providers resolve without reselecting the platform default', () => {
+  const openRc = resolveRuntimeHostLifecycleProvider('a'.repeat(64), 'openrc_user');
+  assert.equal(openRc.supervisor.provider, 'openrc_user');
+  assert.equal(openRc.reconciliationTrigger.provider, 'openrc_supervised_loop');
 });
 
 test('registry package identity avoids local content and recovers an interrupted removal', async (t) => {
