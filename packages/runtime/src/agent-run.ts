@@ -31,6 +31,7 @@ import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import {
   buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
   isSessionInlineInvocation,
 } from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
@@ -85,10 +86,7 @@ import {
   statusFromEvent,
   turnStatusFromEvent,
 } from './session-projection-helpers.js';
-import {
-  buildSyntheticTerminalRuntimeEvent,
-  commitOrCreateTerminalRunFact,
-} from './terminal-run-commit.js';
+import { commitOrCreateTerminalRunFact } from './terminal-run-commit.js';
 import type { RuntimeContinuation } from './runtime-resume.js';
 import {
   createRuntimeContinuationStartAdmissionProof,

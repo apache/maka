@@ -103,6 +103,7 @@ import {
   RUNTIME_CONTINUATION_AUTHORITY_CAPABILITY_VERSION,
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY,
   RUNTIME_WORKSPACE_VERSION_AUTHORITY_CAPABILITY_VERSION,
+  runtimeEventKind,
   SQLITE_RUNTIME_SCHEMA_VERSION,
 } from './sqlite-runtime-schema.js';
 import {
@@ -4640,16 +4641,6 @@ function decodeRuntimePartialStorageRow(row: RuntimePartialStorageRow): RuntimeE
 
 function decodeStoredRuntimeEvent(storedJson: string): RuntimeEvent {
   return decodeRuntimeEvent(JSON.parse(storedJson));
-}
-
-function runtimeEventKind(event: RuntimeEvent): string {
-  return (
-    event.content?.kind ??
-    event.status ??
-    (event.actions?.workspaceFact ? 'workspace_fact' : undefined) ??
-    (event.actions?.toolDispatch ? 'tool_dispatch' : undefined) ??
-    (event.actions?.endInvocation ? 'invocation_end' : 'runtime_fact')
-  );
 }
 
 interface RuntimePartialSnapshot {

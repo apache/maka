@@ -129,6 +129,13 @@ export interface LegacyRunHeader {
   failureMessage?: string;
   abortSource?: string;
   traceWriteError?: string;
+  /**
+   * The provider-dispatch snapshot the header era attached to every run that
+   * reached a provider. Nothing on the spine reads it back, so the migration
+   * only has to know it is there: a header carrying it is a well-formed
+   * header, not a corrupt one.
+   */
+  runComposition?: object;
 }
 
 const LEGACY_RUN_HEADER_SHAPE = defineObjectShape<LegacyRunHeader>()(
@@ -177,6 +184,7 @@ const LEGACY_RUN_HEADER_SHAPE = defineObjectShape<LegacyRunHeader>()(
     'orchestrationSource',
     'agentSwarmAuthorization',
     'toolMode',
+    'runComposition',
   ],
 );
 
@@ -283,6 +291,7 @@ function decodeLegacyRunHeader(value: unknown): LegacyRunHeader {
       value.abortSource,
       value.traceWriteError,
     ].every(isOptionalString) &&
+    (value.runComposition === undefined || isRecord(value.runComposition)) &&
     (value.continuationSource === undefined ||
       isLegacyContinuationSource(value.continuationSource));
   if (!valid) throw new Error('Invalid AgentRun header schema');

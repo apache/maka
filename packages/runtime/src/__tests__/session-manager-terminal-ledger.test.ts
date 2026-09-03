@@ -33,6 +33,7 @@ import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import { runtimeInvocationFailureClass } from '../runtime-event-read-model.js';
 import {
   buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
   runtimeInvocationOutcome,
   runtimeInvocationsFromSessionEvents,
   type RuntimeInvocationRecord,
@@ -54,7 +55,6 @@ import {
 import type { AgentBackend } from '@maka/core/backend-types';
 import {
   buildRecoveredTerminalRuntimeEvent,
-  buildSyntheticTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
   commitOrCreateTerminalRunFact,
   commitTerminalRunWithRuntimeFact,

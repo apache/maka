@@ -25,7 +25,10 @@ import {
 } from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  buildSyntheticTerminalRuntimeEvent,
+} from '@maka/core/runtime-invocation';
 
 export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
@@ -498,6 +501,10 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
     CREATE INDEX runtime_events_by_session_kind
       ON runtime_events(session_id, event_kind, invocation_id);
 
+    CREATE UNIQUE INDEX runtime_events_one_opening_per_invocation
+      ON runtime_events(invocation_id)
+      WHERE event_kind = 'invocation_opened';
+
     CREATE TABLE runtime_legacy_invocation_openings (
       invocation_id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL,
@@ -608,7 +615,7 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     INSERT INTO runtime_events (
       event_id, session_id, invocation_id, run_id, turn_id, event_seq,
       event_kind, payload_json, committed_at
-    ) VALUES (?, ?, ?, ?, ?, 1, 'invocation_opened', ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertOrdinal = db.prepare(`
     INSERT INTO runtime_session_event_ordinals(session_id, ordinal, event_id)
@@ -620,14 +627,25 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
       invocation_id, session_id, run_id, turn_id, opened_at, opening_json
     ) VALUES (?, ?, ?, ?, ?, ?)
   `);
+  // The header column is dropped right after this, so a header this cannot read
+  // is a run that would silently cease to exist. Refusing the whole migration
+  // keeps the database as it was, and the failure names the row instead of
+  // hiding it.
+  const unreadable = (row: { session_id: string; run_id: string }, cause: unknown): Error =>
+    new Error(
+      `Cannot migrate the AgentRun header of ${row.session_id}/${row.run_id}: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
   for (const row of rows) {
     let header: LegacyRunHeader;
     let opening: string;
     try {
       header = decodePersistedLegacyRunHeader(JSON.parse(row.record_json));
       opening = JSON.stringify(invocationOpeningFromLegacyRunHeader(header));
-    } catch {
-      continue;
+    } catch (error) {
+      throw unreadable(row, error);
     }
     if (row.existing_invocation_id !== null) {
       // The invocation id its own events already carry is the one every reader
@@ -643,36 +661,72 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
       );
       continue;
     }
-    let encoded: { event: RuntimeEvent; json: string };
-    try {
-      encoded = encodeCanonicalRuntimeEvent(
-        buildInvocationOpenedEvent({
-          id: `invocation_opened:${header.runId}`,
-          run: {
-            sessionId: header.sessionId,
-            invocationId: header.invocationId ?? header.runId,
-            runId: header.runId,
-            turnId: header.turnId,
-          },
-          openedAt: header.createdAt,
-          opening: invocationOpeningFromLegacyRunHeader(header),
-        }),
+    // A run with no events of its own gets the facts its header held, where
+    // facts live now: the opening, and the ending if the header recorded one.
+    // A header still marked in flight stays open; recovery settles it the way it
+    // settles any run the process died holding.
+    const run = {
+      sessionId: header.sessionId,
+      invocationId: header.invocationId ?? header.runId,
+      runId: header.runId,
+      turnId: header.turnId,
+    };
+    const events = [
+      buildInvocationOpenedEvent({
+        id: `invocation_opened:${header.runId}`,
+        run,
+        openedAt: header.createdAt,
+        opening: invocationOpeningFromLegacyRunHeader(header),
+      }),
+      ...(header.status === 'completed' ||
+      header.status === 'failed' ||
+      header.status === 'cancelled'
+        ? [
+            buildSyntheticTerminalRuntimeEvent({
+              id: `invocation_terminal:${header.runId}`,
+              invocationId: run.invocationId,
+              run,
+              status: header.status,
+              ts: header.completedAt ?? header.updatedAt,
+              ...(header.failureClass !== undefined ? { failureClass: header.failureClass } : {}),
+              ...(header.failureMessage !== undefined ? { message: header.failureMessage } : {}),
+              ...(header.abortSource !== undefined ? { abortSource: header.abortSource } : {}),
+            }),
+          ]
+        : []),
+    ];
+    events.forEach((event, index) => {
+      let encoded: { event: RuntimeEvent; json: string };
+      try {
+        encoded = encodeCanonicalRuntimeEvent(event);
+      } catch (error) {
+        throw unreadable(row, error);
+      }
+      insertEvent.run(
+        event.id,
+        event.sessionId,
+        event.invocationId,
+        event.runId,
+        event.turnId,
+        index + 1,
+        runtimeEventKind(event),
+        encoded.json,
+        event.ts,
       );
-    } catch {
-      continue;
-    }
-    const event = encoded.event;
-    insertEvent.run(
-      event.id,
-      event.sessionId,
-      event.invocationId,
-      event.runId,
-      event.turnId,
-      encoded.json,
-      event.ts,
-    );
-    insertOrdinal.run(event.sessionId, event.id, event.sessionId);
+      insertOrdinal.run(event.sessionId, event.id, event.sessionId);
+    });
   }
+}
+
+/** The `event_kind` column: the one coarse label every reader indexes events by. */
+export function runtimeEventKind(event: RuntimeEvent): string {
+  return (
+    event.content?.kind ??
+    event.status ??
+    (event.actions?.workspaceFact ? 'workspace_fact' : undefined) ??
+    (event.actions?.toolDispatch ? 'tool_dispatch' : undefined) ??
+    (event.actions?.endInvocation ? 'invocation_end' : 'runtime_fact')
+  );
 }
 
 function hasColumn(db: DatabaseSync, table: string, column: string): boolean {

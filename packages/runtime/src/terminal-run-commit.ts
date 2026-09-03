@@ -20,7 +20,10 @@
 import { isPartialRuntimeEvent, isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { RuntimeInvocationOutcome } from '@maka/core/runtime-invocation';
+import {
+  buildSyntheticTerminalRuntimeEvent,
+  type RuntimeInvocationOutcome,
+} from '@maka/core/runtime-invocation';
 import {
   classifyRuntimeEventTerminalFact,
   type RuntimeEventTerminalFact,
@@ -183,57 +186,6 @@ function assertCommittableTerminalEvent(
     throw new Error('terminal RuntimeEvent identity does not match the run it ends');
   }
   return status;
-}
-
-export interface BuildSyntheticTerminalRuntimeEventInput {
-  id: string;
-  invocationId: string;
-  run: RunIdentity;
-  status: RuntimeInvocationOutcome;
-  ts: number;
-  failureClass?: string;
-  abortSource?: string;
-  recoveryReason?: string;
-  diagnostic?: Record<string, unknown>;
-  message?: string;
-}
-
-export function buildSyntheticTerminalRuntimeEvent(
-  input: BuildSyntheticTerminalRuntimeEventInput,
-): RuntimeEvent {
-  const failureClass = input.status === 'failed' ? (input.failureClass ?? 'unknown') : undefined;
-  const abortSource = input.status === 'cancelled' ? input.abortSource : undefined;
-  return {
-    id: input.id,
-    invocationId: input.invocationId,
-    runId: input.run.runId,
-    sessionId: input.run.sessionId,
-    turnId: input.run.turnId,
-    ts: input.ts,
-    partial: false,
-    role: 'system',
-    author: 'system',
-    status: input.status === 'cancelled' ? 'aborted' : input.status,
-    ...(failureClass
-      ? {
-          content: {
-            kind: 'error',
-            code: failureClass,
-            reason: failureClass,
-            message: input.message ?? failureClass,
-          },
-        }
-      : {}),
-    actions: {
-      endInvocation: true,
-      stateDelta: {
-        ...(input.recoveryReason ? { recovered: true, recoveryReason: input.recoveryReason } : {}),
-        ...(input.diagnostic ?? {}),
-        ...(failureClass ? { failureClass } : {}),
-        ...(abortSource ? { abortSource } : {}),
-      },
-    },
-  };
 }
 
 export interface BuildRecoveredTerminalRuntimeEventInput {

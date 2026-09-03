@@ -833,18 +833,6 @@ function readSqliteRunAnchor(db: DatabaseSync, sessionId: string, runId: string)
       ),
     };
   }
-  const first = db
-    .prepare(`
-      SELECT turn_id, committed_at
-      FROM runtime_events
-      WHERE session_id = ? AND run_id = ?
-      ORDER BY event_seq ASC
-      LIMIT 1
-    `)
-    .get(sessionId, runId) as { turn_id: string; committed_at: number } | undefined;
-  if (first) {
-    return { turnId: first.turn_id, openedAt: first.committed_at, sessionInline: false };
-  }
   const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
   error.code = 'ENOENT';
   throw error;

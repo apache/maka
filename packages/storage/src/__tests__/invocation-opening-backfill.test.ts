@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRuntimeEvent } from '@maka/core/runtime-event';
 import type { LegacyRunHeader } from '../legacy-run-header.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
@@ -69,7 +70,7 @@ describe('invocation opening fact backfill', () => {
         assert.deepEqual(
           rows.map((row) => row.run_id),
           ['run-legacy-route', 'run-scheduled'],
-          'only the header-only runs are backfilled, and the corrupt one is skipped',
+          'only the header-only runs are backfilled',
         );
         assert.deepEqual(
           rows.map((row) => row.event_seq),
@@ -97,12 +98,34 @@ describe('invocation opening fact backfill', () => {
         });
         assert.equal(scheduled.content.route.provenance, 'runtime');
 
+        // Both header-only runs were marked completed, so each gets the ending
+        // its header recorded, right after its opening.
+        const backfilled = db
+          .prepare(`
+            SELECT run_id, event_seq, event_kind FROM runtime_events
+            WHERE run_id IN ('run-legacy-route', 'run-scheduled')
+            ORDER BY run_id ASC, event_seq ASC
+          `)
+          .all() as Array<{ run_id: string; event_seq: number; event_kind: string }>;
+        assert.deepEqual(
+          backfilled.map(({ run_id, event_seq, event_kind }) => ({
+            run_id,
+            event_seq,
+            event_kind,
+          })),
+          [
+            { run_id: 'run-legacy-route', event_seq: 1, event_kind: 'invocation_opened' },
+            { run_id: 'run-legacy-route', event_seq: 2, event_kind: 'completed' },
+            { run_id: 'run-scheduled', event_seq: 1, event_kind: 'invocation_opened' },
+            { run_id: 'run-scheduled', event_seq: 2, event_kind: 'completed' },
+          ],
+        );
         const ordinals = db
           .prepare('SELECT COUNT(*) AS total FROM runtime_session_event_ordinals')
           .get() as { total: number };
         assert.equal(
           ordinals.total,
-          rows.length,
+          backfilled.length,
           'every backfilled event joins the Session ordinal stream',
         );
 
@@ -242,11 +265,6 @@ describe('invocation opening fact backfill', () => {
         const one = await store.readInvocation('session-1', 'run-scheduled');
         assert.equal(one.turnId, 'turn-scheduled');
         assert.deepEqual(one.opening.root, { kind: 'scheduled_task', scheduledTaskId: 'task-9' });
-        await assert.rejects(
-          () => store.readInvocation('session-1', 'run-corrupt-root'),
-          /Runtime invocation not found/,
-          'a header the backfill refused to project has no invocation to read',
-        );
 
         await assert.rejects(
           () => store.listSessionInvocationsPage('session-1', { limit: 0 }),
@@ -265,7 +283,138 @@ describe('invocation opening fact backfill', () => {
       }
     });
   });
+
+  // Built from what the header era actually wrote, not from what the decoder
+  // accepts: every run that reached a provider carried the composition snapshot.
+  test('migrates a header exactly as the header era wrote it, composition included', async () => {
+    await withHeaderOnlyRuns(async (databasePath) => {
+      const db = new DatabaseSync(databasePath);
+      try {
+        const insert = db.prepare(
+          'INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json) VALUES (?, ?, ?, ?)',
+        );
+        for (const record of [
+          header({
+            runId: 'run-composed',
+            turnId: 'turn-composed',
+            status: 'failed',
+            failureClass: 'provider_error',
+            failureMessage: 'the provider said no',
+            completedAt: 7,
+            runComposition: headerEraComposition(),
+          }),
+          header({
+            runId: 'run-composed-events',
+            turnId: 'turn-composed-events',
+            runComposition: headerEraComposition(),
+          }),
+        ]) {
+          insert.run(record.sessionId, record.runId, record.createdAt, JSON.stringify(record));
+        }
+        const { json } = encodeCanonicalRuntimeEvent({
+          id: 'composed-1',
+          invocationId: 'run-composed-events',
+          runId: 'run-composed-events',
+          sessionId: 'session-1',
+          turnId: 'turn-composed-events',
+          ts: 1,
+          partial: false,
+          role: 'user',
+          author: 'user',
+          modelVisibility: 'visible',
+          content: { kind: 'text', text: 'already immutable' },
+        });
+        db.prepare(`
+          INSERT INTO runtime_events (
+            event_id, session_id, invocation_id, run_id, turn_id, event_seq,
+            event_kind, payload_json, committed_at
+          ) VALUES ('composed-1', 'session-1', 'run-composed-events', 'run-composed-events',
+                    'turn-composed-events', 1, 'text', ?, 1)
+        `).run(json);
+        migrateSqliteRuntimeDatabase(db);
+        migrateSqliteCoreExecutionDatabase(db);
+      } finally {
+        db.close();
+      }
+
+      const store = createSqliteRuntimeStore(databasePath);
+      try {
+        const invocations = await store.listSessionInvocations('session-1');
+        assert.deepEqual(
+          invocations.map((invocation) => invocation.invocationId).sort(),
+          [
+            'run-composed',
+            'run-composed-events',
+            'run-legacy-route',
+            'run-scheduled',
+            'run-with-events',
+          ],
+          'a run whose header carried a composition snapshot is still a run',
+        );
+        const composed = await store.readInvocation('session-1', 'run-composed');
+        assert.equal(composed.terminalEvent?.status, 'failed');
+        assert.equal(composed.terminalEvent?.ts, 7);
+        assert.equal(composed.terminalEvent?.actions?.stateDelta?.failureClass, 'provider_error');
+        assert.equal(
+          composed.terminalEvent?.content?.kind === 'error'
+            ? composed.terminalEvent.content.message
+            : undefined,
+          'the provider said no',
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  test('refuses to migrate a header it cannot read, and drops nothing', async () => {
+    await withHeaderOnlyRuns(async (databasePath) => {
+      const db = new DatabaseSync(databasePath);
+      try {
+        // A graph wake with no delivery attempt is corruption. Inventing a root
+        // authority for it would be worse than refusing, and dropping the header
+        // would be worse still: the migration stops, and the database stays as
+        // the header era left it.
+        const corrupt = header({
+          runId: 'run-corrupt-root',
+          turnId: 'turn-corrupt',
+          agentGraphWakeId: 'wake-1',
+        });
+        db.prepare(
+          'INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json) VALUES (?, ?, ?, ?)',
+        ).run(corrupt.sessionId, corrupt.runId, corrupt.createdAt, JSON.stringify(corrupt));
+        assert.throws(() => migrateSqliteRuntimeDatabase(db), /session-1\/run-corrupt-root/);
+        assert.equal(readUserVersion(db), SQLITE_RUNTIME_SCHEMA_VERSION - 1);
+        const openings = db
+          .prepare(
+            "SELECT COUNT(*) AS total FROM runtime_events WHERE event_kind = 'invocation_opened'",
+          )
+          .get() as { total: number };
+        assert.equal(openings.total, 0, 'the transaction rolled every other run back too');
+        const headers = db
+          .prepare('SELECT COUNT(*) AS total FROM core_agent_runs WHERE record_json IS NOT NULL')
+          .get() as { total: number };
+        assert.equal(headers.total, 4, 'every header is still there to be read by a fixed build');
+      } finally {
+        db.close();
+      }
+    });
+  });
 });
+
+function headerEraComposition() {
+  return createRunCompositionSnapshot({
+    composerId: 'maka.default',
+    composerRevision: '1',
+    sourceRevisions: [{ id: 'system-prompt', revision: '1' }],
+    baseSystemPromptHash: `sha256:${'a'.repeat(64)}`,
+    toolCatalogHash: `sha256:${'b'.repeat(64)}`,
+    toolAvailabilityHash: `sha256:${'c'.repeat(64)}`,
+    baseProviderOptionsHash: `sha256:${'d'.repeat(64)}`,
+    toolNames: ['read_file'],
+    contextWindow: 200_000,
+  });
+}
 
 /**
  * Put the database back the way the header era left it: runtime schema one step
@@ -274,6 +423,7 @@ describe('invocation opening fact backfill', () => {
  */
 function rewindToHeaderEra(db: DatabaseSync): void {
   db.exec('DROP INDEX IF EXISTS runtime_events_by_session_kind');
+  db.exec('DROP INDEX IF EXISTS runtime_events_one_opening_per_invocation');
   db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');
   db.exec('DROP TABLE IF EXISTS runtime_legacy_invocation_openings');
   db.exec("DELETE FROM runtime_events WHERE event_kind = 'invocation_opened'");
@@ -308,9 +458,6 @@ async function withHeaderOnlyRuns(run: (databasePath: string) => Promise<void>):
           llmConnectionId: 'connection-1',
           scheduledTaskId: 'task-9',
         }),
-        // A graph wake with no delivery attempt is corruption; the backfill must
-        // skip it rather than invent a root authority for it.
-        header({ runId: 'run-corrupt-root', turnId: 'turn-corrupt', agentGraphWakeId: 'wake-1' }),
         header({ runId: 'run-with-events', turnId: 'turn-with-events' }),
       ]) {
         insert.run(record.sessionId, record.runId, record.createdAt, JSON.stringify(record));

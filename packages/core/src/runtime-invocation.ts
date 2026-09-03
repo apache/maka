@@ -118,6 +118,62 @@ export function buildInvocationOpenedEvent(input: {
   };
 }
 
+export interface BuildSyntheticTerminalRuntimeEventInput {
+  id: string;
+  invocationId: string;
+  run: { sessionId: string; runId: string; turnId: string };
+  status: RuntimeInvocationOutcome;
+  ts: number;
+  failureClass?: string;
+  abortSource?: string;
+  recoveryReason?: string;
+  diagnostic?: Record<string, unknown>;
+  message?: string;
+}
+
+/**
+ * The terminal event a writer states on the run's behalf, when the run did not
+ * state its own: recovery after a crash, a copy, or the migration of a header
+ * whose run never wrote an event. One envelope, decided here.
+ */
+export function buildSyntheticTerminalRuntimeEvent(
+  input: BuildSyntheticTerminalRuntimeEventInput,
+): RuntimeEvent {
+  const failureClass = input.status === 'failed' ? (input.failureClass ?? 'unknown') : undefined;
+  const abortSource = input.status === 'cancelled' ? input.abortSource : undefined;
+  return {
+    id: input.id,
+    invocationId: input.invocationId,
+    runId: input.run.runId,
+    sessionId: input.run.sessionId,
+    turnId: input.run.turnId,
+    ts: input.ts,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    status: input.status === 'cancelled' ? 'aborted' : input.status,
+    ...(failureClass
+      ? {
+          content: {
+            kind: 'error',
+            code: failureClass,
+            reason: failureClass,
+            message: input.message ?? failureClass,
+          },
+        }
+      : {}),
+    actions: {
+      endInvocation: true,
+      stateDelta: {
+        ...(input.recoveryReason ? { recovered: true, recoveryReason: input.recoveryReason } : {}),
+        ...(input.diagnostic ?? {}),
+        ...(failureClass ? { failureClass } : {}),
+        ...(abortSource ? { abortSource } : {}),
+      },
+    },
+  };
+}
+
 /** One invocation's position in a Session's opening order. */
 export interface RuntimeInvocationPageCursor {
   readonly openedAt: number;
