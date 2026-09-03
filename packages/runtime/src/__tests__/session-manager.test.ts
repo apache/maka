@@ -3493,7 +3493,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
         now: nextNow(1),
         contextBudget: {
           name: 'manual-compact-accounting',
-          maxHistoryEstimatedTokens: 10_000,
           charsPerToken: 1,
         },
         summarizeHistoryCompact: buildLlmHistorySummarizer({
@@ -4936,6 +4935,8 @@ describe('SessionManager permission mode updates', () => {
       ensureTerminalRuntimeEventDurable: (sessionId, runId, event) =>
         durableEvents.ensureTerminalRuntimeEventDurable(sessionId, runId, event),
       readRuntimeEvents: (sessionId, runId) => durableEvents.readRuntimeEvents(sessionId, runId),
+      readSessionRuntimeEventEntries: (sessionId) =>
+        durableEvents.readSessionRuntimeEventEntries(sessionId),
       readSessionRuntimeEvents: (sessionId) => durableEvents.readSessionRuntimeEvents(sessionId),
     };
     const backends = new BackendRegistry();
@@ -8876,7 +8877,7 @@ describe('SessionManager permission mode updates', () => {
     assert.deepStrictEqual(messages, seeded.projectedMessages);
   });
 
-  test('getMessages orders RuntimeEvent-primary reads by session event chronology across runs', async () => {
+  test('getMessages orders RuntimeEvent-primary reads by durable session chronology', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const manager = makeManagerForReadCutover(store, runStore);
@@ -8986,11 +8987,11 @@ describe('SessionManager permission mode updates', () => {
       ),
       [
         'user:slow:101',
+        'assistant:slow:106',
+        'turn_state:slow:107',
         'user:fast:103',
         'assistant:fast:104',
         'turn_state:fast:105',
-        'assistant:slow:106',
-        'turn_state:slow:107',
       ],
     );
   });
@@ -13524,6 +13525,7 @@ class MemoryAgentRunStore
   private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private runtimeEventEntries: RuntimeEvent[] = [];
   private continuationClaims = new Map<string, ContinuationClaimV1>();
   private continuationStartKinds = new Map<string, 'runtime_admission' | 'claim_repair'>();
   private runtimeEventAppendCount = 0;
@@ -13662,6 +13664,9 @@ class MemoryAgentRunStore
       ...(this.runtimeEvents.get(eventKey) ?? []),
       copyRuntimeEvent(event),
     ]);
+    if (event.partial !== true && !this.runtimeEventEntries.some(({ id }) => id === event.id)) {
+      this.runtimeEventEntries.push(copyRuntimeEvent(event));
+    }
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -13693,6 +13698,12 @@ class MemoryAgentRunStore
     return (this.runtimeEvents.get(key(sessionId, runId)) ?? [])
       .filter((event) => event.partial !== true)
       .map(copyRuntimeEvent);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.runtimeEventEntries
+      .filter((event) => event.sessionId === sessionId)
+      .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
 
   replaceRuntimeEvent(
@@ -14016,6 +14027,7 @@ class MissingCheckpointProjectionAgentRunStore extends MemoryAgentRunStore {
 
 class MemoryRuntimeEventStore implements RuntimeEventStore {
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private runtimeEventEntries: RuntimeEvent[] = [];
 
   constructor(
     private readonly options: {
@@ -14031,6 +14043,9 @@ class MemoryRuntimeEventStore implements RuntimeEventStore {
       ...(this.runtimeEvents.get(eventKey) ?? []),
       copyRuntimeEvent(event),
     ]);
+    if (event.partial !== true && !this.runtimeEventEntries.some(({ id }) => id === event.id)) {
+      this.runtimeEventEntries.push(copyRuntimeEvent(event));
+    }
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -14053,6 +14068,12 @@ class MemoryRuntimeEventStore implements RuntimeEventStore {
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     if (this.options.failRuntimeEventReads) throw new Error('runtime event read failed');
     return (this.runtimeEvents.get(key(sessionId, runId)) ?? []).map(copyRuntimeEvent);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.runtimeEventEntries
+      .filter((event) => event.sessionId === sessionId)
+      .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
@@ -14741,6 +14762,8 @@ function testInteractionAuthority(): RuntimeInteractionAuthority {
       ...identity,
       acceptSandboxBoundaryRequest: async () => {},
       acceptUserQuestionRequest: async () => {},
+      acceptFormRequest: async () => {},
+      withdrawFormRequest: async () => {},
       close: async () => {},
       release: () => {},
     }),

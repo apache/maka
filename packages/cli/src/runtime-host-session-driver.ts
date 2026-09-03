@@ -52,6 +52,7 @@ import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import type { SkillInvocationResult } from '@maka/core/skill-invocation';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { ContextDiagnostics } from '@maka/runtime/context-diagnostics';
 import { isRuntimeHostTerminalTurn as isTerminalTurn } from '@maka/runtime-host/adapter';
 import type { DirectRequestOperationKey, RuntimeHostConnection } from '@maka/runtime-host/client';
@@ -592,6 +593,23 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
   }
 
+  async respondToUserForm(response: InteractionFormResponse): Promise<void> {
+    const sessionId = this.#requireSession('respond to a user form');
+    const pending = this.#channel?.pendingInteraction(response.requestId);
+    if (pending && pending.request.kind !== 'form') {
+      throw new Error('Interaction is not a form request');
+    }
+    const answered = await this.#request('interaction.answer', {
+      sessionId,
+      interactionId: response.requestId,
+      answer:
+        response.action === 'accept'
+          ? { kind: 'form', action: 'accept', values: response.values }
+          : { kind: 'form', action: response.action },
+    });
+    if (pending) this.#channel?.publishInteractionAnswer(answered, pending);
+  }
+
   setModel(model: string, connectionSlug?: string, connectionId?: string): Promise<void> {
     return this.#admit(() => this.#setModel(model, connectionSlug, connectionId));
   }
@@ -840,12 +858,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async openSideConversation(): Promise<MakaSideConversationOpenResult> {
     const parentSessionId = this.#requireSession('open a side conversation');
     const messages = await loadCurrentMessages(this.#connection, parentSessionId);
+    // Absent when the parent has no completed turn yet: fork with an empty
+    // context instead of failing, matching the desktop side conversation.
     const sourceTurnId = deriveTurnRecords(messages)
       .reverse()
       .find((turn) => turn.status === 'completed')?.turnId;
-    if (!sourceTurnId) {
-      throw new Error('A side conversation requires at least one completed Turn.');
-    }
     const sideSessionId = this.#newId();
     const cleanup = this.#requireSessionCopyCleanup();
     await cleanup.ownCreation(
@@ -853,7 +870,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         sessionId: sideSessionId,
         kind: 'branch',
         sourceSessionId: parentSessionId,
-        sourceTurnId,
+        ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
         intent: 'side_conversation',
         ownerId: 'tui-side',
       },
@@ -862,7 +879,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           sessionId: sideSessionId,
           kind: 'branch',
           sourceSessionId: parentSessionId,
-          sourceTurnId,
+          ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
           intent: 'side_conversation',
         }),
     );
@@ -1364,7 +1381,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     sessionId: string;
     kind: 'branch' | 'revision';
     sourceSessionId: string;
-    sourceTurnId: string;
+    sourceTurnId?: string;
     intent?: 'side_conversation';
   }): Promise<void> {
     if (input.kind !== 'branch') {
@@ -1376,7 +1393,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       const result = await this.#request('session.branch.create', {
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.sessionId,
-        sourceTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
         expectedSourceRevision: source.revision,
         ...(input.intent ? { intent: input.intent } : {}),
       });

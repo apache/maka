@@ -590,7 +590,10 @@ export function deriveConnectionSlug(
   }
 }
 
-export type InteractiveOAuthProviderType = Extract<ProviderType, 'openai-codex' | 'xai-oauth'>;
+export type InteractiveOAuthProviderType = Extract<
+  ProviderType,
+  'openai-codex' | 'xai-oauth' | 'github-copilot'
+>;
 
 /** Stable human-facing slug base for one interactive OAuth Connection. */
 function interactiveOAuthConnectionSlugBase(providerType: InteractiveOAuthProviderType): string {
@@ -599,6 +602,10 @@ function interactiveOAuthConnectionSlugBase(providerType: InteractiveOAuthProvid
       return 'codex-subscription';
     case 'xai-oauth':
       return 'xai-oauth';
+    // Shared with the local `gh` credential import so both routes to a Copilot
+    // account land on one Connection instead of two.
+    case 'github-copilot':
+      return 'github-copilot';
   }
 }
 

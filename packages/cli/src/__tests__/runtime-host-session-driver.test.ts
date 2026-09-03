@@ -1917,6 +1917,48 @@ describe('Runtime Host Maka Session driver', () => {
     });
   });
 
+  test('answers and releases a Host-owned form through the generic Interaction operation', async () => {
+    const subscription = new FakeSubscription(
+      continuitySnapshot({ interactions: { pending: [pendingForm()] } }),
+      Promise.resolve([]),
+    );
+    const connection = new FakeConnection([subscription]);
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      now: () => 76,
+    });
+    const switched = await driver.switchSession('session-1');
+    assert.ok(switched.activeTurn);
+    assert.equal((await nextEvent(switched.activeTurn.events)).type, 'form_request');
+
+    await driver.respondToUserForm!({
+      requestId: 'form-1',
+      action: 'accept',
+      values: { version: 'v2' },
+    });
+
+    assert.deepEqual(connection.requests.at(-1), {
+      operation: 'interaction.answer',
+      input: {
+        sessionId: 'session-1',
+        interactionId: 'form-1',
+        answer: { kind: 'form', action: 'accept', values: { version: 'v2' } },
+      },
+    });
+    assert.deepEqual(await nextEvent(switched.activeTurn.events), {
+      type: 'form_answer_ack',
+      id: 'host-interaction:form-1:2',
+      turnId: 'turn-1',
+      ts: 76,
+      requestId: 'form-1',
+      toolUseId: 'tool-form',
+    });
+  });
+
   test('publishes a pending permission that has no transcript event', async () => {
     const permission = pendingPermission();
     const subscription = new FakeSubscription(
@@ -2078,6 +2120,97 @@ describe('Runtime Host Maka Session driver', () => {
       connection.requests.find(({ operation }) => operation === 'session.remove')?.input,
       { sessionId: 'side-1', expectedRevision: 1 },
     );
+  });
+
+  test('opens an empty side copy when the parent has no completed Turn yet', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-empty-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    // The parent's first Turn is still running (an explicit running turn_state),
+    // so there is no completed Turn to branch through. The side conversation
+    // must still open, forking with an empty context instead of erroring.
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-running', 'In-flight question'),
+      {
+        type: 'turn_state',
+        id: 'state-turn-running',
+        turnId: 'turn-running',
+        ts: 80,
+        status: 'running',
+        partialOutputRetained: true,
+      },
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      // The empty copy carries no source transcript.
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      // The empty copy records provenance (parentSessionId) but fabricates no
+      // branchOfTurnId.
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(await driver.readMessages(), []);
+    // The branch omits sourceTurnId entirely (empty copy) while still carrying
+    // the side_conversation intent the Host requires for an empty copy.
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
   });
 
   test('observes actionable and terminal parent status from the Host projection', async () => {
@@ -2716,12 +2849,24 @@ class FakeConnection {
                   ],
                 }
               : operation === 'interaction.answer'
-                ? {
-                    ...pendingQuestion(),
-                    revision: 2,
-                    status: 'answered',
-                    outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
-                  }
+                ? (input as OperationInput<'interaction.answer'>).answer.kind === 'form'
+                  ? {
+                      ...pendingForm(),
+                      revision: 2,
+                      status: 'answered',
+                      outcome: {
+                        kind: 'form_answer',
+                        action: 'accept',
+                        values: { version: 'v2' },
+                        committedAt: 76,
+                      },
+                    }
+                  : {
+                      ...pendingQuestion(),
+                      revision: 2,
+                      status: 'answered',
+                      outcome: { kind: 'question_answer', answers: ['Yes'], committedAt: 75 },
+                    }
                 : operation === 'interaction.query'
                   ? this.interactionQuery
                   : operation === 'turn.start'
@@ -3047,6 +3192,26 @@ function pendingQuestion() {
       kind: 'question' as const,
       toolUseId: 'tool-question',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+function pendingForm() {
+  return {
+    schemaVersion: 1 as const,
+    interactionId: 'form-1',
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    runId: 'run-1',
+    revision: 1 as const,
+    status: 'pending' as const,
+    outcome: null,
+    request: {
+      kind: 'form' as const,
+      toolUseId: 'tool-form',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [{ kind: 'string' as const, name: 'version', label: 'Version', required: true }],
     },
   };
 }

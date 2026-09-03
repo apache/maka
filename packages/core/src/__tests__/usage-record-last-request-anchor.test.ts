@@ -24,28 +24,42 @@ import { decodeCanonicalMessage } from '../session.js';
 
 const usage = { input: 370, output: 60 };
 
-test('a last-request anchor is only valid as a complete positive pair', () => {
+test('a last-request anchor accepts the new usage shape and retired payload key', () => {
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, outputTokens: 30 }), true);
+  assert.equal(isLastRequestAnchor({ inputTokens: 120 }), true);
   assert.equal(isLastRequestAnchor({ inputTokens: 120, payloadChars: 4_000 }), true);
-  assert.equal(isLastRequestAnchor({ inputTokens: 120 }), false);
   assert.equal(isLastRequestAnchor({ payloadChars: 4_000 }), false);
   assert.equal(isLastRequestAnchor({ inputTokens: 0, payloadChars: 4_000 }), false);
-  assert.equal(isLastRequestAnchor({ inputTokens: 120, payloadChars: 0 }), false);
-  assert.equal(
-    isLastRequestAnchor({ inputTokens: 120, payloadChars: 4_000, stepNumber: 2 }),
-    false,
-  );
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, outputTokens: -1 }), false);
+  assert.equal(isLastRequestAnchor({ inputTokens: 120, foo: 1 }), false);
 });
 
 test('token-usage fields carry the anchor and reject a broken one', () => {
   assert.equal(
-    isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, payloadChars: 4_000 } }),
+    isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, outputTokens: 30 } }),
     true,
   );
   assert.equal(isTokenUsageFields(usage), true);
-  assert.equal(isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120 } }), false);
+  assert.equal(
+    isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, payloadChars: 4_000 } }),
+    true,
+  );
+  assert.equal(
+    isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, foo: 1 } }),
+    false,
+  );
+  // The route the counts belong to. A reader pairs them with a window only
+  // when it matches the request it is about to make.
+  assert.equal(
+    isTokenUsageFields({
+      ...usage,
+      lastRequestAnchor: { inputTokens: 120, modelId: 'm', connectionId: 'c' },
+    }),
+    true,
+  );
 });
 
-test('a half-written anchor fails the whole token_usage message decode', () => {
+test('an invalid anchor fails the whole token_usage message decode', () => {
   const message = {
     type: 'token_usage',
     id: 'usage-1',
@@ -56,11 +70,11 @@ test('a half-written anchor fails the whole token_usage message decode', () => {
   assert.deepEqual(
     decodeCanonicalMessage({
       ...message,
-      lastRequestAnchor: { inputTokens: 120, payloadChars: 4_000 },
+      lastRequestAnchor: { inputTokens: 120, outputTokens: 30 },
     }),
-    { ...message, lastRequestAnchor: { inputTokens: 120, payloadChars: 4_000 } },
+    { ...message, lastRequestAnchor: { inputTokens: 120, outputTokens: 30 } },
   );
   assert.throws(() =>
-    decodeCanonicalMessage({ ...message, lastRequestAnchor: { payloadChars: 4_000 } }),
+    decodeCanonicalMessage({ ...message, lastRequestAnchor: { inputTokens: 0 } }),
   );
 });

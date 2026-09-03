@@ -785,12 +785,15 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
   }
 
   releaseConnection(connectionId: string): Promise<void> {
-    this.#invocations.releaseConnection(connectionId);
+    const invocationCleanup = this.#invocations.releaseConnection(connectionId);
     const connection = this.#connections.get(connectionId);
-    if (!connection) return Promise.resolve();
+    if (!connection) return invocationCleanup;
     let task!: Promise<void>;
-    task = this.#activation
-      .runMutation(() => this.#releaseConnectionState(connection))
+    task = Promise.all([
+      invocationCleanup,
+      this.#activation.runMutation(() => this.#releaseConnectionState(connection)),
+    ])
+      .then(() => undefined)
       .finally(() => this.#pendingConnectionReleases.delete(task));
     this.#pendingConnectionReleases.add(task);
     void task.catch(() => undefined);
@@ -827,9 +830,10 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
 
   async close(): Promise<void> {
     this.beginDrain();
-    for (const connectionId of [...this.#connections.keys()]) {
-      this.releaseConnection(connectionId);
-    }
+    const releases = [...this.#connections.keys()].map((connectionId) =>
+      this.releaseConnection(connectionId),
+    );
+    await Promise.allSettled(releases);
     await Promise.allSettled([...this.#pendingConnectionReleases]);
     this.#invocations.close();
     this.#sessions.clear();
@@ -1069,7 +1073,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             );
             if (!target) {
               return {
-                execute: ({ emitProgress } = {}) => prepared.admit(emitProgress),
+                execute: ({ emitProgress, requestInteraction } = {}) =>
+                  prepared.admit(emitProgress, requestInteraction),
                 cancel: () => prepared.cancel(),
               };
             }
@@ -1090,7 +1095,8 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
             }
           }
           return {
-            execute: ({ emitProgress } = {}) => prepared.admit(emitProgress),
+            execute: ({ emitProgress, requestInteraction } = {}) =>
+              prepared.admit(emitProgress, requestInteraction),
             cancel: () => prepared.cancel(),
           };
         } catch (error) {
@@ -1108,6 +1114,7 @@ export class HostClientCapabilityCoordinator implements ClientCapabilityService 
           options.signal,
           options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS,
           options.emitProgress,
+          options.requestInteraction,
         );
       },
     };

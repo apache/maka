@@ -33,6 +33,13 @@ import type {
 import type { ModelFactory } from './model-adapter.js';
 import type { ToolResultArchiveCapability } from './tool-result-archive-capability.js';
 
+/**
+ * Default output cap for a compaction summary. Measured summaries land around
+ * 1K tokens; the cap exists so a runaway summarizer cannot occupy the context
+ * it was asked to free, not to shape the summary (#4559).
+ */
+export const DEFAULT_HISTORY_COMPACT_MAX_OUTPUT_TOKENS = 8_000;
+
 export interface HistoryCompactSummaryInput {
   sessionId: string;
   turnId: string;
@@ -45,14 +52,14 @@ export interface HistoryCompactSummaryInput {
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];
   /**
-   * Estimated provider-input ceiling for this compaction call. A compactor
-   * should fail before dispatch when its projection cannot fit this budget.
-   * The ceiling is absent when the selected model declares no context window.
+   * Output cap for the summary call. A summary is re-sent on every later
+   * request, so it is bounded outright rather than estimated: the summarizer's
+   * provider truncates at this cap (`finishReason: length`), and the compactor
+   * then asks once for a shorter one. Whether the compaction INPUT fits the
+   * summarizer's window is that provider's answer (`input_too_large`), never a
+   * local estimate's (#4559).
    */
-  inputBudget?: {
-    maxEstimatedTokens?: number;
-    charsPerToken: number;
-  };
+  maxOutputTokens?: number;
   abortSignal?: AbortSignal;
   /**
    * Physical-call tracking for this summarization, built by the backend (#1679).

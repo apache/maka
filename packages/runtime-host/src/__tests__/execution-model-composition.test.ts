@@ -1779,6 +1779,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    // The fetched /models value is metadata only. This explicit model-facts
+    // declaration is the Maka compaction target used by the long-session flow.
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
+      }),
+      'utf8',
+    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -1860,8 +1870,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
-    // Cross the history high-water without making the text-only compact input
-    // exceed this fixture's 2,304-token summarizer budget.
+    // Cross the explicitly declared Maka window without making the text-only
+    // compact input exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);
@@ -2842,7 +2852,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       connection: {
         slug: 'goal-evaluator-provider',
         name: 'Goal evaluator provider',
-        providerType: 'moonshot',
+        providerType: 'opencode-go',
         baseUrl: provider.baseUrl,
         enabled: true,
         enabledModelIds: [MODEL_ID],
@@ -2947,6 +2957,7 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
       requestDrain: () => assert.fail('Daily Review telemetry must not drain the Host'),
       newId: () => 'daily-review-call-1',
     });
+    const dailyReviewRequestsBefore = provider.requests.length;
     assert.deepEqual(
       await dailyReview.generate({
         modelKey: `goal-evaluator-provider::${MODEL_ID}`,
@@ -2964,6 +2975,9 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     assert.ok(dailyReviewLog);
     assert.equal(dailyReviewLog.callId, 'daily_review_daily-review-call-1');
     assert.equal(dailyReviewLog.sessionId, undefined);
+    const dailyReviewRequest = provider.requests[dailyReviewRequestsBefore];
+    assert.ok(dailyReviewRequest);
+    assert.equal(dailyReviewRequest.sessionHeader, 'daily-review-call-1');
 
     const memoryModel = createHostMemoryExtractionModel({
       runtimePolicy: policy,
@@ -3011,6 +3025,8 @@ test('Host auxiliary models meter provider usage and abort physical requests', {
     const [proposalRequest, canonicalizeRequest] = provider.requests.slice(memoryRequestsBefore);
     assert.ok(proposalRequest);
     assert.ok(canonicalizeRequest);
+    assert.equal(proposalRequest.sessionHeader, session.id);
+    assert.equal(canonicalizeRequest.sessionHeader, session.id);
     assert.deepEqual(toolNames(proposalRequest.body), ['memory_remember']);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_SYSTEM_SENTINEL/);
     assert.match(JSON.stringify(proposalRequest.body), /SOURCE_USER_SENTINEL/);
@@ -4326,6 +4342,7 @@ interface ProviderRequest {
   readonly url: string;
   readonly authorization: string | undefined;
   readonly customHeader: string | undefined;
+  readonly sessionHeader: string | undefined;
   readonly body: Record<string, unknown>;
 }
 
@@ -4438,6 +4455,7 @@ async function handleProviderRequest(
     url: request.url ?? '',
     authorization: request.headers.authorization,
     customHeader: request.headers['x-maka-test'] as string | undefined,
+    sessionHeader: request.headers['x-opencode-session'] as string | undefined,
     body,
   });
   if (request.url === '/v1/responses') {

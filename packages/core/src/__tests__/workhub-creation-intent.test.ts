@@ -23,9 +23,23 @@ import {
   readWorkHubRequestIntent,
   workHubCorrectionTargetsSession,
   workHubCreationAuthorizesTitle,
+  matchWorkHubSessionName,
+  type WorkHubRequestIntent,
 } from '../workhub-creation-intent.js';
 
 const intentFor = readWorkHubRequestIntent;
+/**
+ * The stop Action Policy, reproduced here over the shared matcher: a stop
+ * reference may carry punctuation after the name and nothing else.
+ */
+const workHubStopTargetsSession = (intent: WorkHubRequestIntent, sessionName: string): boolean => {
+  if (!intent.stop.imperative || !intent.stop.target) return false;
+  const match = matchWorkHubSessionName(intent.stop.target, sessionName);
+  return (
+    match.kind === 'elided_name_punctuation' ||
+    (match.kind === 'named' && /^[.!?。！？]*$/u.test(match.remainder))
+  );
+};
 const affirmativeWorkHubExistingCorrectionTarget = (value: string) =>
   intentFor(value).correction.existingTarget;
 const affirmativeWorkHubNamedCreationTitle = (value: string) => {
@@ -184,6 +198,21 @@ test('requires an affirmative target action for destructive corrections', () => 
   ]) {
     assert.equal(isAffirmativeWorkHubCorrectionRequest(text), false, text);
     assert.equal(isExplicitWorkHubCreationRequest(text), false, text);
+  }
+
+  for (const sessionName of ['U.S.', 'Dr.']) {
+    assert.equal(
+      workHubStopTargetsSession(readWorkHubRequestIntent(`Stop ${sessionName}`), sessionName),
+      true,
+      sessionName,
+    );
+  }
+  for (const text of ['Stop Payments, fix Login', 'Stop Payments and Login']) {
+    assert.equal(
+      workHubStopTargetsSession(readWorkHubRequestIntent(text), 'Payments'),
+      false,
+      text,
+    );
   }
 });
 
@@ -995,5 +1024,45 @@ test('returns one bounded intent record for routing and admission', () => {
     'Fix login] then update docs.',
   ]) {
     assert.equal(readWorkHubRequestIntent(text).execution, 'non_executable', text);
+  }
+});
+
+test('requires a direct, explicitly named command for WorkHub stop authority', () => {
+  for (const [text, target] of [
+    ['Stop Payments', 'Payments'],
+    ['Please cancel the session Payments.', 'Payments'],
+    ['Terminate work "API migration"', 'API migration'],
+    ['停止支付任务', '支付任务'],
+    ['请取消这个会话 登录稳定性。', '登录稳定性'],
+  ] as const) {
+    const intent = readWorkHubRequestIntent(text);
+    assert.deepEqual(intent.stop, { cue: true, imperative: true, target }, text);
+    assert.equal(workHubStopTargetsSession(intent, target), true, text);
+    assert.equal(workHubStopTargetsSession(intent, `${target} extra`), false, text);
+  }
+
+  for (const text of [
+    'Stop it',
+    'Cancel this work',
+    '取消这个工作',
+    'Pause Payments',
+    'Wait on Payments',
+    'How do I stop Payments?',
+    'Can you stop Payments?',
+    'Do not stop Payments',
+    "Don't cancel Payments",
+    '不要停止支付任务',
+    'The literal text is "Stop Payments"',
+    '"Stop Payments"',
+    'Stop "Payments',
+  ]) {
+    assert.deepEqual(
+      readWorkHubRequestIntent(text).stop,
+      {
+        cue: text === 'Stop it' || text === 'Cancel this work' || text === '取消这个工作',
+        imperative: false,
+      },
+      text,
+    );
   }
 });

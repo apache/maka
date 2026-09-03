@@ -31,6 +31,7 @@ import {
   decodeInteractionRequest,
   interactionCanonicalOutcomesEquivalent,
   isInteractionCanonicalOutcomeValidForRequest,
+  projectInteractionFormRequest,
   projectInteractionQuestionRequest,
   type InteractionCanonicalOutcome,
   type InteractionRequest,
@@ -680,6 +681,17 @@ function normalizeRequest(value: unknown, source: DecodeSource): StoredInteracti
       });
       if (!isDeepStrictEqual(request, canonical))
         decodeFailure(source, 'Interaction question request is not canonical safe text');
+      request = canonical;
+    } else if (request.kind === 'form') {
+      const canonical = projectInteractionFormRequest({
+        toolUseId: request.toolUseId,
+        message: request.message,
+        requester: request.requester,
+        fields: request.fields,
+      });
+      if (!isDeepStrictEqual(request, canonical)) {
+        decodeFailure(source, 'Interaction form request is not canonical');
+      }
       request = canonical;
     }
   } catch (error) {

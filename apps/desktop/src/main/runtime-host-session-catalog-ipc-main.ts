@@ -60,6 +60,7 @@ type RuntimeHostSessionCatalogClient = Pick<
 >;
 
 export interface DesktopHostSessionSummary extends SessionCatalogSummary {
+  revision: number;
   labelsTruncated: boolean;
   shared?: true;
 }
@@ -253,6 +254,7 @@ export function toDesktopHostSharedSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     id: session.id,
+    revision: session.revision,
     name: session.name,
     activityAt: session.activityAt,
     isFlagged: false,
@@ -405,6 +407,7 @@ export function toDesktopHostSessionSummary(
 ): DesktopHostSessionSummary {
   return {
     ...projectSessionCatalogSummary(session),
+    revision: session.revision,
     labelsTruncated: session.labelsTruncated,
   };
 }

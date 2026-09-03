@@ -271,7 +271,7 @@ test('Rust build caches publish immutable source generations only from the defau
     .map((name) => [name, readWorkflow(name)])
     .filter(([, workflow]) => workflow.includes('tool: kache@0.16.0'));
 
-  assert.equal(workflows.length, 5);
+  assert.equal(workflows.length, 6);
   for (const [name, workflow] of workflows) {
     assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
     const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);

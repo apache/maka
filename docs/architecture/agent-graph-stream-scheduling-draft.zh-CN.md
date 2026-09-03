@@ -558,6 +558,8 @@ sequenceDiagram
 
 这些都是有意保留的边界。它们让 Graph 有用，同时不把 workflow semantic、resource management 或 product presentation 塞进 Agent runtime。
 
+上述 replay timeline 与 reconcile history 缺口的跟踪：[Agent Graph operational topology #2596](https://github.com/apache/maka/issues/2596)、[Session Inspector #1625](https://github.com/apache/maka/issues/1625)
+
 ## Graph、Swarm、agent_spawn 与 Rive
 
 四种机制解决不同的协调问题。

@@ -54,19 +54,8 @@ export function createDesktopWorkbarServices(
       subscribeSessionEvents: (sessionId, handler) =>
         bridge.sessions.subscribeEvents(sessionId, handler),
     },
-    terminal: {
-      start: (sessionId) => bridge.shellRuns.start(sessionId),
-      stop: (input) => bridge.shellRuns.stop(input),
-      attach: (input) => bridge.shellRuns.attach(input),
-      detach: (input) => bridge.shellRuns.detach(input),
-      write: (input) => bridge.shellRuns.write(input),
-      subscribePtyData: (handler) => bridge.shellRuns.subscribePtyData(handler),
-      subscribeResync: (handler) => bridge.shellRuns.subscribeResync(handler),
-    },
-    todo: {
-      read: (sessionId) => bridge.todo.read(sessionId),
-      subscribeChanges: (handler) => bridge.todo.subscribeChanges(handler),
-    },
+    terminal: bridge.shellRuns,
+    todo: bridge.todo,
     browser: {
       setActiveSession: (sessionId) => bridge.browser.setActiveSession(sessionId),
       setViewport: (input) => bridge.browser.setViewport(input),
@@ -103,13 +92,7 @@ export function createDesktopWorkbarServices(
       subscribeUsageChanges: (sessionId, handler) =>
         bridge.inspector.subscribeUsageChanges(sessionId, handler),
     },
-    attachments: {
-      readBytes: (sessionId, artifactId) =>
-        bridge.attachments.readBytes(sessionId, artifactId),
-      pickFiles: () => bridge.attachments.pickFiles(),
-      previewApproval: (approvalId) =>
-        bridge.attachments.previewApproval(approvalId),
-    },
+    attachments: bridge.attachments,
     sideChat: {
       listSessions: () => bridge.sessions.list(),
       listTurns: (sessionId) => bridge.sessions.listTurns(sessionId),
@@ -121,6 +104,7 @@ export function createDesktopWorkbarServices(
         bridge.sessions.cleanupSessionCopy(sessionId),
       abandonSessionCopy: (sourceSessionId, copyId) =>
         bridge.sessions.abandonSessionCopy(sourceSessionId, copyId),
+      compact: (sessionId) => bridge.sessions.compact(sessionId),
       send: (sessionId, command) => bridge.sessions.send(sessionId, command),
       stop: async (sessionId, target) => {
         const result = await bridge.sessions.stop(

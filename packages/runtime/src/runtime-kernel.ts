@@ -146,6 +146,8 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
+  isHostedInteractionRequestEvent,
+  isHostedInteractionSettlementAckEvent,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
@@ -532,7 +534,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     execution.run = run;
     execution.phase = 'attached';
-    if (execution.stopIntent) run.stop(execution.stopIntent.input.source);
+    if (execution.stopIntent) {
+      run.stop(execution.stopIntent.input.source, execution.stopIntent.input.workHubActionId);
+    }
   }
 
   private reserveExecutionClaim(
@@ -1588,10 +1592,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     binding: RuntimeInteractionRunBinding | undefined,
     event: SessionEvent,
   ): void {
-    if (
-      binding &&
-      (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request')
-    ) {
+    if (binding && isHostedInteractionRequestEvent(event)) {
       binding.assertPendingAdmission(event);
     }
   }
@@ -1712,6 +1713,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     const existing = this.stopAttempts.get(sessionId);
     if (existing) return existing;
     const intent: SessionStopIntent = { input, claims: new Set() };
@@ -1721,7 +1723,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
       execution.stopIntent = intent;
       intent.claims.add(execution);
     }
-    for (const execution of executions) execution.run?.stop(input.source);
+    for (const execution of executions) {
+      execution.run?.stop(input.source, input.workHubActionId);
+    }
     for (const execution of executions) {
       execution.abortController.abort(execution.cancellation);
     }
@@ -1777,7 +1781,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     active: BackendGeneration,
     run: AgentRun,
   ): StopOperation | undefined {
-    run.stop(input.source);
+    run.stop(input.source, input.workHubActionId);
     if (!run.hasPendingStop()) return this.stopOperations.get(sessionId);
     const existingOperation = this.stopOperations.get(sessionId);
     const operation = existingOperation ?? this.buildStopOperation(input);
@@ -1820,7 +1824,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private buildStopOperation(input: StopSessionInput): StopOperation {
-    const abortSource = normalizeStopSessionSource(input.source);
+    const abortSource = normalizeStopSessionSource(input.source, input.workHubActionId);
     const ts = this.deps.now();
     return {
       abortSource,
@@ -3332,10 +3336,7 @@ async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
 ): Promise<boolean> {
-  if (
-    !interactionRun ||
-    (event.type !== 'user_question_answer_ack' && event.type !== 'sandbox_boundary_decision_ack')
-  ) {
+  if (!interactionRun || !isHostedInteractionSettlementAckEvent(event)) {
     return true;
   }
   return await interactionRun.canResumeAfterSettlementAck(event);

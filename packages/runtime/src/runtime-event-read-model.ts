@@ -289,6 +289,18 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.formRequest) {
+      // The matching function_call/function_response own the legacy rows;
+      // this request is live interaction state only.
+      projected = true;
+    }
+
+    if (event.actions?.formAnswerAccepted) {
+      // InteractionStore owns the canonical result. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
     if (event.actions?.permissionAnswerAccepted) {
       projectCanonicalPermissionOutcome(
         event,
@@ -687,7 +699,7 @@ export function projectRuntimeEventUserMessage(
   };
 }
 
-function nonCanonicalContentOrder(
+export function nonCanonicalContentOrder(
   order: readonly AssistantStepContentKind[] | undefined,
 ): AssistantStepContentKind[] | undefined {
   if (!order?.length) return undefined;

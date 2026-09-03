@@ -24,12 +24,33 @@ import {
   buildStatusPatch,
   buildTurnStateMessage,
   isTerminalRunStatus,
+  normalizeStopSessionSource,
   statusFromEvent,
   turnStatusFromEvent,
   turnHasRetainedOutput,
+  workHubDirectStopAbortSource,
 } from '../session-projection-helpers.js';
 
 describe('session projection helpers', () => {
+  test('binds WorkHub Stop provenance to one valid action identity', () => {
+    assert.equal(
+      normalizeStopSessionSource('workhub_direct_stop', 'stop-action'),
+      workHubDirectStopAbortSource('stop-action'),
+    );
+    assert.notEqual(
+      workHubDirectStopAbortSource('stop-action'),
+      workHubDirectStopAbortSource('different-action'),
+    );
+    assert.throws(
+      () => normalizeStopSessionSource('workhub_direct_stop'),
+      /Invalid WorkHub direct-stop action identity/,
+    );
+    assert.throws(
+      () => normalizeStopSessionSource('stop_button', 'stop-action'),
+      /requires its dedicated Stop source/,
+    );
+  });
+
   test('buildStatusPatch normalizes blocked reasons and clears non-blocked reasons', () => {
     assert.deepStrictEqual(buildStatusPatch('blocked', 100), {
       status: 'blocked',
@@ -130,12 +151,18 @@ describe('session projection helpers', () => {
     assert.deepStrictEqual(statusFromEvent({ type: 'user_question_request', ts: 1 } as never), {
       status: 'waiting_for_user',
     });
+    assert.deepStrictEqual(statusFromEvent({ type: 'form_request', ts: 1 } as never), {
+      status: 'waiting_for_user',
+    });
     assert.deepStrictEqual(
       statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never),
       {
         status: 'running',
       },
     );
+    assert.deepStrictEqual(statusFromEvent({ type: 'form_answer_ack', ts: 1 } as never), {
+      status: 'running',
+    });
     assert.strictEqual(
       statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never, {
         allowInteractionResume: false,

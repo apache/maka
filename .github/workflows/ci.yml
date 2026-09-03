@@ -180,6 +180,10 @@ jobs:
           npm run check:tui-copy
           node --test scripts/check-tui-copy.test.mjs
 
+      - name: Test staged Biome hook
+        if: steps.plan.outputs.code == 'true'
+        run: node --test scripts/biome-staged-check.test.mjs
+
       # The header audit above remains install-free. The complete source gate
       # also exercises generation and therefore runs after its pinned formatter
       # dependency is installed, matching the source-candidate workflow.
@@ -367,6 +371,18 @@ jobs:
           MAKA_E2E_X_DISPLAY_BASE="$display_base" \
             npm exec -w @maka/desktop -- playwright test \
               --config e2e/playwright.config.ts --workers="$worker_count"
+
+      # Playwright keeps a trace, a video and a screenshot for every failed
+      # test. Without this they die with the runner, and an e2e flake can only
+      # be diagnosed by reproducing it.
+      - name: Upload Desktop e2e results
+        if: failure() && steps.plan.outputs.e2e == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: desktop-e2e-results
+          path: apps/desktop/e2e/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Browser WebContentsView semantic smoke
         if: steps.plan.outputs.e2e == 'true'

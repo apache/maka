@@ -253,6 +253,60 @@ export const TUI_COPY_RESOURCES = {
       },
     },
   },
+  'form-interaction': {
+    en: {
+      requestedBy: 'Requested by {detail}',
+      sensitiveWarning: 'Do not enter passwords, API keys, access tokens, or payment details.',
+      required: 'required',
+      optional: 'optional',
+      omitted: 'omitted',
+      empty: 'empty',
+      invalid: "Value does not meet this field's constraints",
+      minimumLength: 'At least {minimum} characters',
+      maximumLength: 'At most {maximum} characters',
+      lengthRange: '{minimum}–{maximum} characters',
+      minimumValue: 'Minimum {minimum}',
+      maximumValue: 'Maximum {maximum}',
+      valueRange: 'Range {minimum}–{maximum}',
+      minimumItems: 'Select at least {minimum}',
+      maximumItems: 'Select at most {maximum}',
+      itemRange: 'Select {minimum}–{maximum}',
+      format: 'Format: {format}',
+      reviewHint: '↑↓ field · Enter edit · Space include/omit · s submit · d decline · Esc cancel',
+      textHint: 'Type a value · Enter review · Esc review',
+      choiceHint: '↑↓ select · Enter review · Esc review',
+      multiHint: '↑↓ move · Space toggle · Enter review · Esc review',
+      trueValue: 'true',
+      falseValue: 'false',
+      selectedCount: '{count} selected',
+    },
+    zh: {
+      requestedBy: '由 {detail} 请求',
+      sensitiveWarning: '请勿输入密码、API 密钥、访问令牌或支付信息。',
+      required: '必填',
+      optional: '选填',
+      omitted: '未提供',
+      empty: '空',
+      invalid: '该值不符合字段约束',
+      minimumLength: '至少 {minimum} 个字符',
+      maximumLength: '最多 {maximum} 个字符',
+      lengthRange: '长度 {minimum}–{maximum} 个字符',
+      minimumValue: '最小值 {minimum}',
+      maximumValue: '最大值 {maximum}',
+      valueRange: '范围 {minimum}–{maximum}',
+      minimumItems: '至少选择 {minimum} 项',
+      maximumItems: '最多选择 {maximum} 项',
+      itemRange: '选择 {minimum}–{maximum} 项',
+      format: '格式：{format}',
+      reviewHint: '↑↓ 选择字段 · Enter 编辑 · Space 提供/省略 · s 提交 · d 拒绝 · Esc 取消',
+      textHint: '输入值 · Enter 返回检查 · Esc 返回检查',
+      choiceHint: '↑↓ 选择 · Enter 返回检查 · Esc 返回检查',
+      multiHint: '↑↓ 移动 · Space 切换 · Enter 返回检查 · Esc 返回检查',
+      trueValue: '是',
+      falseValue: '否',
+      selectedCount: '已选择 {count} 项',
+    },
+  },
   pickers: {
     en: {
       modelPickerTitle: 'Select Model',
@@ -281,6 +335,12 @@ export const TUI_COPY_RESOURCES = {
       setupTitle: 'Set Up Provider',
       baseUrlLabel: 'Base URL',
       apiKeyLabel: 'API key',
+      connectionNameLabel: 'Name',
+      connectionSlugLabel: 'Slug',
+      identityHint:
+        'Name this connection, or keep the defaults to auto-assign · Enter continues · Esc returns',
+      identitySlugInvalid: 'Slug must be 2–64 characters: lowercase letters, digits, and hyphens',
+      identityNameTooLong: 'Name must be 256 characters or fewer',
       onboardingUnavailable:
         'Onboarding is unavailable: this environment does not provide a setup surface.',
       onboardingRequestFailed: 'Could not reach the Runtime Host. Try again.',
@@ -291,6 +351,7 @@ export const TUI_COPY_RESOURCES = {
         base_url_not_configured: 'A Base URL is required for this provider.',
         catalog_full: 'The connection catalog is full.',
         model_unavailable: 'A selected model is no longer available. Verify and select again.',
+        slug_taken: 'That slug is already taken. Pick another, or clear it to auto-assign.',
         superseded: 'This connection changed. Reopen /setup and try again.',
       },
       onboardingFailures: {
@@ -324,11 +385,17 @@ export const TUI_COPY_RESOURCES = {
             'Leave blank to reuse the saved key, or enter a new key to rotate it · Esc returns to Base URL',
           provider:
             'Leave blank to reuse the saved key, or enter a new key to rotate it · Esc returns to provider selection',
+          // The identity step only exists for create targets, so a `reuse`
+          // hint never lands here; the provider text keeps the record total.
+          identity:
+            'Leave blank to reuse the saved key, or enter a new key to rotate it · Esc returns to provider selection',
         },
         enter: {
           baseUrl: 'Enter an API key · stored only on this machine · Esc returns to Base URL',
           provider:
             'Enter an API key · stored only on this machine · Esc returns to provider selection',
+          identity:
+            'Enter an API key · stored only on this machine · Esc returns to connection naming',
         },
       },
       submitAction: 'Enter to submit',
@@ -367,6 +434,11 @@ export const TUI_COPY_RESOURCES = {
       setupTitle: '配置模型提供商',
       baseUrlLabel: 'Base URL',
       apiKeyLabel: 'API key',
+      connectionNameLabel: '名称',
+      connectionSlugLabel: '标识（slug）',
+      identityHint: '为该连接起名，或保留默认值自动分配 · Enter 继续 · Esc 返回',
+      identitySlugInvalid: '标识需为 2–64 位小写字母、数字或连字符',
+      identityNameTooLong: '名称不能超过 256 个字符',
       onboardingUnavailable: 'Onboarding 不可用：当前运行环境未提供配置入口。',
       onboardingRequestFailed: '无法连接 Runtime Host，请重试。',
       onboardingRejections: {
@@ -376,6 +448,7 @@ export const TUI_COPY_RESOURCES = {
         base_url_not_configured: '该服务商需要填写 Base URL。',
         catalog_full: '连接目录已满。',
         model_unavailable: '所选模型已不可用，请重新验证并选择。',
+        slug_taken: '该标识已被占用。请更换，或清空后自动分配。',
         superseded: '该连接已发生变化，请重新打开 /setup 后重试。',
       },
       onboardingFailures: {
@@ -405,10 +478,13 @@ export const TUI_COPY_RESOURCES = {
         reuse: {
           baseUrl: '留空复用已保存的 key，或输入新 key 轮换 · Esc 返回 Base URL',
           provider: '留空复用已保存的 key，或输入新 key 轮换 · Esc 返回选择服务商',
+          // identity 步骤只存在于新建流程，reuse 不会落到这里；沿用 provider 文案保持记录完整。
+          identity: '留空复用已保存的 key，或输入新 key 轮换 · Esc 返回选择服务商',
         },
         enter: {
           baseUrl: '输入 API key · 仅本机存储 · Esc 返回 Base URL',
           provider: '输入 API key · 仅本机存储 · Esc 返回选择服务商',
+          identity: '输入 API key · 仅本机存储 · Esc 返回命名连接',
         },
       },
       submitAction: 'Enter 提交',

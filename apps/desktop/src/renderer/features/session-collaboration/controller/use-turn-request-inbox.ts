@@ -22,6 +22,7 @@ import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import type { ToastApi } from '@maka/ui';
 import {
   groupPendingTurnRequests,
+  describeTurnRequestIntent,
   samePendingTurnRequests,
   turnRequestPreview,
   unseenTurnRequests,
@@ -40,6 +41,7 @@ export function useSessionTurnRequestInbox(input: {
     readonly newTurnRequestSummary: (count: number) => string;
     readonly reviewTurnRequest: string;
     readonly turnRequests: string;
+    readonly regenerateRequest: string;
   };
 }) {
   const services = useSessionCollaborationServices();
@@ -67,7 +69,9 @@ export function useSessionTurnRequestInbox(input: {
       variant: 'warning',
       title: copy.newTurnRequestTitle(unseen.length),
       description: unseen.length === 1
-        ? `${sessionName} · ${turnRequestPreview(first.intent.content.text)}`
+        ? `${sessionName} · ${turnRequestPreview(
+            describeTurnRequestIntent(first.intent, copy.regenerateRequest),
+          )}`
         : copy.newTurnRequestSummary(unseen.length),
       duration: 10_000,
       action: {

@@ -2173,8 +2173,11 @@ describe('non-serving Runtime Host kernel', () => {
           { sessionId: 'late-session' },
           50,
         );
-        await lateEntered;
-        await assert.rejects(
+        // Claim the rejection before awaiting anything else. The deadline above
+        // is shorter than the gate below can take to open on a loaded machine,
+        // so attaching the handler later leaves a window where the timeout is
+        // an unhandled rejection and fails the test on timing alone.
+        const locallyTimedRejected = assert.rejects(
           locallyTimed,
           (error: unknown) =>
             error instanceof RuntimeHostRequestInterruptedError &&
@@ -2183,6 +2186,8 @@ describe('non-serving Runtime Host kernel', () => {
             error.cause instanceof RuntimeHostTransportError &&
             error.cause.code === 'read_timeout',
         );
+        await lateEntered;
+        await locallyTimedRejected;
         assert.equal(
           (await connected.connection.status()).hostEpoch,
           connected.connection.hostEpoch,

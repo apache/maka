@@ -54,11 +54,9 @@ import { SettingsRow } from './settings-section';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
-import { useActionGuard } from './use-action-guard';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
-  useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
@@ -169,7 +167,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -414,8 +411,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {needsOAuth && (
           retired ? (
             <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-          ) : usesGitHubCopilotLogin ? (
-            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
               service={oauthLoginService}
@@ -868,18 +863,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       />
                     </CapabilityRow>
                     <CapabilityRow label={copy.contextWindow} description={copy.contextWindowHelp}>
-                      <DeclaredContextWindowField
-                        declared={declared?.contextWindow}
-                        disabled={allActionsBusy}
-                        /* Named per model, like the three controls around it:
-                           the visible label is the row's, but the field's own
-                           name is all a screen reader gets, and every row in
-                           the section carries the same one. */
-                        label={`${copy.contextWindow} — ${modelId}`}
-                        onCommit={(value) =>
-                          setDraftContextWindow(modelId, value ?? undefined)
-                        }
-                      />
+                      <VStack gap={1} hAlign="start">
+                        <DeclaredContextWindowField
+                          declared={declared?.contextWindow}
+                          disabled={allActionsBusy}
+                          /* Named per model, like the three controls around it:
+                             the visible label is the row's, but the field's own
+                             name is all a screen reader gets, and every row in
+                             the section carries the same one. */
+                          label={`${copy.contextWindow} — ${modelId}`}
+                          onCommit={(value) =>
+                            setDraftContextWindow(modelId, value ?? undefined)
+                          }
+                        />
+                        {declared?.contextWindow === undefined &&
+                          connection.models?.find((model) => model.id === modelId)?.contextWindow !== undefined && (
+                            <HStack gap={1} vAlign="center">
+                              <Text size="sm" type="supporting" color="secondary">
+                                {copy.contextWindowHint(
+                                  connection.models.find((model) => model.id === modelId)!.contextWindow!,
+                                )}
+                              </Text>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                label={copy.contextWindowApplyHint}
+                                isDisabled={allActionsBusy}
+                                onClick={() =>
+                                  setDraftContextWindow(
+                                    modelId,
+                                    connection.models?.find((model) => model.id === modelId)?.contextWindow,
+                                  )}
+                              />
+                            </HStack>
+                          )}
+                      </VStack>
                     </CapabilityRow>
                     {showsFastMode && (
                       <CapabilityRow label={copy.fastMode} description={copy.fastModeHelp}>
@@ -1028,70 +1046,6 @@ function connectionIssueStatus(tone: StatusSemantic): 'error' | 'success' | 'inf
   return 'info';
 }
 
-function GitHubCopilotReloginNotice(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  return (
-    <RuntimeHostSettingsGenerationBoundary>
-      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
-    </RuntimeHostSettingsGenerationBoundary>
-  );
-}
-
-function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  const host = useRuntimeHostSettingsTarget();
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).detail;
-  // connectGuard stays: it survives this component's renders and is the
-  // cross-render "one connect at a time" record. The `busy` state it used to
-  // mirror is gone — one button, so clickAction's own disable and spinner are
-  // the whole visible story.
-  const connectGuard = useActionGuard<'connect'>();
-  const mountedRef = useMountedRef();
-  const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const loggedIn = props.hasSecret === true;
-  const loading = props.hasSecret === 'loading';
-
-  async function connect() {
-    if (!connectGuard.begin('connect')) return;
-    try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
-      // A same-key Runtime Host replacement remounts this controller through
-      // the generation boundary above. The old import cannot report into, or
-      // refresh, the connection detail now owned by the replacement Host.
-      if (!mountedRef.current) return;
-      if (!result.ok) {
-        reportHostError(copy.copilotImportFailed, result.message);
-        return;
-      }
-      await props.onRelogin();
-    } catch (error) {
-      if (mountedRef.current) {
-        reportHostError(
-          copy.copilotImportFailed,
-          providerPanelActionErrorMessage(error, locale),
-        );
-      }
-    } finally {
-      connectGuard.finish();
-    }
-  }
-
-  return (
-    <Banner
-      status="info"
-      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
-      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
-      endContent={!loading ? (
-          <Button variant="primary" size="sm" clickAction={() => connect()} label={loggedIn ? copy.reimport : copy.importCredential} />
-      ) : undefined} />
-  );
-}
-
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives
 // the SAME shared browser-assisted OAuth flow the catalog cards use, so an
 // expired connection can be re-authorized right where the problem surfaces.
@@ -1143,8 +1097,7 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
-  // Codex's device page has no code in its URL — the user must type the
-  // code shown here, so hiding it makes the re-login impossible to finish.
+  // Device pages without the code in their URL require the surface to show it.
   const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner

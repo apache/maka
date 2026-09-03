@@ -271,6 +271,10 @@ describe('CodexSessionAdapter', () => {
       });
       assert.equal(session.messages[2]?.type, 'assistant');
       assert.equal(session.messages[2]?.text, 'I found the issue.');
+      assert.deepEqual(
+        session.messages[2]?.type === 'assistant' ? session.messages[2].providerOptions : undefined,
+        { openai: { phase: 'commentary' } },
+      );
       assert.deepEqual(session.messages[3], {
         type: 'tool_call',
         id: 'call-wait-1',
@@ -348,6 +352,11 @@ describe('CodexSessionAdapter', () => {
         turnId: 'codex-turn-item-completed',
         ts: Date.parse('2026-08-22T00:00:04.000Z'),
         text: 'Use canvas. Then process the pixels.',
+        providerOptions: {
+          openai: {
+            phase: 'final_answer',
+          },
+        },
         modelId: 'gpt-codex-item-test',
         contentOrder: ['text'],
       });

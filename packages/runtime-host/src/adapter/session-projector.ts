@@ -473,6 +473,9 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        ...(root.contextCompactionOutcome
+          ? { contextCompactionOutcome: root.contextCompactionOutcome }
+          : {}),
       });
     } else if (root.status === 'failed') {
       events.push({
@@ -561,6 +564,17 @@ export function projectRuntimeHostInteractionRequest(
           question: question.question,
           options: question.options.map((option) => ({ ...option })),
         })),
+      },
+    ];
+  }
+  if (interaction.request.kind === 'form') {
+    return [
+      {
+        type: 'form_request',
+        ...base,
+        message: interaction.request.message,
+        requester: structuredClone(interaction.request.requester),
+        fields: structuredClone(interaction.request.fields),
       },
     ];
   }

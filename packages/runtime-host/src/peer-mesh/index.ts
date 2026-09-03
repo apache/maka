@@ -18,11 +18,13 @@
  */
 
 export {
-  type PeerMeshAuthorityTarget,
   type PeerMeshRosterV1,
   type SignedPeerMeshRosterV1,
 } from './model.js';
-export { decodePeerMeshInvitation, type PeerMeshInvitationV1 } from '../protocol/peer-mesh.js';
+export {
+  decodePeerMeshInvitation,
+  type PeerMeshInvitationV1,
+} from '../protocol/peer-mesh.js';
 export {
   openPeerMeshNode,
   type PeerMeshNode,
@@ -30,7 +32,10 @@ export {
   type PeerMeshTransport,
 } from './node.js';
 export {
-  openRuntimeHostPeerMeshOwner,
-  type RuntimeHostPeerMeshOwner,
+  openRuntimeHostPeerMeshComponent,
+  type RuntimeHostPeerMeshComponent,
 } from './owner.js';
-export { hasPeerMeshIdentityObligations, PeerMeshPostCommitError } from './store.js';
+export {
+  hasPeerMeshIdentityObligations,
+  PeerMeshPostCommitError,
+} from './store.js';

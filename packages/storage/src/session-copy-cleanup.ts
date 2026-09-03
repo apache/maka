@@ -29,7 +29,8 @@ export interface SessionCopyCreationLease {
   sessionId: string;
   kind: 'branch' | 'revision';
   sourceSessionId: string;
-  sourceTurnId: string;
+  /** Settled turn the copy branches through. Absent marks an empty copy. */
+  sourceTurnId?: string;
   intent?: 'side_conversation';
   ownerId: string;
 }
@@ -356,7 +357,7 @@ class SqliteSessionCopyCleanupStore implements SessionCopyCleanupStore {
         creation: {
           kind: creation.kind,
           sourceSessionId: creation.sourceSessionId,
-          sourceTurnId: creation.sourceTurnId,
+          ...(creation.sourceTurnId === undefined ? {} : { sourceTurnId: creation.sourceTurnId }),
           ...(creation.intent ? { intent: creation.intent } : {}),
         },
       };
@@ -492,7 +493,9 @@ function normalizeCreationLease(creation: SessionCopyCreationLease): SessionCopy
     sessionId: normalizeSessionId(creation.sessionId),
     kind: creation.kind,
     sourceSessionId: normalizeSessionId(creation.sourceSessionId),
-    sourceTurnId: normalizeSessionId(creation.sourceTurnId),
+    ...(creation.sourceTurnId === undefined
+      ? {}
+      : { sourceTurnId: normalizeSessionId(creation.sourceTurnId) }),
     ...(creation.intent === 'side_conversation' ? { intent: creation.intent } : {}),
     ownerId: normalizeOwnerId(creation.ownerId),
   };

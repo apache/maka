@@ -26,6 +26,20 @@
   max-width: 100%;
 }
 
+.maka-context-usage-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 4ch;
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+  white-space: nowrap;
+}
+
+.maka-context-usage-indicator svg {
+  flex: 0 0 auto;
+}
+
 /* The composer footer's model and thinking pickers are ghost-button
    DropdownMenus — the same toolbar primitive as ＋ and permission, so their
    resting, hover, focus, and disabled chrome all derive from the Astryx

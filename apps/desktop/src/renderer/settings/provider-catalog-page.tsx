@@ -73,7 +73,7 @@ export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all
 export interface CreatedOAuthConnectionIdentity {
   connectionId: string;
   slug: string;
-  providerType: 'openai-codex' | 'xai-oauth';
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 /**
@@ -176,7 +176,7 @@ export function ProviderCatalogPage(props: {
               data-logged-in={card.isLoggedIn ? 'true' : undefined}
               startContent={<ProviderLogo type={card.providerType} />}
               label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
-                card.id === 'github-copilot' ? card.isLoggedIn ? 'manage' : 'import' : 'add',
+                'add',
                 card.name,
                 card.status,
                 card.description,
@@ -243,7 +243,11 @@ export function ProviderSetupPage(props: {
   if (props.target.method === 'account') {
     return (
       <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountCreated} />
+        <OAuthLoginPanel
+          bridge={props.bridge}
+          cardId={props.target.cardId}
+          onLoginSuccess={props.onAccountCreated}
+        />
       </div>
     );
   }

@@ -566,6 +566,19 @@ describe('committed stream graph projection', () => {
                 userQuestionAnswerAccepted: { requestId: 'question-1' },
               },
             }),
+            runtimeEvent(run, {
+              id: 'form-request',
+              ts: baseTs + 4,
+              actions: {
+                formRequest: {
+                  requestId: 'form-1',
+                  toolUseId: 'tool-3',
+                  message: 'Choose settings',
+                  requester: { name: 'fixture' },
+                  fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+                },
+              },
+            }),
           ],
         },
       ],
@@ -577,9 +590,11 @@ describe('committed stream graph projection', () => {
         [{ kind: 'attention', reason: 'permission_request' }],
         [{ kind: 'attention', reason: 'user_question_request' }],
         [],
+        [{ kind: 'attention', reason: 'form_request' }],
       ],
     );
     assert.deepEqual(records[2]?.facets, ['runtime_fact']);
+    assert.deepEqual(records[3]?.facets, ['form_request']);
     assert.equal(replayAgentGraphRecords(records).operators.research?.status, 'running');
   });
 

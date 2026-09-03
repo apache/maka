@@ -259,6 +259,28 @@ describe('projectProviders', () => {
     );
   });
 
+  test('the create row carries the Host-derived slug suggestion for the identity step', () => {
+    const taken = {
+      ...relay,
+      connectionId: 'openai-id',
+      slug: 'openai',
+      providerType: 'openai' as const,
+    };
+    const entries = projectProviders(catalog([taken])).filter(
+      ({ providerType }) => providerType === 'openai',
+    );
+    const create = entries.find(({ target }) => target.kind === 'create');
+    assert.equal(
+      create && 'suggestedSlug' in create ? create.suggestedSlug : undefined,
+      'openai-2',
+    );
+    // …and with no existing connection the suggestion is the canonical base.
+    const bare = projectProviders(catalog([])).find(
+      ({ providerType }) => providerType === 'openai',
+    );
+    assert.equal(bare && 'suggestedSlug' in bare ? bare.suggestedSlug : undefined, 'openai');
+  });
+
   test('a canonical connection does not hide another account', () => {
     const canonical = { ...relay, connectionId: 'canonical-id', slug: 'openai-compatible' };
     const entries = projectProviders(catalog([relay, canonical])).filter(

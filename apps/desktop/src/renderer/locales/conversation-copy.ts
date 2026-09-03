@@ -77,6 +77,7 @@ export interface DesktopConversationCopy {
     regenerateRunning: string;
     regenerateAgain: string;
     regenerate: string;
+    requestRegenerate: string;
     branchRunning: string;
     branchAborted: string;
     branch: string;
@@ -217,6 +218,28 @@ export interface DesktopConversationCopy {
       cost: string;
     };
     /**
+     * The session-wide metered-token split, read like a bill: what the
+     * provider's cache served, what was paid as uncached input, what was paid
+     * as output. Names the bands of the token track, in the track's order.
+     */
+    tokenUsage: {
+      title: string;
+      segment: { cacheRead: string; cacheMiss: string; output: string };
+    };
+    /**
+     * Where the session's recorded time went. Names the bands of the duration
+     * track; each row also states how many times its kind ran.
+     */
+    durationUsage: {
+      title: string;
+      /** Label under the ring's total figure. */
+      center: string;
+      segment: {
+        model: (count: number) => string;
+        tool: (count: number) => string;
+      };
+    };
+    /**
      * The coverage notice, composed with its own breakdown: the separators
      * belong to the language, not to the layout, so a Chinese sentence gets
      * `：` and `、` where an English one gets `:` and `,`.
@@ -293,14 +316,20 @@ export interface DesktopConversationCopy {
     };
   };
   quoteCompanion: {
-    /** Initial title used while the eager side-conversation fork is empty. */
-    defaultName: string;
     /** Prefix for the companion fork's session name (followed by the excerpt). */
     namePrefix: string;
-    /** Short-lived status while the eager fork is created. */
-    preparing: string;
     permissionStreaming: string;
     scrollToBottom: string;
+    compactSuccessTitle: string;
+    compactSuccessDescription: string;
+    compactStartedTitle: string;
+    compactStartedDescription: string;
+    compactUnchangedTitle: string;
+    compactUnchangedDescription: string;
+    compactErrorTitle: string;
+    compactErrorFallback: string;
+    workspaceUnavailableTitle: string;
+    workspaceUnavailableDescription: string;
     closeConfirmation: {
       title(count: number): string;
       description(count: number): string;
@@ -449,7 +478,7 @@ const COPY = {
         provider_retired: '当前任务绑定的连接，其登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后新建任务。',
       },
     },
-    footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
+    footer: { labels: { regenerate: '重新生成', branch: '分支', copy: '复制', info: '详情' }, pending: '正在处理…', regenerateRunning: '当前回答仍在进行中，结束后再重新生成', regenerateAgain: '已重新生成过，再次点击将创建新的并行回答', regenerate: '让模型重新生成本轮回答', requestRegenerate: '请求所有者批准重新生成本轮回答', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
     workbar: {
       ariaLabel: '任务工作栏',
@@ -572,6 +601,22 @@ const COPY = {
       totals: {
         cost: '估算成本',
       },
+      tokenUsage: {
+        title: 'Token 统计',
+        segment: {
+          cacheRead: '缓存输入',
+          cacheMiss: '未命中输入',
+          output: '输出（含思考）',
+        },
+      },
+      durationUsage: {
+        title: '耗时统计',
+        center: '记录时长',
+        segment: {
+          model: (count) => `LLM 调用 × ${count}`,
+          tool: (count) => `工具执行 × ${count}`,
+        },
+      },
       coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
@@ -612,11 +657,19 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: '侧边对话',
       namePrefix: '侧聊：',
-      preparing: '正在建立侧边对话…',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
       scrollToBottom: '滚动侧边对话到底部',
+      compactSuccessTitle: '上下文已压缩',
+      compactSuccessDescription: '较早的上下文已替换为检查点摘要。',
+      compactStartedTitle: '正在压缩上下文',
+      compactStartedDescription: '正在将较早的上下文整理为检查点摘要。',
+      compactUnchangedTitle: '无需压缩',
+      compactUnchangedDescription: '任务已使用最新的检查点。',
+      compactErrorTitle: '压缩失败',
+      compactErrorFallback: '任务暂时无法压缩，请稍后重试。',
+      workspaceUnavailableTitle: '工作目录不可用',
+      workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
       closeConfirmation: {
         title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
         description: (count) =>
@@ -679,7 +732,7 @@ const COPY = {
         provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
-    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
+    footer: { labels: { regenerate: 'Regenerate', branch: 'Branch', copy: 'Copy', info: 'Details' }, pending: 'Working…', regenerateRunning: 'Wait for the current response to finish before regenerating', regenerateAgain: 'A regenerated response already exists; click again to create another parallel response', regenerate: 'Generate another response to this turn', requestRegenerate: 'Ask the Owner to approve regenerating this response', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
     workbar: {
       ariaLabel: 'Task workbar',
@@ -804,6 +857,22 @@ const COPY = {
       totals: {
         cost: 'Estimated cost',
       },
+      tokenUsage: {
+        title: 'Token usage',
+        segment: {
+          cacheRead: 'Cached input',
+          cacheMiss: 'Uncached input',
+          output: 'Output (incl. reasoning)',
+        },
+      },
+      durationUsage: {
+        title: 'Time breakdown',
+        center: 'Recorded Time',
+        segment: {
+          model: (count) => `LLM Calls × ${count}`,
+          tool: (count) => `Tool Runs × ${count}`,
+        },
+      },
       coveragePartial: (parts) =>
         `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,
       coverageAbsent: (parts) => `This backend does not record per-call detail${enDetail(parts)}`,
@@ -847,11 +916,20 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: 'Side chat',
       namePrefix: 'Side: ',
-      preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
       scrollToBottom: 'Scroll side conversation to bottom',
+      compactSuccessTitle: 'Context compacted',
+      compactSuccessDescription: 'Older context was replaced with a checkpoint summary.',
+      compactStartedTitle: 'Compacting context',
+      compactStartedDescription: 'Summarizing older context into a checkpoint.',
+      compactUnchangedTitle: 'Nothing to compact',
+      compactUnchangedDescription: 'The task already uses the latest checkpoint.',
+      compactErrorTitle: 'Compaction failed',
+      compactErrorFallback: 'The task could not be compacted. Try again later.',
+      workspaceUnavailableTitle: 'Working directory unavailable',
+      workspaceUnavailableDescription:
+        'The working directory does not exist or cannot be accessed. Select a valid folder for a new task.',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>

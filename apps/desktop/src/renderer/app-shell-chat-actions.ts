@@ -454,6 +454,41 @@ export function createAppShellChatActions(deps: {
     };
     try {
       const messageId = crypto.randomUUID();
+      async function submitIntoSession(sessionId: string, messageId: string) {
+        if (exactTurn) armTurnActive(sessionId, messageId);
+        const attachmentItems =
+          pending && pending.length > 0
+            ? toComposerIngestItems(pending)
+            : undefined;
+        const retainedAttachments =
+          pending && pending.length > 0
+            ? retainedAttachmentRefs(pending)
+            : undefined;
+        const sendCommand = {
+          text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...(retainedAttachments && retainedAttachments.length > 0
+            ? { retainedAttachments }
+            : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        };
+        return submitAndProject({
+          sessionId,
+          messageId,
+          placement: 'current_turn',
+          command: {
+            ...sendCommand,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+          },
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('quotes', quotes),
+          exactTurn,
+          isSurfaceVisible: () => activeIdRef.current === sessionId,
+        });
+      }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
         if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
@@ -502,47 +537,15 @@ export function createAppShellChatActions(deps: {
           await discardUnsentSession();
           return false;
         }
-        if (exactTurn) armTurnActive(session.id, messageId);
-        const attachmentItems =
-          pending && pending.length > 0
-            ? toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending && pending.length > 0
-            ? retainedAttachmentRefs(pending)
-            : undefined;
-        const sendCommand = {
-          text,
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('attachmentItems', attachmentItems),
-          ...(retainedAttachments && retainedAttachments.length > 0
-            ? { retainedAttachments }
-            : {}),
-          ...copiedArray('directoryReferences', directoryReferences),
-          ...copiedArray('quotes', quotes),
-          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
-        };
-        const submitted = await submitAndProject({
-          sessionId: session.id,
-          messageId,
-          placement: 'current_turn',
-          command: {
-            ...sendCommand,
-            ...(options.turnOrchestration
-              ? { turnOrchestration: options.turnOrchestration }
-              : {}),
-          },
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('quotes', quotes),
-          exactTurn,
-          isSurfaceVisible: () => activeIdRef.current === session.id,
-        });
+        const submitted = await submitIntoSession(session.id, messageId);
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
-        options.onSessionResolved?.(session.id);
+        // The callback fires only when this send's first message projected;
+        // an unreconciled first message stays unreported.
+        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
         await refreshSessions();
         return true;
       }
@@ -577,42 +580,9 @@ export function createAppShellChatActions(deps: {
           inlineReferences: [],
         },
       );
-      if (exactTurn) armTurnActive(sessionId, messageId);
-      const attachmentItems =
-        pending && pending.length > 0
-          ? toComposerIngestItems(pending)
-          : undefined;
-      const retainedAttachments =
-        pending && pending.length > 0
-          ? retainedAttachmentRefs(pending)
-          : undefined;
-      const sendCommand = {
-        text,
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...copiedArray('attachmentItems', attachmentItems),
-        ...(retainedAttachments && retainedAttachments.length > 0
-          ? { retainedAttachments }
-          : {}),
-        ...copiedArray('directoryReferences', directoryReferences),
-        ...copiedArray('quotes', quotes),
-        ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
-      };
-      const submitted = await submitAndProject({
-        sessionId,
-        messageId,
-        placement: 'current_turn',
-        command: {
-          ...sendCommand,
-          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        },
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...copiedArray('quotes', quotes),
-        exactTurn,
-        isSurfaceVisible: () => activeIdRef.current === sessionId,
-      });
+      const submitted = await submitIntoSession(sessionId, messageId);
       if (submitted.kind === 'refused') return false;
-      if (submitted.kind === 'unreconciled') return true;
-      options.onSessionResolved?.(sessionId);
+      // An existing-Session send never reports a resolved Session.
       return true;
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A

@@ -37,6 +37,7 @@ export const AGENT_GRAPH_RECORD_FACETS = [
   'permission_request',
   'permission_decision',
   'user_question_request',
+  'form_request',
   'transfer',
   'usage',
   'completed',
@@ -55,7 +56,10 @@ export type AgentGraphActivationStatus =
   | 'aborted'
   | 'cancelled';
 
-export type AgentGraphSupervisorAttentionReason = 'permission_request' | 'user_question_request';
+export type AgentGraphSupervisorAttentionReason =
+  | 'permission_request'
+  | 'user_question_request'
+  | 'form_request';
 
 export type AgentGraphSupervisorSignal =
   | {
@@ -521,6 +525,7 @@ function runtimeEventFacets(event: RuntimeEvent, run: AgentRunHeader): AgentGrap
   if (actions?.permissionRequest) facets.push('permission_request');
   if (actions?.permissionDecision) facets.push('permission_decision');
   if (actions?.userQuestionRequest) facets.push('user_question_request');
+  if (actions?.formRequest) facets.push('form_request');
   if (actions?.transferToAgent) facets.push('transfer');
   if (actions?.tokenUsage) facets.push('usage');
 
@@ -540,6 +545,9 @@ function runtimeEventSupervisorSignals(
   }
   if (event.actions?.userQuestionRequest) {
     signals.push({ kind: 'attention', reason: 'user_question_request' });
+  }
+  if (event.actions?.formRequest) {
+    signals.push({ kind: 'attention', reason: 'form_request' });
   }
   const terminalStatus = runtimeEventTerminalStatus(event, run);
   if (terminalStatus) {

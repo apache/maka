@@ -138,7 +138,7 @@ export interface CloneConversationRuntimeLedgerInput {
   readonly referenceMap: ConversationCopyArtifactReferenceMap;
   readonly runStore: AgentRunStore;
   readonly runtimeEventStore: RuntimeEventStore & {
-    importConversationCopyRuntimeEvents?(
+    importConversationCopyRuntimeEvents(
       sessionId: string,
       batches: readonly {
         readonly runId: string;
@@ -586,7 +586,6 @@ export async function cloneConversationRuntimeLedger(
         invocationId,
         references,
       ),
-      clonedRuntimeEvents: plan.events.map((event) => clonedEventBySourceId.get(event.id)!),
       clonedOperationalEvents,
       terminalEvent,
     };
@@ -599,25 +598,26 @@ export async function cloneConversationRuntimeLedger(
     await input.runStore.createRun(clonedRun);
   }
 
-  if (input.runtimeEventStore.importConversationCopyRuntimeEvents) {
-    await input.runtimeEventStore.importConversationCopyRuntimeEvents(
-      input.referenceMap.targetSessionId,
-      preparedPlans.map(({ runId, clonedRuntimeEvents }) => ({
-        runId,
-        events: clonedRuntimeEvents,
-      })),
-    );
-  } else {
-    for (const { runId, clonedRuntimeEvents } of preparedPlans) {
-      for (const clonedEvent of clonedRuntimeEvents) {
-        await input.runtimeEventStore.appendRuntimeEvent(
-          input.referenceMap.targetSessionId,
-          runId,
-          clonedEvent,
-        );
-      }
-    }
+  const importedSourceEventIds = new Set<string>();
+  const orderedBatches = input.plan.inlineRuntimeEvents.flatMap((event) => {
+    const cloned = clonedEventBySourceId.get(event.id);
+    const runId = runIds.get(event.runId);
+    if (!cloned || !runId) return [];
+    importedSourceEventIds.add(event.id);
+    return [{ runId, events: [cloned] }];
+  });
+  for (const { plan, runId } of preparedPlans) {
+    const remaining = plan.events.filter((event) => !importedSourceEventIds.has(event.id));
+    if (remaining.length === 0) continue;
+    orderedBatches.push({
+      runId,
+      events: remaining.map((event) => clonedEventBySourceId.get(event.id)!),
+    });
   }
+  await input.runtimeEventStore.importConversationCopyRuntimeEvents(
+    input.referenceMap.targetSessionId,
+    orderedBatches,
+  );
 
   for (const { plan, runId, clonedOperationalEvents, terminalEvent } of preparedPlans) {
     for (const clonedEvent of clonedOperationalEvents) {
@@ -901,15 +901,14 @@ function cloneAgentRunEvent(
     if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
-    // including the size floor, re-runnable here because the matched covered
-    // span is in hand — must not propagate into a fresh session. Unmarked
-    // legacy summaries stay copyable under the truncation-only load policy
-    // and keep their unmarked identity in the target.
+    // re-runnable here on structure and truncation (the size floor needs the
+    // summarizer call's usage, which a copy does not have) — must not
+    // propagate into a fresh session. Unmarked legacy summaries stay copyable
+    // under the truncation-only load policy and keep their unmarked identity
+    // in the target.
     if (
       sourceCheckpoint.summaryFormat !== undefined &&
-      findCheckpointSummaryDefect(sourceCheckpoint.summary, {
-        coveredRuntimeEvents: match.coveredRuntimeEvents,
-      }) !== undefined
+      findCheckpointSummaryDefect(sourceCheckpoint.summary) !== undefined
     ) {
       throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
     }

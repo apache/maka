@@ -86,12 +86,13 @@ describe('Runtime Host connection effects protocol', () => {
       ),
       response('connection.onboarding.save', { kind: 'rejected', reason: 'superseded' }),
     );
-    assertInvalidRequest('connection.onboarding.save', {
+    const adoptAllDiscovered = request('connection.onboarding.save', {
       target: { kind: 'create', providerType: 'openrouter' },
-      apiKey: null,
+      apiKey: 'transient-secret',
       baseUrl: null,
       enabledModelIds: [],
     });
+    assert.deepEqual(decodeClientFrame(adoptAllDiscovered), adoptAllDiscovered);
     // Provider-specific URL semantics are resolved after an existing target's
     // canonical provider is loaded; the wire still bounds the raw value.
     assertInvalidRequest('connection.onboarding.verify', {
@@ -113,11 +114,39 @@ describe('Runtime Host connection effects protocol', () => {
       apiKey: 'transient-secret',
       baseUrl: null,
     });
-    assertInvalidRequest('connection.onboarding.verify', {
-      target: { kind: 'create', providerType: 'openai-compatible', slug: 'surface-owned' },
+    // A create target may carry a caller-chosen slug/name (#4605); both
+    // decode through the same catalog codecs as the rest of the wire.
+    const namedVerify = request('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'openrouter', slug: 'openrouter-work', name: 'Work' },
       apiKey: 'transient-secret',
       baseUrl: null,
     });
+    assert.deepEqual(decodeClientFrame(namedVerify), namedVerify);
+    // …but a malformed requested slug fails decode like any other bad input.
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'openrouter', slug: 'NOT A SLUG' },
+      apiKey: 'transient-secret',
+      baseUrl: null,
+    });
+    // …and the create target stays closed to fields it does not define.
+    assertInvalidRequest('connection.onboarding.verify', {
+      target: { kind: 'create', providerType: 'openai-compatible', slug2: 'surface-owned' },
+      apiKey: 'transient-secret',
+      baseUrl: null,
+    });
+    // slug_taken is the create target's collision answer, on both halves.
+    assert.deepEqual(
+      decodeHostFrame(
+        response('connection.onboarding.verify', { kind: 'rejected', reason: 'slug_taken' }),
+      ),
+      response('connection.onboarding.verify', { kind: 'rejected', reason: 'slug_taken' }),
+    );
+    assert.deepEqual(
+      decodeHostFrame(
+        response('connection.onboarding.save', { kind: 'rejected', reason: 'slug_taken' }),
+      ),
+      response('connection.onboarding.save', { kind: 'rejected', reason: 'slug_taken' }),
+    );
     assertInvalidResponse('connection.onboarding.verify', {
       kind: 'verified',
       models: [],

@@ -100,7 +100,53 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 96 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 109 as const;
+// 109: accepted Client Capability invocations may carry one bounded nested form
+// Interaction request/result round trip.
+// 108: Session Interaction snapshots, forwarded Runtime events, and Agent Graph
+// activity may carry the provider-neutral `form` request/answer contract.
+// 107: `token_usage` anchors record the model and connection that produced
+// them. The record decodes against a closed allowlist, so an older client
+// rejects the two new keys and, with them, the Session that carries them.
+// 106: Session transcripts gain five `system_note` kinds
+// (`context_provider_dropping`, `context_window_suggestion`,
+// `context_window_overrun`, `context_reported_window_exceeded`,
+// `context_overflow_after_compaction`) and
+// `token_usage` records reshape `lastRequestAnchor` to
+// `{ inputTokens, outputTokens }`, all behind closed allowlists in
+// @maka/core. An older client that handshakes would fail
+// `decodeStoredMessage` on the first transcript carrying them, so the pair
+// must refuse each other at the handshake instead (#4559).
+// 105: Usage summaries may carry the recorded call-time total and per-Session
+// tool-invocation totals. Older Clients reject the unknown fields, so a newer
+// Host's usage summary is unreadable to them.
+// 104: WorkHub Coordination actions add closed direct-stop proposals,
+// confirmations, expected-state preconditions, and outcomes. Older peers
+// reject these strict shapes.
+// 103: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS`, the Host answers the
+// closed `oauth.enrollment.query`, and `connection.onboarding.save` admits
+// canonical OAuth material with an empty enable-all-discovered selection.
+// Older peers reject these wire values, so incompatible pairs must fail the
+// handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
+// 101: Session Turn requests can carry regeneration intents and Guests can
+// atomically withdraw pending requests. Older peers do not share this command
+// vocabulary or the expanded Guest operation grant.
+// 100: `session.branch.create` makes `sourceTurnId` optional, so a side
+// conversation can fork with an empty context (no copied messages, no
+// fabricated `branchOfTurnId`) instead of requiring a settled turn. An older
+// Host's required-field check rejects the request that omits `sourceTurnId`;
+// the handshake keeps mixed-version peers apart. `session.revision.create`
+// still requires `sourceTurnId`, and its wire shape and fingerprint are
+// unchanged.
+// 99: ScheduledTask Agent execution templates carry immutable Connection
+// identity. Older peers cannot preserve the ID/slug/model binding and could
+// silently route a deleted Connection to a same-slug replacement.
+// 98: Peer Mesh invitations carry signed reachability leases and member route
+// projections use the convergent recovery state machine. Older peers decode a
+// different strict wire shape.
+// 97: Host status replaces unsigned route arrays with a self-signed, bounded
+// reachability lease. Older peers cannot validate the locator revision or its
+// target identity before retaining it for reconnect.
 // 96: Read image tool results may carry durable `session_context` refs.
 // 95: Catalog entries carry `describedByMetadata`, so a client asks the
 // Host-resolved entry — not its own bundled table — whether a model needs a

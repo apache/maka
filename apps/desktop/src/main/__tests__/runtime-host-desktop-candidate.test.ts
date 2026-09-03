@@ -1214,6 +1214,7 @@ function connectionHarness(
       return provider.call(frame, {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       });
     },
     disconnect: () => resolveClosed?.(),

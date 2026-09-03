@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.zh-CN.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-29
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
@@ -31,6 +31,8 @@ owners:
 -->
 
 # Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Facts
+
+Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/issues/4319), [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > This chapter answers a deceptively dangerous question: when Maka crashes while a model is calling a tool, how can a restart tell what happened, what may continue, and what must stop for human attention? The answer is: **recover facts from immutable RuntimeEvents, let one RecoveryResolver classify tool state, and create a new Run only when history, execution, and workspace boundaries are all provably safe. Resume never resurrects the old process or disguises “try again” as recovery.**
 
@@ -608,7 +610,7 @@ Write/Edit recovery first needs durable evidence bound to:
 | Observation | Action |
 |---|---|
 | `matches_expected_state` | Cleanup/finalize only; synthesize outcome and commit completed bundle |
-| `matches_prior_state` | Park with `redo_disabled_pending_cas` |
+| `matches_prior_state` | Park with `reconcile_matches_prior_state` |
 | `diverged` | Park; do not overwrite outside changes |
 | `unreadable` | Park; do not guess |
 
@@ -619,7 +621,7 @@ flowchart TD
   Expected -->|"Yes"| Finalize["Finalize only<br/>do not write the file again"]
   Finalize --> Completed["Commit recovered outcome<br/>+ completed decision"]
   Expected -->|"No"| Prior{"current == before?"}
-  Prior -->|"Yes"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"Yes"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"No, content diverged"| ParkDiverged["Park<br/>protect outside writes"]
   Prior -->|"Unreadable"| ParkUnreadable["Park<br/>do not guess"]
 ```

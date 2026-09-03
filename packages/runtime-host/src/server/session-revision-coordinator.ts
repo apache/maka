@@ -39,6 +39,7 @@ import {
   collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
+  type ConversationCopySlice,
   type ConversationRuntimeLedgerCopyPlan,
 } from '@maka/runtime/conversation-copy';
 import { isArchivedToolResultPlaceholder } from '@maka/runtime/context-budget';
@@ -354,13 +355,21 @@ export class HostSessionRevisionCoordinator {
     } catch {
       return copyFailure('persistence_failed', 'Source conversation ledger is unavailable');
     }
-    const slice = createConversationCopySlice(
-      source.messages,
-      input.sourceTurnId,
-      kind === 'revision' ? 'before' : 'through',
-    );
-    if (!slice) {
-      return copyFailure('invalid_request', 'Source turn does not exist');
+    // An empty copy carries no source transcript: skip the slice so a side
+    // conversation can fork before the source has any settled turn.
+    let slice: ConversationCopySlice;
+    if (input.sourceTurnId === undefined) {
+      slice = { messages: [], turnIds: [] };
+    } else {
+      const throughSlice = createConversationCopySlice(
+        source.messages,
+        input.sourceTurnId,
+        kind === 'revision' ? 'before' : 'through',
+      );
+      if (!throughSlice) {
+        return copyFailure('invalid_request', 'Source turn does not exist');
+      }
+      slice = throughSlice;
     }
     let plan: ConversationRuntimeLedgerCopyPlan;
     let sessionHeaders: SessionHeader[];
@@ -595,7 +604,9 @@ export class HostSessionRevisionCoordinator {
       await this.#sessionTodo.initializeCopy({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
-        copyCurrent: kind === 'branch' && slice.beforeTs === undefined,
+        // An empty copy carries no source state, including no in-progress Todo.
+        copyCurrent:
+          kind === 'branch' && slice.beforeTs === undefined && input.sourceTurnId !== undefined,
       });
       if (copiedMessages.length > 0) {
         await this.#stores.sessionStore.appendMessages(input.targetSessionId, [...copiedMessages]);
@@ -720,7 +731,7 @@ export class HostSessionRevisionCoordinator {
       conversationCopy: {
         kind: persistedConversationCopyKind(kind),
         sourceSessionId: input.sourceSessionId,
-        sourceTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
         requestFingerprint,
         state: 'preparing',
         ...(kind === 'side_conversation' ? { intent: kind } : {}),
@@ -728,12 +739,18 @@ export class HostSessionRevisionCoordinator {
       status: 'active',
     };
     if (kind !== 'revision') {
+      // An empty copy records provenance but fabricates no branch turn.
       return {
         ...common,
         parentSessionId: input.sourceSessionId,
-        branchOfTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
       };
     }
+    // Revision copies always carry a turn boundary (enforced at decode).
+    if (input.sourceTurnId === undefined) {
+      throw new Error('Session revision copy requires a turn boundary');
+    }
+    const revisionOfTurnId = input.sourceTurnId;
     const revisionRootSessionId = source.revisionRootSessionId ?? input.sourceSessionId;
     const family = (await this.#stores.sessionStore.listHeaders()).filter(
       (candidate) =>
@@ -749,7 +766,7 @@ export class HostSessionRevisionCoordinator {
       ...(source.branchOfTurnId ? { branchOfTurnId: source.branchOfTurnId } : {}),
       revisionRootSessionId,
       revisionParentSessionId: input.sourceSessionId,
-      revisionOfTurnId: input.sourceTurnId,
+      revisionOfTurnId,
       revisionIndex,
       revisionState: 'preparing',
     };
@@ -923,6 +940,9 @@ function conversationCopyFingerprint(
     kind,
     input.sourceSessionId,
     input.targetSessionId,
+    // Absent for an empty copy. JSON.stringify renders the missing element as
+    // null, so an empty copy gets a distinct identity while through_turn and
+    // revision hashes stay byte-identical to a required sourceTurnId.
     input.sourceTurnId,
   ];
   return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
@@ -933,24 +953,34 @@ function conversationCopyStartNote(
   input: SessionConversationCopyInput,
   createInput: ConversationCopyCreateInput,
 ): StoredMessage {
-  return {
-    type: 'system_note',
+  const base = {
+    type: 'system_note' as const,
     id: randomUUID(),
     ts: Date.now(),
-    kind: 'session_start',
-    data:
-      kind !== 'revision'
-        ? {
-            parentSessionId: input.sourceSessionId,
-            branchOfTurnId: input.sourceTurnId,
-          }
-        : {
-            revisionRootSessionId: createInput.revisionRootSessionId,
-            revisionParentSessionId: input.sourceSessionId,
-            revisionOfTurnId: input.sourceTurnId,
-            revisionIndex: createInput.revisionIndex,
-            revisionState: 'preparing',
-          },
+    kind: 'session_start' as const,
+  };
+  if (kind !== 'revision') {
+    // Empty copies record provenance without a branch turn.
+    return {
+      ...base,
+      data: {
+        parentSessionId: input.sourceSessionId,
+        ...(input.sourceTurnId === undefined ? {} : { branchOfTurnId: input.sourceTurnId }),
+      },
+    };
+  }
+  if (input.sourceTurnId === undefined) {
+    throw new Error('Session revision copy requires a turn boundary');
+  }
+  return {
+    ...base,
+    data: {
+      revisionRootSessionId: createInput.revisionRootSessionId,
+      revisionParentSessionId: input.sourceSessionId,
+      revisionOfTurnId: input.sourceTurnId,
+      revisionIndex: createInput.revisionIndex,
+      revisionState: 'preparing',
+    },
   };
 }
 

@@ -30,7 +30,6 @@ import {
 } from './history-compact-checkpoint.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelMessage } from './model-protocol.js';
-import { fitHistoryCompactMessages } from './history-compact-input-fit.js';
 import {
   admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
@@ -39,7 +38,7 @@ import {
 } from './model-history.js';
 import { withProviderStreamTracking } from './provider-request-telemetry.js';
 import { effectiveReplayToolResultOutput } from './durable-tool-result-projection.js';
-import { providerFailureDiagnostic } from './provider-error-classification.js';
+import { classifyError, providerFailureDiagnostic } from './provider-error-classification.js';
 
 export interface BuildOpenAiCodexHistoryCompactorOptions {
   resolveModel: () => unknown;
@@ -91,10 +90,9 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       if (canContinuePrevious) {
         projectedMessages.unshift(historyCompactCheckpointToModelMessage(previous));
       }
-      const messages = fitHistoryCompactMessages(projectedMessages, {
-        maxInputEstimatedTokens: input.inputBudget?.maxEstimatedTokens,
-        charsPerToken: input.inputBudget?.charsPerToken,
-      });
+      // Whether this input fits the compaction endpoint is its own answer;
+      // nothing is trimmed on a local estimate beforehand (#4559).
+      const messages = projectedMessages;
 
       const providerRequestTracker = input.providerRequestTracker;
       const ai = await loadAiSdkModule();
@@ -133,6 +131,9 @@ export function buildOpenAiCodexHistoryCompactor(options: BuildOpenAiCodexHistor
       return state;
     } catch (error) {
       if (error instanceof HistoryCompactSummarizerError) throw error;
+      if (classifyError(error) === 'ContextLength') {
+        throw new HistoryCompactSummarizerError('input_too_large', { cause: error });
+      }
       throw new HistoryCompactSummarizerError('provider_error', { cause: error });
     }
   };

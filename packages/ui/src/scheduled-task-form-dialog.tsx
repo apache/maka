@@ -191,17 +191,25 @@ export function ScheduledTaskFormDialog(props: {
       schedule = { kind: 'calendar', recurrence, anchorAt: parsedRunAt };
     }
     submitPendingRef.current = true;
-    const input = {
+    const baseInput = {
       title: title.trim(),
       intentBody: note.trim(),
       schedule,
-      effect,
     };
+    // Preserve a pre-#3927 slug-only target without resubmitting it as a new
+    // effect; title, intent, and schedule remain editable.
+    const preservesLegacyEffect =
+      editingId !== null &&
+      props.seed.lockedEffect?.kind === 'agent_run' &&
+      !props.seed.lockedEffect.execution.llmConnectionId;
     setSubmitPending(true);
     try {
       const result = editingId
-        ? await props.onUpdate?.(editingId, input)
-        : await props.onCreate?.(input);
+        ? await props.onUpdate?.(
+            editingId,
+            preservesLegacyEffect ? baseInput : { ...baseInput, effect },
+          )
+        : await props.onCreate?.({ ...baseInput, effect });
       if (result !== false && scheduledTaskMountedRef.current) {
         resetForm();
         props.onOpenChange(false);

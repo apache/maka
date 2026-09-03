@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-29
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
@@ -31,6 +31,8 @@ owners:
 -->
 
 # 第八章：Resume 不是重试——Maka 如何从崩溃事实安全继续
+
+跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)、[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)、[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
 
 > 本章回答一个看起来简单、实际上很危险的问题：Maka 在模型调用工具时崩溃，重启后怎样知道哪些事情已经发生、哪些事情可以继续、哪些事情必须停下来等人处理？核心答案是：**先从不可变的 RuntimeEvent 恢复事实，再由唯一的 RecoveryResolver 判定工具状态；只有历史、执行和 workspace 三条边界都能证明安全时，才创建新的 Run 继续。Resume 从不复活旧进程，也不把“再试一次”伪装成恢复。**
 
@@ -627,7 +629,7 @@ Writer、projection rebuild 和 `RecoveryResolver` 共享同一个 scanner/inter
 | observation | 动作 |
 |---|---|
 | `matches_expected_state` | 只做 cleanup/finalize，合成 outcome，提交 completed bundle |
-| `matches_prior_state` | park，`redo_disabled_pending_cas` |
+| `matches_prior_state` | park，`reconcile_matches_prior_state` |
 | `diverged` | park，不覆盖外部写入 |
 | `unreadable` | park，不猜测 |
 
@@ -638,7 +640,7 @@ flowchart TD
   Expected -->|"是"| Finalize["Finalize only<br/>不再次写文件"]
   Finalize --> Completed["提交 recovered outcome<br/>+ completed decision"]
   Expected -->|"否"| Prior{"current == before?"}
-  Prior -->|"是"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"是"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"否，内容分叉"| ParkDiverged["Park<br/>保护外部写入"]
   Prior -->|"无法读取"| ParkUnreadable["Park<br/>不猜测"]
 ```

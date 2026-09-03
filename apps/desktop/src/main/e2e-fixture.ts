@@ -20,6 +20,10 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { E2eFixtureScenario, E2eFixtureState } from '@maka/core/e2e-fixture';
+import type { AgentGraphClientSnapshot } from '@maka/runtime/stream-graph-read-model';
+import { agentGraphIdForRootSession } from '@maka/runtime/stream-graph-coordinator';
+import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
+import { AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION } from '@maka/core/agent-graph-client-projection';
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
@@ -37,6 +41,7 @@ import {
   LONG_SIDEBAR_SESSION_PREFIX,
   PARTIAL_HISTORY_SESSION_ID,
   PROMPT_RAIL_SESSION_ID,
+  AGENT_GRAPH_SESSION_ID,
   TURN_SESSION_ID,
   writeSession,
 } from './e2e-fixture/seed-helpers.js';
@@ -47,6 +52,7 @@ import {
   promptRailSession,
   turnMessages,
   turnSession,
+  agentGraphSession,
 } from './e2e-fixture/scenarios-chat.js';
 import { seedMcpFixture, seedSkillsMarketFixture } from './e2e-fixture/scenarios-modules.js';
 import { longSidebarSessions } from './e2e-fixture/scenarios-sessions.js';
@@ -73,6 +79,7 @@ const E2E_FIXTURE_SCENARIOS = new Set<E2eFixtureScenario>([
   'module-mcp',
   'module-daily-review',
   'scheduled-tasks',
+  'agent-graph-layout',
   'sidebar-search-modal-open',
 ]);
 
@@ -204,6 +211,8 @@ export function getE2eFixtureState(fixture: E2eFixture | null): E2eFixtureState 
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'daily-review', sidebarCollapsed: false };
     case 'scheduled-tasks':
       return { ...state, activeSessionId: TURN_SESSION_ID, sidebarSection: 'automations', sidebarCollapsed: false };
+    case 'agent-graph-layout':
+      return { ...state, activeSessionId: AGENT_GRAPH_SESSION_ID };
     case 'sidebar-search-modal-open':
       return {
         ...state,
@@ -227,7 +236,13 @@ export async function seedE2eFixture(input: {
   const storageRoot = await resolveStorageRoot({ path: input.workspaceRoot, kind: 'interactive' });
   await writeSettings(input.workspaceRoot, scenario);
   await writeConnections(input.workspaceRoot, now, scenario);
-  await writeSession(input.workspaceRoot, turnSession(now), turnMessages(now));
+  await writeSession(
+    input.workspaceRoot,
+    scenario === 'agent-graph-layout' ? agentGraphSession(now) : turnSession(now),
+    turnMessages(now),
+  );
+
+  if (scenario === 'agent-graph-layout') await seedAgentGraphLayout(input.workspaceRoot, now);
 
   if (scenario === 'turn-narrative' || scenario === 'turn-narrative-browser') {
     const owner = await tryAcquireInteractiveRootOwner(storageRoot);
@@ -317,5 +332,88 @@ export async function seedE2eFixture(input: {
       await usage.close();
       await owner.close();
     }
+  }
+}
+
+async function seedAgentGraphLayout(workspaceRoot: string, now: number): Promise<void> {
+  const graphId = agentGraphIdForRootSession(AGENT_GRAPH_SESSION_ID);
+  const operators: AgentGraphClientSnapshot['operators'] = Array.from(
+    { length: 24 },
+    (_, index) => ({
+      operatorId: `operator-${index + 1}`,
+      childSessionId: `child-session-${index + 1}`,
+      provisionId: `provision-${index + 1}`,
+      agentId: `agent-${index + 1}`,
+      provisionedAt: now - (24 - index) * 1_000,
+      status: 'completed' as const,
+      inboundEdgeIds: [],
+      outboundEdgeIds: [],
+      scheduledWorkIds: [`work-${index + 1}`],
+      readiness: [],
+      omitted: {
+        inboundEdgeIds: 0,
+        outboundEdgeIds: 0,
+        scheduledWorkIds: 0,
+        readiness: 0,
+        readinessWaits: 0,
+      },
+    }),
+  );
+  const snapshot: AgentGraphClientSnapshot = {
+    schemaVersion: 1,
+    rootSessionId: AGENT_GRAPH_SESSION_ID,
+    graphId,
+    orchestrationMode: 'graph',
+    snapshotVersion: `sha256:${'a'.repeat(64)}`,
+    status: 'active',
+    scheduleRevision: 1,
+    topologyFingerprint: `sha256:${'b'.repeat(64)}`,
+    closed: false,
+    latestEventTime: now,
+    operators,
+    edges: [],
+    work: operators.map((operator, index) => ({
+      workId: `work-${index + 1}`,
+      target: { kind: 'agent' as const, agentId: operator.agentId },
+      inputIds: [],
+      status: 'requested' as const,
+      instructionPreview: `布局回归 operator ${index + 1}`,
+      instructionTruncated: false,
+      revision: 1,
+      committedAt: now - (24 - index) * 1_000,
+    })),
+    reconciliationFailures: [],
+    stoppedTargets: [],
+    claims: [],
+    recentControlDecisions: [],
+    recentActivity: [],
+    terminalHistory: { records: [] },
+    omitted: {
+      operators: 0,
+      edges: 0,
+      work: 0,
+      reconciliationFailures: 0,
+      stoppedTargets: 0,
+      claims: 0,
+      controlDecisions: 0,
+      recentActivity: 0,
+    },
+  };
+  const controlStore = createAgentGraphControlStore(workspaceRoot);
+  try {
+    await controlStore.commitAgentGraphClientProjection({
+      schemaVersion: AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION,
+      graphId,
+      rootSessionId: AGENT_GRAPH_SESSION_ID,
+      expectedSnapshotVersion: null,
+      snapshotVersion: snapshot.snapshotVersion,
+      snapshot,
+      replaceOperators: true,
+      operators: [],
+      terminalActivities: [],
+      activityRecords: [],
+    });
+  } finally {
+    controlStore.close();
   }
 }

@@ -17,10 +17,28 @@
  * under the License.
  */
 
-import type { ActiveInteractionRequestEvent, SessionEvent } from '@maka/core/events';
+import type {
+  ActiveInteractionRequestEvent,
+  ClientCapabilityRequestEvent,
+  SandboxBoundaryRequestEvent,
+  SessionEvent,
+  UserQuestionRequestEvent,
+} from '@maka/core/events';
 
-export type ComposerInteraction = ActiveInteractionRequestEvent;
+/** Requests this surface can render and settle itself. */
+export type ComposerInteraction =
+  | SandboxBoundaryRequestEvent
+  | ClientCapabilityRequestEvent
+  | UserQuestionRequestEvent;
 export type InteractionQueues = Record<string, ComposerInteraction[]>;
+
+function isComposerInteraction(event: ActiveInteractionRequestEvent): event is ComposerInteraction {
+  return (
+    event.type === 'sandbox_boundary_request' ||
+    event.type === 'client_capability_request' ||
+    event.type === 'user_question_request'
+  );
+}
 
 export function enqueueInteraction(
   queues: InteractionQueues,
@@ -88,9 +106,10 @@ export function reduceInteractionQueues(
 export function reconcileInteractions(
   queues: InteractionQueues,
   sessionId: string,
-  liveRequests: readonly ComposerInteraction[],
+  liveRequests: readonly ActiveInteractionRequestEvent[],
 ): InteractionQueues {
-  const liveById = new Map(liveRequests.map((request) => [request.requestId, request]));
+  const visibleRequests = liveRequests.filter(isComposerInteraction);
+  const liveById = new Map(visibleRequests.map((request) => [request.requestId, request]));
   const seen = new Set<string>();
   const reconciled: ComposerInteraction[] = [];
   for (const interaction of queues[sessionId] ?? []) {
@@ -99,7 +118,7 @@ export function reconcileInteractions(
     seen.add(interaction.requestId);
     reconciled.push(live);
   }
-  for (const request of liveRequests) {
+  for (const request of visibleRequests) {
     if (!seen.has(request.requestId)) reconciled.push(request);
   }
   return { ...queues, [sessionId]: reconciled };

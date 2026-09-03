@@ -22,9 +22,10 @@ import { applyAppIcon } from './app-icon-surface.js';
 import { installApplicationMenu } from './application-menu.js';
 import { resolveDockPresentation } from './dock-presentation.js';
 import type { createMainWindowController } from './main-window.js';
+import type { WindowRevealMode } from './window-reveal.js';
 
 interface DesktopShellPresentationDeps {
-  readonly startHidden: boolean;
+  readonly revealMode: WindowRevealMode;
   readonly mainWindowController: ReturnType<typeof createMainWindowController>;
   readonly focusOrCreateWindow: () => void;
   readonly onIconError: (error: unknown) => void;
@@ -36,7 +37,7 @@ export function installDesktopShellPresentation(
 ): void {
   const dockPresentation = resolveDockPresentation(
     process.platform,
-    deps.startHidden,
+    deps.revealMode,
   );
   if (app.dock) {
     if (dockPresentation === 'hide') {

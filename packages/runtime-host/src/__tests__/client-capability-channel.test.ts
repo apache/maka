@@ -301,3 +301,180 @@ test('Client Capability channel forwards admitted tool progress before the resul
   ]);
   channel.close(new Error('test complete'));
 });
+
+test('Client Capability channel correlates one admitted nested form before the final result', async () => {
+  let registrationId = '';
+  const written: unknown[] = [];
+  let channel!: ClientCapabilityChannel;
+  const provider: ClientCapabilityProvider = {
+    offers: () => [
+      {
+        offerId: 'fixture',
+        version: '0',
+        affinity: 'call',
+        hostPathAccess: 'none',
+        label: 'Fixture',
+        tools: [{ serverId: 'fixture', name: 'deploy', inputSchema: { type: 'object' } }],
+      },
+    ],
+    call: async (_frame, options) => {
+      await options.accept({ kind: 'none' });
+      const answer = await options.requestInteraction({
+        message: 'Choose a target',
+        requester: { name: 'deploy', source: 'Fixture' },
+        fields: [
+          {
+            kind: 'single_select',
+            name: 'target',
+            label: 'Target',
+            required: true,
+            options: [
+              { value: 'staging', label: 'Staging' },
+              { value: 'production', label: 'Production' },
+            ],
+          },
+        ],
+      });
+      assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
+      return { content: [{ type: 'text', text: 'deployed' }] };
+    },
+  };
+  channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      written.push(frame);
+      if (frame.kind === 'client.capability.accepted') {
+        queueMicrotask(() =>
+          channel.accept({
+            kind: 'client.capability.admitted',
+            invocationId: frame.invocationId,
+          }),
+        );
+      } else if (frame.kind === 'client.capability.interaction_request') {
+        queueMicrotask(() =>
+          channel.accept({
+            kind: 'client.capability.interaction_result',
+            invocationId: frame.invocationId,
+            interactionId: frame.interactionId,
+            result: { action: 'accept', values: { target: 'staging' } },
+          }),
+        );
+      }
+    },
+    replace: async (input) => {
+      registrationId = input.registrationId;
+      return { registrationId, revision: 1 };
+    },
+    unregister: async (input) => ({ registrationId: input.registrationId, revision: 2 }),
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+  await channel.replace(provider, 1_000);
+  channel.accept({
+    kind: 'client.capability.call',
+    invocationId: 'nested-form',
+    registrationId,
+    offerId: 'fixture',
+    serverId: 'fixture',
+    toolName: 'deploy',
+    arguments: {},
+    sessionId: 'session',
+    turnId: 'turn',
+    toolCallId: 'tool-call',
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const interaction = written.find(
+    (frame) =>
+      typeof frame === 'object' &&
+      frame !== null &&
+      'kind' in frame &&
+      frame.kind === 'client.capability.interaction_request',
+  );
+  assert.ok(interaction);
+  assert.deepEqual(written.at(-1), {
+    kind: 'client.capability.result',
+    invocationId: 'nested-form',
+    result: { content: [{ type: 'text', text: 'deployed' }] },
+  });
+  channel.accept({ kind: 'client.capability.release', invocationId: 'nested-form' });
+  channel.close(new Error('test complete'));
+});
+
+test('Client Capability release rejects a pending nested form', async () => {
+  let registrationId = '';
+  let interactionStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    interactionStarted = resolve;
+  });
+  let observedError: unknown;
+  let channel!: ClientCapabilityChannel;
+  const provider: ClientCapabilityProvider = {
+    offers: () => [
+      {
+        offerId: 'fixture',
+        version: '0',
+        affinity: 'call',
+        hostPathAccess: 'none',
+        label: 'Fixture',
+        tools: [{ serverId: 'fixture', name: 'deploy', inputSchema: { type: 'object' } }],
+      },
+    ],
+    call: async (_frame, options) => {
+      await options.accept({ kind: 'none' });
+      try {
+        await options.requestInteraction({
+          message: 'Choose a target',
+          requester: { name: 'deploy' },
+          fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+        });
+        return { content: [] };
+      } catch (error) {
+        observedError = error;
+        throw error;
+      }
+    },
+  };
+  channel = new ClientCapabilityChannel({
+    write: async (frame) => {
+      if (frame.kind === 'client.capability.accepted') {
+        queueMicrotask(() =>
+          channel.accept({
+            kind: 'client.capability.admitted',
+            invocationId: frame.invocationId,
+          }),
+        );
+      } else if (frame.kind === 'client.capability.interaction_request') {
+        interactionStarted();
+      }
+    },
+    replace: async (input) => {
+      registrationId = input.registrationId;
+      return { registrationId, revision: 1 };
+    },
+    unregister: async (input) => ({ registrationId: input.registrationId, revision: 2 }),
+    onFailure: (error) => {
+      throw error;
+    },
+  });
+  await channel.replace(provider, 1_000);
+  channel.accept({
+    kind: 'client.capability.call',
+    invocationId: 'released-form',
+    registrationId,
+    offerId: 'fixture',
+    serverId: 'fixture',
+    toolName: 'deploy',
+    arguments: {},
+    sessionId: 'session',
+    turnId: 'turn',
+    toolCallId: 'tool-call',
+  });
+  await started;
+
+  channel.accept({ kind: 'client.capability.release', invocationId: 'released-form' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(observedError instanceof Error && observedError.name, 'AbortError');
+  channel.close(new Error('test complete'));
+});

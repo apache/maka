@@ -35,7 +35,6 @@ import type {
   InlineReference,
   QuoteRef,
 } from '@maka/core/events';
-import type { SessionSummary } from '@maka/core/session';
 import type { OrchestrationMode } from '@maka/core/orchestration';
 import type { ChatDefaultPermissionMode } from '@maka/core/settings';
 import type { SlashCommandIdForSurface } from '@maka/core/slash-command-catalog';
@@ -86,7 +85,7 @@ import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
 import { AgentGraphPanel } from './agent-graph-panel';
-import { ChatComposerRegion } from './chat-composer-region';
+import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
   WorkbarHost,
   WorkbarTitlebarActions,
@@ -105,9 +104,7 @@ import {
 import { TaskEntryHost, useTaskEntryController } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
-import { SessionTurnRequestComposer } from './session-turn-request-composer.js';
 import * as SessionCollaboration from './features/session-collaboration';
-import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
@@ -363,8 +360,7 @@ function AppShellContent({
     sessionUiController,
   } = useAppShellSessionWorkspace(toastApi);
   const activeCatalogSession = sessions.find((session) => session.id === activeId);
-  const sharedSessionActive =
-    (activeCatalogSession as DesktopSessionSummary | undefined)?.shared === true;
+  const sharedSessionActive = activeCatalogSession?.shared === true;
   const ownerActiveId = activeCatalogSession && !sharedSessionActive ? activeId : undefined;
   const interactionHydrationEpochRef = useRef(new Map<string, number>());
   const markInteractionChanged = useCallback((sessionId: string) => {
@@ -648,7 +644,6 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const sessionCollaborationCopy = getSessionCollaborationCopy(uiLocale);
   const previousInterruptionCopy =
     getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
@@ -955,10 +950,9 @@ function AppShellContent({
     openModelPicker: openComposerModelPicker,
     refreshModelChoices: sessionHostConnections.refreshConnections,
   });
-  const newChatProviderType = newChatModel
-    ? connections.find((connection) => connection.slug === newChatModel.llmConnectionSlug)?.providerType
-    : undefined;
-
+  const newChatProviderType = connections.find(
+    (connection) => connection.slug === newChatModel?.llmConnectionSlug,
+  )?.providerType;
   // PR109d-b: turn footer actions per turn. Derived from the
   // materialized turn list (status + lineage descendants) + pending
   // mask. Per @kenji PR109d review: pending state prevents double-click
@@ -967,9 +961,6 @@ function AppShellContent({
   // Session-row mutations live in Session Navigation; the per-session mode and
   // model claims live in the session UI store.
   const turnActionRegistry = useTurnActionRegistry();
-  const pendingTurnActions = turnActionRegistry.keys;
-  const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
-    `${sessionId}:${turnId}:${actionId}`;
 
   // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
   // hundreds of lines below, and the rail does not need this identity held
@@ -1079,8 +1070,7 @@ function AppShellContent({
   // keeps the props a memoized TurnView reads stable (#2030).
   const deriveTurnPresentation = useAppShellTurnPresentation({
     activeId,
-    pendingTurnActions,
-    pendingKeyOf,
+    pendingTurnActions: turnActionRegistry.keys,
     uiLocale,
   });
 
@@ -1167,15 +1157,13 @@ function AppShellContent({
 
   // Transient placeholder while the real SessionSummary loads, so the composer
   // does not flash a value the session never had.
-  const activeSessionForView: SessionSummary | undefined =
-    activeSession ??
-    (activeId
-      ? pendingSessionView({
-          sessionId: activeId,
-          name: shellCopy.newConversation,
-          permissionMode: newTaskPermissionMode,
-        })
-      : undefined);
+  const activeSessionForView = activeSession ?? (activeId
+    ? pendingSessionView({
+        sessionId: activeId,
+        name: shellCopy.newConversation,
+        permissionMode: newTaskPermissionMode,
+      })
+    : undefined);
   // Each control reads its own field. There is nothing to project and nothing
   // to keep in sync: a Session in Plan with Swarm as its orchestration default
   // says both, because it is both.
@@ -1838,10 +1826,8 @@ function AppShellContent({
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
-    addPendingTurnAction: turnActionRegistry.addKey,
-    clearPendingTurnAction: turnActionRegistry.clearKey,
+    turnActionRegistry,
     openSessionInChat,
-    pendingKeyOf,
     refreshMessages,
     refreshSessions,
     setMessages,
@@ -2694,9 +2680,7 @@ function AppShellContent({
     <ComposerMentionsProvider {...composerMentionsSurface}>
     <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
-      toast={toastApi}
       onOpenSession={openSession}
-      copy={sessionCollaborationCopy}
     >
     <div
       className="appFrame agents-layout-root"
@@ -2778,7 +2762,7 @@ function AppShellContent({
                   activeDesktopSession.profileKind === 'environment'
                     ? undefined
                     : {
-                        label: getSessionCollaborationCopy(uiLocale).shareAction,
+                        label: sharedSessionDialog.shareActionLabel,
                         onClick: () => sharedSessionDialog.openSession(activeDesktopSession),
                       }
                 }
@@ -2899,6 +2883,8 @@ function AppShellContent({
                     {!sharedSessionActive && activeId ? (
                       <SessionCollaboration.SessionTurnRequestApprovalForSession
                         sessionId={activeId}
+                        messages={messages}
+                        onOpenSession={openSessionInChat}
                       />
                     ) : null}
                     {!sharedSessionActive && navSelection.section === 'sessions' &&
@@ -2923,7 +2909,9 @@ function AppShellContent({
                       />
                     ) : null}
                     {sharedSessionActive && activeId ? (
-                      <SessionTurnRequestComposer key={activeId} sessionId={activeId} />
+                      <SessionCollaboration.SessionTurnRequestComposer
+                        sessionId={activeId}
+                      />
                     ) : (
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
@@ -3003,6 +2991,7 @@ function AppShellContent({
                   activeModel={activeModel}
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
+                  latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}
@@ -3085,6 +3074,13 @@ function AppShellContent({
                 }
               >
                 {navSelection.section === 'sessions' ? (
+                  <SessionCollaboration.SessionGuestTurnActionBoundary
+                    sessionId={sharedSessionActive ? activeId : undefined}
+                    deriveTurnPresentation={deriveTurnPresentation}
+                    ownerTurnFooterAction={handleTurnFooterAction}
+                    turnActionRegistry={turnActionRegistry}
+                  >
+                    {(turnActions) => (
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
@@ -3117,8 +3113,8 @@ function AppShellContent({
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                deriveTurnPresentation={deriveTurnPresentation}
-                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
+                deriveTurnPresentation={turnActions.deriveTurnPresentation}
+                onTurnFooterAction={turnActions.onTurnFooterAction}
                 onSwitchToBypassAndRetry={sharedSessionActive ? undefined : handleSwitchToBypassAndRetry}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={!sharedSessionActive && activeId ? {
@@ -3242,6 +3238,8 @@ function AppShellContent({
                 }}
                 conversationItems={planConversationItems}
                   />
+                    )}
+                  </SessionCollaboration.SessionGuestTurnActionBoundary>
                 ) : null}
               </ChatSurfaceLayout>
               )}

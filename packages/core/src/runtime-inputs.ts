@@ -134,7 +134,12 @@ export interface RegenerateTurnInput {
 }
 
 export interface BranchFromTurnInput {
-  sourceTurnId: string;
+  /**
+   * Settled turn to branch through. Absent forks with an empty context — a side
+   * conversation opened before the source has any completed turn (valid only
+   * with `sideConversation: true`).
+   */
+  sourceTurnId?: string;
   name?: string;
   /** Marks a transient read-only fork whose inherited history is reference-only. */
   sideConversation?: boolean;
