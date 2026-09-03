@@ -146,7 +146,7 @@ const generationStoryConnections = [
   generationStoryCopilotConnection,
 ];
 
-const connectionsBridge: ConnectionsBridge = {
+const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async getSnapshot() {
     return {
       connections,

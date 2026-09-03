@@ -301,7 +301,6 @@ function GitHubCopilotLoginPanel(props: {
 }
 
 function requiredOAuthBridge(bridge: ConnectionsBridge) {
-  if (!bridge.oauth) throw new Error('Connection OAuth bridge is unavailable');
   return bridge.oauth;
 }
 

@@ -84,8 +84,8 @@ export interface ConnectionOAuthBridge {
 }
 
 export interface ConnectionsBridge {
-  /** Present on the production Desktop adapter and OAuth-focused fixtures. */
-  readonly oauth?: ConnectionOAuthBridge;
+  /** Host-bound account operations; every adapter and fixture must provide them. */
+  readonly oauth: ConnectionOAuthBridge;
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
   setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
   create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;

@@ -264,6 +264,7 @@ function createBridge(input: {
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
+    oauth: storyOAuthBridge(),
     addFixtureConnection(connection) {
       connections = [...connections, connection];
       defaultSlug ??= connection.slug;

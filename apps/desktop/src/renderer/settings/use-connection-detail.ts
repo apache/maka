@@ -81,11 +81,10 @@ export interface OAuthLoginService {
 
 export function oauthLoginServiceFor(
   providerType: ProviderType,
-  oauth: ConnectionOAuthBridge | undefined,
+  oauth: ConnectionOAuthBridge,
   connectionId: string,
   connectionLabel?: string,
 ): OAuthLoginService | null {
-  if (!oauth) return null;
   switch (providerType) {
     case 'openai-codex':
       return oauthLoginService(

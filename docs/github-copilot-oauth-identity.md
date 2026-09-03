@@ -59,7 +59,7 @@ statement, or exemption permitting third-party reuse of this identity, and none
 has been requested. Reuse rests only on the observation that other clients do
 the same.
 
-Because that basis is missing, the interactive device flow does not ship on:
+Because that basis is missing, the interactive device flow ships with these safeguards:
 
 - The sign-in is **off by default**, per install. An operator opts in by setting
   `MAKA_GITHUB_COPILOT_DEVICE_LOGIN_EXPERIMENTAL=1`; anything else leaves the
