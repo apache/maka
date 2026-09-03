@@ -106,6 +106,19 @@ describe('model-call usage projection', () => {
     assert.equal(summary.coverage.unpricedAttempts, 1);
   });
 
+  test('the summary sums recorded call time over the rows it counts', () => {
+    const summary = projectModelCallUsageSummary(
+      [
+        attempt({ attemptId: 'a', logicalCallId: 'a', latencyMs: 1_200 }),
+        attempt({ attemptId: 'b', logicalCallId: 'b', latencyMs: 300 }),
+      ],
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(summary.totalDurationMs, 1_500);
+    assert.equal(summary.totalRequests, 2);
+  });
+
   test('a genuinely free call is still counted as priced', () => {
     const summary = projectModelCallUsageSummary(
       [attempt({ attemptId: 'free', costUsd: 0 })],

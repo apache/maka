@@ -203,3 +203,15 @@ Maka applies offloading across two operational horizons:
 Pruning affects only the projected view visible to the model. The canonical `RuntimeEvent Log` retains original tool outputs, ensuring subsequent history compaction summarizes real operational facts rather than placeholder markers.
 
 History Compaction compresses along the temporal axis, folding older sequential turns into continuous semantic summaries. Tool Result Pruning offloads along the payload axis, moving oversized results into backing storage while preserving fine-grained event structure. Together, they keep inference fast and lean without sacrificing execution truth.
+
+## Conclusion: Preserve Facts, Defer Representation
+
+Maka's design follows a consistent rule: record what happened reliably, then decide how each consumer should read it.
+
+The UI, model context, crash recovery, and task continuation all read from the same `RuntimeEvent Log`, but each uses a different projection. Compaction changes the resolution at which history is represented. Tool Result Pruning changes how large payloads enter the context. Neither requires rewriting facts that have already been committed.
+
+Append-only history does not remove complexity. It moves complexity away from maintaining a mutable current state and into constructing appropriate views over stable history. The trade-off is continued log growth, versioned and verified projections, and lifecycle management for archived data. In return, the runtime gains clearer recovery boundaries, a more complete audit trail, and the ability to reinterpret history as models and context policies evolve.
+
+For an agent runtime, state management is not about keeping the entire history inside the model forever. It is about preserving a complete, verifiable factual record and constructing a bounded, useful context before each inference step.
+
+The model decides what to do next. The log ensures that the runtime can always reconstruct what has already happened. This is the practical meaning of **Log Is the Runtime**.

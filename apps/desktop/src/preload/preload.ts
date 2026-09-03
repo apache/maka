@@ -2931,9 +2931,6 @@ const makaBridge = {
   // `authRequestId`; the URL is held by main from the earlier `getAuthUrl`
   // call. Renderer can never hand `shell.openExternal` an arbitrary URL.
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean> {
-      return invokeSelectedRuntimeHost(host, 'openai-codex:is-experimental-enabled');
-    },
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
       return invokeSelectedRuntimeHost(host, 'openai-codex:get-auth-url', target);
     },
@@ -2956,6 +2953,9 @@ const makaBridge = {
       errorMessage?: string;
     }> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:get-account-state', connectionId);
+    },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'openai-codex:get-enrollment-state');
     },
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'openai-codex:refresh-tokens', connectionId);
@@ -2990,6 +2990,9 @@ const makaBridge = {
     }> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:get-account-state', connectionId);
     },
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'xai-oauth:get-enrollment-state');
+    },
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'xai-oauth:refresh-tokens', connectionId);
     },
@@ -3001,18 +3004,33 @@ const makaBridge = {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
       return invokeSelectedRuntimeHost(host, 'github-copilot:connect-existing-login');
     },
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
+    getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget) {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-auth-url', target);
+    },
+    openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:open-auth-url', authRequestId);
+    },
+    completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:complete-authorization', authRequestId);
+    },
+    cancelAuthorization(authRequestId?: string, host?: DesktopRuntimeHostRef): Promise<{ ok: true }> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:cancel-authorization', authRequestId);
+    },
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<{
       provider: 'github-copilot';
-      runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
+      runtimeState: 'not_logged_in' | 'authorizing' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
       errorMessage?: string;
     }> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state');
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-account-state', connectionId);
     },
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:refresh-tokens');
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:get-enrollment-state');
     },
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult> {
-      return invokeSelectedRuntimeHost(host, 'github-copilot:logout');
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:refresh-tokens', connectionId);
+    },
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult> {
+      return invokeSelectedRuntimeHost(host, 'github-copilot:logout', connectionId);
     },
   },
   scheduledTasks: {

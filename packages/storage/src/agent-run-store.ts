@@ -1897,9 +1897,13 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: Skill invocation requires external message execution',
     );
   }
-  if (admission.authorization && execution.kind !== 'external_message') {
+  if (
+    admission.authorization &&
+    execution.kind !== 'external_message' &&
+    execution.kind !== 'regenerate'
+  ) {
     throw new Error(
-      'Invalid root turn admission contract: authorization proof requires external message execution',
+      'Invalid root turn admission contract: authorization proof requires external message or regenerate execution',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {

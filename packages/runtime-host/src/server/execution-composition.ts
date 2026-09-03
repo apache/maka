@@ -37,6 +37,7 @@ import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-s
 import {
   BackendRegistry,
   SessionManager,
+  workHubDirectStopAbortSource,
   type BackendFactory,
   type BackendPreparationContext,
 } from '@maka/runtime/session-manager';
@@ -73,6 +74,7 @@ import {
 } from '@maka/runtime/shell-detect';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
+import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
 import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
@@ -1357,40 +1359,47 @@ export async function createExecutionRuntimeHostComposition(
           if (disposition.kind === 'cancelled' || disposition.kind === 'shared_turn') {
             return 'retired';
           }
-          const rootState = coordinator.readRootState(assignment.targetSessionId);
-          return rootState.kind === 'active' &&
-            rootState.turnId === disposition.turnId &&
-            rootState.runId === disposition.runId
-            ? 'not_retired'
-            : 'retired';
+          const identity = {
+            sessionId: assignment.targetSessionId,
+            turnId: disposition.turnId,
+            runId: disposition.runId,
+          };
+          if (isActiveWorkHubRoot(coordinator, identity)) return 'not_retired';
+          // The same restart window as `stopOwnedWorkHubRoot`: an unregistered
+          // root is not evidence that its work ended.
+          const snapshot = await coordinator.read(identity);
+          return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
         },
-        retireDelegation: async (assignment) => {
+        retireDelegation: async (assignment, retirement) => {
           const disposition = await messages.cancelMessageIfPending(
             assignment.targetSessionId,
             assignment.targetMessageId,
+            retirement.cancellationClaimId,
           );
           if (disposition.kind === 'recovering') {
-            throw new WorkHubActionEffectFailure(
-              'operation_unavailable',
-              'WorkHub is still resolving the delegated Message owner',
-            );
+            return { outcome: 'recovering' as const };
           }
-          if (disposition.kind === 'shared_turn') return;
+          if (disposition.kind === 'cancelled') {
+            return { outcome: 'already_terminal' as const };
+          }
+          if (disposition.kind === 'cancelled_pending') {
+            return { outcome: 'cancelled_pending' as const };
+          }
+          if (disposition.kind === 'shared_turn') {
+            return { outcome: 'not_owned' as const, targetTurnId: disposition.turnId };
+          }
           if (disposition.kind === 'owned_root') {
-            const rootState = coordinator.readRootState(assignment.targetSessionId);
-            if (
-              rootState.kind !== 'active' ||
-              rootState.turnId !== disposition.turnId ||
-              rootState.runId !== disposition.runId
-            ) {
-              return;
-            }
-            await coordinator.stopRoot({
+            const identity = {
               sessionId: assignment.targetSessionId,
               turnId: disposition.turnId,
               runId: disposition.runId,
-            });
+            };
+            return retirement.cause === 'direct_stop'
+              ? stopOwnedWorkHubRoot(coordinator, identity, retirement.cancellationClaimId)
+              : stopReplacedWorkHubRoot(coordinator, identity);
           }
+          disposition satisfies never;
+          throw new Error('Unhandled WorkHub Message retirement disposition');
         },
         assign: async (input) => {
           const durable = await stores.sessionStore.readWorkHubAssignment(input.actionId);
@@ -1989,6 +1998,74 @@ export async function createExecutionRuntimeHostComposition(
     if (errors.length === 1) throw error;
     throw new AggregateError(errors, 'Unable to clean up Runtime Host execution composition');
   }
+}
+
+/**
+ * Confirmed direct stop. The action-derived abort source is written onto the
+ * exact root Turn so a retry after a crash can tell WorkHub's own delivery
+ * apart from an earlier or concurrent manual Stop.
+ */
+export async function stopOwnedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+  actionId: string,
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal' | 'recovering';
+  readonly targetTurnId: string;
+}> {
+  if (isActiveWorkHubRoot(coordinator, identity)) {
+    await coordinator.stopRoot(identity, {
+      source: 'workhub_direct_stop',
+      workHubActionId: actionId,
+    });
+  }
+  const terminal = await coordinator.read(identity);
+  if (
+    terminal.status === 'cancelled' &&
+    terminal.abortSource === workHubDirectStopAbortSource(actionId)
+  ) {
+    return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+  }
+  // Registration is in-memory, so between Host restart and execution recovery
+  // this root looks inactive while it is still running. `already_terminal` is
+  // committed as an immutable fact, so only a durably terminal snapshot may
+  // claim it; anything else is still resolving.
+  return isHostedExecutionTerminal(terminal)
+    ? { outcome: 'already_terminal', targetTurnId: identity.turnId }
+    : { outcome: 'recovering', targetTurnId: identity.turnId };
+}
+
+/**
+ * Route correction retiring the root it is replacing. It carries its own
+ * cancellation claim, but it is not a direct stop: recording direct-stop
+ * provenance here would let replay mistake a correction for one, so the
+ * retirement keeps the neutral Stop source ordinary supersession has always
+ * used.
+ */
+export async function stopReplacedWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState' | 'read' | 'stopRoot'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): Promise<{
+  readonly outcome: 'stop_delivered' | 'already_terminal';
+  readonly targetTurnId: string;
+}> {
+  if (!isActiveWorkHubRoot(coordinator, identity)) {
+    return { outcome: 'already_terminal', targetTurnId: identity.turnId };
+  }
+  await coordinator.stopRoot(identity);
+  return { outcome: 'stop_delivered', targetTurnId: identity.turnId };
+}
+
+function isActiveWorkHubRoot(
+  coordinator: Pick<RootTurnCoordinator, 'readRootState'>,
+  identity: { readonly sessionId: string; readonly turnId: string; readonly runId: string },
+): boolean {
+  const rootState = coordinator.readRootState(identity.sessionId);
+  return (
+    rootState.kind === 'active' &&
+    rootState.turnId === identity.turnId &&
+    rootState.runId === identity.runId
+  );
 }
 
 function sessionExecutionConnectionRef(

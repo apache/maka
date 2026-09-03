@@ -105,12 +105,11 @@
     "smoke:windows:dist": "node scripts/windows-smoke.mjs"
   },
   "devDependencies": {
-    "@babel/parser": "7.29.7",
     "@ai-sdk/provider-utils": "5.0.28",
-    "@electron/asar": "4.3.0",
     "@astryxdesign/cli": "0.4.5",
     "@astryxdesign/core": "0.5.2",
     "@biomejs/biome": "2.5.9",
+    "@electron/asar": "4.3.0",
     "@types/node": "^26.2.0",
     "esbuild": "^0.28.1",
     "knip": "^6.32.2",

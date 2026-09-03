@@ -31,7 +31,10 @@ import {
   type ConnectionEffectProxySnapshot,
 } from '@maka/runtime/network/scoped-fetch-transport';
 import { createRequestCustomizationFetch } from '@maka/runtime/request-customization-fetch';
-import { isOAuthSubscriptionProvider } from '@maka/runtime/subscription-credentials';
+import {
+  isOAuthSubscriptionProvider,
+  parseOAuthSubscriptionTokens,
+} from '@maka/runtime/subscription-credentials';
 import { runConnectionModelDiscoveryEffect } from '@maka/runtime/model-fetcher';
 import { runConnectionTestEffect } from '@maka/runtime/test-connection';
 import {
@@ -189,6 +192,7 @@ export class HostConnectionEffectCoordinator {
     const lane = onboardingLane(input);
     return this.#admit(lane, 'connection.onboarding.verify', async () => {
       const prepared = await this.#discoverOnboarding(input);
+      if (prepared.kind === 'empty') return { kind: 'failed', errorClass: 'invalid_response' };
       return prepared.kind === 'ready' ? { kind: 'verified', models: prepared.models } : prepared;
     });
   }
@@ -199,12 +203,23 @@ export class HostConnectionEffectCoordinator {
     const lane = onboardingLane(input);
     return this.#admit(lane, 'connection.onboarding.save', async () => {
       const prepared = await this.#discoverOnboarding(input);
+      if (prepared.kind === 'empty') return { kind: 'rejected', reason: 'model_unavailable' };
       if (prepared.kind !== 'ready') return prepared;
       const available = new Set(prepared.models.map(({ id }) => id));
-      if (input.enabledModelIds.some((modelId) => !available.has(modelId))) {
+      // An adoption caller has no model inventory before the Host performs this
+      // discovery. Empty therefore means "enable everything this operation
+      // verified"; ordinary onboarding callers may still submit an explicit
+      // non-empty subset.
+      const enabledModelIds =
+        input.enabledModelIds.length > 0
+          ? input.enabledModelIds
+          : prepared.models.map(({ id }) => id);
+      if (enabledModelIds.some((modelId) => !available.has(modelId))) {
         return { kind: 'rejected', reason: 'model_unavailable' };
       }
-      return this.#activation.runMutation(async () => this.#commitOnboarding(input, prepared));
+      return this.#activation.runMutation(async () =>
+        this.#commitOnboarding(enabledModelIds, prepared),
+      );
     });
   }
 
@@ -229,12 +244,25 @@ export class HostConnectionEffectCoordinator {
     if (begun.kind === 'catalog_full') {
       return { kind: 'rejected', reason: 'catalog_full' };
     }
+    if (begun.kind === 'slug_taken') {
+      return { kind: 'rejected', reason: 'slug_taken' };
+    }
     const providerType = begun.candidate.providerType;
     const candidate = begun.existingConnection ?? undefined;
     const supplied = input.apiKey?.trim() ?? '';
-    const secret = supplied || begun.storedSecret || '';
-    if (PROVIDER_REGISTRY[providerType].authKind === 'api_key' && secret.length === 0) {
+    const persistedSecret = supplied || begun.storedSecret || '';
+    if (
+      (PROVIDER_REGISTRY[providerType].authKind === 'api_key' ||
+        PROVIDER_REGISTRY[providerType].authKind === 'oauth_token') &&
+      persistedSecret.length === 0
+    ) {
       return { kind: 'rejected', reason: 'credential_not_configured' };
+    }
+    let discoverySecret = persistedSecret;
+    if (isOAuthSubscriptionProvider(providerType) && persistedSecret.length > 0) {
+      const tokens = parseOAuthSubscriptionTokens(persistedSecret);
+      if (!tokens) return { kind: 'failed', errorClass: 'auth' };
+      discoverySecret = tokens.access_token;
     }
     // Mirrors the blank-key contract above: a null baseUrl reuses the
     // existing connection's persisted endpoint or the registry default.
@@ -257,7 +285,7 @@ export class HostConnectionEffectCoordinator {
       // The probe must go out the way the models path sends it (#withTransport):
       // with the connection's custom request headers and body overlay, both
       // pinned by the ticket whose basis the commit revalidates.
-      const effect = await this.#runModelDiscovery(base, secret, {
+      const effect = await this.#runModelDiscovery(base, discoverySecret, {
         fetch: createRequestCustomizationFetch(transport.fetch, {
           headers: begun.requestHeadersSecret
             ? parseRequestHeaders(begun.requestHeadersSecret)
@@ -265,12 +293,8 @@ export class HostConnectionEffectCoordinator {
           bodyOverlay: base.requestBodyOverlay,
         }),
       });
-      if (!effect.ok || effect.models.length === 0) {
-        return {
-          kind: 'failed',
-          errorClass: effect.ok ? 'invalid_response' : effect.error.kind,
-        };
-      }
+      if (!effect.ok) return { kind: 'failed', errorClass: effect.error.kind };
+      if (effect.models.length === 0) return { kind: 'empty' };
       return {
         kind: 'ready',
         ticket: begun.ticket,
@@ -283,7 +307,7 @@ export class HostConnectionEffectCoordinator {
   }
 
   async #commitOnboarding(
-    input: ConnectionOnboardingSaveInput,
+    enabledModelIds: readonly string[],
     prepared: Extract<OnboardingDiscovery, { readonly kind: 'ready' }>,
   ): Promise<ConnectionOnboardingSaveResult> {
     try {
@@ -291,7 +315,7 @@ export class HostConnectionEffectCoordinator {
         prepared.ticket,
         {
           suppliedSecret: prepared.suppliedSecret || null,
-          enabledModelIds: input.enabledModelIds,
+          enabledModelIds,
           discovery: {
             models: prepared.models,
             source: 'fetched',
@@ -304,6 +328,9 @@ export class HostConnectionEffectCoordinator {
       }
       if (committed.kind === 'target_missing') {
         return { kind: 'rejected', reason: 'connection_not_found' };
+      }
+      if (committed.kind === 'slug_taken') {
+        return { kind: 'rejected', reason: 'slug_taken' };
       }
       if (committed.kind === 'superseded') {
         return { kind: 'rejected', reason: 'superseded' };
@@ -466,6 +493,7 @@ type BeginModelFetchReady = Extract<BeginModelFetchResult, { readonly kind: 'rea
 type BeginConnectionTestReady = Extract<BeginConnectionTestResult, { readonly kind: 'ready' }>;
 
 type OnboardingDiscovery =
+  | { readonly kind: 'empty' }
   | {
       readonly kind: 'ready';
       readonly ticket: ConnectionOnboardingTicket;
@@ -479,6 +507,7 @@ type OnboardingDiscovery =
         | 'connection_not_found'
         | 'credential_not_configured'
         | 'base_url_not_configured'
+        | 'slug_taken'
         | 'catalog_full';
     }
   | { readonly kind: 'failed'; readonly errorClass: ConnectionEffectFailureClass };

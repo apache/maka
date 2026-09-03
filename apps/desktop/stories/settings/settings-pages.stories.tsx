@@ -146,7 +146,7 @@ const generationStoryConnections = [
   generationStoryCopilotConnection,
 ];
 
-const connectionsBridge: ConnectionsBridge = {
+const connectionsBridge: Omit<ConnectionsBridge, 'oauth'> = {
   async getSnapshot() {
     return {
       connections,
@@ -835,12 +835,15 @@ const makaBridge = {
       email: 'codex@example.com',
       plan: 'Plus',
     }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   githubCopilotSubscription: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   xaiOAuth: {
     getAccountState: async () => ({ runtimeState: 'not_logged_in' }),
+    getEnrollmentState: async () => ({ enabled: true }),
   },
   app: {
     info: async () => ({
@@ -1032,13 +1035,13 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
 let generationStoryConnectionsPending = false;
-let generationStoryCopilotEmail = 'old-generation@example.com';
-let generationStoryCopilotAccountReads = 0;
+let generationStoryCopilotEnrollmentEnabled = true;
+let generationStoryCopilotEnrollmentReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
-let generationStoryCopilotImportAttempts = 0;
+let generationStoryCopilotLoginAttempts = 0;
 let generationStoryCopilotSecretReads = 0;
-let generationStoryCopilotImportResolve:
+let generationStoryCopilotLoginResolve:
   | ((result: { ok: true }) => void)
   | undefined;
 let generationStoryProfileListener:
@@ -1051,13 +1054,13 @@ function resetGenerationStoryBridge(
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
   generationStoryConnectionsPending = false;
-  generationStoryCopilotEmail = 'old-generation@example.com';
-  generationStoryCopilotAccountReads = 0;
+  generationStoryCopilotEnrollmentEnabled = true;
+  generationStoryCopilotEnrollmentReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
-  generationStoryCopilotImportAttempts = 0;
+  generationStoryCopilotLoginAttempts = 0;
   generationStoryCopilotSecretReads = 0;
-  generationStoryCopilotImportResolve = undefined;
+  generationStoryCopilotLoginResolve = undefined;
   generationStoryProfileListener = undefined;
 }
 
@@ -1094,13 +1097,9 @@ const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    getAccountState: async () => {
-      generationStoryCopilotAccountReads += 1;
-      return {
-        runtimeState: 'authenticated' as const,
-        email: generationStoryCopilotEmail,
-        plan: 'Plus',
-      };
+    getEnrollmentState: async () => {
+      generationStoryCopilotEnrollmentReads += 1;
+      return { enabled: generationStoryCopilotEnrollmentEnabled };
     },
   },
 } satisfies Record<string, unknown>);
@@ -1144,7 +1143,7 @@ const withModelsOAuthAuthorizationGenerationBridge = withScopedMakaBridge({
   },
 } satisfies Record<string, unknown>);
 
-const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
+const withModelsCopilotReloginGenerationBridge = withScopedMakaBridge({
   ...makaBridge,
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   connections: {
@@ -1161,15 +1160,28 @@ const withModelsCopilotReimportGenerationBridge = withScopedMakaBridge({
   },
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    connectExistingLogin: () => {
-      generationStoryCopilotImportAttempts += 1;
-      if (generationStoryCopilotImportAttempts > 1) {
+    getAccountState: async () => ({ runtimeState: 'authenticated' as const }),
+    getAuthUrl: async () => {
+      generationStoryCopilotLoginAttempts += 1;
+      return {
+        authRequestId: `copilot-from-generation-${generationStoryCopilotLoginAttempts}`,
+        stateHint: 'GEN1-CODE',
+      };
+    },
+    openAuthUrl: async () => ({ ok: true as const }),
+    // The Host polls GitHub for the whole device window, so the first attempt
+    // stays unsettled until this story releases it — after the replacement Host
+    // has already taken over.
+    completeAuthorization: () => {
+      if (generationStoryCopilotLoginAttempts > 1) {
         return Promise.resolve({ ok: true as const });
       }
       return new Promise<{ ok: true }>((resolve) => {
-        generationStoryCopilotImportResolve = resolve;
+        generationStoryCopilotLoginResolve = resolve;
       });
     },
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   },
 } satisfies Record<string, unknown>);
 
@@ -2345,10 +2357,9 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
 };
 
 // A ready event can replace the Runtime Host without changing
-// profileId:hostId. The catalog route stays mounted, but Copilot's singleton
-// import state belongs to the Host generation and must be read again before
-// the previous account can be presented as current. Codex and xAI instead
-// project their Connection counts from the connection catalog.
+// profileId:hostId. The active setup route stays mounted, but enrollment
+// availability belongs to the selected Host generation and must be re-read
+// before its sign-in action can remain enabled.
 export const ModelsOAuthHostGenerationRevalidation: Story = {
   decorators: [withModelsOAuthGenerationRevalidationBridge],
   render: () => {
@@ -2363,12 +2374,20 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('old-generation@example.com');
-    const readsBeforeReplacement = generationStoryCopilotAccountReads;
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /添加账号连接：GitHub Copilot/,
+    }));
+    const signIn = await canvas.findByRole('button', { name: '使用 GitHub 登录' });
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > 0,
+      'Initial Copilot enrollment availability was not read',
+    );
+    await expect(signIn).not.toHaveAttribute('aria-disabled', 'true');
+    const readsBeforeReplacement = generationStoryCopilotEnrollmentReads;
     const listener = generationStoryProfileListener;
     if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
 
-    generationStoryCopilotEmail = 'new-generation@example.com';
+    generationStoryCopilotEnrollmentEnabled = false;
     listener({
       epoch: 'storybook-generation-2',
       profileId: 'local',
@@ -2380,11 +2399,14 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
       isDefault: true,
     });
 
-    await canvas.findByText('new-generation@example.com');
-    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
-    await expect(generationStoryCopilotAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > readsBeforeReplacement,
+      'Replacement Host generation did not re-read Copilot enrollment availability',
+    );
+    await expect(await canvas.findByRole('button', { name: '使用 GitHub 登录' }))
+      .toHaveAttribute('aria-disabled', 'true');
     await expect(
-      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
     ).toBeInTheDocument();
   },
 };
@@ -2442,12 +2464,14 @@ export const ModelsOAuthAuthorizationHostGenerationRevalidation: Story = {
   },
 };
 
-// The connection-detail Copilot import owns an action guard and a late
+// The connection-detail Copilot sign-in owns an action guard and a late
 // success callback independently of the catalog login panel. A same-key Host
 // replacement retires that controller without throwing away the detail route
-// or its surrounding Settings state.
-export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
-  decorators: [withModelsCopilotReimportGenerationBridge],
+// or its surrounding Settings state. The detail surface offers the device
+// sign-in rather than a local import: the Host owns enrollment, and Desktop
+// discovers an existing credential from the catalog panel instead.
+export const ModelsCopilotReloginHostGenerationRevalidation: Story = {
+  decorators: [withModelsCopilotReloginGenerationBridge],
   render: () => {
     resetGenerationStoryBridge();
     return (
@@ -2460,11 +2484,11 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const firstImport = await canvas.findByRole('button', { name: '重新导入' });
-    await userEvent.click(firstImport);
+    const firstLogin = await canvas.findByRole('button', { name: '重新登录' });
+    await userEvent.click(firstLogin);
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 1,
-      'GitHub Copilot reimport did not start',
+      () => generationStoryCopilotLoginAttempts === 1,
+      'GitHub Copilot sign-in did not start',
     );
 
     const listener = generationStoryProfileListener;
@@ -2481,22 +2505,22 @@ export const ModelsCopilotReimportHostGenerationRevalidation: Story = {
     });
 
     await waitForStoryCondition(
-      () => canvas.queryByRole('button', { name: '重新导入' })?.hasAttribute('disabled') === false,
-      'Replacement Host kept the previous generation import guard',
+      () => canvas.queryByRole('button', { name: '重新登录' })?.hasAttribute('disabled') === false,
+      'Replacement Host kept the previous generation sign-in guard',
     );
     const readsAfterReplacement = generationStoryCopilotSecretReads;
-    generationStoryCopilotImportResolve?.({ ok: true });
+    generationStoryCopilotLoginResolve?.({ ok: true });
     await new Promise((resolve) => globalThis.setTimeout(resolve, 50));
     await expect(generationStoryCopilotSecretReads).toBe(readsAfterReplacement);
 
-    await userEvent.click(canvas.getByRole('button', { name: '重新导入' }));
+    await userEvent.click(canvas.getByRole('button', { name: '重新登录' }));
     await waitForStoryCondition(
-      () => generationStoryCopilotImportAttempts === 2,
-      'Replacement Host could not start a fresh GitHub Copilot reimport',
+      () => generationStoryCopilotLoginAttempts === 2,
+      'Replacement Host could not start a fresh GitHub Copilot sign-in',
     );
     await waitForStoryCondition(
       () => generationStoryCopilotSecretReads > readsAfterReplacement,
-      'Replacement Host reimport did not refresh the current credential state',
+      'Replacement Host sign-in did not refresh the current credential state',
     );
     await expect(
       canvasElement.querySelector('[data-maka-contract="connection-detail"]'),

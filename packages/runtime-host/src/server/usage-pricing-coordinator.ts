@@ -147,10 +147,25 @@ export class HostUsagePricingCoordinator {
           input.query,
           now,
         );
+        // Tool executions are in their own ledger, not the model-call one, so
+        // their totals ride beside the merged summary rather than inside it —
+        // the same owner split the tool buckets path already follows. A
+        // connection-scoped query is refused instead of answered: tool rows
+        // that predate connection attribution cannot be scoped, and a ring
+        // built from an unscoped subset would quietly contradict the model
+        // totals beside it.
         const { provenance, ...summary } = merged;
+        const toolUsage =
+          input.query.connectionSlug === undefined
+            ? await this.#stores.telemetry.toolSummary(input.query)
+            : undefined;
         return {
           ok: true,
-          result: encodeUsageQueryResult({ kind: 'summary', summary, provenance }),
+          result: encodeUsageQueryResult({
+            kind: 'summary',
+            summary: { ...summary, toolUsage },
+            provenance,
+          }),
         };
       }
       if (input.kind === 'buckets') {

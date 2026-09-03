@@ -35,53 +35,13 @@ import {
   sessionRailLayoutStore,
   type SessionRailLayoutState,
 } from '../model/session-rail-layout-store.js';
-import type { SessionNavigationSession } from '../ports.js';
+import type { SessionNavigationPorts, SessionNavigationSession } from '../ports.js';
 import { useSessionNavigationServices } from '../services-context.js';
 import {
   createSessionNavigationRowActions,
   type SessionNavigationRowActions,
 } from './session-row-actions.js';
 import { useSessionSelection } from './use-session-selection.js';
-
-export type SessionNavigationToastApi = {
-  success(title: string, description?: string): void;
-  error(
-    title: string,
-    description?: string,
-    diagnosticDetails?: string,
-    diagnosticTarget?: { sessionId: string },
-  ): void;
-  confirm(options: {
-    title: string;
-    description: string;
-    confirmLabel: string;
-    cancelLabel: string;
-    destructive?: boolean;
-  }): Promise<boolean>;
-};
-
-type RefBox<T> = { current: T };
-
-/**
- * What the rail asks of the rest of the shell, named one by one.
- *
- * Switching a session also clears the active messages and leaves the Work Hub.
- * Those are commands the shell issues, and they stay commands: the rail calls
- * them, it does not subscribe to them. Nothing here has to be identity-stable —
- * the controller reads them through a ref published on commit — so the shell
- * may build this object inline, and no ordinary `function` declaration upstream
- * can quietly put the rail back on every AppShell render (#4109).
- */
-export interface SessionNavigationPorts {
-  activeIdRef: RefBox<string | undefined>;
-  sessionsRef: RefBox<ReadonlyArray<SessionSummary>>;
-  pendingSessionRowActionsRef: RefBox<Set<string>>;
-  activateSession(sessionId: string | undefined): void;
-  clearActiveMessages(): void;
-  clearSessionRendererState(sessionId: string): void;
-  refreshSessions(): Promise<ReadonlyArray<SessionSummary>>;
-  toastApi: SessionNavigationToastApi;
-}
 
 export interface UseSessionNavigationControllerInput {
   /**

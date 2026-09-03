@@ -59,6 +59,7 @@ import {
   createSystemdUserRuntimeHostLifecycleProvider,
   createSystemdUserRuntimeHostService,
 } from './runtime-host-systemd-service.js';
+import { createOpenRcRuntimeHostLifecycleProvider } from './runtime-host-openrc-service.js';
 import type {
   RuntimeHostLifecycleProvider,
   RuntimeHostLifecycleProviderOffer,
@@ -490,35 +491,61 @@ export async function discoverRuntimeHostLifecycleProvider(
     readonly environment?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<RuntimeHostLifecycleProviderOffer> {
-  const selection = selectRuntimeHostLifecycleProvider({
-    platform: options.platform ?? process.platform,
-    environment: options.environment ?? process.env,
-  });
-  const provider = resolveRuntimeHostLifecycleProvider(rootId, selection.provider);
-  await provider.supervisor.preflight();
-  return { provider, availability: selection.availability };
-}
+  const platform = options.platform ?? process.platform;
+  const environment = options.environment ?? process.env;
+  if (platform === 'darwin') {
+    const provider = createLaunchAgentRuntimeHostLifecycleProvider(rootId);
+    await provider.supervisor.preflight();
+    return { provider, availability: 'session' };
+  }
+  if (platform !== 'linux') {
+    throw new RuntimeHostServiceManagerError(
+      'unsupported_platform',
+      'Supervised Runtime Host deployments currently require Linux or macOS',
+    );
+  }
 
-export function selectRuntimeHostLifecycleProvider(options: {
-  readonly platform: NodeJS.Platform;
-  readonly environment: NodeJS.ProcessEnv;
-}): {
-  readonly provider: RuntimeHostSupervisorProvider;
-  readonly availability: RuntimeHostLifecycleProviderOffer['availability'];
-} {
-  if (options.platform === 'linux') {
+  const systemd = createSystemdUserRuntimeHostLifecycleProvider(rootId, {
+    env: environment,
+  });
+  let systemdError: unknown;
+  try {
+    await systemd.supervisor.preflight();
     return {
-      provider: 'systemd_user',
-      availability: isWslEnvironment(options.environment) ? 'environment' : 'machine',
+      provider: systemd,
+      availability: isWslEnvironment(environment) ? 'environment' : 'machine',
     };
+  } catch (error) {
+    systemdError = error;
   }
-  if (options.platform === 'darwin') {
-    return { provider: 'launch_agent', availability: 'session' };
+
+  const openRcProvider = process.getuid?.() === 0 ? 'openrc_system' : 'openrc_user';
+  const openRc = createOpenRcRuntimeHostLifecycleProvider(rootId, openRcProvider, {
+    env: environment,
+  });
+  try {
+    await openRc.supervisor.preflight();
+    return {
+      provider: openRc,
+      availability: isWslEnvironment(environment)
+        ? 'environment'
+        : openRcProvider === 'openrc_system'
+          ? 'machine'
+          : 'session',
+    };
+  } catch (openRcError) {
+    if (
+      systemdError instanceof RuntimeHostServiceManagerError &&
+      systemdError.code === 'linger_disabled'
+    ) {
+      throw systemdError;
+    }
+    throw new RuntimeHostServiceManagerError(
+      'service_manager_unavailable',
+      'No supervised Linux lifecycle provider is available; configure systemd user lingering or OpenRC activation, or use an on-demand Runtime Host',
+      { cause: new AggregateError([systemdError, openRcError]) },
+    );
   }
-  throw new RuntimeHostServiceManagerError(
-    'unsupported_platform',
-    'Supervised Runtime Host deployments currently require Linux or macOS',
-  );
 }
 
 /** Resolves only the provider identity already persisted by the deployment authority. */
@@ -528,10 +555,7 @@ export function resolveRuntimeHostLifecycleProvider(
 ): RuntimeHostLifecycleProvider {
   if (provider === 'systemd_user') return createSystemdUserRuntimeHostLifecycleProvider(rootId, {});
   if (provider === 'launch_agent') return createLaunchAgentRuntimeHostLifecycleProvider(rootId);
-  throw new RuntimeHostServiceManagerError(
-    'service_manager_unavailable',
-    `The persisted Runtime Host provider ${provider} is unavailable`,
-  );
+  return createOpenRcRuntimeHostLifecycleProvider(rootId, provider);
 }
 
 function isWslEnvironment(environment: NodeJS.ProcessEnv): boolean {

@@ -557,6 +557,12 @@ export class DesktopRuntimeHostClient {
     return this.request("oauth.login.cancel", { attemptId });
   }
 
+  queryOAuthEnrollment(
+    provider: OperationInput<"oauth.enrollment.query">["provider"],
+  ): Promise<OperationOutput<"oauth.enrollment.query">> {
+    return this.request("oauth.enrollment.query", { provider });
+  }
+
   async loadSkillCatalog(
     context: SkillCatalogWorkspaceContext,
     view: SkillCatalogView,

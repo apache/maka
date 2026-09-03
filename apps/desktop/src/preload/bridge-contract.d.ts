@@ -380,7 +380,7 @@ export type DesktopOAuthLoginTarget =
 export interface DesktopOAuthConnectionIdentity {
   readonly connectionId: string;
   readonly slug: string;
-  readonly providerType: 'openai-codex' | 'xai-oauth';
+  readonly providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 export type DesktopOAuthAuthorizationStartResult =
@@ -1548,7 +1548,6 @@ export interface MakaBridge {
     >;
   };
   openAiCodex: {
-    isExperimentalEnabled(host?: DesktopRuntimeHostRef): Promise<boolean>;
     getAuthUrl(host: DesktopRuntimeHostRef | undefined, target: DesktopOAuthLoginTarget): Promise<DesktopOAuthAuthorizationStartResult>;
     openAuthUrl(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
     completeAuthorization(authRequestId: string, host?: DesktopRuntimeHostRef): Promise<DesktopOAuthAuthorizationResult>;
@@ -1570,6 +1569,7 @@ export interface MakaBridge {
         }
       | Exclude<SubscriptionActionResult, { readonly ok: true }>
     >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
@@ -1592,18 +1592,45 @@ export interface MakaBridge {
         }
       | Exclude<SubscriptionActionResult, { readonly ok: true }>
     >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
     refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
     logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   githubCopilotSubscription: {
     connectExistingLogin(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    getAccountState(host?: DesktopRuntimeHostRef): Promise<{
-      provider: 'github-copilot';
-      runtimeState: 'not_logged_in' | 'authenticated' | 'refreshing' | 'refresh_failed' | 'storage_failed';
-      errorMessage?: string;
-    }>;
-    refreshTokens(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
-    logout(host?: DesktopRuntimeHostRef): Promise<SubscriptionActionResult>;
+    getAuthUrl(
+      host: DesktopRuntimeHostRef | undefined,
+      target: DesktopOAuthLoginTarget,
+    ): Promise<DesktopOAuthAuthorizationStartResult>;
+    openAuthUrl(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<SubscriptionActionResult>;
+    completeAuthorization(
+      authRequestId: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<DesktopOAuthAuthorizationResult>;
+    cancelAuthorization(
+      authRequestId?: string,
+      host?: DesktopRuntimeHostRef,
+    ): Promise<{ ok: true }>;
+    getAccountState(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<
+      | {
+          provider: 'github-copilot';
+          runtimeState:
+            | 'not_logged_in'
+            | 'authorizing'
+            | 'authenticated'
+            | 'refreshing'
+            | 'refresh_failed'
+            | 'storage_failed';
+          errorMessage?: string;
+        }
+      | Exclude<SubscriptionActionResult, { readonly ok: true }>
+    >;
+    getEnrollmentState(host?: DesktopRuntimeHostRef): Promise<{ enabled: boolean }>;
+    refreshTokens(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
+    logout(host: DesktopRuntimeHostRef | undefined, connectionId: string): Promise<SubscriptionActionResult>;
   };
   scheduledTasks: {
     list(host?: DesktopRuntimeHostRef): Promise<ScheduledTask[]>;

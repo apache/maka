@@ -28,6 +28,8 @@ import {
 import {
   connectExistingRuntimeHost,
   prepareConnectedRuntimeHostRetirement,
+  RuntimeHostOperationError,
+  RuntimeHostRequestInterruptedError,
   waitForRuntimeHostReady,
 } from '@maka/runtime-host/client';
 import { RUNTIME_HOST_PROTOCOL_VERSION } from '@maka/runtime-host/protocol';
@@ -316,6 +318,7 @@ function assertRecoveryTarget(
 export async function retireRuntimeHostLifecycleOwner(input: {
   readonly rootPath: string;
   readonly rootId: string;
+  readonly connectExisting?: typeof connectExistingRuntimeHost;
   readonly allowInterruptActiveTasks?: boolean;
   /**
    * Freshness fence evaluated before a canonical supervised-deployment retirement is admitted.
@@ -357,7 +360,7 @@ export async function retireRuntimeHostLifecycleOwner(input: {
       throw error;
     }
   }
-  const connected = await connectExistingRuntimeHost({
+  const connected = await (input.connectExisting ?? connectExistingRuntimeHost)({
     rootPath: capability.canonicalPath,
     protocol: {
       min: RUNTIME_HOST_PROTOCOL_VERSION,
@@ -384,31 +387,44 @@ export async function retireRuntimeHostLifecycleOwner(input: {
     );
   }
   try {
-    const diagnostics = await connected.connection.request('host.diagnostics.query', {});
     const supervisorStatus = await input.supervisor?.status();
     if (supervisorStatus) assertExpectedSupervisorOwner(input.expectedOwner, supervisorStatus);
     if (
       supervisorStatus &&
-      (!supervisorStatus.active || supervisorStatus.pid !== diagnostics.pid)
+      (!supervisorStatus.active || supervisorStatus.pid !== connected.registration.pid)
     ) {
       throw new RuntimeHostLifecycleTransactionError(
         'transition_failed',
-        'The supervisor and State Root report different Runtime Host processes',
+        'The supervisor and Runtime Host registration report different processes',
       );
     }
-    // The exact Root owner and canonical supervisor now agree while the deployment lock is held.
-    // This admits retirement of that deployment; a later same-deployment restart is not a new
-    // authority, but it must not acquire the Root before the supervisor is retired.
-    const prepared = await prepareConnectedRuntimeHostRetirement(
-      connected.connection,
-      input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
-    );
-    if (prepared.kind === 'active_tasks') return prepared;
-    if (prepared.pid !== diagnostics.pid) {
-      throw new RuntimeHostLifecycleTransactionError(
-        'transition_failed',
-        'The Runtime Host process changed while retirement was prepared',
+    try {
+      const diagnostics = await connected.connection.request('host.diagnostics.query', {});
+      if (diagnostics.pid !== connected.registration.pid) {
+        throw new RuntimeHostLifecycleTransactionError(
+          'transition_failed',
+          'The Runtime Host registration and diagnostics report different processes',
+        );
+      }
+      // The exact Root owner and canonical supervisor now agree while the deployment lock is held.
+      // This admits retirement of that deployment; a later same-deployment restart is not a new
+      // authority, but it must not acquire the Root before the supervisor is retired.
+      const prepared = await prepareConnectedRuntimeHostRetirement(
+        connected.connection,
+        input.allowInterruptActiveTasks ? 'interrupt_active_work' : 'refuse_active_work',
       );
+      if (prepared.kind === 'active_tasks') return prepared;
+      if (prepared.pid !== diagnostics.pid) {
+        throw new RuntimeHostLifecycleTransactionError(
+          'transition_failed',
+          'The Runtime Host process changed while retirement was prepared',
+        );
+      }
+    } catch (error) {
+      if (!isRuntimeHostRetirementUnavailable(error) || !input.supervisor) throw error;
+      if (!input.allowInterruptActiveTasks) return { kind: 'active_tasks' };
+      await input.supervisor.retire();
+      return waitForRuntimeHostLifecycleOwner(capability, input.timeoutMs ?? 45_000);
     }
     const retirement = await waitForRuntimeHostLifecycleOwner(
       capability,
@@ -424,6 +440,14 @@ export async function retireRuntimeHostLifecycleOwner(input: {
   } finally {
     await connected.connection.close().catch(() => undefined);
   }
+}
+
+function isRuntimeHostRetirementUnavailable(error: unknown): boolean {
+  return (
+    error instanceof RuntimeHostRequestInterruptedError ||
+    (error instanceof RuntimeHostOperationError &&
+      (error.code === 'host_not_ready' || error.code === 'host_draining'))
+  );
 }
 
 function assertExpectedRuntimeHostOwner(

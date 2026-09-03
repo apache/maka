@@ -48,7 +48,12 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
 } from '@maka/runtime/interaction-authority';
-import { RuntimeRegenerateTurnError, type SessionManager } from '@maka/runtime/session-manager';
+import {
+  normalizeStopSessionSource,
+  RuntimeRegenerateTurnError,
+  type SessionManager,
+  type StopSessionInput,
+} from '@maka/runtime/session-manager';
 import { RuntimeOwnerCleanupError } from '@maka/runtime/runtime-kernel';
 import {
   parseSkillInvocationTokens,
@@ -565,7 +570,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: {
       readonly sessionId: string;
       readonly abortSignal: AbortSignal;
-      readonly stopSource?: HostedExecutionStopInput['source'];
+      readonly stopSource?: Exclude<HostedExecutionStopInput['source'], 'workhub_direct_stop'>;
     },
     operation: () => Promise<T>,
   ): Promise<T> {
@@ -893,8 +898,9 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   async requestStop(input: HostedExecutionStopInput): Promise<HostedExecutionSnapshot> {
     await this.stopRoot(input.execution, {
       ...(input.source ? { source: input.source } : {}),
+      ...(input.workHubActionId !== undefined ? { workHubActionId: input.workHubActionId } : {}),
       ...(input.mode ? { mode: input.mode } : {}),
-    });
+    } as StopSessionInput);
     return await this.read(input.execution);
   }
 
@@ -912,13 +918,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     );
   }
 
-  stopRoot(
-    identity: RuntimeMessageRunIdentity,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
-  ): Promise<void> {
+  stopRoot(identity: RuntimeMessageRunIdentity, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     return this.runCommand(async () => {
       const declared = await this.sessionAdmission.run(identity.sessionId, (lease) =>
         this.declareStopFence(
@@ -944,13 +945,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     });
   }
 
-  stopSession(
-    sessionId: string,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
-  ): Promise<void> {
+  stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     return this.runCommand(async () => {
       const declared = await this.sessionAdmission.run(sessionId, (lease) => {
         const active = this.#executions.get(sessionId);
@@ -2062,10 +2058,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     input: Pick<TurnStopInput, 'sessionId' | 'turnId' | 'runId'>,
     commitQueueFence: () => QueueFenceResult,
     admission: SessionAdmissionLease,
-    stopInput: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = {},
+    stopInput: StopSessionInput = {},
   ): Promise<DeclaredStopFence | undefined> {
     const active = this.#executions.get(input.sessionId);
     if (!active || active.turnId !== input.turnId || active.runId !== input.runId) {
@@ -2656,10 +2649,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
 
   private async deliverRuntimeStopIntent(
     sessionId: string,
-    input: {
-      source?: 'stop_button' | 'graph_supervisor';
-      mode?: BackendStopMode;
-    } = { source: 'stop_button' },
+    input: StopSessionInput = { source: 'stop_button' },
   ): Promise<void> {
     await this.manager.deliverHostedRootStop(sessionId, input);
   }

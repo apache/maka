@@ -295,6 +295,57 @@ test('a durable replacement abort terminalizes the retired source linkage', () =
   );
 });
 
+test('direct-stop projection is retryable until resolved and preserves not_owned links', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination', id: 'assignment', turnId: 'source-action', ts: 1,
+    schemaVersion: 1, kind: 'delegation_assigned', actionId: 'source-action',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`, coordinationTurnId: 'source-action',
+    targetSessionId: 'payments', targetSessionName: 'Payments', targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message', delegationId: 'payments-delegation',
+    disposition: 'delegate_existing', userText: 'Fix payment retry',
+  };
+  const requested: StoredMessage = {
+    type: 'workhub_coordination', id: 'stop-request', turnId: 'stop-action', ts: 2,
+    schemaVersion: 3, kind: 'delegation_stop_requested', actionId: 'stop-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'stop-action',
+    stopsActionId: 'source-action', stopsDelegationId: 'payments-delegation',
+    targetSessionId: 'payments', targetMessageId: 'payments-message',
+    targetSessionName: 'Payments', userText: 'Stop Payments',
+  };
+  const notOwned: StoredMessage = {
+    type: 'workhub_coordination', id: 'stop-resolution', turnId: 'stop-action', ts: 3,
+    schemaVersion: 3, kind: 'delegation_stop_resolved', actionId: 'stop-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'stop-action',
+    stopsActionId: 'source-action', stopsDelegationId: 'payments-delegation',
+    targetSessionId: 'payments', targetTurnId: 'shared-turn', outcome: 'not_owned',
+  };
+
+  assert.equal(projectWorkHubCoordinationTurns([assignment, requested])[1]?.state, 'running');
+  const projected = projectWorkHubCoordinationTurns([assignment, requested, notOwned]);
+  assert.deepEqual(projected[1]?.stop, {
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    outcome: 'not_owned',
+  });
+  assert.equal(projected[0]?.assignment?.linkState, 'active');
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: requested },
+    { sequence: 2, message: notOwned },
+  ]), [{ actionId: 'source-action', targetSessionId: 'payments', sequence: 0 }]);
+
+  const stopped = { ...notOwned, outcome: 'stop_delivered' as const };
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment, requested, stopped])[0]?.assignment?.linkState,
+    'stopped',
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: requested },
+    { sequence: 2, message: stopped },
+  ]), []);
+});
+
 test('durable supersession terminalizes only the replaced linkage', () => {
   const source: StoredMessage = {
     type: 'workhub_coordination',

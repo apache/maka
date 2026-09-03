@@ -429,8 +429,12 @@ test('a gesture a nested scroller consumed does not release the tail', async ({
   await page.setViewportSize({ width: 900, height: 700 });
   await sendPrompt(page, LONG_PROMPT);
   await expect(answeredTurns(page)).toHaveCount(1, { timeout: 30_000 });
-  const settled = await scrollMetrics(page);
-  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+  // The turn's arrival and the tail-follow write are two steps, so one sample
+  // races the follow on a loaded runner. Poll until the reader has provably
+  // been carried back to the tail.
+  await expect.poll(async () => (await scrollMetrics(page)).distance, {
+    message: 'the transcript follows the landed answer to the tail',
+  }).toBeLessThanOrEqual(4);
 
   // A real scroller inside the transcript, standing in for a tool-output box
   // (`.maka-tool-output-body`, `max-height: 256px; overflow-y: auto`) or a pty
@@ -500,9 +504,23 @@ test('a nested scroller near the history boundary does not request an earlier ra
 }) => {
   await page.setViewportSize({ width: 900, height: 1500 });
   await waitForPaintedFrames(page, 6);
-  const metrics = await scrollMetrics(page);
-  expect(metrics.scrollTop).toBeLessThanOrEqual(Math.max(640, metrics.clientHeight * 2));
-  expect(metrics.distance).toBeLessThanOrEqual(4);
+  // The fixture is ready when the transcript exists, before its initial tail
+  // positioning necessarily completes. Poll one geometry sample so the pin has
+  // provably settled inside the load band and at the tail before the nested
+  // scroller exercises it.
+  await expect.poll(async () => {
+    const metrics = await scrollMetrics(page);
+    return {
+      insideLoadBand: metrics.scrollTop <= Math.max(640, metrics.clientHeight * 2),
+      settledAtTail: metrics.distance <= 4,
+      metrics,
+    };
+  }, {
+    message: 'the initial transcript tail positioning settles',
+  }).toMatchObject({
+    insideLoadBand: true,
+    settledAtTail: true,
+  });
 
   const nestedBefore = await page.evaluate((selector) => {
     const root = document.querySelector<HTMLElement>(selector);
@@ -659,6 +677,7 @@ test('history asked for at the very top of the scroller still lands above the re
     const root = document.querySelector(selector);
     if (!root) throw new Error('the chat scroll container is missing');
     root.scrollTop = 0;
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
   }, SCROLLER);
 
   await expect.poll(firstLoadedTurn, { timeout: 20_000 }).not.toBe(firstBefore);
@@ -705,12 +724,22 @@ test('following the tail does not ask for the history above it', async ({
   await page.setViewportSize({ width: 900, height: 1500 });
   await waitForPaintedFrames(page, 6);
 
-  const settled = await scrollMetrics(page);
-  expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
-  expect(
-    settled.scrollTop,
-    `the tail must be inside the load band for this test to mean anything: ${JSON.stringify(settled)}`,
-  ).toBeLessThanOrEqual(Math.max(640, settled.clientHeight * 2));
+  // Same as above: the fixture being ready does not mean the initial tail
+  // positioning has completed. Poll until the pin has provably settled at the
+  // tail and inside the load band this test's history claim rests on.
+  await expect.poll(async () => {
+    const settled = await scrollMetrics(page);
+    return {
+      insideLoadBand: settled.scrollTop <= Math.max(640, settled.clientHeight * 2),
+      settledAtTail: settled.distance <= 4,
+      settled,
+    };
+  }, {
+    message: 'the initial transcript tail positioning settles',
+  }).toMatchObject({
+    insideLoadBand: true,
+    settledAtTail: true,
+  });
 
   // Nothing arrived that the reader did not ask for.
   await waitForPaintedFrames(page, 12);

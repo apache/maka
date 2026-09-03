@@ -27,11 +27,13 @@ import type {
   SavedRequestHeaders,
   UpdateConnectionInput,
 } from '@maka/core/llm-connections';
+import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import type {
   ConnectionOnboardingSaveInput,
   ConnectionOnboardingSaveResult,
   ConnectionOnboardingVerifyInput,
   ConnectionOnboardingVerifyResult,
+  OAuthConnectionIdentity,
 } from '@maka/runtime-host/protocol';
 import type {
   DesktopConnectionIdentity,
@@ -47,7 +49,43 @@ export type DesktopConnectionOnboardingIdentity = Extract<
   { readonly kind: 'saved' }
 >['connection'];
 
+export type ConnectionOAuthLoginTarget =
+  | { readonly kind: 'create' }
+  | { readonly kind: 'existing'; readonly connectionId: string };
+
+export type ConnectionOAuthAuthorizationStartResult =
+  | {
+      readonly authRequestId: string;
+      readonly stateHint: string;
+      readonly connection: OAuthConnectionIdentity;
+    }
+  | Exclude<SubscriptionActionResult, { readonly ok: true }>;
+
+export type ConnectionOAuthAuthorizationResult =
+  | { readonly ok: true; readonly connection: OAuthConnectionIdentity }
+  | Exclude<SubscriptionActionResult, { readonly ok: true }>;
+
+export interface ConnectionOAuthProviderBridge {
+  getAuthUrl(target: ConnectionOAuthLoginTarget): Promise<ConnectionOAuthAuthorizationStartResult>;
+  openAuthUrl(authRequestId: string): Promise<SubscriptionActionResult>;
+  completeAuthorization(authRequestId: string): Promise<ConnectionOAuthAuthorizationResult>;
+  cancelAuthorization(authRequestId?: string): Promise<{ readonly ok: true }>;
+  getEnrollmentState(): Promise<{ readonly enabled: boolean }>;
+  getAccountState(connectionId: string): Promise<unknown>;
+  logout(connectionId: string): Promise<SubscriptionActionResult>;
+}
+
+export interface ConnectionOAuthBridge {
+  readonly openAiCodex: ConnectionOAuthProviderBridge;
+  readonly xaiOAuth: ConnectionOAuthProviderBridge;
+  readonly githubCopilotSubscription: ConnectionOAuthProviderBridge & {
+    connectExistingLogin(): Promise<SubscriptionActionResult>;
+  };
+}
+
 export interface ConnectionsBridge {
+  /** Host-bound account operations; every adapter and fixture must provide them. */
+  readonly oauth: ConnectionOAuthBridge;
   getSnapshot(): Promise<DesktopConnectionSnapshot>;
   setDefault(connection: DesktopConnectionIdentity | null): Promise<void>;
   create(input: CreateConnectionInput): Promise<IdentifiedLlmConnection>;

@@ -34,7 +34,10 @@ import { buildChatModelChoices } from '@maka/core/chat-model-choice';
 import { ProvidersPanel, type ConnectionsBridge } from '../../src/renderer/settings/providers-panel';
 import { RuntimeHostSettingsTarget } from '../../src/renderer/settings/runtime-host-settings-target';
 import { SettingsPage } from '../../src/renderer/settings/settings-section';
-import type { ApiKeyOnboardingBridge } from '../../src/renderer/features/connection-settings';
+import type {
+  ApiKeyOnboardingBridge,
+  ConnectionOAuthBridge,
+} from '../../src/renderer/features/connection-settings';
 
 const NOW = Date.parse('2026-07-01T08:00:00Z');
 
@@ -261,6 +264,7 @@ function createBridge(input: {
   let defaultSlug: string | null = input.defaultSlug ?? connections[0]?.slug ?? null;
 
   return {
+    oauth: storyOAuthBridge(),
     addFixtureConnection(connection) {
       connections = [...connections, connection];
       defaultSlug ??= connection.slug;
@@ -501,12 +505,16 @@ function createOAuthSuccessLifecycleFixture() {
   };
 }
 
-function installSubscriptionFixtures(onOAuthComplete?: () => void) {
-  const target = window as unknown as {
-    maka?: Record<string, unknown>;
+function storyOAuthBridge(onOAuthComplete?: () => void): ConnectionOAuthBridge {
+  const githubCopilotSubscription = {
+    ...browserSubscriptionFixture(
+      { runtimeState: 'not_logged_in' },
+      undefined,
+      'github-copilot',
+    ),
+    connectExistingLogin: async () => ({ ok: true as const }),
   };
-  target.maka = {
-    ...(target.maka ?? {}),
+  return {
     openAiCodex: browserSubscriptionFixture(
       {
         runtimeState: 'authenticated',
@@ -514,10 +522,9 @@ function installSubscriptionFixtures(onOAuthComplete?: () => void) {
         plan: 'Plus',
       },
       onOAuthComplete,
+      'openai-codex',
     ),
-    githubCopilotSubscription: browserSubscriptionFixture({
-      runtimeState: 'not_logged_in',
-    }),
+    githubCopilotSubscription,
     xaiOAuth: xaiDeviceSubscriptionFixture(),
   };
 }
@@ -530,35 +537,41 @@ function xaiDeviceSubscriptionFixture() {
   };
   return {
     getAccountState: async () => ({ provider: 'xai-oauth', runtimeState: 'authorizing' }),
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-xai', stateHint: 'ABCD-EFGH', connection }),
-    openAuthUrl: async () => ({ ok: true }),
+    openAuthUrl: async () => ({ ok: true as const }),
     completeAuthorization: async () => new Promise<never>(() => undefined),
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
-function browserSubscriptionFixture(state: {
-  runtimeState: string;
-  email?: string;
-  plan?: string;
-  errorMessage?: string;
-}, onComplete?: () => void) {
+function browserSubscriptionFixture(
+  state: {
+    runtimeState: string;
+    email?: string;
+    plan?: string;
+    errorMessage?: string;
+  },
+  onComplete?: () => void,
+  providerType: 'openai-codex' | 'github-copilot' = 'openai-codex',
+) {
   const connection = {
-    connectionId: 'connection-openai-codex-4',
-    slug: 'openai-codex-4',
-    providerType: 'openai-codex' as const,
+    connectionId: `connection-${providerType}-4`,
+    slug: `${providerType}-4`,
+    providerType,
   };
   return {
     getAccountState: async () => state,
+    getEnrollmentState: async () => ({ enabled: true }),
     getAuthUrl: async () => ({ authRequestId: 'storybook-oauth', stateHint: 'storybook', connection }),
-    openAuthUrl: async () => ({ ok: true }),
+    openAuthUrl: async () => ({ ok: true as const }),
     completeAuthorization: async () => {
       onComplete?.();
       return { ok: true as const, connection };
     },
-    cancelAuthorization: async () => ({ ok: true }),
-    logout: async () => ({ ok: true }),
+    cancelAuthorization: async () => ({ ok: true as const }),
+    logout: async () => ({ ok: true as const }),
   };
 }
 
@@ -570,10 +583,6 @@ function ProviderStoryFrame(props: {
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const clickedRef = useRef(false);
-
-  useEffect(() => {
-    installSubscriptionFixtures(props.onOAuthComplete);
-  }, [props.onOAuthComplete]);
 
   useEffect(() => {
     const autoOpen = props.autoOpen;
@@ -628,7 +637,10 @@ function ProviderStoryFrame(props: {
               <LayoutContent padding={6} isScrollable={false}>
                 <SettingsPage className="settingsModelsPage">
                   <ProvidersPanel
-                    bridge={props.bridge}
+                    bridge={{
+                      ...props.bridge,
+                      oauth: storyOAuthBridge(props.onOAuthComplete),
+                    }}
                     apiKeyOnboardingBridge={props.apiKeyOnboardingBridge}
                   />
                 </SettingsPage>

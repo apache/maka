@@ -55,6 +55,7 @@
     "./conversation-copy": "./dist/conversation-copy.js",
     "./cua-frame-state": "./dist/cua-frame-state.js",
     "./execution-inspect": "./dist/execution-inspect.js",
+    "./github-copilot-oauth-enrollment": "./dist/github-copilot-oauth-enrollment.js",
     "./goal-continuation": "./dist/goal-continuation.js",
     "./goal-evaluator": "./dist/goal-evaluator.js",
     "./goal-state": "./dist/goal-state.js",

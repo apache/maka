@@ -218,6 +218,28 @@ export interface DesktopConversationCopy {
       cost: string;
     };
     /**
+     * The session-wide metered-token split, read like a bill: what the
+     * provider's cache served, what was paid as uncached input, what was paid
+     * as output. Names the bands of the token track, in the track's order.
+     */
+    tokenUsage: {
+      title: string;
+      segment: { cacheRead: string; cacheMiss: string; output: string };
+    };
+    /**
+     * Where the session's recorded time went. Names the bands of the duration
+     * track; each row also states how many times its kind ran.
+     */
+    durationUsage: {
+      title: string;
+      /** Label under the ring's total figure. */
+      center: string;
+      segment: {
+        model: (count: number) => string;
+        tool: (count: number) => string;
+      };
+    };
+    /**
      * The coverage notice, composed with its own breakdown: the separators
      * belong to the language, not to the layout, so a Chinese sentence gets
      * `：` and `、` where an English one gets `:` and `,`.
@@ -579,6 +601,22 @@ const COPY = {
       totals: {
         cost: '估算成本',
       },
+      tokenUsage: {
+        title: 'Token 统计',
+        segment: {
+          cacheRead: '缓存输入',
+          cacheMiss: '未命中输入',
+          output: '输出（含思考）',
+        },
+      },
+      durationUsage: {
+        title: '耗时统计',
+        center: '记录时长',
+        segment: {
+          model: (count) => `LLM 调用 × ${count}`,
+          tool: (count) => `工具执行 × ${count}`,
+        },
+      },
       coveragePartial: (parts) => `部分调用未能完整显示，下面的数字只少不多${zhDetail(parts)}`,
       coverageAbsent: (parts) => `这个后端不记录每次调用的明细${zhDetail(parts)}`,
       unreadable: (count) => `${count} 条记录读不出来`,
@@ -818,6 +856,22 @@ const COPY = {
       summaryUnavailable: 'Full-session usage is temporarily unavailable.',
       totals: {
         cost: 'Estimated cost',
+      },
+      tokenUsage: {
+        title: 'Token usage',
+        segment: {
+          cacheRead: 'Cached input',
+          cacheMiss: 'Uncached input',
+          output: 'Output (incl. reasoning)',
+        },
+      },
+      durationUsage: {
+        title: 'Time breakdown',
+        center: 'Recorded Time',
+        segment: {
+          model: (count) => `LLM Calls × ${count}`,
+          tool: (count) => `Tool Runs × ${count}`,
+        },
       },
       coveragePartial: (parts) =>
         `Some calls could not be shown completely, so the numbers below only undercount${enDetail(parts)}`,

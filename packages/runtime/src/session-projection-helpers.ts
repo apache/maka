@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { createHash } from 'node:crypto';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import { failureClassFromCompleteStopReason, type SessionEvent } from '@maka/core/events';
 import type {
@@ -95,16 +96,30 @@ export function turnHasRetainedOutput(messages: readonly StoredMessage[], turnId
 }
 
 export function normalizeStopSessionSource(
-  source: 'stop_button' | 'graph_supervisor' | undefined,
+  source: 'stop_button' | 'graph_supervisor' | 'workhub_direct_stop' | undefined,
+  workHubActionId?: string,
 ): string | undefined {
+  if (source !== 'workhub_direct_stop' && workHubActionId !== undefined) {
+    throw new Error('WorkHub direct-stop identity requires its dedicated Stop source');
+  }
   switch (source) {
     case 'stop_button':
       return 'renderer.stop_button';
     case 'graph_supervisor':
       return 'graph.supervisor';
+    case 'workhub_direct_stop':
+      return workHubDirectStopAbortSource(workHubActionId);
     case undefined:
       return undefined;
   }
+}
+
+export function workHubDirectStopAbortSource(actionId: string | undefined): string {
+  if (!actionId || !/^[A-Za-z0-9_-]{1,128}$/u.test(actionId)) {
+    throw new Error('Invalid WorkHub direct-stop action identity');
+  }
+  const suffix = createHash('sha256').update(actionId, 'utf8').digest('hex').slice(0, 48);
+  return `workhub.direct_stop.${suffix}`;
 }
 
 export function isTerminalRunStatus(status: AgentRunHeader['status']): boolean {
