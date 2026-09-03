@@ -229,6 +229,8 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/package-linux.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
+    'scripts/prepare-windows-cu-helper.mjs',
+    'scripts/prepare-windows-cu-helper.test.mjs',
     'scripts/product-release-artifacts.mjs',
     'scripts/product-release-authority.mjs',
     'scripts/product-release-authority.test.mjs',

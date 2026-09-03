@@ -1,0 +1,58 @@
+{
+  "schema": "maka.cu.windows/performance-results/1",
+  "protocol": "maka.cu/2",
+  "executor": "rust-native-windows",
+  "helper": "D:\\project\\maka-agent\\apps\\desktop\\resources\\bin\\maka-cu-windows\\maka-cu-windows.exe",
+  "fixture": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\WpfTaskFixture\\bin\\Release\\net10.0-windows10.0.22621.0\\WpfTaskFixture.exe",
+  "measurements": {
+    "coldStartHandshakeMs": [
+      46.916,
+      52.471,
+      42.47
+    ],
+    "coldStartHandshakeAverageMs": 47.286,
+    "helperWorkingSetBytes": [
+      8601600,
+      8597504,
+      8572928
+    ],
+    "firstFrameMs": 1563.699,
+    "firstFrameWorkingSetBytes": 54112256
+  },
+  "handshakes": [
+    {
+      "run": 1,
+      "helperPid": 9956,
+      "helloOk": true,
+      "handshakeMs": 46.916,
+      "workingSetBytes": 8601600,
+      "shutdownMs": 2.266
+    },
+    {
+      "run": 2,
+      "helperPid": 6616,
+      "helloOk": true,
+      "handshakeMs": 52.471,
+      "workingSetBytes": 8597504,
+      "shutdownMs": 2.016
+    },
+    {
+      "run": 3,
+      "helperPid": 28720,
+      "helloOk": true,
+      "handshakeMs": 42.47,
+      "workingSetBytes": 8572928,
+      "shutdownMs": 1.877
+    }
+  ],
+  "firstFrame": {
+    "helperPid": 31888,
+    "fixturePid": 24944,
+    "fixtureHwnd": 3147524,
+    "targetReenumerated": true,
+    "firstFrameMs": 1563.699,
+    "imageOk": true,
+    "imageBytes": 38978,
+    "workingSetBytes": 54112256
+  }
+}

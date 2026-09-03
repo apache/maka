@@ -21,7 +21,9 @@ import { buildComputerUseTools, type ComputerUseToolSet } from '@maka/runtime/co
 import { type CuOverlayHook, type CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import { createMakaCuBackend } from './maka-cu-backend.js';
 import type { MakaCuBackendOptions } from './maka-cu-backend.js';
-import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
+import type { MakaCuReleaseEvent, MakaCuServiceSnapshot } from './maka-cu-service.js';
+import { createWindowsCuBackend } from './windows-cu-backend.js';
+import type { WindowsCuBackendOptions } from './windows-cu-backend.js';
 
 /**
  * One executor.
@@ -32,15 +34,16 @@ import type { MakaCuServiceSnapshot } from './maka-cu-service.js';
  * reports and what `'none'` is distinguished from, so it stays a named value
  * rather than becoming a boolean nobody can read.
  */
-export const CU_BACKEND_IDS = ['maka-cu'] as const;
+export const CU_BACKEND_IDS = ['maka-cu', 'windows-native'] as const;
 export type CuBackendId = (typeof CU_BACKEND_IDS)[number];
 
-export const DEFAULT_CU_BACKEND_ID: CuBackendId = 'maka-cu';
+export const DEFAULT_CU_BACKEND_ID: CuBackendId =
+  process.platform === 'win32' ? 'windows-native' : 'maka-cu';
 
 type DisposableBackend = CuDispatchBackend & {
   clearSession?: (sessionId: string) => void;
   dispose?: () => void;
-  /** maka-cu supervises one child, not a role pair, so it reports its own shape. */
+  /** Both platforms report the shared supervisor's state shape. */
   executorState?: () => MakaCuServiceSnapshot;
 };
 
@@ -76,7 +79,7 @@ const NONE: SelectedComputerUseBackend = {
 
 export interface MakaCuSelection {
   /** Omitted means the default; see `DEFAULT_CU_BACKEND_ID`. */
-  backendId?: 'maka-cu';
+  backendId?: CuBackendId;
   binaryPath?: string;
   expectedBinarySha256?: string;
   compressFrame?: (
@@ -92,24 +95,41 @@ export interface MakaCuSelection {
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   overlay?: CuOverlayHook;
   onTrace?: MakaCuBackendOptions['onTrace'];
-  /**
-   * Coordinate and key dispatch post synthetic events. Off unless a host policy
-   * says otherwise; the model-facing contract already states they fail closed.
-   */
-  allowCompatibilityInputDispatch?: boolean;
   createBackend?: (options: MakaCuBackendOptions) => DisposableBackend;
+  createWindowsBackend?: (options: WindowsCuBackendOptions) => DisposableBackend;
+  onSessionInvalidated?: MakaCuBackendOptions['onSessionInvalidated'];
+  /** Test/host seam; production defaults to Node's platform. */
+  platform?: NodeJS.Platform;
 }
 
 export type ComputerUseBackendSelection = MakaCuSelection;
 
 export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComputerUseBackend {
-  if (process.platform !== 'darwin') return NONE;
+  const platform = deps?.platform ?? process.platform;
+  const backendId =
+    deps?.backendId ??
+    (platform === 'win32' ? 'windows-native' : platform === 'darwin' ? 'maka-cu' : 'none');
+  if (backendId === 'none') return NONE;
+  if (backendId === 'maka-cu' && platform !== 'darwin') return NONE;
+  if (backendId === 'windows-native' && platform !== 'win32') return NONE;
   if (!deps?.binaryPath || !deps.expectedBinarySha256) return NONE;
   const binaryPath = deps.binaryPath;
   const expectedBinarySha256 = deps.expectedBinarySha256;
   try {
     let tools: ComputerUseToolSet | undefined;
-    const backend = (deps.createBackend ?? createMakaCuBackend)({
+    const invalidation = ({
+      sessionId,
+      reason,
+      outcomeUnknown,
+    }: {
+      sessionId: string;
+      reason: MakaCuReleaseEvent['reason'];
+      outcomeUnknown: boolean;
+    }) => {
+      tools?.sessionEvents.reobserveRequired(sessionId);
+      deps.onSessionInvalidated?.({ sessionId, reason, outcomeUnknown });
+    };
+    const sharedBackendOptions: MakaCuBackendOptions = {
       binaryPath,
       expectedBinarySha256,
       ...(deps.compressFrame ? { compressFrame: deps.compressFrame } : {}),
@@ -117,19 +137,18 @@ export function selectComputerUseBackend(deps?: MakaCuSelection): SelectedComput
         ? { physicalInputRecentlyActive: deps.physicalInputRecentlyActive }
         : {}),
       ...(deps.onTrace ? { onTrace: deps.onTrace } : {}),
-      ...(deps.allowCompatibilityInputDispatch === undefined
-        ? {}
-        : { allowCompatibilityInputDispatch: deps.allowCompatibilityInputDispatch }),
-      onSessionInvalidated: ({ sessionId }) => {
-        tools?.sessionEvents.reobserveRequired(sessionId);
-      },
-    });
+      onSessionInvalidated: invalidation,
+    };
+    const backend =
+      backendId === 'windows-native'
+        ? (deps.createWindowsBackend ?? createWindowsCuBackend)(sharedBackendOptions)
+        : (deps.createBackend ?? createMakaCuBackend)(sharedBackendOptions);
     tools = buildComputerUseTools({
       backend,
       ...(deps.overlay ? { overlay: deps.overlay } : {}),
       ...(deps.screenLocked ? { screenLocked: deps.screenLocked } : {}),
     });
-    return { backend, tools, backendId: DEFAULT_CU_BACKEND_ID };
+    return { backend, tools, backendId };
   } catch {
     return NONE;
   }

@@ -107,7 +107,9 @@ const commentStyles = {
  */
 const coveredExtensions = new Map([
   ['.cjs', 'block'],
+  ['.cs', 'block'],
   ['.css', 'block'],
+  ['.csproj', 'html'],
   ['.html', 'html'],
   ['.js', 'block'],
   ['.jsonc', 'slash'],
@@ -123,6 +125,7 @@ const coveredExtensions = new Map([
   ['.toml', 'hash'],
   ['.ts', 'block'],
   ['.tsx', 'block'],
+  ['.xaml', 'html'],
   ['.yaml', 'hash'],
   ['.yml', 'hash'],
 ]);
@@ -223,6 +226,7 @@ export const exclusionRules = [
       'docs/windows-test-inventory.md',
       'native/gitoxide-helper/Cargo.lock',
       'native/runtime-host-peer/Cargo.lock',
+      'experiments/maka-cu-windows-rust/Cargo.lock',
       'packages/runtime/src/bundled-skill-catalog.generated.ts',
     ),
   },
@@ -247,6 +251,9 @@ export const exclusionRules = [
         'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
         'packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite',
         'packages/storage/test-fixtures/workflow-schema-v8.sql',
+        // Cross-machine lifecycle evidence is retained as captured output,
+        // not as authored source.
+        'experiments/maka-cu-windows/lifecycle-results-cross-machine-rust-formal-native-latest.txt',
       )(path) || isUnder('docs/eval', '.csv')(path),
   },
   {
@@ -306,6 +313,18 @@ const provenanceMarkers = [
  * they may carry the ASF header anyway.
  */
 const reviewedProvenance = new Map([
+  [
+    'experiments/maka-cu-windows/fixture/HangWindowFixture/Program.cs',
+    'The SPDX marker identifies the Apache license applied to this Maka-authored test fixture.',
+  ],
+  [
+    'experiments/maka-cu-windows/src/Program.cs',
+    'The SPDX marker identifies the Apache license applied to this Maka-authored helper.',
+  ],
+  [
+    'experiments/maka-cu-windows/src/WgcCapture.cs',
+    'The SPDX marker identifies the Apache license applied to this Maka-authored capture module.',
+  ],
   [
     '.github/ASF_SOURCE_HEADERS.md',
     'Documents the marker patterns; the match is the policy describing its own rule.',

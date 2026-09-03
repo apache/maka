@@ -449,18 +449,25 @@ function buildProgrammaticResults(args, diagnostics) {
   const renderer = diagnostic?.renderer ?? {};
   const expectedWidth = Math.floor(args.width);
   const expectedHeight = Math.floor(args.height);
+  // On Windows, Electron reports the hidden-titlebar non-client frame in the
+  // outer bounds. Keep the exact requested-size assertion on every platform,
+  // with the measured two-pixel frame adjustment as the only Windows variant.
   const bounds = diagnostic?.bounds;
+  const exactSize = bounds?.width === expectedWidth && bounds?.height === expectedHeight;
+  const windowsFrameAdjustedSize =
+    process.platform === 'win32' &&
+    bounds?.width === expectedWidth + 2 &&
+    bounds?.height === expectedHeight + 2;
   const checks = [
     {
       check: PROGRAMMATIC_SMOKE_CHECKS[0],
       ok: Boolean(
         diagnostic?.windowExists &&
           diagnostic.isVisible === true &&
-          bounds?.width === expectedWidth &&
-          bounds?.height === expectedHeight,
+          (exactSize || windowsFrameAdjustedSize),
       ),
       note: diagnostic
-        ? `visible=${diagnostic.isVisible} bounds=${JSON.stringify(bounds)} expected=${expectedWidth}x${expectedHeight}`
+        ? `visible=${diagnostic.isVisible} bounds=${JSON.stringify(bounds)} contentBounds=${JSON.stringify(diagnostic.contentBounds)} expected=${expectedWidth}x${expectedHeight} windowsFrameAdjusted=${windowsFrameAdjustedSize}`
         : 'no BrowserWindow diagnostic was captured',
     },
     {

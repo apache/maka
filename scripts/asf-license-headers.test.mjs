@@ -211,6 +211,9 @@ describe('ASF header classification', () => {
       'scripts/asf-source-release.mjs',
       'apps/desktop/build/installer.nsh',
       'experiments/windows-sandbox/launcher/src/main.rs',
+      'experiments/maka-cu-windows/src/Program.cs',
+      'experiments/maka-cu-windows/src/MakaCuWindows.csproj',
+      'experiments/maka-cu-windows/fixture/WpfTaskFixture/App.xaml',
       'packages/eval/harbor/egress-proxy/Dockerfile',
       'packages/eval/harbor/egress-proxy/network-policy',
       '.github/workflows/ci.yml',
@@ -228,6 +231,7 @@ describe('ASF header classification', () => {
       'patches/node-pty+1.2.0-beta.15.patch': 'third-party-source',
       'packages/ui/src/astryx-chat-reasoning.tsx': 'third-party-source',
       'packages/runtime/src/bundled-skill-catalog.generated.ts': 'generated-files',
+      'experiments/maka-cu-windows-rust/Cargo.lock': 'generated-files',
       'scripts/model-metadata/models-dev-api.snapshot.json': 'no-comment-syntax',
       'packages/runtime/resources/bundled-skills/computer-use/SKILL.md':
         'verbatim-runtime-payloads',

@@ -61,7 +61,11 @@
       // executor preparation scripts, so reformatting breaks provenance
       // verification; bundled-tools.json is their generated sibling.
       "!apps/desktop/resources/licenses/**",
-      "!apps/desktop/bundled-tools.json"
+      "!apps/desktop/bundled-tools.json",
+      // Computer Use harness outputs are raw evidence, not authored source.
+      // Keep their exact captured formatting and avoid Biome's 1 MiB input
+      // ceiling for repeated Chromium runs.
+      "!experiments/maka-cu-windows/**/*-results*.json"
     ]
   },
   "javascript": {

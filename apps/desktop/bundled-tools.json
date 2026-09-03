@@ -12,5 +12,29 @@
     "hardenedRuntime": false,
     "notarization": "missing",
     "distributionReady": false
+  },
+  "windowsCu": {
+    "repo": "sunheyi6/maka-cu",
+    "source": "maka-cu/apps/OpenComputerUseWindows/native",
+    "expectedProtocolVersion": "maka.cu/2",
+    "binaryName": "maka-cu-windows.exe",
+    "binarySizeBytes": 710656,
+    "binarySha256": "9d62d9043443b82e8586dbf784792b0ff502fe55020850fff001baeb9ea815e9",
+    "files": [
+      {
+        "name": "maka-cu-windows.exe",
+        "sizeBytes": 710656,
+        "sha256": "9d62d9043443b82e8586dbf784792b0ff502fe55020850fff001baeb9ea815e9"
+      }
+    ],
+    "publishContract": {
+      "executor": "rust-native-windows",
+      "protocol": "maka.cu/2",
+      "runtimeIdentifier": "win-x64",
+      "cargoProfile": "release",
+      "lto": true,
+      "staticNativeDependencies": true
+    },
+    "distributionReady": false
   }
 }

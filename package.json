@@ -99,6 +99,7 @@
     "check:model-metadata-drift": "node scripts/sync-model-metadata.mjs --drift",
     "generate:bundled-skills": "node scripts/gen-bundled-skill-catalog.mjs",
     "computer-use": "node scripts/computer-use.mjs",
+    "prepare:windows-cu-helper": "node scripts/prepare-windows-cu-helper.mjs",
     "windows:inventory": "node --test scripts/windows-test-inventory.test.mjs && node scripts/windows-test-inventory.mjs --check",
     "windows:inventory:write": "node scripts/windows-test-inventory.mjs --write",
     "smoke:windows": "npm run build && npm run smoke:windows:dist",

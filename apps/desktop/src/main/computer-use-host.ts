@@ -25,11 +25,13 @@ import {
   fstatSync,
   openSync,
   readFileSync,
+  readdirSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { MakaCuBackendOptions } from '@maka/computer-use';
 import type { MakaCuServiceSnapshot } from '@maka/computer-use';
+import type { WindowsCuServiceState } from '@maka/computer-use';
 import {
   selectComputerUseBackend,
   type SelectedComputerUseBackend,
@@ -42,6 +44,15 @@ export interface ComputerUseHostState {
   expectedBinarySha256?: string;
 }
 
+type BundledToolManifest = {
+  makaCu?: { binarySha256?: string; distributionReady?: boolean };
+  windowsCu?: {
+    binarySha256?: string;
+    distributionReady?: boolean;
+    files?: Array<{ name?: string; sizeBytes?: number; sha256?: string }>;
+  };
+};
+
 function readRegularFile(path: string): Buffer {
   const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -52,6 +63,39 @@ function readRegularFile(path: string): Buffer {
   } finally {
     closeSync(fd);
   }
+}
+
+function hasPinnedWindowsHelperFiles(
+  binaryPath: string,
+  files: NonNullable<BundledToolManifest['windowsCu']>['files'],
+): boolean {
+  if (!files || files.length === 0) return false;
+  const expected = new Map<string, { sizeBytes: number; sha256: string }>();
+  for (const file of files) {
+    const sizeBytes = file.sizeBytes;
+    const sha256 = file.sha256;
+    if (
+      !file.name || file.name !== file.name.split(/[\\/]/).pop() ||
+      typeof sizeBytes !== 'number' || !Number.isSafeInteger(sizeBytes) || sizeBytes < 0 ||
+      typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256) || expected.has(file.name)
+    ) return false;
+    expected.set(file.name, { sizeBytes, sha256 });
+  }
+  const directory = dirname(binaryPath);
+  const actual = readdirSync(directory, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name !== 'bundled-tools.json')
+    .map((entry) => entry.name);
+  if (actual.length !== expected.size || actual.some((name) => !expected.has(name))) return false;
+  for (const [name, pin] of expected) {
+    try {
+      const bytes = readRegularFile(join(directory, name));
+      if (bytes.byteLength !== pin.sizeBytes) return false;
+      if (createHash('sha256').update(bytes).digest('hex') !== pin.sha256) return false;
+    } catch {
+      return false;
+    }
+  }
+  return expected.has(binaryPath.split(/[\\/]/).pop() ?? '');
 }
 
 export function createComputerUseHost(input: {
@@ -68,6 +112,7 @@ export function createComputerUseHost(input: {
   screenLocked?: (context: { sessionId: string }) => boolean | Promise<boolean>;
   onTrace?: MakaCuBackendOptions['onTrace'];
   overlay?: CuOverlayHook;
+  platform?: NodeJS.Platform;
 }): ComputerUseHostState {
   const manifestPath = input.manifestPath ?? (input.isPackaged
     ? join(input.resourcesPath, 'bundled-tools.json')
@@ -77,36 +122,42 @@ export function createComputerUseHost(input: {
         '..',
         'bundled-tools.json',
       ));
-  const binaryPath = input.binaryPath ?? (input.isPackaged
-    ? join(input.resourcesPath, 'bin', 'maka-cu')
-    : resolve(
-        dirname(fileURLToPath(import.meta.url)),
-        '..',
-        '..',
-        'resources',
-        'bin',
-        'maka-cu',
-      ));
+  const platform = input.platform ?? process.platform;
+  const windows = platform === 'win32';
+  const binaryPath = input.binaryPath ?? (windows
+    ? (process.env.MAKA_WINDOWS_CU_HELPER_PATH ?? (input.isPackaged
+      ? join(input.resourcesPath, 'bin', 'maka-cu-windows', 'maka-cu-windows.exe')
+      : resolve(
+          dirname(fileURLToPath(import.meta.url)),
+          '..',
+          '..',
+          'resources',
+          'bin',
+          'maka-cu-windows',
+          'maka-cu-windows.exe',
+        )))
+    : (input.isPackaged
+      ? join(input.resourcesPath, 'bin', 'maka-cu')
+      : resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'resources', 'bin', 'maka-cu')));
   try {
-    const manifest = JSON.parse(readRegularFile(manifestPath).toString('utf8')) as {
-      makaCu?: {
-        binarySha256?: string;
-        distributionReady?: boolean;
-      };
-    };
-    const expectedBinarySha256 = manifest.makaCu?.binarySha256;
-    if (input.isPackaged && manifest.makaCu?.distributionReady !== true) {
-      return { selected: selectComputerUseBackend() };
+    const manifest = JSON.parse(readRegularFile(manifestPath).toString('utf8')) as BundledToolManifest;
+    const entry = windows ? manifest.windowsCu : manifest.makaCu;
+    const expectedBinarySha256 = entry?.binarySha256;
+    if (input.isPackaged && entry?.distributionReady !== true) {
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     if (!expectedBinarySha256 || !/^[a-f0-9]{64}$/.test(expectedBinarySha256)) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
+    }
+    if (windows && !hasPinnedWindowsHelperFiles(binaryPath, manifest.windowsCu?.files)) {
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     accessSync(binaryPath, constants.R_OK | constants.X_OK);
     const actual = createHash('sha256')
       .update(readRegularFile(binaryPath))
       .digest('hex');
     if (actual !== expectedBinarySha256) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     return {
       // No `backendId`: the host takes whatever `DEFAULT_CU_BACKEND_ID` names,
@@ -120,12 +171,13 @@ export function createComputerUseHost(input: {
         ...(input.screenLocked ? { screenLocked: input.screenLocked } : {}),
         ...(input.onTrace ? { onTrace: input.onTrace } : {}),
         ...(input.overlay ? { overlay: input.overlay } : {}),
+        ...(input.platform ? { platform: input.platform } : {}),
       }),
       binaryPath,
       expectedBinarySha256,
     };
   } catch {
-    return { selected: selectComputerUseBackend() };
+    return { selected: selectComputerUseBackend({ platform }) };
   }
 }
 
@@ -144,28 +196,31 @@ export function createDesktopPhysicalInputGuard(
  */
 export function computerUseServiceHealth(
   backendId: SelectedComputerUseBackend['backendId'],
-  state: MakaCuServiceSnapshot | undefined,
+  state: MakaCuServiceSnapshot | { state: WindowsCuServiceState; generation: number } | undefined,
 ): {
   state: 'not_available' | 'not_run' | 'healthy' | 'degraded';
   reason: string;
 } {
+  const label = backendId === 'windows-native' ? 'Windows native helper' : 'maka-cu executor';
   if (backendId === 'none' || !state) {
     return {
       state: 'not_available',
-      reason: '未找到通过完整性检查且可分发的 maka-cu executor。',
+      reason: backendId === 'windows-native'
+        ? '未找到通过完整性检查且可分发的 Windows native helper。'
+        : '未找到通过完整性检查且可分发的 maka-cu executor。',
     };
   }
   switch (state.state) {
     case 'disposed':
-      return { state: 'not_available', reason: 'maka-cu executor 已停止。' };
+      return { state: 'not_available', reason: `${label} 已停止。` };
     case 'unavailable':
-      return { state: 'not_available', reason: 'maka-cu executor 启动失败或已退出。' };
+      return { state: 'not_available', reason: `${label} 启动失败或已退出。` };
     case 'starting':
     case 'backing_off':
-      return { state: 'degraded', reason: 'maka-cu executor 正在启动或恢复。' };
+      return { state: 'degraded', reason: `${label} 正在启动或恢复。` };
     case 'ready':
-      return { state: 'healthy', reason: 'maka-cu executor 已就绪。' };
+      return { state: 'healthy', reason: `${label} 已就绪。` };
     default:
-      return { state: 'not_run', reason: 'maka-cu 已可用，将在首次调用时启动。' };
+      return { state: 'not_run', reason: `${backendId === 'windows-native' ? 'Windows helper' : 'maka-cu'} 已可用，将在首次调用时启动。` };
   }
 }

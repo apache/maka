@@ -74,3 +74,17 @@ export type {
   CursorMoveInput,
   OverlayCursorSink,
 } from './computer-use-overlay-hook.js';
+export { createWindowsCuBackend } from './windows-cu-backend.js';
+export type { WindowsCuBackendOptions } from './windows-cu-backend.js';
+export {
+  WindowsCuLifecycleError,
+  WindowsCuRpcError,
+  WindowsCuService,
+  WINDOWS_CU_PROTOCOL_VERSION,
+} from './windows-cu-service.js';
+export type {
+  WindowsCuHandshake,
+  WindowsCuReleaseEvent,
+  WindowsCuServiceOptions,
+  WindowsCuServiceState,
+} from './windows-cu-service.js';

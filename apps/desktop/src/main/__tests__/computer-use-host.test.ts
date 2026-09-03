@@ -19,9 +19,9 @@
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { describe, it } from 'node:test';
 import {
   createComputerUseHost,
@@ -136,6 +136,52 @@ describe('Computer Use host health', () => {
         physicalInputRecentlyActive: () => false,
       });
       assert.equal(linked.selected.backendId, 'none');
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves the Windows native executor entry with the same host hash gate', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'maka-windows-host-'));
+    try {
+      const binaryPath = join(directory, 'maka-cu-windows.exe');
+      await copyFile(process.execPath, binaryPath);
+      const binaryBytes = await readFile(binaryPath);
+      const sidecarPath = join(directory, 'PresentationNative_cor3.dll');
+      const sidecarBytes = Buffer.from('native-sidecar');
+      await writeFile(sidecarPath, sidecarBytes);
+      const hash = createHash('sha256').update(binaryBytes).digest('hex');
+      const files = [
+        { name: basename(binaryPath), sizeBytes: binaryBytes.byteLength, sha256: hash },
+        {
+          name: basename(sidecarPath),
+          sizeBytes: sidecarBytes.byteLength,
+          sha256: createHash('sha256').update(sidecarBytes).digest('hex'),
+        },
+      ];
+      const manifestPath = join(directory, 'bundled-tools.json');
+      const writeManifest = (distributionReady: boolean) =>
+        writeFile(
+          manifestPath,
+          JSON.stringify({ windowsCu: { binarySha256: hash, files, distributionReady } }),
+        );
+      await writeManifest(false);
+      const development = createComputerUseHost({ isPackaged: false, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(development.selected.backendId, 'windows-native');
+      await writeManifest(true);
+      const packaged = createComputerUseHost({ isPackaged: true, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(packaged.selected.backendId, 'windows-native');
+      await rm(sidecarPath);
+      const missing = createComputerUseHost({ isPackaged: false, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(missing.selected.backendId, 'none');
+      await writeFile(sidecarPath, sidecarBytes);
+      await writeFile(join(directory, 'unexpected.dll'), 'unmanaged');
+      const extra = createComputerUseHost({ isPackaged: false, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(extra.selected.backendId, 'none');
+      await rm(join(directory, 'unexpected.dll'));
+      await writeFile(sidecarPath, 'tampered');
+      const tampered = createComputerUseHost({ isPackaged: false, resourcesPath: directory, manifestPath, binaryPath, platform: 'win32', physicalInputRecentlyActive: () => false });
+      assert.equal(tampered.selected.backendId, 'none');
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

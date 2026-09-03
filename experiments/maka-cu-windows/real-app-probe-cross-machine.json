@@ -1,0 +1,57 @@
+{
+  "schema": "maka.cu.windows/real-app-probe/1",
+  "generatedAt": "2026-09-02T12:03:41.296Z",
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v22.16.0"
+  },
+  "policy": {
+    "existingUserProfilesOpened": false,
+    "userDocumentsModified": false,
+    "temporaryLocalPageOnly": true
+  },
+  "apps": {
+    "chromium": {
+      "state": "pass",
+      "executable": "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "version": "152.0.7977.64",
+      "taskEvidence": "browser-task-results.json"
+    },
+    "libreoffice": {
+      "state": "available",
+      "executable": "D:\\soft\\program\\soffice.exe",
+      "version": "26.8.0.3",
+      "taskEvidence": "observe-tree-results-cross-machine.json",
+      "reason": "installed; isolated temporary-document observation/capture was exercised; semantic document write was not_tested because no safe ValuePattern was exposed"
+    },
+    "winui_uwp": {
+      "state": "available",
+      "packages": [
+        {
+          "Name": "Microsoft.Paint",
+          "Version": "11.2605.81.0"
+        },
+        {
+          "Name": "Microsoft.WindowsNotepad",
+          "Version": "11.2607.14.0"
+        },
+        {
+          "Name": "Microsoft.WindowsCalculator",
+          "Version": "11.2607.0.0"
+        }
+      ],
+      "taskEvidence": "observe-tree-results-cross-machine.json",
+      "reason": "packages detected; isolated Calculator and Paint observation smoke was exercised; full mutation matrix is not_tested"
+    }
+  },
+  "artifacts": {
+    "localWebFixture": {
+      "path": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\web-task-fixture.html",
+      "exists": true,
+      "sizeBytes": 2965,
+      "sha256": "0B40F8CF6CB2470A723F3F92E92E9EAF626EEB2A14F3112B3A35897F08483691",
+      "lastWrite": "2026-09-02T10:07:18.350Z"
+    }
+  }
+}

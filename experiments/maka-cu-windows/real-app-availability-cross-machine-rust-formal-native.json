@@ -1,0 +1,49 @@
+{
+  "schema": "maka.cu.windows/real-app-availability/1",
+  "generatedAt": "2026-09-03",
+  "host": {
+    "platform": "win32",
+    "arch": "x64",
+    "node": "v24.19.0"
+  },
+  "policy": {
+    "existingUserChromeProfileOpened": false,
+    "userDocumentsModified": false
+  },
+  "applications": {
+    "electron": {
+      "state": "available",
+      "source": "repository dependency"
+    },
+    "libreoffice": {
+      "state": "available",
+      "executable": "D:\\soft\\program\\soffice.exe"
+    },
+    "winui_uwp": {
+      "state": "available",
+      "packages": [
+        {
+          "name": "Microsoft.Paint",
+          "version": "11.2605.81.0",
+          "packageFamilyName": "Microsoft.Paint_8wekyb3d8bbwe"
+        },
+        {
+          "name": "Microsoft.WindowsCalculator",
+          "version": "11.2607.0.0",
+          "packageFamilyName": "Microsoft.WindowsCalculator_8wekyb3d8bbwe"
+        },
+        {
+          "name": "Microsoft.WindowsNotepad",
+          "version": "11.2607.14.0",
+          "packageFamilyName": "Microsoft.WindowsNotepad_8wekyb3d8bbwe"
+        }
+      ],
+      "taskMatrixState": "not_run_in_this_probe",
+      "notepadProbe": {
+        "state": "blocked_existing_session",
+        "reason": "Notepad restored an existing session with user-visible tabs; the probe stopped before any input, save, or mutation.",
+        "userDocumentsModified": false
+      }
+    }
+  }
+}

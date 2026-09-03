@@ -1,0 +1,96 @@
+{
+  "schema": "maka.cu.windows/generic-wpf-results/1",
+  "executor": "rust-native-windows",
+  "protocol": "maka.cu/2",
+  "target": {
+    "pid": 29820,
+    "hwnd": 4392924,
+    "fixture": "D:\\project\\maka-agent\\experiments\\maka-cu-windows\\fixture\\WpfTaskFixture\\bin\\Release\\net10.0-windows10.0.22621.0\\WpfTaskFixture.exe"
+  },
+  "summary": {
+    "pass": 17,
+    "fail": 0,
+    "blocked": 0,
+    "unknown": 1
+  },
+  "tests": [
+    {
+      "name": "host.hello",
+      "status": "pass"
+    },
+    {
+      "name": "session.begin",
+      "status": "pass"
+    },
+    {
+      "name": "fresh WPF PID/HWND target",
+      "status": "pass"
+    },
+    {
+      "name": "observe exposes WPF input",
+      "status": "pass"
+    },
+    {
+      "name": "semantic set_value",
+      "status": "pass"
+    },
+    {
+      "name": "set_value readback is visible",
+      "status": "pass",
+      "note": "maka-wpf-value"
+    },
+    {
+      "name": "semantic select_text",
+      "status": "pass"
+    },
+    {
+      "name": "semantic button click",
+      "status": "pass"
+    },
+    {
+      "name": "button oracle reports clicked",
+      "status": "pass",
+      "note": "clicked"
+    },
+    {
+      "name": "semantic list selection",
+      "status": "pass"
+    },
+    {
+      "name": "list selection oracle reports Alpha",
+      "status": "pass",
+      "note": "selected:Alpha"
+    },
+    {
+      "name": "secondary_action press",
+      "status": "pass"
+    },
+    {
+      "name": "secondary_action oracle reports clicked",
+      "status": "pass",
+      "note": "clicked"
+    },
+    {
+      "name": "semantic toggle click",
+      "status": "pass"
+    },
+    {
+      "name": "toggle oracle reports on",
+      "status": "pass",
+      "note": "toggled:on"
+    },
+    {
+      "name": "semantic scroll down",
+      "status": "pass"
+    },
+    {
+      "name": "Enter helper remains honest unknown",
+      "status": "unknown",
+      "note": "page oracle is not rewritten as helper verified"
+    },
+    {
+      "name": "session.end",
+      "status": "pass"
+    }
+  ]
+}
