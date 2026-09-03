@@ -205,15 +205,21 @@ try {
     throw "Packaged adversarial probe failed: exit=$exitCode missing=$($missingEvidence -join ', ') output=$rendered"
   }
 
-  # Recursive roots fail admission when any entry redirects to another tree.
   $junctionRoot = Join-Path $workRoot 'junction-root'
   New-Item -ItemType Directory -Path $junctionRoot | Out-Null
   New-Item -ItemType Junction -Path (Join-Path $junctionRoot 'escape') -Target $outsideRoot | Out-Null
-  $junctionRequest = Write-LaunchRequest -Name "phase4-junction-$PID" `
+  $junctionRequestId = "phase4-junction-$PID"
+  $junctionSid = Get-AppContainerSid $junctionRequestId
+  $junctionRequest = Write-LaunchRequest -Name $junctionRequestId `
     -Arguments @('--self-probe') -ReadRoots @($junctionRoot) -WriteRoots @() `
     -ExactReadRoots @() -ExactWriteRoots @()
-  Invoke-ExpectedAdmissionFailure -RequestPath $junctionRequest -Pattern 'reparse point' `
-    -Description 'Junction alias admission'
+  $junctionResult = Invoke-Launcher @('--appcontainer', $junctionRequest)
+  if ($junctionResult.ExitCode -ne 0) {
+    throw "Nested junction admission failed: $($junctionResult.Output -join "`n")"
+  }
+  if ((Get-AclText $outsideRoot) -match [regex]::Escape($junctionSid)) {
+    throw 'Nested junction target received an AppContainer ACL grant'
+  }
 
   # Recursive roots also reject a file whose content is reachable through a
   # second hard-link name outside the admitted tree.

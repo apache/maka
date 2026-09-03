@@ -45,8 +45,10 @@ windows-sys = { version = "0.61", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_IO",
+  "Win32_System_Ioctl",
   "Win32_System_Pipes",
   "Win32_System_Registry",
   "Win32_System_StationsAndDesktops",
+  "Win32_System_SystemServices",
   "Win32_System_Threading",
 ] }

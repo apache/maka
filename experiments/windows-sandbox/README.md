@@ -80,10 +80,12 @@ non-zero, fail-closed outcome.
 `launcher --appcontainer <request.json>` is the isolated-identity candidate. It
 creates a fresh request-derived AppContainer identity, combines its token with
 the same atomic Job attribute, and supplies no network capabilities. Before
-launch, the broker persists an ACL recovery ledger, rejects reparse points, and
-grants that per-launch SID only the requested roots. A short-lived global mutex
-serializes ACL mutation, while a request-specific kernel lease distinguishes
-live ledgers from abandoned ones without serializing child execution. The smoke
-proves allowed read/write access, denial of a user-readable sibling file and
-live loopback endpoint, stale-ledger recovery, concurrent launches, junction
-rejection, and removal of the temporary AppContainer ACE after exit.
+launch, the broker persists an ACL recovery ledger, rejects reparse-point
+roots, skips validated nested NTFS junctions during recursive grants, and grants that
+per-launch SID only the requested roots. A short-lived global mutex serializes
+ACL mutation, while a request-specific kernel lease distinguishes live ledgers
+from abandoned ones without serializing child execution. The smoke proves
+allowed read/write access, denial of a user-readable sibling file and live
+loopback endpoint, stale-ledger recovery, concurrent launches, junction-root
+rejection, nested-junction non-traversal, and removal of the temporary
+AppContainer ACE after exit.
