@@ -82,6 +82,15 @@ export interface RuntimeEventStore {
    * fact and therefore never appear here.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  /**
+   * One invocation by run id, absent when no opening fact names it. A store
+   * that indexes openings answers this in one read; stores without the fast
+   * path are answered from the inventory by `readRunInvocation`.
+   */
+  readRunInvocation?(
+    sessionId: string,
+    runId: string,
+  ): Promise<RuntimeInvocationRecord | undefined>;
   appendRuntimeEvent(
     sessionId: string,
     runId: string,
@@ -119,6 +128,18 @@ export interface RuntimeEventStore {
     upToEventSeq?: number;
   }): Promise<ImmutableRuntimePrefixV1>;
   readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]>;
+}
+
+/** One invocation by run id, through the store's fast path when it has one. */
+export async function readRunInvocation(
+  store: Pick<RuntimeEventStore, 'listSessionInvocations' | 'readRunInvocation'>,
+  sessionId: string,
+  runId: string,
+): Promise<RuntimeInvocationRecord | undefined> {
+  if (store.readRunInvocation) return store.readRunInvocation(sessionId, runId);
+  return (await store.listSessionInvocations(sessionId)).find(
+    (invocation) => invocation.runId === runId,
+  );
 }
 
 export interface RuntimeRecoveryBundleStore extends RuntimeEventStore {

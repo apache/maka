@@ -271,6 +271,7 @@ export type RuntimeEventScanResult = { readonly status: 'complete' | 'limit_exce
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
     limit: number,

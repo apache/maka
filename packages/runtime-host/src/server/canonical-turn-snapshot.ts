@@ -20,6 +20,7 @@
 import { type ContextCompactionOutcome } from '@maka/core/events';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyTerminalRuntimeLedger } from '@maka/runtime/terminal-run-commit';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
@@ -152,9 +153,7 @@ async function readInvocationIfPresent(
   runId: string,
 ): Promise<RuntimeInvocationRecord | undefined> {
   try {
-    return (await stores.runtimeEventStore.listSessionInvocations(sessionId)).find(
-      (invocation) => invocation.runId === runId,
-    );
+    return await readRunInvocation(stores.runtimeEventStore, sessionId, runId);
   } catch (error) {
     if (isMissingFile(error)) return undefined;
     throw error;

@@ -23,6 +23,7 @@ import {
   type RuntimeInvocationRecord,
 } from '@maka/core/runtime-invocation';
 import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
+import { readRunInvocation } from '@maka/core/runtime-event-store';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
 import type { HostedExecutionRef, HostedExecutionSnapshot } from './hosted-execution-authority.js';
@@ -48,9 +49,7 @@ export class HostedExecutionProjectionReader {
     runId: string,
   ): Promise<RuntimeInvocationRecord | undefined> {
     try {
-      return (await this.stores.runtimeEventStore.listSessionInvocations(sessionId)).find(
-        (invocation) => invocation.runId === runId,
-      );
+      return await readRunInvocation(this.stores.runtimeEventStore, sessionId, runId);
     } catch (error) {
       if (isMissingFile(error)) return undefined;
       throw error;

@@ -555,6 +555,18 @@ export class SqliteRuntimeStore
     );
   }
 
+  async readRunInvocation(
+    sessionId: string,
+    runId: string,
+  ): Promise<RuntimeInvocationRecord | undefined> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(runId, 'Invalid run id');
+    return this.readTransaction(() => {
+      const row = this.readInvocationOpeningsSync(sessionId, { direction: 'asc', runId }).at(0);
+      return row ? this.completeInvocationRecordSync(row) : undefined;
+    });
+  }
+
   /**
    * The first page of a Session's invocations, plus whether more exist.
    *
@@ -646,6 +658,7 @@ export class SqliteRuntimeStore
       limit?: number;
       before?: RuntimeInvocationPageCursor;
       invocationId?: string;
+      runId?: string;
     },
   ): Omit<RuntimeInvocationRecord, 'terminalEvent'>[] {
     const order = options.direction === 'desc' ? 'DESC' : 'ASC';
@@ -680,6 +693,7 @@ export class SqliteRuntimeStore
             )
         )
         WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
+          AND (:runId IS NULL OR run_id = :runId)
           AND (
             :beforeOpenedAt IS NULL
             OR opened_at < :beforeOpenedAt
@@ -691,6 +705,7 @@ export class SqliteRuntimeStore
       .all({
         sessionId,
         invocationId: options.invocationId ?? null,
+        runId: options.runId ?? null,
         beforeOpenedAt: options.before?.openedAt ?? null,
         beforeInvocationId: options.before?.invocationId ?? null,
         limit: options.limit ?? -1,

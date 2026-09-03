@@ -47,6 +47,7 @@ export type RuntimeEventReadPersistence = {
 
 export interface RuntimeEventReadStore {
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
     limit: number,
@@ -96,6 +97,8 @@ export async function openRuntimeEventReadPersistence(input: {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
       listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
+      readRunInvocation: (sessionId: string, runId: string) =>
+        store.readRunInvocation(sessionId, runId),
       listSessionInvocationsBounded: (sessionId: string, limit: number) =>
         store.listSessionInvocationsBounded(sessionId, limit),
       listSessionInvocationsPage: (sessionId: string, input: RuntimeInvocationPageInput) =>

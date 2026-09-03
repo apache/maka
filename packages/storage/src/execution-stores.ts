@@ -206,6 +206,7 @@ export interface ExecutionRuntimeEventReader {
    * repairs it.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  readRunInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord | undefined>;
   listSessionInvocationsBounded(
     sessionId: string,
     limit: number,
@@ -552,6 +553,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
       listSessionInvocationsBounded: (sessionId, limit) =>
         run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
       listSessionInvocationsPage: (sessionId, input) =>
@@ -665,6 +668,8 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      readRunInvocation: (sessionId, runId) =>
+        run(() => runtimeEventStore.readRunInvocation(sessionId, runId)),
       listSessionInvocationsBounded: (sessionId, limit) =>
         run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
       listSessionInvocationsPage: (sessionId, input) =>

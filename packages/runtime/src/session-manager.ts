@@ -122,9 +122,10 @@ import type { AgentRunEvent, AgentRunStore } from '@maka/core/agent-run';
 import type { ArtifactRecord } from '@maka/core/artifacts';
 import { invocationMatchesClaimTarget } from '@maka/core/runtime-boundary';
 import type { ContinuationClaimV1 } from '@maka/core/runtime-boundary';
-import type {
-  RuntimeEventStore,
-  RuntimeContinuationAuthorityStore,
+import {
+  readRunInvocation,
+  type RuntimeEventStore,
+  type RuntimeContinuationAuthorityStore,
 } from '@maka/core/runtime-event-store';
 import type {
   RuntimeEvent,
@@ -1057,9 +1058,8 @@ export class SessionManager {
 
   /** One invocation by run id. Absent means no opening fact ever named it. */
   private async readInvocation(sessionId: string, runId: string): Promise<RuntimeInvocationRecord> {
-    const invocation = (await this.listInvocations(sessionId)).find(
-      (candidate) => candidate.runId === runId,
-    );
+    const store = this.deps.runtimeEventStore;
+    const invocation = store ? await readRunInvocation(store, sessionId, runId) : undefined;
     if (!invocation) {
       const error = new Error(`AgentRun ${runId} not found`) as Error & { code?: string };
       error.code = 'ENOENT';
