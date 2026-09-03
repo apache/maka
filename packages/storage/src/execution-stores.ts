@@ -201,9 +201,9 @@ export interface ExecutionAgentRunReader {
 
 export interface ExecutionRuntimeEventReader {
   /**
-   * Session run inventory read from the canonical events rather than the Run
-   * header table. Sits beside `listSessionRuns` so consumers can move one at a
-   * time; nothing writes or repairs it.
+   * A Session's run inventory, read from its canonical events. This is the
+   * definition of the inventory, not a cache of it, so nothing writes or
+   * repairs it.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   listSessionInvocationsBounded(

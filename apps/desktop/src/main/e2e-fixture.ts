@@ -27,6 +27,7 @@ import { AGENT_GRAPH_CLIENT_PROJECTION_SCHEMA_VERSION } from '@maka/core/agent-g
 import { MODEL_CALL_ATTEMPT_EVENT_TYPE } from '@maka/core/model-call-attempt';
 import type { UiLocale } from '@maka/core/ui-locale';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createProjectCatalog } from '@maka/storage/project-catalog';
 import {
   resolveStorageRoot,
@@ -305,13 +306,14 @@ export async function seedE2eFixture(input: {
     // below. It MUST be the lease's canonicalPath, not the raw workspaceRoot —
     // a /var vs /private/var realpath difference would open a different DB.
     const runStore = createSqliteAgentRunStore(owner.lease.canonicalPath);
+    const runtimeEventStore = createWorkspaceRuntimeStore(owner.lease.canonicalPath);
     try {
       const records = usageStatsRecords(now);
       // Model calls seed the CANONICAL ledger through the AgentRun event stream;
       // tools stay on the legacy telemetry table (there is no canonical tool
       // ledger). This is what actually exercises the canonical merge branch.
-      for (const { header: runHeader, attempt } of records.modelCalls) {
-        await runStore.createRun(runHeader);
+      for (const { opening, attempt } of records.modelCalls) {
+        await runtimeEventStore.appendRuntimeEvent(attempt.sessionId, attempt.runId, opening);
         await runStore.appendEvent(attempt.sessionId, attempt.runId, {
           id: attempt.attemptId,
           type: MODEL_CALL_ATTEMPT_EVENT_TYPE,
@@ -323,6 +325,7 @@ export async function seedE2eFixture(input: {
         });
       }
       for (const record of records.tools) await usage.telemetry.recordToolInvocation(record);
+      runtimeEventStore.close();
       await runStore.close?.();
       // Fold the appended attempts into the read model so the page's first read
       // sees canonical usage (production's readCanonicalUsage also repairs).

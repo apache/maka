@@ -78,7 +78,7 @@ Phase 3B/4A 的 workspace checkpoint 是后续独立切片，不进入 PR A。
 - SQLite 与 JSONL 共享唯一 lossless canonical RuntimeEvent codec；validator 消费 codec
   返回的 event，store 持久化同一次编码返回的稳定 JSON bytes；
 - SQLite 对每个 invocation 强制唯一 `(sessionId, runId, turnId)` execution spine；
-- JSONL immutable append 对 exact retry 物理去重，并在落盘前验证目标 Run header；
+- JSONL immutable append 对 exact retry 物理去重，并在落盘前验证目标 invocation 身份；
 - projection-local journal ID 由 operation/event 派生，调用者不能选择；
 - schema 4 的 nullable-dispatch legacy projection 可读但隔离，不进入 recovery 或 canonical rebuild。
 
@@ -171,7 +171,7 @@ future newer schema            -> fail closed
 | decoder canonical persistence 与有损 JSON 拒绝 | storage authority test | 已覆盖 |
 | nested undefined、provider `toJSON`、recovery evidence 改写 | storage authority test | 已覆盖 |
 | JSONL ordinary/tool exact retry 与 conflicting retry | JSONL storage test | 已覆盖 |
-| JSONL event 与目标 Run header identity | JSONL storage test | 已覆盖 |
+| JSONL event 与目标 invocation identity | JSONL storage test | 已覆盖 |
 | invocation 跨 session/run/turn 漂移 | core scanner + SQLite authority test | 已覆盖 |
 | unrelated session corruption 阻断新 session tool boundary | storage authority test | 已覆盖 |
 | corrupt ledger 上的 T1/T2/recovery exact retry | storage authority test | 已覆盖 |
@@ -268,7 +268,7 @@ claim race 与 provider-call T1 测试，再补满足不变量的最小生产路
 - **B1 — immutable boundary 与 replay**：物理 `event_seq`、canonical RuntimeEvent bytes、
   segment digest、ordered manifest、provider replay digest；
 - **B2 — durable authority 与 provider T1**：SQLite unique claim、执行前完整重验证、
-  exact target Run header、store-owned live start、一次性 admission proof/receipt，然后才允许
+  exact target invocation、store-owned live start、一次性 admission proof/receipt，然后才允许
   backend/provider 启动；
 - **B2.1 — pre-provider crash convergence**：claim-only/created-without-start 通过 deterministic
   repair start + terminal 收敛；normal start/no-terminal 无 owner proof 时只 park。
