@@ -62,15 +62,24 @@ export type WorkHubRouteDecision =
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
 
+/**
+ * Both reasons are about the reference itself — what the user's words name —
+ * which is the only question this policy can answer on its own.
+ *
+ * Whether the named Session still owns work a stop can reach is not asked
+ * here. Only the Host knows that, it proves it under the admission lease
+ * anyway, and a renderer that answered from its own view would contradict the
+ * Host in exactly the windows where its view is empty: a second window, a
+ * reload, a reconnect. So a resolved reference submits, and a Session with
+ * nothing to stop is refused by the Gate.
+ */
 export type WorkHubStopClarificationReason =
   /** The stop names no safe target of its own — a pronoun or a bare noun. */
   | 'stop_target_required'
   /** The stop names more than one existing Session. */
   | 'stop_target_ambiguous'
-  /** The named Session exists but owns no WorkHub-delegated active work. */
-  | 'stop_target_not_active'
-  /** The named Session owns more than one active delegation. */
-  | 'stop_target_not_unique';
+  /** The Host refused the stop; its conflict is the whole answer. */
+  | 'stop_target_unavailable';
 
 /**
  * A stop clarification never offers route options. Choosing one re-sends the
@@ -80,25 +89,13 @@ export type WorkHubStopClarificationReason =
 export type WorkHubStopRouteDecision =
   | { kind: 'not_requested' }
   | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
-  | {
-      kind: 'target';
-      target: WorkHubRouteTarget;
-      /** The one active delegation the policy resolved, by opaque identity. */
-      stopsActionId: string;
-    };
+  | { kind: 'target'; target: WorkHubRouteTarget };
 
 export interface WorkHubRoutePolicy {
   resolveStop(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
-    /**
-     * The Host's stoppable delegations for one resolved Session, by opaque
-     * action identity. It is read only once a reference has resolved, so an
-     * ordinary message never pays for it, and the answer the user sees comes
-     * from the same authority admission uses rather than a client mirror.
-     */
-    readStoppableDelegations: (sessionId: string) => Promise<readonly string[]>;
-  }): Promise<WorkHubStopRouteDecision>;
+  }): WorkHubStopRouteDecision;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -165,7 +162,7 @@ function createWorkHubRoutePolicyVisit(
     // ordinary work and falls through to routing; an unsafe or anaphoric
     // reference still fails closed, and a resolved Session that is not uniquely
     // stoppable says why.
-    async resolveStop({ text, sessions, readStoppableDelegations }) {
+    resolveStop({ text, sessions }) {
       const intent = readWorkHubRequestIntent(text);
       if (!intent.stop.cue) return { kind: 'not_requested' };
       const reference = intent.stop.imperative ? intent.stop.target : undefined;
@@ -197,16 +194,10 @@ function createWorkHubRoutePolicyVisit(
       }
       const resolved = sessionByRef.get(admissible[0]!.ref);
       if (!resolved) return { kind: 'not_requested' };
-      const [stopsActionId, ...furtherActive] = await readStoppableDelegations(
-        resolved.target.sessionId,
-      );
-      if (!stopsActionId) {
-        return { kind: 'clarification', reason: 'stop_target_not_active' };
-      }
-      if (furtherActive.length > 0) {
-        return { kind: 'clarification', reason: 'stop_target_not_unique' };
-      }
-      return { kind: 'target', target: resolved.target, stopsActionId };
+      // The reference resolved, which is everything this policy can prove.
+      // Which delegation to end, and whether there is one at all, is the
+      // Host's answer and is made under the lease that performs the stop.
+      return { kind: 'target', target: resolved.target };
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);

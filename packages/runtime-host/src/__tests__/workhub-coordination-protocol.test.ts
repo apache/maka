@@ -91,7 +91,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_stop' },
@@ -101,7 +100,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_stop' },
@@ -113,7 +111,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments' },
       },
     },
@@ -122,7 +119,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments' },
       },
       confirmation: { kind: 'user_correction' },
@@ -132,7 +128,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments' },
         targetSessionId: 'injected',
       },
@@ -151,7 +146,6 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work',
-        stopsActionId: 'action-payments',
         expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
       },
       confirmation: { kind: 'user_stop' },

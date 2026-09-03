@@ -792,7 +792,6 @@ test('WorkHub correction replaces its link without stopping a shared manual Turn
           confirmation: { kind: 'user_stop' },
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: assignment.actionId,
             expects: { targetSessionId: source.id },
           },
         },

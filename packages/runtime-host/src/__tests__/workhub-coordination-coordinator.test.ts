@@ -32,6 +32,8 @@ import {
 import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_SESSION_ROLE,
+  WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+  type StoredMessage,
 } from '@maka/core/session';
 import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/session-store';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
@@ -628,7 +630,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           userText: 'Stop Payments',
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: 'source-action',
             expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
@@ -670,7 +671,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           userText: 'Stop Payments',
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: 'source-action',
             expects: { targetSessionId: targetId },
           },
           confirmation: { kind: 'user_stop' },
@@ -771,7 +771,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           userText: 'Stop Payments',
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: 'source-action',
             expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
@@ -866,7 +865,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           userText: 'Stop Payments',
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: 'source-action',
             expects: { targetSessionId: target.id },
           },
           confirmation: { kind: 'user_stop' },
@@ -897,7 +895,6 @@ describe('Host WorkHub Coordination coordinator', () => {
       userText: 'Stop Payments',
       proposal: {
         disposition: 'stop_work' as const,
-        stopsActionId: 'source-action',
         expects: { targetSessionId: targetId },
       },
       confirmation: { kind: 'user_stop' as const },
@@ -1014,7 +1011,6 @@ describe('Host WorkHub Coordination coordinator', () => {
       userText: 'Stop Login',
       proposal: {
         disposition: 'stop_work' as const,
-        stopsActionId: 'login-action',
         expects: { targetSessionId: loginSessionId },
       },
       confirmation: { kind: 'user_stop' as const },
@@ -1074,7 +1070,6 @@ describe('Host WorkHub Coordination coordinator', () => {
           userText: 'Stop Payments',
           proposal: {
             disposition: 'stop_work',
-            stopsActionId: 'source-action',
             expects: {
               targetSessionId: targets.find((session) => session.name === 'Payments')!.id,
             },
@@ -1099,6 +1094,195 @@ describe('Host WorkHub Coordination coordinator', () => {
       if (!crossed.ok) assert.equal(crossed.error.code, 'operation_conflict');
       assert.ok(loginDelegationId);
       assert.equal(await store.readWorkHubStopRequest(loginDelegationId), undefined);
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a claim written before its stop request resolves like a first attempt', async () => {
+    // The claim is committed before the request, so a crash between them leaves
+    // an action that owns a stop with nothing to converge on. Nothing
+    // destructive happened either, so the delegation is still linked and the
+    // retry must resolve from the active links rather than refuse.
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-claim-only-'));
+    const store = createSessionStore(root);
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      let failStopRequest = true;
+      const stores = new Proxy(store, {
+        get(authority, property, receiver) {
+          if (property === 'appendMessages') {
+            return async (sessionId: string, messages: StoredMessage[]) => {
+              if (
+                failStopRequest &&
+                messages.some(
+                  (message) =>
+                    message.type === 'workhub_coordination' &&
+                    message.kind === 'delegation_stop_requested',
+                )
+              ) {
+                failStopRequest = false;
+                throw new Error('crash before the stop request is durable');
+              }
+              return authority.appendMessages(sessionId, messages);
+            };
+          }
+          return Reflect.get(authority, property, receiver);
+        },
+      }) as SessionAuthorityStore;
+      const workhub = coordinator(root, stores, () => undefined, undefined, undefined, undefined, {
+        assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
+        retireDelegation: async () => ({
+          outcome: 'stop_delivered' as const,
+          targetTurnId: 'payments-turn',
+        }),
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.act'](
+            {
+              actionId: 'source-action',
+              userText: 'Fix payment retry',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: {
+                disposition: 'delegate_existing',
+                candidateRef: candidates.result.candidates.find(
+                  ({ sessionId }) => sessionId === target.id,
+                )!.candidateRef,
+              },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+      const assignment = await store.readWorkHubAssignment('source-action');
+      assert.ok(assignment);
+
+      const stop = () =>
+        workhub.handlers['workhub.coordination.act'](
+          {
+            actionId: 'stop-action',
+            userText: 'Stop Payments',
+            proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+            confirmation: { kind: 'user_stop' },
+          },
+          CONTEXT,
+        );
+
+      assert.equal((await stop()).ok, false);
+      // Exactly the seam: the action owns a stop claim, and no request behind it.
+      assert.equal((await store.readWorkHubActionClaim('stop-action'))?.operation, 'stop');
+      assert.equal(await store.readWorkHubStopRequest(assignment.delegationId), undefined);
+
+      const retried = await stop();
+      assert.equal(retried.ok, true);
+      if (retried.ok && retried.result.disposition === 'stop_work') {
+        assert.equal(retried.result.outcome, 'stop_delivered');
+      }
+      assert.equal(
+        (await store.readWorkHubStopResolution(assignment.delegationId))?.outcome,
+        'stop_delivered',
+      );
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a claimed stop whose delegation went terminal elsewhere conflicts', async () => {
+    // Claim present, no request and no resolution to converge on, and the
+    // delegation is gone from the active set because another path superseded
+    // it. There is nothing left to resolve and nothing was destroyed, so this
+    // refuses exactly as it did before the claim became the replay key.
+    const root = await mkdtemp(join(tmpdir(), 'maka-workhub-claim-terminal-'));
+    const store = createSessionStore(root);
+    try {
+      const target = await store.create({
+        cwd: root,
+        name: 'Payments',
+        llmConnectionSlug: 'test-connection',
+        model: 'test-model',
+        permissionMode: 'ask',
+      });
+      const workhub = coordinator(root, store, () => undefined, undefined, undefined, undefined, {
+        assign: (input) => persistTestAssignment(store, input, 'payments-turn'),
+        retireDelegation: async () => assert.fail('a terminal delegation must not be retired'),
+      });
+      assert.equal((await workhub.handlers['workhub.coordination.resolve']({}, CONTEXT)).ok, true);
+      const candidates = await workhub.handlers['workhub.coordination.candidates']({}, CONTEXT);
+      assert.equal(candidates.ok, true);
+      if (!candidates.ok) return;
+      assert.equal(
+        (
+          await workhub.handlers['workhub.coordination.act'](
+            {
+              actionId: 'source-action',
+              userText: 'Fix payment retry',
+              candidateSetId: candidates.result.candidateSetId,
+              proposal: {
+                disposition: 'delegate_existing',
+                candidateRef: candidates.result.candidates.find(
+                  ({ sessionId }) => sessionId === target.id,
+                )!.candidateRef,
+              },
+            },
+            CONTEXT,
+          )
+        ).ok,
+        true,
+      );
+      const assignment = await store.readWorkHubAssignment('source-action');
+      assert.ok(assignment);
+      assert.equal(
+        await store.claimWorkHubAction({
+          actionId: 'stop-action',
+          operation: 'stop',
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+          subject: assignment.delegationId,
+        }),
+        'claimed',
+      );
+      await store.appendMessages(WORKHUB_COORDINATION_SESSION_ID, [
+        {
+          type: 'workhub_coordination',
+          id: 'whs_terminal_probe',
+          turnId: 'terminal-probe-turn',
+          ts: Date.now(),
+          schemaVersion: WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
+          kind: 'delegation_superseded',
+          actionId: 'supersede-probe-action',
+          actionFingerprint: `sha256:${'c'.repeat(64)}`,
+          coordinationTurnId: 'terminal-probe-turn',
+          supersededActionId: 'source-action',
+          supersededDelegationId: assignment.delegationId,
+          replacementDelegationId: 'whd_replacement_probe',
+        },
+      ]);
+
+      const conflicted = await workhub.handlers['workhub.coordination.act'](
+        {
+          actionId: 'stop-action',
+          userText: 'Stop Payments',
+          proposal: { disposition: 'stop_work', expects: { targetSessionId: target.id } },
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      );
+      assert.equal(conflicted.ok, false);
+      if (!conflicted.ok) assert.equal(conflicted.error.code, 'operation_conflict');
+      assert.equal(await store.readWorkHubStopResolution(assignment.delegationId), undefined);
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

@@ -443,10 +443,8 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
       },
     },
     record: async (input) => ({ turnId: input.turnId }),
-    delegations: async () => ({ delegations: [] }),
     candidates: async () => ({
       candidateSetId: `sha256:${'a'.repeat(64)}`,
-      delegations: async () => ({ delegations: [] }),
       candidates: [],
     }),
     act: async () => ({
@@ -557,10 +555,8 @@ test('Coordination transcript reset rebuilds active linkage outside the resident
       },
     },
     record: async (input) => ({ turnId: input.turnId }),
-    delegations: async () => ({ delegations: [] }),
     candidates: async () => ({
       candidateSetId: `sha256:${'b'.repeat(64)}`,
-      delegations: async () => ({ delegations: [] }),
       candidates: [],
     }),
     act: async () => ({

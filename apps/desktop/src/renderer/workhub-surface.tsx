@@ -628,8 +628,8 @@ export function WorkHubCoordinationTurnView(props: {
 /**
  * A stop clarification has to say what WorkHub could not decide. Every reason
  * here is a distinct dead end for the user — an unnamed target, a name that
- * fits several Sessions, a named Session with nothing to stop, and one holding
- * more work than a single stop may retire.
+ * fits several Sessions, and a Session the Host will not stop because it owns
+ * no single delegation a stop can reach.
  */
 function workHubClarificationPrompt(
   reason: Extract<WorkHubSubmission, { kind: 'clarification' }>['reason'],
@@ -638,8 +638,7 @@ function workHubClarificationPrompt(
   if (reason === 'ambiguous_command') return copy.confirmCommand;
   if (reason === 'stop_target_required') return copy.stopTargetRequired;
   if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
-  if (reason === 'stop_target_not_active') return copy.stopTargetNotActive;
-  if (reason === 'stop_target_not_unique') return copy.stopTargetNotUnique;
+  if (reason === 'stop_target_unavailable') return copy.stopTargetUnavailable;
   return undefined;
 }
 
@@ -839,8 +838,7 @@ function workHubCopy(locale: UiLocale) {
       confirmCommand: workHubAmbiguousCommandPrompt(locale),
       stopTargetRequired: '请明确说出要停止的工作名称，例如“停止 支付任务”。',
       stopTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 停止对应委托。',
-      stopTargetNotActive: '这项工作当前没有由 WorkHub 委托的进行中请求，无需停止。',
-      stopTargetNotUnique: '这项工作有多个进行中的委托；请打开该 Session 停止具体的那一个。',
+      stopTargetUnavailable: '这项工作现在没有可以停止的单个 WorkHub 委托；请打开该 Session 查看。',
       discussionStayed: '这条内容暂时保留在 WorkHub，没有创建或改动 Session。',
       discussionHint: '提出明确的执行目标后，我会把它交给对应的 Session。',
       answering: '正在回答…',
@@ -901,9 +899,8 @@ function workHubCopy(locale: UiLocale) {
     stopTargetRequired: 'Name the work explicitly, for example “Stop Payments”.',
     stopTargetAmbiguous:
       'That name matches more than one work item. Open the exact Session to stop its delegation.',
-    stopTargetNotActive: 'This work has no WorkHub-delegated request running, so there is nothing to stop.',
-    stopTargetNotUnique:
-      'This work has more than one delegation running. Open its Session to stop the exact one.',
+    stopTargetUnavailable:
+      'This work has no single WorkHub delegation to stop right now. Open its Session to see what is running.',
     discussionStayed: 'This stayed in WorkHub without creating or changing a Session.',
     discussionHint: 'State an executable goal and I will hand it to the owning Session.',
     answering: 'Answering…',

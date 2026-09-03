@@ -1479,8 +1479,6 @@ function AppShellContent({
           window.maka.workHub.record(workHubCoordinationSessionId!, input),
         candidates: () =>
           window.maka.workHub.candidates(workHubCoordinationSessionId!),
-        delegations: (targetSessionId) =>
-          window.maka.workHub.delegations(workHubCoordinationSessionId!, targetSessionId),
         act: (input) =>
           window.maka.workHub.act(workHubCoordinationSessionId!, input),
       }),

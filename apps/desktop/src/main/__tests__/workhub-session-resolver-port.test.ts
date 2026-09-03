@@ -33,9 +33,6 @@ const routable = (sessionId: string, sessionName: string) => ({
 });
 
 /** Stands in for the Host read the stop policy makes once a reference resolves. */
-const hostDelegations = (bySessionId: Readonly<Record<string, readonly string[]>>) =>
-  async (sessionId: string): Promise<readonly string[]> => bySessionId[sessionId] ?? [];
-
 /**
  * A stand-in for a later ranked resolver. It recalls by remembered description
  * rather than display name, which is exactly the recall the exact-name baseline
@@ -60,25 +57,19 @@ const describedResolver = (
 
 test('stop resolves through the shared port rather than a stop-specific grammar', async () => {
   const sessions = [routable('payments', 'Payments'), routable('login', 'Login')];
-  const readStoppableDelegations = hostDelegations({
-    payments: ['action-1'],
-    login: ['action-2'],
-  });
 
   // Action Intent extracts the reference ("Stop the payment timeout work" ->
   // "payment timeout work"); resolving it is the Resolver's business alone.
   // The exact-name baseline recalls the display name and nothing else.
   const baseline = createWorkHubRoutePolicy();
-  assert.deepEqual(await baseline.resolveStop({ text: 'Stop Payments', sessions, readStoppableDelegations }), {
+  assert.deepEqual(baseline.resolveStop({ text: 'Stop Payments', sessions}), {
     kind: 'target',
     target: { sessionId: 'payments' },
-    stopsActionId: 'action-1',
   });
   assert.deepEqual(
-    await baseline.resolveStop({
+    baseline.resolveStop({
       text: 'Stop the payment timeout work',
       sessions,
-      readStoppableDelegations,
     }),
     { kind: 'not_requested' },
   );
@@ -89,39 +80,31 @@ test('stop resolves through the shared port rather than a stop-specific grammar'
     describedResolver(new Map([['payments', 'payment timeout work']])),
   );
   assert.deepEqual(
-    await ranked.resolveStop({
+    ranked.resolveStop({
       text: 'Stop the payment timeout work',
       sessions,
-      readStoppableDelegations,
     }), {
     kind: 'target',
     target: { sessionId: 'payments' },
-    stopsActionId: 'action-1',
   });
 });
 
-test('the stop policy, not the resolver, owns destructive sufficiency', async () => {
+test('a resolved reference submits instead of judging the Host state itself', () => {
   const descriptions = new Map([['payments', 'payment timeout work']]);
   const text = 'Stop the payment timeout work';
 
-  // A confidently resolved Session with no active WorkHub delegation, and one
-  // with several, are both refused with the reason they were refused.
-  // Both answers come from the Host read, never from a renderer mirror.
+  // Whether that Session still owns a single stoppable delegation is not asked
+  // here, and deliberately so: only the Host can answer it, and it re-proves it
+  // under the lease that performs the stop. A renderer that answered from its
+  // own view would contradict the Host in exactly the windows where its view is
+  // empty. A confidently resolved reference therefore becomes a target, and a
+  // Session with nothing to stop is refused by the Gate, not here.
   assert.deepEqual(
-    await createWorkHubRoutePolicy(describedResolver(descriptions)).resolveStop({
+    createWorkHubRoutePolicy(describedResolver(descriptions)).resolveStop({
       text,
       sessions: [routable('payments', 'Payments')],
-      readStoppableDelegations: hostDelegations({}),
     }),
-    { kind: 'clarification', reason: 'stop_target_not_active' },
-  );
-  assert.deepEqual(
-    await createWorkHubRoutePolicy(describedResolver(descriptions)).resolveStop({
-      text,
-      sessions: [routable('payments', 'Payments')],
-      readStoppableDelegations: hostDelegations({ payments: ['action-1', 'action-2'] }),
-    }),
-    { kind: 'clarification', reason: 'stop_target_not_unique' },
+    { kind: 'target', target: { sessionId: 'payments' } },
   );
 });
 
@@ -133,10 +116,9 @@ test('an ambiguous recall never becomes a destructive target', async () => {
     ]),
   );
   assert.deepEqual(
-    await createWorkHubRoutePolicy(resolver).resolveStop({
+    createWorkHubRoutePolicy(resolver).resolveStop({
       text: 'Stop the payment timeout work',
       sessions: [routable('payments', 'Payments'), routable('payments-eu', 'Payments EU')],
-      readStoppableDelegations: () => assert.fail('an ambiguous recall must not read the Host'),
     }),
     { kind: 'clarification', reason: 'stop_target_ambiguous' },
   );
@@ -152,10 +134,9 @@ test('a resolver cannot widen stop beyond the visible candidate set it was given
     }),
   };
   assert.deepEqual(
-    await createWorkHubRoutePolicy(resolver).resolveStop({
+    createWorkHubRoutePolicy(resolver).resolveStop({
       text: 'Stop Payments',
       sessions: [routable('payments', 'Payments')],
-      readStoppableDelegations: hostDelegations({ payments: ['action-1'] }),
     }),
     { kind: 'not_requested' },
   );
@@ -166,10 +147,9 @@ test('a stop cue with no safe reference asks for one instead of resolving', asyn
     resolve: () => assert.fail('an unsafe reference must not reach the Session Resolver'),
   };
   assert.deepEqual(
-    await createWorkHubRoutePolicy(resolver).resolveStop({
+    createWorkHubRoutePolicy(resolver).resolveStop({
       text: 'Stop it',
       sessions: [routable('payments', 'Payments')],
-      readStoppableDelegations: () => assert.fail('an unsafe reference must not read the Host'),
     }),
     { kind: 'clarification', reason: 'stop_target_required' },
   );

@@ -39,7 +39,6 @@ export const WORKHUB_COORDINATION_SUMMARY_MAX_BYTES = 8 * 1024;
 const COORDINATION_TITLE_MAX_BYTES = 512;
 const CANDIDATE_SET_ID_MAX_BYTES = 96;
 export const WORKHUB_COORDINATION_CANDIDATE_MAX_ITEMS = 32;
-export const WORKHUB_COORDINATION_DELEGATION_MAX_ITEMS = 256;
 
 const RESOLVE_ERRORS = [
   'host_not_ready',
@@ -118,34 +117,6 @@ export interface WorkHubCoordinationCandidatesResult {
   readonly candidates: readonly WorkHubCoordinationCandidate[];
 }
 
-/**
- * Reads the Coordination Session's active delegation links.
- *
- * A client mirror of these links is a projection that can be empty or stale —
- * a fresh window, a reload, a reconnect — so a policy about to answer the user
- * from it asks the Host instead of trusting what it happens to have seen.
- */
-export interface WorkHubCoordinationDelegationsInput {
-  /** Limits both the result and the target-owned work probe to one Session. */
-  readonly targetSessionId?: string;
-}
-
-export interface WorkHubCoordinationDelegation {
-  readonly actionId: string;
-  readonly targetSessionId: string;
-  /**
-   * Whether this delegation still holds work a stop could reach. A link
-   * outlives the work it delegated, and target execution state that cannot be
-   * read is reported as still holding work rather than as finished.
-   */
-  readonly stoppable: boolean;
-}
-
-export interface WorkHubCoordinationDelegationsResult {
-  /** Active delegations in Coordination transcript order. */
-  readonly delegations: readonly WorkHubCoordinationDelegation[];
-}
-
 export type WorkHubCoordinationProposal =
   | { readonly disposition: 'answer_here' }
   | { readonly disposition: 'clarify'; readonly assistantText: string }
@@ -164,13 +135,15 @@ export type WorkHubCoordinationProposal =
     }
   | {
       readonly disposition: 'stop_work';
-      /** Action identity of the exact durable delegation link being stopped. */
-      readonly stopsActionId: string;
       /**
        * The expected state the Action Policy resolved against. It carries no
        * authority of its own; the Action Gate revalidates it against current
        * durable facts, so a resolution that has gone stale fails closed instead
        * of stopping work the user never resolved.
+       *
+       * Which delegation the stop ends is not stated here. A client cannot
+       * prove which link is live, so the Gate resolves it from its own active
+       * links, and on replay from the durable claim this action already owns.
        */
       readonly expects: WorkHubCoordinationStopPreconditions;
     };
@@ -276,17 +249,6 @@ export const WORKHUB_COORDINATION_OPERATION_SPECS = {
     decodeInput: decodeWorkHubCoordinationCandidatesInput,
     decodeOutput: decodeWorkHubCoordinationCandidatesResult,
   }),
-  'workhub.coordination.delegations': defineOperation<
-    WorkHubCoordinationDelegationsInput,
-    WorkHubCoordinationDelegationsResult,
-    (typeof CANDIDATE_ERRORS)[number]
-  >({
-    mode: 'query',
-    availability: 'ready',
-    errors: CANDIDATE_ERRORS,
-    decodeInput: decodeWorkHubCoordinationDelegationsInput,
-    decodeOutput: decodeWorkHubCoordinationDelegationsResult,
-  }),
   'workhub.coordination.act': defineOperation<
     WorkHubCoordinationActInput,
     WorkHubCoordinationActResult,
@@ -383,51 +345,6 @@ export function decodeWorkHubCoordinationCandidatesResult(
   return {
     candidateSetId: candidateSetId(result.candidateSetId),
     candidates: result.candidates.map(decodeWorkHubCoordinationCandidate),
-  };
-}
-
-export function decodeWorkHubCoordinationDelegationsInput(
-  value: unknown,
-): WorkHubCoordinationDelegationsInput {
-  const input = requireShapedRecord(
-    value,
-    'WorkHub Coordination delegations input',
-    [],
-    ['targetSessionId'],
-  );
-  return input.targetSessionId === undefined
-    ? {}
-    : { targetSessionId: requireEntityId(input.targetSessionId, 'WorkHub target Session id') };
-}
-
-export function decodeWorkHubCoordinationDelegationsResult(
-  value: unknown,
-): WorkHubCoordinationDelegationsResult {
-  const result = requireExactRecord(value, 'WorkHub Coordination delegations result', [
-    'delegations',
-  ]);
-  if (!Array.isArray(result.delegations)) {
-    throw invalidProtocolFrame('Invalid WorkHub Coordination delegations');
-  }
-  if (result.delegations.length > WORKHUB_COORDINATION_DELEGATION_MAX_ITEMS) {
-    throw invalidProtocolFrame('Too many WorkHub Coordination delegations');
-  }
-  return { delegations: result.delegations.map(decodeWorkHubCoordinationDelegation) };
-}
-
-function decodeWorkHubCoordinationDelegation(value: unknown): WorkHubCoordinationDelegation {
-  const delegation = requireExactRecord(value, 'WorkHub Coordination delegation', [
-    'actionId',
-    'targetSessionId',
-    'stoppable',
-  ]);
-  if (typeof delegation.stoppable !== 'boolean') {
-    throw invalidProtocolFrame('Invalid WorkHub delegation work state');
-  }
-  return {
-    actionId: requireEntityId(delegation.actionId, 'WorkHub Coordination action id'),
-    targetSessionId: requireEntityId(delegation.targetSessionId, 'WorkHub target Session id'),
-    stoppable: delegation.stoppable,
   };
 }
 
@@ -703,14 +620,9 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     throw invalidProtocolFrame('Invalid WorkHub replacement target');
   }
   if (proposal.disposition === 'stop_work') {
-    const exact = requireExactRecord(proposal, 'WorkHub stop proposal', [
-      'disposition',
-      'stopsActionId',
-      'expects',
-    ]);
+    const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
     return {
       disposition: 'stop_work',
-      stopsActionId: requireEntityId(exact.stopsActionId, 'WorkHub stopped action id'),
       expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
     };
   }

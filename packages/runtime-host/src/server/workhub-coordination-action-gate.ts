@@ -83,6 +83,17 @@ export interface WorkHubActionGateEffects {
    */
   claimAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome>;
   /**
+   * The operation this action identity already owns, if any.
+   *
+   * A stop names its target Session, not the delegation to end — the Host
+   * resolves that from its own active links. Resolving again on replay would
+   * fail, because a resolved stop takes its delegation out of the active set:
+   * the second attempt would find nothing where the first found one. The claim
+   * is the durable key that survives that, and it outlives removal of the
+   * target Session, so a committed destructive claim still converges.
+   */
+  readActionClaim(actionId: string): Promise<WorkHubActionClaim | undefined>;
+  /**
    * Durable lifetime proof for a delegation target that is no longer readable.
    * `removed` is a tombstone; `absent` is an identity that never existed here.
    */
@@ -355,13 +366,7 @@ export class WorkHubCoordinationActionGate {
           'WorkHub stop requires an explicit named command in trusted user text',
         );
       }
-      const source = await this.#effects.readAssignment(proposal.stopsActionId);
-      if (!source || source.targetSessionId !== proposal.expects.targetSessionId) {
-        throw new WorkHubActionGateFailure(
-          'action_conflict',
-          'WorkHub can stop only the resolved durable delegation it owns',
-        );
-      }
+      const source = await this.#stopSource(input.actionId, proposal.expects.targetSessionId);
       const stopFingerprint = stopActionFingerprint(input, source);
       await this.#claimAction(input.actionId, 'stop', stopFingerprint, source.delegationId);
       const existing = await this.#effects.readStopRequest(source.delegationId);
@@ -535,6 +540,77 @@ export class WorkHubCoordinationActionGate {
       delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
+  }
+
+  /**
+   * The delegation a stop names, by the only two keys that can name it.
+   *
+   * A stop carries its target Session and its own action identity; it never
+   * carries the delegation, because a client cannot prove which link is live.
+   *
+   * Replay reads the claim first. A resolved stop takes its delegation out of
+   * the active set, so re-deriving after one succeeded would find nothing and
+   * turn a converging replay into a conflict. The claim records the delegation
+   * this exact action already bound itself to, and it is written before any
+   * effect, so whatever the first attempt reached is reachable again.
+   *
+   * A first attempt has no claim and resolves from the active links: exactly
+   * one delegation on that Session must still hold work a stop could reach.
+   * Zero or several is the same refusal admission has always made, from the
+   * same durable state, rather than a client's guess about either.
+   */
+  async #stopSource(
+    actionId: string,
+    targetSessionId: string,
+  ): Promise<WorkHubDelegationAssignedMessage> {
+    const claim = await this.#effects.readActionClaim(actionId);
+    if (claim?.operation === 'stop') {
+      // The request records which delegation this action bound itself to. It is
+      // written after the claim, so a crash between the two leaves a claim with
+      // nothing to converge on — and nothing destructive happened either, so
+      // that case resolves from the active links below like a first attempt.
+      const requested = await this.#effects.readStopRequest(claim.subject);
+      if (requested) {
+        const claimed = await this.#effects.readAssignment(requested.stopsActionId);
+        if (!claimed || claimed.targetSessionId !== targetSessionId) {
+          throw new WorkHubActionGateFailure(
+            'action_conflict',
+            'WorkHub stop identity is already bound to a different delegation',
+          );
+        }
+        return claimed;
+      }
+    }
+    const active = await this.#effects.listActiveAssignments();
+    const onTarget = active.filter((assignment) => assignment.targetSessionId === targetSessionId);
+    if (onTarget.length === 0) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub has no active durable delegation to stop on that Session',
+      );
+    }
+    // One link is the answer whatever state its work is in. Whether that work
+    // finished, or was never WorkHub's to stop, is what the stop resolves to —
+    // `already_terminal` and `not_owned` are outcomes, not reasons to refuse
+    // the request before it is recorded.
+    if (onTarget.length === 1) return onTarget[0]!;
+    // Only several links need separating, and then the rule is the same one
+    // competition uses: a delegation whose work already finished is still
+    // linked but is no longer a stop target, so it cannot make a Session that
+    // was delegated to twice permanently unstoppable.
+    const holdingWork: WorkHubDelegationAssignedMessage[] = [];
+    for (const assignment of onTarget) {
+      if ((await this.#effects.readDelegationRetirement(assignment)) !== 'retired') {
+        holdingWork.push(assignment);
+      }
+    }
+    if (holdingWork.length !== 1) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        'WorkHub stop target does not identify one active durable delegation',
+      );
+    }
+    return holdingWork[0]!;
   }
 
   /**

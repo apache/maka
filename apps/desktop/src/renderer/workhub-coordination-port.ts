@@ -34,24 +34,15 @@ import type {
   WorkHubCoordinationActInput,
   WorkHubCoordinationActResult,
   WorkHubCoordinationCandidatesResult,
-  WorkHubCoordinationDelegationsResult,
   OperationOutcome,
   OperationError,
 } from '@maka/runtime-host/protocol';
-import { boundedWorkHubTimelineText } from './workhub-controller.js';
+import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
+
+export { WorkHubCoordinationFailure };
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
-
-export class WorkHubCoordinationFailure extends Error {
-  constructor(
-    readonly code: OperationError<'workhub.coordination.act'>['code'],
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorkHubCoordinationFailure';
-  }
-}
 
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
@@ -62,7 +53,6 @@ export function createDesktopWorkHubCoordinationPort(deps: {
     assistantText: string;
   }): Promise<{ turnId: string }>;
   candidates(): Promise<WorkHubCoordinationCandidatesResult>;
-  delegations(targetSessionId: string): Promise<WorkHubCoordinationDelegationsResult>;
   act(
     input: Omit<WorkHubCoordinationActInput, 'create'>,
   ): Promise<OperationOutcome<'workhub.coordination.act'>>;
@@ -70,7 +60,6 @@ export function createDesktopWorkHubCoordinationPort(deps: {
   return {
     record: deps.record,
     candidates: deps.candidates,
-    delegations: deps.delegations,
     async act(input) {
       const outcome = await deps.act(input);
       if (!outcome.ok) {

@@ -2517,6 +2517,9 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         ? 'same_claim'
         : 'conflict';
     },
+    async readActionClaim(actionId: string) {
+      return actionClaims.get(actionId);
+    },
     async probeTargetRemoval(sessionId: string) {
       if (this.sessions.some((session) => session.id === sessionId)) return 'present' as const;
       return this.removedSessionIds.has(sessionId) ? ('removed' as const) : ('absent' as const);

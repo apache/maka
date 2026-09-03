@@ -420,10 +420,8 @@ test('ambiguous creation is durably clarified before a fresh imperative creates 
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
-      delegations: async () => ({ delegations: [] }),
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
-        delegations: async () => ({ delegations: [] }),
         candidates: [],
       }),
       act: async (input) => {
@@ -595,10 +593,8 @@ test('real Session projection creates new guide topics and preserves origin ambi
     coordination: {
       open: async () => ({ close: async () => undefined }),
       record: async (input) => ({ turnId: input.turnId }),
-      delegations: async () => ({ delegations: [] }),
       candidates: async () => ({
         candidateSetId: `sha256:${'a'.repeat(64)}`,
-        delegations: async () => ({ delegations: [] }),
         candidates: sessions.map((entry) => ({
           candidateRef: `candidate-${entry.id}`,
           sessionId: entry.id,
@@ -666,7 +662,7 @@ test('real Session projection creates new guide topics and preserves origin ambi
           return {
             disposition: 'stop_work',
             outcome: 'cancelled_pending',
-            targetSessionId: input.proposal.stopsActionId,
+            targetSessionId: input.proposal.expects.targetSessionId,
           };
         }
         const targetSessionId = input.proposal.candidateRef.replace(/^candidate-/u, '');
