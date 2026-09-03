@@ -30,7 +30,9 @@ import {
 
 const temporaryDirectories = [];
 after(async () => {
-  await Promise.all(temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryDirectories.map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 test('rejects a tiny artifact before it reaches Desktop resources', async () => {
@@ -68,7 +70,9 @@ test('local preparation never enables distribution readiness', async () => {
     if (originalRoot === undefined) delete process.env.MAKA_CU_WINDOWS_ROOT;
     else process.env.MAKA_CU_WINDOWS_ROOT = originalRoot;
   }
-  const manifest = JSON.parse(await readFile(join(outputRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'));
+  const manifest = JSON.parse(
+    await readFile(join(outputRoot, 'apps', 'desktop', 'bundled-tools.json'), 'utf8'),
+  );
   assert.equal(manifest.windowsCu.distributionReady, false);
 });
 
@@ -83,6 +87,9 @@ test('distribution readiness requires evidence tied to the exact artifact', () =
     packagedConversationE2e: true,
   };
   assert.equal(resolveWindowsCuDistributionReady(complete, hash), true);
-  assert.equal(resolveWindowsCuDistributionReady({ ...complete, artifactSha256: 'c'.repeat(64) }, hash), false);
+  assert.equal(
+    resolveWindowsCuDistributionReady({ ...complete, artifactSha256: 'c'.repeat(64) }, hash),
+    false,
+  );
   assert.equal(resolveWindowsCuDistributionReady(undefined, hash), false);
 });

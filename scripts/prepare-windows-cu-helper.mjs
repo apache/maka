@@ -83,7 +83,8 @@ export async function inspectWindowsCuArtifact(artifactDirectory) {
     );
   }
   const missing = REQUIRED_NATIVE_FILES.filter((name) => !names.includes(name));
-  if (missing.length > 0) throw new Error(`Windows helper artifact is missing: ${missing.join(', ')}`);
+  if (missing.length > 0)
+    throw new Error(`Windows helper artifact is missing: ${missing.join(', ')}`);
   return {
     binaryPath: resolve(artifactDirectory, 'maka-cu-windows.exe'),
     files: await Promise.all(
@@ -105,13 +106,18 @@ async function publishFromSource(sourceRoot) {
     throw new Error(`No Rust Windows executor Cargo.toml found under ${sourceRoot}.`);
   }
   const dirty = (await exec('git', ['status', '--porcelain'], { cwd: sourceRoot })).stdout.trim();
-  if (dirty) throw new Error(`Windows helper source is dirty: ${sourceRoot}; build from an immutable commit.`);
+  if (dirty)
+    throw new Error(
+      `Windows helper source is dirty: ${sourceRoot}; build from an immutable commit.`,
+    );
   const artifact = resolve(sourceRoot, 'artifacts/windows-cu/win-x64');
   await rm(artifact, { recursive: true, force: true });
   await mkdir(artifact, { recursive: true });
-  await exec(process.platform === 'win32' ? 'cargo.exe' : 'cargo', [
-    'build', '--release', '--manifest-path', manifest,
-  ], { cwd: sourceRoot });
+  await exec(
+    process.platform === 'win32' ? 'cargo.exe' : 'cargo',
+    ['build', '--release', '--manifest-path', manifest],
+    { cwd: sourceRoot },
+  );
   const built = resolve(dirname(manifest), 'target/release/maka-cu-windows-rust.exe');
   if (!existsSync(built)) throw new Error(`Rust release binary was not produced: ${built}`);
   await cp(built, resolve(artifact, 'maka-cu-windows.exe'));
@@ -163,7 +169,9 @@ export async function prepareWindowsCuHelper({ source = process.env.MAKA_CU_WIND
     distributionReady: resolveWindowsCuDistributionReady(provenance, hash),
   };
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`Prepared ${output} (${hash}, ${bytes.length} bytes); distributionReady=${manifest.windowsCu.distributionReady}`);
+  console.log(
+    `Prepared ${output} (${hash}, ${bytes.length} bytes); distributionReady=${manifest.windowsCu.distributionReady}`,
+  );
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : undefined;
