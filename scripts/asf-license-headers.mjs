@@ -251,6 +251,9 @@ export const exclusionRules = [
         'packages/storage/src/__tests__/fixtures/codex-rollout-v0.144.jsonl',
         'packages/storage/test-fixtures/v0.1.6-operational-state/runtime.sqlite',
         'packages/storage/test-fixtures/workflow-schema-v8.sql',
+        // Cross-machine lifecycle evidence is retained as captured output,
+        // not as authored source.
+        'experiments/maka-cu-windows/lifecycle-results-cross-machine-rust-formal-native-latest.txt',
       )(path) || isUnder('docs/eval', '.csv')(path),
   },
   {
