@@ -78,6 +78,20 @@ npx knip --workspace packages/ui
 
 架构说明见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)；Eval 的命令与 contract 见 [`packages/eval`](./packages/eval)。
 
+### Storybook 组件文档
+
+Storybook 及其 MCP 端点仅用于开发，并按需启动：
+
+```sh
+npm --workspace @maka/desktop run storybook -- --no-open
+```
+
+启动后，MCP 端点位于 `http://localhost:6006/mcp`；支持仓库级 MCP 配置的客户端
+会通过根目录的 `.mcp.json` 注册它。当前组件目录会逐步补充，并不完整。进行 UI
+开发时应优先查询 Storybook 文档；如果所需 API 尚无文档，则遵循
+[DESIGN.md](./DESIGN.md)，并根据 Astryx 官方 API 或已发布的类型声明核实 Astryx
+组件及其 props，切勿猜测 props。
+
 ## Pull Request
 
 开 PR 时会自动填充 [`pull_request_template.md`](./.github/pull_request_template.md)；请在它的基础上填写，不要整段替换。

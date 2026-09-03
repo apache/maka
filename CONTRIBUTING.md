@@ -78,6 +78,21 @@ npx knip --workspace packages/ui
 
 Architecture is documented in [ARCHITECTURE.md](./ARCHITECTURE.md); evaluation commands and contracts live in [`packages/eval`](./packages/eval).
 
+### Storybook component documentation
+
+Storybook and its MCP endpoint are development-only and start on demand:
+
+```sh
+npm --workspace @maka/desktop run storybook -- --no-open
+```
+
+The MCP endpoint is then available at `http://localhost:6006/mcp`; the root
+`.mcp.json` registers it for clients that support repository MCP configuration.
+Its component catalog is incremental rather than exhaustive. For UI work,
+query Storybook documentation first. If the needed API is not documented there,
+follow [DESIGN.md](./DESIGN.md) and verify Astryx components and props against
+Astryx's official API or published type declarations. Never guess props.
+
 ## Pull requests
 
 Opening a pull request pre-fills [`pull_request_template.md`](./.github/pull_request_template.md); fill it in rather than replacing it.
