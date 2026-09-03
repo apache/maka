@@ -27,7 +27,10 @@ import {
   buildInvocationOpenedEvent,
   isSessionInlineInvocation,
 } from '@maka/core/runtime-invocation';
-import type { RuntimeInvocationOutcome, RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
+import type {
+  RuntimeInvocationOutcome,
+  RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
 import { backfillRuntimeEventsFromStoredMessages } from './runtime-event-backfill.js';
