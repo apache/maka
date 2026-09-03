@@ -189,21 +189,38 @@ async function activePromptRailSnapshot(page: Page): Promise<ActivePromptRailSna
   }, { promptCount: PROMPT_RAIL_PROMPT_COUNT });
 }
 
+// The transcript can still be settling right after a scroll, so one agreeing
+// snapshot can pass mid-settle (#4675). Two protocol reads alone are not
+// enough either: both can execute inside one rendered frame, so an update the
+// rail queued on requestAnimationFrame lands only after they agreed. The rail
+// resolves on the frame after a scroll and keeps re-resolving for six frames
+// after a mutation (packages/ui/src/prompt-anchor-rail.tsx), so the two reads
+// are separated by that whole window: agreement across six painted frames is
+// a settled rail, and nothing is read after the poll that the poll did not
+// see.
+const RAIL_SETTLE_FRAMES = 6;
+
 async function expectPromptRailMatchesReadingPosition(page: Page): Promise<void> {
   let lastSnapshot: ActivePromptRailSnapshot | null = null;
   try {
     await expect.poll(async () => {
-      lastSnapshot = await activePromptRailSnapshot(page);
-      return lastSnapshot.expectedId !== null
-        && lastSnapshot.currentIds.length === 1
-        && lastSnapshot.currentIds[0] === lastSnapshot.expectedId;
-    }, { message: 'the one current tick maps from the Turn being read' }).toBe(true);
+      const first = await activePromptRailSnapshot(page);
+      await waitForPaintedFrames(page, RAIL_SETTLE_FRAMES);
+      const second = await activePromptRailSnapshot(page);
+      lastSnapshot = second;
+      return second.expectedId !== null
+        && second.currentIds.length === 1
+        && second.currentIds[0] === second.expectedId
+        && first.expectedId === second.expectedId
+        && first.currentIds.length === 1
+        && first.currentIds[0] === second.expectedId;
+    }, {
+      message: 'the one current tick maps from the Turn being read, across six painted frames',
+      timeout: 15_000,
+    }).toBe(true);
   } catch {
     throw new Error(`the prompt rail did not settle on the reading position: ${JSON.stringify(lastSnapshot)}`);
   }
-  const snapshot = await activePromptRailSnapshot(page);
-  expect(snapshot.expectedId, `no visible Turn in ${JSON.stringify(snapshot)}`).not.toBeNull();
-  expect(snapshot.currentIds).toEqual([snapshot.expectedId]);
 }
 
 async function scrollTranscriptThroughHistory(page: Page): Promise<void> {
