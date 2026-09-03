@@ -737,32 +737,47 @@ h2 {
   color: var(--accent-solid);
 }
 
-/* Downloads page */
+/* Downloads page: the Astryx technical-documentation layout, content plus a
+   sticky outline, rows for status and numbered steps with copyable code. */
 .doc {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px;
+  gap: 64px;
   padding: 56px 0 0;
+  max-width: 1040px;
 }
 .doc h1 {
   font-size: 40px;
   line-height: 1.15;
   font-weight: 600;
   letter-spacing: -0.03em;
-  margin: 0 0 12px;
+  margin: 0 0 10px;
   text-wrap: balance;
 }
-.doc > p.lede {
-  margin: 0 0 8px;
-  text-align: left;
+.doc .sup {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--muted-foreground);
+  max-width: 62ch;
 }
 .doc h2 {
   font-size: 24px;
-  margin: 48px 0 10px;
+  margin: 0 0 12px;
+}
+.doc h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 .doc p,
 .doc li {
   font-size: 15px;
   line-height: 1.6;
   color: var(--muted-foreground);
-  max-width: 72ch;
+  max-width: 68ch;
+  margin: 0 0 12px;
 }
 .doc p a:not(.btn),
 .doc li a {
@@ -770,9 +785,10 @@ h2 {
   text-decoration: underline;
   text-underline-offset: 3px;
 }
-.doc p b {
-  color: var(--foreground);
-  font-weight: 600;
+.doc .div {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 40px 0;
 }
 .doc .note {
   display: inline-block;
@@ -781,20 +797,126 @@ h2 {
   border: 1px solid color-mix(in srgb, var(--warning-text) 40%, transparent);
   border-radius: 999px;
   padding: 3px 10px;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+}
+.doc .status {
+  margin: 32px 0 48px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-container);
+  background: var(--plain);
+  overflow: hidden;
+}
+.doc .status h3 {
+  padding: 12px 16px;
+  color: var(--muted-foreground);
+  border-bottom: 1px solid var(--border);
+}
+.doc .status .row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.doc .status .row:last-child {
+  border-bottom: 0;
+}
+.doc .status .row:hover {
+  background: var(--surface-sunken);
+}
+.doc .status .row b {
+  font-weight: 600;
+}
+.doc .status .row span {
+  color: var(--muted-foreground);
+}
+.doc .status .row small {
+  font: 500 11px / 1 var(--font-family-code);
+  color: var(--muted-foreground);
+  white-space: nowrap;
+}
+.doc .status .row small.warn {
+  color: var(--warning-text);
+}
+.doc .step {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 18px 0 8px;
+}
+.doc ul {
+  padding-left: 20px;
+  margin: 0 0 8px;
+}
+.doc li {
+  margin: 0 0 4px;
+}
+.doc .code {
+  position: relative;
+  margin: 0 0 12px;
 }
 .doc pre {
+  margin: 0;
   background: var(--plain);
   border: 1px solid var(--border);
   border-radius: var(--radius-container);
-  padding: 14px 16px;
+  padding: 14px 96px 14px 16px;
   overflow-x: auto;
   font: 13px / 1.6 var(--font-family-code);
   color: var(--foreground);
-  margin: 12px 0;
+}
+.doc .copy {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--muted-foreground);
+  font: 500 12px var(--font-family-body);
+  cursor: pointer;
+}
+.doc .copy:hover {
+  color: var(--foreground);
 }
 .doc code {
   font-size: 0.92em;
+}
+.doc .btn {
+  margin-top: 4px;
+}
+.outline {
+  position: sticky;
+  top: 24px;
+  align-self: start;
+  padding-top: 132px;
+}
+.outline .lab {
+  font: 500 11px / 1 var(--font-family-code);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+  margin-bottom: 12px;
+}
+.outline a {
+  display: block;
+  padding: 6px 0 6px 12px;
+  border-left: 2px solid var(--border);
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.outline a:hover {
+  color: var(--foreground);
+}
+.outline a[aria-current="true"] {
+  border-color: var(--accent-solid);
+  color: var(--foreground);
+  font-weight: 500;
 }
 
 /* Footer */
@@ -905,7 +1027,18 @@ h2 {
   h2 {
     font-size: 28px;
   }
+  .doc {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .outline {
+    display: none;
+  }
   .doc h1 {
     font-size: 32px;
+  }
+  .doc .status .row {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }

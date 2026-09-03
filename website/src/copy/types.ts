@@ -89,9 +89,18 @@ export interface Copy {
   downloads: {
     title: string;
     lede: string;
+    onThisPage: string;
+    copy: string;
+    copied: string;
+    status: {
+      h3: string;
+      release: { label: string; value: string; note: string };
+      nightly: { label: string; value: string; note: string };
+      source: { label: string; value: string; note: string };
+    };
     releases: { h2: string; note: string; p: string; distNote: string };
-    verify: { h2: string; p: string };
+    verify: { h2: string; p: string; keys: string; signature: string; checksum: string };
     nightly: { h2: string; note: string; p: string; windows: string };
-    source: { h2: string; requirements: string; after: string };
+    source: { h2: string; prerequisites: string[]; clone: string; build: string; after: string };
   };
 }

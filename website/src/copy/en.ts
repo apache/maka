@@ -159,6 +159,27 @@ export const en: Copy = {
   downloads: {
     title: 'Downloads',
     lede: 'The signed source archive is the release. Everything else on this page is a convenience build, and says so.',
+    onThisPage: 'On this page',
+    copy: 'Copy',
+    copied: 'Copied',
+    status: {
+      h3: 'Where things stand',
+      release: {
+        label: 'Apache release',
+        value: 'None yet. The first one appears here after its vote.',
+        note: 'NOT YET',
+      },
+      nightly: {
+        label: 'Desktop Nightly',
+        value: 'Daily from main, Apple Silicon Macs, Windows unsigned preview.',
+        note: 'NOT AN ASF RELEASE',
+      },
+      source: {
+        label: 'Source',
+        value: 'apache/maka on GitHub, Apache License 2.0.',
+        note: 'APACHE-2.0',
+      },
+    },
     releases: {
       h2: 'Apache releases',
       note: 'NO APACHE RELEASE YET',
@@ -167,7 +188,10 @@ export const en: Copy = {
     },
     verify: {
       h2: 'Verify a release',
-      p: 'Every Apache release is verified the same way. Import the release managers’ keys, check the signature, then the checksum:',
+      p: 'Every Apache release is verified the same way, and every reviewer on the vote does this before voting.',
+      keys: 'Step 1: Import the release managers’ keys',
+      signature: 'Step 2: Check the signature',
+      checksum: 'Step 3: Check the checksum',
     },
     nightly: {
       h2: 'Desktop Nightly',
@@ -177,8 +201,14 @@ export const en: Copy = {
     },
     source: {
       h2: 'Build from source',
-      requirements:
-        'You need Node.js 22.19 or newer, npm 11, Git, and ripgrep, which the Grep tool shells out to.',
+      prerequisites: [
+        'Node.js 22.19 or newer',
+        'npm 11',
+        'Git',
+        'ripgrep, which the Grep tool shells out to',
+      ],
+      clone: 'Step 1: Clone the repository',
+      build: 'Step 2: Install and build every workspace',
       after:
         'CONTRIBUTING covers the workspace layout and how to start Desktop, the TUI and the CLI from that build.',
     },

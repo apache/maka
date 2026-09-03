@@ -150,6 +150,27 @@ export const zhCN: Copy = {
   downloads: {
     title: '下载',
     lede: '签名的源码包才是 release。本页其它内容都是便利构建，并且都会写明。',
+    onThisPage: '本页目录',
+    copy: '复制',
+    copied: '已复制',
+    status: {
+      h3: '当前状态',
+      release: {
+        label: 'Apache release',
+        value: '尚无。第一个 release 投票通过后会出现在这里。',
+        note: '尚无',
+      },
+      nightly: {
+        label: 'Desktop Nightly',
+        value: '每天从 main 构建，Apple Silicon Mac，Windows 未签名预览。',
+        note: '不是 ASF RELEASE',
+      },
+      source: {
+        label: '源码',
+        value: 'GitHub 上的 apache/maka，Apache License 2.0。',
+        note: 'APACHE-2.0',
+      },
+    },
     releases: {
       h2: 'Apache releases',
       note: '尚无 APACHE RELEASE',
@@ -158,7 +179,10 @@ export const zhCN: Copy = {
     },
     verify: {
       h2: '验证 release',
-      p: '每个 Apache release 的验证方式都一样：导入 release manager 的公钥，验签，再核对校验和。',
+      p: '每个 Apache release 的验证方式都一样，投票的每位 reviewer 在投票前都会做这几步。',
+      keys: '第 1 步：导入 release manager 的公钥',
+      signature: '第 2 步：验签',
+      checksum: '第 3 步：核对校验和',
     },
     nightly: {
       h2: 'Desktop Nightly',
@@ -168,7 +192,9 @@ export const zhCN: Copy = {
     },
     source: {
       h2: '从源码构建',
-      requirements: '需要 Node.js 22.19 或更新版本、npm 11、Git，以及 Grep 工具依赖的 ripgrep。',
+      prerequisites: ['Node.js 22.19 或更新版本', 'npm 11', 'Git', 'ripgrep，Grep 工具依赖它'],
+      clone: '第 1 步：克隆仓库',
+      build: '第 2 步：安装依赖并构建全部 workspace',
       after: 'CONTRIBUTING 说明了 workspace 布局，以及如何从这份构建启动 Desktop、TUI 和 CLI。',
     },
   },
