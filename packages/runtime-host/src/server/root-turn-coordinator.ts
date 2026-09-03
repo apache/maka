@@ -2293,7 +2293,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       }
     }
     this.#executions.activate(entry, replacing);
-    entry.done = this.drainTurn(input, entry, startSettled);
+    entry.done = this.sessionAdmission.detach(() => this.drainTurn(input, entry, startSettled));
     void entry.done.catch(() => undefined);
     if (rootReservation) {
       this.#admissions.activated(rootReservation, entry.done);
