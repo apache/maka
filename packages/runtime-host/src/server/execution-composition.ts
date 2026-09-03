@@ -181,7 +181,10 @@ import type { TurnOperationHandlerMap } from './operation-dispatcher.js';
 import { HostUsagePricingCoordinator } from './usage-pricing-coordinator.js';
 import { HostWebSearchCoordinator } from './web-search-coordinator.js';
 import { HostWorkHubCoordinationCoordinator } from './workhub-coordination-coordinator.js';
-import { WorkHubActionEffectFailure } from './workhub-coordination-action-gate.js';
+import {
+  WorkHubActionEffectFailure,
+  workHubResumedTurnId,
+} from './workhub-coordination-action-gate.js';
 
 type ExecutionConnectionRef = Parameters<
   RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']
@@ -1385,6 +1388,41 @@ export async function createExecutionRuntimeHostComposition(
           // root is not evidence that its work ended.
           const snapshot = await coordinator.read(identity);
           return isHostedExecutionTerminal(snapshot) ? 'retired' : 'recovering';
+        },
+        // Resume is the same two steps the Desktop banner takes: ask the Host
+        // whether this Session has a continuation to make, then make it. The
+        // Host owns both answers, so a repeat parks rather than forking, and
+        // WorkHub records only which of the three things happened.
+        resumeDelegation: async (assignment, context) => {
+          const plan = await coordinator.handlers['turn.resume.query'](
+            { sessionId: assignment.targetSessionId },
+            context,
+          );
+          if (!plan.ok) return { outcome: 'parked' as const };
+          if (plan.result.disposition === 'parked') {
+            return {
+              outcome:
+                plan.result.reason === 'resume_candidate_missing'
+                  ? ('already_running' as const)
+                  : ('parked' as const),
+            };
+          }
+          const started = await coordinator.handlers['turn.resume.start'](
+            {
+              sessionId: assignment.targetSessionId,
+              turnId: workHubResumedTurnId(assignment.delegationId, plan.result.sourceRunId),
+              sourceRunId: plan.result.sourceRunId,
+              sourceRuntimeEventHighWater: plan.result.sourceRuntimeEventHighWater,
+            },
+            context,
+          );
+          if (!started.ok || started.result.kind === 'parked') {
+            return { outcome: 'parked' as const };
+          }
+          return {
+            outcome: 'resume_started' as const,
+            targetTurnId: started.result.turn.turnId,
+          };
         },
         retireDelegation: async (assignment, retirement) => {
           const disposition = await messages.cancelMessageIfPending(

@@ -1091,7 +1091,12 @@ export type WorkHubActionOperation =
   | 'delegate_existing'
   | 'create_new'
   | 'replace'
-  | 'stop';
+  | 'stop'
+  // Resume claims like every other disposition, so one action identity still
+  // means one operation. A Host that predates this value refuses to read a
+  // claim carrying it, which is a downgrade hazard and not a wire one: the
+  // table is local, and the row only exists once a resume has been admitted.
+  | 'resume';
 
 /** Durable global binding from one action identity to one exact operation. */
 export interface WorkHubActionClaim {

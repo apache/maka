@@ -329,6 +329,160 @@ describe('WorkHub Coordination Action Gate', () => {
     expects: { targetSessionId },
   });
 
+  const resumeProposal = (targetSessionId: string) => ({
+    disposition: 'resume_work' as const,
+    expects: { targetSessionId },
+  });
+
+  const delegatedTo = (effects: ReturnType<typeof fakeEffects>, sessionId: string) => {
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'a'.repeat(64)}`,
+          targetSessionId: sessionId,
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+  };
+
+  test('resumes the one delegation the named Session owns', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(effects, 'payments');
+
+    const result = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'resume-action',
+        userText: 'Resume Payments',
+        proposal: resumeProposal('payments'),
+      },
+      CONTEXT,
+    );
+
+    assert.deepEqual(result, {
+      disposition: 'resume_work',
+      outcome: 'resume_started',
+      targetSessionId: 'payments',
+      targetTurnId: 'resumed-turn',
+    });
+    assert.equal(effects.resumeCalls.length, 1);
+    assert.equal(effects.resumeCalls[0]?.actionId, 'source-action');
+    // Resume claims like every other disposition, so the identity is spent.
+    assert.equal(effects.actionClaims.get('resume-action')?.operation, 'resume');
+  });
+
+  test('resume needs a named command and carries no destructive confirmation', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(effects, 'payments');
+    const gate = new WorkHubCoordinationActionGate(effects);
+
+    // Anaphora names nothing, so it never reaches the delegation.
+    await assert.rejects(
+      () =>
+        gate.act(
+          {
+            actionId: 'resume-anaphora',
+            userText: 'Resume it',
+            proposal: resumeProposal('payments'),
+          },
+          CONTEXT,
+        ),
+      /explicit named command/u,
+    );
+    // A question is not a command.
+    await assert.rejects(
+      () =>
+        gate.act(
+          {
+            actionId: 'resume-question',
+            userText: 'Should I resume Payments?',
+            proposal: resumeProposal('payments'),
+          },
+          CONTEXT,
+        ),
+      /explicit named command/u,
+    );
+    assert.equal(effects.resumeCalls.length, 0);
+  });
+
+  test('resume refuses a Session that does not own exactly one delegation', async () => {
+    const none = fakeEffects([session('payments', { name: 'Payments' })]);
+    await assert.rejects(
+      () =>
+        new WorkHubCoordinationActionGate(none).act(
+          {
+            actionId: 'resume-none',
+            userText: 'Resume Payments',
+            proposal: resumeProposal('payments'),
+          },
+          CONTEXT,
+        ),
+      /no active durable delegation to resume/u,
+    );
+
+    const several = fakeEffects([session('payments', { name: 'Payments' })]);
+    delegatedTo(several, 'payments');
+    several.assignmentRecords.set(
+      'second-action',
+      assignmentRecord(
+        {
+          actionId: 'second-action',
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Also fix the receipts',
+        },
+        'second-turn',
+      ),
+    );
+    await assert.rejects(
+      () =>
+        new WorkHubCoordinationActionGate(several).act(
+          {
+            actionId: 'resume-many',
+            userText: 'Resume Payments',
+            proposal: resumeProposal('payments'),
+          },
+          CONTEXT,
+        ),
+      /does not identify one active durable delegation/u,
+    );
+    assert.equal(several.resumeCalls.length, 0);
+  });
+
+  test('resume reports the Host answer it was given, including a park', async () => {
+    for (const [outcome, targetTurnId] of [
+      ['already_running', undefined],
+      ['parked', undefined],
+    ] as const) {
+      const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+      delegatedTo(effects, 'payments');
+      effects.resumeOutcome = { outcome };
+
+      const result = await new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: `resume-${outcome}`,
+          userText: 'Resume Payments',
+          proposal: resumeProposal('payments'),
+        },
+        CONTEXT,
+      );
+
+      assert.deepEqual(result, {
+        disposition: 'resume_work',
+        outcome,
+        targetSessionId: 'payments',
+        ...(targetTurnId ? { targetTurnId } : {}),
+      });
+    }
+  });
+
   test('stops exactly one named durable delegation and replays its observed outcome', async () => {
     const effects = fakeEffects([session('payments', { name: 'Payments' })]);
     effects.assignmentRecords.set(
@@ -2563,6 +2717,15 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
         ? 'same_claim'
         : 'conflict';
     },
+    resumeCalls: [] as WorkHubDelegationAssignedMessage[],
+    resumeOutcome: { outcome: 'resume_started' as const, targetTurnId: 'resumed-turn' } as {
+      outcome: 'resume_started' | 'already_running' | 'parked';
+      targetTurnId?: string;
+    },
+    async resumeDelegation(assignment: WorkHubDelegationAssignedMessage) {
+      this.resumeCalls.push(assignment);
+      return this.resumeOutcome;
+    },
     async readActionClaim(actionId: string) {
       return actionClaims.get(actionId);
     },
@@ -2758,6 +2921,11 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     stopRequests: Map<string, WorkHubDelegationStopRequestedMessage>;
     stopResolutions: Map<string, WorkHubDelegationStopResolvedMessage>;
     retirements: WorkHubDelegationAssignedMessage[];
+    resumeCalls: WorkHubDelegationAssignedMessage[];
+    resumeOutcome: {
+      outcome: 'resume_started' | 'already_running' | 'parked';
+      targetTurnId?: string;
+    };
   };
 }
 

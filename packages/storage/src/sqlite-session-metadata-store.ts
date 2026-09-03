@@ -7199,7 +7199,8 @@ function isWorkHubActionOperation(value: unknown): value is WorkHubActionOperati
     value === 'delegate_existing' ||
     value === 'create_new' ||
     value === 'replace' ||
-    value === 'stop'
+    value === 'stop' ||
+    value === 'resume'
   );
 }
 

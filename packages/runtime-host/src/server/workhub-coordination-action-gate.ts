@@ -145,6 +145,15 @@ export interface WorkHubActionGateEffects {
     assignment: WorkHubDelegationAssignedMessage,
     retirement: WorkHubDelegationRetirementClaim,
   ): Promise<WorkHubRetirementResult>;
+  /**
+   * Ask the target Session to carry on the work this delegation left
+   * unfinished. The Host owns whether that is possible; a repeat is safe
+   * because a continuation that already exists parks rather than forks.
+   */
+  resumeDelegation(
+    assignment: WorkHubDelegationAssignedMessage,
+    context: ConnectionContext,
+  ): Promise<WorkHubResumeResult>;
 }
 
 /**
@@ -157,6 +166,11 @@ export interface WorkHubActionGateEffects {
 export interface WorkHubDelegationRetirementClaim {
   readonly cancellationClaimId: string;
   readonly cause: 'direct_stop' | 'replacement';
+}
+
+export interface WorkHubResumeResult {
+  readonly outcome: 'resume_started' | 'already_running' | 'parked';
+  readonly targetTurnId?: string;
 }
 
 export interface WorkHubRetirementResult {
@@ -426,6 +440,29 @@ export class WorkHubCoordinationActionGate {
       });
       return this.#stop(requested, source);
     }
+    if (proposal.disposition === 'resume_work') {
+      // Resume carries no confirmation. It starts work that was already
+      // delegated and already interrupted, so it destroys nothing and needs no
+      // authority a delegation did not already grant — only proof that the
+      // words asked for it and that the Session named still owns one link.
+      if (!requestIntent.resume.imperative) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub resume requires an explicit named command in trusted user text',
+        );
+      }
+      const source = await this.#resumeSource(proposal.expects.targetSessionId);
+      const resumeFingerprint = resumeActionFingerprint(input, source);
+      await this.#claimAction(input.actionId, 'resume', resumeFingerprint, source.delegationId);
+      const resumed = await this.#effects.resumeDelegation(source, context);
+      return {
+        disposition: 'resume_work',
+        outcome: resumed.outcome,
+        targetSessionId: source.targetSessionId,
+        ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
+      };
+    }
+
     if (proposal.disposition === 'create_new') {
       if (!input.create || !workHubCreationAuthorizesTitle(requestIntent, proposal.title)) {
         throw new WorkHubActionGateFailure(
@@ -526,6 +563,29 @@ export class WorkHubCoordinationActionGate {
       delegationAssignment(input, fingerprint, target.sessionId, target.sessionName),
       context,
     );
+  }
+
+  /**
+   * The delegation a resume names.
+   *
+   * Unlike a stop this needs no claim to find its way back: resume changes no
+   * durable link, so the delegation it names is still in the active set on the
+   * next attempt exactly as it was on the first. One link on the Session is the
+   * answer; several is the same ambiguity a stop refuses, and none means there
+   * is nothing here to carry on.
+   */
+  async #resumeSource(targetSessionId: string): Promise<WorkHubDelegationAssignedMessage> {
+    const active = await this.#effects.listActiveAssignments();
+    const onTarget = active.filter((assignment) => assignment.targetSessionId === targetSessionId);
+    if (onTarget.length !== 1) {
+      throw new WorkHubActionGateFailure(
+        'action_conflict',
+        onTarget.length === 0
+          ? 'WorkHub has no active durable delegation to resume on that Session'
+          : 'WorkHub resume target does not identify one active durable delegation',
+      );
+    }
+    return onTarget[0]!;
   }
 
   /**
@@ -1051,6 +1111,17 @@ function workHubCreatedSessionId(actionId: string): string {
   return `whs_${hash(`create\0${actionId}`).slice(0, 48)}`;
 }
 
+/**
+ * The continuation identity a resume would start, derived rather than minted.
+ *
+ * Two attempts at the same interrupted run must name the same Turn, or the
+ * second would ask the Host to start a second continuation instead of finding
+ * the first already there.
+ */
+export function workHubResumedTurnId(delegationId: string, sourceRunId: string): string {
+  return `wht_${hash(`resume\0${delegationId}\0${sourceRunId}`).slice(0, 48)}`;
+}
+
 function workspaceProjection(session: WorkHubActionGateSession): WorkspaceProjection {
   return {
     target:
@@ -1119,6 +1190,23 @@ function replacementActionFingerprint(
         ? { title: input.proposal.target.title, workspace: input.create?.workspace }
         : {}),
     },
+  });
+}
+
+function resumeActionFingerprint(
+  input: WorkHubCoordinationActInput,
+  source: WorkHubDelegationAssignedMessage,
+): `sha256:${string}` {
+  if (input.proposal.disposition !== 'resume_work') {
+    throw new WorkHubActionGateFailure('action_conflict', 'Invalid WorkHub resume replay');
+  }
+  return digest({
+    userText: input.userText,
+    disposition: 'resume_work',
+    resumesActionId: source.actionId,
+    resumesDelegationId: source.delegationId,
+    targetSessionId: source.targetSessionId,
+    targetMessageId: source.targetMessageId,
   });
 }
 

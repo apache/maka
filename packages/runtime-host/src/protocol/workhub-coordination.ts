@@ -148,6 +148,16 @@ export type WorkHubCoordinationProposal =
        * links, and on replay from the durable claim this action already owns.
        */
       readonly expects: WorkHubCoordinationStopPreconditions;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      /**
+       * Resume names the Session it resolved and nothing else, for the same
+       * reason a stop does: which delegation is live is the Host's to know.
+       * The Gate revalidates it, so a resolution that has gone stale fails
+       * closed instead of restarting work the user never named.
+       */
+      readonly expects: WorkHubCoordinationStopPreconditions;
     };
 
 export interface WorkHubCoordinationStopPreconditions {
@@ -202,6 +212,18 @@ export type WorkHubCoordinationActResult =
   | {
       readonly disposition: 'stop_work';
       readonly outcome: 'cancelled_pending' | 'stop_delivered' | 'already_terminal' | 'not_owned';
+      readonly targetSessionId: string;
+      readonly targetTurnId?: string;
+    }
+  | {
+      readonly disposition: 'resume_work';
+      /**
+       * `parked` is the Host declining to continue — the reason is its own and
+       * is not restated here, because nothing the client can do changes it.
+       * `already_running` means the work never stopped, which is an answer, not
+       * a failure.
+       */
+      readonly outcome: 'resume_started' | 'already_running' | 'parked';
       readonly targetSessionId: string;
       readonly targetTurnId?: string;
     };
@@ -518,6 +540,36 @@ export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoord
           }),
     };
   }
+  if (result.disposition === 'resume_work') {
+    const exact = requireShapedRecord(
+      result,
+      'WorkHub Coordination resume result',
+      ['disposition', 'outcome', 'targetSessionId'],
+      ['targetTurnId'],
+    );
+    if (
+      exact.outcome !== 'resume_started' &&
+      exact.outcome !== 'already_running' &&
+      exact.outcome !== 'parked'
+    ) {
+      throw invalidProtocolFrame('Invalid WorkHub resume outcome');
+    }
+    // Only a started continuation names a Turn: the Host has one to name, and
+    // the other two outcomes changed nothing that could carry an identity.
+    if ((exact.outcome === 'resume_started') !== (exact.targetTurnId !== undefined)) {
+      throw invalidProtocolFrame('Invalid WorkHub resume target Turn');
+    }
+    return {
+      disposition: 'resume_work',
+      outcome: exact.outcome,
+      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
+      ...(exact.targetTurnId === undefined
+        ? {}
+        : {
+            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
+          }),
+    };
+  }
   throw invalidProtocolFrame('Invalid WorkHub Coordination action disposition');
 }
 
@@ -631,6 +683,16 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
     return {
       disposition: 'stop_work',
+      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+    };
+  }
+  if (proposal.disposition === 'resume_work') {
+    const exact = requireExactRecord(proposal, 'WorkHub resume proposal', [
+      'disposition',
+      'expects',
+    ]);
+    return {
+      disposition: 'resume_work',
       expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
     };
   }

@@ -193,6 +193,14 @@ function createWorkHubController({ sessions }: { sessions: TestSessionPort }) {
             targetSessionId: input.proposal.expects.targetSessionId,
           };
         }
+        if (input.proposal.disposition === 'resume_work') {
+          return {
+            disposition: 'resume_work',
+            outcome: 'resume_started',
+            targetSessionId: input.proposal.expects.targetSessionId,
+            targetTurnId: 'resumed-turn',
+          };
+        }
         const target = candidateByRef.get(input.proposal.candidateRef);
         if (!target) throw new Error('unknown test candidate');
         const admitted = await sessions.submit(target.target, input.userText, input.actionId);
