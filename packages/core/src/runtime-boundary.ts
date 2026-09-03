@@ -19,7 +19,6 @@
 
 import * as nodeCrypto from 'node:crypto';
 import type { Hash } from 'node:crypto';
-import { runtimeInvocationOpeningFromRunHeader, type AgentRunHeader } from './agent-run.js';
 import { encodeCanonicalRuntimeEvent } from './canonical-runtime-event.js';
 import { isRecord } from './record-schema.js';
 import { decodeRuntimeInvocationOpened, TOOL_BOUNDARY_PROTOCOL_V1 } from './runtime-event.js';
@@ -311,98 +310,29 @@ export function decodeContinuationClaim(value: unknown): ContinuationClaimV1 {
 }
 
 /**
- * The target's pre-provider Run header, rebuilt from the claim.
+ * Is this the invocation the claim opened?
  *
- * A continuation target exists because of its claim and nothing else. Its
- * identity is the claim's target, its clock is `claimedAt`, it has not started,
- * and its continuation lineage is a restatement of the claim's own boundary. So
- * every field here is read off the claim, and the header the claim used to carry
- * was never independent evidence of anything.
+ * The claim froze the target's opening, so the check is that the invocation
+ * still carries it, plus the identity the claim fixed. There is nothing else to
+ * compare: an invocation's lifecycle lives in its events, not in a record that
+ * a frozen copy could go stale against.
  */
-export function continuationTargetRunHeader(claim: ContinuationClaimV1): AgentRunHeader {
-  const opening = claim.targetOpening;
-  const source = claim.boundary.segments.at(-1)!;
-  const { route, configuration, lineage } = opening;
-  return {
-    runId: claim.target.runId,
-    invocationId: claim.target.invocationId,
-    sessionId: claim.target.sessionId,
-    turnId: claim.target.turnId,
-    status: 'created',
-    backendKind: route.backendKind,
-    ...(route.provenance === 'runtime' ? { llmConnectionId: route.llmConnectionId } : {}),
-    ...(route.provenance === 'runtime' && route.providerStateIdentity !== undefined
-      ? { providerStateIdentity: route.providerStateIdentity }
-      : {}),
-    llmConnectionSlug: route.llmConnectionSlug,
-    modelId: route.modelId,
-    cwd: configuration.cwd,
-    ...(configuration.workspaceIdentity !== undefined
-      ? { workspaceIdentity: configuration.workspaceIdentity }
-      : {}),
-    permissionMode: configuration.permissionMode,
-    collaborationMode: configuration.collaborationMode,
-    orchestrationMode: configuration.orchestrationMode,
-    orchestrationSource: configuration.orchestrationSource,
-    ...(configuration.agentSwarmAuthorization !== undefined
-      ? { agentSwarmAuthorization: configuration.agentSwarmAuthorization }
-      : {}),
-    toolMode: configuration.toolMode,
-    createdAt: claim.claimedAt,
-    updatedAt: claim.claimedAt,
-    parentRunId: source.identity.runId,
-    ...(lineage?.resumedFromRunId !== undefined
-      ? { resumedFromRunId: lineage.resumedFromRunId }
-      : {}),
-    ...(lineage?.retriedFromRunId !== undefined
-      ? { retriedFromRunId: lineage.retriedFromRunId }
-      : {}),
-    ...(lineage?.parentTurnId !== undefined ? { parentTurnId: lineage.parentTurnId } : {}),
-    ...(lineage?.retriedFromTurnId !== undefined
-      ? { retriedFromTurnId: lineage.retriedFromTurnId }
-      : {}),
-    ...(lineage?.regeneratedFromTurnId !== undefined
-      ? { regeneratedFromTurnId: lineage.regeneratedFromTurnId }
-      : {}),
-    ...(lineage?.branchOfTurnId !== undefined ? { branchOfTurnId: lineage.branchOfTurnId } : {}),
-    ...(lineage?.parentSessionId !== undefined ? { parentSessionId: lineage.parentSessionId } : {}),
-    ...(lineage?.agentId !== undefined ? { agentId: lineage.agentId } : {}),
-    ...(lineage?.agentName !== undefined ? { agentName: lineage.agentName } : {}),
-    continuationSource: {
-      protocol: 'continuation_source_v2',
-      claimId: claim.claimId,
-      boundaryDigest: claim.boundaryDigest,
-      sourceInvocationId: source.identity.invocationId,
-      sourceRunId: source.identity.runId,
-      sourceTurnId: source.identity.turnId,
-      sourceRuntimeEventHighWater: source.position.lastEventSeq,
-      sourcePrefixDigest: source.prefixDigest,
-      replayManifestDigest: claim.boundary.manifestDigest,
-    },
-  };
-}
-
-/**
- * Is this the Run the claim opened?
- *
- * The claim froze the target's opening, so the check is that the run still
- * projects to it, plus the identity and clock the claim fixed. Lifecycle fields
- * are deliberately out of scope: the run's status and timestamps move as it
- * executes, and comparing them against a frozen copy only ever detected the
- * copy going stale.
- */
-export function runHeaderMatchesClaimTarget(
-  run: AgentRunHeader,
+export function invocationMatchesClaimTarget(
+  invocation: {
+    sessionId: string;
+    invocationId: string;
+    runId: string;
+    turnId: string;
+    opening: RuntimeEventInvocationOpenedContent;
+  },
   claim: ContinuationClaimV1,
 ): boolean {
   return (
-    run.sessionId === claim.target.sessionId &&
-    run.invocationId === claim.target.invocationId &&
-    run.runId === claim.target.runId &&
-    run.turnId === claim.target.turnId &&
-    run.createdAt === claim.claimedAt &&
-    stableJsonStringify(runtimeInvocationOpeningFromRunHeader(run)) ===
-      stableJsonStringify(claim.targetOpening)
+    invocation.sessionId === claim.target.sessionId &&
+    invocation.invocationId === claim.target.invocationId &&
+    invocation.runId === claim.target.runId &&
+    invocation.turnId === claim.target.turnId &&
+    stableJsonStringify(invocation.opening) === stableJsonStringify(claim.targetOpening)
   );
 }
 

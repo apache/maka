@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { invocationMatchesHostedRootExecution } from '../agent-run.js';
+import { invocationMatchesHostedRootExecution } from '../runtime-invocation.js';
 import type {
   RuntimeEventInvocationOpenedContent,
   RuntimeInvocationLineage,

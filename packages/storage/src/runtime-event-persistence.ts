@@ -24,7 +24,7 @@ import type {
   RuntimeInvocationPageResult,
   RuntimeInvocationRecord,
   RuntimeInvocationSearchResult,
-} from '@maka/core/runtime-event-store';
+} from '@maka/core/runtime-invocation';
 import type { BoundedEvidenceReadResult, EvidenceReadBudget } from './agent-run-store.js';
 import { createSqliteRuntimeStore, type SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import {

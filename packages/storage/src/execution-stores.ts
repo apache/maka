@@ -17,27 +17,19 @@
  * under the License.
  */
 
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  AgentRunHeader,
-  AgentRunProjectionKey,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunEventType, AgentRunProjectionKey } from '@maka/core/agent-run';
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
+import type { RuntimeContinuationAuthorityStore } from '@maka/core/runtime-event-store';
 import type {
-  RuntimeContinuationAuthorityStore,
   RuntimeInvocationPageInput,
   RuntimeInvocationPageResult,
   RuntimeInvocationRecord,
   RuntimeInvocationSearchResult,
-} from '@maka/core/runtime-event-store';
+} from '@maka/core/runtime-invocation';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
 import {
   createSqliteAgentRunStore,
-  type AgentRunIdentitySearchResult,
-  type AgentRunPageInput,
-  type AgentRunPageResult,
   type AdmitRootTurnInput,
   type AdmitRootTurnResult,
   type CommitRootTurnStartRejectionInput,
@@ -101,9 +93,6 @@ export {
 } from './sqlite-session-metadata-store.js';
 
 export type {
-  AgentRunIdentitySearchResult,
-  AgentRunPageInput,
-  AgentRunPageResult,
   AdmitRootTurnInput,
   AdmitRootTurnResult,
   CommitRootTurnStartRejectionInput,
@@ -187,10 +176,6 @@ export interface ExecutionSessionReader {
 }
 
 export interface ExecutionAgentRunReader {
-  readRun(sessionId: string, runId: string): Promise<AgentRunHeader>;
-  listSessionRuns(sessionId: string): Promise<AgentRunHeader[]>;
-  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEvents(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsBounded(
     sessionId: string,
@@ -513,17 +498,6 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         })()),
     },
     agentRunStore: {
-      createRun: (header, options) => run(() => agentRunStore.createRun(header, options)),
-      updateRun: (sessionId, runId, patch, options) =>
-        run(() => agentRunStore.updateRun(sessionId, runId, patch, options)),
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
-      listSessionRunsForRecovery: (sessionId) =>
-        run(() => agentRunStore.listSessionRunsForRecovery(sessionId)),
       appendEvent: (sessionId, runId, event, options) =>
         run(() => agentRunStore.appendEvent(sessionId, runId, event, options)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
@@ -670,12 +644,6 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         }),
     },
     agentRunStore: {
-      readRun: (sessionId, runId) => run(() => agentRunStore.readRun(sessionId, runId)),
-      listSessionRuns: (sessionId) => run(() => agentRunStore.listSessionRuns(sessionId)),
-      listSessionRunsBounded: (sessionId, limit) =>
-        run(() => agentRunStore.listSessionRunsBounded(sessionId, limit)),
-      listSessionRunsPage: (sessionId, input) =>
-        run(() => agentRunStore.listSessionRunsPage(sessionId, input)),
       readEvents: (sessionId, runId) => run(() => agentRunStore.readEvents(sessionId, runId)),
       readEventsBounded: (sessionId, runId, budget) =>
         run(() => agentRunStore.readEventsBounded(sessionId, runId, budget)),

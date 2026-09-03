@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from './runtime-event.js';
+import type { RuntimeEvent } from './runtime-event.js';
+import type { RuntimeInvocationRecord } from './runtime-invocation.js';
 import type {
   ContinuationClaimV1,
   ImmutableRuntimePrefixV1,
@@ -69,53 +70,16 @@ export class DurableStoreWriteError extends Error {
   }
 }
 
-/**
- * One invocation as the event spine itself describes it: its opening fact and,
- * once it has ended, its terminal event.
- *
- * This is a query, not a table. Nothing writes it and nothing repairs it, so
- * clearing any physical index and rebuilding from the events produces the same
- * inventory. Reserved control-plane invocation streams have no opening fact and
- * therefore never appear here.
- */
-export interface RuntimeInvocationRecord {
-  sessionId: string;
-  invocationId: string;
-  runId: string;
-  turnId: string;
-  /** Timestamp of the opening fact's own event. */
-  openedAt: number;
-  opening: RuntimeEventInvocationOpenedContent;
-  terminalEvent?: RuntimeEvent;
-}
-
-/** One invocation's position in a Session's opening order. */
-export interface RuntimeInvocationPageCursor {
-  readonly openedAt: number;
-  readonly invocationId: string;
-}
-
-export interface RuntimeInvocationPageInput {
-  readonly before?: RuntimeInvocationPageCursor;
-  readonly limit: number;
-}
-
-export interface RuntimeInvocationPageResult {
-  readonly invocations: readonly RuntimeInvocationRecord[];
-  readonly nextCursor: RuntimeInvocationPageCursor | null;
-}
-
-export interface RuntimeInvocationSearchResult {
-  readonly invocations: readonly RuntimeInvocationRecord[];
-  readonly truncated: boolean;
-}
-
 export interface RuntimeEventStore {
   /** Canonical stores fail the active run closed on every durable write error. */
   readonly durability?: 'best_effort' | 'canonical';
   /**
-   * Enumerate a Session's invocations from the canonical events. Optional only
-   * while the Run header is still the enumeration authority consumers read.
+   * Enumerate a Session's invocations from the canonical events.
+   *
+   * This is a query, not a table. Nothing writes it and nothing repairs it, so
+   * clearing any physical index and rebuilding from the events produces the
+   * same inventory. Reserved control-plane invocation streams have no opening
+   * fact and therefore never appear here.
    */
   listSessionInvocations?(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   appendRuntimeEvent(

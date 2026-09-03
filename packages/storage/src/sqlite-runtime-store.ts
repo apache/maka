@@ -59,24 +59,20 @@ import {
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
-  type RuntimeInvocationPageCursor,
-  type RuntimeInvocationPageInput,
-  type RuntimeInvocationPageResult,
-  type RuntimeInvocationRecord,
-  type RuntimeInvocationSearchResult,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type RuntimeWorkspaceVersionAuthorityStore,
 } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageCursor,
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import { type ToolRecoveryDecisionFact } from '@maka/core/tool-recovery-fact';
 import { canonicalToolArgsHash, stableJsonStringify } from '@maka/core/tool-args-identity';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import {
-  decodePersistedAgentRunHeader,
-  runtimeInvocationOpeningFromRunHeader,
-  type AgentRunHeader,
-} from '@maka/core/agent-run';
-import { markPersisted } from '@maka/core/persisted-value';
 import {
   scanToolLedger,
   ToolLedgerCorruptionError,

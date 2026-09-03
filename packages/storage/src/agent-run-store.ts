@@ -21,12 +21,7 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { DatabaseSync } from 'node:sqlite';
-import {
-  decodeAgentRunEvent,
-  decodeAgentRunHeader,
-  decodeCurrentAgentRunHeader,
-  decodeRuntimeEvent,
-} from './execution-record-codec.js';
+import { decodeAgentRunEvent, decodeRuntimeEvent } from './execution-record-codec.js';
 import { immutableSteeringMessageId } from './runtime-event-invariants.js';
 import {
   normalizeSubmittedTurnIntent,
@@ -48,14 +43,13 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import {
-  DurableStoreWriteError,
-  type RuntimeEventStore,
-  type RuntimeInvocationPageInput,
-  type RuntimeInvocationPageResult,
-  type RuntimeInvocationRecord,
-  type RuntimeInvocationSearchResult,
-} from '@maka/core/runtime-event-store';
+import { DurableStoreWriteError, type RuntimeEventStore } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-invocation';
 import {
   aggregateMessageContents,
   decodeMessageContent,
@@ -78,12 +72,17 @@ import {
   type LatestContextProjectionInput,
   type AgentRunEvent,
   type AgentRunEventType,
-  type AgentRunHeader,
   type AgentRunStore,
   type EmittedAgentRunEvent,
-  type RootExecutionDescriptor,
-  isSessionInlineRun,
 } from '@maka/core/agent-run';
+import {
+  isSessionInlineInvocation,
+  type RootExecutionDescriptor,
+} from '@maka/core/runtime-invocation';
+import {
+  decodeRuntimeInvocationOpened,
+  runtimeEventInvocationOpening,
+} from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import {
   isOrchestrationMode,
@@ -224,8 +223,6 @@ export interface DurableAgentRunStore
   extends AgentRunStore,
     RootTurnAdmissionStore,
     RootTurnStartRejectionStore {
-  listSessionRunsBounded(sessionId: string, limit: number): Promise<AgentRunIdentitySearchResult>;
-  listSessionRunsPage(sessionId: string, input: AgentRunPageInput): Promise<AgentRunPageResult>;
   readEventsBounded(
     sessionId: string,
     runId: string,
@@ -237,7 +234,6 @@ export interface DurableAgentRunStore
     type: AgentRunEventType,
     budget: EvidenceReadBudget,
   ): Promise<BoundedEvidenceReadResult<AgentRunEvent>>;
-  listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]>;
   readEventsForRecovery(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventsForEvidence(sessionId: string, runId: string): Promise<AgentRunEvent[]>;
   readEventProjection(
@@ -253,26 +249,6 @@ export interface DurableAgentRunStore
   ): Promise<void>;
   ready?(): Promise<void>;
   close?(): void;
-}
-
-export interface AgentRunIdentitySearchResult {
-  readonly runs: readonly AgentRunHeader[];
-  readonly truncated: boolean;
-}
-
-export interface AgentRunPageCursor {
-  readonly createdAt: number;
-  readonly runId: string;
-}
-
-export interface AgentRunPageInput {
-  readonly before?: AgentRunPageCursor;
-  readonly limit: number;
-}
-
-export interface AgentRunPageResult {
-  readonly runs: readonly AgentRunHeader[];
-  readonly nextCursor: AgentRunPageCursor | null;
 }
 
 export type { BoundedEvidenceReadResult, EvidenceReadBudget } from './bounded-evidence.js';
@@ -360,196 +336,6 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     return Promise.resolve();
   }
 
-  async createRun(
-    header: AgentRunHeader,
-    _options: { durable?: boolean } = {},
-  ): Promise<AgentRunHeader> {
-    const normalized = normalizeCurrentAgentRunHeader(header, header.sessionId, header.runId);
-    this.#lease.transaction('write', () => {
-      const inserted = this.#lease.database
-        .prepare(`
-          INSERT OR IGNORE INTO core_agent_runs(
-            session_id, run_id, created_at, record_json
-          ) VALUES (?, ?, ?, ?)
-        `)
-        .run(
-          normalized.sessionId,
-          normalized.runId,
-          normalized.createdAt,
-          JSON.stringify(normalized, sanitizeJson),
-        );
-      if (inserted.changes !== 1) {
-        throw new Error(`Agent run already exists: ${normalized.runId}`);
-      }
-      const count = this.#lease.database
-        .prepare('SELECT COUNT(*) AS count FROM core_agent_runs WHERE session_id = ?')
-        .get(normalized.sessionId) as { count?: unknown };
-      const projection = this.#lease.database
-        .prepare(`
-          SELECT 1 AS present
-          FROM core_agent_run_projections
-          WHERE session_id = ? AND event_type = 'history_compact_checkpoint_recorded'
-        `)
-        .get(normalized.sessionId);
-      if (count.count === 1 && !projection) {
-        this.#lease.database
-          .prepare(`
-            INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
-            VALUES (?, 'history_compact_checkpoint_recorded', NULL)
-          `)
-          .run(normalized.sessionId);
-      }
-    });
-    return normalized;
-  }
-
-  async updateRun(
-    sessionId: string,
-    runId: string,
-    patch: Partial<AgentRunHeader>,
-    _options: { durable?: boolean } = {},
-  ): Promise<AgentRunHeader> {
-    assertMutableRunHeaderPatch(patch);
-    assertSafeId(sessionId, 'Invalid session id');
-    assertSafeId(runId, 'Invalid run id');
-    return this.#lease.transaction('write', () => {
-      const current = readSqliteAgentRun(this.#lease.database, sessionId, runId);
-      const next = normalizeCurrentAgentRunHeader(
-        { ...current, ...patch, sessionId, runId },
-        sessionId,
-        runId,
-      );
-      const result = this.#lease.database
-        .prepare(`
-          UPDATE core_agent_runs
-          SET created_at = ?, record_json = ?
-          WHERE session_id = ? AND run_id = ?
-        `)
-        .run(next.createdAt, JSON.stringify(next, sanitizeJson), sessionId, runId);
-      if (result.changes !== 1) throw new Error(`Failed to update run ${runId}`);
-      return next;
-    });
-  }
-
-  async readRun(sessionId: string, runId: string): Promise<AgentRunHeader> {
-    assertSafeId(sessionId, 'Invalid session id');
-    assertSafeId(runId, 'Invalid run id');
-    return readSqliteAgentRun(this.#lease.database, sessionId, runId);
-  }
-
-  async listSessionRuns(sessionId: string): Promise<AgentRunHeader[]> {
-    return this.listSessionRunsForRecovery(sessionId);
-  }
-
-  async listSessionRunsBounded(
-    sessionId: string,
-    limit: number,
-  ): Promise<AgentRunIdentitySearchResult> {
-    assertSafeId(sessionId, 'Invalid session id');
-    assertIdentitySearchLimit(limit);
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT run_id, record_json
-        FROM core_agent_runs
-        WHERE session_id = ?
-        ORDER BY created_at, run_id
-        LIMIT ?
-      `)
-      .all(sessionId, limit + 1) as Array<{ run_id?: unknown; record_json?: unknown }>;
-    const truncated = rows.length > limit;
-    const runs = rows.slice(0, limit).map((row) => {
-      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun row');
-      }
-      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
-    });
-    return { runs, truncated };
-  }
-
-  async listSessionRunsPage(
-    sessionId: string,
-    input: AgentRunPageInput,
-  ): Promise<AgentRunPageResult> {
-    assertSafeId(sessionId, 'Invalid session id');
-    assertIdentitySearchLimit(input.limit);
-    if (input.before) {
-      assertSafeId(input.before.runId, 'Invalid AgentRun page cursor');
-      if (!Number.isFinite(input.before.createdAt)) {
-        throw new Error('Invalid AgentRun page cursor');
-      }
-    }
-    const rows = this.#lease.database
-      .prepare(
-        input.before
-          ? `
-            SELECT run_id, created_at, record_json
-            FROM core_agent_runs
-            WHERE session_id = ?
-              AND (created_at < ? OR (created_at = ? AND run_id < ?))
-            ORDER BY created_at DESC, run_id DESC
-            LIMIT ?
-          `
-          : `
-            SELECT run_id, created_at, record_json
-            FROM core_agent_runs
-            WHERE session_id = ?
-            ORDER BY created_at DESC, run_id DESC
-            LIMIT ?
-          `,
-      )
-      .all(
-        ...(input.before
-          ? [
-              sessionId,
-              input.before.createdAt,
-              input.before.createdAt,
-              input.before.runId,
-              input.limit + 1,
-            ]
-          : [sessionId, input.limit + 1]),
-      ) as Array<{ run_id?: unknown; created_at?: unknown; record_json?: unknown }>;
-    const pageRows = rows.slice(0, input.limit);
-    const runs = pageRows.map((row) => {
-      if (
-        typeof row.run_id !== 'string' ||
-        typeof row.created_at !== 'number' ||
-        typeof row.record_json !== 'string'
-      ) {
-        throw new Error('Invalid SQLite AgentRun page row');
-      }
-      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
-    });
-    const last = pageRows.at(-1);
-    return {
-      runs,
-      nextCursor:
-        rows.length > input.limit &&
-        last &&
-        typeof last.run_id === 'string' &&
-        typeof last.created_at === 'number'
-          ? { createdAt: last.created_at, runId: last.run_id }
-          : null,
-    };
-  }
-
-  async listSessionRunsForRecovery(sessionId: string): Promise<AgentRunHeader[]> {
-    assertSafeId(sessionId, 'Invalid session id');
-    const rows = this.#lease.database
-      .prepare(`
-        SELECT run_id, record_json
-        FROM core_agent_runs
-        WHERE session_id = ?
-        ORDER BY created_at, run_id
-      `)
-      .all(sessionId) as Array<{ run_id?: unknown; record_json?: unknown }>;
-    return rows.map((row) => {
-      if (typeof row.run_id !== 'string' || typeof row.record_json !== 'string') {
-        throw new Error('Invalid SQLite AgentRun row');
-      }
-      return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, row.run_id);
-    });
-  }
-
   async appendEvent(
     sessionId: string,
     runId: string,
@@ -559,11 +345,12 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
     assertSafeId(sessionId, 'Invalid session id');
     assertSafeId(runId, 'Invalid run id');
     this.#lease.transaction('write', () => {
-      const header = readSqliteAgentRun(this.#lease.database, sessionId, runId);
+      const anchor = readSqliteRunAnchor(this.#lease.database, sessionId, runId);
+      this.#openLedgerStream(sessionId, runId, anchor.openedAt);
       const normalized = decodeAgentRunEvent(JSON.parse(JSON.stringify(event, sanitizeJson)), {
         sessionId,
         runId,
-        turnId: header.turnId,
+        turnId: anchor.turnId,
       });
       const type = normalized.type as AgentRunEventType;
       if (type === RUN_COMPOSITION_RECORDED_EVENT_TYPE) {
@@ -598,12 +385,52 @@ class SqliteAgentRunStore implements DurableAgentRunStore {
       //
       // Skipped for a subagent's run: those requests are real, but presenting
       // one as the SESSION's latest context attributes another agent's prompt
-      // to this one. The header is already loaded here, so the check is free.
+      // to this one. The opening fact is already loaded here, so the check is
+      // free.
       const latestContext = options.latestContext;
-      if (latestContext && isSessionInlineRun(header)) {
+      if (latestContext && anchor.sessionInline) {
         this.#writeLatestContextProjection(sessionId, normalized, latestContext);
       }
     });
+  }
+
+  /**
+   * Give this run's ledger its stream row, and the Session its first one.
+   *
+   * The row carries no semantic state: it is the parent `core_agent_run_events`
+   * hangs off and the place the model-call high water lives. Creating it on the
+   * first append is what stops it from being a second record of the run's
+   * existence — the opening fact already is that.
+   *
+   * The Session's first stream also initialises the compaction-checkpoint
+   * projection to an explicit empty, which is how a reader tells "no checkpoint
+   * yet" from "projection never built".
+   */
+  #openLedgerStream(sessionId: string, runId: string, createdAt: number): void {
+    const inserted = this.#lease.database
+      .prepare(
+        'INSERT OR IGNORE INTO core_agent_runs(session_id, run_id, created_at) VALUES (?, ?, ?)',
+      )
+      .run(sessionId, runId, createdAt);
+    if (inserted.changes !== 1) return;
+    const count = this.#lease.database
+      .prepare('SELECT COUNT(*) AS count FROM core_agent_runs WHERE session_id = ?')
+      .get(sessionId) as { count?: unknown };
+    if (count.count !== 1) return;
+    const projection = this.#lease.database
+      .prepare(`
+        SELECT 1 AS present
+        FROM core_agent_run_projections
+        WHERE session_id = ? AND event_type = 'history_compact_checkpoint_recorded'
+      `)
+      .get(sessionId);
+    if (projection) return;
+    this.#lease.database
+      .prepare(`
+        INSERT INTO core_agent_run_projections(session_id, event_type, event_json)
+        VALUES (?, 'history_compact_checkpoint_recorded', NULL)
+      `)
+      .run(sessionId);
   }
 
   /**
@@ -943,44 +770,84 @@ function readSqliteAgentRunLedgerRevision(db: DatabaseSync, sessionId: string): 
   );
 }
 
-function normalizeCurrentAgentRunHeader(
-  value: unknown,
-  sessionId: string,
-  runId: string,
-): AgentRunHeader {
-  assertSafeId(sessionId, 'Invalid session id');
-  assertSafeId(runId, 'Invalid run id');
-  return decodeCurrentAgentRunHeader(JSON.parse(JSON.stringify(value, sanitizeJson)), {
-    sessionId,
-    runId,
-  });
+/**
+ * What the operational ledger needs to know about the run it belongs to.
+ *
+ * All of it is read off the event spine rather than kept beside the ledger: the
+ * turn the records must agree with, when the invocation opened, and whether its
+ * output is the owning Session's own conversation. Copying any of it into a
+ * second row is what made the Run header a rival authority.
+ *
+ * An invocation whose opening the migration could not project keeps a readable
+ * ledger: its turn and clock come from the events it does have, and it fails
+ * closed on the one judgement the opening was needed for.
+ */
+interface LedgerRunAnchor {
+  turnId: string;
+  openedAt: number;
+  sessionInline: boolean;
 }
 
-function decodePersistedAgentRunHeader(
-  value: unknown,
-  sessionId: string,
-  runId: string,
-): AgentRunHeader {
-  assertSafeId(sessionId, 'Invalid session id');
-  assertSafeId(runId, 'Invalid run id');
-  return decodeAgentRunHeader(value, { sessionId, runId });
-}
-
-function readSqliteAgentRun(db: DatabaseSync, sessionId: string, runId: string): AgentRunHeader {
-  const row = db
+function readSqliteRunAnchor(db: DatabaseSync, sessionId: string, runId: string): LedgerRunAnchor {
+  const opening = db
     .prepare(`
-      SELECT record_json
-      FROM core_agent_runs
-      WHERE session_id = ? AND run_id = ?
+      SELECT turn_id, committed_at, payload_json
+      FROM runtime_events
+      WHERE session_id = ? AND run_id = ? AND event_kind = 'invocation_opened'
+      LIMIT 1
     `)
-    .get(sessionId, runId) as { record_json?: unknown } | undefined;
-  if (!row) {
-    const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
-    error.code = 'ENOENT';
-    throw error;
+    .get(sessionId, runId) as
+    | { turn_id: string; committed_at: number; payload_json: string }
+    | undefined;
+  if (opening) {
+    const content = runtimeEventInvocationOpening(
+      decodeRuntimeEvent(JSON.parse(opening.payload_json), {
+        sessionId,
+        runId,
+        turnId: opening.turn_id,
+      }),
+    );
+    if (!content) throw new Error(`RuntimeEvent for run ${runId} is not an opening fact`);
+    return {
+      turnId: opening.turn_id,
+      openedAt: opening.committed_at,
+      sessionInline: isSessionInlineInvocation(content),
+    };
   }
-  if (typeof row.record_json !== 'string') throw new Error('Invalid SQLite AgentRun row');
-  return decodePersistedAgentRunHeader(JSON.parse(row.record_json), sessionId, runId);
+  const legacy = db
+    .prepare(`
+      SELECT turn_id, opened_at, opening_json
+      FROM runtime_legacy_invocation_openings
+      WHERE session_id = ? AND run_id = ?
+      LIMIT 1
+    `)
+    .get(sessionId, runId) as
+    | { turn_id: string; opened_at: number; opening_json: string }
+    | undefined;
+  if (legacy) {
+    return {
+      turnId: legacy.turn_id,
+      openedAt: legacy.opened_at,
+      sessionInline: isSessionInlineInvocation(
+        decodeRuntimeInvocationOpened(JSON.parse(legacy.opening_json)),
+      ),
+    };
+  }
+  const first = db
+    .prepare(`
+      SELECT turn_id, committed_at
+      FROM runtime_events
+      WHERE session_id = ? AND run_id = ?
+      ORDER BY event_seq ASC
+      LIMIT 1
+    `)
+    .get(sessionId, runId) as { turn_id: string; committed_at: number } | undefined;
+  if (first) {
+    return { turnId: first.turn_id, openedAt: first.committed_at, sessionInline: false };
+  }
+  const error = new Error(`Agent run does not exist: ${runId}`) as NodeJS.ErrnoException;
+  error.code = 'ENOENT';
+  throw error;
 }
 
 function readSqliteAgentRunEvents(
@@ -997,7 +864,7 @@ function readSqliteAgentRunEvents(
     `)
     .all(sessionId, runId) as Array<{ record_json?: unknown }>;
   if (rows.length === 0) return [];
-  const header = readSqliteAgentRun(db, sessionId, runId);
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
   return rows.map((row) => {
     if (typeof row.record_json !== 'string') {
       throw new Error('Invalid SQLite AgentRun event row');
@@ -1005,7 +872,7 @@ function readSqliteAgentRunEvents(
     return decodeAgentRunEvent(JSON.parse(row.record_json), {
       sessionId,
       runId,
-      turnId: header.turnId,
+      turnId: anchor.turnId,
     });
   });
 }
@@ -1031,11 +898,11 @@ function readSqliteRunCompositionEvent(
   if (typeof row.record_json !== 'string') {
     throw new Error('Invalid SQLite AgentRun event row');
   }
-  const header = readSqliteAgentRun(db, sessionId, runId);
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
   return decodeAgentRunEvent(JSON.parse(row.record_json), {
     sessionId,
     runId,
-    turnId: header.turnId,
+    turnId: anchor.turnId,
   });
 }
 
@@ -1065,7 +932,7 @@ function readSqliteAgentRunEventsForEvidence(
           .all(sessionId, runId, type)
   ) as Array<{ sequence?: unknown; record_json?: unknown }>;
   if (rows.length === 0) return [];
-  const header = readSqliteAgentRun(db, sessionId, runId);
+  const anchor = readSqliteRunAnchor(db, sessionId, runId);
   return rows.map((row) => {
     const lineNumber =
       typeof row.sequence === 'number' && Number.isSafeInteger(row.sequence) ? row.sequence + 1 : 0;
@@ -1076,7 +943,7 @@ function readSqliteAgentRunEventsForEvidence(
       return decodeAgentRunEvent(JSON.parse(row.record_json), {
         sessionId,
         runId,
-        turnId: header.turnId,
+        turnId: anchor.turnId,
       });
     } catch (error) {
       return {
@@ -1084,8 +951,8 @@ function readSqliteAgentRunEventsForEvidence(
         id: `run-event-corrupt-${lineNumber}`,
         runId,
         sessionId,
-        turnId: header.turnId,
-        ts: header.updatedAt,
+        turnId: anchor.turnId,
+        ts: anchor.openedAt,
         message: error instanceof Error ? error.message : 'Invalid SQLite AgentRun event row',
         data: { lineNumber },
       };
@@ -1394,25 +1261,6 @@ export function rootTurnAdmissionRecordFits(input: AdmitRootTurnInput): boolean 
     return true;
   } catch {
     return false;
-  }
-}
-
-const MUTABLE_AGENT_RUN_HEADER_FIELDS = new Set<keyof AgentRunHeader>([
-  'status',
-  'updatedAt',
-  'completedAt',
-  'failureClass',
-  'failureMessage',
-  'abortSource',
-  'traceWriteError',
-]);
-
-function assertMutableRunHeaderPatch(patch: Partial<AgentRunHeader>): void {
-  const immutable = Object.keys(patch).filter(
-    (key) => !MUTABLE_AGENT_RUN_HEADER_FIELDS.has(key as keyof AgentRunHeader),
-  );
-  if (immutable.length > 0) {
-    throw new Error(`AgentRun admission identity is immutable: ${immutable.sort().join(', ')}`);
   }
 }
 

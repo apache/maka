@@ -23,11 +23,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type { AgentRunHeader } from '@maka/core/agent-run';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import { decodeRuntimeEvent } from '@maka/core/runtime-event';
-import { createSqliteAgentRunStore } from '../agent-run-store.js';
+import type { LegacyRunHeader } from '../legacy-run-header.js';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
+import { migrateSqliteCoreExecutionDatabase } from '../sqlite-core-execution-schema.js';
 import { createSqliteRuntimeStore } from '../sqlite-runtime-store.js';
 import {
   migrateSqliteRuntimeDatabase,
@@ -47,7 +47,6 @@ describe('invocation opening fact backfill', () => {
           ) VALUES ('existing-1', 'session-1', 'run-with-events', 'run-with-events',
                     'turn-with-events', 1, 'text', '{}', 1)
         `).run();
-        rewindRuntimeSchemaToPreviousVersion(db);
         migrateSqliteRuntimeDatabase(db);
         assert.equal(readUserVersion(db), SQLITE_RUNTIME_SCHEMA_VERSION);
 
@@ -177,7 +176,6 @@ describe('invocation opening fact backfill', () => {
           ) VALUES ('existing-1', 'session-1', 'run-with-events', 'run-with-events',
                     'turn-with-events', 1, 'text', ?, 1)
         `).run(json);
-        rewindRuntimeSchemaToPreviousVersion(db);
         migrateSqliteRuntimeDatabase(db);
       } finally {
         db.close();
@@ -210,7 +208,6 @@ describe('invocation opening fact backfill', () => {
     await withHeaderOnlyRuns(async (databasePath) => {
       const db = new DatabaseSync(databasePath);
       try {
-        rewindRuntimeSchemaToPreviousVersion(db);
         migrateSqliteRuntimeDatabase(db);
       } finally {
         db.close();
@@ -250,6 +247,19 @@ describe('invocation opening fact backfill', () => {
           /Runtime invocation not found/,
           'a header the backfill refused to project has no invocation to read',
         );
+
+        await assert.rejects(
+          () => store.listSessionInvocationsPage('session-1', { limit: 0 }),
+          /between 1 and 256/,
+        );
+        await assert.rejects(
+          () =>
+            store.listSessionInvocationsPage('session-1', {
+              limit: 1,
+              before: { openedAt: Number.NaN, invocationId: 'run-scheduled' },
+            }),
+          /Invalid invocation page cursor/,
+        );
       } finally {
         store.close();
       }
@@ -257,8 +267,12 @@ describe('invocation opening fact backfill', () => {
   });
 });
 
-/** Undo the v16 step so the migration under test runs against real header rows. */
-function rewindRuntimeSchemaToPreviousVersion(db: DatabaseSync): void {
+/**
+ * Put the database back the way the header era left it: runtime schema one step
+ * behind, no opening facts, and a `core_agent_runs` row that still carries the
+ * header the migration under test has to read.
+ */
+function rewindToHeaderEra(db: DatabaseSync): void {
   db.exec('DROP INDEX IF EXISTS runtime_events_by_session_kind');
   db.exec('DROP INDEX IF EXISTS runtime_legacy_invocation_openings_by_session');
   db.exec('DROP TABLE IF EXISTS runtime_legacy_invocation_openings');
@@ -266,6 +280,7 @@ function rewindRuntimeSchemaToPreviousVersion(db: DatabaseSync): void {
   db.exec(
     'ALTER TABLE runtime_continuation_claims RENAME COLUMN target_opening_json TO target_run_header_json',
   );
+  db.exec('ALTER TABLE core_agent_runs ADD COLUMN record_json TEXT');
   db.exec(`PRAGMA user_version = ${SQLITE_RUNTIME_SCHEMA_VERSION - 1}`);
 }
 
@@ -276,42 +291,41 @@ function readUserVersion(db: DatabaseSync): number {
 async function withHeaderOnlyRuns(run: (databasePath: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), 'maka-opening-backfill-'));
   try {
-    const store = createSqliteAgentRunStore(root);
-    await store.createRun(
-      header({
-        runId: 'run-legacy-route',
-        turnId: 'turn-legacy',
-        modelId: 'legacy-model',
-      }),
-    );
-    await store.createRun(
-      header({
-        runId: 'run-scheduled',
-        turnId: 'turn-scheduled',
-        llmConnectionId: 'connection-1',
-        scheduledTaskId: 'task-9',
-      }),
-    );
-    // A graph wake with no delivery attempt is corruption; the backfill must
-    // skip it rather than invent a root authority for it.
-    await store.createRun(
-      header({
-        runId: 'run-corrupt-root',
-        turnId: 'turn-corrupt',
-        agentGraphWakeId: 'wake-1',
-      }),
-    );
-    await store.createRun(header({ runId: 'run-with-events', turnId: 'turn-with-events' }));
-    store.close?.();
-
     const databasePath = join(root, OPERATIONAL_STATE_DATABASE_NAME);
+    const db = new DatabaseSync(databasePath);
+    try {
+      migrateSqliteRuntimeDatabase(db);
+      migrateSqliteCoreExecutionDatabase(db);
+      rewindToHeaderEra(db);
+      const insert = db.prepare(
+        'INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json) VALUES (?, ?, ?, ?)',
+      );
+      for (const record of [
+        header({ runId: 'run-legacy-route', turnId: 'turn-legacy', modelId: 'legacy-model' }),
+        header({
+          runId: 'run-scheduled',
+          turnId: 'turn-scheduled',
+          llmConnectionId: 'connection-1',
+          scheduledTaskId: 'task-9',
+        }),
+        // A graph wake with no delivery attempt is corruption; the backfill must
+        // skip it rather than invent a root authority for it.
+        header({ runId: 'run-corrupt-root', turnId: 'turn-corrupt', agentGraphWakeId: 'wake-1' }),
+        header({ runId: 'run-with-events', turnId: 'turn-with-events' }),
+      ]) {
+        insert.run(record.sessionId, record.runId, record.createdAt, JSON.stringify(record));
+      }
+    } finally {
+      db.close();
+    }
+
     await run(databasePath);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 }
 
-function header(overrides: Partial<AgentRunHeader>): AgentRunHeader {
+function header(overrides: Partial<LegacyRunHeader>): LegacyRunHeader {
   return {
     runId: 'run-1',
     invocationId: overrides.runId ?? 'run-1',

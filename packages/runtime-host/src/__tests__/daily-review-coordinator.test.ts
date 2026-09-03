@@ -447,8 +447,8 @@ function appendCorruptAuthorityEvent(root: string, sessionId: string, runId: str
     lease.transaction('write', () => {
       lease.database
         .prepare(`
-          INSERT INTO core_agent_runs(session_id, run_id, created_at, record_json)
-          VALUES (?, ?, 0, '{}')
+          INSERT INTO core_agent_runs(session_id, run_id, created_at)
+          VALUES (?, ?, 0)
         `)
         .run(sessionId, runId);
       lease.database

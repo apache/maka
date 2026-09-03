@@ -23,9 +23,8 @@ import { decodeRuntimeEvent, type RuntimeEvent } from '../runtime-event.js';
 import {
   buildImmutableRuntimePrefix,
   createRuntimeBoundaryCursor,
-  continuationTargetRunHeader,
   decodeContinuationClaim,
-  runHeaderMatchesClaimTarget,
+  invocationMatchesClaimTarget,
   runtimePrefixSegment,
   type RuntimeBoundaryCursorV1,
   type RuntimePrefixIdentityV1,
@@ -326,35 +325,27 @@ describe('immutable RuntimeEvent boundary', () => {
     );
   });
 
-  it('rebuilds the target Run header the claim authorises', () => {
+  it('recognises the invocation the claim authorises', () => {
     const boundary = boundaryForRuns('run-source');
     const claim = decodeContinuationClaim(claimForBoundary(boundary));
-    const header = continuationTargetRunHeader(claim);
-    const source = boundary.segments.at(-1)!;
+    const invocation = { ...claim.target, opening: claim.targetOpening };
 
-    assert.equal(header.runId, claim.target.runId);
-    assert.equal(header.invocationId, claim.target.invocationId);
-    assert.equal(header.status, 'created');
-    assert.equal(header.createdAt, claim.claimedAt);
-    assert.equal(header.updatedAt, claim.claimedAt);
-    assert.equal(header.parentRunId, source.identity.runId);
-    assert.deepEqual(header.continuationSource, {
-      protocol: 'continuation_source_v2',
-      claimId: claim.claimId,
-      boundaryDigest: claim.boundaryDigest,
-      sourceInvocationId: source.identity.invocationId,
-      sourceRunId: source.identity.runId,
-      sourceTurnId: source.identity.turnId,
-      sourceRuntimeEventHighWater: source.position.lastEventSeq,
-      sourcePrefixDigest: source.prefixDigest,
-      replayManifestDigest: boundary.manifestDigest,
-    });
-    // The claim's opening and the header it rebuilds are one fact, not two.
-    assert.ok(runHeaderMatchesClaimTarget(header, claim));
-    assert.ok(!runHeaderMatchesClaimTarget({ ...header, cwd: '/elsewhere' }, claim));
+    assert.ok(invocationMatchesClaimTarget(invocation, claim));
     assert.ok(
-      runHeaderMatchesClaimTarget({ ...header, status: 'running', updatedAt: 99 }, claim),
-      'a running target still matches: lifecycle was never part of what the claim froze',
+      !invocationMatchesClaimTarget(
+        {
+          ...invocation,
+          opening: {
+            ...invocation.opening,
+            configuration: { ...invocation.opening.configuration, cwd: '/elsewhere' },
+          },
+        },
+        claim,
+      ),
+    );
+    assert.ok(
+      !invocationMatchesClaimTarget({ ...invocation, runId: 'another-run' }, claim),
+      'the claim fixes the target identity as well as its opening',
     );
   });
 });

@@ -19,13 +19,12 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  decodePersistedAgentRunHeader,
-  runtimeInvocationOpeningFromRunHeader,
-  type AgentRunHeader,
-} from '@maka/core/agent-run';
+  decodePersistedLegacyRunHeader,
+  invocationOpeningFromLegacyRunHeader,
+  type LegacyRunHeader,
+} from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
-import type { PersistedValue } from '@maka/core/persisted-value';
 
 export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
@@ -554,10 +553,8 @@ function projectContinuationClaimOpenings(db: DatabaseSync): void {
   const remove = db.prepare('DELETE FROM runtime_continuation_claims WHERE claim_id = ?');
   for (const row of rows) {
     try {
-      const header = decodePersistedAgentRunHeader(
-        JSON.parse(row.target_opening_json) as PersistedValue<AgentRunHeader>,
-      );
-      update.run(JSON.stringify(runtimeInvocationOpeningFromRunHeader(header)), row.claim_id);
+      const header = decodePersistedLegacyRunHeader(JSON.parse(row.target_opening_json));
+      update.run(JSON.stringify(invocationOpeningFromLegacyRunHeader(header)), row.claim_id);
     } catch {
       remove.run(row.claim_id);
     }
@@ -581,6 +578,11 @@ function projectContinuationClaimOpenings(db: DatabaseSync): void {
  */
 function backfillInvocationOpeningFacts(db: DatabaseSync): void {
   if (!hasTable(db, 'core_agent_runs')) return;
+  // The header column is dropped by the core-execution migration that follows
+  // this one, so its absence means every header it held is already an opening
+  // fact. Nothing left to project, and the two scopes stay independently
+  // replayable.
+  if (!hasColumn(db, 'core_agent_runs', 'record_json')) return;
   const rows = db
     .prepare(`
       SELECT
@@ -618,13 +620,11 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `);
   for (const row of rows) {
-    let header: AgentRunHeader;
+    let header: LegacyRunHeader;
     let opening: string;
     try {
-      header = decodePersistedAgentRunHeader(
-        JSON.parse(row.record_json) as PersistedValue<AgentRunHeader>,
-      );
-      opening = JSON.stringify(runtimeInvocationOpeningFromRunHeader(header));
+      header = decodePersistedLegacyRunHeader(JSON.parse(row.record_json));
+      opening = JSON.stringify(invocationOpeningFromLegacyRunHeader(header));
     } catch {
       continue;
     }
@@ -655,7 +655,7 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
         role: 'system',
         author: 'system',
         modelVisibility: 'hidden',
-        content: runtimeInvocationOpeningFromRunHeader(header),
+        content: invocationOpeningFromLegacyRunHeader(header),
       });
     } catch {
       continue;
@@ -672,6 +672,11 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     );
     insertOrdinal.run(event.sessionId, event.id, event.sessionId);
   }
+}
+
+function hasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: unknown }>;
+  return columns.some((candidate) => candidate.name === column);
 }
 
 function hasTable(db: DatabaseSync, name: string): boolean {
