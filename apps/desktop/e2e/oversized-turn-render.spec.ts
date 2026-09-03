@@ -410,7 +410,7 @@ test('visible transcript focus during pending growth keeps the live tail', async
   expect(result.distance).toBeLessThanOrEqual(4);
 });
 
-test('Tab between two visible transcript controls under pending growth keeps the live tail', async ({
+test('Focus between two visible transcript controls under pending growth keeps the live tail', async ({
   oversizedTurnWindow: page,
 }) => {
   await page.setViewportSize({ width: 900, height: 700 });
@@ -420,12 +420,17 @@ test('Tab between two visible transcript controls under pending growth keeps the
   });
   await waitForPaintedFrames(page);
 
+  const groupHeader = root.locator('.maka-tool-activity-card [role="button"]').first();
+  await expect(groupHeader).toBeVisible();
+  await groupHeader.click();
+  await waitForPaintedFrames(page);
+
   const pending = await root.evaluate((element) => {
     const list = element.querySelector('.maka-chat-message-list');
     if (!list) throw new Error('the transcript content box is missing');
     const rootRect = element.getBoundingClientRect();
     const visibleHeaders = [...element.querySelectorAll<HTMLElement>(
-      '.maka-tool-activity-card [role="button"][tabindex="0"]',
+      '.maka-tool-activity-card [role="button"]',
     )].filter((candidate) => {
       const boundary = candidate.closest<HTMLElement>('[data-maka-transcript-boundary]');
       const rect = candidate.getBoundingClientRect();
@@ -434,10 +439,10 @@ test('Tab between two visible transcript controls under pending growth keeps the
         && rect.bottom <= rootRect.bottom;
     });
     if (visibleHeaders.length < 2) {
-      throw new Error('need two visible tool-card headers for the Tab regression');
+      throw new Error('need two visible tool-card controls for the focus regression');
     }
     const from = visibleHeaders[0]!;
-    const to = visibleHeaders[visibleHeaders.length - 1]!;
+    const to = visibleHeaders[1]!;
     to.dataset.tabTarget = 'true';
 
     // One task: focus the first visible control, append growth, then move focus
