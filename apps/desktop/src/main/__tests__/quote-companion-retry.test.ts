@@ -137,6 +137,7 @@ async function renderProbe(
     onStop?: (stop: () => Promise<void>) => void;
     onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
     confirmBypass?: () => Promise<boolean>;
+    onContextCompactionError?: (sessionId: string, error: unknown) => void;
     pendingQuotes?: readonly StagedCompanionQuote[];
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   } = {},
@@ -160,6 +161,7 @@ async function renderProbe(
         onSteer: options.onSteer,
         onStop: options.onStop,
         onSetPermissionMode: options.onSetPermissionMode,
+        onContextCompactionError: options.onContextCompactionError,
         pendingQuotes: options.pendingQuotes,
         onQuotesConsumed: options.onQuotesConsumed,
         sourceSession: options.sourceSession,
@@ -192,6 +194,7 @@ async function renderOwnershipProbe(
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
     sourceSession?: SessionSummary;
     modelChoices?: readonly ChatModelChoice[];
+    onContextCompactionError?: (sessionId: string, error: unknown) => void;
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
@@ -449,6 +452,51 @@ test('keeps an async companion compaction exclusive until its terminal event', a
   assert.equal(await rendered.send('ordinary question'), false);
   assert.equal(compactCalls, 1);
   assert.equal(sendCalls, 0);
+});
+
+test('releases an async companion compaction after a Host interruption', async () => {
+  let compactCalls = 0;
+  const compactionErrors: Array<{ sessionId: string; error: unknown }> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      compact: async (sessionId) => {
+        compactCalls += 1;
+        return {
+          kind: 'started' as const,
+          turn: {
+            sessionId,
+            turnId: `compact-turn-${compactCalls}`,
+            runId: `compact-run-${compactCalls}`,
+            status: 'running' as const,
+          },
+        };
+      },
+    },
+    {
+      onContextCompactionError: (sessionId, error) => {
+        compactionErrors.push({ sessionId, error });
+      },
+    },
+  );
+
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(await rendered.send('/compact'), false);
+  await act(async () => {
+    rendered.emit({
+      type: 'abort',
+      id: 'compact-aborted',
+      turnId: 'compact-turn-1',
+      ts: 1,
+      reason: 'crash',
+    });
+    await Promise.resolve();
+  });
+
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
+  assert.equal(compactionErrors.length, 1);
+  assert.equal(compactionErrors[0]?.sessionId, 'side-conversation');
+  assert.equal((compactionErrors[0]?.error as SessionEvent | undefined)?.type, 'abort');
 });
 
 test('clears a failed companion compaction request so it can be retried', async () => {
@@ -1806,6 +1854,7 @@ function QuoteCompanionOwnershipProbe(props: {
   onSteer?: (steer: (text: string) => Promise<boolean>) => void;
   onStop?: (stop: () => Promise<void>) => void;
   onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
+  onContextCompactionError?: (sessionId: string, error: unknown) => void;
   pendingQuotes?: readonly StagedCompanionQuote[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   sourceSession?: SessionSummary;
@@ -1820,6 +1869,7 @@ function QuoteCompanionOwnershipProbe(props: {
     locale: 'en',
     onQuotesConsumed: props.onQuotesConsumed ?? (() => undefined),
     confirmBypass: async () => true,
+    onContextCompactionError: props.onContextCompactionError,
   });
   props.onSend(companion.send);
   props.onSteer?.(companion.steer);

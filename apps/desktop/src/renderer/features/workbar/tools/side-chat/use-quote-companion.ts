@@ -338,6 +338,14 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
+      if (
+        compactionTurnIdRef.current === event.turnId &&
+        (event.type === 'abort' || (event.type === 'error' && !event.recoverable))
+      ) {
+        compactionTurnIdRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        onContextCompactionErrorRef.current?.(forkId, event);
+      }
       if (event.type === 'complete' && event.contextCompactionOutcome) {
         const ownsCompaction =
           compactionRequestInFlightRef.current || compactionTurnIdRef.current === event.turnId;
