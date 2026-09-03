@@ -164,6 +164,6 @@
     "test:dist": "node --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "intl-messageformat": "11.2.12"
+    "intl-messageformat": "11.2.14"
   }
 }
