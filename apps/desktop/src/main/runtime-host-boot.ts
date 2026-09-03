@@ -619,7 +619,7 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
   },
   finalizeAccess: async (mountId, signal, onAccessActivated) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
-    await runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
+    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
   },
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;

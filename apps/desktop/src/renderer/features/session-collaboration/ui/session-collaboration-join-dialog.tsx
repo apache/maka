@@ -56,6 +56,8 @@ export interface SessionCollaborationJoinCopy {
   readonly authenticatingGuest: string;
   readonly finalizingAccess: string;
   readonly loadingSession: string;
+  readonly recoveryStarted: string;
+  readonly recoveryStartedBody: string;
   readonly retainedTasks: string;
   readonly disconnect: string;
   readonly disconnectFailed: string;
@@ -144,6 +146,9 @@ export function SessionCollaborationJoinDialog(props: {
         return;
       }
       props.onImported();
+      if (result.kind === 'recovering') {
+        toast.info(props.copy.recoveryStarted, props.copy.recoveryStartedBody);
+      }
       finishClose();
     } catch (error) {
       if (!open.current || activeOperationId.current !== operationId) return;

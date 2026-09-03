@@ -41,7 +41,10 @@ import {
   decodeDesktopCollaborationInvitation,
   DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES,
 } from './runtime-host-collaboration-invitation.js';
-import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
+import {
+  RuntimeHostPairingFinalizationInterruptedError,
+  type RuntimeHostGuestAccessFinalization,
+} from './runtime-host-desktop-manager.js';
 
 const STORE_SCHEMA_VERSION = 1;
 const STORE_SLOT = 'desktop-guest-session-mounts';
@@ -64,7 +67,7 @@ interface GuestSessionMountDocument {
 interface LiveGuestActivationBase {
   readonly controller: AbortController;
   stage: 'connecting' | 'finalizing';
-  finalization?: Promise<void>;
+  finalization?: Promise<RuntimeHostGuestAccessFinalization>;
   task: Promise<unknown>;
 }
 
@@ -140,7 +143,7 @@ export function createDesktopGuestSessionMountService(input: {
     mountId: string,
     signal: AbortSignal,
     onAccessActivated?: () => void,
-  ) => Promise<void>;
+  ) => Promise<RuntimeHostGuestAccessFinalization>;
   readonly unmount: (mountId: string) => Promise<void>;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   readonly onError?: (error: Error, mount: GuestSessionMount) => void;
@@ -203,7 +206,7 @@ export function createDesktopGuestSessionMountService(input: {
   const activate = async (
     activation: LiveGuestActivation,
     mount: GuestSessionMount,
-  ): Promise<void> => {
+  ): Promise<RuntimeHostGuestAccessFinalization> => {
     activation.stage = 'connecting';
     await input.mount(resolveMountTarget(mount), activation.controller.signal, (phase) => {
       if (activation.kind === 'import') {
@@ -233,8 +236,9 @@ export function createDesktopGuestSessionMountService(input: {
     );
     activation.finalization = finalization;
     try {
-      await finalization;
+      const result = await finalization;
       activation.controller.signal.throwIfAborted();
+      return result;
     } finally {
       if (activation.finalization === finalization) activation.finalization = undefined;
     }
@@ -361,12 +365,15 @@ export function createDesktopGuestSessionMountService(input: {
     let reconcile = false;
     try {
       reportImportProgress(activation.onProgress, 'discovering_host');
-      await activate(activation, mount);
+      const finalization = await activate(activation, mount);
       activation.controller.signal.throwIfAborted();
       if (!(await load()).has(mount.mountId)) {
         throw new Error('Shared Session mount was removed while connecting');
       }
-      return { kind: 'connected', mountId: mount.mountId };
+      return {
+        kind: finalization === 'ready' ? 'connected' : 'recovering',
+        mountId: mount.mountId,
+      };
     } catch (error) {
       if (
         activation.stage === 'finalizing' &&
@@ -382,11 +389,13 @@ export function createDesktopGuestSessionMountService(input: {
         activation.controller.abort(new Error('Shared Session mount activation failed'));
         await input.unmount(mount.mountId).catch(() => undefined);
       }
-      return {
-        kind: 'error',
-        reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
-        message: asError(error).message,
-      };
+      return reconcile
+        ? { kind: 'recovering', mountId: mount.mountId }
+        : {
+            kind: 'error',
+            reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
+            message: asError(error).message,
+          };
     } finally {
       activations.delete(activation);
       if (reconcile) beginStartupReconciliation(mount);

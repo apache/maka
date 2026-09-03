@@ -83,7 +83,7 @@ export interface RuntimeHostDesktopManager {
     mountId: string,
     signal?: AbortSignal,
     onAccessActivated?: () => void,
-  ): Promise<void>;
+  ): Promise<RuntimeHostGuestAccessFinalization>;
   unmountGuest(mountId: string): Promise<void>;
   wakePeerRecovery(): void;
   disable(profileId: string): Promise<void>;
@@ -175,10 +175,12 @@ export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconn
 
 export class RuntimeHostPairingFinalizationInterruptedError extends Error {
   constructor(options?: ErrorOptions) {
-    super('Runtime Host pairing finalization was deferred until the next startup', options);
+    super('Runtime Host pairing finalization is continuing in the background', options);
     this.name = 'RuntimeHostPairingFinalizationInterruptedError';
   }
 }
+
+export type RuntimeHostGuestAccessFinalization = 'ready' | 'reconnecting';
 
 const DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS = 30_000;
 
@@ -359,24 +361,27 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   finalizePairing(profileId: string): Promise<void> {
-    return this.#mutateTarget(profileId, () => this.#finalizeAccessCredential(profileId));
+    return this.#mutateTarget(profileId, async () => {
+      await this.#finalizeAccessCredential(profileId, 'ready');
+    });
   }
 
   finalizeGuestAccess(
     mountId: string,
     signal?: AbortSignal,
     onAccessActivated?: () => void,
-  ): Promise<void> {
+  ): Promise<RuntimeHostGuestAccessFinalization> {
     return this.#mutateTarget(mountId, () =>
-      this.#finalizeAccessCredential(mountId, signal, onAccessActivated),
+      this.#finalizeAccessCredential(mountId, 'activation', signal, onAccessActivated),
     );
   }
 
   async #finalizeAccessCredential(
     profileId: string,
+    completion: 'activation' | 'ready',
     externalSignal?: AbortSignal,
     onAccessActivated?: () => void,
-  ): Promise<void> {
+  ): Promise<RuntimeHostGuestAccessFinalization> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
@@ -415,11 +420,22 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             ) {
               target.skipPeerRouteRefreshOnce = true;
             }
+            if (completion === 'activation') {
+              try {
+                await candidate.close();
+              } catch (error) {
+                // The Host already committed the credential. Candidate cleanup
+                // cannot turn that durable success into a failed Guest import;
+                // its closed signal still drives the reconnect lifecycle.
+                this.#baseInput.onError?.(error);
+              }
+              return 'reconnecting';
+            }
             await candidate.close();
             await this.#waitForReadyCandidate(lifecycle, candidate, signal);
           }
-          signal.throwIfAborted();
-          return;
+          if (completion === 'ready') signal.throwIfAborted();
+          return 'ready';
         } catch (error) {
           if (pairingFinalizeTimedOut(error)) {
             throw new RuntimeHostPairingFinalizationInterruptedError({ cause: error });
