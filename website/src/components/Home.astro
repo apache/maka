@@ -66,7 +66,7 @@ const reads = [
         <div class="rail"></div>
         <div class="hwline"><span>{copy.scene.highWater}</span></div>
         {copy.scene.events.map((event) => (
-          <div class:list={['ev-pill', event.tone]}><i></i><b>{event.name}</b><small>{event.detail}</small></div>
+          <div class:list={['ev-pill', event.tone]}><b>{event.name}</b><small>{event.detail}</small></div>
         ))}
       </div>
       <div class="tape-cap"><span>{copy.scene.caption}</span><span class="hw">{copy.scene.formula}</span></div>

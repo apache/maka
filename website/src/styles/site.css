@@ -353,13 +353,6 @@ h1.display b {
   min-width: 0;
   text-align: left;
 }
-.ev-pill i {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--accent-solid);
-  margin-bottom: 4px;
-}
 .ev-pill b {
   font: 500 11px / 1.3 var(--font-family-code);
   color: var(--accent-solid);
@@ -374,20 +367,11 @@ h1.display b {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.ev-pill.mut i {
-  background: var(--muted-foreground);
-}
 .ev-pill.mut b {
   color: var(--foreground);
 }
-.ev-pill.warn i {
-  background: var(--warning-text);
-}
 .ev-pill.warn b {
   color: var(--warning-text);
-}
-.ev-pill.ok i {
-  background: var(--success-text);
 }
 .ev-pill.ok b {
   color: var(--success-text);
