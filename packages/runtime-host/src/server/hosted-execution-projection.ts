@@ -19,10 +19,9 @@
 
 import {
   invocationMatchesHostedRootExecution,
-  runtimeInvocationOpeningFromRunHeader,
-  type AgentRunHeader,
   type RootExecutionDescriptor,
-} from '@maka/core/agent-run';
+  type RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import { RuntimeMessageAuthorityInvariantError } from '@maka/runtime/message-authority';
 import type { ExecutionStoresWriter } from '@maka/storage/execution-stores';
 import { readCanonicalTurnSnapshot } from './canonical-turn-snapshot.js';
@@ -33,7 +32,7 @@ export class HostedExecutionProjectionReader {
 
   async read(
     execution: HostedExecutionRef,
-    knownRun?: AgentRunHeader,
+    knownRun?: RuntimeInvocationRecord,
   ): Promise<HostedExecutionSnapshot> {
     const run = knownRun ?? (await this.readRunIfPresent(execution.sessionId, execution.runId));
     if (run && run.turnId !== execution.turnId) {
@@ -44,21 +43,30 @@ export class HostedExecutionProjectionReader {
     return readCanonicalTurnSnapshot(this.stores, execution, run);
   }
 
-  async readRunIfPresent(sessionId: string, runId: string): Promise<AgentRunHeader | undefined> {
+  async readRunIfPresent(
+    sessionId: string,
+    runId: string,
+  ): Promise<RuntimeInvocationRecord | undefined> {
     try {
-      return await this.stores.agentRunStore.readRun(sessionId, runId);
+      return (await this.stores.runtimeEventStore.listSessionInvocations(sessionId)).find(
+        (invocation) => invocation.runId === runId,
+      );
     } catch (error) {
       if (isMissingFile(error)) return undefined;
       throw error;
     }
   }
 
-  assertRunIdentity(run: AgentRunHeader, turnId: string, execution: RootExecutionDescriptor): void {
+  assertRunIdentity(
+    run: RuntimeInvocationRecord,
+    turnId: string,
+    execution: RootExecutionDescriptor,
+  ): void {
     assertRunMatchesExecution(run, turnId, execution);
   }
 
   async assertRunIdentityAndContinuation(
-    run: AgentRunHeader,
+    run: RuntimeInvocationRecord,
     turnId: string,
     execution: RootExecutionDescriptor,
   ): Promise<void> {
@@ -90,7 +98,7 @@ export class HostedExecutionProjectionReader {
 }
 
 function assertRunMatchesExecution(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   turnId: string,
   execution: RootExecutionDescriptor,
 ): void {
@@ -99,6 +107,7 @@ function assertRunMatchesExecution(
       `Admitted Turn ${turnId} does not match Run ${run.runId}`,
     );
   }
+  const lineage = run.opening.lineage ?? {};
   switch (execution.kind) {
     case 'external_message':
     case 'workhub_coordination':
@@ -110,34 +119,28 @@ function assertRunMatchesExecution(
     case 'goal':
     case 'agent_graph_supervisor_wake':
     case 'safe_boundary_continuation':
-      // Phase 2c hands this the invocation's own opening fact; until then the
-      // header is projected through the one mapping that owns that projection.
-      if (
-        invocationMatchesHostedRootExecution(
-          {
-            invocationId: run.invocationId ?? run.runId,
-            opening: runtimeInvocationOpeningFromRunHeader(run),
-          },
-          execution,
-        )
-      ) {
-        return;
-      }
+      if (invocationMatchesHostedRootExecution(run, execution)) return;
       break;
     case 'linked_child_initial':
     case 'claimed_agent_graph_intent':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.resumedFromRunId === undefined && run.retriedFromRunId === undefined) return;
+      if (lineage.resumedFromRunId === undefined && lineage.retriedFromRunId === undefined) return;
       break;
     case 'linked_child_resume':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.resumedFromRunId === execution.sourceRunId && run.retriedFromRunId === undefined) {
+      if (
+        lineage.resumedFromRunId === execution.sourceRunId &&
+        lineage.retriedFromRunId === undefined
+      ) {
         return;
       }
       break;
     case 'linked_child_provider_retry':
       assertTrustedAgentIdentity(run, turnId, execution);
-      if (run.retriedFromRunId === execution.sourceRunId && run.resumedFromRunId === undefined) {
+      if (
+        lineage.retriedFromRunId === execution.sourceRunId &&
+        lineage.resumedFromRunId === undefined
+      ) {
         return;
       }
       break;
@@ -150,7 +153,7 @@ function assertRunMatchesExecution(
 }
 
 function assertTrustedAgentIdentity(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   turnId: string,
   execution: Exclude<
     RootExecutionDescriptor,
@@ -168,7 +171,8 @@ function assertTrustedAgentIdentity(
     }
   >,
 ): void {
-  if (run.agentId !== execution.agentId || run.agentName !== execution.agentName) {
+  const lineage = run.opening.lineage;
+  if (lineage?.agentId !== execution.agentId || lineage.agentName !== execution.agentName) {
     throw new RuntimeMessageAuthorityInvariantError(
       `Admitted Turn ${turnId} changed its trusted agent identity`,
     );

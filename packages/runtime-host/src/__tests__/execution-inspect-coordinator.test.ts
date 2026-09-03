@@ -23,7 +23,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { EmittedAgentRunEvent } from '@maka/core/agent-run';
+import { seedInvocation } from './fixtures/seed-invocation.js';
 import { MODEL_CALL_ATTEMPT_SCHEMA_VERSION } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { openInteractiveExecutionStoresForWrite } from '@maka/storage/execution-stores';
@@ -41,7 +42,7 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ root, stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Corrupt model call'));
       const runId = 'corrupt-model-call-run';
-      await stores.agentRunStore.createRun(runHeader(session.id, runId, 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, runId, 1));
       await stores.agentRunStore.appendEvent(session.id, runId, {
         type: 'model_call_attempt_recorded',
         id: 'corrupt-model-call-event',
@@ -77,7 +78,7 @@ describe('HostExecutionInspectCoordinator', () => {
       const session = await stores.sessionStore.create(sessionInput('Compaction diagnostics'));
       const runId = 'compact-run';
       const turnId = `turn-${runId}`;
-      await stores.agentRunStore.createRun(runHeader(session.id, runId, 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, runId, 1));
       await stores.agentRunStore.appendEvent(session.id, runId, {
         type: 'model_call_attempt_recorded',
         id: 'attempt-compact-1',
@@ -147,8 +148,8 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const first = await stores.sessionStore.create(sessionInput('First'));
       const second = await stores.sessionStore.create(sessionInput('Second'));
-      await stores.agentRunStore.createRun(runHeader(first.id, 'shared-run', 1));
-      await stores.agentRunStore.createRun(runHeader(second.id, 'shared-run', 2));
+      await seedInvocation(stores.runtimeEventStore, runHeader(first.id, 'shared-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(second.id, 'shared-run', 2));
 
       const run = await coordinator.handlers['execution.inspect.query'](
         { kind: 'agent_run', sessionId: second.id, agentRunId: 'shared-run' },
@@ -176,7 +177,7 @@ describe('HostExecutionInspectCoordinator', () => {
         'shared-run',
         runtimeEvent(first.id, 'shared-run', 4),
       );
-      await stores.agentRunStore.createRun(runHeader(first.id, 'older-run', 0));
+      await seedInvocation(stores.runtimeEventStore, runHeader(first.id, 'older-run', 0));
       await stores.runtimeEventStore.appendRuntimeEvent(
         first.id,
         'older-run',
@@ -201,7 +202,7 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Large'));
       for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
-        await stores.agentRunStore.createRun(runHeader(session.id, `run-${index}`, index));
+        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, `run-${index}`, index));
       }
 
       const oversized = await coordinator.handlers['execution.inspect.query'](
@@ -232,7 +233,7 @@ describe('HostExecutionInspectCoordinator', () => {
       const runCount = EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS + 8;
       for (let index = 0; index < runCount; index += 1) {
         const runId = `paged-run-${index}`;
-        await stores.agentRunStore.createRun(runHeader(session.id, runId, index));
+        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, runId, index));
         await stores.runtimeEventStore.appendRuntimeEvent(
           session.id,
           runId,
@@ -272,7 +273,8 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Legacy timestamps'));
       for (let index = 0; index <= EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS; index += 1) {
-        await stores.agentRunStore.createRun(
+        await seedInvocation(
+          stores.runtimeEventStore,
           runHeader(session.id, `legacy-run-${index}`, index + 0.5),
         );
       }
@@ -301,7 +303,7 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Target Turn'));
       for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
-        await stores.agentRunStore.createRun(runHeader(session.id, `unrelated-${index}`, index));
+        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, `unrelated-${index}`, index));
       }
       const runId = 'target-run';
       const turnId = `turn-${runId}`;
@@ -316,7 +318,7 @@ describe('HostExecutionInspectCoordinator', () => {
         sourceMessages: [],
         admittedAt: 100,
       });
-      await stores.agentRunStore.createRun(runHeader(session.id, runId, 100));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, runId, 100));
       await stores.runtimeEventStore.appendRuntimeEvent(
         session.id,
         runId,
@@ -344,9 +346,9 @@ describe('HostExecutionInspectCoordinator', () => {
   test('rejects oversized evidence at the bounded Store read boundary', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Large evidence'));
-      await stores.agentRunStore.createRun(runHeader(session.id, 'large-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'large-run', 1));
       await stores.agentRunStore.appendEvent(session.id, 'large-run', {
-        type: 'run_started',
+        type: 'turn_started',
         id: 'large-event',
         sessionId: session.id,
         runId: 'large-run',
@@ -374,9 +376,9 @@ describe('HostExecutionInspectCoordinator', () => {
   test('does not charge unrelated AgentRun diagnostics to the Session trace budget', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Trace evidence'));
-      await stores.agentRunStore.createRun(runHeader(session.id, 'trace-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'trace-run', 1));
       await stores.agentRunStore.appendEvent(session.id, 'trace-run', {
-        type: 'run_started',
+        type: 'turn_started',
         id: 'large-unrelated-event',
         sessionId: session.id,
         runId: 'trace-run',
@@ -404,12 +406,12 @@ describe('HostExecutionInspectCoordinator', () => {
   test('keeps a Session trace pageable when one run exceeds the evidence budget', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Oversized trace page'));
-      await stores.agentRunStore.createRun(runHeader(session.id, 'oversized-run', 2));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'oversized-run', 2));
       await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'oversized-run', {
         ...runtimeEvent(session.id, 'oversized-run', 2),
         content: { kind: 'text', text: 'x'.repeat(EXECUTION_INSPECT_EVIDENCE_MAX_BYTES) },
       });
-      await stores.agentRunStore.createRun(runHeader(session.id, 'older-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'older-run', 1));
       await stores.runtimeEventStore.appendRuntimeEvent(
         session.id,
         'older-run',
@@ -445,7 +447,7 @@ describe('HostExecutionInspectCoordinator', () => {
   test('keeps earlier Session history reachable when one projected page exceeds the result limit', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Oversized trace result'));
-      await stores.agentRunStore.createRun(runHeader(session.id, 'oversized-result-run', 2));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'oversized-result-run', 2));
       for (let index = 0; index < 128; index += 1) {
         await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'oversized-result-run', {
           ...runtimeEvent(session.id, 'oversized-result-run', index + 2),
@@ -453,7 +455,7 @@ describe('HostExecutionInspectCoordinator', () => {
           content: { kind: 'error', message: 'x'.repeat(EXECUTION_INSPECT_RESULT_MAX_BYTES / 64) },
         });
       }
-      await stores.agentRunStore.createRun(runHeader(session.id, 'older-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'older-run', 1));
       await stores.runtimeEventStore.appendRuntimeEvent(
         session.id,
         'older-run',
@@ -509,9 +511,9 @@ describe('HostExecutionInspectCoordinator', () => {
   test('accepts evidence that exactly consumes the shared byte budget before an empty ledger', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Exact evidence budget'));
-      await stores.agentRunStore.createRun(runHeader(session.id, 'exact-run', 1));
+      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'exact-run', 1));
       const baseEvent: EmittedAgentRunEvent = {
-        type: 'run_started',
+        type: 'turn_started',
         id: 'exact-event',
         sessionId: session.id,
         runId: 'exact-run',
@@ -552,7 +554,7 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Aggregate evidence'));
       for (const [index, runId] of ['aggregate-run-1', 'aggregate-run-2'].entries()) {
-        await stores.agentRunStore.createRun(runHeader(session.id, runId, index + 1));
+        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, runId, index + 1));
         await stores.runtimeEventStore.appendRuntimeEvent(session.id, runId, {
           id: `aggregate-event-${index + 1}`,
           invocationId: runId,
@@ -598,21 +600,29 @@ function sessionInput(name: string) {
   } as const;
 }
 
-function runHeader(sessionId: string, runId: string, createdAt: number): AgentRunHeader {
+function runHeader(sessionId: string, runId: string, createdAt: number) {
   return {
     sessionId,
     runId,
     turnId: `turn-${runId}`,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd: '/tmp/workspace',
-    permissionMode: 'ask',
-    createdAt,
-    updatedAt: createdAt,
-    completedAt: createdAt,
+    openedAt: createdAt,
+    opening: {
+      route: {
+        provenance: 'runtime' as const,
+        backendKind: 'fake' as const,
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd: '/tmp/workspace',
+        permissionMode: 'ask' as const,
+        collaborationMode: 'agent' as const,
+        orchestrationMode: 'default' as const,
+        orchestrationSource: 'session' as const,
+        toolMode: 'direct' as const,
+      },
+    },
   };
 }
 

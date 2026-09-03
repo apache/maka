@@ -27,7 +27,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type AgentGraphOperatorProvisionRequest } from '@maka/core/agent-graph-topology';
-import { type AgentRunHeader } from '@maka/core/agent-run';
+import { seedInvocation, type SeedInvocationInput } from './fixtures/seed-invocation.js';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { WORKHUB_COORDINATION_SESSION_ID } from '@maka/core/session';
 import {
@@ -866,28 +866,35 @@ async function seedSource(
       'continuation-parent-invocation',
       'continuation-parent-turn',
     );
-    const continuationChild: AgentRunHeader = {
-      ...agentRunHeader(
-        root,
-        continuationSource.id,
-        'continuation-child-run',
-        'continuation-child-invocation',
-        'continuation-child-turn',
-      ),
-      parentRunId: continuationParent.runId,
-      agentId: 'child-agent',
-      agentName: 'Child Agent',
-      retriedFromRunId: continuationParent.runId,
-      retriedFromTurnId: continuationParent.turnId,
-      continuationSource: {
-        sourceInvocationId: continuationParent.invocationId!,
-        sourceRunId: continuationParent.runId,
-        sourceTurnId: continuationParent.turnId,
-        sourceRuntimeEventHighWater: 1,
+    const continuationChildBase = agentRunHeader(
+      root,
+      continuationSource.id,
+      'continuation-child-run',
+      'continuation-child-invocation',
+      'continuation-child-turn',
+    );
+    const continuationChild: SeedInvocationInput = {
+      ...continuationChildBase,
+      opening: {
+        ...continuationChildBase.opening,
+        source: {
+          kind: 'continuation',
+          sourceInvocationId: continuationParent.invocationId!,
+          sourceRunId: continuationParent.runId,
+          sourceTurnId: continuationParent.turnId,
+          sourceRuntimeEventHighWater: 1,
+        },
+        lineage: {
+          parentRunId: continuationParent.runId,
+          agentId: 'child-agent',
+          agentName: 'Child Agent',
+          retriedFromRunId: continuationParent.runId,
+          retriedFromTurnId: continuationParent.turnId,
+        },
       },
     };
     for (const run of [continuationParent, continuationChild]) {
-      await execution.agentRunStore.createRun(run);
+      await seedInvocation(execution.runtimeEventStore, run);
       if (run.runId === continuationParent.runId) {
         await execution.runtimeEventStore.appendRuntimeEvent(
           run.sessionId,
@@ -909,16 +916,19 @@ async function seedSource(
         }),
       );
     }
-    const persistedContinuationRuns = await execution.agentRunStore.listSessionRuns(
+    const persistedContinuationRuns = await execution.runtimeEventStore.listSessionInvocations(
       continuationSource.id,
     );
     const persistedContinuationChild = persistedContinuationRuns.find(
       (run) => run.runId === continuationChild.runId,
     );
-    assert.equal(persistedContinuationChild?.agentId, continuationChild.agentId);
+    assert.equal(
+      persistedContinuationChild?.opening.lineage?.agentId,
+      continuationChild.opening?.lineage?.agentId,
+    );
     assert.deepEqual(
-      persistedContinuationChild?.continuationSource,
-      continuationChild.continuationSource,
+      persistedContinuationChild?.opening.source,
+      continuationChild.opening?.source,
     );
     const artifact = await artifacts.create({
       id: 'source-artifact',
@@ -1002,18 +1012,18 @@ async function seedSource(
     const sourceRuns = [
       agentRunHeader(root, source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1'),
       agentRunHeader(root, source.id, 'run-turn-2', 'invocation-turn-2', 'turn-2'),
-      {
-        ...agentRunHeader(
+      withParentRun(
+        agentRunHeader(
           root,
           source.id,
           'legacy-child-run',
           'legacy-child-invocation',
           'legacy-child-turn',
         ),
-        parentRunId: 'run-turn-1',
-      },
+        'run-turn-1',
+      ),
     ];
-    for (const run of sourceRuns) await execution.agentRunStore.createRun(run);
+    for (const run of sourceRuns) await seedInvocation(execution.runtimeEventStore, run);
     const sourceRuntimeEvents = [
       runtimeEvent(source.id, 'run-turn-1', 'invocation-turn-1', 'turn-1', {
         id: 'user-1',
@@ -1224,7 +1234,8 @@ async function seedSource(
       source: 'tool_result',
       now: 3,
     });
-    await execution.agentRunStore.createRun(
+    await seedInvocation(
+      execution.runtimeEventStore,
       agentRunHeader(
         root,
         graphChild.header.id,
@@ -1328,7 +1339,7 @@ async function seedSource(
         'linked-after-turn',
       ),
     ]) {
-      await execution.agentRunStore.createRun(run);
+      await seedInvocation(execution.runtimeEventStore, run);
     }
     const graphRootEvents = [
       runtimeEvent(linkedChildSource.id, 'graph-root-run', 'graph-root-invocation', 'linked-turn', {
@@ -1486,18 +1497,18 @@ async function seedSource(
         'archived-owned-parent-invocation',
         'archived-owned-turn',
       ),
-      {
-        ...agentRunHeader(
+      withParentRun(
+        agentRunHeader(
           root,
           archivedOwnedSource.id,
           'archived-owned-child-run',
           'archived-owned-child-invocation',
           'archived-owned-child-turn',
         ),
-        parentRunId: 'archived-owned-parent-run',
-      },
+        'archived-owned-parent-run',
+      ),
     ];
-    for (const run of archivedOwnedRuns) await execution.agentRunStore.createRun(run);
+    for (const run of archivedOwnedRuns) await seedInvocation(execution.runtimeEventStore, run);
     const archivedOwnedRuntimeEvents = [
       runtimeEvent(
         archivedOwnedSource.id,
@@ -1719,13 +1730,13 @@ async function verifyDurableBranch(
         .sort(),
       ['Legacy child task', 'Retained task'],
     );
-    const copiedRuns = await execution.agentRunStore.listSessionRuns(branchSessionId);
+    const copiedRuns = await execution.runtimeEventStore.listSessionInvocations(branchSessionId);
     assert.equal(copiedRuns.length, 2);
     const copiedChild = copiedRuns.find((run) => run.turnId === 'legacy-child-turn');
     const copiedParent = copiedRuns.find((run) => run.turnId === 'turn-1');
     assert.ok(copiedChild);
     assert.ok(copiedParent);
-    assert.equal(copiedChild.parentRunId, copiedParent.runId);
+    assert.equal(copiedChild.opening.lineage?.parentRunId, copiedParent.runId);
     const copiedProjectionResult = (
       await execution.runtimeEventStore.readRuntimeEvents(branchSessionId, copiedParent.runId)
     ).find((event) => event.content?.kind === 'function_response');
@@ -1782,7 +1793,7 @@ async function verifyDurableBranch(
     );
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
     assert.deepEqual(await todos.readOrBootstrap('revision-target'), { items: [] });
-    assert.deepEqual(await execution.agentRunStore.listSessionRuns('revision-target'), []);
+    assert.deepEqual(await execution.runtimeEventStore.listSessionInvocations('revision-target'), []);
     await assert.rejects(
       () => execution.sessionStore.readHeaderSnapshot('revision-target'),
       /not found/i,
@@ -1833,7 +1844,7 @@ async function verifyDurableBranch(
       ),
     );
     await assertCopiedUpload(activeSourceSideConversationTargetId);
-    const sideConversationRuns = await execution.agentRunStore.listSessionRuns(
+    const sideConversationRuns = await execution.runtimeEventStore.listSessionInvocations(
       graphSideConversationTargetId,
     );
     const sideConversationRun = sideConversationRuns.find((run) => run.turnId === 'linked-turn');
@@ -1867,7 +1878,7 @@ async function verifyDurableBranch(
         text: 'graph child result',
       },
     );
-    const archivedSideConversationRuns = await execution.agentRunStore.listSessionRuns(
+    const archivedSideConversationRuns = await execution.runtimeEventStore.listSessionInvocations(
       archivedSideConversationTargetId,
     );
     const archivedSideConversationChildRun = archivedSideConversationRuns.find(
@@ -1919,7 +1930,7 @@ async function verifyDurableBranch(
     assert.equal(graphResult.content.items[0]?.childSessionId, graphChildSessionId);
     assert.equal(graphResult.content.items[0]?.runId, 'graph-child-run');
     assert.deepEqual(graphResult.content.items[0]?.artifactIds, ['graph-child-artifact']);
-    const graphRevisionRuns = await execution.agentRunStore.listSessionRuns(graphRevisionTargetId);
+    const graphRevisionRuns = await execution.runtimeEventStore.listSessionInvocations(graphRevisionTargetId);
     const graphRevisionRun = graphRevisionRuns.find((run) => run.turnId === 'linked-turn');
     assert.ok(graphRevisionRun);
     const graphRuntimeResult = (
@@ -2101,28 +2112,41 @@ function operationError(code: RuntimeHostOperationError['code']) {
     error instanceof RuntimeHostOperationError && error.code === code;
 }
 
+/** The same seed input, with the lineage edge back to the run that spawned it. */
+function withParentRun(input: SeedInvocationInput, parentRunId: string): SeedInvocationInput {
+  return { ...input, opening: { ...input.opening, lineage: { parentRunId } } };
+}
+
 function agentRunHeader(
   cwd: string,
   sessionId: string,
   runId: string,
   invocationId: string,
   turnId: string,
-): AgentRunHeader {
+): SeedInvocationInput {
   return {
+    sessionId,
     runId,
     invocationId,
-    sessionId,
     turnId,
-    status: 'completed',
-    backendKind: 'fake',
-    llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-    llmConnectionSlug: 'fake',
-    modelId: 'fake-model',
-    cwd,
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 5,
-    completedAt: 5,
+    openedAt: 1,
+    opening: {
+      route: {
+        provenance: 'runtime',
+        backendKind: 'fake',
+        llmConnectionId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        llmConnectionSlug: 'fake',
+        modelId: 'fake-model',
+      },
+      configuration: {
+        cwd,
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+    },
   };
 }
 

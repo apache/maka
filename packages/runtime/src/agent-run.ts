@@ -29,7 +29,7 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
-import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
+import { buildInvocationOpenedEvent, isSessionInlineInvocation } from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationLineage } from '@maka/core/runtime-event';
 import {
@@ -1225,17 +1225,17 @@ export class AgentRun {
     await this.recordRuntimeEvents(
       [
         {
-          id: this.input.newId(),
-          invocationId: this.invocationId,
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: this.turnId,
-          ts,
-          partial: false,
-          role: 'system',
-          author: 'system',
-          modelVisibility: 'hidden',
-          content: opening,
+          ...buildInvocationOpenedEvent({
+            id: this.input.newId(),
+            run: {
+              sessionId: this.sessionId,
+              invocationId: this.invocationId,
+              runId: this.runId,
+              turnId: this.turnId,
+            },
+            openedAt: ts,
+            opening,
+          }),
           ...(this.toolBoundaryProtocol
             ? { actions: { runtimeProtocol: { toolBoundary: this.toolBoundaryProtocol } } }
             : {}),

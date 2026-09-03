@@ -20,7 +20,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { BackendStopMode } from '@maka/core/backend-types';
-import type { AgentRunHeader, RootExecutionDescriptor } from '@maka/core/agent-run';
+import type {
+  RootExecutionDescriptor,
+  RuntimeInvocationRecord,
+} from '@maka/core/runtime-invocation';
 import {
   INLINE_REFERENCE_MAX_COUNT,
   messageContentDigest,
@@ -2666,7 +2669,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     sessionId: string,
     turnId: string,
     runId: string,
-    knownRun?: AgentRunHeader,
+    knownRun?: RuntimeInvocationRecord,
   ): Promise<TurnSnapshot> {
     return this.executionProjection.read({ sessionId, turnId, runId }, knownRun);
   }
@@ -2674,7 +2677,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   private async readRunIfPresent(
     sessionId: string,
     runId: string,
-  ): Promise<AgentRunHeader | undefined> {
+  ): Promise<RuntimeInvocationRecord | undefined> {
     return this.executionProjection.readRunIfPresent(sessionId, runId);
   }
 
@@ -2686,11 +2689,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     const mode =
       admission.execution.kind === 'safe_boundary_continuation'
         ? ((
-            await this.stores.agentRunStore.readRun(
-              admission.sessionId,
-              admission.execution.sourceRunId,
-            )
-          ).orchestrationMode ??
+            await this.readRunIfPresent(admission.sessionId, admission.execution.sourceRunId)
+          )?.opening.configuration.orchestrationMode ??
           resolveEffectiveOrchestration(session.orchestrationMode, undefined).mode)
         : resolveEffectiveOrchestration(session.orchestrationMode, admission.turnOrchestration)
             .mode;
@@ -2716,7 +2716,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
   }
 
   private async assertRunMatchesDurableExecution(
-    run: AgentRunHeader,
+    run: RuntimeInvocationRecord,
     turnId: string,
     execution: RootTurnAdmission['execution'],
   ): Promise<void> {

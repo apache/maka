@@ -23,7 +23,7 @@ import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
+import { buildInvocationOpenedEvent, isSessionInlineInvocation } from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
@@ -206,19 +206,12 @@ function transcriptOpeningEvent(input: {
     root: { kind: 'user' },
     source: { kind: 'fresh' },
   };
-  return {
+  return buildInvocationOpenedEvent({
     id: input.newId(),
-    invocationId: input.run.invocationId,
-    runId: input.run.runId,
-    sessionId: input.run.sessionId,
-    turnId: input.run.turnId,
-    ts: input.openedAt,
-    partial: false,
-    role: 'system',
-    author: 'system',
-    modelVisibility: 'hidden',
-    content: opening,
-  };
+    run: input.run,
+    openedAt: input.openedAt,
+    opening,
+  });
 }
 
 /** How the imported turn ended, read off the transcript's own turn record. */

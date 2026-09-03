@@ -26,7 +26,7 @@ import {
   type McpToolProvider,
 } from '@maka/runtime/mcp-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
-import type { RootExecutionDescriptor } from '@maka/core/agent-run';
+import type { RootExecutionDescriptor } from '@maka/core/runtime-invocation';
 import {
   clientCapabilityScopeIdentity,
   type ClientCapabilityGrantTarget,

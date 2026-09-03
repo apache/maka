@@ -82,6 +82,34 @@ export function runtimeInvocationsFromSessionEvents(
   );
 }
 
+/**
+ * Wrap an opening fact in the event that carries it.
+ *
+ * Every writer that opens an invocation goes through here, so the envelope the
+ * inventory reads back is decided once. It is hidden from the model: the
+ * opening is a fact about the run, not something the run said.
+ */
+export function buildInvocationOpenedEvent(input: {
+  id: string;
+  run: { sessionId: string; invocationId: string; runId: string; turnId: string };
+  openedAt: number;
+  opening: RuntimeEventInvocationOpenedContent;
+}): RuntimeEvent {
+  return {
+    id: input.id,
+    sessionId: input.run.sessionId,
+    invocationId: input.run.invocationId,
+    runId: input.run.runId,
+    turnId: input.run.turnId,
+    ts: input.openedAt,
+    partial: false,
+    role: 'system',
+    author: 'system',
+    modelVisibility: 'hidden',
+    content: input.opening,
+  };
+}
+
 /** One invocation's position in a Session's opening order. */
 export interface RuntimeInvocationPageCursor {
   readonly openedAt: number;

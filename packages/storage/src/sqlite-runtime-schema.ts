@@ -25,6 +25,7 @@ import {
 } from './legacy-run-header.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
+import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 
 export const SQLITE_RUNTIME_SCHEMA_VERSION = 16;
 export const RUNTIME_RECOVERY_AUTHORITY_CAPABILITY = 'runtime_recovery_authority';
@@ -644,19 +645,19 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     }
     let encoded: { event: RuntimeEvent; json: string };
     try {
-      encoded = encodeCanonicalRuntimeEvent({
-        id: `invocation_opened:${header.runId}`,
-        invocationId: header.invocationId ?? header.runId,
-        runId: header.runId,
-        sessionId: header.sessionId,
-        turnId: header.turnId,
-        ts: header.createdAt,
-        partial: false,
-        role: 'system',
-        author: 'system',
-        modelVisibility: 'hidden',
-        content: invocationOpeningFromLegacyRunHeader(header),
-      });
+      encoded = encodeCanonicalRuntimeEvent(
+        buildInvocationOpenedEvent({
+          id: `invocation_opened:${header.runId}`,
+          run: {
+            sessionId: header.sessionId,
+            invocationId: header.invocationId ?? header.runId,
+            runId: header.runId,
+            turnId: header.turnId,
+          },
+          openedAt: header.createdAt,
+          opening: invocationOpeningFromLegacyRunHeader(header),
+        }),
+      );
     } catch {
       continue;
     }

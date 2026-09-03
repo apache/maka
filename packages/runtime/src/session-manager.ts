@@ -102,6 +102,7 @@ import { failureClassFromCompleteStopReason } from '@maka/core/events';
 import { isActiveShellRunStatus } from '@maka/core/shell-run';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
+  buildInvocationOpenedEvent,
   isSessionInlineInvocation,
   runtimeInvocationOutcome,
   type RootExecutionDescriptor,
@@ -3823,16 +3824,16 @@ export class SessionManager {
     // The admission never reached an AgentRun, so nothing else will ever open
     // this invocation. Recovery opens and closes it in one pass so the Turn
     // ends up on the spine like any other, with its own reason for ending.
-    await this.deps.runtimeEventStore.appendRuntimeEvent(input.sessionId, input.runId, {
-      id: this.deps.newId(),
-      ...run,
-      ts: input.admittedAt,
-      partial: false,
-      role: 'system',
-      author: 'system',
-      modelVisibility: 'hidden',
-      content: opening,
-    });
+    await this.deps.runtimeEventStore.appendRuntimeEvent(
+      input.sessionId,
+      input.runId,
+      buildInvocationOpenedEvent({
+        id: this.deps.newId(),
+        run,
+        openedAt: input.admittedAt,
+        opening,
+      }),
+    );
 
     const ts = this.deps.now();
     const terminalEvent = buildRecoveredTerminalRuntimeEvent({

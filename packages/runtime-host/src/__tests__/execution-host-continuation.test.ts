@@ -101,16 +101,14 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
       const ledger = await fixture.readTurn(turnId);
       assert.equal(ledger.runs.length, 1);
       const run = ledger.runs[0];
-      assert.equal(run?.parentRunId, source.sourceRunId);
-      assert.equal(run?.parentTurnId, source.sourceTurnId);
+      assert.equal(run?.opening.lineage?.parentRunId, source.sourceRunId);
+      assert.equal(run?.opening.lineage?.parentTurnId, source.sourceTurnId);
       assert.equal(run?.invocationId, admission.execution.targetInvocationId);
-      assert.equal(run?.continuationSource?.sourceRunId, source.sourceRunId);
-      assert.equal(
-        run?.continuationSource && 'protocol' in run.continuationSource
-          ? run.continuationSource.claimId
-          : undefined,
-        admission.execution.claimId,
-      );
+      const openSource = run?.opening.source;
+      assert.equal(openSource?.kind, 'continuation');
+      if (openSource?.kind !== 'continuation') return;
+      assert.equal(openSource.sourceRunId, source.sourceRunId);
+      assert.equal(openSource.claimId, admission.execution.claimId);
     } finally {
       if (!clientsClosed) {
         await first.close();
