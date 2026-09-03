@@ -19,7 +19,13 @@
 
 import { connectionEnabledModelIds, type ProviderType } from '@maka/core/llm-connections';
 import { isRetiredProvider } from '@maka/core/provider-registry';
-import { type SubagentPreset } from '@maka/core/subagent-settings';
+import {
+  AD_HOC_SUBAGENT_DESCRIPTION,
+  AD_HOC_SUBAGENT_ID,
+  AD_HOC_SUBAGENT_NAME,
+  type AdHocSubagentPolicy,
+  type SubagentPreset,
+} from '@maka/core/subagent-settings';
 import type { SubagentPresetListItem } from './agent-catalog.js';
 
 export interface ConfiguredSubagentCatalog {
@@ -31,8 +37,22 @@ export type ResolvedSubagentPreset = SubagentPreset & {
   readonly connectionId: string;
 };
 
+function syntheticAdHocPreset(adHoc: AdHocSubagentPolicy): SubagentPreset {
+  return {
+    id: AD_HOC_SUBAGENT_ID,
+    name: AD_HOC_SUBAGENT_NAME,
+    description: AD_HOC_SUBAGENT_DESCRIPTION,
+    profile: adHoc.maxProfile,
+    connectionSlug: adHoc.connectionSlug,
+    model: adHoc.model,
+    ...(adHoc.thinkingLevel !== undefined ? { thinkingLevel: adHoc.thinkingLevel } : {}),
+    enabled: true,
+  };
+}
+
 export function createConfiguredSubagentCatalog(deps: {
   getPresets(): Promise<readonly SubagentPreset[]>;
+  getAdHocPolicy?: () => Promise<AdHocSubagentPolicy | undefined>;
   getConnection(slug: string): Promise<{
     readonly connectionId: string;
     readonly providerType: ProviderType;
@@ -99,10 +119,23 @@ export function createConfiguredSubagentCatalog(deps: {
 
   return {
     async list() {
-      return (await Promise.all((await deps.getPresets()).map(inspect))).map(({ item }) => item);
+      const configured = (await Promise.all((await deps.getPresets()).map(inspect))).map(
+        ({ item }) => item,
+      );
+      const adHoc = deps.getAdHocPolicy ? await deps.getAdHocPolicy() : undefined;
+      if (!adHoc?.enabled) return configured;
+      const synthetic = syntheticAdHocPreset(adHoc);
+      return [...configured, (await inspect(synthetic)).item];
     },
     async resolve(id) {
-      const preset = (await deps.getPresets()).find((candidate) => candidate.id === id);
+      const adHoc = deps.getAdHocPolicy ? await deps.getAdHocPolicy() : undefined;
+      if (id === AD_HOC_SUBAGENT_ID && !adHoc?.enabled) {
+        throw new Error(`Unknown subagent_id "${id}". Call agent_list before spawning.`);
+      }
+      const preset: SubagentPreset | undefined =
+        id === AD_HOC_SUBAGENT_ID
+          ? syntheticAdHocPreset(adHoc!)
+          : (await deps.getPresets()).find((candidate) => candidate.id === id);
       if (!preset) throw new Error(`Unknown subagent_id "${id}". Call agent_list before spawning.`);
       const inspected = await inspect(preset);
       if (inspected.item.availability.status !== 'available') {

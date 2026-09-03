@@ -113,6 +113,7 @@ import {
 } from './runtime-commit-sink.js';
 import { AdmissionLimiter } from './admission-limiter.js';
 import type { AgentProfile } from './agent-catalog.js';
+import type { AdHocSubagentRole } from '@maka/core/subagent-settings';
 import type { SubagentExecutionRef } from './subagent-execution.js';
 import {
   SandboxCommandError,
@@ -283,6 +284,7 @@ export interface MakaToolContext {
     agentProfile: AgentProfile;
     subagentId?: string;
     prompt: string;
+    temporaryRole?: AdHocSubagentRole;
     /** Optional swarm identity, scoped to the owning tool call. */
     swarm?: {
       swarmId: string;
@@ -419,6 +421,7 @@ export interface ToolRuntimeInput {
     agentProfile: AgentProfile;
     subagentId?: string;
     prompt: string;
+    temporaryRole?: AdHocSubagentRole;
     swarm?: {
       swarmId: string;
       itemId: string;
@@ -2603,6 +2606,9 @@ export class ToolRuntime {
                     agentProfile: spawnInput.agentProfile,
                     ...(spawnInput.subagentId ? { subagentId: spawnInput.subagentId } : {}),
                     prompt: spawnInput.prompt,
+                    ...(spawnInput.temporaryRole
+                      ? { temporaryRole: spawnInput.temporaryRole }
+                      : {}),
                     ...(spawnInput.swarm ? { swarm: spawnInput.swarm } : {}),
                     abortSignal,
                     onReady: async (ready) => {

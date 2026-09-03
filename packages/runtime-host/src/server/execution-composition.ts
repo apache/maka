@@ -1003,6 +1003,8 @@ export async function createExecutionRuntimeHostComposition(
     const subagentCatalog = createConfiguredSubagentCatalog({
       getPresets: async () =>
         (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.subagents.presets,
+      getAdHocPolicy: async () =>
+        (await runtimePolicyStores.runtimePolicy.getSnapshot()).policy.subagents.adHoc,
       getConnection: async (slug) =>
         (await runtimePolicyStores.connectionCatalog.getSnapshot()).connections.find(
           (connection) => connection.slug === slug,

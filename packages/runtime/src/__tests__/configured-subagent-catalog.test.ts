@@ -20,6 +20,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createDefaultSettings } from '@maka/core/settings';
+import { AD_HOC_SUBAGENT_ID } from '@maka/core/subagent-settings';
 import { type LlmConnection } from '@maka/core/llm-connections';
 import { createConfiguredSubagentCatalog } from '../configured-subagent-catalog.js';
 
@@ -124,5 +125,53 @@ describe('configured subagent catalog', () => {
       reason: 'provider_retired',
     });
     await assert.rejects(catalog.resolve('retired-worker'), /provider_retired/);
+  });
+
+  test('lists and resolves the synthetic temporary-bounded route only when opted in', async () => {
+    const catalog = createConfiguredSubagentCatalog({
+      getPresets: async () => [],
+      getAdHocPolicy: async () => ({
+        enabled: true,
+        maxProfile: 'local_read',
+        connectionSlug: connection.slug,
+        model: 'gpt-5-mini',
+      }),
+      getConnection: async (slug) =>
+        slug === connection.slug
+          ? { ...connection, connectionId: '44444444-4444-4444-8444-444444444444' }
+          : null,
+    });
+    const listed = await catalog.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0]?.id, AD_HOC_SUBAGENT_ID);
+    assert.deepStrictEqual(listed[0]?.availability, { status: 'available' });
+    assert.deepStrictEqual(await catalog.resolve(AD_HOC_SUBAGENT_ID), {
+      id: AD_HOC_SUBAGENT_ID,
+      name: 'Temporary bounded',
+      description: 'One-off task role inside the user-approved maximum authority envelope.',
+      profile: 'local_read',
+      connectionSlug: connection.slug,
+      model: 'gpt-5-mini',
+      enabled: true,
+      connectionId: '44444444-4444-4444-8444-444444444444',
+    });
+  });
+
+  test('does not expose the synthetic route when disabled', async () => {
+    const catalog = createConfiguredSubagentCatalog({
+      getPresets: async () => [],
+      getAdHocPolicy: async () => ({
+        enabled: false,
+        maxProfile: 'local_read',
+        connectionSlug: connection.slug,
+        model: 'gpt-5-mini',
+      }),
+      getConnection: async () => ({
+        ...connection,
+        connectionId: '55555555-5555-4555-8555-555555555555',
+      }),
+    });
+    assert.deepStrictEqual(await catalog.list(), []);
+    await assert.rejects(catalog.resolve(AD_HOC_SUBAGENT_ID), /Call agent_list/);
   });
 });

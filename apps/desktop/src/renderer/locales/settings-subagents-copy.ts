@@ -29,6 +29,21 @@ type ProfileCopy = {
 };
 
 export type SubagentSettingsCopy = {
+  adHoc: {
+    title: string;
+    description: string;
+    enabled: string;
+    enabledDescription: string;
+    profile: string;
+    profileDescription: string;
+    connection: string;
+    model: string;
+    thinking: string;
+    noConnection: string;
+    noModel: string;
+    save: string;
+    saveFailed: string;
+  };
   section: {
     title: string;
     count(total: number): string;
@@ -101,6 +116,21 @@ export type SubagentSettingsCopy = {
 
 const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
   'zh-CN': {
+    adHoc: {
+      title: '临时子 Agent',
+      description: '明确启用后，主 Agent 才能创建一次性的任务角色。这里固定它可用的最高能力、连接和模型。',
+      enabled: '允许临时子 Agent',
+      enabledDescription: '关闭后，临时角色不会出现在 agent_list 中，也无法通过 agent_spawn 创建。',
+      profile: '最高能力 Profile',
+      profileDescription: '临时角色只能使用不高于此 Profile 的固定能力边界。',
+      connection: '模型连接',
+      model: '模型',
+      thinking: '思考级别',
+      noConnection: '请先在“模型”页启用一个模型连接。',
+      noModel: '所选连接没有已启用的模型。',
+      save: '保存临时策略',
+      saveFailed: '保存临时子 Agent 策略失败',
+    },
     section: {
       title: '已批准的子 Agent',
       count: (total) => `共 ${total} 个配置`,
@@ -183,6 +213,21 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
   },
   'zh-TW': {
+    adHoc: {
+      title: '臨時子 Agent',
+      description: '明確啟用後，主 Agent 才能建立一次性的任務角色。這裡固定它可用的最高能力、連線和模型。',
+      enabled: '允許臨時子 Agent',
+      enabledDescription: '關閉後，臨時角色不會出現在 agent_list 中，也無法透過 agent_spawn 建立。',
+      profile: '最高能力 Profile',
+      profileDescription: '臨時角色只能使用不高於此 Profile 的固定能力邊界。',
+      connection: '模型連線',
+      model: '模型',
+      thinking: '思考級別',
+      noConnection: '請先在「模型」頁啟用一個模型連線。',
+      noModel: '所選連線沒有已啟用的模型。',
+      save: '儲存臨時策略',
+      saveFailed: '儲存臨時子 Agent 策略失敗',
+    },
     section: {
       title: '已批准的子 Agent',
       count: (total) => `共 ${total} 個設定`,
@@ -265,6 +310,21 @@ const SETTINGS_SUBAGENTS_COPY_BY_LOCALE = {
     },
   },
   en: {
+    adHoc: {
+      title: 'Temporary subagent',
+      description: 'When explicitly enabled, the main agent may create one-off task roles. These settings fix their maximum capability, connection, and model.',
+      enabled: 'Allow temporary subagents',
+      enabledDescription: 'When off, the route is omitted from agent_list and agent_spawn cannot create it.',
+      profile: 'Maximum capability profile',
+      profileDescription: 'Temporary roles cannot exceed this fixed capability boundary.',
+      connection: 'Model connection',
+      model: 'Model',
+      thinking: 'Thinking level',
+      noConnection: 'Enable a model connection on the Models page first.',
+      noModel: 'The selected connection has no enabled models.',
+      save: 'Save temporary policy',
+      saveFailed: 'Failed to save temporary subagent policy',
+    },
     section: {
       title: 'Approved subagents',
       count: (total) => `${total} presets`,

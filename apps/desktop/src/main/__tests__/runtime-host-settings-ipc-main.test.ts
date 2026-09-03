@@ -135,12 +135,17 @@ function createModuleFixture(options: {
     async updateRuntimePolicy(
       createMutation: (value: RuntimePolicy) => {
         kind: string;
-        value: RuntimePolicy["networkProxy"];
+        value: unknown;
       },
     ) {
       const mutation = createMutation(policy);
       if (mutation.kind === "set_network_proxy") {
-        policy = { ...policy, networkProxy: mutation.value };
+        policy = { ...policy, networkProxy: mutation.value as RuntimePolicy["networkProxy"] };
+      } else if (mutation.kind === "set_subagents") {
+        policy = {
+          ...policy,
+          subagents: mutation.value as RuntimePolicy["subagents"],
+        };
       }
       policyRevision += 1;
       return { revision: policyRevision, policy };
@@ -263,6 +268,22 @@ test("runtime settings project credential status without a password value", asyn
 
   assert.equal(settings.network.proxy.passwordConfigured, true);
   assert.equal("password" in settings.network.proxy, false);
+});
+
+test("subagent preset updates preserve the existing ad-hoc policy", async () => {
+  const fixture = createModuleFixture();
+  const current = fixture.policy();
+  const adHoc = {
+    enabled: true,
+    maxProfile: "local_read" as const,
+    connectionSlug: "worker-provider",
+    model: "gpt-5-mini",
+  };
+  // Seed the host policy through the same mutation seam used by the module.
+  await fixture.module.update({ subagents: { presets: [], adHoc } });
+  await fixture.module.update({ subagents: { presets: [] } });
+  assert.deepEqual(fixture.policy().subagents, { presets: [], adHoc });
+  assert.notDeepEqual(fixture.policy(), current);
 });
 
 test("spread-back derived and legacy password fields never enter Runtime policy", async () => {
