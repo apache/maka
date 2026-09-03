@@ -23,17 +23,16 @@ import {
   Banner,
   Button,
   EmptyState,
-  Heading,
   HStack,
   List,
   ListItem,
   Skeleton,
   StatusDot,
-  Text,
   VStack,
 } from '@astryxdesign/core';
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
 import {
+  connectionEnabledModelIds,
   type IdentifiedLlmConnection,
   type ProjectedLlmConnection,
   type ProviderType,
@@ -44,7 +43,9 @@ import { connectionChipStatus } from './provider-connection-status';
 import {
   CATALOG_INITIAL_FILTER,
   ProviderCatalogPage,
+  ProviderCatalogRows,
   ProviderSetupPage,
+  useRecommendedProviders,
   type CatalogFilter,
   type CreatedOAuthConnectionIdentity,
   type SetupTarget,
@@ -53,6 +54,7 @@ import { isRetiredProvider } from '@maka/core/provider-registry';
 import { ConnectionDetail } from './provider-connection-detail';
 import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
+import { SettingsSection } from './settings-section';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
@@ -74,6 +76,7 @@ export type { ConnectionsBridge } from '../features/connection-settings';
  * Where the panel is. Four levels, one container, one back affordance:
  *
  *   list ─┬─ catalog ── setup(credentials | account)
+ *         ├─ setup (straight from the empty list's recommended rows)
  *         └─ detail
  *
  * Nothing here is a Dialog. A modal exists to interrupt the current task for
@@ -83,9 +86,9 @@ export type { ConnectionsBridge } from '../features/connection-settings';
  * grows beyond what fits, consider a full page instead."
  *
  * `setup` carries its own `origin` rather than the panel keeping a history
- * stack: the graph is this small, and the one ambiguous edge (the first-run
- * hero jumps straight to a provider's form, skipping the catalog) is answered
- * by the route that created it instead of by a rule somewhere else.
+ * stack: the graph is this small, and the one ambiguous edge (the list jumps
+ * straight to a provider's form, skipping the catalog) is answered by the
+ * route that created it instead of by a rule somewhere else.
  */
 type PanelRoute =
   | { kind: 'list' }
@@ -285,6 +288,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
     ? connections.find((connection) => connection.connectionId === route.connectionId) ?? null
     : null;
   const pendingConnectionIdentity = route.kind === 'adopting-connection' ? route.identity : null;
+  const addBlocked = pendingConnectionIdentity !== null || hasOnboardingUncertainty;
 
   // A detail route whose connection vanished (deleted in another window) is an
   // unsatisfiable route, not a state to correct: the list is what it renders
@@ -355,31 +359,11 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
             logo={<ProviderLogo type={selected.providerType} compact />}
             titleId={detailTitleId}
             title={connectionDisplayName(selected, connections)}
-            /* The control sits in the slot that shows the state. Setting the
-               default connection was reachable only from the command palette,
-               while this page displayed a 默认 Badge and offered no way to
-               change it — so a user who came here to change it (the obvious
-               place, since it is where the answer is shown) found a read-only
-               label and gave up. Whichever of the two a connection is, this
-               slot now tells the truth AND is the way to change it.
-
-               `secondary`, not ghost: this button sits alone beside a title,
-               where a ghost's bare text reads as a subtitle rather than
-               something you can press — which would recreate the very problem
-               it exists to solve. 测试连接 below is secondary sm, and that is
-               this page's dialect for "quiet but unmistakably a control".
-
-               `clickAction` rather than onClick: it opens no confirm, so there
-               is no state-driven UI to await inside the transition, and the
-               button gets its own pending affordance for free. */
-            /* Retired is checked before either state: the connection cannot
-               send, so it can neither become the default nor honestly wear the
-               默认 Badge. Loading the catalog releases a default target that
-               points at one (connection-catalog-document.ts), so this is the
-               in-memory half of that — and it keeps the slot's invariant, since
-               a Badge with no way to move the default off it would be exactly
-               the read-only label the comment above describes. The row's own
-               已停用 status and the detail banner carry the explanation. */
+            /* The control sits in the slot that shows the state: whichever of
+               the two a connection is, this slot tells the truth AND is the
+               way to change it. A retired connection cannot send, so it can
+               neither become the default nor honestly wear the Badge; the
+               row's own 已停用 status and the detail banner carry that. */
             badge={isRetiredProvider(selected.providerType)
               ? null
               : selected.slug === defaultSlug
@@ -507,22 +491,6 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
           {route.kind === 'detail' && !selected && (
             <Banner status="warning" role="status" title={copy.connectionRemoved} />
           )}
-          <HStack gap={2} vAlign="center" hAlign="between">
-            <HStack gap={2} vAlign="center">
-              <Heading level={3}>{copy.connections}</Heading>
-              {connections.length > 0 && (
-                <Text type="supporting" color="secondary">{copy.count(connections.length)}</Text>
-              )}
-            </HStack>
-            <Button
-              ref={addButtonRef}
-              variant="primary"
-              label={copy.addConnection}
-              onClick={openCatalog}
-              isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty}
-              data-maka-contract="add-connection"
-            />
-          </HStack>
           {hasOnboardingUncertainty && (
             <Banner
               status="warning"
@@ -571,50 +539,82 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
               description={loadError}
               endContent={<Button variant="ghost" label={copy.retry} onClick={() => void reload()} />}
             />
-          ) : connections.length === 0 ? (
-            <EmptyState
-              icon={<Cpu size={ICON_SIZE.empty} />}
-              title={copy.empty}
-              description={copy.emptyHelp}
-              actions={<Button variant="primary" label={copy.addConnection} onClick={openCatalog} isDisabled={pendingConnectionIdentity !== null || hasOnboardingUncertainty} />}
+          ) : null}
+          {/* The list is a labeled group like every other settings page: what
+              it holds, why it matters, and the one group-level action. */}
+          <SettingsSection
+            title={copy.connections}
+            description={copy.connectionsHelp}
+            variant="bare"
+            action={(
+              <Button
+                ref={addButtonRef}
+                variant="primary"
+                label={copy.addConnection}
+                onClick={openCatalog}
+                isDisabled={addBlocked}
+                data-maka-contract="add-connection"
+              />
+            )}
+          >
+            {connections.length === 0 && !loadError ? (
+              <EmptyState
+                isCompact
+                icon={<Cpu size={ICON_SIZE.empty} />}
+                title={copy.empty}
+                description={copy.emptyHelp}
+                actions={<Button variant="secondary" size="sm" label={copy.browseAll} onClick={openCatalog} isDisabled={addBlocked} />}
+              />
+            ) : (
+              <List hasDividers>
+                {connections.map((connection) => {
+                  const status = connectionChipStatus(connection, locale);
+                  const isDefault = connection.slug === defaultSlug;
+                  return (
+                    <ListItem
+                      key={connection.connectionId ?? connection.slug}
+                      className="connectionRow"
+                      data-connection-id={connection.connectionId}
+                      data-connection-slug={connection.slug}
+                      data-disabled={connection.enabled ? undefined : 'true'}
+                      startContent={<ProviderLogo type={connection.providerType} compact />}
+                      label={(
+                        <HStack gap={2} vAlign="center">
+                          {/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/}
+                          <span aria-label={chipAriaLabel(connection, isDefault)}>{connectionDisplayName(connection, connections)}</span>
+                          {isDefault && <Badge variant="neutral" label={copy.default} />}
+                        </HStack>
+                      )}
+                      description={connectionSubtitle(connection, locale)}
+                      endContent={(
+                        <HStack gap={2} vAlign="center">
+                          {status && (
+                            <span className="settingsStatus">
+                              <StatusDot variant={dotForStatus(status.tone)} label={status.label} />
+                              <span>{status.label}</span>
+                            </span>
+                          )}
+                          <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
+                        </HStack>
+                      )}
+                      onClick={() => openDetail(connection)}
+                    />
+                  );
+                })}
+              </List>
+            )}
+          </SettingsSection>
+          {connections.length === 0 && !loadError && (
+            /* First run: the providers most people connect, one click from
+               their form. The full catalog is one more click away above. */
+            <RecommendedProvidersSection
+              connections={connections}
+              isDisabled={addBlocked}
+              onPick={(target) => {
+                returnFocusRef.current = null;
+                setRoute({ kind: 'setup', target, origin: 'list' });
+              }}
             />
-          ) : (
-            <List hasDividers>
-              {connections.map((connection) => {
-                const status = connectionChipStatus(connection, locale);
-                const isDefault = connection.slug === defaultSlug;
-                return (
-                  <ListItem
-                    key={connection.connectionId ?? connection.slug}
-                    className="connectionRow"
-                    data-connection-id={connection.connectionId}
-                    data-connection-slug={connection.slug}
-                    data-disabled={connection.enabled ? undefined : 'true'}
-                    startContent={<ProviderLogo type={connection.providerType} compact />}
-                    label={(
-                      <HStack gap={2} vAlign="center">
-                        {/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/}
-                        <span aria-label={chipAriaLabel(connection, isDefault)}>{connectionDisplayName(connection, connections)}</span>
-                        {isDefault && <Badge variant="neutral" label={copy.default} />}
-                      </HStack>
-                    )}
-                    description={connectionSubtitle(connection, locale)}
-                    endContent={(
-                      <HStack gap={2} vAlign="center">
-                        {status && (
-                          <span className="settingsStatus">
-                            <StatusDot variant={dotForStatus(status.tone)} label={status.label} />
-                            <span>{status.label}</span>
-                          </span>
-                        )}
-                        <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
-                      </HStack>
-                    )}
-                    onClick={() => openDetail(connection)}
-                  />
-                );
-              })}
-            </List>
           )}
         </>
       )}
@@ -633,10 +633,33 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
   }
 }
 
-/** Provider · default model — the row's second line, and the detail's subtitle. */
+function RecommendedProvidersSection(props: {
+  connections: readonly ProjectedLlmConnection[];
+  isDisabled: boolean;
+  onPick(target: SetupTarget): void;
+}) {
+  const copy = getProviderSettingsCopy(useUiLocale()).panel;
+  const recommended = useRecommendedProviders(props.connections);
+  return (
+    <SettingsSection title={copy.recommended} variant="bare">
+      <div inert={props.isDisabled || undefined}>
+        <ProviderCatalogRows
+          cards={recommended.cards}
+          providers={recommended.providers}
+          onPick={props.onPick}
+        />
+      </div>
+    </SettingsSection>
+  );
+}
+
+/** Provider · models · default model — the row's second line, and the detail's subtitle. */
 function connectionSubtitle(connection: IdentifiedLlmConnection, locale: 'zh' | 'en'): string {
+  const copy = getProviderSettingsCopy(locale).panel;
   const providerName = providerDisplay(connection.providerType, locale).name;
+  const enabledCount = connectionEnabledModelIds(connection).length;
   const parts = [providerName];
+  if (enabledCount > 1) parts.push(copy.modelCount(enabledCount));
   if (connection.defaultModel) parts.push(connection.defaultModel);
   return parts.join(' · ');
 }

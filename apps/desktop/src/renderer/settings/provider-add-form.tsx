@@ -24,11 +24,23 @@ import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
-import { Banner, HStack, MultiSelector, Text, VStack } from '@astryxdesign/core';
+import {
+  Banner,
+  CheckboxList,
+  CheckboxListItem,
+  EmptyState,
+  HStack,
+  Step,
+  Stepper,
+  Text,
+  VStack,
+} from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
+import { Search } from '@maka/ui/icons';
 import {
   Button,
   FormLayout,
+  Selector,
   TextInput,
   useMountedRef,
   useUiLocale,
@@ -39,7 +51,6 @@ import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
-  categoryLabel,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ApiKeyOnboardingBridge,
@@ -79,7 +90,12 @@ type ManagedOnboardingPhase =
       readonly kind: 'models';
       readonly models: ReturnType<typeof stableOnboardingModels>;
       readonly selectedIds: readonly string[];
+      /** The model new chats start on. Always one of `selectedIds`. */
+      readonly defaultId: string;
     };
+
+/** Past this many models the picker needs a filter to be usable. */
+const MODEL_FILTER_THRESHOLD = 8;
 
 export function AddProviderForm(props: {
   bridge: ConnectionsBridge;
@@ -108,6 +124,7 @@ export function AddProviderForm(props: {
   const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
   const [requestBodyText, setRequestBodyText] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [modelFilter, setModelFilter] = useState('');
   const [formState, setFormState] = useState<{
     readonly managedPhase: ManagedOnboardingPhase;
     readonly error: ProviderFormError | null;
@@ -146,6 +163,7 @@ export function AddProviderForm(props: {
 
   function resetManagedVerification(options?: { clearKey?: boolean }) {
     setManagedPhase({ kind: 'input' });
+    setModelFilter('');
     if (options?.clearKey) setApiKey('');
   }
 
@@ -223,7 +241,14 @@ export function AddProviderForm(props: {
         setError({ field: 'form', message: copy.onboardingNoModels });
         return;
       }
-      setManagedPhase({ kind: 'models', models, selectedIds });
+      setManagedPhase({
+        kind: 'models',
+        models,
+        selectedIds,
+        defaultId: selectedIds.includes(recommendedDefaultModel)
+          ? recommendedDefaultModel
+          : selectedIds[0]!,
+      });
     } catch (err) {
       if (addProviderMountedRef.current) {
         setError({ field: 'form', message: providerPanelActionErrorMessage(err, locale) });
@@ -243,14 +268,13 @@ export function AddProviderForm(props: {
       setError({ field: 'form', message: copy.onboardingSelectModel });
       return;
     }
+    // Catalog order, with the chosen default first: the Host reads the head of
+    // this list as the connection's default model.
     const selected = new Set(phase.selectedIds);
     const stableIds = phase.models
       .map((model) => model.id)
-      .filter((modelId) => selected.has(modelId));
-    if (selected.has(recommendedDefaultModel)) {
-      stableIds.splice(stableIds.indexOf(recommendedDefaultModel), 1);
-      stableIds.unshift(recommendedDefaultModel);
-    }
+      .filter((modelId) => selected.has(modelId) && modelId !== phase.defaultId);
+    if (selected.has(phase.defaultId)) stableIds.unshift(phase.defaultId);
     submitGuard.begin('submit');
     setBusy(true);
     try {
@@ -449,30 +473,117 @@ export function AddProviderForm(props: {
     );
   }
 
+  // The managed route is two steps — the key, then the models it unlocked —
+  // and the page says so up front rather than springing a second form on a
+  // user who thought they were done. A single-step route shows no stepper:
+  // one step is not progress.
+  const managedStepper = quickUsesManagedOnboarding ? (
+    <Stepper
+      activeStep={managedPhase.kind === 'models' ? 1 : 0}
+      label={copy.stepsAria}
+      density="compact"
+    >
+      <Step step={0} label={copy.stepCredentials} />
+      <Step step={1} label={copy.stepModels} />
+    </Stepper>
+  ) : null;
+
   if (usesApiKeyDialog && managedPhase.kind === 'models') {
-    const options = managedPhase.models.map((model) => ({
-      value: model.id,
-      label: model.displayName?.trim() || model.id,
-    }));
+    const normalizedFilter = modelFilter.trim().toLocaleLowerCase();
+    const showsFilter = managedPhase.models.length > MODEL_FILTER_THRESHOLD;
+    const visibleModels = managedPhase.models.filter((model) =>
+      !normalizedFilter ||
+      [model.id, model.displayName ?? '']
+        .some((value) => value.toLocaleLowerCase().includes(normalizedFilter)));
+    const modelLabel = (model: (typeof managedPhase.models)[number]) =>
+      model.displayName?.trim() || model.id;
+    const selectModels = (selectedIds: readonly string[]) => {
+      // The default follows the selection: unticking it hands the role to the
+      // first model still ticked, so the head of the saved list is never a
+      // model the user just removed.
+      const defaultId = selectedIds.includes(managedPhase.defaultId)
+        ? managedPhase.defaultId
+        : selectedIds[0] ?? '';
+      setManagedPhase({ ...managedPhase, selectedIds, defaultId });
+      clearFieldError('form');
+    };
+    const selectedOptions = managedPhase.models
+      .filter((model) => managedPhase.selectedIds.includes(model.id))
+      .map((model) => ({ value: model.id, label: modelLabel(model) }));
     return (
-      <VStack as="form" gap={3} onSubmit={submitApiKey} data-maka-contract="api-key-onboarding-models">
+      <VStack as="form" gap={4} onSubmit={submitApiKey} data-maka-contract="api-key-onboarding-models">
+        {managedStepper}
         <VStack gap={1}>
           <Text weight="semibold">{copy.onboardingChooseModels}</Text>
           <Text type="supporting" color="secondary">{copy.onboardingChooseModelsHelp}</Text>
         </VStack>
-        <MultiSelector
-          label={copy.onboardingEnabledModels}
-          options={options}
-          value={[...managedPhase.selectedIds]}
-          onChange={(selectedIds) => {
-            setManagedPhase({ ...managedPhase, selectedIds });
-            clearFieldError('form');
-          }}
-          isDisabled={busy}
+        <HStack gap={2} justify="between" vAlign="center" wrap="wrap">
+          <Text type="supporting" color="secondary" role="status">
+            {copy.onboardingSelectedCount(managedPhase.selectedIds.length, managedPhase.models.length)}
+          </Text>
+          <HStack gap={1}>
+            <Button
+              variant="ghost"
+              size="sm"
+              isDisabled={busy || managedPhase.selectedIds.length === managedPhase.models.length}
+              onClick={() => selectModels(managedPhase.models.map((model) => model.id))}
+              label={copy.onboardingSelectAll}
+            />
+            <Button
+              variant="ghost"
+              size="sm"
+              isDisabled={busy || managedPhase.selectedIds.length === 0}
+              onClick={() => selectModels([])}
+              label={copy.onboardingClearAll}
+            />
+          </HStack>
+        </HStack>
+        {showsFilter && (
+          <TextInput
+            value={modelFilter}
+            onChange={setModelFilter}
+            placeholder={copy.onboardingSearchModels}
+            label={copy.onboardingSearchModels}
+            isLabelHidden
+            startIcon={Search}
+            hasClear
+            isDisabled={busy}
+          />
+        )}
+        {visibleModels.length === 0 ? (
+          <EmptyState
+            isCompact
+            title={copy.onboardingNoModelsMatch}
+            actions={<Button variant="ghost" size="sm" label={copy.onboardingClearAll} onClick={() => setModelFilter('')} />}
+          />
+        ) : (
+          <CheckboxList
+            label={copy.onboardingEnabledModels}
+            isLabelHidden
+            value={[...managedPhase.selectedIds]}
+            onChange={selectModels}
+            isDisabled={busy}
+            hasDividers
+            density="compact"
+          >
+            {visibleModels.map((model) => (
+              <CheckboxListItem
+                key={model.id}
+                value={model.id}
+                label={modelLabel(model)}
+                description={modelLabel(model) === model.id ? undefined : model.id}
+              />
+            ))}
+          </CheckboxList>
+        )}
+        <Selector
+          label={copy.onboardingDefaultModel}
+          description={copy.onboardingDefaultModelHelp}
+          options={selectedOptions}
+          value={managedPhase.defaultId}
+          onChange={(defaultId: string) => setManagedPhase({ ...managedPhase, defaultId })}
+          isDisabled={busy || selectedOptions.length === 0}
           placeholder={copy.onboardingSelectModel}
-          triggerDisplay="labels"
-          hasSearch
-          searchPlaceholder={copy.onboardingSearchModels}
           width="100%"
         />
         <div role="status" aria-live="polite">
@@ -502,27 +613,30 @@ export function AddProviderForm(props: {
 
   if (usesApiKeyDialog) {
     return (
-      <VStack as="form" gap={3} onSubmit={submitApiKey}>
-        <PasswordInput
-          value={apiKey}
-          onChange={(next) => {
-            setApiKey(next);
-            resetManagedVerification();
-            clearFieldError('apiKey');
-          }}
-          placeholder={copy.apiKeyPlaceholder}
-          label={copy.apiKeyLabel}
-          isRequired={requiresApiKey}
-          isOptional={!requiresApiKey}
-          status={
-            error?.field === 'apiKey'
-              ? { type: 'error', message: error.message }
-              : undefined
-          }
-          isDisabled={busy}
-          hasAutoFocus
-        />
-        {advancedRequestEditor}
+      <VStack as="form" gap={4} onSubmit={submitApiKey}>
+        {managedStepper}
+        <FormLayout>
+          <PasswordInput
+            value={apiKey}
+            onChange={(next) => {
+              setApiKey(next);
+              resetManagedVerification();
+              clearFieldError('apiKey');
+            }}
+            placeholder={copy.apiKeyPlaceholder}
+            label={copy.apiKeyLabel}
+            isRequired={requiresApiKey}
+            isOptional={!requiresApiKey}
+            status={
+              error?.field === 'apiKey'
+                ? { type: 'error', message: error.message }
+                : undefined
+            }
+            isDisabled={busy}
+            hasAutoFocus
+          />
+          {advancedRequestEditor}
+        </FormLayout>
         <div role="status" aria-live="polite">
           {busy ? (
             <Text type="supporting">
@@ -553,7 +667,7 @@ export function AddProviderForm(props: {
   }
 
   return (
-    <VStack gap={3}>
+    <VStack gap={4}>
       {isExperimental && (
         <Banner
           status="info"

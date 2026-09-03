@@ -17,14 +17,13 @@
  * under the License.
  */
 
+import type { ReactNode } from 'react';
 import {
   Banner,
   EmptyState,
   HStack,
   List,
   ListItem,
-  Section,
-  Selector,
   VStack,
 } from '@astryxdesign/core';
 import { ICON_SIZE, Check, ChevronRight, Search } from '@maka/ui/icons';
@@ -38,25 +37,14 @@ import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connection
 import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
-import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
+import { OAuthLoginPanel, useOAuthCards, type OAuthCard, type OAuthCardId } from './provider-oauth-section';
+import { SettingsSection } from './settings-section';
 import {
   getProviderSettingsCopy,
   type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
   type DesktopConnectionOnboardingIdentity,
 } from '../features/connection-settings';
-
-type CatalogCategory = ProviderCatalogGroup | 'all' | 'recommended' | 'accounts';
-
-const CATALOG_CATEGORIES: CatalogCategory[] = [
-  'all',
-  'recommended',
-  'accounts',
-  'plans',
-  'api',
-  'aggregators',
-  'local',
-];
 
 /**
  * How the catalog is filtered. It lives in the panel, not in this component:
@@ -65,10 +53,9 @@ const CATALOG_CATEGORIES: CatalogCategory[] = [
  */
 export interface CatalogFilter {
   query: string;
-  category: CatalogCategory;
 }
 
-export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all' };
+export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '' };
 
 export interface CreatedOAuthConnectionIdentity {
   connectionId: string;
@@ -85,15 +72,19 @@ export type SetupTarget =
   | { method: 'credentials'; providerType: ProviderType; name: string }
   | { method: 'account'; cardId: OAuthCardId; providerType: ProviderType; name: string };
 
+/** The catalog groups in page order; `recommended` also carries the account sign-ins. */
+const CATALOG_GROUPS: readonly ProviderCatalogGroup[] = ['recommended', 'plans', 'api', 'aggregators', 'local'];
+
 /**
- * Level 2: the provider catalog. Search plus a category filter over the 55
- * keyed providers and the account sign-ins, one row each.
+ * Level 2: the provider catalog. One search field over everything, and below
+ * it the providers as labeled groups — the same 推荐 / 模型计划 / API / 聚合
+ * / 本地 vocabulary the registry already carries, laid out the way every other
+ * settings page lays out its groups. A category picker used to stand beside
+ * the search field; the groups make it redundant, because scrolling past a
+ * heading is the filter.
  *
- * This used to be step 1 of a Dialog. It is a page because it is a
- * destination, not an interruption — Astryx's own Dialog guidance says "if the
- * content grows beyond what fits, consider a full page instead", and a
- * 560px-wide modal over a ~700px content column preserved almost none of the
- * context a modal exists to preserve.
+ * Typing collapses the groups into one flat list: a search is asking "where
+ * is X", and the answer should not be spread across five headings.
  */
 export function ProviderCatalogPage(props: {
   filter: CatalogFilter;
@@ -102,124 +93,155 @@ export function ProviderCatalogPage(props: {
   onPick(target: SetupTarget): void;
 }) {
   const locale = useUiLocale();
-  const providerCopy = getProviderSettingsCopy(locale);
-  const copy = providerCopy.panel;
-  const catalogCopy = providerCopy.catalog;
-  const { query, category } = props.filter;
-  const showsOAuth = category === 'all' || category === 'recommended' || category === 'accounts';
-  const oauth = useOAuthCards({
-    query: showsOAuth ? query : undefined,
-    connections: props.connections,
-  });
+  const copy = getProviderSettingsCopy(locale).panel;
+  const oauthCopy = getProviderSettingsCopy(locale).oauthSection;
+  const { query } = props.filter;
+  const normalizedQuery = query.trim();
+  const oauth = useOAuthCards({ query: normalizedQuery, connections: props.connections });
 
-  // Category is a Selector, not a second TabList: the page header already owns
-  // one level of navigation, and six tabs beside a search field made the
-  // toolbar the busiest row on the page.
-  const categoryOptions = CATALOG_CATEGORIES.map((value) => ({ value, label: copy.tabs[value] }));
-  const providers = providersForCategory(category, query, locale);
-  const isEmpty = providers.length === 0 && (!showsOAuth || oauth.cards.length === 0);
+  const searchField = (
+    <TextInput
+      value={query}
+      onChange={(value) => props.onFilterChange({ query: value })}
+      placeholder={copy.searchPlaceholder}
+      label={copy.searchAria}
+      isLabelHidden
+      startIcon={Search}
+      hasClear
+    />
+  );
+
+  if (normalizedQuery) {
+    const providers = providersMatching(CATALOG_PROVIDER_TYPES, normalizedQuery, locale);
+    const isEmpty = providers.length === 0 && oauth.cards.length === 0;
+    return (
+      <VStack gap={4} data-maka-contract="provider-catalog">
+        {searchField}
+        {oauth.refreshError && (
+          <Banner status="warning" role="alert" title={oauthCopy.staleState} description={oauth.refreshError} />
+        )}
+        {isEmpty ? (
+          // Filter empty (DESIGN.md §10 tier 1): a filter no-match always carries
+          // the clear action, on any tier — the user must be able to exit.
+          <EmptyState
+            isCompact
+            title={copy.noMatch}
+            actions={(
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.clearSearch}
+                onClick={() => props.onFilterChange({ query: '' })}
+              />
+            )}
+          />
+        ) : (
+          <ProviderCatalogRows cards={oauth.cards} providers={providers} onPick={props.onPick} />
+        )}
+      </VStack>
+    );
+  }
 
   return (
-    <VStack gap={4} data-maka-contract="provider-catalog">
-      <Section variant="transparent" paddingBlock={2}>
-        <HStack gap={2} hAlign="between" vAlign="center">
-          <TextInput
-            value={query}
-            onChange={(value) => props.onFilterChange({ ...props.filter, query: value })}
-            placeholder={copy.searchPlaceholder}
-            label={copy.searchAria}
-            isLabelHidden
-            startIcon={Search}
-          />
-          <Selector
-            label={copy.category}
-            isLabelHidden
-            value={category}
-            onChange={(value: string) => props.onFilterChange({ ...props.filter, category: value as CatalogCategory })}
-            options={categoryOptions}
-            data-catalog-category={category}
-          />
-        </HStack>
-      </Section>
+    <VStack gap={8} data-maka-contract="provider-catalog">
+      {searchField}
       {oauth.refreshError && (
-        <Banner
-          status="warning"
-          role="alert"
-          title={providerCopy.oauthSection.staleState}
-          description={oauth.refreshError}
-        />
+        <Banner status="warning" role="alert" title={oauthCopy.staleState} description={oauth.refreshError} />
       )}
-      {isEmpty ? (
-        // Filter empty (DESIGN.md §10 tier 1): a filter no-match always carries
-        // the clear action, on any tier — the user must be able to exit.
-        <EmptyState
-          isCompact
-          title={copy.noMatch}
-          actions={(
-            <Button
-              variant="ghost"
-              size="sm"
-              label={copy.clearSearch}
-              onClick={() => props.onFilterChange({ ...props.filter, query: '' })}
-            />
-          )}
-        />
-      ) : (
-        <List hasDividers>
-          {showsOAuth && oauth.cards.map((card) => (
-            <ListItem
-              key={card.id}
-              className="providerCatalogRow"
-              data-card-id={card.id}
-              data-provider={card.providerType}
-              data-status="ready"
-              data-logged-in={card.isLoggedIn ? 'true' : undefined}
-              startContent={<ProviderLogo type={card.providerType} />}
-              label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
-                'add',
-                card.name,
-                card.status,
-                card.description,
-              )}>{card.name}</span>}
-              description={card.description}
-              endContent={(
-                <HStack gap={2} vAlign="center">
-                  {card.isLoggedIn && (
-                    <span className="settingsStatus" aria-hidden="true">
-                      <Check size={ICON_SIZE.chrome} />
-                      <span>{providerCopy.oauthSection.signedIn}</span>
-                    </span>
-                  )}
-                  <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
-                </HStack>
-              )}
-              onClick={() => props.onPick({
-                method: 'account',
-                cardId: card.id,
-                providerType: card.providerType,
-                name: card.name,
-              })}
-            />
-          ))}
-          {providers.map((type) => {
-            const display = providerDisplay(type, locale);
-            return (
-              <ListItem
-                key={type}
-                className="providerCatalogRow"
-                data-provider={type}
-                data-status="ready"
-                startContent={<ProviderLogo type={type} />}
-                label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={catalogCopy.cardAria(display.name, display.description)}>{display.name}</span>}
-                description={display.description}
-                endContent={<ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />}
-                onClick={() => props.onPick({ method: 'credentials', providerType: type, name: display.name })}
-              />
-            );
-          })}
-        </List>
-      )}
+      {CATALOG_GROUPS.map((group) => {
+        const providers = group === 'recommended'
+          ? providersMatching(RECOMMENDED_PROVIDER_TYPES, '', locale)
+          : providersMatching(CATALOG_PROVIDER_TYPES, '', locale, group);
+        const cards = group === 'recommended' ? oauth.cards : [];
+        if (providers.length === 0 && cards.length === 0) return null;
+        return (
+          <SettingsSection key={group} title={copy.groups[group]} variant="bare">
+            <ProviderCatalogRows cards={cards} providers={providers} onPick={props.onPick} />
+          </SettingsSection>
+        );
+      })}
     </VStack>
+  );
+}
+
+/** The recommended providers, for surfaces that show a shortlist instead of the catalog. */
+export function useRecommendedProviders(connections: readonly LlmConnection[]): {
+  cards: OAuthCard[];
+  providers: ProviderType[];
+} {
+  const locale = useUiLocale();
+  const oauth = useOAuthCards({ connections });
+  return { cards: oauth.cards, providers: providersMatching(RECOMMENDED_PROVIDER_TYPES, '', locale) };
+}
+
+/**
+ * One list of provider rows: account sign-ins first, then keyed providers.
+ * The catalog renders one per group; the empty connection list renders one
+ * with the recommended shortlist, so a first run is a single click away from
+ * a provider's form.
+ */
+export function ProviderCatalogRows(props: {
+  cards: readonly OAuthCard[];
+  providers: readonly ProviderType[];
+  onPick(target: SetupTarget): void;
+  header?: ReactNode;
+}) {
+  const locale = useUiLocale();
+  const providerCopy = getProviderSettingsCopy(locale);
+  return (
+    <List hasDividers header={props.header}>
+      {props.cards.map((card) => (
+        <ListItem
+          key={card.id}
+          className="providerCatalogRow"
+          data-card-id={card.id}
+          data-provider={card.providerType}
+          data-status="ready"
+          data-logged-in={card.isLoggedIn ? 'true' : undefined}
+          startContent={<ProviderLogo type={card.providerType} compact />}
+          label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.oauthSection.cardAria(
+            'add',
+            card.name,
+            card.status,
+            card.description,
+          )}>{card.name}</span>}
+          description={card.description}
+          endContent={(
+            <HStack gap={2} vAlign="center">
+              {card.isLoggedIn && (
+                <span className="settingsStatus" aria-hidden="true">
+                  <Check size={ICON_SIZE.chrome} />
+                  <span>{providerCopy.oauthSection.signedIn}</span>
+                </span>
+              )}
+              <ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />
+            </HStack>
+          )}
+          onClick={() => props.onPick({
+            method: 'account',
+            cardId: card.id,
+            providerType: card.providerType,
+            name: card.name,
+          })}
+        />
+      ))}
+      {props.providers.map((type) => {
+        const display = providerDisplay(type, locale);
+        return (
+          <ListItem
+            key={type}
+            className="providerCatalogRow"
+            data-provider={type}
+            data-status="ready"
+            startContent={<ProviderLogo type={type} compact />}
+            label={/* a11y-allow: this label names the ROW, not the span. Astryx's Item puts consumer props on its outer wrapper and renders a separate invisible <button> for the click target, so an aria-label on the Item never reaches that button — measured. The button is named from its content, and this span is how the status reaches that name. Removing it drops the runtime error from the row's accessible name (settings.spec:226).*/ <span aria-label={providerCopy.catalog.cardAria(display.name, display.description)}>{display.name}</span>}
+            description={display.description}
+            endContent={<ChevronRight size={ICON_SIZE.chrome} aria-hidden="true" />}
+            onClick={() => props.onPick({ method: 'credentials', providerType: type, name: display.name })}
+          />
+        );
+      })}
+    </List>
   );
 }
 
@@ -269,22 +291,17 @@ export function ProviderSetupPage(props: {
   );
 }
 
-function providersForCategory(category: CatalogCategory, query: string, locale: 'zh' | 'en'): ProviderType[] {
-  // 'accounts' is the OAuth-only category: every row in it comes from
-  // useOAuthCards, so the keyed catalog contributes nothing.
-  if (category === 'accounts') return [];
-  const source = category === 'recommended' ? RECOMMENDED_PROVIDER_TYPES : CATALOG_PROVIDER_TYPES;
-  const normalizedQuery = query.trim().toLocaleLowerCase();
+function providersMatching(
+  source: readonly ProviderType[],
+  query: string,
+  locale: 'zh' | 'en',
+  group?: ProviderCatalogGroup,
+): ProviderType[] {
+  const normalizedQuery = query.toLocaleLowerCase();
   return source.filter((type) => {
     if (!CATALOG_PROVIDER_TYPES.includes(type)) return false;
     if (PROVIDER_REGISTRY[type].status !== 'ready') return false;
-    if (
-      category !== 'all' &&
-      category !== 'recommended' &&
-      PROVIDER_REGISTRY[type].catalogGroup !== category
-    ) {
-      return false;
-    }
+    if (group && PROVIDER_REGISTRY[type].catalogGroup !== group) return false;
     if (!normalizedQuery) return true;
     const display = providerDisplay(type, locale);
     return [type, display.name, display.description, PROVIDER_REGISTRY[type].label]
