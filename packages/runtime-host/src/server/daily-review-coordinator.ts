@@ -30,6 +30,7 @@ import {
   type DailyReviewArchiveSectionContent,
   type DailyReviewRange,
   type DailyReviewSummary,
+  type DayRangeMs,
 } from '@maka/core/daily-review';
 import { collapseSessionRevisions } from '@maka/core/session-revisions';
 import { mergeUsageBuckets, mergeUsageSummary } from '@maka/core/usage-ledger-merge';
@@ -90,7 +91,7 @@ export class HostDailyReviewCoordinator {
   readonly #inFlight = new Map<
     string,
     {
-      readonly modelKey: string;
+      readonly modelKeyOverride: string;
       readonly trigger: 'cron' | 'manual';
       readonly promise: Promise<DailyReviewArchive>;
     }
@@ -170,11 +171,13 @@ export class HostDailyReviewCoordinator {
           const snapshot = await this.#store.readConfig();
           return querySuccess({ kind: 'config', ...snapshot });
         }
-        case 'summary':
+        case 'summary': {
+          const now = this.#now();
           return querySuccess({
             kind: 'summary',
-            summary: await this.#buildSummary(input.offsetDays, input.daySpan),
+            summary: await this.#buildSummary(dayRange(now, input.offsetDays, input.daySpan), now),
           });
+        }
         case 'archives': {
           const beforeArchiveId = input.beforeArchiveId;
           const page = await this.#store.listArchivePage(beforeArchiveId, input.limit);
@@ -247,13 +250,7 @@ export class HostDailyReviewCoordinator {
     }
   }
 
-  async #buildSummary(offsetDays: number, daySpan: number): Promise<DailyReviewSummary> {
-    const offset = Math.trunc(offsetDays);
-    const span = Math.max(1, Math.min(30, Math.trunc(daySpan)));
-    const now = this.#now();
-    const endDay = offset === 0 ? localDayBoundsForInstant(now) : localDayBoundsAt(now, offset);
-    const startDay = localDayBoundsAt(endDay.fromMs, -(span - 1));
-    const range = { fromMs: startDay.fromMs, toMs: endDay.toMs };
+  async #buildSummary(range: DayRangeMs, now: number): Promise<DailyReviewSummary> {
     const query = dailyUsageQuery(range);
     const canonical = await readCompleteCanonicalUsage(this.#usage, query, now);
     const [usageSummary, toolBuckets, modelBuckets, sessions] = await Promise.all([
@@ -285,21 +282,23 @@ export class HostDailyReviewCoordinator {
     readonly trigger: 'cron' | 'manual';
     readonly replaceExisting: boolean;
   }): Promise<DailyReviewArchive> {
-    const summary = await this.#buildSummary(input.offsetDays, input.range);
-    const archiveId = dailyReviewArchiveId(summary.day, input.range);
-    const existing = await this.#store.getArchive(archiveId);
-    if (existing && !input.replaceExisting) return existing;
-    const config = await this.#store.readConfig();
-    const modelKey = input.modelKeyOverride.trim() || config.config.modelKey;
+    const now = this.#now();
+    const day = dayRange(now, input.offsetDays, input.range);
+    const archiveId = dailyReviewArchiveId(day, input.range);
+    const modelKeyOverride = input.modelKeyOverride.trim();
+    // Claim the archive before the first await. Two Clients asking for the
+    // same archive at once share one generation; a claim taken only after the
+    // reads let the second request slip past a first that had already
+    // published, and each Client then saw its own archive.
     const inFlight = this.#inFlight.get(archiveId);
     if (inFlight) {
-      if (inFlight.modelKey === modelKey && inFlight.trigger === input.trigger) {
+      if (inFlight.modelKeyOverride === modelKeyOverride && inFlight.trigger === input.trigger) {
         return inFlight.promise;
       }
       throw new DailyReviewRunConflictError(archiveId);
     }
-    const pending = this.#generateArchive(archiveId, summary, modelKey, input);
-    const entry = { modelKey, trigger: input.trigger, promise: pending };
+    const pending = this.#generateArchive(archiveId, day, now, modelKeyOverride, input);
+    const entry = { modelKeyOverride, trigger: input.trigger, promise: pending };
     this.#inFlight.set(archiveId, entry);
     try {
       return await pending;
@@ -310,13 +309,20 @@ export class HostDailyReviewCoordinator {
 
   async #generateArchive(
     archiveId: string,
-    summary: DailyReviewSummary,
-    modelKey: string,
+    day: DayRangeMs,
+    now: number,
+    modelKeyOverride: string,
     input: {
       readonly range: DailyReviewRange;
       readonly trigger: 'cron' | 'manual';
+      readonly replaceExisting: boolean;
     },
   ): Promise<DailyReviewArchive> {
+    const summary = await this.#buildSummary(day, now);
+    const existing = await this.#store.getArchive(archiveId);
+    if (existing && !input.replaceExisting) return existing;
+    const config = await this.#store.readConfig();
+    const modelKey = modelKeyOverride || config.config.modelKey;
     const base = {
       id: archiveId,
       day: summary.day,
@@ -455,6 +461,14 @@ export class HostDailyReviewCoordinator {
     if (this.#draining || isAbort(error) || isRetryableSchedulerError(error)) return;
     this.#requestDrain();
   }
+}
+
+function dayRange(nowMs: number, offsetDays: number, daySpan: number): DayRangeMs {
+  const offset = Math.trunc(offsetDays);
+  const span = Math.max(1, Math.min(30, Math.trunc(daySpan)));
+  const endDay = offset === 0 ? localDayBoundsForInstant(nowMs) : localDayBoundsAt(nowMs, offset);
+  const startDay = localDayBoundsAt(endDay.fromMs, -(span - 1));
+  return { fromMs: startDay.fromMs, toMs: endDay.toMs };
 }
 
 function scheduledTimeHasPassed(nowMs: number, executeTime: string): boolean {

@@ -153,6 +153,73 @@ test('Daily Review conflicts rather than coalescing different generation options
   );
 });
 
+test('Daily Review joins an in-flight generation even when its own reads land later', async () => {
+  let releaseLaggingRead: (() => void) | undefined;
+  const laggingRead = new Promise<void>((resolve) => {
+    releaseLaggingRead = resolve;
+  });
+  let listCalls = 0;
+  let modelCalls = 0;
+
+  await withCoordinator(
+    async ({ coordinator, usage }) => {
+      const now = Date.now();
+      await usage.telemetry.recordLlmCall({
+        id: 'daily-review-join-source',
+        callKind: 'main',
+        callId: 'daily-review-join-source',
+        connectionSlug: 'test',
+        providerId: 'test',
+        modelId: 'test',
+        inputTokens: 1,
+        outputTokens: 1,
+        cacheHitInputTokens: 0,
+        cacheMissInputTokens: 1,
+        cachedInputTokens: 0,
+        cacheWriteInputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 2,
+        costUsd: 0,
+        latencyMs: 1,
+        status: 'success',
+        startedAt: now,
+        date: new Date(now).toISOString().slice(0, 10),
+        ts: now,
+      });
+      const run = {
+        kind: 'run' as const,
+        range: 1 as const,
+        offsetDays: 0,
+        modelKeyOverride: 'provider::model-a',
+        replaceExisting: true,
+      };
+      // Two Clients ask for the same archive at once. Whichever finishes first
+      // releases the other's lagging read, so the laggard only reaches its own
+      // bookkeeping after the leader has already published.
+      const first = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+      const second = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+      void Promise.race([first, second]).then(() => releaseLaggingRead?.());
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      assert.equal(modelCalls, 1);
+      assert.deepEqual(secondResult, firstResult);
+    },
+    {
+      generate: async () => {
+        modelCalls += 1;
+        return { ok: false, errorClass: 'configuration' };
+      },
+    },
+    true,
+    {
+      list: async () => {
+        listCalls += 1;
+        if (listCalls === 2) await laggingRead;
+        return [];
+      },
+    },
+  );
+});
+
 test('Daily Review does not coalesce cron and manual archive provenance', async () => {
   let releaseModel: (() => void) | undefined;
   let notifyModelStarted: (() => void) | undefined;
@@ -275,6 +342,9 @@ async function withCoordinator(
     generate: async () => ({ ok: false, errorClass: 'configuration' }),
   },
   recoverBeforeRun = true,
+  sessions: ConstructorParameters<typeof HostDailyReviewCoordinator>[0]['sessions'] = {
+    list: async () => [],
+  },
 ): Promise<void> {
   const base = await mkdtemp(join(tmpdir(), 'maka-daily-review-coordinator-'));
   const root = join(base, 'interactive');
@@ -291,7 +361,7 @@ async function withCoordinator(
   const coordinator = new HostDailyReviewCoordinator({
     store,
     usage,
-    sessions: { list: async () => [] },
+    sessions,
     model,
     acquireResidency: () => ({ release: () => undefined }),
     requestDrain: () => {
