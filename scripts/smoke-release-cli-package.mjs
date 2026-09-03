@@ -36,7 +36,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
 import { findReleaseTarball } from './release-cli-eval-support.mjs';
@@ -264,8 +264,8 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     const addon = require(nativePath);
     await smokeWindowsTaskScheduler(
       windowsLifecycle.createWindowsRuntimeHostLifecycleProvider,
+      peerArtifact.resolveRuntimeHostNativePath,
       cliEntrypoint,
-      nativePath,
       join(root, 'windows task & % 生命周期'),
     );
     const peerId = await addon.ensurePeerIdentity(hostKeyPath);
@@ -414,7 +414,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   }
 }
 
-async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePath, root) {
+async function smokeWindowsTaskScheduler(createProvider, resolveNativePath, cliEntrypoint, root) {
   if (process.platform !== 'win32') return;
   mkdirSync(root, { recursive: true });
   const rootId = createHash('sha256').update(root).digest('hex');
@@ -427,7 +427,7 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePa
     recursive: true,
   });
   const managedCliEntrypoint = join(managedPackageRoot, 'dist', basename(cliEntrypoint));
-  const managedNativePath = join(managedPackageRoot, relative(controllerPackageRoot, nativePath));
+  const managedNativePath = await resolveNativePath(managedCliEntrypoint);
   const scriptPath = join(
     dirname(managedCliEntrypoint),
     'runtime-host-windows-supervisor-smoke.cjs',
