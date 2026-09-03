@@ -1509,8 +1509,10 @@ describe('host-managed agent graph coordinator', () => {
             isArchived: false,
           }) as never,
       },
-      runStore: { listSessionRuns: async () => runs },
-      runtimeEventStore: { readImmutableRuntimeEvents: async () => runtimeEvents },
+      runtimeEventStore: {
+        listSessionInvocations: async () => runs,
+        readImmutableRuntimeEvents: async () => runtimeEvents,
+      },
       controlStore: {
         listAgentGraphOperatorProvisions: async () => provisions,
         listAgentGraphScheduleUpdates: async () => scheduleUpdates,

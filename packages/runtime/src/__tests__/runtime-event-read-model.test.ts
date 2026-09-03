@@ -1574,14 +1574,14 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.strictEqual(out.diagnostics.every(isHardRuntimeEventReadModelDiagnostic), true);
   });
 
-  test('failed terminal RuntimeEvent maps to failed turn state when run header carries failure class', () => {
+  test('failed terminal RuntimeEvent maps to failed turn state with the class it states', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
         ev({
           id: 'evt-failed',
           ts: ts + 9,
           status: 'failed',
-          actions: { endInvocation: true },
+          actions: { endInvocation: true, stateDelta: { failureClass: 'tool_failed' } },
         }),
       ],
       {
@@ -1707,7 +1707,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
-  test('aborted terminal RuntimeEvent keeps an explicit diagnostic when abort source is unavailable', () => {
+  // The omission is `classifyRuntimeEventTerminalFact`'s to report. Repeating it
+  // here would turn a transcript row that reads fine into an unreadable Session.
+  test('aborted terminal RuntimeEvent that states no source still projects its turn state', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
         ev({
@@ -1727,10 +1729,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       status: 'aborted',
       abortedAt: ts + 9,
     });
-    assert.deepStrictEqual(
-      out.diagnostics.map((diag) => diag.code),
-      ['incomplete_event'],
-    );
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('projects tool_call stepId from refs so the UI timeline keeps step pairing', () => {
@@ -1952,8 +1951,9 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
     event: { author: 'user', refs: { toolCallId: 'coverage-form-tool' } },
   },
   transferToAgent: { action: 'agent-b' },
-  // The terminal fact is one of the actions that does own a row.
-  endInvocation: { action: true },
+  // The terminal fact is one of the actions that does own a row, and the event
+  // states the outcome it ends on.
+  endInvocation: { action: true, event: { status: 'completed' } },
   tokenUsage: { action: { input: 10, output: 5 } },
   toolDispatch: {
     action: {

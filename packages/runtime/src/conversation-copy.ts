@@ -338,9 +338,6 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
   const runs = await Promise.all(
     selectedRunEvents.map(async ({ run, events }) => {
       const operationalEvents = await input.runStore.readEvents(run.sessionId, run.runId);
-      if (events.length === 0) {
-        throw new Error(`Cannot copy AgentRun ${run.runId} without RuntimeEvent facts`);
-      }
       const terminal = classifyTerminalRuntimeLedger(run, events);
       if (run.terminalEvent && terminal.kind !== 'fact') {
         throw new Error(`Cannot copy terminal AgentRun ${run.runId} without one terminal fact`);

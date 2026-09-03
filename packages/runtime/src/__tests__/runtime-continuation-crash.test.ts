@@ -46,7 +46,6 @@ const CRASH_CHILD_READY_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_
 const CRASH_HARNESS_TIMEOUT_MS = process.platform === 'win32' ? 180_000 : 60_000;
 const FAILPOINTS: readonly RuntimeContinuationFailpoint[] = [
   'after_continuation_claim_committed',
-  'after_run_created',
   'after_continuation_start_committed',
   'after_terminal_event_committed',
 ];
@@ -97,10 +96,10 @@ if (process.env[CRASH_CHILD_ENV] === '1') {
             sourceRunId: 'source-run',
           });
           assert.equal(repeatedPlan.disposition, 'park');
+          // A crash after the terminal event is not an unfinished claim: the
+          // event is the continuation's ending, so the boundary already has one.
           assert.deepEqual(repeatedPlan.rejectionReasons, [
-            failpoint === 'after_continuation_claim_committed' ||
-            failpoint === 'after_run_created' ||
-            failpoint === 'after_terminal_event_committed'
+            failpoint === 'after_continuation_claim_committed'
               ? 'continuation_claim_repair_required'
               : failpoint === 'after_continuation_start_committed'
                 ? 'continuation_started_indeterminate'
@@ -343,16 +342,16 @@ async function readInvocation(
 /**
  * What a crash at each boundary left durable.
  *
- * A continuation's opening fact rides its continuation-start event, so the two
- * boundaries before that commit leave the target invocation unopened. There is
- * no separate run record left over to disagree with the ledger.
+ * A continuation's opening fact rides its continuation-start event, so a crash
+ * before that commit leaves the target invocation unopened. There is no separate
+ * run record left over to disagree with the ledger.
  */
 function assertPrefix(
   failpoint: RuntimeContinuationFailpoint,
   invocation: RuntimeInvocationRecord | undefined,
   events: readonly RuntimeEvent[],
 ): void {
-  if (failpoint === 'after_continuation_claim_committed' || failpoint === 'after_run_created') {
+  if (failpoint === 'after_continuation_claim_committed') {
     assert.equal(invocation, undefined);
     assert.deepEqual(events, []);
     return;

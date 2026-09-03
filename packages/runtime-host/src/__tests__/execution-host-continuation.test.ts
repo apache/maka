@@ -119,38 +119,6 @@ test('two Clients idempotently start one Host-owned safe-boundary continuation',
   });
 });
 
-test('startup repairs a continuation Run created before its durable start', async () => {
-  await withExecutionRoot(async (fixture) => {
-    const crash = await fixture.seedSafeBoundaryContinuationCrash('after_run_created');
-    const host = await fixture.startHost();
-    const client = await connectClient(fixture.root);
-    try {
-      const repaired = await client.request('turn.query', {
-        sessionId: fixture.sessionId,
-        turnId: crash.targetTurnId,
-      });
-      assert.equal(repaired.runId, crash.targetRunId);
-      assert.equal(repaired.status, 'failed');
-      assert.equal(repaired.failureClass, 'continuation_abandoned_before_provider_dispatch');
-      assert.deepEqual(
-        await client.request('turn.resume.query', {
-          sessionId: fixture.sessionId,
-          sourceRunId: crash.sourceRunId,
-          expectedRuntimeEventHighWater: crash.sourceRuntimeEventHighWater,
-        }),
-        {
-          sessionId: fixture.sessionId,
-          disposition: 'parked',
-          reason: 'continuation_already_exists',
-        },
-      );
-    } finally {
-      await client.close();
-      await fixture.stopHost(host);
-    }
-  });
-});
-
 test('startup repairs a continuation claim committed before its target Run', async () => {
   await withExecutionRoot(async (fixture) => {
     const crash = await fixture.seedSafeBoundaryContinuationCrash(

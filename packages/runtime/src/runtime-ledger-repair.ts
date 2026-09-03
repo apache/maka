@@ -223,6 +223,13 @@ function transcriptOutcome(
   openedAt: number,
 ): RuntimeEventBackfillOutcome {
   const ts = Math.max(openedAt, ...turnMessages.map((message) => message.ts));
+  // A transcript that never stated how a turn ended does not get to claim it
+  // completed. The terminal event is written once and cannot be corrected later,
+  // so an inferred status is recorded as the failure it actually is — which is
+  // also the reason an adapter emits a cutoff of its own.
+  if (turn.statusSource !== 'recorded') {
+    return { status: 'failed', ts, failureClass: 'missing_terminal_event' };
+  }
   const status = transcriptOutcomeStatus(turn.status);
   return {
     status,

@@ -183,7 +183,6 @@ export interface AgentRunSessionStore {
 
 export type RuntimeContinuationFailpoint =
   | 'after_continuation_claim_committed'
-  | 'after_run_created'
   | 'after_continuation_start_committed'
   | 'after_terminal_event_committed';
 
@@ -778,7 +777,6 @@ export class AgentRun {
 
     this.continuationActive = true;
     await this.openInvocation(continuation);
-    await this.input.continuationFailpoint?.('after_run_created');
     const startedAt = this.input.now();
     this.lastTs = startedAt;
     if (!this.input.commitContinuationStart) {

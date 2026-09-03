@@ -1141,154 +1141,19 @@ test('conversation copy rejects continuation authority selected through the chil
   );
 });
 
-test('conversation copy rejects a retained AgentRun without RuntimeEvent facts', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-missing-runtime-copy-'));
-  try {
-    const runStore = createSqliteAgentRunStore(root);
-    const runtimeEventStore = createWorkspaceRuntimeStore(root);
-    const rootRun = runFacts({
-      runId: 'run-root',
-      invocationId: 'invocation-root',
-      turnId: 'turn-root',
-      cwd: root,
-    });
-    const childRun = runFacts({
-      runId: 'run-child',
-      invocationId: 'invocation-child',
-      turnId: 'turn-child',
-      parentRunId: 'run-root',
-      agentId: 'researcher',
-      agentName: 'Researcher',
-      cwd: root,
-    });
-    await seedRun(runtimeEventStore, rootRun);
-    await seedRun(runtimeEventStore, childRun);
-    for (const event of [
-      runtimeEvent({
-        id: 'event-root-user',
-        invocationId: 'invocation-root',
-        runId: 'run-root',
-        turnId: 'turn-root',
-        role: 'user',
-        author: 'user',
-        content: { kind: 'text', text: 'delegate' },
-      }),
-      runtimeEvent({
-        id: 'event-root-terminal',
-        invocationId: 'invocation-root',
-        runId: 'run-root',
-        turnId: 'turn-root',
-        ts: 2,
-        status: 'completed',
-      }),
-    ]) {
-      await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
-    }
-    const source = await new RuntimeReadModel({
-      runtimeEventStore,
-    }).getSessionView('session-source');
-    let sequence = 0;
-
-    await assert.rejects(
-      async () =>
-        cloneConversationRuntimeLedger({
-          plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
-          copiedMessages: source.messages,
-          referenceMap: {
-            mode: 'exact',
-            linkedChildren: { mode: 'reject' },
-            sourceSessionId: 'session-source',
-            targetSessionId: 'session-target',
-            artifactIds: new Map(),
-            relativePaths: new Map(),
-          },
-          runStore,
-          runtimeEventStore,
-          newId: () => `target-${++sequence}`,
-        }),
-      /Cannot copy AgentRun run-child without RuntimeEvent facts/,
-    );
-    assert.deepEqual(await runtimeEventStore.listSessionInvocations('session-target'), []);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test('conversation copy can use RuntimeEvents backfilled by the read model', async () => {
-  const run = agentRunHeader({
-    runId: 'run-backfilled',
-    invocationId: 'invocation-backfilled',
-    turnId: 'turn-backfilled',
-    status: 'completed',
-    updatedAt: 3,
-    completedAt: 3,
-  });
-  const legacyMessages: StoredMessage[] = [
-    {
-      type: 'user',
-      id: 'legacy-user',
-      turnId: run.turnId,
-      ts: 1,
-      text: 'hello',
-    },
-    {
-      type: 'assistant',
-      id: 'legacy-assistant',
-      turnId: run.turnId,
-      ts: 2,
-      text: 'world',
-      modelId: 'fake-model',
-    },
-    {
-      type: 'turn_state',
-      id: 'legacy-state',
-      turnId: run.turnId,
-      ts: 3,
-      status: 'completed',
-      partialOutputRetained: false,
-    },
-  ];
-  const runStore = {
-    listSessionRuns: async () => [run],
-    readEvents: async () => [],
-  } as Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
-  const runtimeEventStore = {
-    readRuntimeEvents: async () => [],
-    readSessionRuntimeEventEntries: async () => [],
-  } as Pick<RuntimeEventStore, 'readRuntimeEvents'>;
-  const source = await new RuntimeReadModel({
-    runStore: runStore as AgentRunStore,
-    runtimeEventStore: runtimeEventStore as RuntimeEventStore,
-    projectionCache: { readMessages: async () => legacyMessages },
-  }).getSessionView(run.sessionId);
-
-  const plan = await prepareConversationRuntimeLedgerCopy({
-    sourceSessionId: run.sessionId,
-    sourceEvents: source.events,
-    copiedMessages: source.messages,
-    runStore,
-    runtimeEventStore,
-  });
-
-  assert.deepEqual(
-    plan.runs[0]?.runtimeEvents.map((event) => event.content?.kind ?? event.status),
-    ['text', 'text', 'completed'],
-  );
-});
-
 test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-recovery-copy-'));
   const runStore = createSqliteAgentRunStore(root);
   const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   try {
     await runStore.ready?.();
-    await seedRun(runtimeEventStore, {
-      runId: 'run-source',
-      invocationId: 'invocation-source',
-      turnId: 'turn-1',
-      cwd: root,
-    });
     const sourceEvents: RuntimeEvent[] = [
+      invocationOpenedEvent({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
       runtimeEvent({
         id: 'event-user',
         role: 'user',
@@ -1488,13 +1353,13 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
   const runtimeEventStore = createSqliteRuntimeStore(join(root, 'runtime.sqlite'));
   try {
     await runStore.ready?.();
-    await seedRun(runtimeEventStore, {
-      runId: 'run-source',
-      invocationId: 'invocation-source',
-      turnId: 'turn-1',
-      cwd: root,
-    });
     const sourceEvents: RuntimeEvent[] = [
+      invocationOpenedEvent({
+        runId: 'run-source',
+        invocationId: 'invocation-source',
+        turnId: 'turn-1',
+        cwd: root,
+      }),
       runtimeEvent({
         id: 'event-user',
         role: 'user',
@@ -2154,6 +2019,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
       'event-target-4',
       'event-target-5',
       'event-target-6',
+      'event-target-7',
     ];
     let nextId = 0;
 
@@ -2200,6 +2066,7 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         'event-target-4',
         'event-target-5',
         'event-target-6',
+        'event-target-7',
       ],
     );
     assert.ok(
@@ -2210,31 +2077,34 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
           event.invocationId === 'run-target',
       ),
     );
-    assert.equal(targetEvents[0]?.refs?.artifactId, 'artifact-target');
+    // The opening fact is the run's first event, so the copied source events
+    // line up with it one place along.
+    const copiedEvents = targetEvents.slice(1);
+    assert.equal(copiedEvents[0]?.refs?.artifactId, 'artifact-target');
     assert.equal(
-      targetEvents[0]?.content?.kind === 'text' ? targetEvents[0].content.text : undefined,
+      copiedEvents[0]?.content?.kind === 'text' ? copiedEvents[0].content.text : undefined,
       targetAttachmentText,
     );
     assert.equal(
       copied.copiedMessages.find((message) => message.type === 'assistant')?.text,
       targetAttachmentText,
     );
-    assert.equal(targetEvents[1]?.refs?.sourceInvocationId, 'run-target');
+    assert.equal(copiedEvents[1]?.refs?.sourceInvocationId, 'run-target');
     assert.deepEqual(
-      targetEvents[1]?.content?.kind === 'function_call' ? targetEvents[1].content.args : undefined,
+      copiedEvents[1]?.content?.kind === 'function_call' ? copiedEvents[1].content.args : undefined,
       sourceEvents[1]?.content?.kind === 'function_call' ? sourceEvents[1].content.args : undefined,
     );
     assert.deepEqual(
-      targetEvents[2]?.content?.kind === 'function_response'
-        ? targetEvents[2].content.result
+      copiedEvents[2]?.content?.kind === 'function_response'
+        ? copiedEvents[2].content.result
         : undefined,
       sourceEvents[2]?.content?.kind === 'function_response'
         ? sourceEvents[2].content.result
         : undefined,
     );
     const typedResultValue =
-      targetEvents[4]?.content?.kind === 'function_response'
-        ? targetEvents[4].content.result
+      copiedEvents[4]?.content?.kind === 'function_response'
+        ? copiedEvents[4].content.result
         : undefined;
     const typedResult = decodeCanonicalToolResultContent(typedResultValue);
     assert.equal(typedResult.kind === 'subagent' ? typedResult.permissionMode : undefined, 'ask');
@@ -2246,13 +2116,13 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
     // build cannot emit: their rows are not carried into the target.
     assert.deepEqual(
       targetOperationalEvents.map((event) => event.type),
-      ['history_compact_checkpoint_recorded', 'run_completed'],
+      ['history_compact_checkpoint_recorded', 'model_stream_completed'],
     );
     // A copied RuntimeEvent still points somewhere new, though. Carrying the
     // source's trace identity into the target is the thing the copy exists to
     // prevent, whether or not the record naming that trace came along.
-    assert.notEqual(targetEvents[1]?.refs?.providerRequestTraceId, 'provider-trace-source');
-    assert.ok(targetEvents[1]?.refs?.providerRequestTraceId);
+    assert.notEqual(copiedEvents[1]?.refs?.providerRequestTraceId, 'provider-trace-source');
+    assert.ok(copiedEvents[1]?.refs?.providerRequestTraceId);
     assert.equal(targetEvents[1]?.refs?.traceEventId, undefined);
     assert.doesNotMatch(JSON.stringify(targetOperationalEvents), /OPAQUE_SOURCE_COMPACTION_STATE/);
     const projectedCheckpoint = await runStore.readEventProjection?.(
@@ -2591,7 +2461,8 @@ test('conversation copy drops a checkpoint from a superseded source policy inste
         targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
       )
     ).flat();
-    assert.equal(targetEvents.length, sourceEvents.length);
+    // The opening fact is one of the run's events, so the copy carries it too.
+    assert.equal(targetEvents.length, sourceEvents.length + 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -2624,6 +2495,7 @@ test('conversation copy rebuilds a resumed child checkpoint over its child run c
       invocationId: 'invocation-child-2',
       turnId: 'turn-child-2',
       parentRunId: 'run-root',
+      resumedFromRunId: 'run-child-1',
       agentId: 'researcher',
       agentName: 'Researcher',
       cwd: root,
@@ -3358,6 +3230,7 @@ interface SeededRun {
   turnId?: string;
   cwd?: string;
   parentRunId?: string;
+  resumedFromRunId?: string;
   agentId?: string;
   agentName?: string;
   openedAt?: number;
@@ -3407,6 +3280,7 @@ function invocationOpening(
 ): RuntimeEventInvocationOpenedContent {
   const lineage = {
     ...(run.parentRunId ? { parentRunId: run.parentRunId } : {}),
+    ...(run.resumedFromRunId ? { resumedFromRunId: run.resumedFromRunId } : {}),
     ...(run.agentId ? { agentId: run.agentId } : {}),
     ...(run.agentName ? { agentName: run.agentName } : {}),
   };
@@ -3435,41 +3309,31 @@ function invocationOpening(
 }
 
 /**
- * Open one invocation on the spine, and close it when the test says it ended.
+ * Open one invocation on the spine.
  *
- * The copy tests only need a run to exist and to name its turn, so everything
- * else is the same for all of them.
+ * Every test here writes the run's own events afterwards, ending included, so
+ * the seed states only that the run began and what it was routed to.
  */
 async function seedRun(
   runtimeEventStore: Pick<RuntimeEventStore, 'appendRuntimeEvent'>,
   run: SeededRun = {},
 ): Promise<void> {
+  const event = invocationOpenedEvent(run);
+  await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
+}
+
+/** The opening event of one seeded run, for a test that writes its ledger in one batch. */
+function invocationOpenedEvent(run: SeededRun = {}): RuntimeEvent {
   const identity = {
     sessionId: run.sessionId ?? 'session-source',
     invocationId: run.invocationId ?? 'invocation',
     runId: run.runId ?? 'run',
     turnId: run.turnId ?? 'turn',
   };
-  const openedAt = run.openedAt ?? 1;
-  await runtimeEventStore.appendRuntimeEvent(
-    identity.sessionId,
-    identity.runId,
-    buildInvocationOpenedEvent({
-      id: `${identity.runId}-invocation-opened`,
-      run: identity,
-      openedAt,
-      opening: invocationOpening(run),
-    }),
-  );
-  const outcome = run.outcome ?? 'completed';
-  if (outcome === 'open') return;
-  await runtimeEventStore.appendRuntimeEvent(identity.sessionId, identity.runId, {
-    id: `${identity.runId}-terminal`,
-    ...identity,
-    ts: run.closedAt ?? openedAt + 1,
-    partial: false,
-    role: 'system',
-    author: 'system',
-    status: outcome,
+  return buildInvocationOpenedEvent({
+    id: `${identity.runId}-invocation-opened`,
+    run: identity,
+    openedAt: run.openedAt ?? 1,
+    opening: invocationOpening(run),
   });
 }

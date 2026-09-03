@@ -82,9 +82,7 @@ export interface InspectAgentRunOptions {
 export type AgentRunInspectReader = Pick<AgentRunStore, 'readEvents'>;
 
 export type RuntimeEventInspectReader = Pick<RuntimeEventStore, 'readRuntimeEvents'> &
-  Required<Pick<RuntimeEventStore, 'listSessionInvocations'>> & {
-    readInvocation?(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
-  };
+  Required<Pick<RuntimeEventStore, 'listSessionInvocations'>>;
 
 /**
  * One run, read from both ledgers it actually has: the RuntimeEvent spine that
@@ -188,13 +186,13 @@ export async function inspectSessionRunReadModels(
   return models;
 }
 
+// A run is not its invocation: a continuation is a new run on the invocation it
+// resumes. This reader is addressed by run, so it looks the invocation up by the
+// id it was actually given.
 async function readInvocation(
   runtimeEventStore: RuntimeEventInspectReader,
   options: InspectAgentRunOptions,
 ): Promise<RuntimeInvocationRecord> {
-  if (runtimeEventStore.readInvocation) {
-    return runtimeEventStore.readInvocation(options.sessionId, options.runId);
-  }
   const found = (await runtimeEventStore.listSessionInvocations(options.sessionId)).find(
     (invocation) => invocation.runId === options.runId,
   );

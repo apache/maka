@@ -86,7 +86,9 @@ describe('versioned execution inspect documents', () => {
           eventId: 'call',
         },
       ]);
-      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 1);
+      // The opening fact is the run's first runtime event, so the call and the
+      // terminal event that follow it sit at sequences 1 and 2.
+      assert.equal(document.sources.runtimeCoverage?.highWater.sequence, 2);
       assert.equal(
         document.diagnostics.some((item) => item.code === 'tool_response_missing'),
         true,

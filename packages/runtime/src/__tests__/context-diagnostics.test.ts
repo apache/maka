@@ -24,9 +24,12 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
+import type { RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
+import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { readLatestContextSnapshot } from '../latest-context-snapshot.js';
+import { seedInvocation } from './invocation-fixture.js';
 
 test('rejects v2 snapshots that the canonical writer cannot produce', () => {
   const base = {
@@ -73,6 +76,7 @@ test('rejects v2 snapshots that the canonical writer cannot produce', () => {
 test('serves the sealed snapshot without reading a single run', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -101,6 +105,7 @@ test('serves the sealed snapshot without reading a single run', async () => {
 test('does not trust a pre-observation projection over its canonical attempt', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     const oldProjection = latestContext('attempt-1', 10);
     oldProjection.snapshot.schemaVersion = 1;
@@ -136,6 +141,7 @@ test('does not trust a pre-observation projection over its canonical attempt', a
 test('upgrades exact-matched mixed-era composition into the current projection', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     const oldProjection = latestContext('attempt-1', 10);
     oldProjection.snapshot.schemaVersion = 1;
@@ -185,6 +191,7 @@ test('upgrades exact-matched mixed-era composition into the current projection',
 test('a failed call does not replace the last good snapshot', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -221,6 +228,10 @@ test('a failed call does not replace the last good snapshot', async () => {
 test("a subagent's run never becomes the session's context", async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-parent');
+    await openRun(root, 'session-1', 'run-child', {
+      lineage: { parentRunId: 'run-parent', agentId: 'reviewer' },
+    });
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -256,6 +267,7 @@ test('rebuilds a canonical observation, then repairs it so the next read scans n
   // two reads.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -559,6 +571,7 @@ test('warm and cold agree on which of two requests that finished together is the
   // request the panel is describing.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     // Appended greater-id first, so a rule that simply kept the last write
     // would answer 'model-a' here and disagree with the scan below.
@@ -660,6 +673,7 @@ test('a request that finished earlier cannot move the answer backwards', async (
   // completion, or a late arrival would permanently rewind the panel.
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -696,6 +710,7 @@ test('a damaged projection is repaired, not preserved forever', async () => {
   // refresh rescanned the whole session (#2323).
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -748,6 +763,7 @@ test('a damaged projection is repaired, not preserved forever', async () => {
 test('repairs malformed projection bytes from the canonical ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -804,6 +820,7 @@ test('repairs malformed projection bytes from the canonical ledger', async () =>
 test('does not persist a cold answer after canonical authority advances', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const store = createSqliteAgentRunStore(root);
     await store.appendEvent(
       'session-1',
@@ -863,6 +880,7 @@ test('does not persist a cold answer after canonical authority advances', async 
 test('rebuilds a nested-malformed v2 projection from the canonical ledger', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -925,6 +943,7 @@ test('rebuilds a nested-malformed v2 projection from the canonical ledger', asyn
 test('an old readable-order projection is upgraded after one cold rebuild', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-context-diagnostics-'));
   try {
+    await openRun(root, 'session-1', 'run-1');
     const writer = createSqliteAgentRunStore(root);
     await writer.appendEvent(
       'session-1',
@@ -970,6 +989,32 @@ test('an old readable-order projection is upgraded after one cold rebuild', asyn
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * Open the invocation these ledger writes belong to.
+ *
+ * The operational ledger anchors every run on its opening fact, so a test that
+ * writes rows for a run has to say that the run began — and the opening is also
+ * where a run says it belongs to a subagent rather than to the session.
+ */
+async function openRun(
+  root: string,
+  sessionId: string,
+  runId: string,
+  opening?: Partial<RuntimeEventInvocationOpenedContent>,
+): Promise<void> {
+  const runtimeStore = createWorkspaceRuntimeStore(root);
+  try {
+    await seedInvocation(runtimeStore, {
+      sessionId,
+      runId,
+      turnId: `turn-${runId}`,
+      ...(opening ? { opening } : {}),
+    });
+  } finally {
+    runtimeStore.close();
+  }
+}
 
 function countingStore(
   reader: ReturnType<typeof createSqliteAgentRunStore>,

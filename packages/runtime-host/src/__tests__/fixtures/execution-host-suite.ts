@@ -287,10 +287,7 @@ export class ExecutionFixture {
   }
 
   async seedSafeBoundaryContinuationCrash(
-    failpoint:
-      | 'after_continuation_claim_committed'
-      | 'after_run_created'
-      | 'after_continuation_start_committed',
+    failpoint: 'after_continuation_claim_committed' | 'after_continuation_start_committed',
   ): Promise<{
     sourceRunId: string;
     sourceRuntimeEventHighWater: number;

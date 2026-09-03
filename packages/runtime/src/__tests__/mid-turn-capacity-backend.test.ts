@@ -1770,11 +1770,11 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal(anchor?.outputTokens, 10);
   });
 
-  test('an anchor is discarded unless a run header proves it came from this model', async () => {
+  test('an anchor is discarded unless its invocation proves it came from this model', async () => {
     // Input tokens are a count in one model's tokenizer; nothing converts them.
-    // The anchor sits ABOVE the declared window, so it is the header check
-    // alone that decides: a matching header folds at step 0, while a header
-    // naming another model and no header at all leave the request alone.
+    // The anchor sits ABOVE the declared window, so it is the opening's route
+    // alone that decides: a matching route folds at step 0, while a route
+    // naming another model and no invocation at all leave the request alone.
     const anchor = priorUsageEvent({ inputTokens: 30_000, outputTokens: 10 });
     const otherModel = priorRunInvocation();
     for (const [priorInvocations, folds] of [

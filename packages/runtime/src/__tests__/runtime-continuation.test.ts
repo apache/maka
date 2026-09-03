@@ -184,23 +184,23 @@ test('RuntimeContinuationPlanner derives terminal repair from durable run and ev
   assert.deepEqual(plan.rejectionReasons, ['terminal_repair_failed']);
 });
 
-test('RuntimeContinuationPlanner parks when the terminal run header disagrees with the ledger fact', async () => {
+test('RuntimeContinuationPlanner parks when the source ledger does not end on its terminal fact', async () => {
   const planner = new RuntimeContinuationPlanner({
     readSourceInvocation: async () => runInvocation('run-1', { outcome: 'completed' }),
     readImmutableRuntimePrefix: async () =>
       immutablePrefix([
-        event({
-          id: 'source-user',
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'continue' },
-        }),
         event({
           id: 'source-terminal',
           role: 'system',
           author: 'system',
           status: 'failed',
           actions: { endInvocation: true },
+        }),
+        event({
+          id: 'source-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'continue' },
         }),
       ]),
     newId: () => 'fresh-id',
