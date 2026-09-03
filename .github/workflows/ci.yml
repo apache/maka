@@ -294,7 +294,7 @@ jobs:
       - id: forward-roll-baseline
         name: Resolve the published forward-roll baseline
         if: steps.plan.outputs.state_root_compat == 'true'
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT" HEAD
 
       - name: Download the forward-roll baseline
         if: steps.plan.outputs.state_root_compat == 'true'

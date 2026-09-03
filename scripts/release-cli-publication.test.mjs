@@ -26,6 +26,7 @@ import { join, resolve } from 'node:path';
 import test from 'node:test';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
 import {
+  assertCommitIsAncestor,
   assertRegistryNightlyPredecessor,
   fetchRegistryRelease,
   parseCliNightlyVersion,
@@ -332,6 +333,64 @@ test('a newer Nightly invalidates previously qualified predecessor evidence', as
   );
 });
 
+test('fences the predecessor commit to an ancestor of the change under test (#4447)', async () => {
+  const ancestorCommit = '1111111111111111111111111111111111111111';
+  const nonAncestorCommit = '2222222222222222222222222222222222222222';
+  const fixture = {
+    ...createCandidate('0.2.0-dev.42.20260829', '0.2.0'),
+    gitHead: ancestorCommit,
+  };
+
+  const execStub = (cmd, args) => {
+    assert.equal(cmd, 'git');
+    assert.equal(args[0], 'merge-base');
+    assert.equal(args[1], '--is-ancestor');
+    if (args[2] === ancestorCommit) return;
+    const err = new Error('not an ancestor');
+    err.status = 1;
+    throw err;
+  };
+
+  // 1. Success when gitHead is an ancestor
+  const predecessor = await resolveRegistryNightlyPredecessor({
+    fetchImpl: registryFetch({ fixture }),
+    fencedAncestorHead: 'HEAD',
+    exec: execStub,
+  });
+  assert.equal(predecessor.gitHead, ancestorCommit);
+
+  // 2. Fails loudly when gitHead is NOT an ancestor
+  const nonAncestorFixture = {
+    ...createCandidate('0.2.0-dev.42.20260829', '0.2.0'),
+    gitHead: nonAncestorCommit,
+  };
+  await assert.rejects(
+    resolveRegistryNightlyPredecessor({
+      fetchImpl: registryFetch({ fixture: nonAncestorFixture }),
+      fencedAncestorHead: 'HEAD',
+      exec: execStub,
+    }),
+    /is not an ancestor of HEAD; forward-roll baseline must precede the change under test/,
+  );
+
+  // 3. Fails loudly when gitHead is missing from registry metadata and fence was requested
+  const missingGitHeadFixture = createCandidate('0.2.0-dev.42.20260829', '0.2.0');
+  await assert.rejects(
+    resolveRegistryNightlyPredecessor({
+      fetchImpl: registryFetch({ fixture: missingGitHeadFixture }),
+      fencedAncestorHead: 'HEAD',
+      exec: execStub,
+    }),
+    /is missing gitHead metadata required for ancestor fencing/,
+  );
+
+  // 4. Invalid commit SHA rejected
+  assert.throws(
+    () => assertCommitIsAncestor({ commit: 'not-a-sha', exec: execStub }),
+    /Invalid git commit SHA/,
+  );
+});
+
 test('signature audit must contain Maka provenance for the finalized version', () => {
   const fixture = createPreparedCandidate();
   const verified = {
@@ -616,6 +675,7 @@ function registryFetch({ fixture, bytes = fixture.bytes }) {
         name: 'maka-agent',
         version: fixture.version,
         dist: { tarball: tarballUrl, integrity, shasum },
+        ...(fixture.gitHead ? { gitHead: fixture.gitHead } : {}),
       });
     }
     if (url === 'https://registry.npmjs.org/maka-agent') {

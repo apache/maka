@@ -356,7 +356,7 @@ jobs:
       # is now this job's output.
       - name: Resolve the current npm Nightly as immutable evidence
         id: predecessor
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT" HEAD
       # Three runs of one script against one sandbox, not three runners. Two of
       # these transitions are between tarballs that were published and frozen,
       # so nothing in a pull request can change their outcome except the

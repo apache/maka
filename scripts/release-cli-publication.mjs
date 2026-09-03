@@ -17,8 +17,9 @@
  * under the License.
  */
 
+import { execFileSync } from 'node:child_process';
 import { appendFileSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
@@ -33,6 +34,7 @@ const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const REPOSITORY = 'apache/maka';
 const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
 const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -218,7 +220,33 @@ export async function fetchRegistryRelease({
   return { ...record, tarballPath, sha256 };
 }
 
-export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = {}) {
+export function assertCommitIsAncestor({
+  commit,
+  head = 'HEAD',
+  repoRoot = DEFAULT_REPO_ROOT,
+  exec = execFileSync,
+}) {
+  if (typeof commit !== 'string' || !/^[0-9a-f]{7,40}$/i.test(commit)) {
+    throw new Error(`Invalid git commit SHA for ancestor check: ${commit}`);
+  }
+  try {
+    exec('git', ['merge-base', '--is-ancestor', commit, head], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+  } catch {
+    throw new Error(
+      `Registry Nightly gitHead ${commit} is not an ancestor of ${head}; forward-roll baseline must precede the change under test (#4447)`,
+    );
+  }
+}
+
+export async function resolveRegistryNightlyPredecessor({
+  fetchImpl = fetch,
+  fencedAncestorHead,
+  repoRoot = DEFAULT_REPO_ROOT,
+  exec = execFileSync,
+} = {}) {
   const packageMetadata = await fetchJson(
     fetchImpl,
     `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`,
@@ -237,6 +265,16 @@ export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = 
     throw new Error('Registry Nightly identity does not match its dist-tag');
   }
 
+  const gitHead = versionMetadata.gitHead;
+  if (fencedAncestorHead !== undefined) {
+    if (!gitHead) {
+      throw new Error(
+        `Registry Nightly ${version} is missing gitHead metadata required for ancestor fencing (#4447)`,
+      );
+    }
+    assertCommitIsAncestor({ commit: gitHead, head: fencedAncestorHead, repoRoot, exec });
+  }
+
   const tarball = `${PACKAGE_NAME}-${version}.tgz`;
   const tarballUrl = parseRegistryTarballUrl(versionMetadata.dist?.tarball, tarball);
   const integrity = parseSha512Integrity(versionMetadata.dist?.integrity);
@@ -244,6 +282,7 @@ export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = 
     version,
     tarballUrl,
     integrity,
+    ...(gitHead ? { gitHead } : {}),
   };
 }
 
@@ -621,13 +660,14 @@ async function main() {
     });
     return;
   }
-  if (command === 'resolve-nightly-predecessor' && args.length === 1) {
-    const [output] = args;
-    const predecessor = await resolveRegistryNightlyPredecessor();
+  if (command === 'resolve-nightly-predecessor' && (args.length === 1 || args.length === 2)) {
+    const [output, fencedAncestorHead] = args;
+    const predecessor = await resolveRegistryNightlyPredecessor({ fencedAncestorHead });
     appendOutputs(output, {
       version: predecessor.version,
       tarball_url: predecessor.tarballUrl,
       integrity: predecessor.integrity,
+      ...(predecessor.gitHead ? { git_head: predecessor.gitHead } : {}),
     });
     return;
   }
