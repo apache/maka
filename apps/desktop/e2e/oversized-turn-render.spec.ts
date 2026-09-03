@@ -424,6 +424,7 @@ test('Focus between two visible transcript controls under pending growth keeps t
   await expect(groupHeader).toBeVisible();
   await groupHeader.click();
   await waitForPaintedFrames(page);
+  await waitForStableScrollGeometry(page);
 
   const pending = await root.evaluate((element) => {
     const list = element.querySelector('.maka-chat-message-list');
