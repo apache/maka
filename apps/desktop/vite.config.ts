@@ -24,6 +24,7 @@ import react from '@vitejs/plugin-react';
 import { dependencyPatchesCachePlugin } from './vite-dependency-patches.js';
 import { bundledNpmPackagesPlugin } from './vite-bundled-packages.js';
 import { rendererEntryContractPlugin } from './scripts/vite-renderer-entry-contract.js';
+import { workspacePackagesPlugin } from './vite-workspace-packages.js';
 
 /**
  * PR-ICONS-FULL-REPLACE-0 (WAWQAQ msg `60064e2d` 2026-06-24): point the
@@ -46,6 +47,7 @@ export default defineConfig({
   plugins: [
     react(),
     dependencyPatchesCachePlugin(REPO_ROOT),
+    workspacePackagesPlugin(REPO_ROOT),
     bundledNpmPackagesPlugin(),
     rendererEntryContractPlugin(resolve(import.meta.dirname, 'src/renderer')),
   ],
