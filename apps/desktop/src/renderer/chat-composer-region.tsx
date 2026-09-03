@@ -117,6 +117,7 @@ interface ChatComposerRegionProps
    * it from the rendered slice.
    */
   latestRequestUsageTokens?: number;
+  onOpenContextUsage(): void;
   directoryComposerProps: Pick<
     ComponentProps<typeof Composer>,
     'pendingDirectories' | 'onRemoveDirectory' | 'onPickDirectory'
@@ -189,6 +190,7 @@ export function ChatComposerRegion({
   stop,
   boundaryUnreadableNotice,
   latestRequestUsageTokens,
+  onOpenContextUsage,
   directoryComposerProps,
   directoryPickerEnabled,
   ...composerRest
@@ -211,6 +213,7 @@ export function ChatComposerRegion({
         usageTokens: latestRequestUsageTokens,
         declaredContextWindow: activeModelChoice?.declaredContextWindow,
         metadataContextWindow: activeModelChoice?.contextWindow,
+        onOpen: onOpenContextUsage,
       }
     : undefined;
   const previousNewTaskDraftKey = useRef(newTaskDraftKey);

@@ -2992,6 +2992,7 @@ function AppShellContent({
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
+                  onOpenContextUsage={() => workbar.commands.openTool('inspector', 'right')}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
                   hideUnavailableCurrentModel={sessionHealthNotice?.onClickTarget === 'model_picker'}

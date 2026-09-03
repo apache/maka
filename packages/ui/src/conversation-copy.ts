@@ -319,6 +319,7 @@ export interface ConversationCopy {
       contextUsageShare: (used: number, window: number) => string;
       contextUsageNoWindow: string;
       contextUsageUnavailable: string;
+      contextUsageOpen: string;
       stepLimit: string;
     };
   };
@@ -548,6 +549,7 @@ const CONVERSATION_COPY = {
           `${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} tokens`,
         contextUsageNoWindow: '该模型没有窗口大小可用：未声明，模型也未上报',
         contextUsageUnavailable: '供应商未报告用量',
+        contextUsageOpen: '打开用量追踪',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
     },
@@ -722,6 +724,7 @@ const CONVERSATION_COPY = {
           `${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens`,
         contextUsageNoWindow: 'No context window size is available: none declared, none reported',
         contextUsageUnavailable: 'The provider did not report usage',
+        contextUsageOpen: 'Open usage trace',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },
