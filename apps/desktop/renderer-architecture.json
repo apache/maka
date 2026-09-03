@@ -4241,12 +4241,11 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../features/usage": 2,
+          "../features/usage": 3,
           "./settings-error-copy": 1,
           "./settings-section": 1,
           "@maka/core/settings": 1,
-          "@maka/ui": 1,
-          "react": 1
+          "@maka/ui": 1
         }
       },
       "src/renderer/settings/use-action-guard.ts": {

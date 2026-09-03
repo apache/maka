@@ -82,6 +82,15 @@ shim, since `settings-error-copy` is not a copy catalog.
 
 ## Follow-up
 
+- Add a `SettingsSurface` integration test for the mount seam this PR moves.
+  `usage-settings-view.test.ts` mounts `UsageFeatureScope` + `UsageSettingsView`
+  directly and drives `fenceTarget()` / `targetKey` by hand; it does not load
+  `settings-surface.tsx`, so the surface's fence call sites
+  (`commitSelectedRuntimeHostProfile`, the generation-change handler) and the
+  `usageTargetKey` derivation are not exercised end-to-end. Those three lifecycle
+  obligations are exactly what a stale head had regressed with every test green, so
+  a surface-level test guarding them is the real coverage; it is deferred to keep
+  this extraction PR contained.
 - Add the editable pricing tab (#2015 / PR #4164) as a feature-internal tab,
   replacing the read-only pricing tab preserved here.
 - De-duplicate the controllers. `controller/action-guard.ts` and

@@ -17,62 +17,36 @@
  * under the License.
  */
 
-import { forwardRef, type ReactNode } from 'react';
 import { useUiLocale } from '@maka/ui';
 import type { UsageSettings } from '@maka/core/settings';
-import {
-  UsageFeatureScope,
-  UsageSettingsView,
-  type UsageScopeHandle,
-  type UsageServices,
-} from '../features/usage';
+import { UsageSettingsView } from '../features/usage';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { SettingsPage } from './settings-section';
-
-export type { UsageScopeHandle } from '../features/usage';
 
 /**
  * Legacy delegation seam for the Usage feature (issue #4425), split into the two
  * levels the settings surface mounts it at:
  *
- * - `UsageScopeMount` hosts the feature's persistent `UsageFeatureScope`.
- *   `settings-surface` mounts it *above* the loading/error gate, so the loaded
- *   snapshot survives a Skeleton/Banner state or a section change. The scope
- *   takes `targetKey` (`host:epoch`) as a prop and clears/invalidates internally
- *   when it changes, so a Host/generation change never remounts the surface.
+ * - `UsageScopeMount` is the feature's persistent `UsageFeatureScope`, re-exported
+ *   under the mount name. `settings-surface` mounts it *above* the loading/error
+ *   gate, so the loaded snapshot survives a Skeleton/Banner state or a section
+ *   change. The scope takes `targetKey` (`host:epoch`) as a prop and
+ *   clears/invalidates internally when it changes, so a Host/generation change
+ *   never remounts the surface. A plain re-export is enough — the scope's prop
+ *   contract is already the mount contract, so no wrapper is needed.
  * - `UsageSettingsPage` is the disposable view, mounted in the section content
  *   slot; it reads the snapshot from the scope above via context.
  *
- * Both bind locale-scoped copy + error description here, touch no `window.maka`,
- * and import no platform/feature-internal code, so this stays a thin closure
- * shim. It is a transitional seam, not the composition ownership #4425 targets:
- * the `UsageServices` are still assembled in `settings-surface`, not in
- * `composition/desktop-feature-services.tsx` + a `platform/desktop` adapter.
+ * The page binds only the locale-scoped error description (`describeError`) here;
+ * copy is imported directly from the validated locale catalog by the view. This
+ * shim touches no `window.maka` and imports no platform/feature-internal code, so
+ * it stays a thin closure shim. It is a transitional seam, not the composition
+ * ownership #4425 targets: the `UsageServices` are still assembled in
+ * `settings-surface`, not in `composition/desktop-feature-services.tsx` +
+ * a `platform/desktop` adapter.
  */
-export const UsageScopeMount = forwardRef<
-  UsageScopeHandle,
-  {
-    /** Selected Host generation (`host:epoch`); a change resets the scope's snapshot. */
-    targetKey: string;
-    services: UsageServices;
-    loadErrorTitle: string;
-    /** Localize a load failure (bound to the settings locale by the caller). */
-    describeError(error: unknown): string;
-    children?: ReactNode;
-  }
->(function UsageScopeMount(props, ref) {
-  return (
-    <UsageFeatureScope
-      ref={ref}
-      targetKey={props.targetKey}
-      services={props.services}
-      loadErrorTitle={props.loadErrorTitle}
-      describeError={props.describeError}
-    >
-      {props.children}
-    </UsageFeatureScope>
-  );
-});
+export { UsageFeatureScope as UsageScopeMount } from '../features/usage';
+export type { UsageScopeHandle } from '../features/usage';
 
 export function UsageSettingsPage(props: {
   settings: UsageSettings;

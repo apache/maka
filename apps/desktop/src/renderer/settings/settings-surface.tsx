@@ -395,8 +395,11 @@ function SettingsSurfaceContent(
     updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
       updateSettings({ usage: patch }).then((result) => result.settings.usage),
   };
-  const usageTargetKey = selectedRuntimeHost
-    ? `${selectedRuntimeHost.profileId}:${selectedRuntimeHost.hostId}:${selectedRuntimeHostEpoch ?? ''}`
+  // `selectedRuntimeHostKey` is the one authority for the `profileId:hostId`
+  // shape (`runtimeHostSettingsKey`); usage keys on it plus the epoch so a
+  // same-key reconnect (epoch bump) still changes the target.
+  const usageTargetKey = selectedRuntimeHostKey
+    ? `${selectedRuntimeHostKey}:${selectedRuntimeHostEpoch ?? ''}`
     : 'no-host';
   function commitSelectedRuntimeHostProfile(
     profileId: string,
