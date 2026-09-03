@@ -3549,6 +3549,17 @@ export const ArchivedTasks: Story = {
   render: () => (
     <SettingsStory section="archived-tasks" archivedTaskSessions={archivedTaskSessions} />
   ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const title = 'Single agent_spawn with local_read for runtime/src inspection';
+    const unarchive = await canvas.findByRole('button', { name: `取消归档「${title}」` });
+    const remove = await canvas.findByRole('button', { name: `彻底删除「${title}」` });
+    await expect(unarchive).toBeVisible();
+    await expect(remove).toBeVisible();
+    await expect(unarchive.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(remove.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    await expect(canvas.queryByRole('button', { name: `「${title}」的更多操作` })).toBeNull();
+  },
 };
 
 // Real path: 设置 → 导入任务 on a machine that has Codex installed.
