@@ -117,7 +117,7 @@ export const en: Copy = {
     p: 'Three paths, kept separate on purpose.',
     nightly: {
       title: 'Try Desktop Nightly',
-      body: 'Daily builds from main for developers and testers, published on GitHub Releases. Apple Silicon Macs now; Windows is an unsigned preview.',
+      body: 'Daily builds from main for developers and testers, published on GitHub Releases. macOS on Apple Silicon and Intel; Windows and Linux are unsigned previews.',
       note: 'NOT AN ASF RELEASE · MAY BE UNSTABLE',
     },
     source: {
@@ -188,7 +188,8 @@ export const en: Copy = {
       },
       nightly: {
         label: 'Desktop Nightly',
-        value: 'Daily from main, Apple Silicon Macs, Windows unsigned preview.',
+        value:
+          'Daily from main. macOS arm64 and x64; Windows x64 and Linux x64 and arm64 as unsigned previews.',
         note: 'NOT AN ASF RELEASE',
       },
       source: {
@@ -213,8 +214,8 @@ export const en: Copy = {
     nightly: {
       h2: 'Desktop Nightly',
       note: 'NOT AN ASF RELEASE',
-      p: 'Desktop Nightly is built daily from main for developers and testers and published as a GitHub prerelease. Choose the newest Maka Desktop Nightly; after installation the app updates itself on the Nightly channel. It is not an ASF release and is not intended for production use. It targets Apple Silicon Macs.',
-      windows: 'Windows is an unsigned preview, not a supported release tier.',
+      p: 'Desktop Nightly is built daily from main for developers and testers and published as a GitHub prerelease. Choose the newest Maka Desktop Nightly; after installation the app updates itself on the Nightly channel. It is not an ASF release and is not intended for production use. It ships for macOS on Apple Silicon and Intel, Windows x64, and Linux x64 and arm64.',
+      windows: 'The Windows and Linux builds are unsigned previews, not a supported release tier.',
     },
     source: {
       h2: 'Build from source',

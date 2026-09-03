@@ -64,7 +64,7 @@ Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记�
 
 **Apache Releases**：Maka 尚未发布过 Apache release。发布之后，带签名的源码包才是正式 release，其他渠道分发的包属于便利构建。候选契约、签名路径与验包步骤见[下载页面](https://maka.apache.org/zh-CN/downloads/)与 [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md)。
 
-**Desktop Nightly**：每天从 `main` 构建，面向开发者和测试者。目前支持 Apple Silicon Mac，Windows 是未签名预览。它不是 ASF release，不适合生产使用。安装包与平台状态见[下载页面](https://maka.apache.org/zh-CN/downloads/)。
+**Desktop Nightly**：每天从 `main` 构建，面向开发者和测试者，覆盖 macOS 的 Apple Silicon 与 Intel、Windows x64、Linux x64 与 arm64；Windows 和 Linux 构建是未签名预览。它不是 ASF release，不适合生产使用。安装包与平台状态见[下载页面](https://maka.apache.org/zh-CN/downloads/)。
 
 **从源码构建**：要从源码 checkout 直接构建并运行 Desktop、TUI 或 CLI，见下方的[从源码构建](#从源码构建)一节。
 
@@ -162,7 +162,7 @@ Experiment → Cells → Attempts → Results
        Runtime Host 执行 Maka subjects
 ```
 
-从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及六篇中英双语深度文章。
+从 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md) 开始阅读。它提供总体架构图、代码边界、按问题组织的阅读路径，以及 `docs/architecture/` 下深度文章的链接。
 
 ## 仓库结构
 
@@ -178,10 +178,14 @@ packages/eval/         Experiment cell、attempt、result 与 executor/subject a
 packages/computer-use/ Computer Use 后端选择、Host 生命周期和协议适配
 packages/cli/          TUI 和非交互 CLI
 packages/ui/           共享对话、Markdown、Artifact 与 UI primitives
+native/                Rust：Runtime Host 的 direct-peer addon 与 gitoxide helper
 website/               maka.apache.org 的 Astro 源码
 
 docs/                  架构、产品、安全、隐私和测试契约
 scripts/               Build hygiene、视觉检查、smoke 和 release helpers
+skills/                随仓库分发的 agent skill
+patches/               安装时应用到 npm 依赖的补丁
+experiments/           平台实验，目前是 Windows 沙箱 smoke 脚本
 ```
 
 ## 本地数据与恢复

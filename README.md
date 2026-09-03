@@ -64,7 +64,7 @@ The [website](https://maka.apache.org/en/) walks through one turn of the log and
 
 **Apache Releases**: Maka has not made an Apache release yet. When one exists, the signed source archive will be the official release; packages distributed elsewhere are convenience artifacts. See the [downloads page](https://maka.apache.org/en/downloads/) and [`.github/ASF_SOURCE_RELEASE.md`](./.github/ASF_SOURCE_RELEASE.md) for candidate criteria, signing procedures, and verification steps.
 
-**Desktop Nightly**: Built daily from `main` for developers and testers. Apple Silicon Macs now; Windows is an unsigned preview. It is not an ASF release and is not intended for production use. The [downloads page](https://maka.apache.org/en/downloads/) has the installers and the platform status.
+**Desktop Nightly**: Built daily from `main` for developers and testers, for macOS on Apple Silicon and Intel, Windows x64 and Linux x64 and arm64; the Windows and Linux builds are unsigned previews. It is not an ASF release and is not intended for production use. The [downloads page](https://maka.apache.org/en/downloads/) has the installers and the platform status.
 
 **Build from source**: To compile and run Desktop, the TUI, or the CLI directly from a source checkout, see the [Build from source](#build-from-source) section below.
 
@@ -163,7 +163,7 @@ Experiment → Cells → Attempts → Results
        Runtime Host executes Maka subjects
 ```
 
-Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, code boundaries, problem-oriented reading paths, and six bilingual deep dives.
+Start with [ARCHITECTURE.md](./ARCHITECTURE.md). It provides the system map, code boundaries, problem-oriented reading paths, and links to the deep dives under `docs/architecture/`.
 
 ## Repository layout
 
@@ -179,10 +179,14 @@ packages/eval/         Experiment cells, attempts, results, and executor/subject
 packages/computer-use/ Computer-use backend selection, host lifecycle, and protocol adapters
 packages/cli/          TUI and non-interactive CLI
 packages/ui/           Shared conversation, Markdown, Artifact, and UI primitives
+native/                Rust: the direct-peer addon for Runtime Host and the gitoxide helper
 website/               Astro source for maka.apache.org
 
 docs/                  Architecture, product, security, privacy, and test contracts
 scripts/               Build hygiene, visual checks, smoke tests, and release helpers
+skills/                Agent skills shipped with the repository
+patches/               Patches applied to npm dependencies at install
+experiments/           Platform experiments, currently the Windows sandbox smoke scripts
 ```
 
 ## Local data and recovery
