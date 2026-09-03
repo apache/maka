@@ -368,6 +368,7 @@ export function AgentGraphPanel(props: {
       className="maka-agent-graph-panel"
       aria-label={copy.title}
       data-collapsed={collapsed ? 'true' : 'false'}
+      data-error={error ? 'true' : 'false'}
     >
       <header className="maka-agent-graph-heading">
         <div className="maka-agent-graph-heading-copy">
