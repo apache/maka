@@ -16,10 +16,10 @@ Locations intentionally omit line numbers so unrelated edits do not invalidate t
 | Classification | Count |
 |---|---:|
 | windows-backend-gap | 27 |
-| portable-candidate | 18 |
+| portable-candidate | 19 |
 | platform-contract | 31 |
 
-Total Windows-excluded declarations: **76**
+Total Windows-excluded declarations: **77**
 
 ## Inventory
 
@@ -97,6 +97,7 @@ Total Windows-excluded declarations: **76**
 | portable-candidate | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` disabling proxy authentication commits policy before deleting its credential | `process.platform === 'win32' ? 'POSIX file handles are required to inject persistence failures' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` successor recovery removes credentials orphaned by an interrupted connection removal | `process.platform === 'win32' ? 'POSIX permissions are required to inject a persistence failure' : false` |
 | platform-contract | `packages/storage/src/__tests__/runtime-policy-stores.test.ts` fails closed on final symlinks, FIFOs, and oversized documents without changing bytes | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/settings-store-onboarding.test.ts` writes settings.json owner-only (0600) and leaves no temp file behind | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/stable-storage.test.ts` rejects a symlink instead of following it | `process.platform === 'win32' ? 'POSIX no-follow semantics are required' : false` |
 | platform-contract | `packages/storage/src/__tests__/usage-stores.test.ts` classifies a renamed or replaced live root as a draining persistence failure | `process.platform === 'win32' ? 'Windows does not permit renaming a directory with an open SQLite database' : false` |
 | platform-contract | `packages/storage/src/__tests__/workspace-identity.test.ts` an unmarked read-only workspace fails without leaving marker state | `process.platform === 'win32' ? 'POSIX permissions are required to create a read-only workspace fixture' : false` |

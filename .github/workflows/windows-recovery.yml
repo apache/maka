@@ -115,7 +115,7 @@ on:
       - 'packages/storage/src/artifact-store.ts'
       - 'packages/storage/src/artifact-writer-bootstrap-lock.ts'
       - 'packages/storage/src/artifact-writer-lock.ts'
-      - 'packages/storage/src/credential-store.ts'
+      - 'packages/storage/src/atomic-file-write.ts'
       - 'packages/storage/src/file-lifetime-owner.ts'
       - 'packages/storage/src/managed-dependency-environment.ts'
       - 'packages/storage/src/marker-file.ts'
