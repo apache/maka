@@ -6,7 +6,7 @@ Generated against `@astryxdesign/core@0.5.2` (194 component exports).
 
 Wiki bar: Design Conventions · API Use-the-System · Theming · Container Padding.
 
-**Totals:** 245 files — blocker 0, reimplementation 0, polish 1, aligned 244.
+**Totals:** 244 files — blocker 0, reimplementation 0, polish 1, aligned 243.
 
 ## Exclusions (explicit)
 
@@ -117,15 +117,14 @@ Wiki bar: Design Conventions · API Use-the-System · Theming · Container Paddi
 | `apps/desktop/src/renderer/settings/permission-center-page.tsx` | settings-page | Banner, Button, Collapsible, CollapsibleGroup, HStack, List, ListItem, MetadataList, MetadataListItem, StatusDot, Text, VStack | aligned — uses Astryx (Banner, Button, Collapsible, CollapsibleGroup, HStack, List, ListItem, MetadataList) | aligned |
 | `apps/desktop/src/renderer/settings/personalization-settings-section.tsx` | settings-module | SegmentedControl, SegmentedControlItem, TextArea, TextInput | aligned — uses Astryx (SegmentedControl, SegmentedControlItem, TextArea, TextInput) | aligned |
 | `apps/desktop/src/renderer/settings/projects-settings-page.tsx` | settings-page | Badge, Banner, Button, EmptyState, HStack, List, ListItem, MoreMenu, TextInput | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, List, ListItem, MoreMenu) | aligned |
-| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, Collapsible, FormLayout, HStack, MultiSelector, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, Collapsible, FormLayout, HStack, MultiSelector, Text, TextInput) | aligned |
+| `apps/desktop/src/renderer/settings/provider-add-form.tsx` | settings-module | Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack, Selector, Step, Stepper, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, CheckboxList, CheckboxListItem, Collapsible, EmptyState, FormLayout, HStack) | aligned |
 | `apps/desktop/src/renderer/settings/provider-add-model-dialog.tsx` | settings-module | Button, Dialog, DialogHeader, FormLayout, HStack, Layout, LayoutContent, LayoutFooter, NumberInput, TextInput | aligned — uses Astryx (Button, Dialog, DialogHeader, FormLayout, HStack, Layout, LayoutContent, LayoutFooter) | aligned |
 | `apps/desktop/src/renderer/settings/provider-brand-marks.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector, TextInput, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, List, ListItem, Section, Selector) | aligned |
-| `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Banner, Button, Divider, DropdownMenu, DropdownMenuCheckboxItem, Grid, HStack, Heading, Link, NumberInput, Selector, Text, TextInput, VStack | aligned — uses Astryx (Banner, Button, Divider, DropdownMenu, DropdownMenuCheckboxItem, Grid, HStack, Heading) | aligned |
+| `apps/desktop/src/renderer/settings/provider-catalog-page.tsx` | settings-page | Banner, Button, EmptyState, HStack, Heading, List, ListItem, TextInput, VStack | aligned — uses Astryx (Banner, Button, EmptyState, HStack, Heading, List, ListItem, TextInput) | aligned |
+| `apps/desktop/src/renderer/settings/provider-connection-detail.tsx` | settings-module | Badge, Banner, Button, DropdownMenu, DropdownMenuCheckboxItem, HStack, Link, NumberInput, Selector, Switch, Text, TextInput, Token, VStack | aligned — uses Astryx (Badge, Banner, Button, DropdownMenu, DropdownMenuCheckboxItem, HStack, Link, NumberInput) | aligned |
 | `apps/desktop/src/renderer/settings/provider-display.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
-| `apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx` | settings-module | MultiSelector | aligned — uses Astryx (MultiSelector) | aligned |
 | `apps/desktop/src/renderer/settings/provider-oauth-section.tsx` | settings-module | Banner, Button, HStack, Text, VStack | aligned — uses Astryx (Banner, Button, HStack, Text, VStack) | aligned |
-| `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem, Skeleton, StatusDot, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, EmptyState, HStack, Heading, List, ListItem) | aligned |
+| `apps/desktop/src/renderer/settings/providers-panel.tsx` | settings-module | Badge, Banner, Button, Divider, EmptyState, HStack, Heading, List, ListItem, Skeleton, StatusDot, Text, VStack | aligned — uses Astryx (Badge, Banner, Button, Divider, EmptyState, HStack, Heading, List) | aligned |
 | `apps/desktop/src/renderer/settings/request-customization-editor.tsx` | settings-module | Button, HStack, IconButton, Text, TextArea, TextInput, VStack | aligned — uses Astryx (Button, HStack, IconButton, Text, TextArea, TextInput, VStack) | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-interaction-boundary.tsx` | settings-module | none | aligned — no raw controls; no Astryx JSX usage | aligned |
 | `apps/desktop/src/renderer/settings/runtime-host-management-dialog.tsx` | settings-module | Badge, Banner, Button, Dialog, DialogHeader, IconButton, Layout, LayoutContent, LayoutFooter, MoreMenu, Selector, Spinner, Switch, Text, TextInput, Tooltip | aligned — uses Astryx (Badge, Banner, Button, Dialog, DialogHeader, IconButton, Layout, LayoutContent) | aligned |

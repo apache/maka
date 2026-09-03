@@ -94,7 +94,6 @@ apps/desktop/src/renderer/settings/provider-brand-marks.tsx
 apps/desktop/src/renderer/settings/provider-catalog-page.tsx
 apps/desktop/src/renderer/settings/provider-connection-detail.tsx
 apps/desktop/src/renderer/settings/provider-display.tsx
-apps/desktop/src/renderer/settings/provider-enabled-model-manager.tsx
 apps/desktop/src/renderer/settings/provider-oauth-section.tsx
 apps/desktop/src/renderer/settings/providers-panel.tsx
 apps/desktop/src/renderer/settings/request-customization-editor.tsx
