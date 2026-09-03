@@ -63,7 +63,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
           label: 'MCP',
           description: 'MCP tools connected by this Desktop client.',
           tools,
-          omitUnsupportedTools: true,
+          dynamic: true,
         },
       ],
     });

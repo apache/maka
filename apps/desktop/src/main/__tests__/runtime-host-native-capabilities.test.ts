@@ -540,7 +540,7 @@ test('chunks a dynamic capability group beyond the single-offer tool limit', asy
         label: 'MCP',
         description: 'MCP tools connected by this Desktop client.',
         tools: mcpTools,
-        omitUnsupportedTools: true,
+        dynamic: true,
       },
     ],
   });
@@ -596,7 +596,7 @@ test('omits trailing dynamic tools beyond the manifest tool budget and keeps fix
           label: 'MCP',
           description: 'MCP tools connected by this Desktop client.',
           tools: mcpTools,
-          omitUnsupportedTools: true,
+          dynamic: true,
         },
       ],
     },
@@ -641,7 +641,7 @@ test('omits trailing dynamic tools beyond the manifest byte budget', () => {
           label: 'MCP',
           description: 'MCP tools connected by this Desktop client.',
           tools: mcpTools,
-          omitUnsupportedTools: true,
+          dynamic: true,
         },
       ],
     },
@@ -665,6 +665,43 @@ test('omits trailing dynamic tools beyond the manifest byte budget', () => {
   assert.match(diagnostics[0] ?? '', /omitted [1-9]\d* MCP tool/u);
 });
 
+test('reports dynamic tools the decoder rejects instead of dropping them silently', () => {
+  const diagnostics: string[] = [];
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools connected by this Desktop client.',
+          dynamic: true,
+          tools: [
+            tool('good_tool', z.object({}), async () => 'ok'),
+            {
+              ...tool('bad_tool', z.object({}), async () => 'ok'),
+              description: 'x'.repeat(8_193),
+            },
+          ],
+        },
+      ],
+    },
+    { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+  );
+
+  assert.deepEqual(
+    provider.offers()[0]?.tools.map((descriptor) => descriptor.name),
+    ['good_tool'],
+  );
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0] ?? '', /omitted desktop_mcp tool bad_tool/u);
+  assert.match(diagnostics[0] ?? '', /Invalid description/u);
+});
+
 test('chunks and degrades a dynamic capability group deterministically', () => {
   const mcpTools = Array.from({ length: 70 }, (_, index) =>
     tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => 'ok'),
@@ -682,7 +719,7 @@ test('chunks and degrades a dynamic capability group deterministically', () => {
           label: 'MCP',
           description: 'MCP tools connected by this Desktop client.',
           tools: mcpTools,
-          omitUnsupportedTools: true,
+          dynamic: true,
         },
       ],
     });

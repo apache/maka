@@ -56,8 +56,13 @@ export interface DesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly MakaTool[];
-  /** Keep compatible tools when a dynamic provider declares a wider schema dialect. */
-  readonly omitUnsupportedTools?: boolean;
+  /**
+   * Marks a dynamically sourced group: tools the decoder rejects are omitted
+   * with a diagnostic, the group may be chunked past the single-offer tool
+   * limit, and its trailing tools are shed first under the manifest budget.
+   * Fixed groups never set this — their failures stay loud.
+   */
+  readonly dynamic?: boolean;
 }
 
 interface PreparedDesktopCapabilityTool {
@@ -70,7 +75,7 @@ interface PreparedDesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly PreparedDesktopCapabilityTool[];
-  readonly omitUnsupportedTools?: boolean;
+  readonly dynamic?: boolean;
 }
 
 type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool">;
@@ -150,7 +155,7 @@ export function createDesktopNativeCapabilityProvider(
     ),
   );
   const groups = fitDesktopCapabilityManifest(
-    prepareCapabilityGroups(capabilityGroups(input)),
+    prepareCapabilityGroups(capabilityGroups(input), providerOptions.onDiagnostic),
     serviceOffers,
     hostPathAccess,
     providerOptions.onDiagnostic,
@@ -481,6 +486,7 @@ function capabilityOffer(
 
 function prepareCapabilityGroups(
   groups: readonly DesktopCapabilityGroup[],
+  onDiagnostic?: (diagnostic: string) => void,
 ): PreparedDesktopCapabilityGroup[] {
   return groups.flatMap((group) => {
     const tools = group.tools.flatMap((tool): PreparedDesktopCapabilityTool[] => {
@@ -493,27 +499,31 @@ function prepareCapabilityGroups(
           ),
         );
       } catch (error) {
-        if (!group.omitUnsupportedTools) throw error;
+        if (!group.dynamic) throw error;
+        onDiagnostic?.(
+          `Desktop omitted ${group.offerId} tool ${tool.name}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         return [];
       }
       return [{ tool, descriptor }];
     });
-    if (group.omitUnsupportedTools && tools.length === 0) return [];
+    if (group.dynamic && tools.length === 0) return [];
     return chunkPreparedGroup({ ...group, tools });
   });
 }
 
 /**
  * Split a dynamic group beyond the single-offer tool limit into stable chunks.
- * Chunked offers keep the group's server identity, so published tool names,
- * Session Grant scopes, and Host admission never depend on how the group was
- * split.
+ * Chunked offers keep the group's server identity, so published tool names and
+ * Session Grant scopes do not depend on how the group was split. The grant key
+ * still carries the offer contract, so changing the published tool set
+ * re-prompts already-approved tools.
  */
 function chunkPreparedGroup(
   group: PreparedDesktopCapabilityGroup,
 ): PreparedDesktopCapabilityGroup[] {
   if (
-    !group.omitUnsupportedTools ||
+    !group.dynamic ||
     group.tools.length <= CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER
   ) {
     return [group];
@@ -558,7 +568,7 @@ function fitDesktopCapabilityManifest(
     let index = fitting.length - 1;
     while (
       index >= 0 &&
-      (!fitting[index]?.group.omitUnsupportedTools || fitting[index]?.tools.length === 0)
+      (!fitting[index]?.group.dynamic || fitting[index]?.tools.length === 0)
     ) {
       index -= 1;
     }
@@ -647,21 +657,10 @@ async function parseToolArguments(tool: MakaTool, args: unknown): Promise<unknow
   if (tool.parameters instanceof z.ZodType) {
     return tool.parameters.parseAsync(args);
   }
-  const parameters = tool.parameters as {
-    readonly validate?: (
-      value: unknown,
-    ) =>
-      | { readonly success: true; readonly value: unknown }
-      | { readonly success: false; readonly error: unknown }
-      | Promise<
-          | { readonly success: true; readonly value: unknown }
-          | { readonly success: false; readonly error: unknown }
-        >;
-  };
-  if (typeof parameters?.validate !== "function") return args;
-  const result = await parameters.validate(args);
-  if (result.success) return result.value;
-  throw result.error;
+  // The only non-Zod parameters are JSON-Schema declarations (MCP tools via
+  // jsonSchema()), which carry no client-side validator: validation is the
+  // producing server's responsibility.
+  return args;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
