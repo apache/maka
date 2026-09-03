@@ -352,7 +352,8 @@ function SessionListGroups(props: {
   }>;
 }) {
   const rail = useSessionRailData();
-  const copy = getConversationCopy(useUiLocale()).sessions;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).sessions;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -470,18 +471,27 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    const pinnedSessions = groupSessionsForHistory(
+      activeGroups.flatMap((group) => group.sessions.filter((session) => session.isFlagged)),
+      locale,
+    ).find((group) => group.id === 'pinned')?.sessions ?? [];
 
     function renderProjectGroup(
       group: (typeof props.groups)[number],
+      includePinned = false,
     ): ReactNode {
       const project = group.project;
+      const sessions = includePinned
+        ? group.sessions
+        : group.sessions.filter((session) => !session.isFlagged);
       return (
         <ProjectNavRow
           key={group.key}
           groupKey={group.key}
           label={group.label}
           project={project}
-          sessions={group.sessions}
+          sessions={sessions}
+          summarySessions={group.sessions}
           streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
@@ -497,7 +507,12 @@ function SessionListGroups(props: {
     return (
       <>
         {renameDialog}
-        {activeGroups.map(renderProjectGroup)}
+        {pinnedSessions.length > 0 && (
+          <SideNavSection title={copy.pinned} className="maka-session-group">
+            {pinnedSessions.map((session) => renderSessionRow(session))}
+          </SideNavSection>
+        )}
+        {activeGroups.map((group) => renderProjectGroup(group))}
         {archivedGroups.length > 0 && (
           <SideNavItem
             label={copy.archivedProjects}
@@ -509,7 +524,7 @@ function SessionListGroups(props: {
             {/* Always mount children: Astryx derives collapsible chrome from
                 !!children. Nulling on collapse removes the chevron and makes
                 the controlled isCollapsed prop a no-op. */}
-            {archivedGroups.map(renderProjectGroup)}
+            {archivedGroups.map((group) => renderProjectGroup(group, true))}
           </SideNavItem>
         )}
       </>
@@ -545,6 +560,7 @@ function ProjectNavRow(props: {
   label: string;
   project?: ProjectRecord;
   sessions: SessionSummary[];
+  summarySessions?: SessionSummary[];
   streamingSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
@@ -556,10 +572,10 @@ function ProjectNavRow(props: {
     () =>
       createProjectHoverCardSummary(
         props.project,
-        props.sessions,
+        props.summarySessions ?? props.sessions,
         props.streamingSessionIds,
       ),
-    [props.project, props.sessions, props.streamingSessionIds],
+    [props.project, props.sessions, props.streamingSessionIds, props.summarySessions],
   );
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.

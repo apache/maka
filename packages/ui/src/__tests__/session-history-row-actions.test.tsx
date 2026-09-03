@@ -303,6 +303,45 @@ test('renders collapsible project navigation and row actions as sibling controls
   assertNoNestedButtons(markup);
 });
 
+test('renders pinned tasks once above project groups', () => {
+  const pinnedSession: SessionSummary = {
+    ...session,
+    id: 'session-pinned',
+    name: 'Pinned task',
+    isFlagged: true,
+  };
+  const projectSession: SessionSummary = {
+    ...session,
+    id: 'session-project',
+    name: 'Project task',
+  };
+  const markup = renderToStaticMarkup(
+    <LocaleProvider locale="en">
+      <Rail
+        sessions={[pinnedSession, projectSession]}
+        groups={[
+          {
+            id: project.id,
+            label: project.name,
+            project,
+            sessions: [pinnedSession, projectSession],
+          },
+        ]}
+        groupVariant="project"
+      />
+    </LocaleProvider>,
+  );
+
+  const { document } = parseHTML(markup);
+  const projectRow = document.querySelector('.maka-project-row');
+  assert.ok(projectRow);
+  assert.match(markup, />Pinned</);
+  assert.ok(markup.indexOf('Pinned task') < markup.indexOf('Maka'));
+  assert.equal(markup.match(/Pinned task/g)?.length, 1);
+  assert.doesNotMatch(projectRow.textContent, /Pinned task/);
+  assert.match(projectRow.textContent, /Project task/);
+});
+
 test('keeps project running totals aligned with renderer-local task streaming', () => {
   const locallyStreaming = {
     ...session,

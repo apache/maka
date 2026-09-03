@@ -414,6 +414,7 @@ export const ProjectGroups: Story = {
       makeSession({
         id: 'proj-main',
         name: '主仓会话',
+        isFlagged: true,
         lastMessageAt: NOW - 4 * 60 * 1000,
       }),
       makeSession({
