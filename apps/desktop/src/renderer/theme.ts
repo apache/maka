@@ -151,8 +151,17 @@ export function applyTheme(pref: ThemePreference): () => void {
 function setDarkClass(isDark: boolean): void {
   const root = document.documentElement;
   root.classList.toggle(DARK_CLASS, isDark);
-  // Lets native form controls and scrollbars pick up the right base colors per
-  // the Vercel Web Interface Guidelines dark-mode rule.
+  // This is what picks the mode, not just what tells native form controls and
+  // scrollbars about it: every palette colour is a `light-dark()` pair that
+  // resolves against color-scheme (maka-tokens.css, DESIGN.md §8). It must stay
+  // in lockstep with the class — which also carries the mode to Astryx — and it
+  // must keep being set before the first paint (cached-theme-bootstrap.ts).
+  //
+  // Inside the app, Astryx's <Theme> re-declares color-scheme on its own
+  // wrapper from the class (astryx-theme-mode.ts), so the subtree turns over on
+  // that React commit rather than on this line. That is one repaint later and
+  // it is the whole switch, not half of it — which is the point: the palette
+  // and Astryx's own tokens can no longer disagree for a frame.
   root.style.colorScheme = isDark ? 'dark' : 'light';
   syncTitleBarOverlay(root);
 }
