@@ -39,10 +39,14 @@
 </p>
 
 <p align="center">
-  <a href="https://maka.apache.org/en/">Website</a> &nbsp;·&nbsp; <a href="https://maka.apache.org/en/downloads/">Downloads</a>
+  <a href="https://maka.apache.org/en/"><img src="https://img.shields.io/badge/Website-maka.apache.org-1F6FEB?style=for-the-badge" alt="Website: maka.apache.org" /></a>
+  <a href="https://maka.apache.org/en/downloads/"><img src="https://img.shields.io/badge/Downloads-1F6FEB?style=for-the-badge" alt="Downloads" /></a>
 </p>
 
-![Maka keeps a complete record of everything it did.](./.github/assets/maka-hero.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.en.dark.png" />
+  <img alt="A high-performance agent workspace that keeps a complete record of everything it did. One turn of RuntimeEvents: the model speaks, runs a command, asks permission, you approve, it gets the result, edits a file, the turn ends." src="./.github/assets/readme-hero.en.light.png" />
+</picture>
 
 > [!NOTE]
 > Apache Maka (Incubating) is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator PMC. Incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision-making process have stabilized in a manner consistent with other successful ASF projects. While incubation status is not necessarily a reflection of the completeness or stability of the code, it does indicate that the project has yet to be fully endorsed by the ASF. [DISCLAIMER-WIP](./DISCLAIMER-WIP) records the issues the project is currently aware of.
@@ -52,11 +56,12 @@
 
 ## What Maka is
 
-Maka runs on your local machine with your own model connection. The record of model messages, tool calls, tool results, and run terminations is kept, and the UI and subsequent model calls are views of that record rather than the only copy. Shorter context is not deleted history, as previous tool output can be omitted from prompt context without discarding saved evidence. The [Maka website](https://maka.apache.org/en/) explains why and links the published runs.
+- **Your machine, your data.** Sessions, settings and run records stay local. You bring the model: a cloud API, a local model or a compatible gateway.
+- **The record is kept.** Model messages, tool calls, tool results and how a turn ended are written down. The UI and the next model call are views of that record, not the only copy.
+- **Shorter context is not deleted history.** Old tool output can be left out of the next prompt without throwing away the saved evidence.
+- **One place runs the agent.** Desktop, the TUI and CLI, and Eval all go through Runtime Host; Eval owns only the experiment and its scores.
 
-Desktop, TUI/CLI, and Eval are separate entry points that execute through a single Runtime Host. Desktop is for daily interaction, file and Artifact workflows, and model and permission setup; the TUI and CLI use Maka in the current project directory or run one non-interactive Turn; Eval runs reproducible benchmark experiments across Maka and external subjects. [ARCHITECTURE.md](./ARCHITECTURE.md) has the system map and the host protocol.
-
-Current capabilities include built-in tools (`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`), sandbox approval for operations that leave the workspace boundary, a durable execution record with crash recovery and turn resume, session branching and search, and declarative multi-arm eval expanded across tasks, repetitions, and subjects. See [docs/README.md](./docs/README.md) for documentation and authority maps.
+The [website](https://maka.apache.org/en/) shows one turn of that record and links the published runs. [ARCHITECTURE.md](./ARCHITECTURE.md) has the system map.
 
 ## Get Maka
 

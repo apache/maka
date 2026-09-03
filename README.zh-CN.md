@@ -39,10 +39,14 @@
 </p>
 
 <p align="center">
-  <a href="https://maka.apache.org/zh-CN/">官网</a> &nbsp;·&nbsp; <a href="https://maka.apache.org/zh-CN/downloads/">下载</a>
+  <a href="https://maka.apache.org/zh-CN/"><img src="https://img.shields.io/badge/%E5%AE%98%E7%BD%91-maka.apache.org-1F6FEB?style=for-the-badge" alt="官网：maka.apache.org" /></a>
+  <a href="https://maka.apache.org/zh-CN/downloads/"><img src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD-1F6FEB?style=for-the-badge" alt="下载" /></a>
 </p>
 
-![Maka 完整记录它做过的每一件事。](./.github/assets/maka-hero.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./.github/assets/readme-hero.zh-CN.dark.png" />
+  <img alt="一个高性能的 Agent 工作台，并完整记录它做过的每一件事。一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。" src="./.github/assets/readme-hero.zh-CN.light.png" />
+</picture>
 
 > [!NOTE]
 > Apache Maka (Incubating) 是一个正在 Apache 软件基金会（ASF）孵化的项目，由 Apache Incubator PMC 提供 sponsor。所有新接受的项目都必须经过孵化，直到进一步审查表明其基础设施、沟通方式和决策流程已经稳定到与其他成功的 ASF 项目一致的程度。孵化状态并不必然反映代码的完成度或稳定性，但它确实表明该项目尚未得到 ASF 的完全认可。项目当前已知的问题记录在 [DISCLAIMER-WIP](./DISCLAIMER-WIP)（以英文原文为准）。
@@ -52,11 +56,12 @@
 
 ## 什么是 Maka
 
-Maka 在本机运行，连接你自己的模型。模型消息、工具调用、工具结果与终止状态都会被完整记录；界面与下一次模型请求只是这份记录的视图，而非唯一副本。缩短上下文不等于删除历史，旧的工具输出可以从后续 prompt 中省略，但保存的证据始终完整保留。完整背景与设计考量参见 [Maka 官网](https://maka.apache.org/zh-CN/)。
+- **数据在你的机器上。** 会话、设置和运行记录保存在本机。模型由你接：云 API、本地模型或兼容网关。
+- **做过的事会留下来。** 模型消息、工具调用、工具结果、这一轮怎么结束，都会记下来。界面和下一次模型请求只是这份记录的视图，不是唯一副本。
+- **缩短上下文不等于删掉历史。** 旧的工具输出可以不送进下一轮提示，但已保存的证据不会丢。
+- **Agent 只在一处跑。** Desktop、TUI 和 CLI、Eval 都走 Runtime Host；Eval 只负责实验和分数。
 
-Desktop、TUI/CLI 与 Eval 是不同的运行入口，统一通过同一个 Runtime Host 执行。Desktop 负责日常交互、文件与 Artifact 工作流、模型和权限配置；TUI 和 CLI 在当前工程目录中使用 Maka，或执行单次非交互 Turn；Eval 在 Maka 与外部 subject 之间运行可复现的基准实验。系统地图与宿主协议见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
-
-系统当前具备内置工具（`Read`、`Write`、`Edit`、`Bash`、`Glob`、`Grep`）、越出沙箱边界的工具审批、具备崩溃恢复与回合续跑能力的持久化执行记录、会话分支与搜索，以及按 task × repetition × subject 展开的声明式多臂评测能力。完整文档与权威来源映射参见 [docs/README.md](./docs/README.md)。
+[官网](https://maka.apache.org/zh-CN/)展示了这份记录中的一轮，并链接到公开的运行结果。系统地图见 [ARCHITECTURE.zh-CN.md](./ARCHITECTURE.zh-CN.md)。
 
 ## 获取 Maka
 
