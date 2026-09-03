@@ -550,7 +550,8 @@ export class WorkHubCoordinationActionGate {
       // The request records which delegation this action bound itself to. It is
       // written after the claim, so a crash between the two leaves a claim with
       // nothing to converge on — and nothing destructive happened either, so
-      // that case resolves from the active links below like a first attempt.
+      // that case resolves from the active links below, subject to the claim
+      // still naming what they resolve to.
       const requested = await this.#effects.readStopRequest(claim.subject);
       if (requested) {
         const claimed = await this.#effects.readAssignment(requested.stopsActionId);
@@ -575,24 +576,40 @@ export class WorkHubCoordinationActionGate {
     // finished, or was never WorkHub's to stop, is what the stop resolves to —
     // `already_terminal` and `not_owned` are outcomes, not reasons to refuse
     // the request before it is recorded.
-    if (onTarget.length === 1) return onTarget[0]!;
+    //
     // Only several links need separating, and then the rule is the same one
     // competition uses: a delegation whose work already finished is still
     // linked but is no longer a stop target, so it cannot make a Session that
     // was delegated to twice permanently unstoppable.
-    const holdingWork: WorkHubDelegationAssignedMessage[] = [];
-    for (const assignment of onTarget) {
-      if ((await this.#effects.readDelegationRetirement(assignment)) !== 'retired') {
-        holdingWork.push(assignment);
+    let resolved = onTarget[0]!;
+    if (onTarget.length > 1) {
+      const holdingWork: WorkHubDelegationAssignedMessage[] = [];
+      for (const assignment of onTarget) {
+        if ((await this.#effects.readDelegationRetirement(assignment)) !== 'retired') {
+          holdingWork.push(assignment);
+        }
       }
+      if (holdingWork.length !== 1) {
+        throw new WorkHubActionGateFailure(
+          'action_conflict',
+          'WorkHub stop target does not identify one active durable delegation',
+        );
+      }
+      resolved = holdingWork[0]!;
     }
-    if (holdingWork.length !== 1) {
+    // A claim with no request behind it resolves from the active links like a
+    // first attempt, but only while those links still name the delegation it
+    // bound itself to. If that one left and another took its place, the
+    // fingerprint derived here would no longer match the claim, and since
+    // claims are never deleted the refusal would be permanent and unexplained.
+    // Say why instead: the identity is spent, and the retry needs a new one.
+    if (claim?.operation === 'stop' && resolved.delegationId !== claim.subject) {
       throw new WorkHubActionGateFailure(
         'action_conflict',
-        'WorkHub stop target does not identify one active durable delegation',
+        'WorkHub stop identity is already bound to a different delegation',
       );
     }
-    return holdingWork[0]!;
+    return resolved;
   }
 
   async #stop(
