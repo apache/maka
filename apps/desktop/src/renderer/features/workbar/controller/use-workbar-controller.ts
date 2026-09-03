@@ -306,6 +306,11 @@ export function useWorkbarController(
     },
     [linkPendingWorkBoardSession],
   );
+=======
+  const onNewTaskSessionNotProjected = useCallback(() => {
+    pendingWorkBoardStartRef.current = undefined;
+  }, []);
+>>>>>>> c6a05bd08 (refactor(desktop): 简化 Work Board start-task 解析链路)
 
   const startWorkBoardTask = useCallback(
     (item: WorkBoardItem) => {
