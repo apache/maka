@@ -142,6 +142,7 @@
     "./task-submission-readiness": "./dist/task-submission-readiness.js",
     "./terminal-input": "./dist/terminal-input.js",
     "./terminal-mouse-input": "./dist/terminal-mouse-input.js",
+    "./text-sanitize": "./dist/text-sanitize.js",
     "./tool-activity-args": "./dist/tool-activity-args.js",
     "./tool-quiet-preview": "./dist/tool-quiet-preview.js",
     "./tool-result-record-schema": "./dist/tool-result-record-schema.js",

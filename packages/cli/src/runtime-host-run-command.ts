@@ -453,7 +453,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
       const next = await this.#interactions.race(events.next());
       if (next.done) break;
       const event = next.value;
-      if (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request') {
+      if (
+        event.type === 'user_question_request' ||
+        event.type === 'form_request' ||
+        event.type === 'sandbox_boundary_request'
+      ) {
         continue;
       }
       active.outcome.accept(observationFromSessionEvent(event));
@@ -892,7 +896,9 @@ class NonInteractiveInteractionController {
     throw new Error(
       pending.request.kind === 'question'
         ? 'interactive user questions are unavailable in non-interactive mode'
-        : 'interactive permission requests are unavailable in non-interactive mode',
+        : pending.request.kind === 'form'
+          ? 'interactive user forms are unavailable in non-interactive mode'
+          : 'interactive permission requests are unavailable in non-interactive mode',
     );
   }
 
