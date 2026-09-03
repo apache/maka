@@ -419,6 +419,15 @@
   line-height: 1.6;
   text-autospace: normal;
 }
+/* Han faces have no italic, so `*emphasis*` in Chinese renders as a synthetic
+   shear of PingFang. Chinese typography marks emphasis with a dot under each
+   character instead. Keyed on the document language, which LocaleProvider
+   keeps in step with the UI locale, so Latin prose keeps its italic. */
+[data-maka-contract="markdown"] .astryx-markdown em:lang(zh) {
+  font-style: normal;
+  text-emphasis: filled dot;
+  text-emphasis-position: under right;
+}
 /* Heading scale: size says "this is a heading", weight and colour say which
    level. Astryx's document ladder (20/18/16/14) is a page scale and an agent
    turn emits `##` every few lines, so the transcript flattens h1 onto h2 and
