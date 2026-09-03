@@ -104,7 +104,11 @@ function clientCapabilityLabel(
       if (request.scope.kind !== 'browser_origin') break;
       return copy.browser(request.scope.origin);
     case 'computer_use':
-      return copy.computerUse;
+      if (request.scope.kind === 'macos_bundle_id') {
+        return copy.computerUseApp(request.scope.bundleId);
+      }
+      if (request.scope.kind === 'app_catalog') return copy.computerUseCatalog;
+      break;
     case 'desktop_mcp':
       if (request.scope.kind !== 'mcp_tool') break;
       return copy.desktopMcp(request.scope.serverId, request.scope.toolName);

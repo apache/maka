@@ -39,9 +39,10 @@ import {
   type ComputerUseErrorCode,
   type ComputerUseWindowIdentity,
 } from '@maka/core/computer-use';
+import { normalizeMacosBundleId } from '@maka/core/client-capability-grant';
 import { redactSecrets } from '@maka/core/redaction';
 import { renderObservationForModel } from './computer-use-observation-text.js';
-import type { MakaTool } from './tool-runtime.js';
+import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import {
   bindCuaActionToObservation,
   bindCuaSemanticActionToObservation,
@@ -90,8 +91,11 @@ import type {
   CuPresentationFence,
   CuRunContext,
   CuRunResult,
+  CuResolvedExecutionTarget,
+  CuRunningExecutionTarget,
   CuSemanticAction,
 } from './computer-use-types.js';
+import { CuObservationFailure, normalizeCuProcessGeneration } from './computer-use-types.js';
 
 export { adaptToCuAction, snapshotComputerParams } from './computer-use-codec.js';
 export type {
@@ -99,6 +103,7 @@ export type {
   CuDispatchBackend,
   CuDispatchEvidence,
   CuDispatchOutcome,
+  CuObservationFailureCause,
   CuObservedElement,
   CuObservation,
   CuOverlayHook,
@@ -106,9 +111,17 @@ export type {
   CuPresentationFence,
   CuRunContext,
   CuRunResult,
+  CuResolvedExecutionTarget,
+  CuResolvedTargetIdentity,
+  CuRunningExecutionTarget,
   CuScreenshot,
   CuSemanticAction,
+  CuTargetResolution,
+  CuTargetResolutionRequest,
 } from './computer-use-types.js';
+
+export { CuObservationFailure } from './computer-use-types.js';
+export { normalizeCuProcessGeneration } from './computer-use-types.js';
 
 // Function-tool JSON schemas require an object at the top level.
 // Keep the wire schema as one top-level object, then apply the strict
@@ -383,7 +396,66 @@ function shouldSendScreenshotToModel(input: ComputerParams): boolean {
   );
 }
 
+export interface ComputerUsePreparationContext {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly toolCallId: string;
+  readonly signal: AbortSignal;
+}
+
+export interface PreparedComputerUseObservationBinding {
+  readonly turnId: string;
+  readonly frameId: string;
+  readonly epoch: number;
+  readonly target: CuRunningExecutionTarget;
+}
+
+export type PreparedComputerUsePolicyBinding =
+  | {
+      readonly action: ComputerParams['action'];
+      readonly target: {
+        readonly kind: 'application';
+        readonly resolved: CuResolvedExecutionTarget;
+      };
+    }
+  | {
+      readonly action: ComputerParams['action'];
+      readonly target: {
+        readonly kind: 'observation';
+        readonly binding: PreparedComputerUseObservationBinding;
+      };
+    }
+  | {
+      readonly action: ComputerParams['action'];
+      readonly target:
+        | { readonly kind: 'app_catalog' }
+        | { readonly kind: 'targetless' }
+        | { readonly kind: 'unresolved' };
+    };
+
+export interface PreparedComputerUseExecutionResult {
+  readonly result: ComputerToolResult;
+  readonly metadata: {
+    readonly freshObservation?: PreparedComputerUseObservationBinding;
+  };
+}
+
+export interface PreparedComputerUseInvocation {
+  readonly admission:
+    | { readonly kind: 'macos_bundle_id'; readonly bundleId: string }
+    | { readonly kind: 'app_catalog' }
+    | { readonly kind: 'duration_wait' }
+    | { readonly kind: 'unresolved' };
+  readonly projectionInput: ComputerParams;
+  readonly policyBinding: PreparedComputerUsePolicyBinding;
+  execute(context: MakaToolContext): Promise<PreparedComputerUseExecutionResult>;
+}
+
 export interface ComputerUseToolSet extends Array<MakaTool> {
+  prepareInvocation(
+    rawArgs: unknown,
+    context: ComputerUsePreparationContext,
+  ): Promise<PreparedComputerUseInvocation>;
   clearSession(sessionId: string): void;
   sessionEvents: {
     snapshot(sessionId: string): CuaSessionSnapshot;
@@ -702,6 +774,7 @@ export function buildComputerUseTools(deps: {
   const presentationFinishedTimeoutMs =
     deps.presentationFinishedTimeoutMs ?? DEFAULT_PRESENTATION_FINISHED_TIMEOUT_MS;
   const invocationQueues = new Map<string, Promise<void>>();
+  const durationWaitControllers = new Map<string, Set<AbortController>>();
   const presentationWaiters = new Map<string, Set<() => void>>();
   const presentationQueueWaiters = new Map<string, Set<() => void>>();
   const presentationGenerations = new Map<string, number>();
@@ -716,10 +789,25 @@ export function buildComputerUseTools(deps: {
     /** The non-canonical name that resolved this observation, if any. */
     appAlias?: string;
     windowId?: number;
+    target?: CuRunningExecutionTarget;
     elements?: Map<string, CuObservedElement>;
     /** From the last observation: the windows stacked above the target. */
     obscuringRects?: Array<{ x: number; y: number; width: number; height: number }>;
   }
+  type InternalPreparedBinding =
+    | { readonly kind: 'application'; readonly target: CuResolvedExecutionTarget }
+    | {
+        readonly kind: 'observation';
+        readonly record: SessionObservationRecord;
+        readonly binding: PreparedComputerUseObservationBinding;
+      }
+    | { readonly kind: 'app_catalog' }
+    | { readonly kind: 'targetless'; readonly preparedSignal: AbortSignal }
+    | { readonly kind: 'unresolved' };
+  const preparedBindingKey = Symbol('preparedComputerUseBinding');
+  type PreparedExecutionArgs = ComputerParams & {
+    readonly [preparedBindingKey]: InternalPreparedBinding;
+  };
   const observations = new Map<string, SessionObservationRecord>();
   interface SessionStateRecord {
     turnId?: string;
@@ -762,6 +850,24 @@ export function buildComputerUseTools(deps: {
     return () => {
       turns.delete(turnId);
       if (turns.size === 0) pendingInvocationTurns.delete(sessionId);
+    };
+  }
+
+  function registerDurationWait(sessionId: string): {
+    readonly controller: AbortController;
+    release(): void;
+  } {
+    const controller = new AbortController();
+    const controllers = durationWaitControllers.get(sessionId) ?? new Set<AbortController>();
+    controllers.add(controller);
+    durationWaitControllers.set(sessionId, controllers);
+    return {
+      controller,
+      release: () => {
+        if (durationWaitControllers.get(sessionId) !== controllers) return;
+        controllers.delete(controller);
+        if (controllers.size === 0) durationWaitControllers.delete(sessionId);
+      },
     };
   }
 
@@ -967,9 +1073,84 @@ export function buildComputerUseTools(deps: {
     record.appId = observation.appId;
     record.appAlias = observation.appAlias ?? carriedAlias;
     record.windowId = observation.windowId;
+    record.target = observation.target;
     record.obscuringRects = observation.obscuringRects;
     record.elements = new Map(normalized.elements.map((element) => [element.elementId, element]));
     return { ...normalized, observationId: frame.frameId };
+  }
+
+  function normalizeResolvedTarget(target: CuResolvedExecutionTarget): CuResolvedExecutionTarget {
+    if (target.kind === 'installed') {
+      return Object.freeze({
+        kind: 'installed',
+        identity: Object.freeze({
+          kind: 'bundle_id',
+          bundleId: normalizeMacosBundleId(target.identity.bundleId),
+        }),
+      });
+    }
+    const { selector } = target;
+    if (
+      !Number.isSafeInteger(selector.pid) ||
+      selector.pid <= 0 ||
+      !Number.isSafeInteger(selector.windowId) ||
+      selector.windowId <= 0
+    ) {
+      throw new Error('Invalid Computer Use execution selector');
+    }
+    const identity =
+      target.identity.kind === 'bundle_id'
+        ? Object.freeze({
+            kind: 'bundle_id' as const,
+            bundleId: normalizeMacosBundleId(target.identity.bundleId),
+          })
+        : (() => {
+            if (target.identity.appId !== `pid:${selector.pid}`) {
+              throw new Error('Invalid Computer Use process identity');
+            }
+            return Object.freeze({ kind: 'process' as const, appId: target.identity.appId });
+          })();
+    return Object.freeze({
+      kind: 'running',
+      identity,
+      selector: Object.freeze({
+        pid: selector.pid,
+        processGeneration: normalizeCuProcessGeneration(selector.processGeneration),
+        windowId: selector.windowId,
+      }),
+    });
+  }
+
+  function sameRunningTarget(
+    left: CuRunningExecutionTarget | undefined,
+    right: CuRunningExecutionTarget,
+  ): boolean {
+    if (!left || left.identity.kind !== right.identity.kind) return false;
+    const sameIdentity =
+      left.identity.kind === 'bundle_id' && right.identity.kind === 'bundle_id'
+        ? left.identity.bundleId === right.identity.bundleId
+        : left.identity.kind === 'process' && right.identity.kind === 'process'
+          ? left.identity.appId === right.identity.appId
+          : false;
+    return (
+      sameIdentity &&
+      left.selector.pid === right.selector.pid &&
+      left.selector.processGeneration === right.selector.processGeneration &&
+      left.selector.windowId === right.selector.windowId
+    );
+  }
+
+  function currentObservationBinding(
+    record: SessionObservationRecord | undefined,
+  ): PreparedComputerUseObservationBinding | undefined {
+    const frame = record?.state.activeObservation();
+    if (!record?.target || !frame) return undefined;
+    return Object.freeze({
+      turnId: record.turnId,
+      frameId: frame.frameId,
+      epoch: frame.epoch,
+      target: record.target,
+    });
   }
 
   type BindingFailureReason =
@@ -1195,7 +1376,7 @@ export function buildComputerUseTools(deps: {
    * A refusal the executor states it never dispatched.
    *
    * `path` is what the executor did, not what it was asked to do, and `"none"`
-   * is its word for "nothing reached the target" — `maka.cu/2` §6.5. It is
+   * is its word for "nothing reached the target" — `maka.cu/3` §6.5. It is
    * absent rather than defaulted when a backend does not say, so a backend that
    * forgets falls back to the cautious behaviour instead of claiming this one.
    *
@@ -1276,6 +1457,7 @@ export function buildComputerUseTools(deps: {
           {
             app: record.appId,
             windowId: record.windowId,
+            ...(record.target ? { target: record.target } : {}),
             includeScreenshot: true,
           },
           signal,
@@ -1315,7 +1497,9 @@ export function buildComputerUseTools(deps: {
     invocationQueues.set(sessionId, current);
     await previous;
     try {
-      if (signal.aborted) throw new Error('aborted');
+      if (signal.aborted) {
+        throw signal.reason instanceof Error ? signal.reason : new Error('aborted');
+      }
       return await operation();
     } finally {
       release();
@@ -1323,6 +1507,53 @@ export function buildComputerUseTools(deps: {
         invocationQueues.delete(sessionId);
       }
     }
+  }
+
+  async function withAbortableInvocationQueue<T>(
+    sessionId: string,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return await raceWithAbort(withInvocationQueue(sessionId, signal, operation), signal);
+  }
+
+  async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+    signal.throwIfAborted();
+    return await new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (outcome: 'resolve' | 'reject', value: T | unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        if (outcome === 'resolve') resolve(value as T);
+        else reject(value);
+      };
+      const onAbort = () => finish('reject', signal.reason ?? new Error('aborted'));
+      signal.addEventListener('abort', onAbort, { once: true });
+      promise.then(
+        (value) => finish('resolve', value),
+        (error) => finish('reject', error),
+      );
+    });
+  }
+
+  async function waitForDuration(milliseconds: number, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (milliseconds === 0) return;
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: unknown) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        signal.removeEventListener('abort', onAbort);
+        if (error !== undefined) reject(error);
+        else resolve();
+      };
+      const timer = setTimeout(() => finish(), milliseconds);
+      const onAbort = () => finish(signal.reason ?? new Error('aborted'));
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   function presentationScreenPoint(boundAction: CuaBoundAction | undefined): CuPoint | undefined {
@@ -1573,7 +1804,7 @@ export function buildComputerUseTools(deps: {
       '[focused] marks where a key sent without an element_id will land, when the executor reports focus. ' +
       'The shipping maka-cu host keeps compatibility key and coordinate dispatch disabled. press_key, type, key, hold_key, ' +
       'pointer clicks, drag, coordinate scroll and mouse movement remain in the provider schema for compatibility but fail closed. ' +
-      'cursor_position, hold_key and zoom also have no maka.cu/2 execution path. Use click_element, set_value, select_text, ' +
+      'cursor_position, hold_key and zoom also have no maka.cu/3 execution path. Use click_element, set_value, select_text, ' +
       'scroll_element, secondary_action, window_action or element_sequence; if those cannot express the task, report the capability gap. ' +
       'A screenshot provides visual evidence but does not enable synthetic input. ' +
       'Never guess the current foreground app; list_apps or observe an explicit app/window first. ' +
@@ -1639,6 +1870,10 @@ export function buildComputerUseTools(deps: {
       { abortSignal, sessionId, turnId, toolCallId, emitProgress },
     ): Promise<ComputerToolResult> => {
       if (abortSignal.aborted) return { text: 'computer aborted before start' };
+      const preparedBinding =
+        args !== null && typeof args === 'object'
+          ? (args as Partial<PreparedExecutionArgs>)[preparedBindingKey]
+          : undefined;
       const input = snapshotComputerParams(computerParams.parse(args));
       const includeScreenshotInModelOutput = shouldSendScreenshotToModel(input);
       // Before anything is claimed against a frame or dispatched: an argument
@@ -1646,12 +1881,72 @@ export function buildComputerUseTools(deps: {
       // of the record, not a value, and every path below would have typed it.
       const replayed = withheldValueReplayed(input);
       if (replayed) return replayed;
+      const durationOnlyWait =
+        input.action === 'wait' &&
+        input.wait_for_text === undefined &&
+        input.wait_for_text_gone === undefined;
+      const durationWait = durationOnlyWait ? registerDurationWait(sessionId) : undefined;
+      const invocationSignal = durationWait
+        ? AbortSignal.any([
+            abortSignal,
+            durationWait.controller.signal,
+            ...(preparedBinding?.kind === 'targetless' ? [preparedBinding.preparedSignal] : []),
+          ])
+        : abortSignal;
       const invocationGeneration = presentationGenerations.get(sessionId) ?? 0;
       const releasePendingInvocation = trackPendingInvocation(sessionId, turnId);
       try {
-        return await withInvocationQueue<ComputerToolResult>(sessionId, abortSignal, async () => {
+        const runQueued = durationOnlyWait ? withAbortableInvocationQueue : withInvocationQueue;
+        return await runQueued(sessionId, invocationSignal, async () => {
           if ((presentationGenerations.get(sessionId) ?? 0) !== invocationGeneration) {
             return sessionFailure('user_stopped');
+          }
+          if (durationOnlyWait) {
+            const durationMs = Math.round((input.duration ?? 0) * 1000);
+            await waitForDuration(durationMs, invocationSignal);
+            if ((presentationGenerations.get(sessionId) ?? 0) !== invocationGeneration) {
+              return sessionFailure('user_stopped');
+            }
+            invocationSignal.throwIfAborted();
+            return {
+              text: `maka_computer.wait ok — waited ${(durationMs / 1000).toFixed(1)}s`,
+            };
+          }
+          if (preparedBinding?.kind === 'observation') {
+            const current = observations.get(sessionId);
+            const binding = currentObservationBinding(current);
+            if (
+              current !== preparedBinding.record ||
+              !binding ||
+              binding.turnId !== preparedBinding.binding.turnId ||
+              binding.frameId !== preparedBinding.binding.frameId ||
+              binding.epoch !== preparedBinding.binding.epoch ||
+              !sameRunningTarget(binding.target, preparedBinding.binding.target)
+            ) {
+              return bindingFailure('stale_frame', input.action);
+            }
+          }
+          const expectedRunningTarget =
+            preparedBinding?.kind === 'observation'
+              ? preparedBinding.binding.target
+              : preparedBinding?.kind === 'application' && preparedBinding.target.kind === 'running'
+                ? preparedBinding.target
+                : undefined;
+          if (expectedRunningTarget) {
+            const current = await deps.backend.resolveTarget(
+              { kind: 'window', windowId: expectedRunningTarget.selector.windowId },
+              abortSignal,
+            );
+            if (
+              current.kind !== 'resolved' ||
+              current.target.kind !== 'running' ||
+              !sameRunningTarget(current.target, expectedRunningTarget)
+            ) {
+              return {
+                text: `maka_computer.${input.action} failed: target_changed — the prepared application target is no longer current`,
+                error: 'target_changed',
+              };
+            }
           }
           const state = sessionState(sessionId, turnId);
           // Ahead of the leases, because a locked screen outranks whatever the
@@ -1770,7 +2065,12 @@ export function buildComputerUseTools(deps: {
                     // measured on a real run, `stopped at step 1 of 9:
                     // capture_failed` with step 1 reported `ok`, so a nine-key
                     // calculation could never get past its first key.
-                    { app: record.appId, windowId: record.windowId, includeScreenshot: false },
+                    {
+                      app: record.appId,
+                      windowId: record.windowId,
+                      ...(record.target ? { target: record.target } : {}),
+                      includeScreenshot: false,
+                    },
                     abortSignal,
                     runCtx,
                   );
@@ -1899,6 +2199,7 @@ export function buildComputerUseTools(deps: {
                     {
                       app: record.appId!,
                       windowId: record.windowId!,
+                      ...(record.target ? { target: record.target } : {}),
                       includeScreenshot: withPicture,
                     },
                     abortSignal,
@@ -1948,7 +2249,17 @@ export function buildComputerUseTools(deps: {
                   'action:"observe" naming it.',
               };
             }
-            const launched = await deps.backend.launchApp({ app: input.app }, abortSignal, runCtx);
+            const launched = await deps.backend.launchApp(
+              {
+                app: input.app,
+                ...(preparedBinding?.kind === 'application' &&
+                preparedBinding.target.kind === 'installed'
+                  ? { target: preparedBinding.target }
+                  : {}),
+              },
+              abortSignal,
+              runCtx,
+            );
             // A launch changes the window set and z-order, so every frame the
             // model is holding now describes a desktop that has moved on.
             state.reobserveRequired();
@@ -2087,21 +2398,32 @@ export function buildComputerUseTools(deps: {
                   {
                     app: record.appId,
                     ...(record.windowId ? { windowId: record.windowId } : {}),
+                    ...(record.target ? { target: record.target } : {}),
                     includeScreenshot: false,
                   },
                   abortSignal,
                   runCtx,
                 );
-              } catch {
+              } catch (error) {
                 // The window going away is an answer to `text_gone` and a
                 // failure for `text`, rather than an error either way.
-                if (!wantPresent) {
+                if (error instanceof CuObservationFailure && error.cause === 'window_gone') {
+                  if (wantPresent) {
+                    return {
+                      text: 'maka_computer.wait failed: target_missing — the window being waited on is no longer there',
+                      error: error.publicCode,
+                    };
+                  }
                   return {
                     text: 'maka_computer.wait ok — the window is gone, so the text is too',
                   };
                 }
                 return {
-                  text: 'maka_computer.wait failed: target_missing — the window being waited on is no longer there',
+                  text: `maka_computer.wait failed: ${
+                    error instanceof CuObservationFailure ? error.publicCode : 'target_missing'
+                  } — the target could not be observed safely`,
+                  error:
+                    error instanceof CuObservationFailure ? error.publicCode : 'target_missing',
                 };
               }
               polls += 1;
@@ -2202,7 +2524,10 @@ export function buildComputerUseTools(deps: {
             // Only when the name cannot already be an id: a string with a dot
             // is passed through untouched, so an executor that resolves ids the
             // host has never heard of keeps working.
-            const resolvedApp = await resolveAppName(input.app, abortSignal);
+            const resolvedApp =
+              preparedBinding?.kind === 'application'
+                ? { app: input.app }
+                : await resolveAppName(input.app, abortSignal);
             if (resolvedApp && 'ambiguous' in resolvedApp) {
               return {
                 text:
@@ -2219,6 +2544,10 @@ export function buildComputerUseTools(deps: {
                   includeScreenshot,
                   ...(input.menu ? { menu: input.menu } : {}),
                   ...(input.query ? { query: input.query } : {}),
+                  ...(preparedBinding?.kind === 'application' &&
+                  preparedBinding.target.kind === 'running'
+                    ? { target: preparedBinding.target }
+                    : {}),
                 },
                 abortSignal,
                 runCtx,
@@ -2348,6 +2677,10 @@ export function buildComputerUseTools(deps: {
               {
                 app: input.app,
                 windowId: input.window_id,
+                ...(preparedBinding?.kind === 'application' &&
+                preparedBinding.target.kind === 'running'
+                  ? { target: preparedBinding.target }
+                  : {}),
                 includeScreenshot: true,
               },
               abortSignal,
@@ -2837,7 +3170,13 @@ export function buildComputerUseTools(deps: {
                 };
           }
         });
+      } catch (error) {
+        if (durationWait?.controller.signal.aborted) {
+          return sessionFailure('user_stopped');
+        }
+        throw error;
       } finally {
+        durationWait?.release();
         releasePendingInvocation();
       }
     },
@@ -2872,6 +3211,206 @@ export function buildComputerUseTools(deps: {
       };
     },
   };
+  const executePreparedArgs = tool.impl;
+
+  async function prepareInvocation(
+    rawArgs: unknown,
+    context: ComputerUsePreparationContext,
+  ): Promise<PreparedComputerUseInvocation> {
+    context.signal.throwIfAborted();
+    const preparedGeneration = presentationGenerations.get(context.sessionId) ?? 0;
+    let projectionInput = snapshotComputerParams(computerParams.parse(rawArgs));
+    let internalBinding: InternalPreparedBinding;
+
+    if (
+      projectionInput.action === 'wait' &&
+      projectionInput.wait_for_text === undefined &&
+      projectionInput.wait_for_text_gone === undefined
+    ) {
+      internalBinding = Object.freeze({ kind: 'targetless', preparedSignal: context.signal });
+    } else {
+      await deps.backend.ensureReady(context.signal);
+      context.signal.throwIfAborted();
+
+      if (projectionInput.action === 'list_apps') {
+        internalBinding = Object.freeze({ kind: 'app_catalog' });
+      } else if (
+        projectionInput.action === 'launch_app' ||
+        projectionInput.action === 'observe' ||
+        projectionInput.action === 'screenshot'
+      ) {
+        const request =
+          projectionInput.action === 'launch_app'
+            ? ({
+                kind: 'application',
+                app: projectionInput.app,
+                intent: 'launch',
+              } as const)
+            : projectionInput.window_id !== undefined
+              ? ({ kind: 'window', windowId: projectionInput.window_id } as const)
+              : ({
+                  kind: 'application',
+                  app: projectionInput.app!,
+                  intent: 'operate',
+                } as const);
+        const resolution = await deps.backend.resolveTarget(request, context.signal);
+        if (resolution.kind !== 'resolved') {
+          internalBinding = Object.freeze({ kind: 'unresolved' });
+        } else {
+          const target = normalizeResolvedTarget(resolution.target);
+          if (
+            (projectionInput.action === 'launch_app' && target.kind !== 'installed') ||
+            (projectionInput.action !== 'launch_app' && target.kind !== 'running')
+          ) {
+            throw new Error('Computer Use target resolver returned an invalid target');
+          }
+          internalBinding = Object.freeze({ kind: 'application', target });
+          const app =
+            target.identity.kind === 'bundle_id'
+              ? target.identity.bundleId
+              : (projectionInput.app ?? target.identity.appId);
+          if (projectionInput.action === 'launch_app') {
+            projectionInput = snapshotComputerParams({ ...projectionInput, app });
+          } else {
+            if (target.kind !== 'running') {
+              throw new Error('Computer Use target resolver returned an invalid running target');
+            }
+            projectionInput = snapshotComputerParams({
+              ...projectionInput,
+              app,
+              window_id: target.selector.windowId,
+            });
+          }
+        }
+      } else if (projectionInput.action === 'cursor_position') {
+        internalBinding = Object.freeze({ kind: 'unresolved' });
+      } else {
+        const record = observations.get(context.sessionId);
+        const binding = currentObservationBinding(record);
+        const requestedFrame =
+          'observation_id' in projectionInput ? projectionInput.observation_id : undefined;
+        if (
+          !record ||
+          !binding ||
+          binding.turnId !== context.turnId ||
+          (requestedFrame !== undefined && requestedFrame !== binding.frameId)
+        ) {
+          internalBinding = Object.freeze({ kind: 'unresolved' });
+        } else {
+          internalBinding = Object.freeze({ kind: 'observation', record, binding });
+        }
+      }
+    }
+
+    const admission: PreparedComputerUseInvocation['admission'] = (() => {
+      switch (internalBinding.kind) {
+        case 'app_catalog':
+          return Object.freeze({ kind: 'app_catalog' });
+        case 'targetless':
+          return Object.freeze({ kind: 'duration_wait' });
+        case 'application':
+          return internalBinding.target.identity.kind === 'bundle_id'
+            ? Object.freeze({
+                kind: 'macos_bundle_id',
+                bundleId: internalBinding.target.identity.bundleId,
+              })
+            : Object.freeze({ kind: 'unresolved' });
+        case 'observation':
+          return internalBinding.binding.target.identity.kind === 'bundle_id'
+            ? Object.freeze({
+                kind: 'macos_bundle_id',
+                bundleId: internalBinding.binding.target.identity.bundleId,
+              })
+            : Object.freeze({ kind: 'unresolved' });
+        case 'unresolved':
+          return Object.freeze({ kind: 'unresolved' });
+      }
+    })();
+    const policyBinding: PreparedComputerUsePolicyBinding = (() => {
+      switch (internalBinding.kind) {
+        case 'application':
+          return Object.freeze({
+            action: projectionInput.action,
+            target: Object.freeze({ kind: 'application', resolved: internalBinding.target }),
+          });
+        case 'observation':
+          return Object.freeze({
+            action: projectionInput.action,
+            target: Object.freeze({ kind: 'observation', binding: internalBinding.binding }),
+          });
+        case 'app_catalog':
+        case 'targetless':
+        case 'unresolved':
+          return Object.freeze({
+            action: projectionInput.action,
+            target: Object.freeze({
+              kind:
+                internalBinding.kind === 'app_catalog'
+                  ? 'app_catalog'
+                  : internalBinding.kind === 'targetless'
+                    ? 'targetless'
+                    : 'unresolved',
+            }),
+          }) as PreparedComputerUsePolicyBinding;
+      }
+    })();
+    let state: 'prepared' | 'executing' | 'finished' = 'prepared';
+    const preparedSignal = context.signal;
+
+    return Object.freeze({
+      admission,
+      projectionInput,
+      policyBinding,
+      execute: async (
+        executionContext: MakaToolContext,
+      ): Promise<PreparedComputerUseExecutionResult> => {
+        if (state !== 'prepared') throw new Error('Computer Use invocation was already consumed');
+        state = 'executing';
+        preparedSignal.throwIfAborted();
+        executionContext.abortSignal.throwIfAborted();
+        if ((presentationGenerations.get(context.sessionId) ?? 0) !== preparedGeneration) {
+          state = 'finished';
+          return {
+            result: sessionFailure('user_stopped'),
+            metadata: Object.freeze({}),
+          };
+        }
+        const beforeFrameId = currentObservationBinding(
+          observations.get(context.sessionId),
+        )?.frameId;
+        const executionArgs = Object.assign(
+          { ...projectionInput },
+          { [preparedBindingKey]: internalBinding },
+        ) as PreparedExecutionArgs;
+        try {
+          const result = await executePreparedArgs(executionArgs, executionContext);
+          const fresh = currentObservationBinding(observations.get(context.sessionId));
+          return {
+            result,
+            metadata:
+              fresh && fresh.frameId !== beforeFrameId
+                ? Object.freeze({ freshObservation: fresh })
+                : Object.freeze({}),
+          };
+        } finally {
+          state = 'finished';
+        }
+      },
+    });
+  }
+
+  const tools = [tool] as ComputerUseToolSet;
+  tools.prepareInvocation = prepareInvocation;
+  tool.impl = async (args, context) => {
+    if (context.abortSignal.aborted) return { text: 'computer aborted before start' };
+    const prepared = await prepareInvocation(args, {
+      sessionId: context.sessionId,
+      turnId: context.turnId,
+      toolCallId: context.toolCallId,
+      signal: context.abortSignal,
+    });
+    return (await prepared.execute(context)).result;
+  };
   const debug = deps.debug;
   if (debug) {
     const dispatch = tool.impl;
@@ -2903,9 +3442,12 @@ export function buildComputerUseTools(deps: {
       }
     };
   }
-  const tools = [tool] as ComputerUseToolSet;
   tools.clearSession = (sessionId: string) => {
     presentationGenerations.set(sessionId, (presentationGenerations.get(sessionId) ?? 0) + 1);
+    for (const controller of durationWaitControllers.get(sessionId) ?? []) {
+      controller.abort(new Error('Computer Use Session stopped'));
+    }
+    durationWaitControllers.delete(sessionId);
     for (const wake of presentationQueueWaiters.get(sessionId) ?? []) wake();
     for (const wake of presentationWaiters.get(sessionId) ?? []) wake();
     const current = sessionStates.get(sessionId);

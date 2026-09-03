@@ -25,7 +25,8 @@ export type ClientCapabilityGrantCapability = 'browser' | 'computer_use' | 'desk
 
 export type ClientCapabilityGrantScope =
   | { readonly kind: 'browser_origin'; readonly origin: string }
-  | { readonly kind: 'capability' }
+  | { readonly kind: 'macos_bundle_id'; readonly bundleId: string }
+  | { readonly kind: 'app_catalog' }
   | { readonly kind: 'mcp_tool'; readonly serverId: string; readonly toolName: string };
 
 export interface ClientCapabilityGrantTarget {
@@ -68,8 +69,11 @@ const GRANT_SHAPE = defineObjectShape<ClientCapabilitySessionGrant>()(
 const BROWSER_ORIGIN_SCOPE_SHAPE = defineObjectShape<
   Extract<ClientCapabilityGrantScope, { kind: 'browser_origin' }>
 >()(['kind', 'origin'], []);
-const CAPABILITY_SCOPE_SHAPE = defineObjectShape<
-  Extract<ClientCapabilityGrantScope, { kind: 'capability' }>
+const MACOS_BUNDLE_ID_SCOPE_SHAPE = defineObjectShape<
+  Extract<ClientCapabilityGrantScope, { kind: 'macos_bundle_id' }>
+>()(['kind', 'bundleId'], []);
+const APP_CATALOG_SCOPE_SHAPE = defineObjectShape<
+  Extract<ClientCapabilityGrantScope, { kind: 'app_catalog' }>
 >()(['kind'], []);
 const MCP_TOOL_SCOPE_SHAPE = defineObjectShape<
   Extract<ClientCapabilityGrantScope, { kind: 'mcp_tool' }>
@@ -95,7 +99,9 @@ export function decodeClientCapabilityGrantTarget(value: unknown): ClientCapabil
   const scope = decodeClientCapabilityGrantScope(record.scope);
   if (
     (capability === 'browser' && scope.kind !== 'browser_origin') ||
-    (capability === 'computer_use' && scope.kind !== 'capability') ||
+    (capability === 'computer_use' &&
+      scope.kind !== 'macos_bundle_id' &&
+      scope.kind !== 'app_catalog') ||
     (capability === 'desktop_mcp' && scope.kind !== 'mcp_tool')
   ) {
     throw new Error('Client Capability Session Grant scope does not match capability');
@@ -134,8 +140,10 @@ export function clientCapabilityScopeIdentity(scope: ClientCapabilityGrantScope)
   switch (scope.kind) {
     case 'browser_origin':
       return scope.origin;
-    case 'capability':
-      return '*';
+    case 'macos_bundle_id':
+      return scope.bundleId;
+    case 'app_catalog':
+      return 'app_catalog';
     case 'mcp_tool':
       return `${scope.serverId}\0${scope.toolName}`;
   }
@@ -157,11 +165,19 @@ function decodeClientCapabilityGrantScope(value: unknown): ClientCapabilityGrant
       }
       return deepFreeze({ kind: 'browser_origin', origin: record.origin });
     }
-    case 'capability':
-      if (!hasExactShape(record, CAPABILITY_SCOPE_SHAPE)) {
-        throw new Error('Invalid capability scope fields');
+    case 'macos_bundle_id':
+      if (!hasExactShape(record, MACOS_BUNDLE_ID_SCOPE_SHAPE)) {
+        throw new Error('Invalid macOS bundle ID scope fields');
       }
-      return Object.freeze({ kind: 'capability' });
+      return Object.freeze({
+        kind: 'macos_bundle_id',
+        bundleId: normalizeMacosBundleId(record.bundleId),
+      });
+    case 'app_catalog':
+      if (!hasExactShape(record, APP_CATALOG_SCOPE_SHAPE)) {
+        throw new Error('Invalid app catalog scope fields');
+      }
+      return Object.freeze({ kind: 'app_catalog' });
     case 'mcp_tool':
       if (!hasExactShape(record, MCP_TOOL_SCOPE_SHAPE)) {
         throw new Error('Invalid MCP tool scope fields');
@@ -189,6 +205,17 @@ function plainRecord(value: unknown, label: string): Record<string, unknown> {
 
 function safeId(value: unknown, label: string): string {
   if (typeof value !== 'string' || !SAFE_ID.test(value)) throw new Error(`Invalid ${label}`);
+  return value;
+}
+
+export function normalizeMacosBundleId(value: unknown): string {
+  if (
+    typeof value !== 'string' ||
+    value.length > 512 ||
+    !/^[A-Za-z0-9][A-Za-z0-9.-]*$/u.test(value)
+  ) {
+    throw new Error('Invalid macOS bundle ID');
+  }
   return value;
 }
 

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// The `maka.cu/2` wire contract, host side. Mirrors `maka-cu`'s
+// The `maka.cu/3` wire contract, host side. Mirrors `maka-cu`'s
 // docs/HOST_PROTOCOL.md; section numbers in comments refer to it.
 //
 // Everything here is parsing and mapping only: closed sets are checked against
@@ -34,7 +34,7 @@ import {
   type ComputerUseRect,
 } from '@maka/core/computer-use';
 
-export const MAKA_CU_PROTOCOL_VERSION = 'maka.cu/2';
+export const MAKA_CU_PROTOCOL_VERSION = 'maka.cu/3';
 
 /** JSON-RPC error codes (§1.1). These describe the request, never the world. */
 export const MAKA_CU_RPC_ERROR = {
@@ -453,6 +453,7 @@ export interface MakaCuDisplay {
  */
 export interface MakaCuSnapshotTarget {
   pid: number;
+  processGeneration: string;
   windowId: number;
   appId: string;
   appName?: string;
@@ -486,6 +487,21 @@ export interface MakaCuApp {
   name?: string;
   windowCount: number;
 }
+
+export type MakaCuTargetResolution =
+  | { kind: 'missing' | 'ambiguous' }
+  | {
+      kind: 'resolved';
+      target:
+        | { kind: 'installed'; appId: string }
+        | {
+            kind: 'running';
+            appId: string;
+            pid: number;
+            processGeneration: string;
+            windowId: number;
+          };
+    };
 
 /** §5.7 `apps.launch`. */
 export interface MakaCuLaunchedApp {
@@ -582,6 +598,19 @@ function requireString(method: string, value: unknown, what: string): string {
     throw new MakaCuProtocolViolation(method, `${what} is not a non-empty string`);
   }
   return value;
+}
+
+function requireProcessGeneration(method: string, value: unknown, what: string): string {
+  const generation = requireString(method, value, what);
+  if (!/^pst:(0|[1-9][0-9]{0,19})$/u.test(generation)) {
+    throw new MakaCuProtocolViolation(method, `${what} is not a process generation`);
+  }
+  const digits = generation.slice(4);
+  const max = '18446744073709551615';
+  if (digits.length > max.length || (digits.length === max.length && digits > max)) {
+    throw new MakaCuProtocolViolation(method, `${what} is outside UInt64`);
+  }
+  return generation;
 }
 
 function requireNumber(method: string, value: unknown, what: string): number {
@@ -803,6 +832,40 @@ export function readApp(method: string, value: unknown): MakaCuApp {
   };
 }
 
+export function readTargetResolution(method: string, value: unknown): MakaCuTargetResolution {
+  const result = requireRecord(method, value, 'result');
+  const resolution = requireMember(
+    method,
+    result.resolution,
+    ['resolved', 'missing', 'ambiguous'] as const,
+    'result.resolution',
+  );
+  if (resolution !== 'resolved') return { kind: resolution };
+  const target = requireRecord(method, result.target, 'result.target');
+  const kind = requireMember(
+    method,
+    target.kind,
+    ['installed', 'running'] as const,
+    'result.target.kind',
+  );
+  const appId = requireString(method, target.appId, 'result.target.appId');
+  if (kind === 'installed') return { kind: 'resolved', target: { kind, appId } };
+  return {
+    kind: 'resolved',
+    target: {
+      kind,
+      appId,
+      pid: requireNumber(method, target.pid, 'result.target.pid'),
+      processGeneration: requireProcessGeneration(
+        method,
+        target.processGeneration,
+        'result.target.processGeneration',
+      ),
+      windowId: requireNumber(method, target.windowId, 'result.target.windowId'),
+    },
+  };
+}
+
 /**
  * §5.7. `foregroundTaken` is required: the executor either checked or it did
  * not, and a host that defaults it to `false` reports "the user kept their
@@ -912,6 +975,11 @@ export function readSnapshot(method: string, value: unknown): MakaCuSnapshot {
     capturedAt: requireNumber(method, snapshot.capturedAt, 'snapshot.capturedAt'),
     target: {
       pid: requireNumber(method, target.pid, 'snapshot.target.pid'),
+      processGeneration: requireProcessGeneration(
+        method,
+        target.processGeneration,
+        'snapshot.target.processGeneration',
+      ),
       windowId: requireNumber(method, target.windowId, 'snapshot.target.windowId'),
       // §5.1: the one string that names an app on this wire.
       appId: requireString(method, target.appId, 'snapshot.target.appId'),

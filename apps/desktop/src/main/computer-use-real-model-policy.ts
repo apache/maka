@@ -17,21 +17,25 @@
  * under the License.
  */
 
-import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type {
+  ComputerUsePreparationContext,
+  ComputerUseToolSet,
+  PreparedComputerUseInvocation,
+  PreparedComputerUsePolicyBinding,
+} from '@maka/runtime/computer-use-tools';
+import { normalizeCuProcessGeneration } from '@maka/runtime/computer-use-tools';
 
 import type { MakaTool } from '@maka/runtime/tool-runtime';
-
-const ACTIONS_WITHOUT_OBSERVATION_OWNERSHIP = new Set([
-  'list_apps',
-  'wait',
-  'cursor_position',
-]);
 
 export interface ComputerUseRealModelPolicy {
   allowedActions: readonly string[];
   maxTotalActions: number;
   maxActionCounts: Readonly<Record<string, number>>;
-  allowedApps: readonly string[];
+  allowedTargets: readonly {
+    readonly pid: number;
+    readonly processGeneration: string;
+    readonly windowIds?: readonly number[];
+  }[];
 }
 
 export function parseComputerUseRealModelPolicy(
@@ -42,7 +46,7 @@ export function parseComputerUseRealModelPolicy(
     allowedActions?: unknown;
     maxTotalActions?: unknown;
     maxActionCounts?: unknown;
-    allowedApps?: unknown;
+    allowedTargets?: unknown;
   };
   const allowedActions = Array.isArray(value.allowedActions)
     ? value.allowedActions
@@ -74,18 +78,34 @@ export function parseComputerUseRealModelPolicy(
     throw new Error('Invalid Computer Use real-model maxActionCounts');
   }
   if (
-    !Array.isArray(value.allowedApps)
-    || value.allowedApps.length === 0
-    || value.allowedApps.some((app) =>
-      typeof app !== 'string' || !app.trim())
+    !Array.isArray(value.allowedTargets)
+    || value.allowedTargets.length === 0
+    || value.allowedTargets.some((target) => {
+      if (!target || typeof target !== 'object' || Array.isArray(target)) return true;
+      const record = target as Record<string, unknown>;
+      return !Number.isSafeInteger(record.pid)
+        || (record.pid as number) <= 0
+        || (() => {
+          try {
+            normalizeCuProcessGeneration(record.processGeneration);
+            return false;
+          } catch {
+            return true;
+          }
+        })()
+        || (record.windowIds !== undefined
+          && (!Array.isArray(record.windowIds)
+            || record.windowIds.some((windowId) =>
+              !Number.isSafeInteger(windowId) || (windowId as number) <= 0)));
+    })
   ) {
-    throw new Error('Invalid Computer Use real-model allowedApps');
+    throw new Error('Invalid Computer Use real-model allowedTargets');
   }
   return {
     allowedActions,
     maxTotalActions: value.maxTotalActions as number,
     maxActionCounts: value.maxActionCounts as Record<string, number>,
-    allowedApps: value.allowedApps,
+    allowedTargets: value.allowedTargets as ComputerUseRealModelPolicy['allowedTargets'],
   };
 }
 
@@ -94,87 +114,88 @@ export function applyComputerUseRealModelPolicy(
   policy: ComputerUseRealModelPolicy | undefined,
 ): ComputerUseToolSet {
   if (!policy) return tools;
+  const activePolicy = policy;
   let totalActions = 0;
   const actionCounts = new Map<string, number>();
   const ownedObservations = new Set<string>();
-  const allowed = new Set(policy.allowedActions);
-  const allowedApps = new Set(policy.allowedApps);
-  const wrapped = tools.map((tool) => {
-    if (tool.name !== 'maka_computer') return tool;
-    return {
-      ...tool,
-      impl: async (args, context) => {
-        const action = typeof (args as { action?: unknown })?.action === 'string'
-          ? (args as { action: string }).action
-          : 'unknown';
+  const allowed = new Set(activePolicy.allowedActions);
+  function policyFailure(action: string, error: string): Error {
+    return new Error(`maka_computer.${action} failed: ${error}`);
+  }
+  function targetAllowed(binding: PreparedComputerUsePolicyBinding): boolean {
+    if (binding.target.kind === 'app_catalog' || binding.target.kind === 'targetless') return true;
+    if (binding.target.kind === 'unresolved') return false;
+    if (binding.target.kind === 'observation') {
+      if (!ownedObservations.has(binding.target.binding.frameId)) return false;
+      return runningTargetAllowed(binding.target.binding.target.selector);
+    }
+    if (binding.target.resolved.kind !== 'running') return false;
+    return runningTargetAllowed(binding.target.resolved.selector);
+  }
+  function runningTargetAllowed(selector: {
+    readonly pid: number;
+    readonly processGeneration: string;
+    readonly windowId: number;
+  }): boolean {
+    return activePolicy.allowedTargets.some((target) =>
+      target.pid === selector.pid
+      && target.processGeneration === selector.processGeneration
+      && (target.windowIds === undefined || target.windowIds.includes(selector.windowId)));
+  }
+  async function prepareInvocation(
+    args: unknown,
+    context: ComputerUsePreparationContext,
+  ): Promise<PreparedComputerUseInvocation> {
+    const prepared = await tools.prepareInvocation(args, context);
+    const action = prepared.policyBinding.action;
+    if (!allowed.has(action)) throw policyFailure(action, 'unsupported_action_policy');
+    if (!targetAllowed(prepared.policyBinding)) {
+      throw policyFailure(action, 'target_policy_mismatch');
+    }
+    let consumed = false;
+    return Object.freeze({
+      ...prepared,
+      execute: async (...executeArgs: Parameters<PreparedComputerUseInvocation['execute']>) => {
+        if (consumed) throw new Error('Computer Use policy invocation was already consumed');
+        consumed = true;
         totalActions += 1;
-        if (totalActions > policy.maxTotalActions) {
-          return {
-            text: 'maka_computer failed: total_action_budget_exceeded',
-            error: 'total_action_budget_exceeded',
-          };
-        }
-        if (!allowed.has(action)) {
-          return {
-            text: `maka_computer.${action} failed: unsupported_action_policy`,
-            error: 'unsupported_action_policy',
-          };
-        }
-        const app = (args as { app?: unknown })?.app;
-        if (
-          (action === 'observe' || action === 'screenshot')
-          && (typeof app !== 'string' || !allowedApps.has(app))
-        ) {
-          return {
-            text: `maka_computer.${action} failed: target_policy_mismatch`,
-            error: 'target_policy_mismatch',
-          };
-        }
-        const observationId = (args as {
-          observation_id?: unknown;
-        })?.observation_id;
-        if (
-          action !== 'observe'
-          && action !== 'screenshot'
-          && !ACTIONS_WITHOUT_OBSERVATION_OWNERSHIP.has(action)
-          && (
-            typeof observationId !== 'string'
-            || !ownedObservations.has(observationId)
-          )
-        ) {
-          return {
-            text: `maka_computer.${action} failed: target_policy_mismatch`,
-            error: 'target_policy_mismatch',
-          };
+        if (totalActions > activePolicy.maxTotalActions) {
+          throw policyFailure(action, 'total_action_budget_exceeded');
         }
         const actionCount = (actionCounts.get(action) ?? 0) + 1;
         actionCounts.set(action, actionCount);
-        if (actionCount > (policy.maxActionCounts[action] ?? 0)) {
-          return {
-            text: `maka_computer.${action} failed: action_budget_exceeded`,
-            error: 'action_budget_exceeded',
-          };
+        if (actionCount > (activePolicy.maxActionCounts[action] ?? 0)) {
+          throw policyFailure(action, 'action_budget_exceeded');
         }
-        const result = await tool.impl(args as never, context);
-        if (action === 'observe') {
-          const text = (result as { text?: unknown })?.text;
-          if (typeof text === 'string') {
-            try {
-              const parsed = JSON.parse(text) as {
-                observation_id?: unknown;
-              };
-              if (typeof parsed.observation_id === 'string') {
-                ownedObservations.add(parsed.observation_id);
-              }
-            } catch {
-              // A failed/non-JSON observation never creates target ownership.
-            }
-          }
+        const result = await prepared.execute(...executeArgs);
+        if (result.metadata.freshObservation) {
+          ownedObservations.add(result.metadata.freshObservation.frameId);
         }
         return result;
       },
-    };
-  }) as ComputerUseToolSet;
+    });
+  }
+  const wrapped = tools.map((tool) =>
+    tool.name !== 'maka_computer'
+      ? tool
+      : {
+          ...tool,
+          impl: async (args, context) => {
+            try {
+              const prepared = await prepareInvocation(args, {
+                sessionId: context.sessionId,
+                turnId: context.turnId,
+                toolCallId: context.toolCallId,
+                signal: context.abortSignal,
+              });
+              return (await prepared.execute(context)).result;
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              return { text: message, error: message.split(': ').at(-1) ?? 'policy_error' };
+            }
+          },
+        }) as ComputerUseToolSet;
+  wrapped.prepareInvocation = prepareInvocation;
   wrapped.clearSession = (sessionId) => tools.clearSession(sessionId);
   wrapped.sessionEvents = tools.sessionEvents;
   return wrapped;

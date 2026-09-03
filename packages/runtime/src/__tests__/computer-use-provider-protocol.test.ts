@@ -1079,6 +1079,11 @@ function fakeSemanticBackend(value: { current: string }): CuDispatchBackend {
     appId: 'pid:42',
     pid: 42,
     windowId: 7,
+    target: {
+      kind: 'running',
+      identity: { kind: 'process', appId: 'pid:42' },
+      selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+    },
     contentFingerprint: 'fixture',
     elements: [
       {
@@ -1095,6 +1100,17 @@ function fakeSemanticBackend(value: { current: string }): CuDispatchBackend {
     ],
   });
   return {
+    async ensureReady() {},
+    async resolveTarget() {
+      return {
+        kind: 'resolved',
+        target: {
+          kind: 'running',
+          identity: { kind: 'process', appId: 'pid:42' },
+          selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+        },
+      };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },

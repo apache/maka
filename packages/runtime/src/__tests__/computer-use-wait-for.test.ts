@@ -55,6 +55,10 @@ function observation(labels: string[]): CuObservation {
 function backend(before: string[], after: string[], changeAt: number): CuDispatchBackend {
   let looks = 0;
   return {
+    async ensureReady() {},
+    async resolveTarget() {
+      return { kind: 'missing' };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },

@@ -165,19 +165,6 @@ describe('the call a model reads back as its own', () => {
     );
   });
 
-  test('never shows a host-only field as though the model had sent it', () => {
-    const readBack = computerUseModelCallArgs({
-      action: 'click_element',
-      observation_id: 'obs-1',
-      element_id: '4',
-      approvalClass: 'semantic_mutation',
-      rememberForTurnAllowed: false,
-    });
-
-    assert.ok(!('approvalClass' in readBack));
-    assert.ok(!('rememberForTurnAllowed' in readBack));
-  });
-
   test('never shows the element identity the host resolved for itself', () => {
     // The Computer Use tool attaches the observed element's identity so the
     // host can verify the target. It is not in the wire schema, and that schema

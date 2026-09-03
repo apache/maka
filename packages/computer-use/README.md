@@ -35,7 +35,7 @@ The package exposes one root entry point through `src/index.ts`:
   `CuDispatchBackend` contract.
 - `MakaCuService` supervises the executor process and owns the JSON-RPC request,
   cancellation, restart, and generation lifecycle.
-- The `maka-cu-protocol` exports decode and validate `maka.cu/2` envelopes,
+- The `maka-cu-protocol` exports decode and validate `maka.cu/3` envelopes,
   snapshots, dispatch results, domain errors, and key chords.
 - `resolveCuaDisplaySnapshots()` maps executor screenshots to Electron display
   coordinates without guessing when the display geometry is ambiguous.
@@ -73,7 +73,7 @@ Cross-platform work is tracked separately:
 ## Protocol and lifecycle
 
 The host and executor communicate over line-delimited JSON-RPC using the
-versioned `maka.cu/2` protocol. `MakaCuService` verifies that the executable is
+versioned `maka.cu/3` protocol. `MakaCuService` verifies that the executable is
 usable and checks any configured digest before spawning it, completes a
 `host.hello` handshake, and exposes the executor version, capabilities, limits,
 and process generation. The product selector always supplies the required

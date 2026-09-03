@@ -43,7 +43,7 @@
  * and `element_id`, not `windowId` and `elementId`.
  *
  * That distinction is load-bearing rather than cosmetic. This projection used
- * to be `computerUseApprovalSummary`, which renames both keys, and a renderer
+ * to use a host-only permission projection, which renames both keys, and a renderer
  * that reads the old names off the new projection does not fail — every
  * element action quietly falls back to "点击该元素", which is the exact defect
  * this file exists to remove. `SummaryKey` below is `keyof

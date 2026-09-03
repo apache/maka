@@ -58,12 +58,26 @@ function context(overrides: Partial<CuRunContext> = {}) {
   };
 }
 
+const runningTarget = {
+  kind: 'running' as const,
+  identity: { kind: 'bundle_id' as const, bundleId: 'com.example.Fixture' },
+  selector: { pid: 100, processGeneration: 'pst:1', windowId: 10 },
+};
+
+const preparationBackend = {
+  async ensureReady() {},
+  async resolveTarget() {
+    return { kind: 'resolved' as const, target: runningTarget };
+  },
+};
+
 function fixtureObservation(overrides: Partial<CuObservation> = {}): CuObservation {
   return {
     observationId: 'backend-observation-1',
     appId: 'Fixture',
     pid: 100,
     windowId: 10,
+    target: runningTarget,
     windowBounds: { x: 100, y: 100, width: 600, height: 400 },
     sourceBoundsPx: { x: 0, y: 0, width: 1200, height: 800 },
     contentFingerprint: 'fixture-structure-a',
@@ -139,6 +153,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     const dispatches: Array<{ action: CuAction; context: CuRunContext }> = [];
     let revision = 0;
     const backend: CuDispatchBackend = {
+      ...preparationBackend,
       async preflight() {
         return { accessibility: true, screenRecording: true };
       },
@@ -227,6 +242,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
     const overlay = overlayRecorder();
     let mode: 'target_change' | 'unknown' = 'target_change';
     const backend: CuDispatchBackend = {
+      ...preparationBackend,
       async preflight() {
         return { accessibility: true, screenRecording: true };
       },
@@ -299,6 +315,7 @@ describe('Computer Use cross-layer deterministic contract', () => {
 
   test('explicit session cleanup fences late work and persisted projection omits private UI content', async () => {
     const backend: CuDispatchBackend = {
+      ...preparationBackend,
       async preflight() {
         return { accessibility: true, screenRecording: true };
       },

@@ -57,7 +57,7 @@ export type CuDispatchOutcome =
        * The message may be shown to the model.
        *
        * Set only by a backend that guarantees its diagnostics carry no text
-       * belonging to the observed application — `maka.cu/2` §1.2 makes that a
+       * belonging to the observed application — `maka.cu/3` §1.2 makes that a
        * protocol rule. Absent means withheld, so a backend that forgets is
        * quiet rather than leaky.
        */
@@ -82,6 +82,75 @@ export interface CuAppSummary {
   name?: string;
   windowCount: number;
   windows?: Array<{ windowId: number; title?: string }>;
+}
+
+export type CuResolvedTargetIdentity =
+  | { readonly kind: 'bundle_id'; readonly bundleId: string }
+  | { readonly kind: 'process'; readonly appId: `pid:${number}` };
+
+export interface CuRunningExecutionTarget {
+  readonly kind: 'running';
+  readonly identity: CuResolvedTargetIdentity;
+  readonly selector: {
+    readonly pid: number;
+    readonly processGeneration: string;
+    readonly windowId: number;
+  };
+}
+
+export type CuResolvedExecutionTarget =
+  | CuRunningExecutionTarget
+  | {
+      readonly kind: 'installed';
+      readonly identity: { readonly kind: 'bundle_id'; readonly bundleId: string };
+    };
+
+export type CuTargetResolutionRequest =
+  | {
+      readonly kind: 'application';
+      readonly app: string;
+      readonly intent: 'operate' | 'launch';
+    }
+  | { readonly kind: 'window'; readonly windowId: number };
+
+export type CuTargetResolution =
+  | { readonly kind: 'resolved'; readonly target: CuResolvedExecutionTarget }
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'ambiguous' };
+
+const MAX_PROCESS_GENERATION = '18446744073709551615';
+
+export function normalizeCuProcessGeneration(value: unknown): string {
+  if (typeof value !== 'string' || !/^pst:(0|[1-9][0-9]{0,19})$/u.test(value)) {
+    throw new Error('Invalid Computer Use process generation');
+  }
+  const digits = value.slice(4);
+  if (
+    digits.length > MAX_PROCESS_GENERATION.length ||
+    (digits.length === MAX_PROCESS_GENERATION.length && digits > MAX_PROCESS_GENERATION)
+  ) {
+    throw new Error('Invalid Computer Use process generation');
+  }
+  return value;
+}
+
+export type CuObservationFailureCause =
+  | 'window_gone'
+  | 'process_replaced'
+  | 'target_changed'
+  | 'cancelled'
+  | 'backend_failure';
+
+export class CuObservationFailure extends Error {
+  readonly cause: CuObservationFailureCause;
+  readonly publicCode: ComputerUseErrorCode;
+
+  constructor(cause: CuObservationFailureCause, publicCode: ComputerUseErrorCode, message: string) {
+    super(message);
+    this.name = 'CuObservationFailure';
+    this.cause = cause;
+    this.publicCode = publicCode;
+  }
 }
 
 export interface CuLaunchedApp {
@@ -200,6 +269,8 @@ export interface CuObservation {
   appId: string;
   pid: number;
   windowId: number;
+  /** Trusted native root identity. Required for managed admission. */
+  target?: CuRunningExecutionTarget;
   windowTitle?: string;
   /**
    * The name the caller used, when it was not the canonical one.
@@ -275,7 +346,7 @@ export type CuSemanticAction =
        * The coordinate `scroll` aims at a pixel and needs a visible window to
        * anchor the conversion; this addresses the scroll area itself, which is
        * the difference that shows when the window is behind something else.
-       * `maka.cu/2` declares it (`{kind:"scroll", direction, pages}`) and
+       * `maka.cu/3` declares it (`{kind:"scroll", direction, pages}`) and
        * cua-driver advertises `scroll` among its element actions, so both
        * executors already speak it — this is the member that lets Maka say it.
        */
@@ -367,10 +438,14 @@ export interface CuOverlayHook {
 
 /**
  * The host dispatch seam. Implemented in @maka/computer-use by the maka-cu
- * backend, which spawns the maka-cu executor and speaks `maka.cu/2` over stdio.
+ * backend, which spawns the maka-cu executor and speaks `maka.cu/3` over stdio.
  * Alternative backends can plug in behind this same interface later.
  */
 export interface CuDispatchBackend {
+  /** Start the shared backend and complete its protocol handshake. */
+  ensureReady(signal: AbortSignal): Promise<void>;
+  /** Side-effect-free canonical target resolution for managed admission. */
+  resolveTarget(input: CuTargetResolutionRequest, signal: AbortSignal): Promise<CuTargetResolution>;
   /** Live macOS TCC status. Called at EVERY action-start — cached "granted" is
    *  insufficient because the user can revoke at any time (S12). */
   preflight(signal: AbortSignal): Promise<{ accessibility: boolean; screenRecording: boolean }>;
@@ -389,7 +464,10 @@ export interface CuDispatchBackend {
    * the whole point of a background launch is that the user keeps theirs.
    */
   launchApp?(
-    input: { app: string },
+    input: {
+      app: string;
+      target?: Extract<CuResolvedExecutionTarget, { readonly kind: 'installed' }>;
+    },
     signal: AbortSignal,
     context: CuRunContext,
   ): Promise<CuLaunchedApp>;
@@ -400,6 +478,7 @@ export interface CuDispatchBackend {
       includeScreenshot: boolean;
       menu?: string;
       query?: string;
+      target?: CuRunningExecutionTarget;
     },
     signal: AbortSignal,
     context: CuRunContext,
@@ -422,6 +501,7 @@ export interface CuDispatchBackend {
       includeScreenshot: boolean;
       menu?: string;
       query?: string;
+      target?: CuRunningExecutionTarget;
     },
     signal: AbortSignal,
     context: CuRunContext,

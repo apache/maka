@@ -171,10 +171,7 @@ describe('AiSdkBackend Computer Use model loop', () => {
         ledger: durable.ledger,
       }),
     );
-    // The model's own list_apps, then observe resolving the `app` it was given.
-    // The second lookup is a backend call the model never waits on, which is
-    // the trade the resolution makes: a host round trip instead of a model one.
-    assert.deepEqual(backendCalls, ['list_apps', 'list_apps', 'observe', 'set_value']);
+    assert.deepEqual(backendCalls, ['list_apps', 'observe', 'set_value']);
     assert.equal(value.current, 'model-written');
     assert.equal(events.at(-1)?.type, 'complete');
     const textComplete = [...events].reverse().find((event) => event.type === 'text_complete');
@@ -280,17 +277,7 @@ describe('AiSdkBackend Computer Use model loop', () => {
       }),
     );
     assert.equal(value.current, 'recovered');
-    // Each observe resolves its `app` first, because the model is allowed to
-    // say the name a person would use. That lookup is a backend call and not a
-    // model round trip, which is the round trip the resolution exists to save.
-    assert.deepEqual(backendCalls, [
-      'list_apps',
-      'observe',
-      'left_click',
-      'list_apps',
-      'observe',
-      'set_value',
-    ]);
+    assert.deepEqual(backendCalls, ['observe', 'left_click', 'observe', 'set_value']);
     assert.equal(events.at(-1)?.type, 'complete');
   });
 });
@@ -301,6 +288,11 @@ function fakeComputerBackend(value: { current: string }, calls: string[]): CuDis
     appId: 'pid:42',
     pid: 42,
     windowId: 7,
+    target: {
+      kind: 'running',
+      identity: { kind: 'process', appId: 'pid:42' },
+      selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+    },
     windowTitle: 'Codex CUA Lab',
     contentFingerprint: 'fixture-structure',
     elements: [
@@ -324,6 +316,17 @@ function fakeComputerBackend(value: { current: string }, calls: string[]): CuDis
     },
   });
   return {
+    async ensureReady() {},
+    async resolveTarget() {
+      return {
+        kind: 'resolved',
+        target: {
+          kind: 'running',
+          identity: { kind: 'process', appId: 'pid:42' },
+          selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+        },
+      };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },

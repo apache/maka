@@ -19,7 +19,7 @@
 
 // Unit test for MakaCuService, the supervisor between the maka-cu backend and
 // the executor child. Drives it against a MOCK executor (a small CommonJS node
-// script written to a temp dir) that speaks `maka.cu/2` — the real `maka-cu`
+// script written to a temp dir) that speaks `maka.cu/3` — the real `maka-cu`
 // binary is never spawned, and does not exist as a signed artifact yet.
 //
 // The supervisor had no test of its own: it was exercised only through the
@@ -93,7 +93,7 @@ function handle(msg) {
   }
   if (typeof msg.id !== 'number') return;
   if (msg.method === 'host.hello') {
-    send({ jsonrpc: '2.0', id: msg.id, result: { ok: true, protocol: 'maka.cu/2',
+    send({ jsonrpc: '2.0', id: msg.id, result: { ok: true, protocol: 'maka.cu/3',
       executor: { name: 'maka-cu-mock', version: '0.0.1' }, pid: process.pid,
       capabilities: { captureStream: false, elementActions: [], pointActions: [],
         keyActions: [], imageFormats: ['png'] },

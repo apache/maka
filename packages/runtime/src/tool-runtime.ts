@@ -1086,32 +1086,15 @@ export class ToolRuntime {
     // model reads back on its next turn (`model-history.ts` replays
     // `event.content.args`).
     //
-    // Computer Use used the host's approval summary here. That projection
-    // exists to decide and display a permission: it renames `window_id` to
-    // `windowId`, adds `approvalClass` and `rememberForTurnAllowed`, and drops
-    // every argument it does not need. On the real ToolRuntime a model that
-    // sent {action:'press_key', app, window_id, observation_id, element_id,
-    // text:'cmd+s'} read back {action, approvalClass, rememberForTurnAllowed,
-    // app, windowId, observationId} — a key the tool rejects, two fields it
-    // never sent, no element, and a press_key with no key. It then went on
-    // calling it that way.
-    //
-    // The permission prompt still reads `permissionArgs`, and the approval
-    // scope key is still computed from the raw call, so this only changes what
-    // is written down. `computerUseModelCallArgs` keeps the same privacy rule
+    // `computerUseModelCallArgs` keeps the privacy rule
     // — screen-derived and user-typed values are reduced to a shape — and
     // speaks the tool's own argument names.
     const persistedArgs =
       tool.categoryHint === 'computer_use'
         ? snapshotToolArgs(computerUseModelCallArgs(permissionArgs))
         : permissionArgs;
-    // What the model will read back as its own call. The approval summary is
-    // the host's projection for deciding a permission, and using it here taught
-    // the model to call the tool with `approvalClass`, `rememberForTurnAllowed`
-    // and `windowId` — two fields it does not take and one key in a dialect it
-    // rejects. Same privacy boundary, names the tool accepts.
-    //
-    // The same projection as the audit record, since `computerUseModelCallArgs`
+    // What the model will read back as its own call. This is the same projection
+    // as the audit record, since `computerUseModelCallArgs`
     // became what both are written with. It was spelled out twice, which meant
     // running it twice per call and leaving two expressions to drift apart. The
     // two names stay because the roles are different — one is what the host

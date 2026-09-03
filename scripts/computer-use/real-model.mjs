@@ -320,13 +320,16 @@ export async function waitForTraceFlush(path, expectedToolCallIds, timeoutMs = 2
 export async function discoverFixtureIdentity(
   fixturePid,
   windowSpecs,
-  { listApps, timeoutMs = 2_000, pollIntervalMs = 50 } = {},
+  { listApps, resolveTarget, timeoutMs = 2_000, pollIntervalMs = 50 } = {},
 ) {
   if (!Number.isInteger(fixturePid) || fixturePid <= 0) {
     throw new Error('fixture discovery requires a valid launcher-owned pid');
   }
   if (typeof listApps !== 'function') {
     throw new Error('fixture discovery requires an independent window lister');
+  }
+  if (typeof resolveTarget !== 'function') {
+    throw new Error('fixture discovery requires the native target resolver');
   }
   const expectedTitles = windowSpecs?.map((window) => window.title);
   if (
@@ -362,10 +365,35 @@ export async function discoverFixtureIdentity(
         windowIds.push(matches[0].windowId);
       }
       if (complete && new Set(windowIds).size === windowIds.length) {
+        const resolved = await Promise.all(windowIds.map((windowId) => resolveTarget(windowId)));
+        const running = resolved.map((entry) =>
+          entry?.kind === 'resolved' ? entry.target : undefined,
+        );
+        if (
+          running.some(
+            (target, index) =>
+              target?.kind !== 'running' ||
+              target.selector.pid !== fixturePid ||
+              target.selector.windowId !== windowIds[index],
+          )
+        ) {
+          lastFailure = 'native resolver did not preserve the fixture targets';
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, pollIntervalMs));
+          continue;
+        }
+        const processGenerations = new Set(
+          running.map((target) => target.selector.processGeneration),
+        );
+        if (processGenerations.size !== 1) {
+          lastFailure = 'fixture windows do not share one process generation';
+          await new Promise((resolvePromise) => setTimeout(resolvePromise, pollIntervalMs));
+          continue;
+        }
         return {
           instances: [
             {
               pid: fixturePid,
+              processGeneration: running[0].selector.processGeneration,
               windowIds,
             },
           ],
@@ -398,6 +426,8 @@ async function discoverLauncherFixtureIdentity(fixturePid, windowSpecs) {
   try {
     return await discoverFixtureIdentity(fixturePid, windowSpecs, {
       listApps: () => backend.listApps(new AbortController().signal),
+      resolveTarget: (windowId) =>
+        backend.resolveTarget({ kind: 'window', windowId }, new AbortController().signal),
       timeoutMs: 5_000,
     });
   } finally {
@@ -512,7 +542,7 @@ async function run() {
             Object.fromEntries(
               scenario.allowedActions.map((action) => [action, scenario.maxTotalActions]),
             ),
-          allowedApps: activeWindowSpecs(scenario).map((window) => window.title),
+          allowedTargets: fixtureIdentity.instances,
         }),
         MAKA_CU_REAL_MODEL_TRACE: tracePath,
       },

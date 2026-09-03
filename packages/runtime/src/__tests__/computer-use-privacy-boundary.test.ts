@@ -145,9 +145,7 @@ test('Computer Use snapshots execution args and persists the model-facing projec
   assert.deepEqual(start?.type === 'tool_start' ? start.args : undefined, expectedArgs);
   assert.equal(invocations.length, 1);
   assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /secret/);
-  // Host-only fields that the approval summary added and the model never sent.
-  assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /approvalClass|rememberForTurnAllowed/);
-  // The dialect the tool actually accepts, not the approval summary's.
+  // The dialect the tool actually accepts.
   assert.doesNotMatch(invocations[0]!.argsSummary ?? '', /windowId|observationId/);
 });
 
@@ -340,11 +338,8 @@ test('Computer Use persists which element a call targeted', async () => {
 });
 
 test('the model reads its own call back in the names the tool accepts', async () => {
-  // The record replayed to the model used to be the host's approval
-  // projection: `approvalClass`, `rememberForTurnAllowed`, `windowId`. Two of
-  // those are not arguments at all and the third is a key the tool rejects, so
-  // the model went on calling it that way — six of eleven calls on a real
-  // desktop run, and 29 rejections in this machine's telemetry.
+  // The record replayed to the model must keep the tool's wire names; camelCase
+  // target keys are rejected by the tool.
   const events: SessionEvent[] = [];
   const runtimeEvents: unknown[] = [];
   const runtime = createTestToolRuntime({

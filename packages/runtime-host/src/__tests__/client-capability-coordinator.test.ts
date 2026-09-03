@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import { createManagedExecutionBoundary } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { ToolOutcomeUnknownError } from '@maka/core/events';
+import type { ClientCapabilityGrantTarget } from '@maka/core/client-capability-grant';
 import type { McpCallResult } from '@maka/core/mcp';
 import type {
   ClientCapabilityAdmissionEvidence,
@@ -466,6 +467,83 @@ describe('Host Client Capability coordinator', () => {
       await prepared.execute(managedContext('tool-settings')),
       textResult('settings'),
     );
+    snapshot.release();
+    await connection.close();
+    await coordinator.close();
+  });
+
+  test('admits Computer Use from native target evidence and rejects unresolved targets', async () => {
+    const approved: ClientCapabilityGrantTarget[] = [];
+    const admission = clientCapabilityCoordinatorTestAdmission();
+    const coordinator = createCoordinator(() => undefined, {
+      ...admission,
+      interactions: {
+        requestClientCapabilityApproval: async ({ target }) => {
+          approved.push(target);
+          return 'allow';
+        },
+      },
+      grants: {
+        readClientCapabilitySessionGrant: async (key) =>
+          approved.some(
+            (target) =>
+              target.providerId === key.providerId &&
+              target.contractId === key.contractId &&
+              target.serverId === key.serverId &&
+              target.toolName === key.toolName &&
+              target.capability === key.capability &&
+              JSON.stringify(target.scope) === JSON.stringify(key.scope),
+          )
+            ? { version: 1, ...key, grantedAt: 1 }
+            : undefined,
+      },
+    });
+    const connection = attachAutoAdmittingConnection(
+      coordinator,
+      'connection-a',
+      (frame) =>
+        frame.arguments.target === 'app'
+          ? {
+              kind: 'computer_use',
+              target: { kind: 'macos_bundle_id', bundleId: 'com.apple.TextEdit' },
+            }
+          : frame.arguments.target === 'catalog'
+            ? { kind: 'computer_use', target: { kind: 'app_catalog' } }
+            : frame.arguments.target === 'duration'
+              ? { kind: 'computer_use', target: { kind: 'duration_wait' } }
+              : { kind: 'none' },
+      'computer',
+    );
+    await registerSessionTools(
+      coordinator,
+      'connection-a',
+      'registration-computer',
+      'desktop_computer_use',
+      ['maka_computer'],
+    );
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+
+    const application = await prepare(snapshot.tools[0], { target: 'app' }, 'tool-app');
+    assert.deepEqual(approved[0]?.scope, {
+      kind: 'macos_bundle_id',
+      bundleId: 'com.apple.TextEdit',
+    });
+    assert.deepEqual(await application.execute(managedContext('tool-app')), textResult('computer'));
+
+    const duration = await prepare(snapshot.tools[0], { target: 'duration' }, 'tool-duration');
+    assert.equal(approved.length, 1);
+    assert.deepEqual(
+      await duration.execute(managedContext('tool-duration')),
+      textResult('computer'),
+    );
+
+    await assert.rejects(
+      () => prepare(snapshot.tools[0], { target: 'unresolved' }, 'tool-unresolved'),
+      /requires native target evidence/,
+    );
+
     snapshot.release();
     await connection.close();
     await coordinator.close();

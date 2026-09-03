@@ -43,6 +43,10 @@ const APPS: CuAppSummary[] = [
 
 function backend(): CuDispatchBackend {
   return {
+    async ensureReady() {},
+    async resolveTarget() {
+      return { kind: 'missing' };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },

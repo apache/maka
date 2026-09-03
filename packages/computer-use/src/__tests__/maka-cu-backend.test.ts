@@ -19,7 +19,7 @@
 
 // Unit test for the maka-cu CuDispatchBackend. Drives the module against a MOCK
 // executor (a small CommonJS node script written to a temp dir) that speaks
-// `maka.cu/2` — the real `maka-cu` binary is never spawned, and does not exist
+// `maka.cu/3` — the real `maka-cu` binary is never spawned, and does not exist
 // as a signed artifact yet. The mock records every message it receives to an
 // NDJSON log the test inspects, the same way the cua-driver backend test does.
 //
@@ -35,7 +35,11 @@ import { after, before, describe, it } from 'node:test';
 
 import type { CuaBoundAction } from '@maka/runtime/cua-frame-state';
 
-import type { CuObservation, CuRunContext } from '@maka/runtime/computer-use-types';
+import type {
+  CuObservation,
+  CuRunContext,
+  CuRunningExecutionTarget,
+} from '@maka/runtime/computer-use-types';
 import {
   createMakaCuBackend,
   type MakaCuBackendOptions,
@@ -67,7 +71,7 @@ if (process.argv[2] !== 'host') {
   process.exit(64);
 }
 const LOG = process.env.MAKACU_MOCK_LOG || '';
-const PROTOCOL = process.env.MAKACU_MOCK_PROTOCOL || 'maka.cu/2';
+const PROTOCOL = process.env.MAKACU_MOCK_PROTOCOL || 'maka.cu/3';
 const DISPATCH_ERROR = process.env.MAKACU_MOCK_DISPATCH_ERROR || '';
 const TIER = process.env.MAKACU_MOCK_TIER || 'ax';
 const PATH_NAME = process.env.MAKACU_MOCK_PATH || 'ax_action';
@@ -89,10 +93,10 @@ const NO_WOULD_REQUIRE = process.env.MAKACU_MOCK_NO_WOULD_REQUIRE === '1';
 const REFUSAL_OUTCOME = process.env.MAKACU_MOCK_REFUSAL_OUTCOME || 'refused';
 const OK_OUTCOME = process.env.MAKACU_MOCK_OK_OUTCOME || 'ok';
 const SESSION_ERROR = process.env.MAKACU_MOCK_SESSION_ERROR || '';
-const WINDOW_LIST_ERROR = process.env.MAKACU_MOCK_WINDOW_LIST_ERROR || '';
 const MALFORMED = process.env.MAKACU_MOCK_MALFORMED || '';
 const LAUNCH_ERROR = process.env.MAKACU_MOCK_LAUNCH_ERROR || '';
 const HANG_OBSERVE = process.env.MAKACU_MOCK_HANG_OBSERVE === '1';
+const DELAY_OBSERVE_MS = Number(process.env.MAKACU_MOCK_DELAY_OBSERVE_MS || '0');
 const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
 let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
@@ -162,6 +166,7 @@ function snapshot(includeImage) {
     capturedAt: Date.now(),
     target: {
       pid: 4711,
+      processGeneration: 'pst:1',
       windowId: 90210,
       appId: 'com.example.Fixture',
       appName: 'Fixture',
@@ -281,18 +286,35 @@ function handle(msg) {
     case 'permissions.check':
       ok(id, { accessibility: true, screenRecording: true, screenRecordingProbe: 'capture_succeeded' });
       return;
+    case 'target.resolve':
+      if (params.target.kind === 'application' && params.target.intent === 'launch') {
+        ok(id, { resolution: 'resolved', target: {
+          kind: 'installed', appId: params.target.app === 'Fixture'
+            ? 'com.example.Fixture'
+            : params.target.app,
+        } });
+        return;
+      }
+      if (params.target.kind === 'application' && params.target.app !== 'com.example.Fixture') {
+        ok(id, { resolution: 'missing' });
+        return;
+      }
+      ok(id, { resolution: 'resolved', target: {
+        kind: 'running', appId: 'com.example.Fixture', pid: 4711,
+        processGeneration: 'pst:1',
+        windowId: params.target.kind === 'window' ? params.target.windowId : 90210,
+      } });
+      return;
     case 'apps.list':
       ok(id, { apps: [Object.assign({ appId: 'com.example.Fixture', pid: 4711, name: 'Fixture',
         windowCount: 1, running: true },
         MALFORMED === 'app_no_window_count' ? { windowCount: undefined } : {})] });
       return;
     case 'window.list':
-      if (WINDOW_LIST_ERROR) { domainError(id, WINDOW_LIST_ERROR, {}); return; }
-      ok(id, { windows: [Object.assign({ pid: 4711, windowId: 90210,
+      ok(id, { windows: [{ pid: 4711, windowId: 90210,
         appId: 'com.example.Fixture', appName: 'Fixture', title: 'Untitled',
         bounds: { x: 0, y: WINDOW_ORIGIN_Y, width: 600, height: 400 }, layer: 0, zIndex: 3,
-        onScreen: true, displayId: '69732928' },
-        MALFORMED === 'window_no_zindex' ? { zIndex: undefined } : {})] });
+        onScreen: true, displayId: '69732928' }] });
       return;
     case 'apps.launch':
       if (LAUNCH_ERROR) { domainError(id, LAUNCH_ERROR, {}); return; }
@@ -305,6 +327,10 @@ function handle(msg) {
       // Alive, and simply slower than the host's deadline — the shape a real
       // executor takes while walking a file dialog's accessibility tree.
       if (HANG_OBSERVE) return;
+      if (DELAY_OBSERVE_MS > 0) {
+        setTimeout(function () { ok(id, { snapshot: snapshot(params.includeImage !== false) }); }, DELAY_OBSERVE_MS);
+        return;
+      }
       ok(id, { snapshot: snapshot(params.includeImage !== false) });
       return;
     case 'screen.capture':
@@ -401,10 +427,10 @@ function makeBackend(
     refusalOutcome?: string;
     okOutcome?: string;
     sessionError?: string;
-    windowListError?: string;
     malformed?: string;
     launchError?: string;
     hangObserve?: boolean;
+    delayObserveMs?: number;
     truncated?: boolean;
     differencePresentation?: 'no-change' | 'difference' | 'full';
     timeoutMs?: number;
@@ -423,7 +449,7 @@ function makeBackend(
       (opts.differencePresentation ? `-difference-${opts.differencePresentation}` : ''),
   );
   process.env.MAKACU_MOCK_LOG = logPath;
-  process.env.MAKACU_MOCK_PROTOCOL = opts.protocol ?? 'maka.cu/2';
+  process.env.MAKACU_MOCK_PROTOCOL = opts.protocol ?? 'maka.cu/3';
   process.env.MAKACU_MOCK_DISPATCH_ERROR = opts.dispatchError ?? '';
   process.env.MAKACU_MOCK_TIER = opts.tier ?? 'ax';
   process.env.MAKACU_MOCK_PATH = opts.path ?? 'ax_action';
@@ -439,10 +465,10 @@ function makeBackend(
   process.env.MAKACU_MOCK_REFUSAL_OUTCOME = opts.refusalOutcome ?? 'refused';
   process.env.MAKACU_MOCK_OK_OUTCOME = opts.okOutcome ?? 'ok';
   process.env.MAKACU_MOCK_SESSION_ERROR = opts.sessionError ?? '';
-  process.env.MAKACU_MOCK_WINDOW_LIST_ERROR = opts.windowListError ?? '';
   process.env.MAKACU_MOCK_MALFORMED = opts.malformed ?? '';
   process.env.MAKACU_MOCK_LAUNCH_ERROR = opts.launchError ?? '';
   process.env.MAKACU_MOCK_HANG_OBSERVE = opts.hangObserve ? '1' : '';
+  process.env.MAKACU_MOCK_DELAY_OBSERVE_MS = String(opts.delayObserveMs ?? 0);
   process.env.MAKACU_MOCK_TRUNCATED = opts.truncated ? '1' : '';
   process.env.MAKACU_MOCK_LAUNCH_FOREGROUND = opts.launchTookForeground ? '1' : '';
   process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y = String(opts.windowOriginY ?? 25);
@@ -471,11 +497,27 @@ function signal(): AbortSignal {
 
 const FIXTURE_APP_ID = 'com.example.Fixture';
 
+async function resolveFixtureTarget(
+  backend: ReturnType<typeof createMakaCuBackend>,
+): Promise<CuRunningExecutionTarget> {
+  const resolution = await backend.resolveTarget(
+    { kind: 'application', app: FIXTURE_APP_ID, intent: 'operate' },
+    signal(),
+  );
+  assert.equal(resolution.kind, 'resolved');
+  assert.equal(resolution.kind === 'resolved' ? resolution.target.kind : undefined, 'running');
+  if (resolution.kind !== 'resolved' || resolution.target.kind !== 'running') {
+    throw new Error('fixture target did not resolve');
+  }
+  return resolution.target;
+}
+
 async function observeFixture(
   backend: ReturnType<typeof createMakaCuBackend>,
 ): Promise<MakaCuObservation> {
+  const target = await resolveFixtureTarget(backend);
   return backend.observeApp!(
-    { app: FIXTURE_APP_ID, includeScreenshot: true },
+    { app: FIXTURE_APP_ID, target, includeScreenshot: true },
     signal(),
     RUN_CONTEXT,
   );
@@ -526,7 +568,7 @@ describe('maka-cu backend', () => {
 
     const records = await readRecords(logPath);
     const hello = received(records, 'host.hello')[0];
-    assert.equal(hello?.protocol, 'maka.cu/2');
+    assert.equal(hello?.protocol, 'maka.cu/3');
     assert.equal(hello?.hostPid, process.pid);
     assert.equal(hello?.allowGlobalPointer, false);
     assert.equal(typeof hello?.imageDir, 'string');
@@ -601,11 +643,14 @@ describe('maka-cu backend', () => {
     const records = await readRecords(logPath);
     const observeParams = received(records, 'observe')[0];
     assert.equal(observeParams?.session, RUN_CONTEXT.sessionId);
-    // §5.2: a tagged union, never app + windowId as two optional fields, and the
-    // app string travels unaltered — the executor resolves it (§5.1), so the
-    // host never touches window.list to do it.
-    assert.deepEqual(observeParams?.target, { kind: 'app', app: FIXTURE_APP_ID });
-    assert.equal(received(records, 'window.list').length, 0);
+    // §5.2: observe receives only the exact selector returned by target.resolve.
+    assert.deepEqual(observeParams?.target, {
+      kind: 'window',
+      appId: FIXTURE_APP_ID,
+      pid: 4711,
+      processGeneration: 'pst:1',
+      windowId: 90210,
+    });
     // §5: bounds are omitted so the executor applies the ones it declared.
     assert.equal(observeParams?.maxElements, undefined);
     assert.equal(received(records, 'session.begin').length, 1);
@@ -913,10 +958,13 @@ describe('maka-cu backend', () => {
       timeoutMs: 300,
       onTrace: (event) => traces.push(event),
     });
+    const target = await resolveFixtureTarget(backend);
     await assert.rejects(
-      backend.captureObservation!({ windowId: 90210, includeScreenshot: true }, signal(), {
-        ...RUN_CONTEXT,
-      }),
+      backend.captureObservation!(
+        { windowId: 90210, target, includeScreenshot: true },
+        signal(),
+        RUN_CONTEXT,
+      ),
       /outcome_unknown/,
     );
     const hostError = traces.find((event) => event.type === 'host_error');
@@ -1204,27 +1252,79 @@ describe('maka-cu backend', () => {
     // (computer-use-tools.ts freshFullObservation): the appId it hands back is
     // the one the observation carried.
     const again = await backend.captureObservation!(
-      { app: observation.appId, windowId: observation.windowId, includeScreenshot: true },
+      {
+        app: observation.appId,
+        windowId: observation.windowId,
+        target: observation.target,
+        includeScreenshot: true,
+      },
       signal(),
       RUN_CONTEXT,
     );
     assert.equal(again.appId, FIXTURE_APP_ID);
 
-    // The window id was joined to its pid through window.list (§5.4) and the
-    // pair resolved into the exact arm of the union.
+    // Every follow-up observation keeps the exact native selector.
     const observes = received(await readRecords(logPath), 'observe');
-    assert.deepEqual(observes[1]?.target, { kind: 'window', pid: 4711, windowId: 90210 });
+    assert.deepEqual(observes[1]?.target, {
+      kind: 'window',
+      appId: FIXTURE_APP_ID,
+      pid: 4711,
+      processGeneration: 'pst:1',
+      windowId: 90210,
+    });
   });
 
   it('refuses an {app, windowId} pair no window satisfies as target_missing', async () => {
     const { backend } = makeBackend();
-    await assert.rejects(
-      backend.captureObservation!(
-        { app: 'com.example.Other', windowId: 90210, includeScreenshot: true },
+    assert.deepEqual(
+      await backend.resolveTarget(
+        { kind: 'application', app: 'com.example.Other', intent: 'operate' },
         signal(),
-        RUN_CONTEXT,
       ),
-      /target_missing/,
+      { kind: 'missing' },
+    );
+  });
+
+  it('lets a queued target resolution observe its own cancellation', async () => {
+    const { backend, logPath } = makeBackend({ delayObserveMs: 250, timeoutMs: 1000 });
+    const target = await resolveFixtureTarget(backend);
+    const active = backend.observeApp!(
+      { app: FIXTURE_APP_ID, target, includeScreenshot: false },
+      signal(),
+      RUN_CONTEXT,
+    );
+    await waitForRecord(
+      logPath,
+      (record) => record.kind === 'recv' && record.method === 'observe',
+      'the active observation never reached the executor',
+    );
+
+    const controller = new AbortController();
+    const queued = backend.resolveTarget(
+      { kind: 'application', app: FIXTURE_APP_ID, intent: 'operate' },
+      controller.signal,
+    );
+    controller.abort();
+
+    try {
+      await Promise.race([
+        assert.rejects(queued, /aborted/),
+        delay(100).then(() => assert.fail('queued target resolution ignored caller cancellation')),
+      ]);
+      assert.equal(received(await readRecords(logPath), 'target.resolve').length, 1);
+    } finally {
+      await Promise.allSettled([active, queued]);
+    }
+
+    assert.equal(
+      (
+        await backend.resolveTarget(
+          { kind: 'application', app: FIXTURE_APP_ID, intent: 'operate' },
+          signal(),
+        )
+      ).kind,
+      'resolved',
+      'the cancelled FIFO slot must release when its predecessor finishes',
     );
   });
 
@@ -1481,26 +1581,6 @@ describe('maka-cu backend', () => {
     }
   });
 
-  it('refuses a window list entry with no zIndex rather than sorting it as 0', async () => {
-    const traces: any[] = [];
-    const { backend } = makeBackend({
-      malformed: 'window_no_zindex',
-      onTrace: (event) => traces.push(event),
-    });
-    // §5.4: the executor MUST NOT emit ties, and a defaulted 0 manufactures
-    // them in the sort that picks the target window.
-    await assert.rejects(
-      backend.captureObservation!({ windowId: 90210, includeScreenshot: true }, signal(), {
-        ...RUN_CONTEXT,
-      }),
-      /service_mismatch/,
-    );
-    assert.match(
-      traces.find((event) => event.type === 'protocol_violation')?.reason ?? '',
-      /window\.zIndex/,
-    );
-  });
-
   it('refuses an apps.list entry with no windowCount rather than reporting zero', async () => {
     const traces: any[] = [];
     const { backend } = makeBackend({
@@ -1522,16 +1602,6 @@ describe('maka-cu backend', () => {
     // The tool implementation gets a CuRunResult the model can read, not a
     // thrown Error from inside the backend.
     assert.equal(!result.outcome.ok && result.outcome.error, 'permission_missing');
-  });
-
-  it('maps a refused window.list the same way', async () => {
-    const { backend } = makeBackend({ windowListError: 'permission_missing' });
-    await assert.rejects(
-      backend.captureObservation!({ windowId: 90210, includeScreenshot: true }, signal(), {
-        ...RUN_CONTEXT,
-      }),
-      /permission_missing/,
-    );
   });
 });
 

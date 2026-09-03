@@ -24,7 +24,6 @@ import {
   type AdditionalPermissionRiskSummary,
   type AdditionalPermissionScope,
 } from './additional-permissions.js';
-import { COMPUTER_USE_APPROVAL_CLASSES, type ComputerUseApprovalClass } from './computer-use.js';
 import {
   categorizeBash,
   isToolCategory,
@@ -101,15 +100,6 @@ export interface InteractionStdinReview {
   readonly size?: { readonly cols: number; readonly rows: number };
 }
 
-export interface InteractionComputerUseReview {
-  readonly kind: 'computer_use';
-  readonly action: string;
-  readonly approvalClass: ComputerUseApprovalClass;
-  readonly app?: string;
-  readonly windowId?: number;
-  readonly observationId?: string;
-}
-
 export interface InteractionBrowserTextPreview {
   readonly text: string;
   readonly bytes: number;
@@ -162,8 +152,7 @@ export type InteractionToolPermissionReview =
   | InteractionWebReview
   | InteractionGenericToolReview
   | InteractionStdinReview
-  | InteractionBrowserReview
-  | InteractionComputerUseReview;
+  | InteractionBrowserReview;
 
 export interface InteractionAdditionalPermissionPathReview {
   readonly path: string;
@@ -285,10 +274,6 @@ const STDIN_INPUT_SHAPE = defineObjectShape<NonNullable<InteractionStdinReview['
 const STDIN_SIZE_SHAPE = defineObjectShape<NonNullable<InteractionStdinReview['size']>>()(
   ['cols', 'rows'],
   [],
-);
-const COMPUTER_USE_SHAPE = defineObjectShape<InteractionComputerUseReview>()(
-  ['kind', 'action', 'approvalClass'],
-  ['app', 'windowId', 'observationId'],
 );
 const BROWSER_NAVIGATE_SHAPE = defineObjectShape<
   Extract<InteractionBrowserReview, { action: 'navigate' }>
@@ -569,7 +554,6 @@ function projectToolReview(
     case 'browser_extract':
       return projectBrowser(toolName, record);
     default:
-      if (category === 'computer_use') return projectComputerUse(record);
       return projectGenericToolReview(record);
   }
 }
@@ -767,35 +751,6 @@ function projectStdin(args: unknown): InteractionStdinReview {
   });
 }
 
-function projectComputerUse(record: Record<string, unknown>): InteractionComputerUseReview {
-  const action = safeText(
-    projectionString(record.action, INTERACTION_PERMISSION_TEXT_MAX_BYTES),
-    INTERACTION_PERMISSION_TEXT_MAX_BYTES,
-  );
-  const approvalClass = oneOf(record.approvalClass, COMPUTER_USE_APPROVAL_CLASSES, 'approvalClass');
-  const app = optionalProjectionString(record, 'app', INTERACTION_PERMISSION_TEXT_MAX_BYTES);
-  const observationId = optionalProjectionString(
-    record,
-    'observationId',
-    INTERACTION_PERMISSION_TEXT_MAX_BYTES,
-  );
-  let windowId: number | undefined;
-  if (Object.hasOwn(record, 'windowId'))
-    windowId = nonNegativeIntegerForProjection(record.windowId, 'windowId');
-  return deepFreeze({
-    kind: 'computer_use',
-    action,
-    approvalClass,
-    ...(app === undefined ? {} : { app: safeText(app, INTERACTION_PERMISSION_TEXT_MAX_BYTES) }),
-    ...(windowId === undefined ? {} : { windowId }),
-    ...(observationId === undefined
-      ? {}
-      : {
-          observationId: safeText(observationId, INTERACTION_PERMISSION_TEXT_MAX_BYTES),
-        }),
-  });
-}
-
 function decodeToolReview(value: unknown): InteractionToolPermissionReview {
   const record = plainRecord(value, 'Permission review');
   switch (record.kind) {
@@ -867,8 +822,6 @@ function decodeToolReview(value: unknown): InteractionToolPermissionReview {
       return decodeStdin(record);
     case 'browser':
       return decodeBrowser(record);
-    case 'computer_use':
-      return decodeComputerUse(record);
     default:
       throw new Error('Invalid permission review kind');
   }
@@ -999,32 +952,6 @@ function decodeStdin(record: Record<string, unknown>): InteractionStdinReview {
   });
 }
 
-function decodeComputerUse(record: Record<string, unknown>): InteractionComputerUseReview {
-  exact(record, COMPUTER_USE_SHAPE, 'computer use review');
-  return deepFreeze({
-    kind: 'computer_use',
-    action: safeCanonicalString(record.action, 'action', INTERACTION_PERMISSION_TEXT_MAX_BYTES),
-    approvalClass: oneOf(record.approvalClass, COMPUTER_USE_APPROVAL_CLASSES, 'approvalClass'),
-    ...(record.app === undefined
-      ? {}
-      : {
-          app: safeCanonicalString(record.app, 'app', INTERACTION_PERMISSION_TEXT_MAX_BYTES),
-        }),
-    ...(record.windowId === undefined
-      ? {}
-      : { windowId: nonNegativeInteger(record.windowId, 'windowId') }),
-    ...(record.observationId === undefined
-      ? {}
-      : {
-          observationId: safeCanonicalString(
-            record.observationId,
-            'observationId',
-            INTERACTION_PERMISSION_TEXT_MAX_BYTES,
-          ),
-        }),
-  });
-}
-
 function decodeAdditionalReview(value: unknown): InteractionPermissionAdditionalPermissionsReview {
   const record = plainRecord(value, 'Additional permission review');
   exact(record, ADDITIONAL_REVIEW_SHAPE, 'additional permission review');
@@ -1110,10 +1037,7 @@ function assertToolSemantics(
   const expected =
     toolName === 'Bash'
       ? ([category, 'command'] as const)
-      : (identity[toolName] ??
-        (category === 'computer_use'
-          ? ([category, 'computer_use'] as const)
-          : ([category, 'tool'] as const)));
+      : (identity[toolName] ?? ([category, 'tool'] as const));
   if (category !== expected[0] || review.kind !== expected[1])
     throw new Error('Permission review does not match tool identity');
   if (review.kind === 'browser') {

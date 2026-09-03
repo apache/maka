@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// The `maka.cu/2` CuDispatchBackend. Speaks the host protocol (`maka-cu`'s
+// The `maka.cu/3` CuDispatchBackend. Speaks the host protocol (`maka-cu`'s
 // docs/HOST_PROTOCOL.md) to `maka-cu`, the native macOS executor; section
 // numbers in comments refer to that document.
 //
@@ -56,11 +56,14 @@ import type {
   CuDispatchOutcome,
   CuObservation,
   CuObservedElement,
+  CuResolvedExecutionTarget,
   CuRunContext,
   CuRunResult,
   CuScreenshot,
   CuSemanticAction,
+  CuTargetResolutionRequest,
 } from '@maka/runtime/computer-use-types';
+import { CuObservationFailure } from '@maka/runtime/computer-use-types';
 import { abortableDelay } from './abortable-delay.js';
 import { exceedsFrameCap, FRAME_COMPRESS_THRESHOLD_BYTES } from './frame-budget.js';
 import {
@@ -75,7 +78,7 @@ import {
   readImageField,
   readLaunchedApp,
   readSnapshot,
-  readWindow,
+  readTargetResolution,
   MAKA_CU_RPC_ERROR,
   type MakaCuDispatchResult,
   type MakaCuDomainError,
@@ -85,7 +88,6 @@ import {
   type MakaCuImage,
   type MakaCuMappedErrorCode,
   type MakaCuSnapshot,
-  type MakaCuWindow,
 } from './maka-cu-protocol.js';
 import {
   isMakaCuLifecycleError,
@@ -94,10 +96,11 @@ import {
   type MakaCuReleaseEvent,
   type MakaCuServiceSnapshot,
 } from './maka-cu-service.js';
+import { abortPromise } from './stdio-json-rpc.js';
 
 /**
  * `CuAction.scrollAmount` has no declared unit at the tool boundary ("Amount for
- * scroll", 0..100) while `maka.cu/2` declares pages. The conversion is fixed
+ * scroll", 0..100) while `maka.cu/3` declares pages. The conversion is fixed
  * here, in one place, so the two ends cannot disagree silently. The number is a
  * convention, not a measurement — replace it with one when a real machine says
  * what a model-issued scroll of `n` should move.
@@ -350,7 +353,7 @@ interface StoredSnapshot {
 type CaptureFailure = CuRunResult & { outcome: Extract<CuRunResult['outcome'], { ok: false }> };
 
 /**
- * What `maka.cu/2` carries that Maka's shared Computer Use contract does not
+ * What `maka.cu/3` carries that Maka's shared Computer Use contract does not
  * carry yet.
  *
  * The executor reports more about a tree than `CuObservation` has fields for:
@@ -409,7 +412,7 @@ export type MakaCuObservation = Omit<CuObservation, 'elements'> & {
 /**
  * `messageIsAppTextFree` declares that a refusal sentence interpolates nothing
  * the observed application wrote, so it needs no redaction pass before a model
- * reads it. `maka.cu/2` §1.2 makes it a rule for the executor's own sentences
+ * reads it. `maka.cu/3` §1.2 makes it a rule for the executor's own sentences
  * and this backend holds itself to it. Same widening, same reason: the shared
  * outcome type has no field for the declaration yet.
  */
@@ -480,6 +483,7 @@ export type MakaCuBackend = Omit<
     input: {
       app?: string;
       windowId?: number;
+      target?: Extract<CuResolvedExecutionTarget, { readonly kind: 'running' }>;
       includeScreenshot: boolean;
       menu?: string;
       query?: string;
@@ -491,6 +495,7 @@ export type MakaCuBackend = Omit<
     input: {
       app?: string;
       windowId?: number;
+      target?: Extract<CuResolvedExecutionTarget, { readonly kind: 'running' }>;
       // Was pinned to `true` on both of these while every caller wanted a
       // picture. `observe` now asks for one only when the model does, and a
       // capture between the steps of a sequence asks for none at all. The
@@ -510,7 +515,10 @@ export type MakaCuBackend = Omit<
     context: CuRunContext,
   ): Promise<CuRunResult>;
   launchApp(
-    input: { app: string },
+    input: {
+      app: string;
+      target?: Extract<CuResolvedExecutionTarget, { readonly kind: 'installed' }>;
+    },
     signal: AbortSignal,
     context: CuRunContext,
   ): Promise<MakaCuLaunchedApp>;
@@ -522,7 +530,7 @@ export type MakaCuBackend = Omit<
 /**
  * Every refusal this backend makes, in one place — which is also why the
  * app-text-free declaration lives here rather than at each of the thirty-odd
- * call sites. `maka.cu/2` §1.2 makes it a protocol rule for the executor's own
+ * call sites. `maka.cu/3` §1.2 makes it a protocol rule for the executor's own
  * sentences, and the host's own messages interpolate only what the caller
  * supplied: an app id, a window id, an element id, a key name. None of them
  * carry a label, a title or a value.
@@ -912,7 +920,21 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     });
     const current = previous.then(() => gate);
     operationQueues.set(queueKey, current);
-    await previous;
+
+    const releaseQueuePosition = () => {
+      release();
+      if (operationQueues.get(queueKey) === current) operationQueues.delete(queueKey);
+    };
+
+    try {
+      await Promise.race([previous, abortPromise(signal)]);
+    } catch (error) {
+      // Keep this cancelled caller's FIFO slot until its predecessor finishes,
+      // otherwise a later request could overtake the operation still in flight.
+      void previous.then(releaseQueuePosition, releaseQueuePosition);
+      throw error;
+    }
+
     try {
       if (disposed) throw new Error('maka-cu backend disposed');
       if (signal.aborted) throw new Error('aborted');
@@ -925,8 +947,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       if (!sessionId) return await operation();
       return await service.withSession(sessionId, operation);
     } finally {
-      release();
-      if (operationQueues.get(queueKey) === current) operationQueues.delete(queueKey);
+      releaseQueuePosition();
     }
   }
 
@@ -1512,6 +1533,17 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       appId: snapshot.target.appId,
       pid: snapshot.target.pid,
       windowId: snapshot.target.windowId,
+      target: {
+        kind: 'running',
+        identity: snapshot.target.appId.startsWith('pid:')
+          ? { kind: 'process', appId: snapshot.target.appId as `pid:${number}` }
+          : { kind: 'bundle_id', bundleId: snapshot.target.appId },
+        selector: {
+          pid: snapshot.target.pid,
+          processGeneration: snapshot.target.processGeneration,
+          windowId: snapshot.target.windowId,
+        },
+      },
       ...(snapshot.target.title ? { windowTitle: snapshot.target.title } : {}),
       capturedAt: snapshot.capturedAt,
       windowBounds: snapshot.target.bounds,
@@ -1595,77 +1627,11 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
   // Observe (§5).
   // -------------------------------------------------------------------------
 
-  async function listWindows(sessionId: string, signal: AbortSignal): Promise<MakaCuWindow[]> {
-    const envelope = await service.call('window.list', { session: sessionId }, signal);
-    if (!envelope.ok) throw new MakaCuDomainRefusal('window.list', envelope.error);
-    const windows = envelope.windows;
-    if (!Array.isArray(windows)) {
-      throw new MakaCuProtocolViolation('window.list', 'windows is not an array');
-    }
-    // Dropping an entry the host could not read would hide a window from the
-    // occlusion sort and from the id→pid join, and the entry it hid is exactly
-    // the one that was malformed.
-    return windows.map((entry) => readWindow('window.list', entry));
-  }
-
-  /**
-   * §5.2: `target` is a tagged union, never a bag of optional fields — "app OR
-   * window_id" is exactly the disagreement that made a compliant model fail on a
-   * real machine. The host resolves its own two-optional API into one arm here:
-   * an app alone goes to the executor, which owns the window inventory and the
-   * z-order (§5.2); a window id is resolved against `window.list` for its pid,
-   * because that join is what the list is for (§5.4).
-   */
-  async function resolveTarget(
-    input: { app?: string; windowId?: number },
-    sessionId: string,
-    signal: AbortSignal,
-  ): Promise<{ kind: 'app'; app: string } | { kind: 'window'; pid: number; windowId: number }> {
-    if (input.windowId === undefined && input.app) return { kind: 'app', app: input.app };
-    const windows = await listWindows(sessionId, signal);
-    if (input.windowId === undefined) {
-      // Neither input: the frontmost usable window, which `window.list` declares
-      // by ordering front-to-back with no zIndex ties.
-      const winner = windows
-        .filter((window) => window.layer === 0 && window.onScreen)
-        .sort((a, b) => b.zIndex - a.zIndex)[0];
-      if (!winner) {
-        throw new MakaCuHostRefusal('target_missing', 'no visible window is available to observe');
-      }
-      return { kind: 'window', pid: winner.pid, windowId: winner.windowId };
-    }
-    // A window id is exact and numeric, and it is resolved whatever its layer or
-    // on-screen state: the caller named one window, not "one of the visible ones".
-    const winner = windows.find((window) => window.windowId === input.windowId);
-    if (!winner) {
-      // Where a window_id actually comes from. This used to say "from
-      // list_apps", and `list_apps` on this backend answers with app id, pid,
-      // name and a window COUNT — no window ids at all. A model sent there
-      // reads the list, finds nothing to quote, and comes back with a guess.
-      throw new MakaCuHostRefusal(
-        'target_missing',
-        `no window with id ${input.windowId} is open. A window_id comes from the window_id field of an observation, and stops resolving once that window closes — observe the app by app_id to get the id of a window it has now.`,
-      );
-    }
-    // §5.1: both were supplied, so both must hold, and no window satisfies the
-    // pair when they disagree. The comparison is against `appId` and nothing
-    // else — matching `appName` or `title` is what made every {app, windowId}
-    // pair for a bundle-identified app unresolvable, since the string the host
-    // handed out was the bundle id and the strings it matched against were
-    // display strings that never carry one.
-    if (input.app && input.app !== winner.appId) {
-      throw new MakaCuHostRefusal(
-        'target_missing',
-        `window ${input.windowId} does not belong to ${input.app}. An app_id is the id string list_apps returns, or the app_id field of an observation — never an application's display name. Pass just the window_id to observe that window whichever app owns it.`,
-      );
-    }
-    return { kind: 'window', pid: winner.pid, windowId: winner.windowId };
-  }
-
   async function observe(
     input: {
       app?: string;
       windowId?: number;
+      target?: Extract<CuResolvedExecutionTarget, { readonly kind: 'running' }>;
       includeScreenshot: boolean;
       menu?: string;
       // Not sent to the executor. A filter that narrowed the walk would narrow
@@ -1680,7 +1646,23 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
   ): Promise<CuObservation> {
     try {
       await ensureSession(context.sessionId, signal);
-      const target = await resolveTarget(input, context.sessionId, signal);
+      const preparedTarget = input.target;
+      if (!preparedTarget) {
+        throw new MakaCuHostRefusal(
+          'target_missing',
+          'Computer Use requires a prepared native target',
+        );
+      }
+      const target = {
+        kind: 'window' as const,
+        appId:
+          preparedTarget.identity.kind === 'bundle_id'
+            ? preparedTarget.identity.bundleId
+            : preparedTarget.identity.appId,
+        pid: preparedTarget.selector.pid,
+        processGeneration: preparedTarget.selector.processGeneration,
+        windowId: preparedTarget.selector.windowId,
+      };
       const envelope = await service.call(
         'observe',
         {
@@ -1715,6 +1697,20 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       // in the sequence — session, window list, target resolution, observe —
       // travels in the message with its mapped code, the way the cua-driver
       // backend's does.
+      if (error instanceof MakaCuDomainRefusal) {
+        const publicCode = mapMakaCuDomainError(error.domain.code);
+        const cause =
+          error.domain.code === 'window_gone'
+            ? 'window_gone'
+            : error.domain.code === 'process_replaced'
+              ? 'process_replaced'
+              : error.domain.code === 'window_changed' || error.domain.code === 'element_changed'
+                ? 'target_changed'
+                : undefined;
+        if (publicCode && cause) {
+          throw new CuObservationFailure(cause, publicCode, error.domain.message);
+        }
+      }
       const mapped =
         error instanceof MakaCuDomainRefusal
           ? domainFailure(error.method, error.domain, context.toolCallId)
@@ -2071,6 +2067,9 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       error.code === 'snapshot_expired' ||
       error.code === 'snapshot_evicted' ||
       error.code === 'snapshot_unknown' ||
+      error.code === 'process_replaced' ||
+      error.code === 'window_changed' ||
+      error.code === 'window_gone' ||
       // §6.2: the token was real and the echoed digest was not the recorded one,
       // which means this host paired a token with a digest from another frame.
       // Re-sending against the same frame cannot help, so the frame goes.
@@ -2278,6 +2277,55 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
   }
 
   return {
+    async ensureReady(signal) {
+      await service.ensureStarted(signal);
+    },
+
+    async resolveTarget(input: CuTargetResolutionRequest, signal) {
+      return withOperationQueue(signal, async () => {
+        const envelope = await service.call(
+          'target.resolve',
+          {
+            target:
+              input.kind === 'window'
+                ? { kind: 'window', windowId: input.windowId }
+                : {
+                    kind: 'application',
+                    app: input.app,
+                    intent: input.intent,
+                  },
+          },
+          signal,
+        );
+        if (!envelope.ok) throw new MakaCuDomainRefusal('target.resolve', envelope.error);
+        const resolution = readTargetResolution('target.resolve', envelope);
+        if (resolution.kind !== 'resolved') return resolution;
+        if (resolution.target.kind === 'installed') {
+          return {
+            kind: 'resolved' as const,
+            target: {
+              kind: 'installed' as const,
+              identity: { kind: 'bundle_id' as const, bundleId: resolution.target.appId },
+            },
+          };
+        }
+        return {
+          kind: 'resolved' as const,
+          target: {
+            kind: 'running' as const,
+            identity: resolution.target.appId.startsWith('pid:')
+              ? { kind: 'process' as const, appId: resolution.target.appId as `pid:${number}` }
+              : { kind: 'bundle_id' as const, bundleId: resolution.target.appId },
+            selector: {
+              pid: resolution.target.pid,
+              processGeneration: resolution.target.processGeneration,
+              windowId: resolution.target.windowId,
+            },
+          },
+        };
+      });
+    },
+
     async preflight(signal) {
       return withOperationQueue(signal, async () => {
         // §5: `prompt: false` must not raise a TCC dialog — this runs at every
@@ -2346,7 +2394,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
               'apps.launch',
               {
                 session: context.sessionId,
-                app: input.app,
+                app: input.target?.identity.bundleId ?? input.app,
                 waitForWindowMs: LAUNCH_WINDOW_TIMEOUT_MS,
               },
               signal,
@@ -2452,14 +2500,14 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
             }
             const wire = pointActionFor(action);
             if (!wire) {
-              // `cursor_position`, `hold_key` and `zoom` have no maka.cu/2
+              // `cursor_position`, `hold_key` and `zoom` have no maka.cu/3
               // method. Reading the cursor is meaningless for an executor that
               // never moves it, and the other two are not in the protocol's
               // action sets — feature detection, not silent degradation.
               //
               // The protocol's name for itself is not a fact a model can use:
               // it cannot choose a protocol version, and "not part of
-              // maka.cu/2" reads as a version problem it might route around.
+              // maka.cu/3" reads as a version problem it might route around.
               return failure(
                 'unsupported_action',
                 `'${action.type}' is not one of the actions Computer Use can perform, and nothing was attempted. There is no other spelling of it — the observation lists every element with its position and the actions it accepts, and those are what this window can be driven with.`,

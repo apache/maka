@@ -69,6 +69,10 @@ function recordingBackend(): CuDispatchBackend & { calls: string[] } {
   const calls: string[] = [];
   return {
     calls,
+    async ensureReady() {},
+    async resolveTarget() {
+      return { kind: 'missing' };
+    },
     async preflight() {
       calls.push('preflight');
       return { accessibility: true, screenRecording: true };

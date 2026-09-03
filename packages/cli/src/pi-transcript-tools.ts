@@ -854,7 +854,7 @@ function toolInputSummary(entry: MakaPiToolEntry): string {
  * This tool's name is `Maka Computer` for observing a window, clicking a
  * button and observing again alike, so ten calls in a turn printed ten
  * identical headers; the generic fallback then spelled the arguments out as
- * `action: … / approvalClass: … / rememberForTurnAllowed: …`, which names the
+ * a host-only permission projection, which names the
  * host's own approval bookkeeping rather than anything the model asked for.
  *
  * The arguments here are a `ComputerUseModelCallArgs`, not the raw wire call:

@@ -133,6 +133,28 @@ test('publishes the real Computer Use schema through the Client Capability proto
   assert.equal(Array.isArray(coordinateSchema?.coordinate?.items), true);
 });
 
+test('prepares Computer Use evidence before admitting and executing the call', async () => {
+  const computerUseTools = buildComputerUseTools({ backend: computerBackend() });
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {},
+    computerUseTools,
+    releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
+  });
+  let accepted: ClientCapabilityAdmissionEvidence | undefined;
+
+  await call(
+    provider,
+    computerFrame({ arguments: { action: 'list_apps' } }),
+    (evidence) => {
+      accepted = evidence;
+    },
+  );
+
+  assert.deepEqual(accepted, { kind: 'computer_use', target: { kind: 'app_catalog' } });
+});
+
 test('publishes every production Desktop-owned tool schema through the protocol', () => {
   const settingsTools = buildClientSettingsTools({
     async read() {
@@ -666,6 +688,15 @@ function computerTools(
         },
       ]
     : []) as unknown as ComputerUseToolSet;
+  tools.prepareInvocation = async (rawArgs) => ({
+    admission: { kind: 'duration_wait' },
+    projectionInput: rawArgs as never,
+    policyBinding: { action: 'wait', target: { kind: 'targetless' } },
+    execute: async (context) => ({
+      result: (await impl?.(rawArgs as { wait?: boolean }, context)) as never,
+      metadata: {},
+    }),
+  });
   tools.clearSession = clearSession;
   tools.sessionEvents = {} as ComputerUseToolSet['sessionEvents'];
   return tools;
@@ -673,8 +704,31 @@ function computerTools(
 
 function computerBackend(): CuDispatchBackend {
   return {
+    async ensureReady() {},
+    async resolveTarget(input) {
+      if (input.kind === 'application' && input.intent === 'launch') {
+        return {
+          kind: 'resolved',
+          target: {
+            kind: 'installed',
+            identity: { kind: 'bundle_id', bundleId: 'com.example.Fixture' },
+          },
+        };
+      }
+      return {
+        kind: 'resolved',
+        target: {
+          kind: 'running',
+          identity: { kind: 'bundle_id', bundleId: 'com.example.Fixture' },
+          selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+        },
+      };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
+    },
+    async listApps() {
+      return [];
     },
     async run() {
       return { outcome: { ok: true, tier: 'ax', verified: true } };

@@ -40,7 +40,8 @@ export function clientCapabilityCoordinatorTestAdmission() {
         capability: 'browser' | 'computer_use' | 'desktop_mcp';
         scope:
           | { kind: 'browser_origin'; origin: string }
-          | { kind: 'capability' }
+          | { kind: 'macos_bundle_id'; bundleId: string }
+          | { kind: 'app_catalog' }
           | { kind: 'mcp_tool'; serverId: string; toolName: string };
       }) => ({ version: 1 as const, ...key, grantedAt: 0 }),
     },

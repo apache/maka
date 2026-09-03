@@ -541,17 +541,6 @@ describe('Interaction projection', () => {
       },
       {
         ...toolPermission,
-        toolName: 'computer_use',
-        category: 'computer_use',
-        reason: 'computer_use',
-        args: {
-          action: 'observe',
-          approvalClass: 'metadata_read',
-          app: 42,
-        },
-      },
-      {
-        ...toolPermission,
         toolName: 'WriteStdin',
         args: { size: { cols: 0, rows: 24 } },
         rememberForTurnAllowed: false,

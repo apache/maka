@@ -20,13 +20,11 @@
 
 // Build the maka-cu executor from source and pin the result.
 //
-// cua-driver arrived as a signed upstream release, so preparing it meant
-// downloading a tarball and checking it against a digest someone else produced.
-// maka-cu is ours: there is no third party to download from, and the artifact
-// that matters is the one this machine just built. So this script builds it,
-// records what it built, and writes both into apps/desktop/bundled-tools.json —
-// the same manifest the host reads, so the running app can only ever spawn a
-// binary whose bytes match the ones recorded here.
+// The source is always a fresh clone of the official maka/base branch. Local
+// checkouts and branch-name overrides would let the manifest claim provenance
+// that does not describe the bytes being shipped. This script records the
+// cloned commit and tree together with the built artifact in
+// apps/desktop/bundled-tools.json — the same manifest the host verifies.
 //
 // Nothing about this is a substitute for signing. `distributionReady` stays
 // false until a notarized artifact exists, and the host refuses to use an
@@ -34,25 +32,30 @@
 // this binary runs.
 //
 //   node scripts/computer-use.mjs prepare
-//   MAKA_CU_SOURCE=/path/to/maka-cu node scripts/computer-use.mjs prepare
-//   MAKA_CU_SOURCE_BRANCH=maka/base node scripts/computer-use.mjs prepare
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  closeSync,
   copyFileSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
-  readSync,
-  closeSync,
   readFileSync,
+  readSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveMakaCuSourceBranch } from './prepare-provenance.mjs';
+import {
+  buildMakaCuManifestEntry,
+  MAKA_CU_SOURCE_BRANCH,
+  MAKA_CU_SOURCE_URL,
+} from './prepare-manifest.mjs';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const manifestPath = join(repoRoot, 'apps', 'desktop', 'bundled-tools.json');
@@ -66,14 +69,6 @@ const MACH_O_MAGICS = new Set([
 function fail(message) {
   process.stderr.write(`computer-use prepare: ${message}\n`);
   process.exit(1);
-}
-
-function sourcePath() {
-  const explicit = process.env.MAKA_CU_SOURCE;
-  if (explicit) return resolve(explicit);
-  // A sibling checkout is the layout this repo is developed in; naming it here
-  // beats every contributor discovering the variable.
-  return resolve(repoRoot, '..', 'maka-cu');
 }
 
 function assertMachO(path) {
@@ -93,42 +88,32 @@ function git(source, args) {
   return execFileSync('git', ['-C', source, ...args], { encoding: 'utf8' }).trim();
 }
 
-function sourceBranch(source) {
-  const currentBranch = git(source, ['rev-parse', '--abbrev-ref', 'HEAD']);
-  const remoteBranches = git(source, [
-    'for-each-ref',
-    '--points-at',
-    'HEAD',
-    '--format=%(refname:short)',
-    'refs/remotes',
-  ]).split('\n');
-  try {
-    return resolveMakaCuSourceBranch({
-      currentBranch,
-      remoteBranches,
-      explicitBranch: process.env.MAKA_CU_SOURCE_BRANCH,
-    });
-  } catch (error) {
-    fail(
-      `${error instanceof Error ? error.message : String(error)}. ` +
-        'Set MAKA_CU_SOURCE_BRANCH to the source branch this commit belongs to.',
-    );
-  }
-}
+const checkoutRoot = mkdtempSync(join(tmpdir(), 'maka-cu-prepare-'));
+const source = join(checkoutRoot, 'source');
+const cleanupCheckout = () => rmSync(checkoutRoot, { recursive: true, force: true });
+process.once('exit', cleanupCheckout);
+process.once('SIGINT', () => process.exit(130));
+process.once('SIGTERM', () => process.exit(143));
 
-const source = sourcePath();
-if (!existsSync(join(source, 'Package.swift'))) {
-  fail(`no Swift package at ${source}. Set MAKA_CU_SOURCE to the maka-cu checkout.`);
-}
-
-// A dirty tree would pin bytes to a commit that does not describe them.
-const status = git(source, ['status', '--porcelain']);
-if (status && process.env.MAKA_CU_ALLOW_DIRTY !== '1') {
-  fail(
-    `${source} has uncommitted changes, so the recorded commit would not describe the ` +
-      'binary. Commit them, or set MAKA_CU_ALLOW_DIRTY=1 for a throwaway build.',
-  );
-}
+process.stderr.write(
+  `computer-use prepare: cloning ${MAKA_CU_SOURCE_URL}#${MAKA_CU_SOURCE_BRANCH}\n`,
+);
+execFileSync(
+  'git',
+  [
+    'clone',
+    '--branch',
+    MAKA_CU_SOURCE_BRANCH,
+    '--single-branch',
+    '--depth',
+    '1',
+    '--no-tags',
+    MAKA_CU_SOURCE_URL,
+    source,
+  ],
+  { stdio: 'inherit' },
+);
+if (!existsSync(join(source, 'Package.swift'))) fail('official source has no Swift package.');
 
 process.stderr.write(`computer-use prepare: building ${source}\n`);
 execFileSync('swift', ['build', '-c', 'release', '--package-path', source], { stdio: 'inherit' });
@@ -221,26 +206,26 @@ function isStapled(path) {
 
 const signing = signatureOf(destination);
 const stapled = isStapled(destination);
+const sourceCommit = git(source, ['rev-parse', 'HEAD']);
+const officialBranchCommit = git(source, [
+  'rev-parse',
+  `refs/remotes/origin/${MAKA_CU_SOURCE_BRANCH}`,
+]);
+if (sourceCommit !== officialBranchCommit) {
+  fail(`checked-out source does not match origin/${MAKA_CU_SOURCE_BRANCH}.`);
+}
 // Every condition, or none of it. Distribution is the one place a partial
 // answer is worse than a refusal: an ad-hoc helper inside a notarized app is
 // not a smaller problem than an unsigned one, it fails the same way.
-const distributionReady =
-  signing.signature === 'developer-id' && signing.hardenedRuntime === true && stapled;
-
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
-manifest.makaCu = {
-  repo: 'maka-agent/maka-cu',
-  branch: sourceBranch(source),
-  commit: git(source, ['rev-parse', 'HEAD']),
-  expectedProtocolVersion: 'maka.cu/2',
-  binaryName: 'maka-cu',
+manifest.makaCu = buildMakaCuManifestEntry({
+  commit: sourceCommit,
+  tree: git(source, ['rev-parse', 'HEAD^{tree}']),
   binarySizeBytes: statSync(destination).size,
   binarySha256,
-  buildProvenance: 'local-source-build',
-  ...signing,
-  notarization: stapled ? 'stapled' : 'missing',
-  distributionReady,
-};
+  signing,
+  stapled,
+});
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
 process.stderr.write(
@@ -250,8 +235,8 @@ process.stderr.write(
     `computer-use prepare: signature ${signing.signature}` +
     `${signing.hardenedRuntime ? ' + hardened runtime' : ''}` +
     `, notarization ${manifest.makaCu.notarization}` +
-    `, distributionReady ${distributionReady}\n` +
-    (distributionReady
+    `, distributionReady ${manifest.makaCu.distributionReady}\n` +
+    (manifest.makaCu.distributionReady
       ? ''
       : 'computer-use prepare: development only — a packaged build will refuse this entry.\n') +
     (identity

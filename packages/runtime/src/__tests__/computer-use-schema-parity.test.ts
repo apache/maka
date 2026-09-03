@@ -20,11 +20,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import {
-  computerUseApprovalSummary,
-  COMPUTER_USE_SEMANTIC_ACTIONS,
-  CU_ACTION_TYPES,
-} from '@maka/core/computer-use';
+import { COMPUTER_USE_SEMANTIC_ACTIONS, CU_ACTION_TYPES } from '@maka/core/computer-use';
 import { computerParams } from '../computer-use-codec.js';
 import { computerWireParams } from '../computer-use-tools.js';
 
@@ -138,48 +134,19 @@ describe('the two argument schemas describe the same tool', () => {
     );
   });
 
-  test('every action survives the approval summary as itself', () => {
-    // A third handwritten catalog. `computerUseApprovalSummary` downgrades an
-    // action it does not know to `unknown`, and that value is what lands in the
-    // persisted audit record and what turn-level remember is keyed on. An
-    // action added to both schemas passes the checks above while silently
-    // degrading those consumers, which is the same class of gap one layer over.
-    const degraded = unionArms()
-      .map(({ action }) => ({ action, summarized: computerUseApprovalSummary({ action }).action }))
-      .filter(({ action, summarized }) => summarized !== action);
-
-    assert.deepEqual(
-      degraded,
-      [],
-      'these actions are recorded as "unknown" in the audit trail and cannot be remembered',
-    );
-  });
-
-  test('the approval catalog names exactly the actions the wire carries', () => {
-    // The check above walks from the schemas to the catalog and catches a name
-    // the catalog is missing. This walks the other way, and catches a name the
-    // catalog has that the schemas do not.
-    //
-    // That direction is quieter and costs more. `COMPUTER_USE_SEMANTIC_ACTIONS`
-    // feeds `APPROVAL_ACTIONS`, which is what decides `knownAction`. A name
-    // listed there and absent from the wire enum makes the approval summary and
-    // the model-facing record of the call report an action the SDK rejects
-    // before the tool ever runs, as though it were a call that had been taken —
-    // and makes `rememberForTurnAllowed` true for it. Nothing fails; a person
-    // reads an approval for an action that did not happen, and the model reads
-    // its own history as proof that the name works.
+  test('the action catalog names exactly the actions the wire carries', () => {
     const wire = new Set(wireActions());
     const catalog = new Set<string>([...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES]);
 
     assert.deepEqual(
       catalogNotOnWire(catalog, wire),
       [],
-      'the approval catalog names actions the tool will reject',
+      'the action catalog names actions the tool will reject',
     );
     assert.deepEqual(
       [...wire].filter((action) => !catalog.has(action)),
       [],
-      'the wire carries actions the approval catalog records as "unknown"',
+      'the wire carries actions missing from the action catalog',
     );
   });
 });

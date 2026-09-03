@@ -219,7 +219,8 @@ export interface ConversationCopy {
   clientCapability: {
     title: string;
     browser: (origin: string) => string;
-    computerUse: string;
+    computerUseApp: (bundleId: string) => string;
+    computerUseCatalog: string;
     desktopMcp: (serverId: string, toolName: string) => string;
     sessionNotice: string;
     reject: string;
@@ -510,7 +511,8 @@ const CONVERSATION_COPY = {
     clientCapability: {
       title: '允许使用客户端能力？',
       browser: (origin) => `允许 Browser 操作 ${origin}`,
-      computerUse: '允许 Computer Use 操作这台 Mac',
+      computerUseApp: (bundleId) => `允许 Computer Use 操作 ${bundleId}`,
+      computerUseCatalog: '允许 Computer Use 查看可操作的应用列表',
       desktopMcp: (serverId, toolName) => `允许调用 ${serverId} 的 ${toolName} 工具`,
       sessionNotice: '允许后，本任务中相同范围的后续操作将不再询问。',
       reject: '拒绝',
@@ -668,7 +670,8 @@ const CONVERSATION_COPY = {
     clientCapability: {
       title: 'Allow this client capability?',
       browser: (origin) => `Allow Browser to operate ${origin}`,
-      computerUse: 'Allow Computer Use to operate this Mac',
+      computerUseApp: (bundleId) => `Allow Computer Use to operate ${bundleId}`,
+      computerUseCatalog: 'Allow Computer Use to view the available application list',
       desktopMcp: (serverId, toolName) => `Allow ${toolName} from ${serverId}`,
       sessionNotice: 'Matching operations will be allowed for the rest of this task.',
       reject: 'Reject',

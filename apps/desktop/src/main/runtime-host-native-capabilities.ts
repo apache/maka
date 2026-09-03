@@ -26,6 +26,7 @@ import {
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
 import type {
+  ClientCapabilityAdmissionEvidence,
   ClientCapabilityCallFrame,
   ClientCapabilityCallResult,
   ClientCapabilityContentBlock,
@@ -344,10 +345,28 @@ async function invokeNativeTool(
     frame.offerId === BROWSER_OFFER_ID || frame.offerId === COMPUTER_USE_OFFER_ID
       ? providerOptions.nativeSessionId?.(frame.sessionId) ?? frame.sessionId
       : frame.sessionId;
-  const admissionEvidence =
+  const toolContext = {
+    sessionId,
+    turnId: frame.turnId,
+    cwd,
+    toolCallId: frame.toolCallId,
+    abortSignal: signal,
+    emitOutput() {},
+    ...(options.progress ? { emitProgress: options.progress } : {}),
+  };
+  const preparedComputerUse =
+    frame.offerId === COMPUTER_USE_OFFER_ID
+      ? await input.computerUseTools.prepareInvocation(args, {
+          sessionId,
+          turnId: frame.turnId,
+          toolCallId: frame.toolCallId,
+          signal,
+        })
+      : undefined;
+  const admissionEvidence: ClientCapabilityAdmissionEvidence =
     frame.offerId === BROWSER_OFFER_ID
       ? {
-          kind: "browser_url" as const,
+          kind: "browser_url",
           url: await input.resolveBrowserUrl({
             sessionId,
             toolName: frame.toolName,
@@ -355,7 +374,19 @@ async function invokeNativeTool(
             signal,
           }),
         }
-      : { kind: "none" as const };
+      : preparedComputerUse?.admission.kind === "macos_bundle_id"
+        ? {
+            kind: "computer_use",
+            target: {
+              kind: "macos_bundle_id",
+              bundleId: preparedComputerUse.admission.bundleId,
+            },
+          }
+        : preparedComputerUse?.admission.kind === "app_catalog"
+          ? { kind: "computer_use", target: { kind: "app_catalog" } }
+          : preparedComputerUse?.admission.kind === "duration_wait"
+            ? { kind: "computer_use", target: { kind: "duration_wait" } }
+            : { kind: "none" };
   signal.throwIfAborted();
   await options.accept(admissionEvidence);
   signal.throwIfAborted();
@@ -376,23 +407,22 @@ async function invokeNativeTool(
   if (frame.offerId === COMPUTER_USE_OFFER_ID) {
     providerOptions.onComputerUseTurnUsed?.(frame.sessionId, frame.turnId);
   }
-  const execute = () =>
-    binding.tool.impl(args, {
-      sessionId,
-      turnId: frame.turnId,
-      cwd,
-      toolCallId: frame.toolCallId,
-      abortSignal: signal,
-      emitOutput() {},
-      ...(options.progress ? { emitProgress: options.progress } : {}),
-    });
+  const execute = async () =>
+    preparedComputerUse
+      ? (await preparedComputerUse.execute(toolContext)).result
+      : binding.tool.impl(args, toolContext);
   const output = await (admissionEvidence.kind === "browser_url"
     ? withBrowserOriginAdmission(
         { sessionId, url: admissionEvidence.url },
         execute,
       )
     : execute());
-  return projectToolResult(binding.tool, frame.toolCallId, args, output);
+  return projectToolResult(
+    binding.tool,
+    frame.toolCallId,
+    preparedComputerUse?.projectionInput ?? args,
+    output,
+  );
 }
 
 function browserOrigin(value: string): string {

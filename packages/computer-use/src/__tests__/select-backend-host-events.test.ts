@@ -23,12 +23,29 @@ import type { CuDispatchBackend } from '@maka/runtime/computer-use-types';
 import type { MakaCuBackendOptions } from '../maka-cu-backend.js';
 import { selectComputerUseBackend } from '../select-backend.js';
 
+const runningTarget = {
+  kind: 'running' as const,
+  identity: { kind: 'bundle_id' as const, bundleId: 'com.example.Fixture' },
+  selector: { pid: 42, processGeneration: 'pst:1', windowId: 7 },
+};
+
+const preparationBackend = {
+  async ensureReady() {},
+  async resolveTarget() {
+    return {
+      kind: 'resolved' as const,
+      target: runningTarget,
+    };
+  },
+};
+
 test('service invalidation producer advances Runtime to reobserve', async () => {
   if (process.platform !== 'darwin') return;
   let invalidate:
     | ((input: { sessionId: string; reason: 'child_exit'; outcomeUnknown: boolean }) => void)
     | undefined;
   const backend: CuDispatchBackend = {
+    ...preparationBackend,
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },
@@ -38,6 +55,7 @@ test('service invalidation producer advances Runtime to reobserve', async () => 
         appId: 'Fixture',
         pid: 42,
         windowId: 7,
+        target: runningTarget,
         elements: [],
       };
     },
@@ -83,6 +101,7 @@ test('physical input policy is passed to the selected backend', () => {
   const physicalInputRecentlyActive = () => true;
   let received: MakaCuBackendOptions['physicalInputRecentlyActive'];
   const backend: CuDispatchBackend = {
+    ...preparationBackend,
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },

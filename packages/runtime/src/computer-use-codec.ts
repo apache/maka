@@ -680,7 +680,7 @@ export function summarize(
     // shown it.
     //
     // It is shown only when the backend declares its diagnostics carry no
-    // application text (`maka.cu/2` §1.2 makes that a protocol rule). Absent
+    // application text (`maka.cu/3` §1.2 makes that a protocol rule). Absent
     // means withheld: a backend that says nothing is treated as one that
     // cannot promise it.
     const detail =

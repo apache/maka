@@ -100,7 +100,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 100 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 101 as const;
+// 101: Computer Use accepted frames carry Host-verifiable native target
+// evidence used to enforce Session Grant scopes and exact execution targets.
+// Older peers cannot preserve that boundary.
 // 100: `session.branch.create` makes `sourceTurnId` optional, so a side
 // conversation can fork with an empty context (no copied messages, no
 // fabricated `branchOfTurnId`) instead of requiring a settled turn. An older

@@ -20,7 +20,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { CuAction } from '@maka/core/computer-use';
-import { buildComputerUseTools } from '@maka/runtime/computer-use-tools';
+import {
+  buildComputerUseTools,
+  type CuDispatchBackend,
+  type CuObservation,
+} from '@maka/runtime/computer-use-tools';
 import { parseObservationText } from '@maka/runtime/test-only/observation-text-reader';
 import { createComputerUseOverlayHook } from '../computer-use-overlay-hook.js';
 
@@ -274,12 +278,17 @@ function recordingSink() {
  * space as the window bounds, which is how `validateSemanticElementVisibility`
  * already compares them.
  */
-function fixtureObservation(): Record<string, unknown> {
+function fixtureObservation(): CuObservation {
   return {
     observationId: 'backend-obs-1',
     appId: 'Fixture',
     pid: 42,
     windowId: 4321,
+    target: {
+      kind: 'running',
+      identity: { kind: 'process', appId: 'pid:42' },
+      selector: { pid: 42, processGeneration: 'pst:1', windowId: 4321 },
+    },
     contentFingerprint: 'ax-structure-1',
     windowBounds: { x: 100, y: 50, width: 400, height: 300 },
     sourceBoundsPx: { x: 0, y: 0, width: 800, height: 600 },
@@ -312,8 +321,14 @@ async function driveRealTool(
   call: Record<string, unknown>,
 ): Promise<Array<{ call: string; input: Record<string, unknown> }>> {
   const { events, sink } = recordingSink();
-  const observed = { ...fixtureObservation(), ...observationOverrides };
-  const backend = {
+  const observed = { ...fixtureObservation(), ...observationOverrides } as CuObservation;
+  const target = observed.target;
+  if (!target) throw new Error('fixture observation must have a target');
+  const backend: CuDispatchBackend = {
+    async ensureReady() {},
+    async resolveTarget() {
+      return { kind: 'resolved', target };
+    },
     async preflight() {
       return { accessibility: true, screenRecording: true };
     },
@@ -328,7 +343,7 @@ async function driveRealTool(
     },
   };
   const [tool] = buildComputerUseTools({
-    backend: backend as never,
+    backend,
     overlay: createComputerUseOverlayHook(sink as never),
   });
   const first = (await tool.impl(

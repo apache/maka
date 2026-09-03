@@ -19,192 +19,180 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { ComputerUseToolSet } from '@maka/runtime/computer-use-tools';
+import type {
+  ComputerUseToolSet,
+  PreparedComputerUseInvocation,
+} from '@maka/runtime/computer-use-tools';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
 import {
   applyComputerUseRealModelPolicy,
   parseComputerUseRealModelPolicy,
 } from '../computer-use-real-model-policy.js';
 
-function tool(calls: string[]): MakaTool {
-  return {
+const fixtureTarget = {
+  kind: 'running' as const,
+  identity: { kind: 'bundle_id' as const, bundleId: 'com.github.Electron' },
+  selector: { pid: 42, processGeneration: 'pst:7', windowId: 9 },
+};
+
+function toolSet(executed: string[]): ComputerUseToolSet {
+  const tool: MakaTool = {
     name: 'maka_computer',
     description: 'test',
     parameters: {},
-    impl: async (args) => {
-      calls.push((args as { action: string }).action);
-      return (args as { action: string }).action === 'observe'
-        ? { text: '{"observation_id":"owned-observation"}' }
-        : { text: 'ok' };
+    impl: async () => {
+      throw new Error('raw implementation must not bypass preparation');
     },
   };
+  const tools = [tool] as ComputerUseToolSet;
+  tools.prepareInvocation = async (rawArgs) => {
+    const action = (rawArgs as { action: string }).action;
+    const binding =
+      action === 'list_apps'
+        ? ({ action, target: { kind: 'app_catalog' } } as const)
+        : action === 'wait'
+          ? ({ action, target: { kind: 'targetless' } } as const)
+          : action === 'launch_app'
+            ? ({
+                action,
+                target: {
+                  kind: 'application',
+                  resolved: {
+                    kind: 'installed',
+                    identity: { kind: 'bundle_id', bundleId: 'com.github.Electron' },
+                  },
+                },
+              } as const)
+            : action === 'observe'
+              ? ({ action, target: { kind: 'application', resolved: fixtureTarget } } as const)
+              : ({
+                  action,
+                  target: {
+                    kind: 'observation',
+                    binding: {
+                      turnId: 't',
+                      frameId: 'owned-frame',
+                      epoch: 1,
+                      target: fixtureTarget,
+                    },
+                  },
+                } as const);
+    return {
+      admission: { kind: 'macos_bundle_id', bundleId: 'com.github.Electron' },
+      projectionInput: rawArgs as never,
+      policyBinding: binding as PreparedComputerUseInvocation['policyBinding'],
+      async execute() {
+        executed.push(action);
+        return {
+          result: { text: 'ok' },
+          metadata:
+            action === 'observe'
+              ? {
+                  freshObservation: {
+                    turnId: 't',
+                    frameId: 'owned-frame',
+                    epoch: 1,
+                    target: fixtureTarget,
+                  },
+                }
+              : {},
+        };
+      },
+    } satisfies PreparedComputerUseInvocation;
+  };
+  tools.clearSession = () => {};
+  tools.sessionEvents = {
+    snapshot: () => ({ status: 'unobserved', generation: 0 }),
+    physicalUserIntervened: () => ({ status: 'intervention_debounce', generation: 1 }),
+    interventionDebounceElapsed: () => ({ status: 'reobserve_required', generation: 1 }),
+    reobserveRequired: () => ({ status: 'reobserve_required', generation: 1 }),
+    screenLocked: () => ({ status: 'screen_locked', generation: 1 }),
+    screenUnlocked: () => ({ status: 'reobserve_required', generation: 1 }),
+    blockedUrlDetected: () => ({ status: 'blocked_url', generation: 1 }),
+    userStopped: () => ({ status: 'user_stopped', generation: 1 }),
+    dynamicContentChanged: () => ({ status: 'unobserved', generation: 0 }),
+  };
+  return tools;
 }
 
-function toolSet(calls: string[]): ComputerUseToolSet {
-  return Object.assign([tool(calls)], {
-    clearSession(_sessionId: string) {},
-    sessionEvents: {
-      snapshot: () => ({ status: 'unobserved' as const, generation: 0 }),
-      physicalUserIntervened: () => ({ status: 'intervention_debounce' as const, generation: 1 }),
-      interventionDebounceElapsed: () => ({ status: 'reobserve_required' as const, generation: 1 }),
-      reobserveRequired: () => ({ status: 'reobserve_required' as const, generation: 1 }),
-      screenLocked: () => ({ status: 'screen_locked' as const, generation: 1 }),
-      screenUnlocked: () => ({ status: 'reobserve_required' as const, generation: 1 }),
-      blockedUrlDetected: () => ({ status: 'blocked_url' as const, generation: 1 }),
-      userStopped: () => ({ status: 'user_stopped' as const, generation: 1 }),
-      dynamicContentChanged: () => ({ status: 'unobserved' as const, generation: 0 }),
-    },
-  });
-}
+const policy = {
+  allowedActions: ['observe', 'click_element'],
+  maxTotalActions: 2,
+  maxActionCounts: { observe: 1, click_element: 1 },
+  allowedTargets: [{ pid: 42, processGeneration: 'pst:7', windowIds: [9] }],
+};
 
-test('parses one bounded allowlist and rejects malformed policies', () => {
-  assert.deepEqual(parseComputerUseRealModelPolicy(JSON.stringify({
-    allowedActions: ['list_apps', 'observe', 'wait'],
-    maxTotalActions: 4,
-    maxActionCounts: { list_apps: 1, observe: 2, wait: 1 },
-    allowedApps: ['Fixture'],
-  })), {
-    allowedActions: ['list_apps', 'observe', 'wait'],
-    maxTotalActions: 4,
-    maxActionCounts: { list_apps: 1, observe: 2, wait: 1 },
-    allowedApps: ['Fixture'],
-  });
+const context = {
+  sessionId: 's',
+  turnId: 't',
+  toolCallId: 'c',
+  cwd: '/tmp',
+  abortSignal: new AbortController().signal,
+  emitOutput() {},
+};
+
+test('parses exact native target allowlists and rejects obsolete app names', () => {
+  assert.deepEqual(parseComputerUseRealModelPolicy(JSON.stringify(policy)), policy);
   assert.throws(
-    () => parseComputerUseRealModelPolicy(undefined),
-    /Missing Computer Use real-model policy/,
+    () =>
+      parseComputerUseRealModelPolicy(
+        JSON.stringify({ ...policy, allowedTargets: undefined, allowedApps: ['Fixture'] }),
+      ),
+    /allowedTargets/,
   );
   assert.throws(
-    () => parseComputerUseRealModelPolicy('{"allowedActions":[],"maxTotalActions":0}'),
-    /Invalid Computer Use real-model/,
+    () =>
+      parseComputerUseRealModelPolicy(
+        JSON.stringify({
+          ...policy,
+          allowedTargets: [{ pid: 42, processGeneration: 'pst:18446744073709551616' }],
+        }),
+      ),
+    /allowedTargets/,
   );
 });
 
-test('blocks disallowed and over-budget actions before dispatch', async () => {
-  const calls: string[] = [];
-  const [wrapped] = applyComputerUseRealModelPolicy(toolSet(calls), {
-    allowedActions: ['observe'],
-    maxTotalActions: 2,
-    maxActionCounts: { observe: 1 },
-    allowedApps: ['Fixture'],
-  });
-  const context = {
-    sessionId: 's',
-    turnId: 't',
-    toolCallId: 'c',
-    cwd: '/tmp',
-    abortSignal: new AbortController().signal,
-    emitOutput() {},
-  };
-
-  const allowed = await wrapped.impl({
-    action: 'observe',
-    app: 'Fixture',
-  } as never, context) as { text: string };
-  assert.match(allowed.text, /owned-observation/);
-  const disallowed = await wrapped.impl(
-    { action: 'left_click' } as never,
-    context,
-  ) as { text: string };
-  assert.match(
-    disallowed.text,
-    /unsupported_action_policy/,
+test('prepared policy binds the fixture target and observation before execution', async () => {
+  const executed: string[] = [];
+  const wrapped = applyComputerUseRealModelPolicy(toolSet(executed), policy);
+  const observe = await wrapped.prepareInvocation(
+    { action: 'observe' },
+    { sessionId: 's', turnId: 't', toolCallId: 'observe', signal: context.abortSignal },
   );
-  const overBudget = await wrapped.impl(
-    { action: 'observe', app: 'Fixture' } as never,
-    context,
-  ) as { text: string };
-  assert.match(
-    overBudget.text,
-    /total_action_budget_exceeded/,
+  assert.deepEqual(executed, [], 'preparation and admission do not consume execution budget');
+  await observe.execute(context);
+  const click = await wrapped.prepareInvocation(
+    { action: 'click_element' },
+    { sessionId: 's', turnId: 't', toolCallId: 'click', signal: context.abortSignal },
   );
-  assert.deepEqual(calls, ['observe']);
+  await click.execute(context);
+  assert.deepEqual(executed, ['observe', 'click_element']);
 });
 
-test('blocks wrong targets before dispatch', async () => {
-  const calls: string[] = [];
-  const [wrapped] = applyComputerUseRealModelPolicy(toolSet(calls), {
-    allowedActions: ['observe', 'click_element'],
-    maxTotalActions: 3,
-    maxActionCounts: { observe: 2, click_element: 1 },
-    allowedApps: ['Owned Fixture'],
+test('installed targets and the wrong process generation fail before admission', async () => {
+  const executed: string[] = [];
+  const wrapped = applyComputerUseRealModelPolicy(toolSet(executed), {
+    ...policy,
+    allowedActions: [...policy.allowedActions, 'launch_app'],
+    maxActionCounts: { ...policy.maxActionCounts, launch_app: 1 },
   });
-  const context = {
-    sessionId: 's',
-    turnId: 't',
-    toolCallId: 'c',
-    cwd: '/tmp',
-    abortSignal: new AbortController().signal,
-    emitOutput() {},
-  };
-  const wrong = await wrapped.impl({
-    action: 'observe',
-    app: 'Other App',
-  } as never, context) as { text: string };
-  const unbound = await wrapped.impl({
-    action: 'click_element',
-    element_id: '7',
-  } as never, context) as { text: string };
-  assert.match(wrong.text, /target_policy_mismatch/);
-  assert.match(unbound.text, /target_policy_mismatch/);
-  assert.deepEqual(calls, []);
-});
-
-test('semantic mutations require an observation created by the owned fixture', async () => {
-  const calls: string[] = [];
-  const [wrapped] = applyComputerUseRealModelPolicy(toolSet(calls), {
-    allowedActions: ['observe', 'click_element'],
-    maxTotalActions: 3,
-    maxActionCounts: { observe: 1, click_element: 1 },
-    allowedApps: ['Owned Fixture'],
+  await assert.rejects(
+    wrapped.prepareInvocation(
+      { action: 'launch_app' },
+      { sessionId: 's', turnId: 't', toolCallId: 'launch', signal: context.abortSignal },
+    ),
+    /target_policy_mismatch/,
+  );
+  const wrongGeneration = applyComputerUseRealModelPolicy(toolSet(executed), {
+    ...policy,
+    allowedTargets: [{ pid: 42, processGeneration: 'pst:8', windowIds: [9] }],
   });
-  const context = {
-    sessionId: 's',
-    turnId: 't',
-    toolCallId: 'c',
-    cwd: '/tmp',
-    abortSignal: new AbortController().signal,
-    emitOutput() {},
-  };
-  await wrapped.impl({
-    action: 'observe',
-    app: 'Owned Fixture',
-  } as never, context);
-  const owned = await wrapped.impl({
-    action: 'click_element',
-    observation_id: 'owned-observation',
-    element_id: '7',
-  } as never, context) as { text: string };
-  assert.equal(owned.text, 'ok');
-  assert.deepEqual(calls, ['observe', 'click_element']);
-});
-
-test('wait and cursor_position do not require an impossible observation_id', async () => {
-  const calls: string[] = [];
-  const [wrapped] = applyComputerUseRealModelPolicy(toolSet(calls), {
-    allowedActions: ['wait', 'cursor_position'],
-    maxTotalActions: 2,
-    maxActionCounts: { wait: 1, cursor_position: 1 },
-    allowedApps: ['Owned Fixture'],
-  });
-  const context = {
-    sessionId: 's',
-    turnId: 't',
-    toolCallId: 'c',
-    cwd: '/tmp',
-    abortSignal: new AbortController().signal,
-    emitOutput() {},
-  };
-
-  const wait = await wrapped.impl(
-    { action: 'wait', duration: 0.01 } as never,
-    context,
-  ) as { text: string };
-  const cursor = await wrapped.impl(
-    { action: 'cursor_position' } as never,
-    context,
-  ) as { text: string };
-
-  assert.equal(wait.text, 'ok');
-  assert.equal(cursor.text, 'ok');
-  assert.deepEqual(calls, ['wait', 'cursor_position']);
+  await assert.rejects(
+    wrongGeneration.prepareInvocation(
+      { action: 'observe' },
+      { sessionId: 's', turnId: 't', toolCallId: 'observe', signal: context.abortSignal },
+    ),
+    /target_policy_mismatch/,
+  );
+  assert.deepEqual(executed, []);
 });

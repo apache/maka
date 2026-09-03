@@ -231,17 +231,10 @@ export type CuSemanticActionType = (typeof CU_SEMANTIC_ACTION_TYPES)[number];
  *
  * This list used to be hand-written beside a schema that already listed the
  * same names, and it drifted: `window_action` was added to the strict union and
- * not here, so had it also reached the wire, every window move, resize and
- * minimise would have been summarised as `unknown` — in the approval a person
- * reads before allowing it, and in the record the model reads back of its own
- * call.
- *
- * Drift in the other direction costs just as much and is quieter. A name listed
- * here that the schema does not accept makes `computerUseApprovalSummary`
- * report an action the tool will reject as though it were one that had been
- * taken, and makes `rememberForTurnAllowed` true for it. So the guard in
- * `computer-use-schema-parity.test.ts` (@maka/runtime, which can import the
- * schema; this package cannot) compares the two lists in both directions.
+ * not here, so had it also reached the wire the shared action catalog would no
+ * longer describe the tool. The guard in `computer-use-schema-parity.test.ts`
+ * (@maka/runtime, which can import the schema; this package cannot) compares
+ * the two lists in both directions.
  *
  * It is no longer hand-written: the three openers are named here and the rest
  * is spliced from `CU_SEMANTIC_ACTION_TYPES`, so there is one place to add a
@@ -406,42 +399,10 @@ export type ComputerUseActionOutcome =
     };
 
 /**
- * Approval is a capability gate, not proof that an action is fresh or valid.
- * Runtime must still establish an active observation and validate the target.
- */
-export const COMPUTER_USE_APPROVAL_CLASSES = [
-  'metadata_read',
-  'screenshot_read',
-  'pointer_mutation',
-  'keyboard_mutation',
-  'semantic_mutation',
-] as const;
-
-export type ComputerUseApprovalClass = (typeof COMPUTER_USE_APPROVAL_CLASSES)[number];
-
-export interface ComputerUseApprovalSummary {
-  action: string;
-  approvalClass: ComputerUseApprovalClass;
-  rememberForTurnAllowed: boolean;
-  app?: string;
-  windowId?: number;
-  observationId?: string;
-}
-
-/**
  * The call as the model should read it back: its own arguments, in the names
  * the tool accepts.
  *
- * The approval summary above is the host's projection for deciding and
- * displaying a permission. It was also being written into the model-facing
- * record of the call, and that had a cost nobody was watching for: the model's
- * transcript said it had called `maka_computer` with `approvalClass`,
- * `rememberForTurnAllowed` and `windowId` — two host-only fields and a key in a
- * dialect the tool rejects — so it went on calling it that way. A real desktop
- * run failed six of eleven calls on shapes copied from its own history, and the
- * telemetry file on this machine holds 29 such rejections.
- *
- * Same privacy boundary as the summary: typed text and written values are what
+ * Typed text and written values are what
  * a person asked for or what a window held, and they stay out. Element ids do
  * not — an element id is an index into one observation, and withholding it is
  * what left the model unable to see which control it had just acted on.
@@ -452,8 +413,6 @@ export interface ComputerUseApprovalSummary {
  * already tried that point — the repeated-and-thrash shape this projection
  * exists to make visible, reintroduced by the projection itself.
  *
- * Accepts either dialect on input, so it can project raw arguments or an
- * approval summary recovered from storage.
  */
 /**
  * One step of an `element_sequence`, as the model reads it back.
@@ -495,19 +454,13 @@ export interface ComputerUseModelCallArgs {
  * Fields the host adds, which the model never sent and must never be shown as
  * though it had.
  *
- * `approvalClass` and `rememberForTurnAllowed` come from the approval summary.
  * `element_identity` is added by the Computer Use tool's own `permissionArgs`,
  * which resolves the model's `element_id` against the live observation — and
  * `permissionArgs` is what this projection is applied to on the ToolRuntime
  * path, so without this the model would read back a call carrying a key it has
  * no way to send and whose value came off the accessibility tree.
  */
-const HOST_ONLY_ARGS = new Set([
-  'approvalClass',
-  'rememberForTurnAllowed',
-  'element_identity',
-  'elementIdentity',
-]);
+const HOST_ONLY_ARGS = new Set(['element_identity', 'elementIdentity']);
 
 /** The keys projected by name above, so the sweep below does not repeat them. */
 const MODEL_CALL_NAMED_ARGS = new Set([
@@ -754,125 +707,6 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
       : {}),
     ...rest,
   };
-}
-
-const POINTER_ACTIONS = new Set([
-  'mouse_move',
-  'left_click',
-  'right_click',
-  'middle_click',
-  'double_click',
-  'triple_click',
-  'left_mouse_down',
-  'left_mouse_up',
-  'left_click_drag',
-  'scroll',
-  'zoom',
-]);
-
-const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
-const SEMANTIC_ACTIONS = new Set([
-  'click_element',
-  'set_value',
-  'select_text',
-  'secondary_action',
-  // Scrolling an element moves what is on screen without changing any value.
-  // It is still a mutation of the target's state, and it is the semantic twin
-  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
-  'scroll_element',
-  // A sequence of element actions is still element actions: same class, same
-  // approval, one call.
-  'element_sequence',
-  // Starting an app changes what is on screen. It touches no element, but it
-  // is not a read, and letting it fall through to the default would have
-  // classified it correctly by accident rather than on purpose.
-  'launch_app',
-]);
-
-// Exactly the wire vocabulary, derived rather than restated: an action the tool
-// accepts is an action a person can be asked to approve.
-const APPROVAL_ACTIONS = new Set<string>(CU_TOOL_ACTION_TYPES);
-
-export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSummary {
-  const record = asRecord(args);
-  const rawAction = ownDataProperty(record, 'action');
-  const knownAction = typeof rawAction === 'string' && APPROVAL_ACTIONS.has(rawAction);
-  const action = knownAction ? rawAction : 'unknown';
-  // The tool defaults observe to a text-only Accessibility tree. Permission
-  // classification must follow the action that will execute, not the old
-  // screenshot-by-default contract: an omitted flag is metadata_read, and only
-  // an explicit true requires Screen Recording approval.
-  const includeScreenshot = ownDataProperty(record, 'include_screenshot') === true;
-  const approvalClass: ComputerUseApprovalClass =
-    action === 'list_apps' || action === 'cursor_position' || action === 'wait'
-      ? 'metadata_read'
-      : action === 'observe'
-        ? includeScreenshot
-          ? 'screenshot_read'
-          : 'metadata_read'
-        : action === 'screenshot'
-          ? 'screenshot_read'
-          : POINTER_ACTIONS.has(action)
-            ? 'pointer_mutation'
-            : KEYBOARD_ACTIONS.has(action)
-              ? 'keyboard_mutation'
-              : SEMANTIC_ACTIONS.has(action)
-                ? 'semantic_mutation'
-                : 'semantic_mutation';
-
-  const rawApp = ownDataProperty(record, 'app');
-  const rawWindowId = ownDataProperty(record, 'window_id');
-  const rawObservationId = ownDataProperty(record, 'observation_id');
-  const exactApp = typeof rawApp === 'string' && rawApp.length > 0 ? rawApp : undefined;
-  const app = exactApp === undefined ? undefined : boundedDisplay(redactSecrets(exactApp), 256);
-  const windowId =
-    typeof rawWindowId === 'number' && Number.isInteger(rawWindowId) ? rawWindowId : undefined;
-  const exactObservationId =
-    typeof rawObservationId === 'string' ? stableIdentifier(rawObservationId) : undefined;
-  const observationId =
-    exactObservationId === undefined
-      ? undefined
-      : boundedDisplay(redactSecrets(exactObservationId), 256);
-  const explicitTarget = exactApp !== undefined || windowId !== undefined;
-  const targetBound =
-    action === 'list_apps' ||
-    ((action === 'observe' || action === 'screenshot') && explicitTarget) ||
-    ((POINTER_ACTIONS.has(action) ||
-      KEYBOARD_ACTIONS.has(action) ||
-      SEMANTIC_ACTIONS.has(action)) &&
-      exactObservationId !== undefined &&
-      explicitTarget);
-  const rememberForTurnAllowed = knownAction && targetBound;
-
-  return {
-    action,
-    approvalClass,
-    rememberForTurnAllowed,
-    ...(app === undefined ? {} : { app }),
-    ...(windowId === undefined ? {} : { windowId }),
-    ...(observationId === undefined ? {} : { observationId }),
-  };
-}
-
-export function computerUseApprovalScopeKey(args: unknown): string {
-  const record = asRecord(args);
-  const rawAction = ownDataProperty(record, 'action');
-  const exactAction = typeof rawAction === 'string' ? rawAction : null;
-  const rawApp = ownDataProperty(record, 'app');
-  const exactApp = typeof rawApp === 'string' ? rawApp : null;
-  const rawWindowId = ownDataProperty(record, 'window_id');
-  const exactWindowId =
-    typeof rawWindowId === 'number' && Number.isInteger(rawWindowId) ? rawWindowId : null;
-  const rawObservationId = ownDataProperty(record, 'observation_id');
-  const exactObservationId = typeof rawObservationId === 'string' ? rawObservationId : null;
-  const summary = computerUseApprovalSummary(record);
-  return `computer_use:${JSON.stringify([
-    summary.approvalClass,
-    exactAction,
-    exactApp,
-    exactWindowId,
-    exactObservationId,
-  ])}`;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

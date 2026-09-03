@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// Supervises one `maka-cu` executor child and speaks `maka.cu/2` to it over
+// Supervises one `maka-cu` executor child and speaks `maka.cu/3` to it over
 // line-delimited JSON-RPC 2.0 on stdio (`maka-cu`'s docs/HOST_PROTOCOL.md §1).
 //
 // The framing decoder and the lifecycle vocabulary are shared with the

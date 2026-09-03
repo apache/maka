@@ -29,6 +29,7 @@ import { type MakaTool } from '@maka/runtime/tool-runtime';
 import type { RootExecutionDescriptor } from '@maka/core/agent-run';
 import {
   clientCapabilityScopeIdentity,
+  normalizeMacosBundleId,
   type ClientCapabilityGrantTarget,
 } from '@maka/core/client-capability-grant';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
@@ -65,6 +66,7 @@ import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 // accepted call can return its real terminal result instead of outcome_unknown.
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 const DESKTOP_BROWSER_SERVER_ID = 'desktop_browser';
+const DESKTOP_COMPUTER_USE_SERVER_ID = 'desktop_computer_use';
 const DESKTOP_SETTINGS_SERVER_ID = 'desktop_settings';
 const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -75,6 +77,7 @@ const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_extract',
 ]);
 const DESKTOP_SETTINGS_TOOLS = new Set(['MakaClientSettingsGet', 'MakaClientSettingsUpdate']);
+const DESKTOP_COMPUTER_USE_TOOLS = new Set(['maka_computer']);
 
 export { ClientCapabilityInvocationError };
 export type { ClientCapabilityInvocationFailure };
@@ -1495,6 +1498,31 @@ function managedClientCapabilityGrantTarget(
       throw new Error('Desktop Settings admission does not accept scope evidence');
     }
     return undefined;
+  }
+  if (
+    tool.offerId === DESKTOP_COMPUTER_USE_SERVER_ID &&
+    serverId === DESKTOP_COMPUTER_USE_SERVER_ID &&
+    DESKTOP_COMPUTER_USE_TOOLS.has(toolName)
+  ) {
+    if (evidence.kind !== 'computer_use') {
+      throw new Error('Desktop Computer Use admission requires native target evidence');
+    }
+    if (evidence.target.kind === 'duration_wait') return undefined;
+    const scope =
+      evidence.target.kind === 'app_catalog'
+        ? Object.freeze({ kind: 'app_catalog' as const })
+        : Object.freeze({
+            kind: 'macos_bundle_id',
+            bundleId: normalizeMacosBundleId(evidence.target.bundleId),
+          } as const);
+    return Object.freeze({
+      providerId: registration.providerId,
+      contractId,
+      serverId,
+      toolName,
+      capability: 'computer_use',
+      scope,
+    });
   }
   if (
     tool.offerId !== DESKTOP_BROWSER_SERVER_ID ||

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-// Unit test for the `maka.cu/2` parsing layer: the key grammar the host owns
+// Unit test for the `maka.cu/3` parsing layer: the key grammar the host owns
 // (§6.4) and the readers that refuse rather than default (§1.3, §5.2). No child
 // process is involved — these are pure functions over the wire's shapes.
 //
@@ -64,6 +64,7 @@ function snapshot(overrides: Record<string, unknown> = {}): Record<string, unkno
     capturedAt: 1753574400123,
     target: {
       pid: 4711,
+      processGeneration: 'pst:1',
       windowId: 90210,
       appId: 'com.apple.Notes',
       appName: 'Notes',

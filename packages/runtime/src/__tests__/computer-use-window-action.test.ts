@@ -31,6 +31,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { computerParams } from '../computer-use-codec.js';
+import type { CuDispatchBackend } from '../computer-use-tools.js';
 
 function parse(input: unknown) {
   return computerParams.safeParse(input);
@@ -129,41 +130,49 @@ test('a minimise names its own cost, because it cannot be taken back', async () 
     appId: 'com.apple.calculator',
     pid: 1,
     windowId: 2,
+    target: {
+      kind: 'running' as const,
+      identity: { kind: 'bundle_id' as const, bundleId: 'com.apple.calculator' },
+      selector: { pid: 1, processGeneration: 'pst:1', windowId: 2 },
+    },
     elements: [{ elementId: '0', role: 'AXWindow', label: '计算器' }],
   };
   // The fixture has to lose the window, or it cannot reproduce what happens.
   // A backend that keeps answering with an observation makes this assertion
   // pass no matter what the code does.
   let gone = false;
-  const [tool] = buildComputerUseTools({
-    backend: {
-      async preflight() {
-        return { accessibility: true, screenRecording: true };
-      },
-      async observeApp() {
-        if (gone) throw new Error('target_missing: the target window no longer exists');
-        return observation as never;
-      },
-      async captureObservation() {
-        if (gone) throw new Error('target_missing: the target window no longer exists');
-        return observation as never;
-      },
-      async runSemantic(action: { type: string; action?: string }) {
-        if (action.type === 'window_action' && action.action === 'minimize') gone = true;
-        return {
-          outcome: {
-            ok: true as const,
-            tier: 'ax' as const,
-            verified: true,
-            evidence: { path: 'ax_attribute', effect: 'confirmed' as const },
-          },
-        };
-      },
-      async run() {
-        return { outcome: { ok: true as const, tier: 'ax' as const } };
-      },
-    } as never,
-  });
+  const backend: CuDispatchBackend = {
+    async ensureReady() {},
+    async resolveTarget() {
+      return { kind: 'resolved', target: observation.target };
+    },
+    async preflight() {
+      return { accessibility: true, screenRecording: true };
+    },
+    async observeApp() {
+      if (gone) throw new Error('target_missing: the target window no longer exists');
+      return observation as never;
+    },
+    async captureObservation() {
+      if (gone) throw new Error('target_missing: the target window no longer exists');
+      return observation as never;
+    },
+    async runSemantic(action: { type: string; action?: string }) {
+      if (action.type === 'window_action' && action.action === 'minimize') gone = true;
+      return {
+        outcome: {
+          ok: true as const,
+          tier: 'ax' as const,
+          verified: true,
+          evidence: { path: 'ax_attribute', effect: 'confirmed' as const },
+        },
+      };
+    },
+    async run() {
+      return { outcome: { ok: true as const, tier: 'ax' as const } };
+    },
+  };
+  const [tool] = buildComputerUseTools({ backend });
   const context = {
     abortSignal: new AbortController().signal,
     sessionId: 'm',

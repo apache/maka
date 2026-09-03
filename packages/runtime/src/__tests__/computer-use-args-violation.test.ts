@@ -36,16 +36,13 @@ function refusalFor(args: unknown): unknown {
 
 describe('computer use argument refusals', () => {
   test('tells a call in the wrong dialect what this action does take', () => {
-    // The shape from a real run: every key in camelCase, plus two fields that
-    // belong to the host's approval projection and were never the model's to
-    // send. Naming only what is wrong left it re-sending the same shape.
+    // Every target key is in camelCase. Naming only what is wrong left the
+    // model re-sending the same shape.
     const args = {
       action: 'click_element',
       app: 'com.apple.calculator',
       windowId: 8677,
       observationId: 'obs-1',
-      approvalClass: 'semantic_mutation',
-      rememberForTurnAllowed: false,
     };
 
     const said = describeComputerUseArgsViolation(refusalFor(args), args);

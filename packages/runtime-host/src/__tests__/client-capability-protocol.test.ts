@@ -127,6 +127,36 @@ describe('Client Capability protocol', () => {
       },
     );
     assert.deepEqual(
+      decodeClientFrame({
+        kind: 'client.capability.accepted',
+        invocationId: 'computer-use-invocation',
+        admissionEvidence: {
+          kind: 'computer_use',
+          target: { kind: 'macos_bundle_id', bundleId: 'com.apple.TextEdit' },
+        },
+      }),
+      {
+        kind: 'client.capability.accepted',
+        invocationId: 'computer-use-invocation',
+        admissionEvidence: {
+          kind: 'computer_use',
+          target: { kind: 'macos_bundle_id', bundleId: 'com.apple.TextEdit' },
+        },
+      },
+    );
+    assert.throws(
+      () =>
+        decodeClientFrame({
+          kind: 'client.capability.accepted',
+          invocationId: 'computer-use-invocation',
+          admissionEvidence: {
+            kind: 'computer_use',
+            target: { kind: 'macos_bundle_id', bundleId: '' },
+          },
+        }),
+      (error: unknown) => error instanceof RuntimeHostProtocolError,
+    );
+    assert.deepEqual(
       decodeHostFrame({
         kind: 'client.capability.admitted',
         invocationId: 'invocation',

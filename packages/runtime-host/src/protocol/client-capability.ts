@@ -18,6 +18,7 @@
  */
 
 import { TOOL_ACTIVITY_KINDS, type ToolActivityKind } from '@maka/core/events';
+import { normalizeMacosBundleId } from '@maka/core/client-capability-grant';
 import {
   assertExactKeys,
   requireCount,
@@ -193,7 +194,14 @@ export interface ClientCapabilityAcceptedFrame {
 
 export type ClientCapabilityAdmissionEvidence =
   | { readonly kind: 'none' }
-  | { readonly kind: 'browser_url'; readonly url: string };
+  | { readonly kind: 'browser_url'; readonly url: string }
+  | {
+      readonly kind: 'computer_use';
+      readonly target:
+        | { readonly kind: 'macos_bundle_id'; readonly bundleId: string }
+        | { readonly kind: 'app_catalog' }
+        | { readonly kind: 'duration_wait' };
+    };
 
 export interface ClientCapabilityRejectedFrame {
   readonly kind: 'client.capability.rejected';
@@ -504,8 +512,37 @@ function decodeClientCapabilityAdmissionEvidence(
         kind: evidence.kind,
         url: requireString(evidence.url, 'url', 16_384),
       };
+    case 'computer_use': {
+      assertExactKeys(evidence, 'Client Capability admission evidence', ['kind', 'target']);
+      const target = requireRecord(evidence.target, 'Computer Use admission target');
+      switch (target.kind) {
+        case 'macos_bundle_id':
+          assertExactKeys(target, 'Computer Use admission target', ['kind', 'bundleId']);
+          return {
+            kind: evidence.kind,
+            target: {
+              kind: target.kind,
+              bundleId: decodeMacosBundleId(target.bundleId),
+            },
+          };
+        case 'app_catalog':
+        case 'duration_wait':
+          assertExactKeys(target, 'Computer Use admission target', ['kind']);
+          return { kind: evidence.kind, target: { kind: target.kind } };
+        default:
+          throw invalidProtocolFrame('Unknown Computer Use admission target kind');
+      }
+    }
     default:
       throw invalidProtocolFrame('Unknown Client Capability admission evidence kind');
+  }
+}
+
+function decodeMacosBundleId(value: unknown): string {
+  try {
+    return normalizeMacosBundleId(value);
+  } catch {
+    throw invalidProtocolFrame('Invalid Computer Use macOS bundle ID');
   }
 }
 
