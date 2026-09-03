@@ -172,7 +172,7 @@ export function createComputerUseHost(input: {
       .update(readRegularFile(binaryPath))
       .digest('hex');
     if (actual !== expectedBinarySha256) {
-      return { selected: selectComputerUseBackend() };
+      return { selected: selectComputerUseBackend({ platform }) };
     }
     return {
       // No `backendId`: the host takes whatever `DEFAULT_CU_BACKEND_ID` names,
