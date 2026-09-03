@@ -471,6 +471,141 @@ describe('Host Client Capability coordinator', () => {
     await coordinator.close();
   });
 
+  test('approves a trusted Desktop MCP tool once and scopes the Session Grant per tool', async () => {
+    let approvedTarget:
+      | Parameters<
+          HostClientCapabilityCoordinatorOptions['interactions']['requestClientCapabilityApproval']
+        >[0]['target']
+      | undefined;
+    let approvalCount = 0;
+    const coordinator = createCoordinator(() => undefined, {
+      interactions: {
+        requestClientCapabilityApproval: async ({ target }) => {
+          approvalCount += 1;
+          approvedTarget = target;
+          return 'allow';
+        },
+      },
+      grants: {
+        readClientCapabilitySessionGrant: async (key) =>
+          approvedTarget &&
+          approvedTarget.providerId === key.providerId &&
+          approvedTarget.contractId === key.contractId &&
+          approvedTarget.capability === key.capability &&
+          approvedTarget.scope.kind === 'mcp_tool' &&
+          key.scope.kind === 'mcp_tool' &&
+          approvedTarget.scope.serverId === key.scope.serverId &&
+          approvedTarget.scope.toolName === key.scope.toolName
+            ? { version: 1, ...key, grantedAt: 1 }
+            : undefined,
+      },
+    });
+    const sent: unknown[] = [];
+    const connection = attachAutoAdmittingConnection(
+      coordinator,
+      'connection-a',
+      () => ({ kind: 'none' }),
+      'done',
+      sent,
+    );
+    await registerSessionTools(coordinator, 'connection-a', 'registration-mcp', 'desktop_mcp', [
+      'fixture_echo',
+      'fixture_ping',
+    ]);
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+    const tools = new Map(snapshot.tools.map((tool) => [tool.displayName, tool]));
+
+    // accept -> approval -> admit -> execute: the provider is never admitted
+    // before the approval resolves.
+    const preparedEcho = await prepare(tools.get('fixture_echo'), {}, 'tool-echo');
+    assert.equal(approvalCount, 1);
+    assert.equal(approvedTarget?.capability, 'desktop_mcp');
+    assert.deepEqual(approvedTarget?.scope, {
+      kind: 'mcp_tool',
+      serverId: 'desktop_mcp',
+      toolName: 'fixture_echo',
+    });
+    assert.equal(
+      sent.some((frame) => isRecord(frame) && frame.kind === 'client.capability.admitted'),
+      false,
+    );
+    assert.deepEqual(await preparedEcho.execute(managedContext('tool-echo')), textResult('done'));
+    const admittedIndex = sent.findIndex(
+      (frame) => isRecord(frame) && frame.kind === 'client.capability.admitted',
+    );
+    const callIndex = sent.findIndex(
+      (frame) => isRecord(frame) && frame.kind === 'client.capability.call',
+    );
+    assert.ok(callIndex >= 0 && admittedIndex > callIndex);
+
+    // The persisted Session Grant covers the approved tool without a new
+    // approval...
+    const preparedEchoAgain = await prepare(tools.get('fixture_echo'), {}, 'tool-echo-again');
+    assert.equal(approvalCount, 1);
+    assert.deepEqual(
+      await preparedEchoAgain.execute(managedContext('tool-echo-again')),
+      textResult('done'),
+    );
+
+    // ...while a sibling tool under the same offer needs its own grant.
+    const preparedPing = await prepare(tools.get('fixture_ping'), {}, 'tool-ping');
+    assert.equal(approvalCount, 2);
+    assert.deepEqual(approvedTarget?.scope, {
+      kind: 'mcp_tool',
+      serverId: 'desktop_mcp',
+      toolName: 'fixture_ping',
+    });
+    assert.deepEqual(await preparedPing.execute(managedContext('tool-ping')), textResult('done'));
+
+    snapshot.release();
+    await connection.close();
+    await coordinator.close();
+  });
+
+  test('cancels a denied Desktop MCP call before admission', async () => {
+    const coordinator = createCoordinator(() => undefined, {
+      interactions: {
+        requestClientCapabilityApproval: async () => 'deny',
+      },
+      grants: {
+        readClientCapabilitySessionGrant: async () => undefined,
+      },
+    });
+    const sent: unknown[] = [];
+    const connection = attachAutoAdmittingConnection(
+      coordinator,
+      'connection-a',
+      () => ({ kind: 'none' }),
+      'done',
+      sent,
+    );
+    await registerSessionTools(coordinator, 'connection-a', 'registration-mcp', 'desktop_mcp', [
+      'fixture_echo',
+    ]);
+    assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
+    const snapshot = coordinator.snapshotForSession('session-a');
+    assert.ok(snapshot);
+
+    await assert.rejects(
+      () => prepare(snapshot.tools[0], {}, 'tool-mcp-denied'),
+      /Client Capability request was denied/u,
+    );
+    assert.equal(
+      sent.some((frame) => isRecord(frame) && frame.kind === 'client.capability.admitted'),
+      false,
+    );
+    assert.equal(
+      sent.some((frame) => isRecord(frame) && frame.kind === 'client.capability.cancel'),
+      true,
+    );
+
+    snapshot.release();
+    await connection.close();
+    await coordinator.close();
+  });
+
   test('reports capability_lost before admission and outcome_unknown after admission', async () => {
     await assertLossClassification('before_acceptance', 'capability_lost');
     await assertLossClassification('after_admission', 'outcome_unknown');
