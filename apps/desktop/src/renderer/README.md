@@ -64,7 +64,11 @@ application -> shared contracts + injected ports
   preload, main, or `platform/desktop`. Consumers use its public `index` entry;
   `testing` is test/Storybook-only.
 - `platform/desktop/` is the outer adapter zone for the preload bridge. It
-  implements narrow inward-facing ports rather than exporting the whole bridge;
+  implements narrow inward-facing ports rather than exporting the whole bridge:
+  where a port is a structural subset of one bridge namespace the adapter hands
+  that namespace through as-is (`sessions: bridge.sessions`) instead of
+  restating each method, and hand-writes the blocks that rename, guard, or
+  translate;
   composition and adapters consume application public entries, not deep
   implementation modules. Adapters may own bridge and browser-environment
   access, but never React UI/hooks/class lifecycle, Electron/Node imports, or

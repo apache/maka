@@ -26,6 +26,8 @@
 - PR A 已合并：`upstream/main@086ec99d`（#1521）
 - 当前 PR B 平铺基线：`upstream/main@e4c6ddbf`
 - 当前 PR B 平铺分支：`codex/runtime-continuation-correctness`
+- 跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)
+- 跟踪：[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)
 
 ## 1. 目的
 

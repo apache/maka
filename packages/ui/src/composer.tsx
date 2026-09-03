@@ -37,6 +37,7 @@ import { useMountedRef } from './use-mounted-ref.js';
 import {
   ICON_SIZE,
   ArrowUp,
+  CircleGauge,
   FileText,
   ListTodo,
   Network,
@@ -397,6 +398,12 @@ export const Composer = forwardRef<
     noModelConnection?: boolean;
     /** Optional Host-aware replacement for the generic no-model hint. */
     noModelHint?: string;
+    /** Read-only usage indicator for the active model's latest request. */
+    contextUsage?: {
+      usageTokens?: number;
+      declaredContextWindow?: number;
+      metadataContextWindow?: number;
+    };
     /**
      * Optional edit-and-resend banner above the composer. Desktop owns the
      * revision draft; Composer only renders the notice + cancel affordance.
@@ -2135,6 +2142,7 @@ export const Composer = forwardRef<
                     onChange={props.onNewChatThinkingLevelChange}
                   />
                 )}
+                {props.contextUsage ? <ContextUsageIndicator {...props.contextUsage} /> : null}
               </div>
               {/* The project decides where a NEW chat starts, which makes it a
                   parameter of this send like the model beside it — so it sits
@@ -2233,5 +2241,38 @@ export const Composer = forwardRef<
     </>
   );
 });
+
+function ContextUsageIndicator(props: {
+  usageTokens?: number;
+  declaredContextWindow?: number;
+  metadataContextWindow?: number;
+}) {
+  const copy = getConversationCopy(useUiLocale()).messages;
+  // A window from either source is enough to show a share: the user's
+  // declaration when there is one, otherwise the model's reported window. The
+  // distinction matters for the compaction threshold, which only a declaration
+  // arms, not for reading a number off the screen. With no window at all the
+  // usage stands on its own.
+  const window = props.declaredContextWindow ?? props.metadataContextWindow;
+  const label =
+    props.usageTokens === undefined
+      ? '—'
+      : window !== undefined && window > 0
+        ? `${Math.round((props.usageTokens / window) * 100)}%`
+        : `${props.usageTokens} tok`;
+  const tooltip =
+    props.usageTokens === undefined
+      ? copy.systemNotes.contextUsageUnavailable
+      : window !== undefined && window > 0
+        ? copy.systemNotes.contextUsageShare(props.usageTokens, window)
+        : copy.systemNotes.contextUsageNoWindow;
+  const indicator = (
+    <span className="maka-context-usage-indicator" aria-label={tooltip ?? label}>
+      <CircleGauge size={ICON_SIZE.meta} aria-hidden="true" />
+      <span>{label}</span>
+    </span>
+  );
+  return tooltip ? <Tooltip content={tooltip}>{indicator}</Tooltip> : indicator;
+}
 
 export type ComposerProps = ComponentProps<typeof Composer>;

@@ -2412,7 +2412,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
           await this.continuity.acceptRuntimeEvent(input.sessionId, active.runId, event);
         } else if (isInteractionAnswerAck(event)) {
           await this.continuity.refreshCanonical(input.sessionId);
-        } else if (event.type === 'user_question_request') {
+        } else if (event.type === 'user_question_request' || event.type === 'form_request') {
           this.continuity.enqueueCanonicalRefresh(input.sessionId);
         }
       }
@@ -3128,7 +3128,7 @@ function isRuntimeSessionForwardedEvent(
 }
 
 function isInteractionAnswerAck(event: SessionEvent): boolean {
-  return event.type === 'user_question_answer_ack';
+  return event.type === 'user_question_answer_ack' || event.type === 'form_answer_ack';
 }
 
 function completedStart(outcome: RootMessageStartOutcome): TurnStartDisposition {

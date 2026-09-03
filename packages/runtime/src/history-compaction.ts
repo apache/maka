@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ContextBudgetDiagnostic } from '@maka/core/usage-stats/types';
 import { finitePositive } from './context-budget-helpers.js';
@@ -183,6 +184,14 @@ export interface PlanHistoryCompactionInput {
   highWaterName?: string;
   highWaterSeq?: number;
   previousCheckpoint?: HistoryCompactCheckpoint;
+  /**
+   * Run headers for the ordered events, and the route this fold is dispatched
+   * on. Together they name the newest reply this route produced, which is the
+   * only span a retreat may target: a rejection of a larger one says nothing
+   * about a span another model accepted.
+   */
+  runHeaders?: readonly AgentRunHeader[];
+  acceptedRoute?: { modelId: string; connectionId?: string };
   /** Present only when this automatic Compaction should create a Memory task. */
   memoryExtractionBoundary?: HistoryCompactMemoryExtractionBoundary;
   summarize: HistoryCompactionSummarizer;
@@ -214,6 +223,41 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * when it cannot fold a safe completed prefix it FAILS OPEN (keep the raw
  * projection + diagnostic) and the request goes out unchanged.
  */
+/**
+ * How many ordered events the last request THIS ROUTE had accepted covered.
+ *
+ * A span is only proven for the model and connection that accepted it: a token
+ * count is a number in one tokenizer, and a session's history can span runs on
+ * several routes. So the newest reply produced on the summarizer's own route
+ * ends the span, found through the run headers rather than by role alone —
+ * everything before its first event was in a request that route accepted.
+ * A ledger with no reply from this route has nothing proven, and the caller
+ * must not invent a boundary.
+ */
+function acceptedInputBoundary(
+  events: readonly RuntimeEvent[],
+  runHeaders: readonly AgentRunHeader[],
+  route: { modelId: string; connectionId?: string } | undefined,
+): number | undefined {
+  if (!route) return undefined;
+  const onRoute = (event: RuntimeEvent | undefined): boolean => {
+    if (event?.role !== 'model') return false;
+    const header = runHeaders.find((candidate) => candidate.runId === event.runId);
+    if (!header || header.modelId !== route.modelId) return false;
+    return header.llmConnectionId === route.connectionId;
+  };
+  let index = -1;
+  for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
+    if (onRoute(events[cursor])) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return undefined;
+  while (index > 0 && onRoute(events[index - 1])) index -= 1;
+  return index;
+}
+
 export async function planHistoryCompaction(
   input: PlanHistoryCompactionInput,
 ): Promise<PlanHistoryCompactionResult> {
@@ -282,11 +326,28 @@ export async function planHistoryCompaction(
       if (error instanceof HistoryCompactSummarizerError) {
         if (error.reason === 'input_too_large') {
           // The summarizer's provider said this span does not fit its own
-          // window; that is the only fit signal the fold listens to. Retreat by
-          // half rather than by one event: each retreat is a real provider
-          // round trip, and the loop exits through no_safe_completed_span when
-          // even the smallest legal span is refused.
-          maxCoveredCount = Math.floor(boundary.coveredCount / 2);
+          // window; that is the only fit signal the fold listens to. Retreat to
+          // the span the last accepted request's input covered: that span was
+          // accepted by this model on this connection, so it is provably within
+          // capacity, where halving the range is a guess that can overshoot
+          // (throwing away verbatim history for nothing) or undershoot (paying
+          // another round trip). Only one retreat is available, because there
+          // is only one proven boundary; a rejection of that span too is the
+          // provider saying this fold cannot be made, and the fold fails open
+          // (#4559).
+          const proven = acceptedInputBoundary(
+            input.orderedEvents,
+            input.runHeaders ?? [],
+            input.acceptedRoute,
+          );
+          if (proven === undefined || proven >= boundary.coveredCount) {
+            return {
+              decision: 'fail_open',
+              reason: 'summarizer_failed',
+              diagnosticReason: error.reason,
+            };
+          }
+          maxCoveredCount = proven;
           continue;
         }
         return {

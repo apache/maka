@@ -113,6 +113,7 @@ async function mountRegion(): Promise<{
               composerRef: composer,
               directoryComposerProps: {},
               directoryPickerEnabled: false,
+
               active: true,
               onboardingComposerHidden: false,
               activeInteraction: undefined,

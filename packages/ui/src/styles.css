@@ -231,11 +231,7 @@
 .maka-turn-processing { margin-top: 8px; }
 .maka-turn-provider-retry { margin-top: 8px; }
 .maka-turn-indicator-text { display: inline-flex; min-width: 0; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Duration must match `WORKING_PHRASE_FADE_MS` in chat-turn.tsx: the swap is a
-   fade out, then a text change, then a fade in, and the JS timer is what waits
-   out this transition before rewriting the word. */
-.maka-turn-working-phrase { font-weight: var(--font-weight-medium); transition: opacity var(--duration-large) var(--ease-out-strong); }
-.maka-turn-working-phrase[data-fading="true"] { opacity: 0; }
+.maka-turn-status-label { font-weight: var(--font-weight-medium); }
 .maka-turn-status-separator { color: var(--foreground-alpha-16); }
 /* Tabular figures so a ticking clock changes glyphs without changing width. */
 .maka-turn-elapsed { font-variant-numeric: tabular-nums; }

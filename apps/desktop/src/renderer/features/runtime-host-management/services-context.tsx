@@ -17,24 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { RuntimeHostManagementServices } from './ports.js';
 
-const RuntimeHostManagementServicesContext = createContext<RuntimeHostManagementServices | null>(null);
+const { Provider, useServices } = createServicesContext<RuntimeHostManagementServices>('RuntimeHostManagementServicesProvider');
 
-export function RuntimeHostManagementServicesProvider(props: {
-  readonly services: RuntimeHostManagementServices;
-  readonly children?: ReactNode;
-}) {
-  return (
-    <RuntimeHostManagementServicesContext.Provider value={props.services}>
-      {props.children}
-    </RuntimeHostManagementServicesContext.Provider>
-  );
-}
+export const RuntimeHostManagementServicesProvider = Provider;
 
 export function useRuntimeHostManagementServices(): RuntimeHostManagementServices {
-  const services = useContext(RuntimeHostManagementServicesContext);
-  if (!services) throw new Error('RuntimeHostManagementServicesProvider is missing');
-  return services;
+  return useServices();
 }

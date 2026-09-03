@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   applyRuntimeEventHistoryCompact,
@@ -176,7 +177,10 @@ describe('plan context compaction', () => {
     assert.deepEqual(result.replacementEvents[1], events[2]);
   });
 
-  test('retreats the safe prefix by half for each input-too-large rejection', async () => {
+  test('retreats to the span the last accepted input covered', async () => {
+    // The newest reply's events end that span: everything before the first of
+    // them was in the request the provider accepted, so it is provably within
+    // capacity. Halving would be a guess in either direction (#4559).
     const events = [
       user('old-user', 'old-turn'),
       model('old-model', 'old-turn', 'old result'),
@@ -188,10 +192,12 @@ describe('plan context compaction', () => {
       planInput({
         phase: 'standalone',
         orderedEvents: events,
+        runHeaders: HEADERS_A,
+        acceptedRoute: ROUTE_A,
         reserveTailEvents: 0,
         summarize: ({ coveredRuntimeEvents }) => {
           attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
-          if (attemptedCoverage.length <= 2) {
+          if (attemptedCoverage.length === 1) {
             throw new HistoryCompactSummarizerError('input_too_large');
           }
           return structuredSummary('A bounded automatic summary.');
@@ -203,16 +209,185 @@ describe('plan context compaction', () => {
     if (result.decision !== 'compacted') return;
     assert.deepEqual(attemptedCoverage, [
       ['old-user', 'old-model', 'recent-user', 'recent-model'],
-      ['old-user', 'old-model'],
-      ['old-user'],
+      ['old-user', 'old-model', 'recent-user'],
     ]);
     assert.deepEqual(
       result.tailRuntimeEvents.map((event) => event.id),
-      ['old-model', 'recent-user', 'recent-model'],
+      ['recent-model'],
     );
   });
 
-  test('fails open after repeated input-too-large retreat reaches no safe span', async () => {
+  test('a later fold rolls over the reply the retreat left verbatim', async () => {
+    // The retreat keeps the newest reply out of the fold, so it stays in the
+    // request as raw text. It does not stay there: the next fold covers it,
+    // rolling the checkpoint forward, because by then a newer reply ends the
+    // proven span. This bounds how long a retreat's leftover survives.
+    const first = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    let attempts = 0;
+    const retreated = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: first,
+        runHeaders: HEADERS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          if (attempts === 1) throw new HistoryCompactSummarizerError('input_too_large');
+          return structuredSummary('A bounded automatic summary.');
+        },
+      }),
+    );
+    assert.equal(retreated.decision, 'compacted');
+    if (retreated.decision !== 'compacted') return;
+    assert.deepEqual(
+      retreated.tailRuntimeEvents.map((event) => event.id),
+      ['recent-model'],
+    );
+
+    // The turn continues: a newer reply arrives, so the proven span now ends
+    // after the one the retreat spared.
+    const later = [...first, user('next-user', 'next-turn'), model('next-model', 'next-turn')];
+    const rolled = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: later,
+        runHeaders: HEADERS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        previousCheckpoint: retreated.checkpoint,
+        summarize: () => structuredSummary('A bounded automatic summary.'),
+      }),
+    );
+    assert.equal(rolled.decision, 'compacted');
+    if (rolled.decision !== 'compacted') return;
+    assert.equal(
+      rolled.coveredRuntimeEvents.some((event) => event.id === 'recent-model'),
+      true,
+    );
+  });
+
+  test('fails open when the proven boundary is refused too', async () => {
+    // One retreat, because there is one proven boundary. A rejection of that
+    // span is the provider saying this fold cannot be made.
+    const events = [
+      user('old-user', 'old-turn'),
+      model('old-model', 'old-turn', 'old result'),
+      user('recent-user', 'recent-turn'),
+      model('recent-model', 'recent-turn', 'recent result'),
+    ];
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        runHeaders: HEADERS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 2);
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'input_too_large');
+  });
+
+  test("a mixed-route session retreats to this route's own newest reply", async () => {
+    // History can span runs on several routes. A span another model accepted
+    // proves nothing about this summarizer's window, so the retreat targets the
+    // newest reply THIS route produced, found through the run headers.
+    const events = [
+      user('old-user', 'old-turn'),
+      modelOnRun('mine', 'old-turn', 'run-1', 'accepted by this route'),
+      user('switch-user', 'switch-turn'),
+      modelOnRun('theirs', 'switch-turn', 'run-2', 'accepted by another route'),
+    ];
+    const attemptedCoverage: string[][] = [];
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: events,
+        runHeaders: [
+          runHeader('run-1', 'model-a', 'conn-a'),
+          runHeader('run-2', 'model-b', 'conn-b'),
+        ],
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: ({ coveredRuntimeEvents }) => {
+          attemptedCoverage.push(coveredRuntimeEvents.map((event) => event.id));
+          if (attemptedCoverage.length === 1) {
+            throw new HistoryCompactSummarizerError('input_too_large');
+          }
+          return structuredSummary('A bounded automatic summary.');
+        },
+      }),
+    );
+
+    assert.equal(result.decision, 'compacted');
+    // Not ['old-user', 'mine', 'switch-user'], which stops at the other route's
+    // reply: that span is proven only for the model that accepted it.
+    assert.deepEqual(attemptedCoverage, [
+      ['old-user', 'mine', 'switch-user', 'theirs'],
+      ['old-user'],
+    ]);
+  });
+
+  test('fails open when only another route has ever been accepted', async () => {
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: [user('u1', 't1'), modelOnRun('theirs', 't1', 'run-2')],
+        runHeaders: [runHeader('run-2', 'model-b', 'conn-b')],
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(result.decision, 'fail_open');
+  });
+
+  test('fails open without retrying when no accepted reply proves a boundary', async () => {
+    // No model reply anywhere, so no request has ever been accepted on this
+    // ledger; inventing a boundary would be the guess this change removes.
+    let attempts = 0;
+    const result = await planHistoryCompaction(
+      planInput({
+        phase: 'standalone',
+        orderedEvents: [user('u1', 't1'), user('u2', 't1'), user('u3', 't2')],
+        runHeaders: HEADERS_A,
+        acceptedRoute: ROUTE_A,
+        reserveTailEvents: 0,
+        summarize: () => {
+          attempts += 1;
+          throw new HistoryCompactSummarizerError('input_too_large');
+        },
+      }),
+    );
+
+    assert.equal(attempts, 1);
+    assert.equal(result.decision, 'fail_open');
+  });
+
+  test('fails open on an input-too-large rejection with the summarizer reason', async () => {
+    // The retreat is bounded by what a provider has already accepted, so a
+    // rejection that outlives it fails open carrying the summarizer's own
+    // reason rather than a span-selection one.
     const result = await planHistoryCompaction(
       planInput({
         summarize: () => {
@@ -220,7 +395,9 @@ describe('plan context compaction', () => {
         },
       }),
     );
-    assert.deepEqual(result, { decision: 'fail_open', reason: 'no_safe_completed_span' });
+    assert.equal(result.decision, 'fail_open');
+    if (result.decision !== 'fail_open') return;
+    assert.equal(result.diagnosticReason, 'input_too_large');
   });
 
   test('persisted checkpoint replay-validates against the same ledger prefix (recovery)', async () => {
@@ -379,6 +556,29 @@ function user(id: string, turnId: string): RuntimeEvent {
 function model(id: string, turnId: string, text: string = id): RuntimeEvent {
   return { ...base(id, turnId), role: 'model', author: 'agent', content: { kind: 'text', text } };
 }
+/** A model reply produced by a named run, so a route can be attached to it. */
+function modelOnRun(id: string, turnId: string, runId: string, text: string = id): RuntimeEvent {
+  return { ...model(id, turnId, text), runId, invocationId: runId };
+}
+function runHeader(runId: string, modelId: string, llmConnectionId: string): AgentRunHeader {
+  return {
+    runId,
+    sessionId: 'session-1',
+    turnId: 'turn-1',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionId,
+    llmConnectionSlug: llmConnectionId,
+    modelId,
+    cwd: '/tmp/maka',
+    permissionMode: 'ask',
+    createdAt: 1_800_000_000_000,
+    updatedAt: 1_800_000_000_000,
+  };
+}
+const ROUTE_A = { modelId: 'model-a', connectionId: 'conn-a' };
+const HEADERS_A = [runHeader('run-1', 'model-a', 'conn-a')];
+
 function call(id: string, callId: string, turnId: string): RuntimeEvent {
   return {
     ...base(id, turnId),

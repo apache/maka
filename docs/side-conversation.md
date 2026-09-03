@@ -443,14 +443,6 @@ failure observed in this pass succeeded when rerun in isolation.
 
 ## Follow-up Work
 
-1. Extract the remaining surface switch into a registered tab descriptor model
-   before adding third-party panel types.
-2. Surface parent status in the panel when the main Session needs input,
-   approval, or completes.
-3. Decide whether an explicit user request should be able to promote a side
-   conversation to a durable ordinary Session before adding write access.
-4. Add commit selection to Review, then hunk-level stage/unstage/revert
-   actions.
-5. Add filesystem watching and multi-repository aggregation to Review.
-6. Add remote-host Terminal creation and a restorable route only after the
-   Runtime can reattach or recreate a terminal honestly across app restart.
+Follow-up work continues to preserve the lifecycle and authority boundaries documented above. Its status and decomposition live in the tracker so this design does not become a second checklist.
+
+Tracking: [Side Conversation follow-ups #4331](https://github.com/apache/maka/issues/4331)

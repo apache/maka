@@ -962,6 +962,45 @@ describe('models.dev provider conformance', () => {
     assert.deepEqual(requests[2]?.body.contents, [{ role: 'user', parts: [{ text: 'Hi' }] }]);
   });
 
+  test('OpenCode Go connection probes identify every supported wire request', async () => {
+    const requests: Array<{
+      url: string;
+      headers: IncomingMessage['headers'];
+    }> = [];
+    const server = await startJsonServer(async (request, response) => {
+      requests.push({
+        url: request.url ?? '',
+        headers: request.headers,
+      });
+      respondJson(response, 200, {});
+    });
+    const connection: LlmConnection = {
+      slug: 'opencode-go',
+      name: 'OpenCode Go',
+      providerType: 'opencode-go',
+      baseUrl: `${server.url}/zen/go/v1`,
+      defaultModel: 'kimi-k2.7-code',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    for (const modelId of ['kimi-k2.7-code', 'minimax-m3', 'muse-spark-1.2-contributor']) {
+      assert.equal((await testConnection(connection, 'opencode-go-test-key', modelId)).ok, true);
+    }
+
+    assert.deepEqual(
+      requests.map(({ url }) => url),
+      ['/zen/go/v1/chat/completions', '/zen/go/v1/messages', '/zen/go/v1/responses'],
+    );
+    for (const request of requests) {
+      assert.match(
+        String(request.headers['x-opencode-session']),
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      );
+    }
+  });
+
   test('Volcengine Agent Plan connection probes do not retain the synthetic response', async () => {
     let body: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {

@@ -1175,6 +1175,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
   });
 
   test('step-0 overflow recovery gates reasoning on retry and durable reload', async () => {
+    // The subject here is reasoning gating across the retry and the durable
+    // reload, not how many times a fold may retreat: the retreat is bounded by
+    // the one span a provider has already accepted, so the summarizer answers
+    // on its first call.
     let summarizeCalls = 0;
     const fixture = buildReactiveFixture({
       script: ['overflow', 'tool', 'done'],
@@ -1182,16 +1186,16 @@ describe('reactive overflow recovery in the streaming backend', () => {
       reasoningReplayTail: true,
       summarize: (input) => {
         summarizeCalls += 1;
-        if (summarizeCalls <= 2) {
-          throw new HistoryCompactSummarizerError('input_too_large');
-        }
+        if (summarizeCalls === 1) throw new HistoryCompactSummarizerError('input_too_large');
         return reactiveStructuredSummary(input.source.foldedRuntimeEvents);
       },
     });
     await runTurn(fixture);
 
     assert.equal(fixture.model.doStreamCalls.length, 3);
-    assert.equal(fixture.summarizerCalls(), 3);
+    // One retreat, to the span the last accepted input covered, which leaves
+    // the reasoning tail verbatim.
+    assert.equal(fixture.summarizerCalls(), 2);
     for (const call of fixture.model.doStreamCalls.slice(1)) {
       const prompt = JSON.stringify(call.prompt);
       assert.match(prompt, /REACTIVE_SUMMARY_SENTINEL/);

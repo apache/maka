@@ -366,6 +366,13 @@ export class AiSdkCompaction {
         sessionId: this.sessionId,
         phase: 'standalone',
         orderedEvents: runtimeContext,
+        ...(input.runtimeContextRunHeaders ? { runHeaders: input.runtimeContextRunHeaders } : {}),
+        acceptedRoute: {
+          modelId: this.input.modelId,
+          ...(this.targetConnectionId !== undefined
+            ? { connectionId: this.targetConnectionId }
+            : {}),
+        },
         reserveTailEvents: 0,
         charsPerToken,
         now: this.now(),
@@ -814,6 +821,7 @@ export class AiSdkCompaction {
     if (persisted) {
       state.baselineTokens = persisted.inputTokens + (persisted.outputTokens ?? 0);
       state.lastAcceptedTotalTokens = state.baselineTokens;
+      state.priorAcceptedInputTokens = persisted.inputTokens;
     }
     if (persisted) state.replyReserveTokens = replyReserveTokens(persisted.outputTokens);
     return state;
@@ -1069,6 +1077,11 @@ export class AiSdkCompaction {
       phase: input.phase ?? 'mid_turn',
       orderedEvents,
       headAnchor: { runtimeEventId: state.headAnchor.id, turnId },
+      runHeaders: state.priorRunHeaders,
+      acceptedRoute: {
+        modelId: this.input.modelId,
+        ...(this.targetConnectionId !== undefined ? { connectionId: this.targetConnectionId } : {}),
+      },
       reserveTailEvents: 1,
       charsPerToken,
       now: this.now(),
@@ -1459,6 +1472,14 @@ export class MidTurnCapacityCompactState {
    * rejection about what remains in it.
    */
   compactionAppliedThisSend = false;
+  /**
+   * Input tokens of the last request a provider accepted before this send.
+   *
+   * Input against input, across the send boundary: the first request of a send
+   * has no earlier step to compare with, and `baselineTokens` counts the reply
+   * too, which the next request does not always carry.
+   */
+  priorAcceptedInputTokens: number | undefined;
 
   constructor(
     readonly headAnchor: RuntimeEvent,

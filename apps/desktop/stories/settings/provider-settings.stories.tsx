@@ -903,7 +903,7 @@ export const OAuthCreateAdoptsExactConnection: Story = {
       '[data-connection-id="connection-openai-codex-4"]',
     );
     await expect(createdRow).not.toBeNull();
-    await expect(within(createdRow!).getByRole('button')).toHaveFocus();
+    await waitFor(() => expect(within(createdRow!).getByRole('button')).toHaveFocus());
   },
 };
 

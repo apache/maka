@@ -32,6 +32,8 @@ owners:
 
 # Chapter 8: Resume Is Not Retry—How Maka Continues Safely from Crash Facts
 
+Tracking: [Production Write/Edit recovery #4319](https://github.com/apache/maka/issues/4319), [safe-boundary continuation hardening #4324](https://github.com/apache/maka/issues/4324), [sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)
+
 > This chapter answers a deceptively dangerous question: when Maka crashes while a model is calling a tool, how can a restart tell what happened, what may continue, and what must stop for human attention? The answer is: **recover facts from immutable RuntimeEvents, let one RecoveryResolver classify tool state, and create a new Run only when history, execution, and workspace boundaries are all provably safe. Resume never resurrects the old process or disguises “try again” as recovery.**
 
 This chapter is for engineers entering Maka Runtime for the first time. The first half builds intuition with an interrupted file write. The second half explains Phases 0–4, Desktop and CLI integration, T1/T2, recovery decisions, workspace checkpoints, and the recommended implementation sequence.

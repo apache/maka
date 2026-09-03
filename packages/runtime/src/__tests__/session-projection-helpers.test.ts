@@ -151,12 +151,18 @@ describe('session projection helpers', () => {
     assert.deepStrictEqual(statusFromEvent({ type: 'user_question_request', ts: 1 } as never), {
       status: 'waiting_for_user',
     });
+    assert.deepStrictEqual(statusFromEvent({ type: 'form_request', ts: 1 } as never), {
+      status: 'waiting_for_user',
+    });
     assert.deepStrictEqual(
       statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never),
       {
         status: 'running',
       },
     );
+    assert.deepStrictEqual(statusFromEvent({ type: 'form_answer_ack', ts: 1 } as never), {
+      status: 'running',
+    });
     assert.strictEqual(
       statusFromEvent({ type: 'sandbox_boundary_decision_ack', ts: 1 } as never, {
         allowInteractionResume: false,

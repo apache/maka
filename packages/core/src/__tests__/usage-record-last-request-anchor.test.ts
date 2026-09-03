@@ -48,6 +48,15 @@ test('token-usage fields carry the anchor and reject a broken one', () => {
     isTokenUsageFields({ ...usage, lastRequestAnchor: { inputTokens: 120, foo: 1 } }),
     false,
   );
+  // The route the counts belong to. A reader pairs them with a window only
+  // when it matches the request it is about to make.
+  assert.equal(
+    isTokenUsageFields({
+      ...usage,
+      lastRequestAnchor: { inputTokens: 120, modelId: 'm', connectionId: 'c' },
+    }),
+    true,
+  );
 });
 
 test('an invalid anchor fails the whole token_usage message decode', () => {

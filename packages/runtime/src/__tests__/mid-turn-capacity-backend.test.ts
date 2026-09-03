@@ -147,6 +147,8 @@ interface MidTurnFixtureOptions {
   firstResult?: string;
   /** The model finishes on the second request instead of running three steps. */
   finalAtSecondCall?: boolean;
+  /** One request and no tool call, so only the step-0 comparison can fire. */
+  singleRequest?: boolean;
   /** Add a third tool step whose result outgrows even a rolled-forward fold (finding A). */
   rollingOverflow?: boolean;
   /** Tool-search availability with a huge deferred schema (finding D). */
@@ -263,6 +265,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     if (options.bigToolGroup) {
       return call === 1 ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }) : doneChunks();
     }
+    if (options.singleRequest) return doneChunks();
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' });
       if (!options.assistantTextInFirstStep) return first;
@@ -1287,6 +1290,87 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(
       fixture.messages.some(
         (message) => (message as { kind?: string }).kind === 'context_window_overrun',
+      ),
+      false,
+    );
+  });
+
+  test('reports provider context dropping across the send boundary', async () => {
+    // The Ollama shape: the provider truncates to its own window, so the input
+    // it counts is the SAME on every later request while the user keeps adding
+    // turns. A send of one or two steps never sees that from the inside
+    // (#4623). One request here, so only the step-0 comparison can write it.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 3_716, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
+        (message as { kind?: string }).kind === 'context_provider_dropping',
+    );
+    assert.deepEqual(note?.data, { inputTokens: 3_716, priorInputTokens: 3_716 });
+  });
+
+  test('does not report dropping across the boundary when the input grew', async () => {
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 4_000, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('does not report dropping across the boundary when the input merely shrank', async () => {
+    // A manual compaction leaves the pre-compaction anchor behind, a turn can
+    // carry a smaller tool set, and a user can edit or branch history. All
+    // three shrink the input legitimately, and none lands on exactly the same
+    // count, so equality is what separates them from a truncating provider.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 900, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('does not report dropping across the boundary when this send folded first', async () => {
+    // A fold before the first request explains a smaller input by itself.
+    const fixture = buildFixture({
+      contextWindow: 3_000,
+      singleRequest: true,
+      finalStepUsage: { input: 3_716, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
       ),
       false,
     );

@@ -106,6 +106,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
         {
           signal: new AbortController().signal,
           accept: async () => undefined,
+          requestInteraction: async () => assert.fail('Unexpected provider interaction'),
         },
       ),
       /not offered/u,
@@ -131,6 +132,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
           accept: async (evidence) => {
             admissionEvidence = evidence;
           },
+          requestInteraction: async () => assert.fail('Unexpected provider interaction'),
         },
       ),
       {

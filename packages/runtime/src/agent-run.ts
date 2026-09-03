@@ -1904,7 +1904,9 @@ async function appendUserMessageOnce(
 
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
-    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
+    event.type === 'sandbox_boundary_decision_ack' ||
+    event.type === 'user_question_answer_ack' ||
+    event.type === 'form_answer_ack'
   );
 }
 

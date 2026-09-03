@@ -248,6 +248,7 @@ import {
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
   type DesktopSessionSummary,
+  type DesktopSessionSummaryInput,
 } from '../shared/desktop-session-projection.js';
 
 let activeRuntimeHost: DesktopTargetScope | undefined;
@@ -680,7 +681,7 @@ async function invokeSessionSummary(
     session.scope,
     session.sessionId,
     ...args,
-  ) as SessionSummary;
+  ) as DesktopSessionSummaryInput;
   return projectSessionSummary(session.scope, summary);
 }
 
@@ -702,14 +703,14 @@ async function invokeBranchFromTurn(
     ref.scope,
     ref.sessionId,
     input,
-  ) as SessionSummary | { ok: true; session: SessionSummary } | { ok: false; reason: string };
+  ) as DesktopSessionSummaryInput | { ok: true; session: DesktopSessionSummaryInput } | { ok: false; reason: string };
   if (input.sideConversation) {
     if (!('ok' in result) || result.ok === false) {
       return result as DesktopSideConversationBranchResult;
     }
     return { ok: true, session: projectSessionSummary(ref.scope, result.session) };
   }
-  return projectSessionSummary(ref.scope, result as SessionSummary);
+  return projectSessionSummary(ref.scope, result as DesktopSessionSummaryInput);
 }
 
 async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
@@ -728,7 +729,7 @@ async function invokeSessionInput<T, I extends { readonly sessionId: string }>(
 
 function projectSessionSummary(
   scope: DesktopTargetScope,
-  session: SessionSummary,
+  session: DesktopSessionSummaryInput,
 ): DesktopSessionSummary {
   const projected = projectSessionCatalogSummary(scope, session);
   runtimeHostSessionScopes.set(projected.id, runtimeHostScopeKey(scope));
@@ -737,7 +738,7 @@ function projectSessionSummary(
 
 function projectSessionCatalogSummary(
   scope: DesktopTargetScope,
-  session: SessionSummary,
+  session: DesktopSessionSummaryInput,
 ): DesktopSessionSummary {
   const metadata = runtimeHostMetadataFor(scope);
   if (!metadata) throw new Error('Desktop Runtime Host metadata is unavailable');
@@ -897,7 +898,7 @@ async function listDesktopSessions(
       'sessions:list',
       parent.scope,
       { ...filter, subagentParentSessionId: parent.sessionId },
-    ) as SessionCatalogSummary[];
+    ) as DesktopSessionSummaryInput[];
     return sessions.map((session) => projectSessionSummary(parent.scope, session));
   }
   lastDesktopSessionCatalog = await resolveRuntimeHostSessionCatalog(
@@ -924,7 +925,7 @@ async function listDesktopSessionsWithCoverage(): Promise<{
         hostId: scope.hostId,
         access: metadata.profileAccess,
         sessions: ipcRenderer.invoke('sessions:list', scope)
-          .then((sessions: SessionCatalogSummary[]) =>
+          .then((sessions: DesktopSessionSummaryInput[]) =>
             sessions.map((session) => projectSessionCatalogSummary(scope, session))),
       };
     }),
@@ -955,7 +956,7 @@ async function createDesktopSessionOnScope(
   scope: DesktopTargetScope,
   input?: CreateSessionRequestInput,
 ): Promise<DesktopSessionSummary> {
-  const session = await ipcRenderer.invoke('sessions:create', scope, input) as SessionSummary;
+  const session = await ipcRenderer.invoke('sessions:create', scope, input) as DesktopSessionSummaryInput;
   return projectSessionSummary(scope, session);
 }
 
@@ -2118,7 +2119,7 @@ const makaBridge = {
       const ref = await runtimeHostSessionRef(sessionId);
       const summary = await ipcRenderer.invoke(
         'sessions:reviseBeforeTurn', ref.scope, ref.sessionId, input,
-      ) as SessionSummary;
+      ) as DesktopSessionSummaryInput;
       return projectSessionSummary(ref.scope, summary);
     },
     respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void> {
@@ -2474,7 +2475,7 @@ const makaBridge = {
         'external-sessions:import', scope, input,
       ) as ExternalSessionImportIpcResult;
       return result.ok
-        ? { ...result, session: projectSessionSummary(scope, result.session) }
+        ? { ...result, session: projectSessionSummary(scope, result.session as DesktopSessionSummaryInput) }
         : result;
     },
   },

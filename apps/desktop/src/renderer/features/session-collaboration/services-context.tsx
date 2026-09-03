@@ -17,25 +17,13 @@
  * under the License.
  */
 
-import { createContext, useContext, type ReactNode } from 'react';
+import { createServicesContext } from '../../application/contracts/feature-services.js';
 import type { SessionCollaborationServices } from './ports.js';
 
-const SessionCollaborationServicesContext =
-  createContext<SessionCollaborationServices | null>(null);
+const { Provider, useServices } = createServicesContext<SessionCollaborationServices>('SessionCollaborationServicesProvider');
 
-export function SessionCollaborationServicesProvider(props: {
-  readonly services: SessionCollaborationServices;
-  readonly children?: ReactNode;
-}) {
-  return (
-    <SessionCollaborationServicesContext.Provider value={props.services}>
-      {props.children}
-    </SessionCollaborationServicesContext.Provider>
-  );
-}
+export const SessionCollaborationServicesProvider = Provider;
 
 export function useSessionCollaborationServices(): SessionCollaborationServices {
-  const services = useContext(SessionCollaborationServicesContext);
-  if (!services) throw new Error('SessionCollaborationServicesProvider is missing');
-  return services;
+  return useServices();
 }

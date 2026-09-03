@@ -447,11 +447,11 @@ Maka has one LLM compaction mechanism and one adjacent current-request rewrite:
 | Mechanism | Source | When it runs | Durable result | Role in this chapter |
 |---|---|---|---|---|
 | History LLM compaction | Safe RuntimeEvent prefix | Manual request, pre-turn capacity, active-turn capacity, or provider overflow | Schema V2 or V3 checkpoint recorded in the AgentRun event ledger | Primary subject |
-| Active Tool Result Prune | Provider-visible Tool Result in the current Turn | Before the next step in the same Turn | Raw result is archived first; placeholder changes only current messages | Primary subject of Chapter 2 |
+| Active Tool Result Prune | Provider-visible Tool Result in the current Turn | Before the next step in the same Turn | Raw result is archived first; a projection transition durably records the replacement | Primary subject of Chapter 2 |
 
 Both preserve canonical source, but they do not create parallel compaction authorities. History compaction always selects a safe RuntimeEvent prefix, generates and validates one replacement, then persists one checkpoint before replay. Trigger-specific code may pin the live head or reserve a verbatim tail; it does not own another planner, summary format, controller, or durable block.
 
-Active Tool Result Prune remains a deterministic non-LLM rewrite. It archives an eligible raw Tool Result before replacing that result in the current provider request. It neither summarizes a span nor creates a checkpoint, and the later history-compaction planner reads the canonical RuntimeEvents rather than treating prune placeholders as source authority.
+Active Tool Result Prune remains a deterministic non-LLM rewrite. It archives an eligible raw Tool Result, appends a durable projection transition to the AgentRun event ledger, and derives the current request from the effective-history reducer. The same reducer supplies later replay, restart, budgeting, and compaction. Prune neither summarizes a span nor creates a checkpoint, and canonical RuntimeEvents remain unchanged.
 
 The placeholder carries a bounded `maka://archive/...` address and instructions for `ArchiveRead`; model replay deterministically reconstructs that address for legacy placeholders. Runtime does not eagerly expand the archived body back into every request. The model calls `ArchiveRead` only when it needs the detail, and the Host validates the Session, hash, and byte size before returning a bounded inspect or query result. A later checkpoint replaces covered placeholders with its summary and intentionally carries no archive roots. The complete Tool Result remains in the canonical RuntimeEvent ledger, but model reachability does not become a permanent cross-checkpoint authority.
 

@@ -54,6 +54,8 @@ test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   );
 
   assert.notEqual(local.id, remote.id);
+  assert.equal(local.revision, 7);
+  assert.equal(remote.revision, 7);
   assert.equal(local.profileKind, 'local');
   assert.equal(remote.profileName, 'Office');
 });
@@ -268,9 +270,10 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
   }
 });
 
-function summary(id: string): SessionSummary {
+function summary(id: string): SessionSummary & { revision: number } {
   return {
     id,
+    revision: 7,
     name: id,
     isFlagged: false,
     isArchived: false,
