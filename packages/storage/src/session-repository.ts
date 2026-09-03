@@ -143,6 +143,8 @@ export interface PendingForkOperation {
   readonly state: 'pending';
   readonly forkId: string;
   readonly source: SessionRevisionRef;
+  /** Captured from the verified source Session when the Fork is first claimed. */
+  readonly sourceAgentId: string;
   readonly targetSessionId: string;
 }
 
@@ -166,6 +168,12 @@ export type ForkIdempotencyRetention = 'indefinite';
  */
 export interface SessionRepository {
   readonly forkIdempotencyRetention: ForkIdempotencyRetention;
+  /**
+   * Resolves the current head and verifies its checkpoint as one Repository
+   * read. Callers that do not already hold a revision must not maintain an
+   * independent current-head record.
+   */
+  checkoutCurrent(sessionId: string): Promise<CommittedSessionRevision>;
   checkoutExact(ref: SessionRevisionRef): Promise<CommittedSessionRevision>;
   createSession(input: CreateSessionInput): Promise<CommittedSessionRevision>;
   commit(input: CommitSessionRevisionInput): Promise<CommittedSessionRevision>;
@@ -175,10 +183,13 @@ export interface SessionRepository {
 
 export type SessionRepositoryErrorCode =
   | 'session_not_found'
+  | 'source_revision_not_available'
   | 'revision_not_available'
   | 'revision_conflict'
   | 'session_already_exists'
   | 'idempotency_conflict'
+  | 'invalid_fork_target'
+  | 'fork_agent_mismatch'
   | 'object_not_found'
   | 'integrity_mismatch'
   | 'quota_exceeded'
@@ -286,6 +297,18 @@ class InMemorySessionRepository implements SessionRepository {
   private readonly forks = new Map<string, InternalForkOperation>();
 
   constructor(private readonly objectStore: ImmutableObjectStore) {}
+
+  async checkoutCurrent(sessionId: string): Promise<CommittedSessionRevision> {
+    const admittedSessionId = requireIdentifier(sessionId, 'Session identity');
+    const session = this.sessions.get(admittedSessionId);
+    if (!session) throw repositoryError('session_not_found', 'Cloud Session was not found');
+
+    // Capture exactly the current head selected by this read before awaiting
+    // object verification. A subsequent writer cannot substitute its head.
+    const committed = copyCommittedSessionRevision(session.head);
+    await this.assertCheckpointReadable(committed.checkpoint);
+    return committed;
+  }
 
   async checkoutExact(ref: SessionRevisionRef): Promise<CommittedSessionRevision> {
     const requested = admitRevisionRef(ref, 'Session revision reference');
@@ -403,10 +426,36 @@ class InMemorySessionRepository implements SessionRepository {
       }
       return copyForkOperation(existing);
     }
+    if (admitted.targetSessionId === admitted.source.sessionId) {
+      throw repositoryError(
+        'invalid_fork_target',
+        'Fork target Session must differ from its source Session',
+      );
+    }
+
+    // The first claim is the linearization point for the source binding. It
+    // must prove the named revision is still current and readable before a
+    // retry can rely on this durable Fork record.
+    const source = await this.resolveForkSource(admitted.source);
+
+    // Source verification may yield. Reconcile another claimant that won while
+    // it was in progress rather than overwriting its durable idempotency fact.
+    const claimedWhileReading = this.forks.get(admitted.forkId);
+    if (claimedWhileReading) {
+      if (!sameForkClaim(claimedWhileReading, admitted)) {
+        throw repositoryError(
+          'idempotency_conflict',
+          'Fork identity was reused with different input',
+        );
+      }
+      return copyForkOperation(claimedWhileReading);
+    }
+
     const pending: InternalPendingForkOperation = {
       state: 'pending',
       forkId: admitted.forkId,
       source: admitted.source,
+      sourceAgentId: source.agentId,
       targetSessionId: admitted.targetSessionId,
     };
     this.forks.set(admitted.forkId, pending);
@@ -421,6 +470,12 @@ class InMemorySessionRepository implements SessionRepository {
 
     const target = this.sessions.get(operation.targetSessionId);
     if (!target) throw repositoryError('session_not_found', 'Fork target Session was not found');
+    if (target.agentId !== operation.sourceAgentId) {
+      throw repositoryError(
+        'fork_agent_mismatch',
+        'Fork target Agent does not match its verified source Agent',
+      );
+    }
     if (
       target.createdByForkId !== operation.forkId ||
       !target.forkedFrom ||
@@ -482,6 +537,43 @@ class InMemorySessionRepository implements SessionRepository {
         'Fork target does not match its claimed operation',
       );
     }
+    if (operation.sourceAgentId !== input.agentId) {
+      throw repositoryError(
+        'fork_agent_mismatch',
+        'Fork target Agent must match its verified source Agent',
+      );
+    }
+  }
+
+  private async resolveForkSource(
+    source: SessionRevisionRef,
+  ): Promise<{ readonly agentId: string }> {
+    const initial = this.sessions.get(source.sessionId);
+    if (!initial || initial.head.ref.revision !== source.revision) {
+      throw repositoryError(
+        'source_revision_not_available',
+        'Fork source Session revision is not available',
+      );
+    }
+
+    const committed = copyCommittedSessionRevision(initial.head);
+    await this.assertCheckpointReadable(committed.checkpoint);
+
+    // A source head advance while asynchronous object verification ran makes
+    // this request ineligible. Later retries of an admitted fork use the
+    // durable claim above and intentionally do not revalidate this condition.
+    const afterVerification = this.sessions.get(source.sessionId);
+    if (
+      !afterVerification ||
+      afterVerification.head.ref.revision !== source.revision ||
+      afterVerification.agentId !== committed.agentId
+    ) {
+      throw repositoryError(
+        'source_revision_not_available',
+        'Fork source Session revision is no longer current',
+      );
+    }
+    return Object.freeze({ agentId: committed.agentId });
   }
 
   private async assertCheckpointReadable(
@@ -869,6 +961,7 @@ function copyForkOperation(input: InternalForkOperation): ForkOperation {
       state: 'pending',
       forkId: input.forkId,
       source: copyRevisionRef(input.source),
+      sourceAgentId: input.sourceAgentId,
       targetSessionId: input.targetSessionId,
     });
   }
@@ -880,6 +973,7 @@ function copyCompletedForkOperation(input: InternalCompletedForkOperation): Comp
     state: 'completed',
     forkId: input.forkId,
     source: copyRevisionRef(input.source),
+    sourceAgentId: input.sourceAgentId,
     targetSessionId: input.targetSessionId,
     target: copyRevisionRef(input.target),
   });

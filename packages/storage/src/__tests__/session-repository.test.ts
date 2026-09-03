@@ -78,6 +78,7 @@ test('publishes and verifies Bundle then Manifest before creating an exact head'
     assert.equal(repository.forkIdempotencyRetention, 'indefinite');
     assert.equal(created.ref.revision, 'r1');
     assert.deepEqual(created.checkpoint, checkpoint);
+    assert.deepEqual(await repository.checkoutCurrent('session-a'), created);
     assert.deepEqual(await repository.checkoutExact(created.ref), created);
   });
 });
@@ -98,6 +99,7 @@ test('retains only the current Manifest revision and never falls forward', async
       repository.checkoutExact(created.ref),
       hasRepositoryCode('revision_not_available'),
     );
+    assert.deepEqual(await repository.checkoutCurrent(created.ref.sessionId), committed);
     assert.deepEqual(await repository.checkoutExact(committed.ref), committed);
   });
 });
@@ -315,23 +317,222 @@ test('rejects a Manifest value that does not match its immutable reference', asy
   });
 });
 
+test('claims only a retained readable source and captures its Agent binding', async () => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
+    await assert.rejects(
+      repository.claimFork({
+        forkId: 'missing-source',
+        source: { sessionId: 'missing-session', revision: 'r1' },
+        targetSessionId: 'session-b',
+      }),
+      hasRepositoryCode('source_revision_not_available'),
+    );
+
+    const next = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'source-next.tar.zst', 'source next'),
+    );
+    const advanced = await repository.commit({
+      sessionId: created.ref.sessionId,
+      expectedRevision: created.ref.revision,
+      checkpoint: next,
+    });
+
+    await assert.rejects(
+      repository.claimFork({
+        forkId: 'retired-source',
+        source: created.ref,
+        targetSessionId: 'session-b',
+      }),
+      hasRepositoryCode('source_revision_not_available'),
+    );
+    const pending = await repository.claimFork({
+      forkId: 'retired-source',
+      source: advanced.ref,
+      targetSessionId: 'session-b',
+    });
+    assert.equal(pending.state, 'pending');
+    assert.equal(pending.sourceAgentId, created.agentId);
+  });
+});
+
+test('does not claim a Fork from an unreadable source checkpoint', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const base = createInMemoryImmutableObjectStore();
+    let failedObjectRef: string | undefined;
+    const objectStore: ImmutableObjectStore = {
+      publish: (input) => base.publish(input),
+      assertReadable: async (ref) => {
+        if (ref.objectRef === failedObjectRef) {
+          throw new SessionRepositoryError('integrity_mismatch', 'Fork source is damaged');
+        }
+        await base.assertReadable(ref);
+      },
+    };
+    const repository = createInMemorySessionRepository({ objectStore });
+    const checkpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'source.tar.zst', 'source'),
+    );
+    const source = await repository.createSession({
+      sessionId: 'session-a',
+      agentId: 'agent-a',
+      checkpoint,
+    });
+
+    failedObjectRef = checkpoint.manifest.objectRef;
+    await assert.rejects(
+      repository.claimFork({
+        forkId: 'fork-a',
+        source: source.ref,
+        targetSessionId: 'session-b',
+      }),
+      hasRepositoryCode('integrity_mismatch'),
+    );
+
+    failedObjectRef = undefined;
+    assert.equal(
+      (
+        await repository.claimFork({
+          forkId: 'fork-a',
+          source: source.ref,
+          targetSessionId: 'session-b',
+        })
+      ).state,
+      'pending',
+    );
+  });
+});
+
+test('does not claim a Fork when its source head moves during verification', async () => {
+  await withTemporaryDirectory(async (directory) => {
+    const base = createInMemoryImmutableObjectStore();
+    let blockNextBundleRead = false;
+    let reading: (() => void) | undefined;
+    let releaseRead: (() => void) | undefined;
+    const readStarted = new Promise<void>((resolve) => {
+      reading = resolve;
+    });
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const objectStore: ImmutableObjectStore = {
+      publish: (input) => base.publish(input),
+      assertReadable: async (ref) => {
+        await base.assertReadable(ref);
+        if (!blockNextBundleRead || ref.mediaType !== SESSION_BUNDLE_OBJECT_MEDIA_TYPE) return;
+        blockNextBundleRead = false;
+        reading?.();
+        await readReleased;
+      },
+    };
+    const repository = createInMemorySessionRepository({ objectStore });
+    const initial = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'initial.tar.zst', 'initial'),
+    );
+    const created = await repository.createSession({
+      sessionId: 'session-a',
+      agentId: 'agent-a',
+      checkpoint: initial,
+    });
+    const next = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'next.tar.zst', 'next'),
+    );
+
+    blockNextBundleRead = true;
+    const claim = repository.claimFork({
+      forkId: 'fork-a',
+      source: created.ref,
+      targetSessionId: 'session-b',
+    });
+    await readStarted;
+    const advanced = await repository.commit({
+      sessionId: created.ref.sessionId,
+      expectedRevision: created.ref.revision,
+      checkpoint: next,
+    });
+    releaseRead?.();
+
+    await assert.rejects(claim, hasRepositoryCode('source_revision_not_available'));
+    assert.equal(
+      (
+        await repository.claimFork({
+          forkId: 'fork-a',
+          source: advanced.ref,
+          targetSessionId: 'session-b',
+        })
+      ).state,
+      'pending',
+    );
+  });
+});
+
+test('binds a Fork target to its verified source Agent and a distinct Session identity', async () => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
+    await assert.rejects(
+      repository.claimFork({
+        forkId: 'same-session',
+        source: created.ref,
+        targetSessionId: created.ref.sessionId,
+      }),
+      hasRepositoryCode('invalid_fork_target'),
+    );
+
+    await repository.claimFork({
+      forkId: 'fork-a',
+      source: created.ref,
+      targetSessionId: 'session-b',
+    });
+    const targetCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
+    await assert.rejects(
+      repository.createSession({
+        sessionId: 'session-b',
+        agentId: 'agent-b',
+        checkpoint: targetCheckpoint,
+        forkedFrom: created.ref,
+        createdByForkId: 'fork-a',
+      }),
+      hasRepositoryCode('fork_agent_mismatch'),
+    );
+
+    const target = await repository.createSession({
+      sessionId: 'session-b',
+      agentId: created.agentId,
+      checkpoint: targetCheckpoint,
+      forkedFrom: created.ref,
+      createdByForkId: 'fork-a',
+    });
+    assert.deepEqual((await repository.completeFork({ forkId: 'fork-a' })).target, target.ref);
+  });
+});
+
 test('claims Fork identity before target creation and resumes both crash windows', async () => {
-  await withReadySession(async ({ repository, checkpoint, created }) => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
     const request = {
       forkId: 'fork-a',
       source: created.ref,
       targetSessionId: 'session-b',
     };
+    const targetCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
 
     const pending = await repository.claimFork(request);
     assert.equal(pending.state, 'pending');
+    assert.equal(pending.sourceAgentId, created.agentId);
     assert.deepEqual(await repository.claimFork(request), pending);
 
     // Simulates a retry after a crash before target creation.
     const target = await repository.createSession({
       sessionId: request.targetSessionId,
       agentId: created.agentId,
-      checkpoint,
+      checkpoint: targetCheckpoint,
       forkedFrom: created.ref,
       createdByForkId: request.forkId,
     });
@@ -343,7 +544,7 @@ test('claims Fork identity before target creation and resumes both crash windows
       await repository.createSession({
         sessionId: request.targetSessionId,
         agentId: created.agentId,
-        checkpoint,
+        checkpoint: targetCheckpoint,
         forkedFrom: created.ref,
         createdByForkId: request.forkId,
       }),
@@ -362,7 +563,7 @@ test('claims Fork identity before target creation and resumes both crash windows
 });
 
 test('never adopts a target created by a different Fork operation', async () => {
-  await withReadySession(async ({ repository, checkpoint, created }) => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
     await repository.claimFork({
       forkId: 'fork-owner',
       source: created.ref,
@@ -373,10 +574,14 @@ test('never adopts a target created by a different Fork operation', async () => 
       source: created.ref,
       targetSessionId: 'session-b',
     });
+    const targetCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
     await repository.createSession({
       sessionId: 'session-b',
       agentId: created.agentId,
-      checkpoint,
+      checkpoint: targetCheckpoint,
       forkedFrom: created.ref,
       createdByForkId: 'fork-owner',
     });
@@ -385,7 +590,7 @@ test('never adopts a target created by a different Fork operation', async () => 
       repository.createSession({
         sessionId: 'session-b',
         agentId: created.agentId,
-        checkpoint,
+        checkpoint: targetCheckpoint,
         forkedFrom: created.ref,
         createdByForkId: 'fork-contender',
       }),
@@ -412,29 +617,33 @@ test('keeps a Fork pending until its target checkpoint is readable', async () =>
       },
     };
     const repository = createInMemorySessionRepository({ objectStore });
-    const checkpoint = await publishCheckpoint(
+    const sourceCheckpoint = await publishCheckpoint(
       objectStore,
-      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+      await writeArtifact(directory, 'fork-source.tar.zst', 'fork source'),
     );
     const source = await repository.createSession({
       sessionId: 'session-a',
       agentId: 'agent-a',
-      checkpoint,
+      checkpoint: sourceCheckpoint,
     });
     await repository.claimFork({
       forkId: 'fork-a',
       source: source.ref,
       targetSessionId: 'session-b',
     });
+    const targetCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
     await repository.createSession({
       sessionId: 'session-b',
       agentId: source.agentId,
-      checkpoint,
+      checkpoint: targetCheckpoint,
       forkedFrom: source.ref,
       createdByForkId: 'fork-a',
     });
 
-    failedObjectRef = checkpoint.manifest.objectRef;
+    failedObjectRef = targetCheckpoint.manifest.objectRef;
     await assert.rejects(
       repository.completeFork({ forkId: 'fork-a' }),
       hasRepositoryCode('integrity_mismatch'),
@@ -445,16 +654,20 @@ test('keeps a Fork pending until its target checkpoint is readable', async () =>
 });
 
 test('uses independent CAS sequences for source and Fork target Sessions', async () => {
-  await withReadySession(async ({ repository, objectStore, directory, checkpoint, created }) => {
+  await withReadySession(async ({ repository, objectStore, directory, created }) => {
     await repository.claimFork({
       forkId: 'fork-a',
       source: created.ref,
       targetSessionId: 'session-b',
     });
+    const forkCheckpoint = await publishCheckpoint(
+      objectStore,
+      await writeArtifact(directory, 'fork-target.tar.zst', 'fork target'),
+    );
     const target = await repository.createSession({
       sessionId: 'session-b',
       agentId: created.agentId,
-      checkpoint,
+      checkpoint: forkCheckpoint,
       forkedFrom: created.ref,
       createdByForkId: 'fork-a',
     });
