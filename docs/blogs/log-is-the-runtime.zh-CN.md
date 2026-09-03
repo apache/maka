@@ -21,27 +21,27 @@
 
 # Log Is the Runtime：Maka 如何用 Append-Only Log 管理 Agent 状态与上下文
 
-## Log Is the Database
+## 从 Log Is the Database 谈起
 
-所谓 **Log Is the Database**，不是一句比喻，而是一种真实存在于分布式数据库中的数据理念：数据库在任意时刻的状态，都可以由一份历史状态和其后提交的日志重新计算出来。
+构建长时间运行的 Coding Agent 时，最棘手的问题往往出在运行时的可靠性上。如果宿主进程意外崩溃，正在执行的任务该如何精准恢复？如果某个工具在修改文件或发起网络请求途中挂了，下次启动还能不能安全重试？如果自动化测试一次性吐出数十万 token 的日志，怎么避免后续推理的上下文直接被打爆？
 
-写成公式就是：
+分布式数据库很早就遇到过类似的问题。在数据库领域，**Log Is the Database** 是一个经过充分验证的原则：数据库在任意时刻的状态，本质上都是某份基线状态与其后提交日志的应用结果。
 
 ```text
 State(n) = Apply(State(0), Log[1...n])
 ```
 
-`Log[1...n]` 是截至位置 `n` 已经提交的日志，`Apply` 是数据库的状态转换过程。只要初始状态相同，并且按照相同顺序执行相同的日志，节点就应该得到相同的数据库状态。
+其中 `Log[1...n]` 代表截止到位置 `n` 已提交的日志序列，`Apply` 是状态转移函数。只要初始状态一致，并且按相同顺序应用这串日志，所有节点就能得到完全一致的数据库状态。
 
-实际系统当然不会在每次启动时从第一条日志开始回放。随着日志增长，数据库会定期生成 snapshot，把某个日志位置上的完整状态保存下来。恢复时先加载 snapshot，再回放它之后的日志：
+生产环境不会每次都从第一条日志开始回放。数据库会定期打 Snapshot 固化全量状态，恢复时先加载 Snapshot，再回放后面的日志增量：
 
 ```text
 State(n) = Apply(Snapshot(k), Log[k+1...n])
 ```
 
-因此，一个节点的本地数据库并不是不可替代的原件。它更像是一份计算结果：可以落后，可以损坏，也可以被整个删除。只要 snapshot 和后续 committed log 还在，这个节点的状态就能够被重新构造出来。
+在这个模型里，节点本地的数据表更像是一份物化缓存，可能滞后，可能损坏，也能直接清空重建。只要 Snapshot 和后续提交的日志还在，系统状态就能完整还原。
 
-这也决定了写入发生的顺序。一次写入不是先修改数据库，再顺手留下一条日志。它首先成为日志中的一条记录，在被复制并提交之后，才由状态机应用到数据库状态中：
+这也决定了数据的写入路径：一次变更不会先写磁盘数据页再顺手记条日志，而是先追加到日志中。等日志复制并提交后，状态机才把它应用到业务数据里：
 
 ```text
 Client Command
@@ -57,13 +57,9 @@ Apply to State Machine
 Update Tables / Indexes / Materialized State
 ```
 
-这里真正具有权威性的不是某个节点此刻持有的数据页，而是已经提交的日志前缀。表、索引、缓存以及本地存储文件，都是这段日志执行后的物化结果。
+系统中的权威数据源始终是已提交的日志前缀，表、索引和缓存都是基于日志计算出的物化结果。
 
-这正是它与传统 WAL 观念最重要的区别。
-
-在传统数据库中，WAL 首先是一种恢复机制。数据库通过日志保证本地事务的原子性和持久性；一旦修改已经安全写入数据页并完成 checkpoint，较早的日志就可以被回收。在这个模型里，数据页是主要状态，日志服务于数据页的恢复。
-
-而在 log-centric database 中，关系反了过来：
+这和传统单机数据库的 WAL（Write-Ahead Logging）定位不同。在传统数据库里，数据页是主状态，WAL 主要是事务原子性和持久性的恢复工具，数据页刷盘并完成 checkpoint 之后旧日志就能回收。但在 Log-centric 数据库里，日志本身就是权威历史，表状态只是日志计算出的投影。
 
 ```text
 Traditional WAL:
@@ -75,36 +71,23 @@ Log-centric Database:
     Data State    → Materialized Result
 ```
 
-这并不意味着系统必须永久保留从创世开始的每一条日志。Snapshot、checkpoint 和 log compaction 仍然是必要的工程手段。关键在于：数据库用什么来定义状态的演进，又用什么来判断两个副本是否拥有同一个数据库。
-
-对于一个以 log 为核心的系统，答案不是比较两份本地文件是否相同，而是检查两个节点是否拥有相同的 committed log，以及它们是否把这段日志应用到了相同的位置。
-
-换句话说，数据库的一致性被拆成了两个更具体的问题：
-
-```text
-所有副本是否同意同一段日志？
-相同的日志是否会产生相同的状态？
-```
-
-前一个问题由复制和共识协议解决，后一个问题由确定性的状态机解决。
-
-这就是 **Log Is the Database** 最直接的含义：log 不是数据库运行之后留下的记录；log 是数据库状态的输入，而我们查询到的数据库，只是这段输入在某个位置上的计算结果。
+副本间的一致性由此拆解为两个确定性的环节：共识协议保证所有副本拿到同一份有序日志，状态机保证相同的日志输入必定产生相同的应用状态。
 
 ## Log Is the Runtime
 
-把这个思路放到 Agent 上，会得到一个很相似的结论。
+把这个设计思路放到 Agent 系统中，逻辑也是相通的。
 
-LLM 本身没有一份会随着任务持续推进的、可供 Runtime 读取的持久状态。每次调用模型，Runtime 都要重新告诉它：用户说过什么、模型此前做过什么、调用过哪些工具、工具返回了什么，以及任务目前进行到了哪里。
+大语言模型本身是无状态的，不会在多次交互中驻留可供 Runtime 随时读取的内部状态。每一次调用模型，Runtime 都必须向其组装上下文：用户的要求、之前做过的操作、调用了什么工具、工具返回了什么，以及当前进行到了哪一步。
 
-换句话说，Agent 所谓的“状态”，并不藏在某个一直运行的模型进程里。它是 Runtime 根据历史事实，在每次模型调用之前重新构造出来的。
+Agent 的状态并不依附于某个一直在跑的后台进程，而是 Runtime 根据历史事实，在每次发起推理前动态构建出的投影：
 
 ```text
 Agent State(t) = Project(RuntimeEvents[0...t], policy, runtime configuration)
 ```
 
-这就是 Maka 对 **Log Is the Database** 的进一步使用：Runtime Event Log 是 Agent 交互的事实空间；Agent 在某个时刻的状态，是这段日志在特定策略下的投影。
+这就是 Maka 采用 **Log Is the Runtime** 的原因：`RuntimeEvent Log` 是 Agent 交互的事实空间，Agent 在某个时刻的状态则是这份日志在特定策略下的确定性视图。
 
-这里的 log 显然不能只记录聊天文本。一次真正的 Agent 执行可能是这样的：
+完整的执行日志远比普通的聊天记录复杂，它包含任务生命周期的完整步骤：
 
 ```text
 1. User: 修复这个项目里失败的测试
@@ -122,9 +105,9 @@ Agent State(t) = Project(RuntimeEvents[0...t], policy, runtime configuration)
 13. Runtime: 将这次 Run 标记为 completed
 ```
 
-如果只保存第 1 条和第 12 条，我们保存的是一段聊天记录，不是 Agent 的执行状态。真正决定 Agent 下一步行为的，还包括工具调用的参数和结果、调用之间的对应关系、权限是否获得、执行是否已经结束，以及这些事实之间的顺序。
+如果只保存第 1 条和第 12 条，留下的只是一份聊天文本，丢失了执行状态。真正决定 Agent 下一步动作的，还包括工具调用的具体参数和返回值、调用与响应的对应关系、权限审批结论，以及每一步发生的先后顺序。
 
-这也是 Maka 没有用一个简单的 `role + text` 结构表示历史的原因。在代码中，`RuntimeEvent` 的内容包括：
+因此，Maka 没有采用简单的 `role + text` 结构，而是定义了结构化的 `RuntimeEvent`：
 
 ```ts
 type RuntimeEventContent =
@@ -135,7 +118,7 @@ type RuntimeEventContent =
   | Error
 ```
 
-事件还可以携带影响 Runtime 控制状态的 actions，例如：
+事件还可以携带影响 Runtime 控制流的动作：
 
 ```ts
 type RuntimeEventActions = {
@@ -149,19 +132,15 @@ type RuntimeEventActions = {
 }
 ```
 
-每条事件同时带有 `sessionId`、`turnId`、`runId` 和 `invocationId`。这些 ID 分别回答：这段长期交互是谁、这是用户看到的哪一轮、这是哪一次具体执行尝试，以及这组模型和工具活动属于哪次 invocation。
-
-事件写入 SQLite 的 `runtime_events` 表，并在一次 invocation 内获得单调递增的 `event_seq`。Maka 读取一段执行历史时，不是读取“当前消息列表”，而是按 `event_seq` 读取一个 immutable prefix：
+每条事件都打上了 `sessionId`、`turnId`、`runId` 和 `invocationId` 的坐标，持久化到 SQLite 的 `runtime_events` 表中，并在一次 Invocation 内获得单调递增的 `event_seq`。Maka 读取历史时，基于 `event_seq` 获取一个不可变前缀：
 
 ```text
 RuntimeEvents[1...highWater]
 ```
 
-这里的 `highWater` 很重要。它把“我恢复了这次执行”变成了一个可验证的陈述：恢复逻辑必须明确自己读到了哪一条事件，而不是从一个仍可能变化的“最新状态”继续运行。Maka 还会对这个 immutable prefix 计算 digest，使 continuation 绑定到一段确定的历史，而不是绑定到一个模糊的 Session。
+通过引入 `highWater` 边界与前缀摘要（Digest），恢复逻辑把后续执行绑定在经过校验的历史切片上，无需依赖可能发生变化的模糊状态。
 
-同一段 Runtime Event Log 会产生多种不同的状态。
-
-`projectRuntimeEventsToStoredMessages()` 将它投影成用户在 UI 中看到的消息、工具活动和 Turn 状态；`buildRuntimeEventModelReplayPlan()` 将它投影成下一次 provider 调用能够接受的模型历史；`classifyRuntimeEventTerminalFact()` 判断一次 Run 最终是 completed、failed 还是 aborted；`buildContinuationReplayPlan()` 则在进程崩溃之后判断哪一段历史可以安全地交给一个新的 Run 继续执行。
+同一份 `RuntimeEvent Log` 会针对不同消费场景生成不同的投影：
 
 ```text
                          ┌→ Session / UI
@@ -173,92 +152,51 @@ Runtime Event Log ───────┼→ Next Model Context
                          └→ Crash Recovery / Continuation
 ```
 
-这些 projection 可以有不同的选择规则，但不能各自发明事实。
+- `projectRuntimeEventsToStoredMessages()`：投影为前端展示所需的会话消息、工具状态与轮次信息。
+- `buildRuntimeEventModelReplayPlan()`：组装下一次模型调用所需的有效上下文，跳过内部控制事件（如 `modelVisibility: hidden`）和流式临时分块，配对函数调用并保留原生思考语义。
+- `classifyRuntimeEventTerminalFact()`：判定单次 Run 的终态（completed、failed 或 aborted）。
+- `buildContinuationReplayPlan()`：在进程退出后，判定哪些已确认的历史可以安全移交后续 Run 继续执行。
 
-例如，模型不需要看到所有 Runtime 控制事件。`buildRuntimeEventModelReplayPlan()` 会跳过 `modelVisibility: hidden` 的事件，不会把 terminal fact 当作一条对话消息，也不会把流式传输中的临时 chunk 放回模型上下文。它还要重新配对 function call 和 function response，并在 provider 支持时保留 signed thinking 等原生语义。
+在工具调用的恢复上，Maka 将工具执行拆分为落盘派发（Dispatch）和落盘结果（Outcome）两个边界。如果崩溃发生在两者之间，系统将该状态标记为待核对，在无法证明幂等和安全性时阻止自动重试，避免静默重试引发重复写文件等副作用。
 
-UI 的选择又不同。它需要展示文本、thinking、工具活动、权限状态和错误，但不应该把内部的 tool-dispatch recovery fact 渲染成一条聊天消息。
+只要 Committed Runtime Event Log 存在，进程即便崩溃，UI 即便重载，模型上下文即便重构，Agent 曾经观察到的事实、发起的调用、返回的结果与结束的边界，都能从日志中确定性地恢复出来。
 
-因此，模型上下文不是历史本身，UI transcript 也不是历史本身。它们都是对同一份 Runtime Event Log 的读取方式。
+## Compaction：作为物化视图的压缩投影
 
-这个区分对长时间运行的 Agent 尤其重要。模型的 context window 是有限的，Agent 的执行历史却可以不断增长。如何同时保留完整历史，又让下一次推理只读取一个有限上下文，是 Maka 必须单独解决的问题。
+日志追加写机制面临一个实际限制：事件序列单调递增，但模型的上下文窗口大小是固定的。
 
-这里还必须给“回放”划一条边界。
+如果把模型上下文等同于执行历史，最直接的做法是截断早期记录，用模型生成的摘要就地覆盖。这样做会永久破坏底层历史，丢失排查线索，后续换用更大上下文的模型时也无法再利用当年的完整信息。
 
-回放 Runtime Event Log，不等于重新执行所有工具，也不等于复现模型当时每一个隐藏层的神经元状态。Maka 当前保证的是 semantic replay：在一个确定的事件边界上，重新得到用户和模型已经交换的内容、工具调用及其结果、权限与终止状态，并据此构造 UI、模型上下文和恢复判断。
+Maka 将事实层面的历史（History）与推理层面的上下文（Context）区分开来：`RuntimeEvent Log` 保持 Append-Only 不可变，Compaction 只改变下一次模型推理读取历史的方式。
 
-对于已经越过副作用边界、却没有留下结果的工具调用，Maka 不会因为“回放到了一个 function call”就盲目重试。代码把工具执行拆成 dispatch 和 outcome 两个 durable boundary；如果崩溃发生在两者之间，恢复器必须把它识别为未知或待核对状态。无法证明安全时，continuation 会被阻止，而不是猜测工具没有执行。
+较长的历史会被投影为“早期事件的摘要加近期事件的原文字节”。老旧的中间交互不再占用后续推理的 Token，但它们依然完整留在底层日志中。
 
-所以 **Log Is the Runtime** 并不是说 log 可以复刻整个物理世界。它表达的是一个更严格、也更有用的保证：
+Compaction Checkpoint 相当于数据库里的物化视图，是一份为了加速读取而生成的持久化快照。Checkpoint 遗失时可以通过原始日志重新计算，若两者产生分歧，始终以权威的原始日志为准。
 
-> 进程可以消失，UI 可以重建，模型上下文可以重新选择，甚至下一次执行可以由新的 Run 接管；但 Agent 已经观察过什么、做出过什么调用、得到过什么结果，以及执行在哪个边界结束，必须能够从 committed Runtime Event Log 中重新得到。
+因此，可靠的 Checkpoint 必须明确记录其覆盖的连续事件区间、终止水位线以及源日志摘要。Compaction 不会在历史中挑拣删除，而是在时间线上画出清晰的水位：水位线之前由 Checkpoint 承载，水位线之后保持原始事件。后续新产生的事件继续在尾部追加，下一次压缩也只需增量折叠旧 Checkpoint 与新生成的增量后缀。
 
-对于数据库，log 回放的是数据状态；对于 Maka，log 回放的是 Agent 可以继续行动的状态空间。
+摘要本身具有信息损耗，会直接影响模型对后续动作的判断。Maka 要求投影结果必须先完成校验与落盘，才能交给模型使用。如果在内存中生成摘要后直接发给模型再异步持久化，一旦发生崩溃，系统就无法复原模型当时到底看到了哪一份上下文。
 
-## Compaction Is Only a Projection
+保留追加写前缀还能提高 LLM Provider 的 KV-Cache 前缀命中率。只要 System Prompt、工具定义与序列化格式保持稳定，多次调用通常只需在尾部追加增量内容，复用已有的计算缓存。Compaction 虽然会重置一次旧前缀，但也建立了一个紧凑的全新基线，后续交互可以继续基于新基线积累 Cache。
 
-Append-only 很自然地带来一个矛盾：历史只会增长，但模型的 context window 不会增长。
+## Tool Result Prune：有边界的上下文卸载
 
-如果把 context 当成 history，这个问题几乎只有一种解法：删掉早期消息，用一段摘要覆盖它们。上下文是变短了，但历史也被永久改写了。以后无论是恢复、审计、调试，还是换一个更大的模型重新理解任务，能够读到的都只剩那段有损摘要。
+即使在交互轮次不多的场景下，单次工具调用也可能占满上下文。读取大型源码文件、全仓符号检索、拉取测试日志或等待子 Agent 汇聚结果，单次输出可能达到数万甚至数十万 Token。模型在当前步骤需要分析这些细节，但在后续的多轮交互中如果一直带着这些大体积数据，不仅增加开销，还会干扰模型的注意力。
 
-Maka 选择把两件事分开：Runtime Event Log 继续 append-only；compaction 只决定下一次 inference 如何读取它。
+Tool Result Prune 的目的，是避免大体积对象持续滞留在模型的工作内存中。
 
-一段很长的历史，可以被投影成“早期事件的 summary，加上最近事件的原文”。旧的模型回复和 Tool Result 不再占用下一次推理的 token，但它们仍然留在原始日志中。被压缩的是 context，不是 history。
+Maka 借鉴了操作系统的按需分页（Demand Paging）思想：在把完整的 Tool Result 写入持久化存储后，模型上下文中的原始负载会被替换为轻量级的占位符（Placeholder）。占位符记录了调用工具名、原始字节大小、内容哈希以及访问凭证。模型获知完整结果已经归档，并在需要细节时通过特定方式发起检索。
 
-> Context is not history.
+在目前的实现中，归档的大对象由通用的 `ArtifactStore` 统一承载。为了提供更专门的上下文卸载生命周期管理，系统后续计划迁移至独立的 SQLite `ContextOffloadStore`（见 Issue #4071）。
 
-从这个角度看，compaction checkpoint 很像数据库里的 materialized view。它可以被持久化，也可以成为绝大多数读取的快速入口，但它仍然只是某段原始数据的计算结果。判断谁是事实源的方法很简单：checkpoint 丢了，可以从 log 重新生成；如果 checkpoint 与 log 对不上，应该丢弃 checkpoint，退回原始历史，而不是反过来修改 log 迁就 checkpoint。
+卸载与读取路径遵循严格的有边界读取（Bounded Read）控制，将查看目录结构（Inspect）、按项查询（Query）与分页读取（Paginated Read）分开。模型可以先探查元数据，仅在必要时拉取局部分片，避免一次读取又把数十万 Token 全部倒灌回活跃上下文。
 
-这也是为什么一个可靠的 checkpoint 不能只保存一段 summary。它还必须说明自己覆盖了哪一段连续历史、停在哪个事件边界，以及这段 source 是否仍然和生成 summary 时完全相同。只有这样，Runtime 才能确定自己做的是“用 projection 替换一个已知前缀”，而不是把一段来历不明的摘要塞进模型上下文。
+在时序上，Maka 遵循“先归档落盘、后生成占位符”。只有在完整负载确认写入存储，并且哈希与字节校验一致后，Runtime 才会将上下文中的原文替换为占位符。若归档失败，系统宁可保留完整内容多占一些 Token，也不生成可能失效的悬空引用。
 
-这里的“连续前缀”尤其重要。Compaction 不是从历史各处挑选一些看起来不重要的内容删除，而是在一条有序日志上画出一条明确的水位线：水位线之前由 checkpoint 表示，之后仍然保留原始事件。这样，新的事件可以继续追加在尾部；下一次 compaction 也只需要把旧 checkpoint 和新增长的那段历史向前折叠，而不必重新解释整个 Session。
+卸载机制主要应用在两个阶段：
+1. **单轮执行内（Active Turn）**：工具刚产生超大结果时，在进入下一步推理前将其移出活跃上下文，让模型按需读取。
+2. **历史重放时（History Replay）**：近期工具调用保留完整上下文，早期的大型工具结果在重构上下文时替换为占位符，形成热数据常驻、冷数据下沉的分层设计。
 
-当然，“compaction 只是 projection”并不意味着它对 Agent 的行为没有影响。
+这两类裁剪仅作用于对模型可见的 Projection。原始的 `RuntimeEvent Log` 中永远保留完整的工具输出，后续的 History Compaction 在生成语义摘要时看到的也是真实事件，而不是占位符。
 
-数据库中的索引通常不应该改变查询结果，但 Agent 的 summary 天生是有损的。模型读完整历史和读 compacted context，下一步可能做出不同判断。Compaction 没有改变已经发生的过去，却改变了模型生成未来事件时所能看到的状态。
-
-所以这里的“只是”说的是它的 authority，而不是它的重要性：checkpoint 没有资格改写历史，但它会参与决定历史接下来怎样增长。正因如此，一份新的 projection 应该先被验证、再被持久化，最后才交给模型使用。只在内存里临时生成 summary、发送给模型之后才尝试保存，会产生一个无法恢复的分叉：进程重启后，Runtime 知道模型输出了什么，却不知道模型当时究竟看到了哪一版历史。
-
-Append-only 还带来另一个很实际的收益：更高的 KV cache 前缀命中率。一次 Agent 任务会连续调用模型很多次；只要 system prompt、tool definitions 和序列化方式保持稳定，下一次请求通常只是在上一轮历史后追加新的 model、Tool Call 和 Tool Result。此前已经计算过的长 token prefix 可以继续被 provider 复用。
-
-Compaction 会主动打断一次旧前缀，但它同时建立了一个更短的新前缀锚点。只要这个 checkpoint 保持稳定，后续事件又会继续 append 在它后面，新的 KV cache 前缀便可以持续复用。因此，compaction 不是反复重写上下文，而是偶尔为一条不断增长的日志建立新的读取起点。
-
-这就是 Maka 在 append-only 与有限 context 之间做出的选择：历史永远向前追加；compaction 不负责删除历史，只负责决定模型从哪里、以什么分辨率继续阅读历史。
-
-## Tool Result Prune Is Context Offload
-
-即使不考虑很长的历史，一次 Tool Call 也可能瞬间塞满模型的 context window。
-
-读取一个大文件、搜索整个代码库、运行测试、抓取网页，或者等待一组子 Agent 返回，都可能产生几万甚至几十万 token 的 Tool Result。模型在拿到结果的那个 step 里也许确实需要这些细节，但在后续每一次推理中重复携带完整结果，通常既昂贵，也没有必要。
-
-Tool Result Prune 解决的不是“这段历史还要不要”，而是“这份大对象是否必须一直驻留在模型的工作内存里”。
-
-Maka 的选择是先把完整 Tool Result 写入独立的 context-offload storage，再把下一次模型请求中的原文替换成一个很小的 placeholder。Placeholder 保留结果来自哪个工具、原始大小、内容摘要和可回读地址。模型知道这里曾经有一份完整结果，也知道在需要细节时应该怎样取回它。
-
-这里的“外部”是相对于模型 context 而言，并不意味着必须上传到远端。Maka 仍然遵循 local-first：offload storage 只是位于有限的 context window 之外，由 Runtime 管理的一层本地持久存储。
-
-所以 prune 更像操作系统的 swap 或 demand paging，而不像删除：context window 是昂贵的工作内存，offload store 是容量更大的后备存储，placeholder 是留在工作集里的页表项。区别是这里的 page-in 不是透明发生的，而是由模型显式决定。模型可以先查看 archive 的结构和元信息，再按 item 查询，或者分页读取其中一段，而不必一次把整个大对象重新搬回 context。
-
-这条读取路径必须是 bounded 的。否则，一个十万 token 的结果刚被 prune，模型调用一次回读工具又把十万 token 全部塞了回来，context 管理就只完成了一次无意义的往返。Maka 因此把 inspect、query 和分页 read 分开：先让模型知道 archive 里有什么，再只取当前推理真正需要的部分。
-
-这里最重要的顺序是：先 archive，再 placeholder。
-
-一个只保存“结果已被省略”的占位符没有任何恢复价值。只有当完整内容已经成功写入外部存储，并且引用、内容 hash、字节数和 Session 身份都能够对应起来时，Runtime 才能从模型上下文中移走原文。如果 archive 写入失败，正确的行为是继续保留完整 Tool Result，而不是为了节省 token 制造一个无法回读的空指针。
-
-同样，回读也不能只相信模型传回来的地址。Archive 属于产生它的 Session，内容必须与 placeholder 中记录的 hash 和大小一致。这个约束让 placeholder 成为对一份确定内容的 capability，而不是一个可以随意读取本地数据的文件路径。
-
-Maka 会在两个时间尺度上做这种 offload。
-
-一种发生在当前 Turn 内：工具刚产生一个很大的 Tool Result，在进入下一 step 之前，Runtime 就可以把它从 active context 中卸载。模型在下一次推理中先看到引用，再按任务需要决定查看结构、读取局部，还是完全不加载原文。
-
-另一种发生在历史 replay 时：最近的 Tool Result 保持完整，较早且过大的结果在重新构造模型上下文时变成 placeholder。这样，Session 可以保留一段相对完整的近期工作集，而把很少再次访问的旧结果放到更便宜的存储层。
-
-这两种 prune 都只作用于 provider-visible projection。Canonical Runtime Event Log 中的原始 Tool Result 仍然存在，后续 history compaction 看到的 source 也仍然是原始事件，而不是 placeholder。否则，summary 就会总结出“这里曾经有一段被省略的内容”，而不是总结 Agent 当时真正观察到的结果。
-
-因此，Tool Result Prune 和 History Compaction 虽然都在减少 context，却解决了两个不同的问题。
-
-History Compaction 把一段连续历史折叠成更低分辨率的语义摘要；Tool Result Prune 则保留事件结构，只把其中过大的 payload 移出热工作集。前者改变模型阅读历史的分辨率，后者改变一份大对象所在的存储层级。
-
-两者共同建立了一种分层的 Agent memory：最新、最相关的事实直接留在 context 中；体积很大但仍可能有用的 Tool Result 通过引用按需读取；更早的历史由 checkpoint 提供连续性的摘要；而完整的执行事实始终保留在 append-only log 中。
-
-这也是 Maka 上下文管理最核心的边界：context 可以被压缩，可以被分页，也可以被重新投影；但为了节省 token，不应该假装一件已经发生过的事从未发生。
+History Compaction 沿时间轴压缩历史，将长事件序列折叠为低分辨率的语义摘要；Tool Result Prune 沿空间轴卸载负载，保持事件结构的同时将大对象转移到持久存储中。两者以不可变的 Append-Only Log 为基准，在减少 Token 占用的同时，保证了执行历史的精确与可复原。
