@@ -28,7 +28,6 @@ import {
   StatusDot,
   Switch,
   Text,
-  Token,
   VStack,
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
@@ -745,21 +744,18 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             const label = entry?.displayName?.trim() || id;
             const declared: RelayModelProfile | undefined = relayProfileDraft[id];
             const declares = declaringModelIds.has(id);
-            const facts = (
-              <HStack gap={1.5} vAlign="center" wrap="wrap">
-                {label !== id && <Text type="supporting" color="secondary">{id}</Text>}
-                {entry?.contextWindow !== undefined && (
-                  <Token size="sm" label={copy.contextToken(formatTokenCount(entry.contextWindow))} />
-                )}
-                {entry?.supportsVision && <Token size="sm" label={copy.visionToken} />}
-                {entry !== undefined && entry.thinkingLevels.length > 0 && (
-                  <Token size="sm" label={copy.thinkingToken} />
-                )}
-                {declares && declared === undefined && (
-                  <Text type="supporting" color="secondary">{copy.modelUndescribed}</Text>
-                )}
-              </HStack>
-            );
+            // One supporting line, the facts separated by dots: the id when it
+            // differs from the name, then what the model can do. Plain text,
+            // not a token per fact — three pills under a name and a badge read
+            // as clutter, and none of these is a state to scan for.
+            const factParts = [
+              label !== id ? id : null,
+              entry?.contextWindow !== undefined ? copy.contextToken(formatTokenCount(entry.contextWindow)) : null,
+              entry?.supportsVision ? copy.visionToken : null,
+              entry !== undefined && entry.thinkingLevels.length > 0 ? copy.thinkingToken : null,
+              declares && declared === undefined ? copy.modelUndescribed : null,
+            ].filter((part): part is string => part !== null);
+            const facts = factParts.length > 0 ? factParts.join(' · ') : undefined;
             const rowLabel = entry?.isDefault ? (
               <HStack gap={2} vAlign="center">
                 <span>{label}</span>
