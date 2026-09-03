@@ -103,6 +103,7 @@ test('MCP tools stay bound to the connection generation that advertised them', a
       ),
       /not offered/u,
     );
+    let admissionEvidence: unknown;
     assert.deepEqual(
       await provider.call(
         {
@@ -120,7 +121,9 @@ test('MCP tools stay bound to the connection generation that advertised them', a
         },
         {
           signal: new AbortController().signal,
-          accept: async () => undefined,
+          accept: async (evidence) => {
+            admissionEvidence = evidence;
+          },
         },
       ),
       {
@@ -130,6 +133,8 @@ test('MCP tools stay bound to the connection generation that advertised them', a
         ],
       },
     );
+    // The Host managed admission policy for desktop_mcp requires this contract.
+    assert.deepEqual(admissionEvidence, { kind: 'none' });
 
     const result = await echo.impl({ value: 'runtime-e2e' }, {
       sessionId: 'session', turnId: 'turn', cwd: process.cwd(), toolCallId: 'call',

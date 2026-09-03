@@ -26,6 +26,11 @@ import {
   type OAuthPresentationBackend,
 } from "@maka/runtime-host/client";
 import {
+  CLIENT_CAPABILITY_MAX_MANIFEST_BYTES,
+  CLIENT_CAPABILITY_MAX_OFFERS,
+  CLIENT_CAPABILITY_MAX_TOOLS,
+  CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
+  decodeClientCapabilityReplaceInput,
   decodeClientCapabilityToolDescriptor,
   type ClientCapabilityCallFrame,
   type ClientCapabilityCallResult,
@@ -43,6 +48,8 @@ import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
 const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
+// Same wire length as the registrationId the Client Capability channel assigns.
+const MANIFEST_REGISTRATION_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
 
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
@@ -63,6 +70,7 @@ interface PreparedDesktopCapabilityGroup {
   readonly label: string;
   readonly description: string;
   readonly tools: readonly PreparedDesktopCapabilityTool[];
+  readonly omitUnsupportedTools?: boolean;
 }
 
 type NativeToolBinding = Pick<PreparedDesktopCapabilityTool, "tool">;
@@ -117,6 +125,8 @@ interface DesktopNativeCapabilityProviderOptions {
   readonly onSessionUsed?: (sessionId: string) => void;
   readonly onComputerUseTurnUsed?: (sessionId: string, turnId: string) => void;
   readonly onClosed?: () => void;
+  /** Reports a visible degradation while assembling the published manifest. */
+  readonly onDiagnostic?: (diagnostic: string) => void;
   readonly nativeSessionId?: (sessionId: string) => string;
   readonly targetScope?: DesktopTargetScope;
 }
@@ -127,11 +137,6 @@ export function createDesktopNativeCapabilityProvider(
   providerOptions: DesktopNativeCapabilityProviderOptions = {},
 ): DesktopNativeCapabilityProvider {
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
-  const groups = prepareCapabilityGroups(capabilityGroups(input));
-  const offers = Object.freeze(
-    groups.map((group) => capabilityOffer(group, hostPathAccess)),
-  );
-  const bindings = indexBindings(groups);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
@@ -139,6 +144,31 @@ export function createDesktopNativeCapabilityProvider(
     ? input.additionalServices(requireTargetScope(providerOptions.targetScope))
     : [];
   const services = indexServices(oauthPresentation?.services?.() ?? [], additionalServices);
+  const serviceOffers = Object.freeze(
+    [...services.values()].map(({ serviceId, version }) =>
+      Object.freeze({ serviceId, version }),
+    ),
+  );
+  const groups = fitDesktopCapabilityManifest(
+    prepareCapabilityGroups(capabilityGroups(input)),
+    serviceOffers,
+    hostPathAccess,
+    providerOptions.onDiagnostic,
+  );
+  const offers = Object.freeze(
+    groups.map((group) => capabilityOffer(group, hostPathAccess)),
+  );
+  // Authoritative check: a manifest that will be sent must decode first, so a
+  // budget overrun can never fail the whole registration at the channel. An
+  // empty provider is legal and never registers.
+  if (offers.length > 0 || serviceOffers.length > 0) {
+    decodeClientCapabilityReplaceInput({
+      registrationId: MANIFEST_REGISTRATION_ID_PLACEHOLDER,
+      offers,
+      ...(serviceOffers.length === 0 ? {} : { services: serviceOffers }),
+    });
+  }
+  const bindings = indexBindings(groups);
   const releaseSessionResources = [
     input.releaseBrowserSession,
     input.releaseComputerUseSession,
@@ -165,7 +195,7 @@ export function createDesktopNativeCapabilityProvider(
 
   return {
     offers: () => offers,
-    services: () => [...services.values()].map(({ serviceId, version }) => ({ serviceId, version })),
+    services: () => [...serviceOffers],
     call: (frame, options) => {
       if (closed)
         throw new Error("Desktop native capability provider is closed");
@@ -469,8 +499,106 @@ function prepareCapabilityGroups(
       return [{ tool, descriptor }];
     });
     if (group.omitUnsupportedTools && tools.length === 0) return [];
-    return [{ ...group, tools }];
+    return chunkPreparedGroup({ ...group, tools });
   });
+}
+
+/**
+ * Split a dynamic group beyond the single-offer tool limit into stable chunks.
+ * Chunked offers keep the group's server identity, so published tool names,
+ * Session Grant scopes, and Host admission never depend on how the group was
+ * split.
+ */
+function chunkPreparedGroup(
+  group: PreparedDesktopCapabilityGroup,
+): PreparedDesktopCapabilityGroup[] {
+  if (
+    !group.omitUnsupportedTools ||
+    group.tools.length <= CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER
+  ) {
+    return [group];
+  }
+  const chunks: PreparedDesktopCapabilityGroup[] = [];
+  for (
+    let offset = 0;
+    offset < group.tools.length;
+    offset += CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER
+  ) {
+    chunks.push({
+      ...group,
+      offerId:
+        offset === 0
+          ? group.offerId
+          : `${group.offerId}_${offset / CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER + 1}`,
+      tools: group.tools.slice(offset, offset + CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER),
+    });
+  }
+  return chunks;
+}
+
+/**
+ * Fit the assembled manifest to the Client Capability budgets before it is
+ * sent. Fixed capability groups are never degraded: if they alone exceed a
+ * budget the registration must fail loudly. Dynamic (omittable) groups shed
+ * their trailing tools instead, and the omission is reported.
+ */
+function fitDesktopCapabilityManifest(
+  groups: readonly PreparedDesktopCapabilityGroup[],
+  services: readonly ClientCapabilityServiceOffer[],
+  hostPathAccess: ClientCapabilityHostPathAccess,
+  onDiagnostic?: (diagnostic: string) => void,
+): PreparedDesktopCapabilityGroup[] {
+  const fitting = groups.map((group) => ({ group, tools: [...group.tools] }));
+  const omitted: string[] = [];
+  const assemble = (): PreparedDesktopCapabilityGroup[] =>
+    fitting
+      .filter((entry) => entry.tools.length > 0)
+      .map((entry) => ({ ...entry.group, tools: entry.tools }));
+  while (!manifestFitsBudget(assemble(), services, hostPathAccess)) {
+    let index = fitting.length - 1;
+    while (
+      index >= 0 &&
+      (!fitting[index]?.group.omitUnsupportedTools || fitting[index]?.tools.length === 0)
+    ) {
+      index -= 1;
+    }
+    const entry = fitting[index];
+    if (!entry) {
+      throw new Error(
+        "Desktop fixed capability groups exceed the Client Capability manifest budget",
+      );
+    }
+    const dropped = entry.tools.pop();
+    if (dropped) omitted.push(dropped.descriptor.name);
+  }
+  if (omitted.length > 0) {
+    const names = omitted.reverse();
+    const shown = names.slice(0, 8).join(", ");
+    onDiagnostic?.(
+      `Desktop omitted ${names.length} MCP tool(s) beyond the Client Capability manifest budget: ${shown}${names.length > 8 ? `, +${names.length - 8} more` : ""}`,
+    );
+  }
+  return assemble();
+}
+
+function manifestFitsBudget(
+  groups: readonly PreparedDesktopCapabilityGroup[],
+  services: readonly ClientCapabilityServiceOffer[],
+  hostPathAccess: ClientCapabilityHostPathAccess,
+): boolean {
+  if (groups.length > CLIENT_CAPABILITY_MAX_OFFERS) return false;
+  const offers = groups.map((group) => capabilityOffer(group, hostPathAccess));
+  let toolCount = 0;
+  for (const offer of offers) toolCount += offer.tools.length;
+  if (toolCount > CLIENT_CAPABILITY_MAX_TOOLS) return false;
+  const manifest = {
+    registrationId: MANIFEST_REGISTRATION_ID_PLACEHOLDER,
+    offers,
+    ...(services.length === 0 ? {} : { services }),
+  };
+  return (
+    Buffer.byteLength(JSON.stringify(manifest), "utf8") <= CLIENT_CAPABILITY_MAX_MANIFEST_BYTES
+  );
 }
 
 function capabilityToolDescriptor(
@@ -547,11 +675,11 @@ function indexBindings(
 ): Map<string, NativeToolBinding> {
   const bindings = new Map<string, NativeToolBinding>();
   for (const group of groups) {
-    for (const { tool } of group.tools) {
+    for (const { tool, descriptor } of group.tools) {
       const key = bindingKey({
         offerId: group.offerId,
-        serverId: group.offerId,
-        toolName: tool.name,
+        serverId: descriptor.serverId,
+        toolName: descriptor.name,
       });
       if (bindings.has(key)) {
         throw new Error(

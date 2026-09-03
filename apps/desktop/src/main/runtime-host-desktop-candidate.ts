@@ -739,6 +739,7 @@ export async function createDesktopRuntimeHostCandidate(
           onComputerUseTurnUsed: watchComputerUseTurn,
           isTargetValid: deps.isTargetValid,
           onClosed: () => providers.delete(provider),
+          onDiagnostic: logLocalRuntimeHostProcessDiagnostic,
         },
       );
       providers.add(provider);

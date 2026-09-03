@@ -524,6 +524,189 @@ test('dispatches through the same immutable tool snapshot it advertised', async 
   );
 });
 
+test('chunks a dynamic capability group beyond the single-offer tool limit', async () => {
+  const mcpTools = Array.from({ length: 65 }, (_, index) =>
+    tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => `tool-${index}`),
+  );
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {},
+    computerUseTools: [] as never,
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp',
+        label: 'MCP',
+        description: 'MCP tools connected by this Desktop client.',
+        tools: mcpTools,
+        omitUnsupportedTools: true,
+      },
+    ],
+  });
+
+  assert.deepEqual(
+    provider.offers().map((offer) => [offer.offerId, offer.tools.length] as const),
+    [
+      ['desktop_browser', 1],
+      ['desktop_mcp', 64],
+      ['desktop_mcp_2', 1],
+    ],
+  );
+  // Chunked offers keep the group's server identity.
+  assert.equal(provider.offers()[2]?.tools[0]?.serverId, 'desktop_mcp');
+  assert.equal(provider.offers()[2]?.tools[0]?.name, 'mcp_tool_064');
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
+  );
+  // A tool in a later chunk dispatches through its chunk offerId.
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp_2',
+        serverId: 'desktop_mcp',
+        toolName: 'mcp_tool_064',
+        arguments: {},
+      }),
+    ),
+    { content: [{ type: 'text', text: 'tool-64' }] },
+  );
+  await provider.close();
+});
+
+test('omits trailing dynamic tools beyond the manifest tool budget and keeps fixed groups', async () => {
+  const diagnostics: string[] = [];
+  const mcpTools = Array.from({ length: 300 }, (_, index) =>
+    tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => 'ok'),
+  );
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools connected by this Desktop client.',
+          tools: mcpTools,
+          omitUnsupportedTools: true,
+        },
+      ],
+    },
+    { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+  );
+
+  const offers = provider.offers();
+  assert.equal(offers[0]?.offerId, 'desktop_browser');
+  assert.equal(offers[0]?.tools.length, 1);
+  let toolCount = 0;
+  for (const offer of offers) toolCount += offer.tools.length;
+  assert.equal(toolCount, 256);
+  assert.equal(offers.at(-1)?.tools.at(-1)?.name, 'mcp_tool_254');
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers,
+    }),
+  );
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0] ?? '', /omitted 45 MCP tool/u);
+  assert.match(diagnostics[0] ?? '', /mcp_tool_255/u);
+  await provider.close();
+});
+
+test('omits trailing dynamic tools beyond the manifest byte budget', () => {
+  const diagnostics: string[] = [];
+  const mcpTools = Array.from({ length: 80 }, (_, index) => ({
+    ...tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => 'ok'),
+    description: `mcp_tool_${index} ${'x'.repeat(1_000)}`,
+  }));
+  const provider = createDesktopNativeCapabilityProvider(
+    {
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools connected by this Desktop client.',
+          tools: mcpTools,
+          omitUnsupportedTools: true,
+        },
+      ],
+    },
+    { onDiagnostic: (diagnostic) => diagnostics.push(diagnostic) },
+  );
+
+  const offers = provider.offers();
+  const kept = offers.flatMap((offer) => offer.tools.map((descriptor) => descriptor.name));
+  assert.ok(kept.length > 0 && kept.length < 80);
+  assert.deepEqual(
+    kept,
+    mcpTools.slice(0, kept.length).map((candidate) => candidate.name),
+  );
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers,
+    }),
+  );
+  assert.equal(diagnostics.length, 1);
+  assert.match(diagnostics[0] ?? '', /omitted [1-9]\d* MCP tool/u);
+});
+
+test('chunks and degrades a dynamic capability group deterministically', () => {
+  const mcpTools = Array.from({ length: 70 }, (_, index) =>
+    tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => 'ok'),
+  );
+  const create = () =>
+    createDesktopNativeCapabilityProvider({
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: [] as never,
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        {
+          offerId: 'desktop_mcp',
+          label: 'MCP',
+          description: 'MCP tools connected by this Desktop client.',
+          tools: mcpTools,
+          omitUnsupportedTools: true,
+        },
+      ],
+    });
+  const first = create();
+  const second = create();
+  assert.deepEqual(first.offers(), second.offers());
+});
+
+test('fails loudly when a fixed capability group exceeds the manifest budget', () => {
+  assert.throws(
+    () =>
+      createDesktopNativeCapabilityProvider({
+        browserTools: Array.from({ length: 65 }, (_, index) =>
+          tool(`browser_tool_${index}`, z.object({}), async () => 'ok'),
+        ),
+        resolveBrowserUrl: () => 'https://example.com/',
+        releaseBrowserSession() {},
+        computerUseTools: [] as never,
+        releaseComputerUseSession() {},
+      }),
+    /Invalid Client Capability offer tools/u,
+  );
+});
+
 test('reports provider retirement once after its registration is released', async () => {
   let retirements = 0;
   const provider = createDesktopNativeCapabilityProvider(
