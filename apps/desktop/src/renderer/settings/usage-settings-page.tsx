@@ -50,6 +50,11 @@ export type { UsageScopeHandle } from '../features/usage';
 
 export function UsageSettingsPage(props: {
   settings: UsageSettings;
+  // Settings-selected Runtime Host, threaded to the feature's Pricing tab
+  // (per-Host overrides). Typed inline (structurally the feature's `UsageHostRef`
+  // and the preload `DesktopRuntimeHostRef`) so this closure shim adds no import
+  // dependency — it stays a thin, dependency-frozen seam.
+  runtimeHost: { readonly profileId: string; readonly hostId: string } | undefined;
   onOpenSession?(sessionId: string): void;
 }) {
   const locale = useUiLocale();
@@ -58,6 +63,7 @@ export function UsageSettingsPage(props: {
       <UsageSettingsView
         settings={props.settings}
         describeError={(error) => settingsActionErrorMessage(error, locale)}
+        runtimeHost={props.runtimeHost}
         onOpenSession={props.onOpenSession}
       />
     </SettingsPage>

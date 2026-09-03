@@ -31,6 +31,7 @@ import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings'
 import { estimatedUsageCost, hasUnavailableUsage } from '@maka/core/usage-ledger-merge';
 import { Button, TextInput, Selector, Switch, useToast, useUiLocale, Banner } from '@maka/ui';
 import { ICON_SIZE, Activity, BarChart3, Cpu, Database, RefreshCcw, Search } from '@maka/ui/icons';
+import { PricingEditor } from './pricing-editor.js';
 import {
   getUsageSettingsCopy,
   type UsageSettingsCopy,
@@ -40,6 +41,7 @@ import { UsageStatsTable } from './usage-stats-table.js';
 import { useActionGuard } from '../controller/action-guard.js';
 import { useOptimisticSettingsDraft } from '../controller/optimistic-settings-draft.js';
 import { useUsageServices, useUsageStats } from '../services-context.js';
+import type { UsageHostRef } from '../ports.js';
 
 type UsageActiveTab = UsageSettings['activeTab'];
 
@@ -55,6 +57,8 @@ type UsageActiveTab = UsageSettings['activeTab'];
 export function UsageSettingsView(props: {
   settings: UsageSettings;
   describeError(error: unknown): string;
+  /** Settings-selected Runtime Host, threaded to the Pricing tab (per-Host overrides). */
+  runtimeHost: UsageHostRef | undefined;
   onOpenSession?(sessionId: string): void;
 }) {
   const services = useUsageServices();
@@ -108,12 +112,11 @@ export function UsageSettingsView(props: {
       );
   }, [stats, usageDraft.status, normalizedModelFilter]);
 
-  const tabCounts: Record<UsageActiveTab, number> = {
+  const tabCounts: Record<Exclude<UsageActiveTab, 'pricing'>, number> = {
     requests: stats?.logs.length ?? 0,
     providers: stats?.byProvider.length ?? 0,
     models: stats?.byModel.length ?? 0,
     tools: stats?.byTool.length ?? 0,
-    pricing: stats?.pricing.length ?? 0,
   };
 
   function updateUsage(patch: Partial<UsageSettings>): Promise<boolean> {
@@ -152,7 +155,7 @@ export function UsageSettingsView(props: {
 
   return (
     <>
-      {usageIncomplete ? (
+      {usageIncomplete && usageDraft.activeTab !== 'pricing' ? (
         <Banner
           status="warning"
           role="status"
@@ -160,36 +163,41 @@ export function UsageSettingsView(props: {
           description={copy.incompleteBody}
         />
       ) : null}
-      <div className="settingsUsageOverview">
-        <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
-          <SegmentedControl
-            value={usageDraft.range}
-            label={copy.rangeAria}
-            onChange={(value) => void setRange(value as UsageRange)}
-          >
-            {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
-              <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
-            ))}
-          </SegmentedControl>
-          <Button
-            variant="ghost"
-            size="sm"
-            isIconOnly
-            isLoading={refreshing}
-            label={copy.refreshAria}
-            tooltip={copy.refreshAria}
-            onClick={() => void refresh()}
-            icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
-          />
-        </div>
+      {/* #2015 acceptance #2: the Pricing tab is not time-scoped, so the Usage
+          range/summary toolbar is hidden there — the date range cannot be
+          mistaken for a Pricing scope. */}
+      {usageDraft.activeTab !== 'pricing' ? (
+        <div className="settingsUsageOverview">
+          <div className="settingsUsageToolbar" role="group" aria-label={copy.toolbarAria}>
+            <SegmentedControl
+              value={usageDraft.range}
+              label={copy.rangeAria}
+              onChange={(value) => void setRange(value as UsageRange)}
+            >
+              {(['24h', '7d', '30d', 'all'] as const).map((value, index) => (
+                <SegmentedControlItem key={value} value={value} label={copy.ranges[index]} />
+              ))}
+            </SegmentedControl>
+            <Button
+              variant="ghost"
+              size="sm"
+              isIconOnly
+              isLoading={refreshing}
+              label={copy.refreshAria}
+              tooltip={copy.refreshAria}
+              onClick={() => void refresh()}
+              icon={<RefreshCcw size={ICON_SIZE.control} aria-hidden="true" />}
+            />
+          </div>
 
-        <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
-          <MetricCard title={copy.totalRequests} value={stats ? String(stats.summary.totalRequests) : '—'} />
-          <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
-          <MetricCard title={copy.totalTokens} value={stats ? String(stats.summary.totalTokens) : '—'} detail={stats ? copy.tokenDetail(stats.summary.inputTokens, stats.summary.outputTokens) : undefined} />
-          <MetricCard title={copy.cacheTokens} value={stats ? String(stats.summary.cacheTokens) : '—'} detail={stats ? copy.cacheDetail(stats.summary.cacheMiss, stats.summary.cacheRead, stats.summary.cacheCreation) : undefined} />
+          <div className="settingsUsageSummary" role="group" aria-label={copy.summaryAria}>
+            <MetricCard title={copy.totalRequests} value={stats ? String(stats.summary.totalRequests) : '—'} />
+            <MetricCard title={copy.totalCost} value={totalCostDisplay} detail={copy.costHelp} />
+            <MetricCard title={copy.totalTokens} value={stats ? String(stats.summary.totalTokens) : '—'} detail={stats ? copy.tokenDetail(stats.summary.inputTokens, stats.summary.outputTokens) : undefined} />
+            <MetricCard title={copy.cacheTokens} value={stats ? String(stats.summary.cacheTokens) : '—'} detail={stats ? copy.cacheDetail(stats.summary.cacheMiss, stats.summary.cacheRead, stats.summary.cacheCreation) : undefined} />
+          </div>
         </div>
-      </div>
+      ) : null}
 
       <div className="settingsUsageBreakdown">
         <div className="settingsUsageTabsBar">
@@ -203,7 +211,7 @@ export function UsageSettingsView(props: {
             <Tab value="providers" label={copy.tabs[1]} endContent={<span>{tabCounts.providers}</span>} />
             <Tab value="models" label={copy.tabs[2]} endContent={<span>{tabCounts.models}</span>} />
             <Tab value="tools" label={copy.tabs[3]} endContent={<span>{tabCounts.tools}</span>} />
-            <Tab value="pricing" label={copy.tabs[4]} endContent={<span>{tabCounts.pricing}</span>} />
+            <Tab value="pricing" label={copy.tabs[4]} />
           </TabList>
         </div>
 
@@ -249,7 +257,11 @@ export function UsageSettingsView(props: {
 
         {usageDraft.activeTab === 'pricing' ? (
           <div className="settingsUsageTabPanel">
-            <UsagePricingPanel stats={stats} copy={copy} />
+            <PricingEditor
+              describeError={props.describeError}
+              runtimeHost={props.runtimeHost}
+              generationKey={targetKey}
+            />
           </div>
         ) : null}
       </div>
@@ -416,22 +428,6 @@ function UsageToolsPanel(props: { stats: UsageStats | null; copy: UsageSettingsC
       ]}
       rows={(props.stats?.byTool ?? []).map((row) => [row.tool, row.calls, row.success, row.errors, `${row.avgDurationMs}ms`])}
       empty={{ Icon: Activity, title: props.copy.tables.toolEmptyTitle, body: props.copy.tables.toolEmptyBody }}
-    />
-  );
-}
-
-function UsagePricingPanel(props: { stats: UsageStats | null; copy: UsageSettingsCopy }) {
-  return (
-    <UsageStatsTable
-      ariaLabel={props.copy.tables.pricingAria}
-      columns={[
-        { header: props.copy.tables.pricingHeaders[0], grow: true },
-        { header: props.copy.tables.pricingHeaders[1] },
-        { header: props.copy.tables.pricingHeaders[2], numeric: true },
-        { header: props.copy.tables.pricingHeaders[3], numeric: true },
-      ]}
-      rows={(props.stats?.pricing ?? []).map((row) => [row.provider, row.model, `$${row.inputPerMTokUsd}`, `$${row.outputPerMTokUsd}`])}
-      empty={{ Icon: BarChart3, title: props.copy.tables.noPricing, body: props.copy.tables.pricingEmptyBody }}
     />
   );
 }

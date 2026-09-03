@@ -87,22 +87,6 @@ test("settings usage stats use the canonical model-call total and load every act
           nextOffset: offset === 0 ? 100 : null,
         } satisfies UsageQueryResult;
       },
-      loadPricingSnapshot: async () => ({
-        hostEpoch: "host-epoch",
-        connectionId: "connection-id",
-        revision: 1,
-        entries: [
-          {
-            source: "custom",
-            resetEffect: "become_unpriced",
-            pricing: {
-              modelKey: "provider-a:model-a",
-              inputUsdPer1M: 1,
-              outputUsdPer1M: 2,
-            },
-          },
-        ],
-      }),
     } as unknown as DesktopRuntimeHostClient,
     sendToRenderer: () => undefined,
   });
@@ -134,14 +118,6 @@ test("settings usage stats use the canonical model-call total and load every act
   ]);
   assert.deepEqual(stats.byTool, [
     { tool: "Read", calls: 171, success: 170, errors: 0, avgDurationMs: 25 },
-  ]);
-  assert.deepEqual(stats.pricing, [
-    {
-      provider: "provider-a",
-      model: "model-a",
-      inputPerMTokUsd: 1,
-      outputPerMTokUsd: 2,
-    },
   ]);
   // The canonical summary provenance is carried through so the page can qualify
   // a cost that reads low; the full range fit under the cap, so not truncated.

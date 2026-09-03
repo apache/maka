@@ -18,14 +18,8 @@
  */
 
 import { resolveUsageRange } from "@maka/core/model-call-usage-projection";
-import { tryResult } from "@maka/core/result";
 import type { UsageRange, UsageStats } from "@maka/core/settings";
-import {
-  normalizePricingConfig,
-  normalizePricingModelKey,
-} from "@maka/core/usage-stats/pricing";
 import type {
-  PricingConfig,
   TimeRange,
   UsageGroupBy,
   UsageQuery,
@@ -53,16 +47,6 @@ const MAX_ACTIVITY_RECORDS = 50_000;
 export function registerRuntimeHostUsageIpc(
   deps: RuntimeHostUsageIpcDeps,
 ): void {
-  let pricingMutationQueue: Promise<void> = Promise.resolve();
-  const enqueuePricingMutation = <T>(operation: () => Promise<T>): Promise<T> => {
-    const result = pricingMutationQueue.then(operation);
-    pricingMutationQueue = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  };
-
   handleReconnectableRead(
     deps.ipcMain,
     "settings:usageStats",
@@ -115,45 +99,6 @@ export function registerRuntimeHostUsageIpc(
         };
       }, "USAGE_LOGS_FAILED"),
   );
-  handleReconnectableRead(deps.ipcMain, "usage:pricing:list", () =>
-    tryReconnectableReadResult(async () => {
-      const snapshot = await deps.client.loadPricingSnapshot();
-      return snapshot.entries
-        .filter((entry) => entry.source === "custom")
-        .map((entry) => entry.pricing);
-    }, "USAGE_PRICING_LIST_FAILED"),
-  );
-  deps.ipcMain.handle("usage:pricing:put", (_event, pricing: unknown) =>
-    tryResult(
-      () =>
-        enqueuePricingMutation(async () => {
-          const normalized = normalizePricingConfig(pricing);
-          if (!normalized.ok) throw new Error(normalized.error);
-          await applyPricingMutation(deps.client, {
-            kind: "upsert",
-            pricing: normalized.value,
-          });
-          deps.sendToRenderer("usage:pricing:changed");
-          return normalized.value;
-        }),
-      "USAGE_PRICING_PUT_FAILED",
-    ),
-  );
-  deps.ipcMain.handle("usage:pricing:reset", (_event, modelKey: unknown) =>
-    tryResult(
-      () =>
-        enqueuePricingMutation(async () => {
-          const normalized = normalizePricingModelKey(modelKey);
-          if (!normalized.ok) throw new Error(normalized.error);
-          await applyPricingMutation(deps.client, {
-            kind: "delete",
-            modelKey: normalized.value,
-          });
-          deps.sendToRenderer("usage:pricing:changed");
-        }),
-      "USAGE_PRICING_RESET_FAILED",
-    ),
-  );
 }
 
 async function loadUsageStats(
@@ -161,11 +106,10 @@ async function loadUsageStats(
   range: UsageRange,
 ): Promise<UsageStats> {
   const query = { range: resolveUsageRange(range, Date.now()) } satisfies UsageQuery;
-  const [summaryResult, llmResult, toolResult, pricing] = await Promise.all([
+  const [summaryResult, llmResult, toolResult] = await Promise.all([
     client.queryUsage({ kind: "summary", query }),
     loadAllLogs(client, "llm", query),
     loadAllLogs(client, "tool", query),
-    client.loadPricingSnapshot(),
   ]);
   if (summaryResult.kind !== "summary") throw invalidUsageProjection();
   const llmLogs = llmResult.rows;
@@ -200,13 +144,6 @@ async function loadUsageStats(
     byProvider: aggregateModelLogs(llmLogs, "provider"),
     byModel: aggregateModelLogs(llmLogs, "model"),
     byTool: aggregateToolLogs(toolLogs),
-    pricing: pricing.entries
-      .filter((entry) => entry.source === "custom")
-      .map(({ pricing: entry }) => projectPricing(entry))
-      .sort(
-        (left, right) =>
-          left.provider.localeCompare(right.provider) || left.model.localeCompare(right.model),
-      ),
     provenance: summaryResult.provenance,
     ...(logsTruncated ? { logsTruncated: true } : {}),
   };
@@ -380,16 +317,6 @@ function aggregateToolLogs(logs: readonly ToolUsageLogProjection[]): UsageStats[
     .sort((left, right) => right.calls - left.calls || left.tool.localeCompare(right.tool));
 }
 
-function projectPricing(pricing: PricingConfig): UsageStats["pricing"][number] {
-  const separator = pricing.modelKey.indexOf(":");
-  return {
-    provider: separator < 0 ? "" : pricing.modelKey.slice(0, separator),
-    model: separator < 0 ? pricing.modelKey : pricing.modelKey.slice(separator + 1),
-    inputPerMTokUsd: pricing.inputUsdPer1M,
-    outputPerMTokUsd: pricing.outputUsdPer1M,
-  };
-}
-
 async function loadAllBuckets(
   client: DesktopRuntimeHostClient,
   query: UsageQuery & { groupBy: UsageGroupBy },
@@ -440,26 +367,6 @@ function toToolQuery(query: UsageQuery) {
     ...(query.toolName === undefined ? {} : { toolName: query.toolName }),
     ...(query.status === undefined ? {} : { status: query.status }),
   };
-}
-
-async function applyPricingMutation(
-  client: DesktopRuntimeHostClient,
-  mutation:
-    | { readonly kind: "upsert"; readonly pricing: PricingConfig }
-    | { readonly kind: "delete"; readonly modelKey: string },
-): Promise<void> {
-  const outcome = await client.applyPricingMutation({
-    base: await client.loadPricingSnapshot(),
-    mutation,
-  });
-  if (
-    outcome.kind === "saved" ||
-    outcome.kind === "saved_refresh_failed" ||
-    outcome.kind === "synchronized"
-  ) {
-    return;
-  }
-  throw new Error("Pricing changed concurrently; reload it before retrying");
 }
 
 function invalidUsageProjection(): Error {

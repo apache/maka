@@ -95,6 +95,35 @@
   min-width: 0;
 }
 
+/* Pricing panel: a vertical stack (header, optional write notice, table). */
+.settingsPricing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+/* Header row: heading/subtitle on the left, the Add control on the right. */
+.settingsPricingHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPricingHeading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+/* Writes are blocked after an uncertain/refresh-failed outcome: dim the possibly
+   stale list until a fresh snapshot loads, so it does not read as authoritative. */
+.settingsPricingStale {
+  opacity: 0.6;
+}
+
 /* 任务 column: the session-name link truncates inside its fixed column width and
    surfaces the full name via the button tooltip. StyleX owns the button's own
    layout; these rules only cap its width and ellipsis the label text (descendant
