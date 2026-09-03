@@ -564,6 +564,12 @@ h2 {
 }
 
 /* Big stat */
+/* The stat sits in the middle of whatever height the copy leaves, not glued to the bottom. */
+.tile .fig:has(> .stat) {
+  flex: 1;
+  display: flex;
+  align-items: center;
+}
 .stat {
   font-size: 56px;
   font-weight: 600;
