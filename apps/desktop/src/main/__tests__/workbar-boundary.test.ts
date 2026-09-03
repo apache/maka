@@ -97,9 +97,18 @@ describe('Workbar feature boundary', () => {
     assert.equal(productionEntry.includes("from './testing"), false);
   });
 
-  it('keeps Workbar topology and resource lifecycle out of AppShell', () => {
+  it('owns the Workbar controller below AppShell', () => {
     const appShell = readFileSync(
       join(desktopRoot, 'src', 'renderer', 'app-shell.tsx'),
+      'utf8',
+    );
+    const productionEntry = readFileSync(join(featureRoot, 'index.ts'), 'utf8');
+    const provider = readFileSync(
+      join(featureRoot, 'ui', 'workbar-provider.tsx'),
+      'utf8',
+    );
+    const host = readFileSync(
+      join(featureRoot, 'ui', 'workbar-host.tsx'),
       'utf8',
     );
     for (const forbidden of [
@@ -108,13 +117,39 @@ describe('Workbar feature boundary', () => {
       'pendingSideChatClose',
       'sideConversations',
       'window.maka.shellRuns.start',
+      'useWorkbarController',
+      'workbar.selectors',
+      'workbar.commands',
+      '<WorkbarHost model=',
+      'Workbar.createWorkbarShellBridge',
     ]) {
       assert.equal(appShell.includes(forbidden), false, forbidden);
     }
-    assert.equal(
-      appShell.includes('<WorkbarHost model={workbar.host} />'),
-      true,
+    assert.equal(appShell.includes('<Workbar.WorkbarHost />'), true);
+    assert.equal(provider.includes('useWorkbarController({'), true);
+    assert.equal(provider.includes('function WorkbarShellBridgeOwner'), true);
+    assert.equal(provider.includes('createWorkbarShellBridge()'), true);
+    assert.equal(host.includes('useWorkbarHostModel()'), true);
+    assert.equal(productionEntry.includes('useWorkbarController'), false);
+  });
+
+  it('publishes the rail visibility as an equality-selected reader projection', () => {
+    const reads = readFileSync(
+      join(
+        desktopRoot,
+        'src',
+        'renderer',
+        'features',
+        'session-navigation',
+        'controller',
+        'use-session-navigation-reads.ts',
+      ),
+      'utf8',
     );
+
+    assert.equal(reads.includes('hiddenSessionIdsStore'), true);
+    assert.equal(reads.includes('useExternalStoreSelector('), true);
+    assert.equal(reads.includes('readonlyStringSetEqual'), true);
   });
 
   it('projects Work Board project identity through the controller-owned host model', () => {
@@ -131,9 +166,9 @@ describe('Workbar feature boundary', () => {
       'utf8',
     );
 
-    assert.equal(appShell.includes('projectId: currentProjectId'), true);
+    assert.equal(appShell.includes('projectId={currentProjectId}'), true);
     assert.equal(
-      appShell.includes('projectAliases: currentProject?.aliases ?? []'),
+      appShell.includes('projectAliases={currentProject?.aliases ?? []}'),
       true,
     );
     assert.equal(controller.includes('projectId: input.projectId'), true);

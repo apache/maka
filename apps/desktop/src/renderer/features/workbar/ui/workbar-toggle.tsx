@@ -22,6 +22,7 @@ import { Tooltip } from '@astryxdesign/core/Tooltip';
 import { IconButton, useUiLocale } from '@maka/ui';
 import { PanelRightClose, PanelRightOpen } from '@maka/ui/icons';
 import { getShellCopy } from '../../../locales/shell-copy';
+import { useWorkbarTitlebarModel } from './workbar-provider.js';
 
 /** Shared titlebar/panel toggle for the Workbar column. */
 export function WorkbarToggle(props: {
@@ -57,7 +58,12 @@ export function WorkbarToggle(props: {
 }
 
 /** Titlebar restore affordance shown only while the Workbar is collapsed. */
-export function WorkbarTitlebarActions(props: {
+export function WorkbarTitlebarActions() {
+  return <WorkbarTitlebarActionsView {...useWorkbarTitlebarModel()} />;
+}
+
+/** Environment-free view seam for focused tests and Storybook. */
+export function WorkbarTitlebarActionsView(props: {
   available: boolean;
   collapsed: boolean;
   onToggle(): void;

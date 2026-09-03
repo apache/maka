@@ -52,6 +52,14 @@ export * from './tools/terminal/session-terminal-query.js';
 export * from './tools/terminal/session-terminal-frame.js';
 export * from './tools/inspector/use-session-trace.js';
 export * from './controller/use-workbar-controller.js';
+export * from './controller/workbar-shell-bridge.js';
+export {
+  WorkbarProvider,
+  useWorkbarHostModel,
+  useWorkbarTitlebarModel,
+} from './ui/workbar-provider.js';
+export type { WorkbarTitlebarModel } from './ui/workbar-provider.js';
+export type { WorkbarHostModel } from './ui/workbar-host.js';
 export { SideChatCloseConfirmation } from './ui/side-chat-close-confirmation.js';
 
 const noopSubscription = (): (() => void) => () => undefined;

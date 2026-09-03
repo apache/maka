@@ -38,6 +38,7 @@ import type {
 } from '../tools/side-chat/quote-companion-panel-state';
 import type { CompanionForkVisibilityEvent } from '../tools/side-chat/quote-companion-visibility';
 import { SideChatCloseConfirmation } from './side-chat-close-confirmation.js';
+import { useWorkbarHostModel } from './workbar-provider.js';
 
 const WorkbarSurface = lazy(() =>
   import('./workbar-surface').then((module) => ({
@@ -134,7 +135,12 @@ export interface WorkbarHostModel {
   };
 }
 
-export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
+export function WorkbarHost() {
+  return <WorkbarHostView model={useWorkbarHostModel()} />;
+}
+
+/** Environment-free view seam for focused tests and Storybook. */
+export function WorkbarHostView({ model: props }: { model: WorkbarHostModel }) {
   const locale = useUiLocale();
   const toast = useToast();
   const copy = getShellCopy(locale).app;

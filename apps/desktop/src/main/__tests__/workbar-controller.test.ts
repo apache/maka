@@ -121,7 +121,8 @@ function input(
     authoritativeSessionIds: new Set(activeSession ? [activeSession.id] : []),
     shellObscured: false,
     modelChoices: [],
-    reportError: (title, description) => errors.push(`${title}: ${description}`),
+    reportError: (_sessionId, title, description) =>
+      errors.push(`${title}: ${description}`),
   };
 }
 
