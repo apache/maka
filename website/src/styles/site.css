@@ -1048,16 +1048,18 @@ h2 {
     padding-top: 40px;
   }
   .scene {
-    padding: 28px 20px 48px;
+    padding: 28px 20px 24px;
   }
   .turn {
     grid-template-columns: 1fr 1fr;
   }
   .tape-cap {
-    left: 20px;
-    right: 20px;
+    position: static;
+    margin-top: 28px;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+    line-height: 1.5;
+    text-align: center;
   }
   .tape-cap .hw {
     margin-left: 0;
