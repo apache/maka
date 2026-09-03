@@ -35,6 +35,8 @@ export interface Copy {
     security: string;
     asf: string;
     getMaka: string;
+    // The narrow-screen menu that holds the links above.
+    menu: string;
   };
   hero: {
     headline: [string, string, string];

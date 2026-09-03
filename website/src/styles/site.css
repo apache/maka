@@ -137,10 +137,10 @@ code {
   background: var(--surface-sunken);
   color: var(--foreground);
 }
-.nav .asf {
+.nav details {
   position: relative;
 }
-.nav .asf summary {
+.nav details summary {
   list-style: none;
   cursor: pointer;
   padding: 6px 12px;
@@ -148,15 +148,15 @@ code {
   color: var(--muted-foreground);
   font-weight: 500;
 }
-.nav .asf summary::-webkit-details-marker {
+.nav details summary::-webkit-details-marker {
   display: none;
 }
-.nav .asf summary:hover,
-.nav .asf[open] summary {
+.nav details summary:hover,
+.nav details[open] summary {
   background: var(--surface-sunken);
   color: var(--foreground);
 }
-.nav .asf .menu {
+.nav details .menu {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
@@ -169,8 +169,24 @@ code {
   border-radius: 14px;
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.08);
 }
-.nav .asf .menu a {
+.nav details .menu a {
   white-space: nowrap;
+}
+/* The narrow-screen menu sits at the right edge and only appears when the link row is gone. */
+.nav .more {
+  display: none;
+}
+.nav .more summary {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+}
+.nav .more .menu {
+  left: auto;
+  right: 0;
 }
 .nav .sp {
   flex: 1;
@@ -973,6 +989,10 @@ h2 {
 .doc code {
   font-size: 0.92em;
 }
+/* The distribution URL is one unbreakable word; it wraps rather than widening the page on phones. */
+.doc p code {
+  overflow-wrap: anywhere;
+}
 .doc .btn {
   margin-top: 4px;
 }
@@ -1069,6 +1089,9 @@ h2 {
   .nav .links {
     display: none;
   }
+  .nav .more {
+    display: block;
+  }
   .sec-h {
     grid-template-columns: 1fr;
     gap: 12px;
@@ -1095,12 +1118,17 @@ h2 {
   .wrap {
     padding: 0 20px;
   }
-  .nav .btn {
+  /* Get Maka moves into the menu and the theme follows the OS; the row does not fit them at 390px. */
+  .nav .btn,
+  .nav .theme {
     display: none;
   }
-  .nav .brand,
-  .nav .theme {
+  .nav .brand {
     margin-right: 0;
+  }
+  .lang a,
+  .lang span {
+    padding: 5px 8px;
   }
   .hero {
     padding-top: 40px;

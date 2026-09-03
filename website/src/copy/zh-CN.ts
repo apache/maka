@@ -34,6 +34,7 @@ export const zhCN: Copy = {
     security: '安全',
     asf: 'ASF',
     getMaka: '获取 Maka',
+    menu: '菜单',
   },
   hero: {
     headline: ['一个高性能的 Agent 工作台，', '并完整记录', '它做过的每一件事。'],

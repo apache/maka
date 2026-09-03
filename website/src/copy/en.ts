@@ -39,6 +39,7 @@ export const en: Copy = {
     security: 'Security',
     asf: 'ASF',
     getMaka: 'Get Maka',
+    menu: 'Menu',
   },
   hero: {
     headline: [

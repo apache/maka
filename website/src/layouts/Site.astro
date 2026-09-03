@@ -40,6 +40,15 @@ const href = (locale: Locale) => `/${locale}/${path}`;
 const canonical = new URL(href(copy.locale), Astro.site);
 const home = `/${copy.locale}/`;
 const downloads = `/${copy.locale}/downloads/`;
+// The site's own links: a row in the nav on wide screens, a menu on narrow ones.
+const primary = [
+  [links.docs, copy.nav.docs],
+  [downloads, copy.nav.downloads],
+  [links.eval, copy.nav.benchmarks],
+  [links.discussions, copy.nav.community],
+  [links.security, copy.nav.security],
+];
+const current = (href: string) => (href === downloads && page === 'downloads' ? 'page' : undefined);
 // The ASF links every project site must carry, shown in the nav menu and the footer.
 const asf = [
   [links.asf, copy.footer.foundation],
@@ -87,11 +96,7 @@ const asf = [
           <small>Incubating</small>
         </a>
         <div class="links">
-          <a href={links.docs}>{copy.nav.docs}</a>
-          <a href={downloads} aria-current={page === 'downloads' ? 'page' : undefined}>{copy.nav.downloads}</a>
-          <a href={links.eval}>{copy.nav.benchmarks}</a>
-          <a href={links.discussions}>{copy.nav.community}</a>
-          <a href={links.security}>{copy.nav.security}</a>
+          {primary.map(([href, label]) => <a href={href} aria-current={current(href)}>{label}</a>)}
           <details class="asf">
             <summary>{copy.nav.asf}</summary>
             <div class="menu">{asf.map(([href, label]) => <a href={href}>{label}</a>)}</div>
@@ -112,6 +117,15 @@ const asf = [
           <svg class="moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z" /></svg>
         </button>
         <a class="btn primary sm" href={downloads}>{copy.nav.getMaka}</a>
+        <details class="more">
+          <summary aria-label={copy.nav.menu}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </summary>
+          <div class="menu">
+            {primary.map(([href, label]) => <a href={href} aria-current={current(href)}>{label}</a>)}
+            <a href={downloads}>{copy.nav.getMaka}</a>
+          </div>
+        </details>
       </nav>
 
       <slot />
@@ -124,11 +138,11 @@ const asf = [
       </footer>
     </div>
     <script is:inline>
-      // The ASF menu closes on a click anywhere outside it.
+      // The nav menus close on a click anywhere outside them.
       (() => {
-        const menu = document.querySelector('.asf');
+        const menus = document.querySelectorAll('.nav details');
         document.addEventListener('click', (event) => {
-          if (!menu.contains(event.target)) menu.removeAttribute('open');
+          for (const menu of menus) if (!menu.contains(event.target)) menu.removeAttribute('open');
         });
       })();
       // The toggle flips between light and dark and remembers the choice in this browser.
