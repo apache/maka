@@ -60,6 +60,18 @@ test('the root redirects to the English homepage without a delay', () => {
   assert.match(page('index.html'), /content="0;url=\/en\/"/u);
 });
 
+test('every copy button on the downloads page has its own accessible name', () => {
+  for (const locale of locales) {
+    const names = [
+      ...page(`${locale}/downloads/index.html`).matchAll(
+        /<button class="copy"[^>]*aria-label="([^"]+)"/gu,
+      ),
+    ].map(([, name]) => name);
+    assert.equal(names.length, 5, locale);
+    assert.equal(new Set(names).size, names.length, locale);
+  }
+});
+
 test('the font licenses ship with the fonts', () => {
   for (const pkg of ['geist', 'geist-mono']) {
     assert.match(page(`licenses/${pkg}/LICENSE`), /SIL Open Font License/u);

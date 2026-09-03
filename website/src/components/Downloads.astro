@@ -80,7 +80,7 @@ const sections = [
         {(['keys', 'signature', 'checksum'] as const).map((step) => (
           <>
             <b class="step">{d.verify[step]}</b>
-            <div class="code"><pre><code>{steps[step].join('\n')}</code></pre><button class="copy" type="button" data-copy={d.copy} data-copied={d.copied}>{d.copy}</button></div>
+            <div class="code"><pre><code>{steps[step].join('\n')}</code></pre><button class="copy" type="button" aria-label={`${d.copy}: ${d.verify[step]}`} data-label={d.verify[step]} data-copy={d.copy} data-copied={d.copied}>{d.copy}</button></div>
           </>
         ))}
       </section>
@@ -102,7 +102,7 @@ const sections = [
         {(['clone', 'build'] as const).map((step) => (
           <>
             <b class="step">{d.source[step]}</b>
-            <div class="code"><pre><code>{steps[step].join('\n')}</code></pre><button class="copy" type="button" data-copy={d.copy} data-copied={d.copied}>{d.copy}</button></div>
+            <div class="code"><pre><code>{steps[step].join('\n')}</code></pre><button class="copy" type="button" aria-label={`${d.copy}: ${d.source[step]}`} data-label={d.source[step]} data-copy={d.copy} data-copied={d.copied}>{d.copy}</button></div>
           </>
         ))}
         <p><a href={localized.contributing[l]}>{d.source.after}</a></p>
@@ -119,14 +119,17 @@ const sections = [
     // Copy buttons and the outline's current-section marker.
     (() => {
       for (const button of document.querySelectorAll('.copy')) {
+        // Each button is named after its step, so five of them stay distinguishable to a screen reader.
+        const show = (text) => {
+          button.textContent = text;
+          button.setAttribute('aria-label', `${text}: ${button.dataset.label}`);
+        };
         button.addEventListener('click', async () => {
           const code = button.parentElement?.querySelector('code')?.textContent ?? '';
           try {
             await navigator.clipboard.writeText(code);
-            button.textContent = button.dataset.copied;
-            setTimeout(() => {
-              button.textContent = button.dataset.copy;
-            }, 1500);
+            show(button.dataset.copied);
+            setTimeout(() => show(button.dataset.copy), 1500);
           } catch {}
         });
       }
