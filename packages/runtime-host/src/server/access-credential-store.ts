@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import { chmod, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { syncDirectory } from '@maka/storage/stable-storage';
 import {
   type AccessCredentialPrincipalKind,
   type ClientCapabilityOwnerIdentity,
@@ -575,16 +576,6 @@ function validateIssuedGrants(grants: readonly OperationKey[]): readonly Operati
     }
   }
   return Object.freeze([...grants]);
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

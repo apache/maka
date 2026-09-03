@@ -20,6 +20,7 @@
 import { constants, type BigIntStats } from 'node:fs';
 import { lstat, open } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { syncWindowsDirectory } from './windows-directory-sync.js';
 
 export interface ReadStableBoundedFileInput {
   readonly path: string;
@@ -123,7 +124,10 @@ export async function syncDirectoryChain(
 }
 
 export async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
+  if (process.platform === 'win32') {
+    await syncWindowsDirectory(path);
+    return;
+  }
   const handle = await open(path, 'r');
   try {
     await handle.sync();

@@ -30,6 +30,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { syncDirectory as syncStorageDirectory } from '@maka/storage/stable-storage';
 import { isPathInside, isSafeSkillId } from '@maka/runtime/path-containment';
 
 import { MANAGED_SKILL_BASELINE_RELATIVE_PATH } from '@maka/runtime/skills';
@@ -1171,15 +1172,10 @@ async function safeReadDirectory(
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  let handle;
   try {
-    handle = await open(path, 'r');
-    await handle.sync();
+    await syncStorageDirectory(path);
   } catch (error) {
     throw persistenceFailed('Skill transaction directory could not be synchronized', error);
-  } finally {
-    await handle?.close().catch(() => undefined);
   }
 }
 

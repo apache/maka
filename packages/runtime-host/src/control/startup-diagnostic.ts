@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { redactSecrets } from '@maka/core/redaction';
 import { resolveRootControlNamespace } from '@maka/storage/root-authority';
+import { syncDirectory as syncStorageDirectory } from '@maka/storage/stable-storage';
 import { z } from 'zod';
 import {
   CANDIDATE_STARTUP_FAILURE_REASONS,
@@ -361,14 +362,7 @@ function startupAttemptIdFromFilename(filename: string): string | undefined {
 }
 
 async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r').catch(() => undefined);
-  if (!handle) return;
-  try {
-    await handle.sync().catch(() => undefined);
-  } finally {
-    await handle.close();
-  }
+  await syncStorageDirectory(path).catch(() => undefined);
 }
 
 function isNodeError(error: unknown, code: string): boolean {

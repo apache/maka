@@ -190,16 +190,16 @@ parent-directory update through volatile device caches.
 | Surface | Current Windows guarantee | Boundary |
 |---|---|---|
 | SQLite operational state | Databases use WAL journaling with `synchronous=FULL`. Real-process failpoint tests verify that committed runtime, continuation, and memory facts survive owner death while incomplete transactions do not become authoritative. Workspace RuntimeEvents and projections retain their schema 9 reader/rebuild contract. | The guarantee is the SQLite and Windows filesystem contract on supported local storage. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
-| Artifact payload publication | Payload bytes are written to a same-directory staging file and the file is synchronized before publication. Recovery reconciles staged payloads, metadata, deletes, and owner death without accepting uncommitted residue. | Windows evidence covers forced process termination and restart. It does not establish a separately forced parent-directory entry after sudden system power loss. |
+| Artifact payload publication | Payload bytes are written to a same-directory staging file and the file is synchronized before publication. Recovery reconciles staged payloads, metadata, deletes, and owner death without accepting uncommitted residue. Parent directories are synchronized through `syncDirectory()` on Windows using directory handles opened with backup semantics and `FlushFileBuffers`. | Windows evidence covers forced process termination and restart. Maka does not claim protection from storage hardware or drivers that acknowledge flushes before data is stable. |
 | Root and open-database replacement | Live owners retain exclusive authority and cleanup closes stores and leases before deleting their roots. | Windows does not permit the POSIX test technique of renaming or unlinking an open SQLite database or replacing a directory that contains open files. Those tests remain classified as platform contracts rather than portable recovery gates. |
 
 On POSIX, stable-storage paths synchronize changed parent directories after publishing or removing a
-name. On Windows, Node does not provide the same usable directory-handle synchronization operation,
-so `syncDirectory()` is a no-op. Maka therefore does not currently promise POSIX-equivalent
-power-loss durability for a newly created, renamed, linked, or removed directory entry on Windows.
-The supported evidence is narrower: file contents are synchronized where the storage protocol calls
-for it, SQLite transactions use full synchronous WAL semantics, process-crash recovery converges,
-and unsupported live-root replacement fails closed.
+name. On Windows, `syncDirectory()` opens the parent directory with `FILE_FLAG_BACKUP_SEMANTICS` and
+`FILE_FLAG_WRITE_THROUGH`, then calls `FlushFileBuffers` through the Node file handle. Maka therefore
+aligns directory-entry durability with POSIX where the Windows filesystem contract allows it. The
+supported evidence remains narrower than a full power-loss certification: file contents are
+synchronized where the storage protocol calls for it, SQLite transactions use full synchronous WAL
+semantics, process-crash recovery converges, and unsupported live-root replacement fails closed.
 
 ## Baseline captured on 2026-08-04
 
