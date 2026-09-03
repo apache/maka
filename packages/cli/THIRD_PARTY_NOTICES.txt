@@ -7715,7 +7715,7 @@ ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 
-Package: zod@4.5.4
+Package: zod@4.4.3
 Declared license: MIT
 Selected license: MIT
 Repository: git+https://github.com/colinhacks/zod.git
