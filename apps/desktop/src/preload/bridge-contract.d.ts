@@ -120,6 +120,7 @@ import type {
   CollaborationTurnRequestDecideResult,
   CollaborationTurnRequestQueryResult,
   SessionTurnAccessRequest,
+  CollaborationTurnRequestWithdrawResult,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
 import type {
@@ -767,7 +768,13 @@ export interface MakaBridge {
     removeMount(mountId: string): Promise<void>;
     requestTurn(
       sessionId: string,
-      input: { readonly turnId: string; readonly text: string },
+      input:
+        | { readonly kind: 'start'; readonly turnId: string; readonly text: string }
+        | {
+            readonly kind: 'regenerate';
+            readonly turnId: string;
+            readonly sourceTurnId: string;
+          },
     ): Promise<SessionTurnAccessRequest>;
     getTurnRequests(sessionId: string): Promise<CollaborationTurnRequestQueryResult>;
     /** Pending Owner decisions across every connected Owner Runtime Host. */
@@ -776,6 +783,10 @@ export interface MakaBridge {
       sessionId: string,
       requestId: string,
     ): Promise<CollaborationTurnRequestAcknowledgeResult>;
+    withdrawTurnRequest(
+      sessionId: string,
+      requestId: string,
+    ): Promise<CollaborationTurnRequestWithdrawResult>;
     decideTurnRequest(
       sessionId: string,
       requestId: string,

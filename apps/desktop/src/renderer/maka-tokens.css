@@ -75,8 +75,11 @@
      a darker shell. Earlier warm-parchment / hue-80 "cream" experiments were
      superseded (de-yellowed to a cool-neutral hue, then flattened to plain
      white). --surface-canvas is what `.appFrame` paints behind everything;
-     --background is what cards paint. */
-  --background: oklch(1.000 0 0);
+     --background is what cards paint.
+
+     PR-GRAY-CARD-LIFT-0: dark mode follows the same neutral gray (hue 0, no
+     chroma) hierarchy. Lightness anchors keep existing contrast tuning. */
+  --background: light-dark(oklch(1.000 0 0), oklch(0.205 0.004 286));
   /* Derived from --background, not hardcoded (PALETTE-LEAK-0: palettes
      override --background and never this token, so a hardcoded zinc plate
      survived every palette switch).
@@ -104,15 +107,34 @@
 
      The semantic names are canonical; the older names around them are
      aliases that keep resolving to exactly what they resolved to before.
-     Nothing is forced to migrate here -- see DESIGN.md, Surface ladder. */
-  --surface-sunken: oklch(from var(--background) calc(l - 0.055) c h);
+     Nothing is forced to migrate here -- see DESIGN.md, Surface ladder.
+
+     Dark inverts the direction, not the rule: higher is still lighter and the
+     reading surface still takes the brightest rung. The two rungs that read
+     the same recipe in both modes say it once; only the two that genuinely
+     differ carry a light-dark() pair. */
+  --surface-sunken: light-dark(
+    oklch(from var(--background) calc(l - 0.055) c h),
+    oklch(from var(--background) calc(l - 0.065) c h));
   --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
   --surface-raised: var(--background);
   /* Light has no room above white, so overlay carries the same FILL as raised
      and is told apart by the overlay recipe (border-soft + elevation).
      Unpinning it from `--background` is what gives dark a rung to climb and
-     the recipe something to hang on: a semantic split, not a colour change. */
-  --surface-overlay: var(--surface-raised);
+     the recipe something to hang on: a semantic split, not a colour change.
+
+     Visual System 2.0 (T4): dark's rung derives in oklch like the three above
+     it. It was the ladder's last `color-mix(in srgb, ...)`, which DESIGN.md §3
+     named as the one known exception to the One Colorspace Rule and scheduled
+     for exactly that round. Two derivations in one family that read as the
+     same intent but resolve differently is the drift that rule exists to stop —
+     and the ladder is the family where it would matter most, since the rungs
+     are only meaningful relative to each other. Pinned to the measured value
+     the srgb mix produced (rgb 27,27,29 / OKLab L 0.223) so the unification
+     moves no pixels; the contract holds the number. */
+  --surface-overlay: light-dark(
+    var(--surface-raised),
+    oklch(from var(--background) calc(l + 0.018) c h));
   /* PR-GRAY-CARD-LIFT-3 (WAWQAQ msg `053ca971`): in the new
      gray-plate / white-card hierarchy, "elevated" cards live on the
      same pure white as base content cards — the lift comes from the
@@ -133,9 +155,9 @@
      Resolving these to `--surface-raised` would satisfy DESIGN.md §10's ban on
      literal surface colors and break all four in dark mode. That ban exists to
      stop OUR surfaces drifting off the ladder; none of these is one of our
-     surfaces. Mode-invariant on purpose — it deliberately has no `.dark`
-     override. If a fifth consumer appears that is really app chrome, it
-     belongs on the ladder instead. */
+     surfaces. Mode-invariant on purpose — it deliberately carries one value
+     rather than a light-dark() pair. If a fifth consumer appears that is
+     really app chrome, it belongs on the ladder instead. */
   --surface-paper: oklch(1 0 0);
   /* PR-UI-ALIGN-0: warm near-black (#141414-like) at a faint warm hue, so
      ALL derived grays (#636261/#838280-like) pick up the reference's warm cast
@@ -144,8 +166,11 @@
      warm hue-75 near-black made every derived gray read parchment-
      beige — fighting the glass/transparency language the shell is
      built on. zinc-family hue 286 at the same chroma reads clean and
-     cool like the reference sidebar. */
-  --foreground: oklch(0.17 0.005 286);
+     cool like the reference sidebar.
+
+     Dark's 0.95: 0.92 measured 14.11:1, just under the 15:1 the reading tier
+     asks for. */
+  --foreground: light-dark(oklch(0.17 0.005 286), oklch(0.95 0.004 286));
   /* Prose has exactly two rungs — --foreground and --muted-foreground — and
      everything below them is size, weight and case. The two retired middle
      greys stay retired, enforced by ink-ladder-contract. See DESIGN.md §3. */
@@ -155,7 +180,7 @@
      an independent green
      (connected/ok semantics); running/focus-ring/nav-active/selection follow
      --accent, while link text follows the solid tier below. */
-  --accent: oklch(0.70 0.135 250);
+  --accent: light-dark(oklch(0.70 0.135 250), oklch(0.74 0.15 250));
   /* The SOLID accent tier: a filled accent surface that carries TEXT, and
      accent-colored text/icons on a plain surface. --action (L0.85 chip) is too
      light to clear 1.4.3's 4.5:1 for text, so it cannot back a solid button
@@ -172,8 +197,15 @@
      tokyo-night 4.39:1 — under AA — with onedark 4.62:1 and nord 4.64:1 barely
      over. L0.48 puts all eleven at 5.15:1 or better (tokyo-night 5.15, onedark
      5.37, nord 5.46, default 6.51). Dark stays at L0.76, which already ranges
-     6.98-9.76:1 against the dark backgrounds. */
-  --accent-solid: oklch(from var(--accent) 0.48 c h);
+     6.98-9.76:1 against the dark backgrounds.
+
+     Dark inverts the solid tier: the fill goes LIGHT and carries dark ink,
+     matching Astryx's own --color-on-accent (light-dark(#fff, #171717)). L0.76
+     clears 4.5:1 against that ink for every palette (weakest is coral at
+     7.16:1). */
+  --accent-solid: light-dark(
+    oklch(from var(--accent) 0.48 c h),
+    oklch(from var(--accent) 0.76 c h));
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
@@ -191,14 +223,15 @@
      "info" is a semantic slot, not a hue, and it paints with the accent —
      see the Astryx bridge at the bottom of this file.
 
-     All THREE are declared here, in one block, in both modes. Warning used to
-     sit thirty lines further down beside the -text variants, which is how it
-     came to be the only hue without a dark override: a regeneration that walks
-     "the status block" walks two of them and silently leaves the third
-     behind. Grouping is the fix, not a tidy-up. */
-  --success: oklch(0.50 0.17 145);      /* green — connected, ok */
-  --destructive: oklch(0.50 0.24 28);   /* red — errors, denied */
-  --warning: oklch(0.50 0.18 55);       /* orange — caution */
+     All THREE are declared here, in one block, each carrying both modes.
+     Warning is the hue that proves why: it was the ONE status whose dark value
+     lived apart from its siblings, so lowering the light value to L=0.50
+     dragged dark down with it and put dark warning at 2.83:1, well under AA.
+     Its measured 5.44:1 is restored, and the structure that let it be missed is
+     gone — a hue cannot lose its dark side when the two sit in one value. */
+  --success: light-dark(oklch(0.50 0.17 145), oklch(0.60 0.17 145));  /* green — connected, ok */
+  --destructive: light-dark(oklch(0.50 0.24 28), oklch(0.70 0.19 22)); /* red — errors, denied */
+  --warning: light-dark(oklch(0.50 0.18 55), oklch(0.66 0.18 55));    /* orange — caution */
 
   /* Legacy brand affordance for a few emphasized surfaces.
      PR-THEME-APPLY-AND-DONE-POLISH-0 (WAWQAQ msg `dec85e5b`): was a static
@@ -305,7 +338,13 @@
      68% ink measures #525153 / #a2a2a4, 7.9:1 / 7.0:1. Every one of the eleven
      palettes then clears AA in both modes — worst light is onedark 5.0:1,
      worst dark is onedark 6.1:1. Hierarchy below these two rungs comes from
-     size, weight and case — never a third grey. */
+     size, weight and case — never a third grey.
+
+     One mix serves both modes: it reads --foreground and --background, which
+     each carry their own pair, so the rung re-derives per mode — and per media
+     surface — without naming a percentage twice. The per-mode percentage this
+     used to need existed to keep a THIRD tier from colliding with muted; with
+     the middle rung gone there is nothing left to separate. */
   --muted-foreground: color-mix(in oklch, var(--foreground) 68%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
@@ -332,9 +371,14 @@
      re-tint the accent without ruining chat legibility.
      PR-GRAY-CARD-LIFT-0: bubble shifts to neutral gray (hue 0)
      matching the new gray-plate / white-card hierarchy. Slightly
-     darker than the white card so the bubble lifts. */
-  --chat-user-bg: oklch(0.935 0 0);
-  --chat-user-foreground: var(--foreground);
+     darker than the white card so the bubble lifts.
+     Dark takes a slate bubble — distinct from --accent and readable against
+     the dark background. PR-DEFAULT-CANVAS-DEYELLOW-0: hue 250 to match the
+     cool-neutral canvas in dark mode too. */
+  --chat-user-bg: light-dark(oklch(0.935 0 0), oklch(0.30 0.010 250));
+  --chat-user-foreground: light-dark(
+    var(--foreground),
+    oklch(from var(--foreground) 0.96 min(c, 0.004) h));
   --user-message-bubble: var(--chat-user-bg);
   --selection:     oklch(from var(--accent) l c h / 0.2);
 
@@ -380,10 +424,17 @@
      because "shadow" invited call sites to reach for it when they wanted
      lift. Same pixels; the two leading transparent layers are kept so the
      shadow list's shape (and any transition against it) is unchanged. */
+  /* Dark-mode shadow collapse: blur shadows are nearly invisible on a dark
+     shell but still cost compositing and, worse, the foreground-derived layers
+     turn WHITE-ish in dark mode and read as a glow. Elevation in dark mode is
+     carried by border rings (interface-design: "dark mode shadows collapse to a
+     single ring"); modal keeps one deep drop so overlays still separate from
+     the backdrop. So the ring is where the two modes meet, and only its COLOUR
+     differs — one recipe, one pair inside it. */
   --ring-soft:
     rgba(0,0,0,0) 0 0 0 0,
     rgba(0,0,0,0) 0 0 0 0,
-    oklch(from var(--foreground) l c h / 0.06) 0 0 0 1px;
+    light-dark(oklch(from var(--foreground) l c h / 0.06), oklch(1 0 0 / 0.08)) 0 0 0 1px;
 
   /* === z-index scale (semantic) === */
   --z-sticky: 20;
@@ -907,94 +958,33 @@
 }
 
 /* =============================================================================
-   DARK MODE — toggle via `<html class="dark">`
+   DARK MODE — `color-scheme`, set on <html> beside `class="dark"` (theme.ts)
+
+   Colours do NOT belong here. A colour that differs by mode carries both sides
+   in its own value, as `light-dark(light, dark)`, declared once above.
+
+   The reason is `color-scheme`, not tidiness. Astryx inverts a surface by
+   setting `color-scheme: dark` on it (MediaTheme — every toast body, every
+   overlay scrim) and expects the tokens under it to follow. A selector cannot
+   follow: `.dark` matches <html>, so a token declared here keeps the PAGE's
+   mode everywhere, including on a surface that just declared itself the other
+   one. That is how the error toast came to paint light-mode grey prose on its
+   red plate at 1.04:1. A `light-dark()` value resolves against whatever
+   color-scheme is in force where it is USED, so it follows the page and the
+   inverted surface both, for every token — including the ones nobody has
+   thought to check yet.
+
+   What is left here: two alphas. `light-dark()` takes two colours, and a bare
+   number has nowhere else to express a mode. A shadow is not an exception —
+   only its colour differs, so the pair goes inside the recipe (--ring-soft).
+
+   Enforced by ink-ladder-contract.
 ============================================================================= */
 
 .dark {
   /* Designer audit P1-6: composer edge ring — see styles/composer.css. */
   --composer-ring-alpha: 0.12;
-  /* PR-GRAY-CARD-LIFT-0: dark mode follows the same neutral gray
-   * (hue 0, no chroma) hierarchy. Lightness anchors keep existing
-   * contrast tuning. */
-  --background: oklch(0.205 0.004 286);
-  /* PALETTE-LEAK-0: derived (see light-mode note). Same 0.025 step as light —
-     the hairline carries the boundary in both modes, so neither needs a wash
-     wide enough to do it alone. The 0.065 this carried before was never seen on
-     the shell (Astryx painted its own surface over the frame plate until this
-     branch handed the columns their materials); against the product's #171719
-     content it rendered a near-black #09090b rail. */
-  --surface-canvas: var(--surface-base);
-  /* Dark inverts the direction, not the rule: higher is still lighter and the
-     reading surface still takes the brightest rung. Unlike light there IS
-     room above raised, so overlay climbs a real step. */
-  --surface-sunken: oklch(from var(--background) calc(l - 0.065) c h);
-  --surface-base: oklch(from var(--background) calc(l - 0.025) c h);
-  --surface-raised: var(--background);
-  /* Visual System 2.0 (T4): derived in oklch like the three rungs above it.
-     It was the ladder's last `color-mix(in srgb, ...)`, which DESIGN.md §3
-     named as the one known exception to the One Colorspace Rule and scheduled
-     for exactly this round. Two derivations in one family that read as the
-     same intent but resolve differently is the drift that rule exists to stop —
-     and the ladder is the family where it would matter most, since the rungs
-     are only meaningful relative to each other. Pinned to the measured value
-     the srgb mix produced (rgb 27,27,29 / OKLab L 0.223) so the unification
-     moves no pixels; the contract holds the number. */
-  --surface-overlay: oklch(from var(--background) calc(l + 0.018) c h);
-  --background-elevated: var(--surface-overlay);
-  /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
-  --foreground: oklch(0.95 0.004 286);
-  /* No dark override for the muted rung: 68% ink is the one mix that puts both
-     modes on Astryx's --color-text-secondary (7.9:1 light, 7.0:1 dark on the
-     default palette). The per-mode percentage that used to live here existed
-     to keep a THIRD tier from colliding with muted; with the middle rung gone
-     there is nothing left to separate. */
-
-  --accent: oklch(0.74 0.15 250);
-  /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light
-     mode, so the "light, fresh button" reads consistently across themes. */
-  /* Dark mode inverts the solid tier: the fill goes LIGHT and carries dark
-     ink, matching Astryx's own --color-on-accent (light-dark(#fff, #171717)).
-     L0.76 clears 4.5:1 against that ink for every palette (weakest is coral
-     at 7.16:1). See the light-mode note above for why --action cannot serve
-     this role. */
-  --accent-solid: oklch(from var(--accent) 0.76 c h);
-  --link: var(--accent-solid);
-  --focus-ring: var(--accent);
-  --status-running: var(--accent);
-  /* All three together, same shape as the light block. Warning is the hue that
-     proves why: it was the ONE status without a dark override, so lowering the
-     light value to L=0.50 dragged dark down with it and put dark warning at
-     2.83:1, well under AA. Its measured 5.44:1 is restored, and the structure
-     that let it be missed is gone. */
-  --success: oklch(0.60 0.17 145);
-  --destructive: oklch(0.70 0.19 22);
-  --warning: oklch(0.66 0.18 55);
-
   --opacity-overlay: 0.06;
-
-  /* Dark-mode shadow collapse: blur shadows are nearly
-     invisible on a dark shell but still cost compositing and, worse,
-     the foreground-derived layers turn WHITE-ish in dark mode and read
-     as a glow. Elevation in dark mode is carried by border rings
-     (interface-design: "dark mode shadows collapse to a single ring");
-     modal keeps one deep drop so overlays still separate from the
-     backdrop. */
-  --ring-soft:
-    0 0 0 1px oklch(1 0 0 / 0.08);
-  /* Slate user bubble for dark mode — distinct from --accent and readable
-     against the dark background.
-     PR-DEFAULT-CANVAS-DEYELLOW-0: hue 250 to match the cool-neutral
-     canvas in dark mode too. */
-  --chat-user-bg: oklch(0.30 0.010 250);
-  --chat-user-foreground: oklch(from var(--foreground) 0.96 min(c, 0.004) h);
-  --user-message-bubble: var(--chat-user-bg);
-
-  /* foreground-N variants re-derive automatically via color-mix(), so the
-     :root definitions above remain correct — no need to redefine here. */
-
-  /* Brand deep follows accent in dark mode too; hover is a brighter
-     variant for the darker surface. */
-  --brand-deep: var(--accent);
 }
 
 /* =============================================================================
@@ -1027,7 +1017,8 @@
    ---------------------------------------------------------------
    4 alternative palettes a user can pick in Settings · 主题.
    Activated via `<html data-maka-theme="onedark">` etc.
-   Light + dark each have their own override block. `default` =
+   One block per palette, each colour carrying both modes — see the
+   DARK MODE note above for why a mode is never a selector here. `default` =
    no `data-maka-theme` attr (renders the original Maka palette).
 
    Each palette overrides only the 6 base colors + accent variants;
@@ -1037,201 +1028,111 @@
 
 /* --- Onedark (VS Code default-like) --- */
 [data-maka-theme="onedark"] {
-  --background: oklch(0.95 0.005 250);
-  --foreground: oklch(0.30 0.02 250);
-  --accent: oklch(0.62 0.13 237);              /* One Dark blue (#61AFEF family) */
-  --success: oklch(0.62 0.16 145);
-  --destructive: oklch(0.62 0.20 22);
-  --user-message-bubble: oklch(0.92 0.012 250);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="onedark"].dark {
-  --background: oklch(0.21 0.010 250);
-  --foreground: oklch(0.90 0.010 250);
-  --accent: oklch(0.70 0.13 237);
-  --success: oklch(0.65 0.16 145);
-  --destructive: oklch(0.70 0.18 22);
-  --user-message-bubble: oklch(0.30 0.012 250);
+  --background: light-dark(oklch(0.95 0.005 250), oklch(0.21 0.010 250));
+  --foreground: light-dark(oklch(0.30 0.02 250), oklch(0.90 0.010 250));
+  --accent: light-dark(oklch(0.62 0.13 237), oklch(0.70 0.13 237));  /* One Dark blue (#61AFEF family) */
+  --success: light-dark(oklch(0.62 0.16 145), oklch(0.65 0.16 145));
+  --destructive: light-dark(oklch(0.62 0.20 22), oklch(0.70 0.18 22));
+  --user-message-bubble: light-dark(oklch(0.92 0.012 250), oklch(0.30 0.012 250));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- Catppuccin Mocha (warm pastels) --- */
 [data-maka-theme="catppuccin-mocha"] {
-  --background: oklch(0.96 0.008 60);
-  --foreground: oklch(0.28 0.02 300);
-  --accent: oklch(0.65 0.18 330);              /* mauve / pink */
-  --success: oklch(0.62 0.14 145);
-  --destructive: oklch(0.62 0.20 25);
-  --user-message-bubble: oklch(0.94 0.012 60);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="catppuccin-mocha"].dark {
-  --background: oklch(0.22 0.020 290);
-  --foreground: oklch(0.92 0.012 320);
-  --accent: oklch(0.78 0.16 330);
-  --success: oklch(0.72 0.14 145);
-  --destructive: oklch(0.72 0.18 22);
-  --user-message-bubble: oklch(0.30 0.020 290);
+  --background: light-dark(oklch(0.96 0.008 60), oklch(0.22 0.020 290));
+  --foreground: light-dark(oklch(0.28 0.02 300), oklch(0.92 0.012 320));
+  --accent: light-dark(oklch(0.65 0.18 330), oklch(0.78 0.16 330));  /* mauve / pink */
+  --success: light-dark(oklch(0.62 0.14 145), oklch(0.72 0.14 145));
+  --destructive: light-dark(oklch(0.62 0.20 25), oklch(0.72 0.18 22));
+  --user-message-bubble: light-dark(oklch(0.94 0.012 60), oklch(0.30 0.020 290));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- Tokyo Night (bluish dark) --- */
 [data-maka-theme="tokyo-night"] {
-  --background: oklch(0.97 0.005 240);
-  --foreground: oklch(0.25 0.015 240);
-  --accent: oklch(0.55 0.16 215);              /* cool sky blue */
-  --success: oklch(0.62 0.14 145);
-  --destructive: oklch(0.62 0.20 22);
-  --user-message-bubble: oklch(0.93 0.010 240);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="tokyo-night"].dark {
-  --background: oklch(0.18 0.020 250);
-  --foreground: oklch(0.90 0.010 240);
-  --accent: oklch(0.70 0.18 215);              /* brighter sky blue */
-  --success: oklch(0.68 0.16 145);
-  --destructive: oklch(0.70 0.19 22);
-  --user-message-bubble: oklch(0.28 0.018 250);
+  --background: light-dark(oklch(0.97 0.005 240), oklch(0.18 0.020 250));
+  --foreground: light-dark(oklch(0.25 0.015 240), oklch(0.90 0.010 240));
+  --accent: light-dark(oklch(0.55 0.16 215), oklch(0.70 0.18 215));  /* cool sky blue, brighter in dark */
+  --success: light-dark(oklch(0.62 0.14 145), oklch(0.68 0.16 145));
+  --destructive: light-dark(oklch(0.62 0.20 22), oklch(0.70 0.19 22));
+  --user-message-bubble: light-dark(oklch(0.93 0.010 240), oklch(0.28 0.018 250));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- Nord (cool nordic) --- */
 [data-maka-theme="nord"] {
-  --background: oklch(0.97 0.005 220);
-  --foreground: oklch(0.28 0.015 220);
-  --accent: oklch(0.62 0.12 215);              /* glacier blue */
-  --success: oklch(0.68 0.12 145);
-  --destructive: oklch(0.62 0.16 22);
-  --user-message-bubble: oklch(0.93 0.008 220);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="nord"].dark {
-  --background: oklch(0.24 0.012 220);
-  --foreground: oklch(0.92 0.008 220);
-  --accent: oklch(0.72 0.14 215);
-  --success: oklch(0.72 0.13 145);
-  --destructive: oklch(0.72 0.17 22);
-  --user-message-bubble: oklch(0.32 0.014 220);
+  --background: light-dark(oklch(0.97 0.005 220), oklch(0.24 0.012 220));
+  --foreground: light-dark(oklch(0.28 0.015 220), oklch(0.92 0.008 220));
+  --accent: light-dark(oklch(0.62 0.12 215), oklch(0.72 0.14 215));  /* glacier blue */
+  --success: light-dark(oklch(0.68 0.12 145), oklch(0.72 0.13 145));
+  --destructive: light-dark(oklch(0.62 0.16 22), oklch(0.72 0.17 22));
+  --user-message-bubble: light-dark(oklch(0.93 0.008 220), oklch(0.32 0.014 220));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- coral (warm coral / pink accent) --- */
 [data-maka-theme="coral"] {
-  --background: oklch(0.99 0.005 25);
-  --foreground: oklch(0.22 0.015 25);
-  --accent: oklch(0.68 0.18 25);                /* coral / warm pink */
-  --success: oklch(0.68 0.14 145);
-  --destructive: oklch(0.60 0.20 18);
-  --user-message-bubble: oklch(0.95 0.012 25);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="coral"].dark {
-  --background: oklch(0.22 0.018 25);
-  --foreground: oklch(0.94 0.008 25);
-  --accent: oklch(0.76 0.18 25);
-  --success: oklch(0.72 0.13 145);
-  --destructive: oklch(0.70 0.20 18);
-  --user-message-bubble: oklch(0.30 0.020 25);
+  --background: light-dark(oklch(0.99 0.005 25), oklch(0.22 0.018 25));
+  --foreground: light-dark(oklch(0.22 0.015 25), oklch(0.94 0.008 25));
+  --accent: light-dark(oklch(0.68 0.18 25), oklch(0.76 0.18 25));  /* coral / warm pink */
+  --success: light-dark(oklch(0.68 0.14 145), oklch(0.72 0.13 145));
+  --destructive: light-dark(oklch(0.60 0.20 18), oklch(0.70 0.20 18));
+  --user-message-bubble: light-dark(oklch(0.95 0.012 25), oklch(0.30 0.020 25));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- azure (cool product blue accent) --- */
 [data-maka-theme="azure"] {
-  --background: oklch(0.98 0.005 250);
-  --foreground: oklch(0.20 0.015 250);
-  --accent: oklch(0.55 0.12 195);               /* lake cyan */
-  --success: oklch(0.66 0.15 150);
-  --destructive: oklch(0.62 0.18 22);
-  --user-message-bubble: oklch(0.94 0.010 250);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="azure"].dark {
-  --background: oklch(0.20 0.015 250);
-  --foreground: oklch(0.93 0.010 250);
-  --accent: oklch(0.72 0.13 195);
-  --success: oklch(0.72 0.14 150);
-  --destructive: oklch(0.72 0.18 22);
-  --user-message-bubble: oklch(0.28 0.018 250);
+  --background: light-dark(oklch(0.98 0.005 250), oklch(0.20 0.015 250));
+  --foreground: light-dark(oklch(0.20 0.015 250), oklch(0.93 0.010 250));
+  --accent: light-dark(oklch(0.55 0.12 195), oklch(0.72 0.13 195));  /* lake cyan */
+  --success: light-dark(oklch(0.66 0.15 150), oklch(0.72 0.14 150));
+  --destructive: light-dark(oklch(0.62 0.18 22), oklch(0.72 0.18 22));
+  --user-message-bubble: light-dark(oklch(0.94 0.010 250), oklch(0.28 0.018 250));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- forest (earthy moss-green accent on warm sage canvas) --- */
 [data-maka-theme="forest"] {
-  --background: oklch(0.985 0.006 130);
-  --foreground: oklch(0.22 0.018 145);
-  --accent: oklch(0.50 0.12 152);                /* deep moss green */
-  --success: oklch(0.62 0.14 145);
-  --destructive: oklch(0.58 0.20 22);
-  --user-message-bubble: oklch(0.94 0.012 130);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="forest"].dark {
-  --background: oklch(0.21 0.012 145);
-  --foreground: oklch(0.93 0.010 130);
-  --accent: oklch(0.68 0.14 152);
-  --success: oklch(0.70 0.14 145);
-  --destructive: oklch(0.70 0.20 22);
-  --user-message-bubble: oklch(0.30 0.014 145);
+  --background: light-dark(oklch(0.985 0.006 130), oklch(0.21 0.012 145));
+  --foreground: light-dark(oklch(0.22 0.018 145), oklch(0.93 0.010 130));
+  --accent: light-dark(oklch(0.50 0.12 152), oklch(0.68 0.14 152));  /* deep moss green */
+  --success: light-dark(oklch(0.62 0.14 145), oklch(0.70 0.14 145));
+  --destructive: light-dark(oklch(0.58 0.20 22), oklch(0.70 0.20 22));
+  --user-message-bubble: light-dark(oklch(0.94 0.012 130), oklch(0.30 0.014 145));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- dusk (deep violet accent on a cool twilight canvas) --- */
 [data-maka-theme="dusk"] {
-  --background: oklch(0.97 0.008 290);
-  --foreground: oklch(0.22 0.018 295);
-  --accent: oklch(0.55 0.18 305);                /* deep violet */
-  --success: oklch(0.64 0.14 145);
-  --destructive: oklch(0.60 0.20 18);
-  --user-message-bubble: oklch(0.93 0.013 290);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="dusk"].dark {
-  --background: oklch(0.20 0.018 295);
-  --foreground: oklch(0.92 0.010 290);
-  --accent: oklch(0.72 0.18 305);
-  --success: oklch(0.70 0.14 145);
-  --destructive: oklch(0.70 0.20 18);
-  --user-message-bubble: oklch(0.30 0.020 295);
+  --background: light-dark(oklch(0.97 0.008 290), oklch(0.20 0.018 295));
+  --foreground: light-dark(oklch(0.22 0.018 295), oklch(0.92 0.010 290));
+  --accent: light-dark(oklch(0.55 0.18 305), oklch(0.72 0.18 305));  /* deep violet */
+  --success: light-dark(oklch(0.64 0.14 145), oklch(0.70 0.14 145));
+  --destructive: light-dark(oklch(0.60 0.20 18), oklch(0.70 0.20 18));
+  --user-message-bubble: light-dark(oklch(0.93 0.013 290), oklch(0.30 0.020 295));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- sand (warm cream canvas + amber accent — the warm legacy) --- */
 [data-maka-theme="sand"] {
-  --background: oklch(0.98 0.008 75);
-  --foreground: oklch(0.22 0.014 70);
-  --accent: oklch(0.62 0.14 55);                 /* amber / ochre */
-  --success: oklch(0.62 0.14 145);
-  --destructive: oklch(0.60 0.20 22);
-  --user-message-bubble: oklch(0.94 0.012 75);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="sand"].dark {
-  --background: oklch(0.22 0.014 70);
-  --foreground: oklch(0.93 0.010 75);
-  --accent: oklch(0.72 0.14 55);
-  --success: oklch(0.70 0.14 145);
-  --destructive: oklch(0.70 0.20 22);
-  --user-message-bubble: oklch(0.30 0.014 70);
+  --background: light-dark(oklch(0.98 0.008 75), oklch(0.22 0.014 70));
+  --foreground: light-dark(oklch(0.22 0.014 70), oklch(0.93 0.010 75));
+  --accent: light-dark(oklch(0.62 0.14 55), oklch(0.72 0.14 55));  /* amber / ochre */
+  --success: light-dark(oklch(0.62 0.14 145), oklch(0.70 0.14 145));
+  --destructive: light-dark(oklch(0.60 0.20 22), oklch(0.70 0.20 22));
+  --user-message-bubble: light-dark(oklch(0.94 0.012 75), oklch(0.30 0.014 70));
   --chat-user-bg: var(--user-message-bubble);
 }
 
 /* --- mono (pure grayscale, distraction-free) --- */
 [data-maka-theme="mono"] {
-  --background: oklch(0.985 0 0);
-  --foreground: oklch(0.18 0 0);
-  --accent: oklch(0.30 0 0);                     /* near-black */
-  --success: oklch(0.55 0 0);
-  --destructive: oklch(0.45 0.18 22);            /* keep destructive readable */
-  --user-message-bubble: oklch(0.93 0 0);
-  --chat-user-bg: var(--user-message-bubble);
-}
-[data-maka-theme="mono"].dark {
-  --background: oklch(0.18 0 0);
-  --foreground: oklch(0.95 0 0);
-  --accent: oklch(0.92 0 0);                     /* near-white */
-  --success: oklch(0.70 0 0);
-  --destructive: oklch(0.65 0.18 22);
-  --user-message-bubble: oklch(0.28 0 0);
+  --background: light-dark(oklch(0.985 0 0), oklch(0.18 0 0));
+  --foreground: light-dark(oklch(0.18 0 0), oklch(0.95 0 0));
+  --accent: light-dark(oklch(0.30 0 0), oklch(0.92 0 0));  /* near-black / near-white */
+  --success: light-dark(oklch(0.55 0 0), oklch(0.70 0 0));
+  --destructive: light-dark(oklch(0.45 0.18 22), oklch(0.65 0.18 22));  /* keep destructive readable */
+  --user-message-bubble: light-dark(oklch(0.93 0 0), oklch(0.28 0 0));
   --chat-user-bg: var(--user-message-bubble);
 }
 
@@ -1395,6 +1296,17 @@
     font-family: var(--font-family-code);
   }
 
+  html {
+    /* The application's ground, declared on the root rather than on `body`.
+       Either one propagates to the canvas, so the two paint identically — but
+       the root is the surface the native Windows titlebar strip has to match,
+       and theme.ts samples it from here. It has to sample a painted element:
+       a token's declared value is a `light-dark()` recipe, not a colour
+       (DESIGN.md §8). On `body` this left the root transparent, with nothing
+       for the sampler to read. */
+    background: var(--background);
+  }
+
   body {
     /* The document's default text role, and the one site where declaring it
        matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
@@ -1408,7 +1320,6 @@
        rules change nothing when removed, and they inherit their role from
        this line. */
     font: var(--maka-text-body);
-    background: var(--background);
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

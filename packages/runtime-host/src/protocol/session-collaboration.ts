@@ -116,11 +116,21 @@ export type SessionTurnAccessRequestState =
       readonly admission: 'pending' | 'started' | 'blocked' | 'failed';
     };
 
-export interface SessionTurnRequestIntent {
+export interface SessionTurnStartRequestIntent {
   readonly sessionId: string;
   readonly turnId: string;
   readonly content: { readonly text: string };
 }
+
+export interface SessionTurnRegenerateRequestIntent {
+  readonly sessionId: string;
+  readonly turnId: string;
+  readonly sourceTurnId: string;
+}
+
+export type SessionTurnRequestIntent =
+  | SessionTurnStartRequestIntent
+  | SessionTurnRegenerateRequestIntent;
 
 export interface SessionTurnAccessRequest {
   readonly requestId: string;
@@ -163,6 +173,14 @@ export interface CollaborationTurnRequestAcknowledgeInput {
 
 export interface CollaborationTurnRequestAcknowledgeResult {
   readonly acknowledged: boolean;
+}
+
+export interface CollaborationTurnRequestWithdrawInput {
+  readonly requestId: string;
+}
+
+export interface CollaborationTurnRequestWithdrawResult {
+  readonly withdrawn: boolean;
 }
 const COLLABORATION_ERRORS = [
   'host_not_ready',
@@ -251,6 +269,17 @@ export const SESSION_COLLABORATION_OPERATION_SPECS = {
     errors: COLLABORATION_ERRORS,
     decodeInput: decodeCollaborationTurnRequestAcknowledgeInput,
     decodeOutput: decodeCollaborationTurnRequestAcknowledgeResult,
+  }),
+  'collaboration.turn-request.withdraw': defineOperation<
+    CollaborationTurnRequestWithdrawInput,
+    CollaborationTurnRequestWithdrawResult,
+    (typeof COLLABORATION_ERRORS)[number]
+  >({
+    mode: 'command',
+    availability: 'ready',
+    errors: COLLABORATION_ERRORS,
+    decodeInput: decodeCollaborationTurnRequestWithdrawInput,
+    decodeOutput: decodeCollaborationTurnRequestWithdrawResult,
   }),
   'collaboration.turn-request.decide': defineOperation<
     CollaborationTurnRequestDecideInput,
@@ -471,6 +500,27 @@ function decodeCollaborationTurnRequestAcknowledgeResult(
   return { acknowledged: record.acknowledged };
 }
 
+function decodeCollaborationTurnRequestWithdrawInput(
+  value: unknown,
+): CollaborationTurnRequestWithdrawInput {
+  const record = requireExactRecord(value, 'collaboration Turn request withdrawal input', [
+    'requestId',
+  ]);
+  return { requestId: requireId(record.requestId, 'requestId') };
+}
+
+function decodeCollaborationTurnRequestWithdrawResult(
+  value: unknown,
+): CollaborationTurnRequestWithdrawResult {
+  const record = requireExactRecord(value, 'collaboration Turn request withdrawal result', [
+    'withdrawn',
+  ]);
+  if (typeof record.withdrawn !== 'boolean') {
+    throw invalidProtocolFrame('Invalid collaboration Turn request withdrawal result');
+  }
+  return { withdrawn: record.withdrawn };
+}
+
 function decodeCollaborationTurnRequestDecideInput(
   value: unknown,
 ): CollaborationTurnRequestDecideInput {
@@ -528,7 +578,20 @@ export function decodeSessionTurnAccessRequest(value: unknown): SessionTurnAcces
 }
 
 function decodeSessionTurnRequestIntent(value: unknown): SessionTurnRequestIntent {
-  const record = requireExactRecord(value, 'Session Turn request intent', [
+  const candidate = requireRecord(value, 'Session Turn request intent');
+  if (!Object.hasOwn(candidate, 'content')) {
+    const record = requireExactRecord(value, 'Session Turn regenerate request intent', [
+      'sessionId',
+      'turnId',
+      'sourceTurnId',
+    ]);
+    return {
+      sessionId: requireEntityId(record.sessionId, 'sessionId'),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      sourceTurnId: requireEntityId(record.sourceTurnId, 'sourceTurnId'),
+    };
+  }
+  const record = requireExactRecord(value, 'Session Turn start request intent', [
     'sessionId',
     'turnId',
     'content',

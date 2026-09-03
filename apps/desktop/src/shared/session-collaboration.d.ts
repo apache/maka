@@ -19,6 +19,7 @@
 
 export type SessionCollaborationImportResult =
   | { readonly kind: 'connected'; readonly mountId: string }
+  | { readonly kind: 'recovering'; readonly mountId: string }
   | {
       readonly kind: 'error';
       readonly reason:

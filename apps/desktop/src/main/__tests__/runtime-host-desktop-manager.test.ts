@@ -711,7 +711,7 @@ test('reconnects after a pairing candidate becomes bound to this Client', async 
   await manager.close();
 });
 
-test('activates Guest access on a fresh stream without replaying route progress', async () => {
+test('completes Guest import at credential activation while reconnect continues', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);
   const pending = candidateHarness({
@@ -719,19 +719,27 @@ test('activates Guest access on a fresh stream without replaying route progress'
     finalizeReconnectRequired: true,
   });
   const active = candidateHarness({ hostId: remoteHostId });
-  const queue = [local.candidate, pending.candidate, active.candidate];
+  let releaseActive!: () => void;
+  const activeReleased = new Promise<void>((resolve) => {
+    releaseActive = resolve;
+  });
+  let starts = 0;
   const phases: string[] = [];
   const routeRefreshes: Array<boolean | undefined> = [];
   const manager = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
       startCandidate: async (input) => {
+        starts += 1;
         if (input.profileTarget) {
           routeRefreshes.push(input.refreshPeerRoutes);
           input.onConnectionPhase?.('discovering');
           input.onConnectionPhase?.('connecting');
         }
-        return ready(queue.shift()!);
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(pending.candidate);
+        await activeReleased;
+        return ready(active.candidate);
       },
       reconnectBackoff: { minMs: 0, maxMs: 0 },
     },
@@ -743,14 +751,18 @@ test('activates Guest access on a fresh stream without replaying route progress'
   );
   let activations = 0;
 
-  await manager.finalizeGuestAccess('shared-session', undefined, () => {
+  const result = await manager.finalizeGuestAccess('shared-session', undefined, () => {
     activations += 1;
   });
 
+  assert.equal(result, 'reconnecting');
+  assert.equal(manager.current('shared-session')?.readiness, 'reconnecting');
   assert.deepEqual(phases, ['discovering', 'connecting']);
-  assert.deepEqual(routeRefreshes, [undefined, false]);
   assert.equal(activations, 1);
   assert.equal(pending.closeCalls, 1);
+  releaseActive();
+  await manager.waitUntilReady('shared-session');
+  assert.deepEqual(routeRefreshes, [undefined, false]);
   assert.equal(manager.current('shared-session')?.candidate, active.candidate);
   await manager.close();
 });

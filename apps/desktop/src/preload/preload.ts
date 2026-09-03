@@ -225,6 +225,7 @@ import {
   type OperationOutcome,
   type OperationOutput,
   type CollaborationTurnRequestQueryResult,
+  type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -1338,11 +1339,17 @@ const makaBridge = {
       return ipcRenderer.invoke(
         'session-collaboration:turn-request:create',
         session.scope,
-        {
-          sessionId: session.sessionId,
-          turnId: input.turnId,
-          content: { text: input.text },
-        },
+        input.kind === 'start'
+          ? {
+              sessionId: session.sessionId,
+              turnId: input.turnId,
+              content: { text: input.text },
+            }
+          : {
+              sessionId: session.sessionId,
+              turnId: input.turnId,
+              sourceTurnId: input.sourceTurnId,
+            },
       );
     },
     async getTurnRequests(sessionId) {
@@ -1382,6 +1389,14 @@ const makaBridge = {
         session.scope,
         requestId,
       );
+    },
+    async withdrawTurnRequest(sessionId, requestId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:withdraw',
+        session.scope,
+        requestId,
+      ) as Promise<CollaborationTurnRequestWithdrawResult>;
     },
     async decideTurnRequest(sessionId, requestId, decision) {
       const session = await runtimeHostSessionRef(sessionId);

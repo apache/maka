@@ -37,7 +37,10 @@ import type {
   SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import { getSessionCollaborationCopy } from './locales/session-collaboration-copy.js';
-import { turnRequestStateLabel } from './session-turn-request-composer.js';
+import {
+  describeTurnRequestIntent,
+  turnRequestStateLabel,
+} from './features/session-collaboration';
 
 type Props = {
   readonly target?: {
@@ -370,7 +373,7 @@ function ShareSessionDialog(props: ShareSessionDialogProps) {
                   <div className="sessionCollaborationTurnRequest" key={request.requestId}>
                     <div>
                       <Text type="body" className="sessionCollaborationTurnRequestText">
-                        {request.intent.content.text}
+                        {describeTurnRequestIntent(request.intent, copy.regenerateRequest)}
                       </Text>
                       <Text type="supporting" color="secondary">
                         {guestIdentityLabel(request.principalId, copy.guest)}

@@ -1209,6 +1209,68 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
   }
 });
 
+test('conversation copy can use RuntimeEvents backfilled by the read model', async () => {
+  const run = agentRunHeader({
+    runId: 'run-backfilled',
+    invocationId: 'invocation-backfilled',
+    turnId: 'turn-backfilled',
+    status: 'completed',
+    updatedAt: 3,
+    completedAt: 3,
+  });
+  const legacyMessages: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'legacy-user',
+      turnId: run.turnId,
+      ts: 1,
+      text: 'hello',
+    },
+    {
+      type: 'assistant',
+      id: 'legacy-assistant',
+      turnId: run.turnId,
+      ts: 2,
+      text: 'world',
+      modelId: 'fake-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'legacy-state',
+      turnId: run.turnId,
+      ts: 3,
+      status: 'completed',
+      partialOutputRetained: false,
+    },
+  ];
+  const runStore = {
+    listSessionRuns: async () => [run],
+    readEvents: async () => [],
+  } as Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+  const runtimeEventStore = {
+    readRuntimeEvents: async () => [],
+    readSessionRuntimeEventEntries: async () => [],
+  } as Pick<RuntimeEventStore, 'readRuntimeEvents'>;
+  const source = await new RuntimeReadModel({
+    runStore: runStore as AgentRunStore,
+    runtimeEventStore: runtimeEventStore as RuntimeEventStore,
+    projectionCache: { readMessages: async () => legacyMessages },
+  }).getSessionView(run.sessionId);
+
+  const plan = await prepareConversationRuntimeLedgerCopy({
+    sourceSessionId: run.sessionId,
+    sourceEvents: source.events,
+    copiedMessages: source.messages,
+    runStore,
+    runtimeEventStore,
+  });
+
+  assert.deepEqual(
+    plan.runs[0]?.runtimeEvents.map((event) => event.content?.kind ?? event.status),
+    ['text', 'text', 'completed'],
+  );
+});
+
 test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-conversation-recovery-copy-'));
   const runStore = createSqliteAgentRunStore(root);
@@ -2363,6 +2425,16 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         content: { kind: 'text', text: 'first' },
       }),
       runtimeEvent({
+        id: 'event-1-assistant',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        ts: 4,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'first response' },
+      }),
+      runtimeEvent({
         id: 'event-1-terminal',
         invocationId: 'invocation-1',
         runId: 'run-1',
@@ -2383,6 +2455,16 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         role: 'user',
         author: 'user',
         content: { kind: 'text', text: 'second' },
+      }),
+      runtimeEvent({
+        id: 'event-2-assistant',
+        invocationId: 'invocation-2',
+        runId: 'run-2',
+        turnId: 'turn-2',
+        ts: 4.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'second response' },
       }),
       runtimeEvent({
         id: 'event-2-terminal',
@@ -2417,10 +2499,26 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         status: 'completed',
       }),
     ];
-    for (const event of [...firstEvents, ...childEvents, ...secondEvents]) {
+    for (const event of [
+      firstEvents[0]!,
+      childEvents[0]!,
+      secondEvents[0]!,
+      firstEvents[1]!,
+      secondEvents[1]!,
+      firstEvents[2]!,
+      childEvents[1]!,
+      secondEvents[2]!,
+    ]) {
       await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
-    const sourceEvents = [...firstEvents, ...secondEvents];
+    const sourceEvents = [
+      firstEvents[0]!,
+      secondEvents[0]!,
+      firstEvents[1]!,
+      secondEvents[1]!,
+      firstEvents[2]!,
+      secondEvents[2]!,
+    ];
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
@@ -2466,14 +2564,12 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
     });
 
     const targetRuns = await runStore.listSessionRuns('session-target');
-    const targetEvents = (
-      await Promise.all(
-        targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
-      )
-    ).flat();
     const targetInlineRunIds = new Set(
       targetRuns.filter(isSessionInlineRun).map((run) => run.runId),
     );
+    const targetEvents = (await runtimeEventStore.readSessionRuntimeEventEntries('session-target'))
+      .map(({ event }) => event)
+      .filter((event) => targetInlineRunIds.has(event.runId));
     assert.ok(targetRuns.some((run) => !isSessionInlineRun(run)));
     const projectedCheckpoint = await runStore.readEventProjection?.(
       'session-target',

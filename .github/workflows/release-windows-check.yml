@@ -138,8 +138,43 @@ jobs:
       - name: Update stable Rust for Desktop native artifacts
         run: rustup update stable --no-self-update
 
+      - id: rustc
+        name: Resolve Rust cache version
+        run: |
+          echo "version=$(rustc --version | cut -d ' ' -f 2)" >> "$GITHUB_OUTPUT"
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          {
+            echo "KACHE_CACHE_DIR=${{ runner.temp }}/kache"
+            echo "KACHE_RUNTIME_DIR=${{ runner.temp }}/kache-runtime"
+            echo "RUSTC_WRAPPER=kache"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Kache
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
+        with:
+          tool: kache@0.16.0
+
+      - id: kache-cache
+        name: Restore Rust build cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: kache-windows-release-check-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-${{ steps.rustc.outputs.revision }}
+          restore-keys: |
+            kache-windows-release-check-v0.16.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rustc.outputs.version }}-
+
       - name: Package the Windows installer and ZIP
         run: npm run package:windows-x64
+
+      - name: Report Rust build cache
+        run: kache report --format github >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save Rust build cache
+        if: github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/kache
+          key: ${{ steps.kache-cache.outputs.cache-primary-key }}
 
       - name: Verify the Windows release
         run: npm run verify:windows-x64 -- x64

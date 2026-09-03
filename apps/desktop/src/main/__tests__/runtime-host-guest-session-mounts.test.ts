@@ -64,7 +64,7 @@ test('retains a successful Guest mount and rehydrates the same authority after r
   await second!.close();
 });
 
-test('presents Guest import as one connection followed by access activation', async () => {
+test('reports activated Guest access as recovering while reauthentication continues', async () => {
   const progress: string[] = [];
   const mounts = service(memoryStore(), {
     mount: async (_target, _signal, onConnectionPhase) => {
@@ -76,6 +76,7 @@ test('presents Guest import as one connection followed by access activation', as
     },
     finalizeAccess: async (_mountId, _signal, onAccessActivated) => {
       onAccessActivated?.();
+      return 'reconnecting';
     },
   });
 
@@ -86,7 +87,7 @@ test('presents Guest import as one connection followed by access activation', as
     (phase) => progress.push(phase),
   );
 
-  assert.equal(result.kind, 'connected');
+  assert.equal(result.kind, 'recovering');
   const visibleProgress = progress.filter((phase, index) => phase !== progress[index - 1]);
   assert.deepEqual(visibleProgress, [
     'validating_invitation',
@@ -202,6 +203,7 @@ test('settles admitted finalization before committing unmount desire', async () 
     finalizeAccess: async () => {
       started();
       await finalized;
+      return 'ready';
     },
     unmount: async () => {
       assert.deepEqual(await store.read(), []);
@@ -257,6 +259,7 @@ test('removal fences a connecting startup mount before credential finalization',
     },
     finalizeAccess: async () => {
       finalizations += 1;
+      return 'ready';
     },
   });
 
@@ -288,6 +291,7 @@ test('removal settles one admitted startup finalization without waiting through 
     finalizeAccess: async () => {
       markFinalizing();
       await finalization;
+      return 'ready';
     },
   });
 
@@ -315,6 +319,7 @@ test('settles admitted finalization before closing and retains the mount', async
     finalizeAccess: async () => {
       started();
       await finalized;
+      return 'ready';
     },
   });
 
@@ -347,11 +352,12 @@ test('retains and reconciles a mount when finalization outcome is unknown', asyn
       attempts += 1;
       if (attempts === 1) throw new RuntimeHostPairingFinalizationInterruptedError();
       resolveReconciled();
+      return 'ready';
     },
   });
 
   const result = await mounts.importInvitation(invitation('guest-unknown'), false, 'import-unknown');
-  assert.equal(result.kind, 'error');
+  assert.equal(result.kind, 'recovering');
   assert.equal((await store.read()).length, 1);
   await reconciled;
   assert.equal(attempts, 2);
@@ -446,7 +452,7 @@ function service(
   return createDesktopGuestSessionMountService({
     store,
     mount: overrides.mount ?? (async () => undefined),
-    finalizeAccess: overrides.finalizeAccess ?? (async () => undefined),
+    finalizeAccess: overrides.finalizeAccess ?? (async () => 'ready'),
     unmount: overrides.unmount ?? (async () => undefined),
     ...(overrides.wait ? { wait: overrides.wait } : {}),
     onError: overrides.onError ?? (() => undefined),
