@@ -47,6 +47,11 @@ import {
   writeRuntimeHostPeerAuthentication,
 } from '../transport/peer-native.js';
 import type { RuntimeHostPeerClient, RuntimeHostPeerConnectionPhase } from './peer-client.js';
+import {
+  decodeSignedPeerReachabilityLease,
+  isPeerReachabilityLeaseRecoverable,
+  type SignedPeerReachabilityLeaseV1,
+} from '../peer-reachability/model.js';
 import { RuntimeHostPermanentReconnectError } from './reconnect-lifecycle.js';
 import { RuntimeHostRemoteCompatibilityError } from './remote-compatibility-error.js';
 import {
@@ -63,15 +68,12 @@ import {
   type RuntimeHostWslProcessFactory,
 } from './wsl-environment.js';
 
-const PROFILE_SCHEMA_VERSION = 3;
+const PROFILE_SCHEMA_VERSION = 4;
 const CLIENT_PROFILE_DOCUMENT_NAME = 'runtime-host-profiles.json';
 const PROFILE_DOCUMENT_MAX_BYTES = 64 * 1024;
 const PROFILE_COUNT_MAX = 32;
 const PROFILE_NAME_MAX_BYTES = 128;
 const PROFILE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
-const PEER_ID_MAX_BYTES = 160;
-const PEER_ADDRESS_MAX_BYTES = 2 * 1024;
-const PEER_ROUTE_MAX = 16;
 const DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS = 5_000;
 const PROFILE_CREDENTIAL_RECORD_PREFIX = 'maka-runtime-host-profile-credential-v1:';
 const PROFILE_INCARNATION_ID_MAX_BYTES = 128;
@@ -148,9 +150,7 @@ export type RuntimeHostRemoteTransport =
     }
   | {
       readonly kind: 'libp2p-direct';
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
+      readonly reachability: SignedPeerReachabilityLeaseV1;
     };
 
 export interface RuntimeHostProfileDocument {
@@ -275,8 +275,9 @@ export class RuntimeHostProfileConnectionError extends RuntimeHostPermanentRecon
   constructor(
     readonly reason: RuntimeHostProfileConnectionFailureReason,
     message: string,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = 'RuntimeHostProfileConnectionError';
   }
 }
@@ -607,17 +608,52 @@ export async function connectPeerRuntimeHost(input: {
 }): Promise<RuntimeHostConnection> {
   input.signal?.throwIfAborted();
   const handshakeTimeoutMs = input.handshakeTimeoutMs ?? DEFAULT_PEER_HANDSHAKE_TIMEOUT_MS;
-  const stream = await input.peerClient.connect(
-    {
-      peerId: input.transport.peerId,
-      routeHints: input.transport.routeHints,
-      coordinationRelays: input.transport.coordinationRelays,
-      directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
-      ...(input.refreshPeerRoutes === undefined ? {} : { refreshRoutes: input.refreshPeerRoutes }),
-    },
-    input.signal,
-    input.onConnectionPhase,
-  );
+  const peerId = input.transport.reachability.lease.peerId;
+  let reachability: SignedPeerReachabilityLeaseV1;
+  try {
+    reachability = input.peerClient.observeAuthenticatedReachability({
+      expectedPeerId: peerId,
+      value: input.transport.reachability,
+      allowHistorical: true,
+    });
+  } catch (cause) {
+    throw new RuntimeHostProfileConnectionError(
+      'target_mismatch',
+      `Runtime Host profile ${input.profileId} contains invalid peer reachability evidence`,
+      { cause },
+    );
+  }
+  const bootstrap = isPeerReachabilityLeaseRecoverable(reachability.lease, Date.now())
+    ? reachability.lease
+    : undefined;
+  let stream: Awaited<ReturnType<RuntimeHostPeerClient['connect']>>;
+  try {
+    stream = await input.peerClient.connect(
+      {
+        peerId,
+        routeHints: bootstrap?.directRoutes ?? [],
+        coordinationRelays: bootstrap?.coordinationRoutes ?? [],
+        directDeadlineMs: Math.min(input.connectTimeoutMs ?? 40_000, 120_000),
+        ...(input.refreshPeerRoutes === undefined
+          ? {}
+          : { refreshRoutes: input.refreshPeerRoutes }),
+      },
+      input.signal,
+      input.onConnectionPhase,
+    );
+  } catch (cause) {
+    if (cause instanceof RuntimeHostPeerError && cause.code === 'peer_identity_mismatch') {
+      throw new RuntimeHostProfileConnectionError(
+        'target_mismatch',
+        `Runtime Host profile ${input.profileId} resolved to a different peer identity`,
+        { cause },
+      );
+    }
+    if (cause instanceof RuntimeHostPeerError && cause.code === 'peer_native_unavailable') {
+      throw runtimeHostPeerUnavailableError(cause);
+    }
+    throw cause;
+  }
   const abort = () => stream.abort();
   input.signal?.addEventListener('abort', abort, { once: true });
   if (input.signal?.aborted) abort();
@@ -651,8 +687,11 @@ export async function connectPeerRuntimeHost(input: {
       handshakeTimeoutMs,
       onHostStatus: (status) => {
         const endpoint = status.peerEndpoint;
-        if (endpoint?.peerId === input.transport.peerId) {
-          input.peerClient.observeAuthenticatedRoutes(endpoint);
+        if (endpoint) {
+          input.peerClient.observeAuthenticatedReachability({
+            value: endpoint,
+            expectedPeerId: peerId,
+          });
         }
         input.onHostStatus?.(status);
       },
@@ -697,9 +736,20 @@ function requireRuntimeHostPeerClient(
   peerClient: RuntimeHostPeerClient | undefined,
 ): RuntimeHostPeerClient {
   if (peerClient) return peerClient;
-  throw new RuntimeHostPeerError(
-    'peer_native_unavailable',
-    'Experimental direct peer requires a Client peer endpoint owner',
+  throw runtimeHostPeerUnavailableError(
+    new RuntimeHostPeerError(
+      'peer_native_unavailable',
+      'Experimental direct peer requires a Client peer endpoint owner',
+    ),
+  );
+}
+
+function runtimeHostPeerUnavailableError(
+  cause: RuntimeHostPeerError,
+): RuntimeHostPermanentReconnectError {
+  return new RuntimeHostPermanentReconnectError(
+    'Runtime Host peer networking is unavailable in this Maka build',
+    { cause },
   );
 }
 
@@ -742,6 +792,7 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
   if (
     record.schemaVersion !== 1 &&
     record.schemaVersion !== 2 &&
+    record.schemaVersion !== 3 &&
     record.schemaVersion !== PROFILE_SCHEMA_VERSION
   ) {
     throw new Error('Runtime Host profile document has an unsupported schema');
@@ -761,10 +812,18 @@ export function decodeRuntimeHostProfileDocument(value: unknown): RuntimeHostPro
     throw new Error('Runtime Host profile schema 1 cannot contain activation');
   }
   if (
-    record.schemaVersion !== PROFILE_SCHEMA_VERSION &&
+    (record.schemaVersion as number) < 3 &&
     profiles.some((profile) => profile.kind === 'remote' && profile.access === 'session_guest')
   ) {
     throw new Error('Runtime Host profile schema 3 is required for restricted access');
+  }
+  if (
+    (record.schemaVersion as number) < 4 &&
+    profiles.some(
+      (profile) => profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct',
+    )
+  ) {
+    throw new Error('Runtime Host profile schema 4 is required for Direct peer reachability');
   }
   const ids = new Set<string>();
   for (const profile of profiles) {
@@ -1284,24 +1343,18 @@ export function decodeRuntimeHostRemoteTransport(value: unknown): RuntimeHostRem
   if (kind === 'libp2p-direct') {
     const record = requireExactRecord(value, 'Runtime Host direct peer transport', [
       'kind',
-      'peerId',
-      'routeHints',
-      'coordinationRelays',
+      'reachability',
     ]);
-    const peerId = requireBoundedToken(record.peerId, 'Runtime Host peer id', PEER_ID_MAX_BYTES);
-    const routeHints = requirePeerAddresses(record.routeHints, 'Runtime Host peer route hints');
-    const coordinationRelays = requirePeerAddresses(
-      record.coordinationRelays,
-      'Runtime Host coordination relays',
-    );
-    if (routeHints.length === 0 && coordinationRelays.length === 0) {
+    const reachability = decodeSignedPeerReachabilityLease(record.reachability);
+    if (
+      reachability.lease.directRoutes.length === 0 &&
+      reachability.lease.coordinationRoutes.length === 0
+    ) {
       throw new Error('Runtime Host direct peer transport requires at least one route');
     }
     return Object.freeze({
       kind: 'libp2p-direct',
-      peerId,
-      routeHints,
-      coordinationRelays,
+      reachability,
     });
   }
   throw new Error('Runtime Host transport kind is invalid');
@@ -1468,29 +1521,8 @@ function transportCredentialBinding(transport: RuntimeHostRemoteTransport): stri
         ? `${transport.destination}\0${transport.sshPort ?? ''}\0activate\0${transport.activation.operatorPath}`
         : `${transport.destination}\0${transport.sshPort ?? ''}\0${transport.remotePort}\0${transport.websocketPath}`;
     case 'libp2p-direct':
-      return transport.peerId;
+      return transport.reachability.lease.peerId;
   }
-}
-
-function requirePeerAddresses(value: unknown, label: string): readonly string[] {
-  if (!Array.isArray(value) || value.length > PEER_ROUTE_MAX) {
-    throw new Error(`${label} must be an array with at most ${PEER_ROUTE_MAX} entries`);
-  }
-  const addresses = value.map((entry) => {
-    const address = requireString(entry, label);
-    if (
-      !address.startsWith('/') ||
-      Buffer.byteLength(address, 'utf8') > PEER_ADDRESS_MAX_BYTES ||
-      /[\s\u0000-\u001f\u007f]/u.test(address)
-    ) {
-      throw new Error(`${label} contains an invalid multiaddr`);
-    }
-    return address;
-  });
-  if (new Set(addresses).size !== addresses.length) {
-    throw new Error(`${label} contains duplicates`);
-  }
-  return Object.freeze(addresses);
 }
 
 function requireBoundedToken(value: unknown, label: string, maxBytes: number): string {
@@ -1635,16 +1667,20 @@ async function writeProfileDocument(
   document: RuntimeHostProfileDocument,
 ): Promise<void> {
   const schemaVersion = document.profiles.some(
-    (profile) => profile.kind === 'remote' && profile.access === 'session_guest',
+    (profile) => profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct',
   )
     ? PROFILE_SCHEMA_VERSION
     : document.profiles.some(
-          (profile) =>
-            profile.kind === 'environment' ||
-            (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+          (profile) => profile.kind === 'remote' && profile.access === 'session_guest',
         )
-      ? 2
-      : 1;
+      ? 3
+      : document.profiles.some(
+            (profile) =>
+              profile.kind === 'environment' ||
+              (profile.transport.kind === 'ssh' && profile.transport.activation !== undefined),
+          )
+        ? 2
+        : 1;
   const encoded = `${JSON.stringify({ ...document, schemaVersion }, null, 2)}\n`;
   if (Buffer.byteLength(encoded, 'utf8') > PROFILE_DOCUMENT_MAX_BYTES) {
     throw new Error('Runtime Host profile document exceeds its size limit');

@@ -19,6 +19,8 @@
 
 export {
   groupPendingTurnRequests,
+  describeOwnerTurnRequestIntent,
+  describeTurnRequestIntent,
   samePendingTurnRequests,
   turnRequestPreview,
   unseenTurnRequests,
@@ -26,3 +28,4 @@ export {
 export type { SessionCollaborationServices } from './ports.js';
 export { SessionCollaborationServicesProvider } from './services-context.js';
 export { SessionCollaborationJoinDialog } from './ui/session-collaboration-join-dialog.js';
+export { SessionTurnRequestComposer } from './ui/session-turn-request-composer.js';

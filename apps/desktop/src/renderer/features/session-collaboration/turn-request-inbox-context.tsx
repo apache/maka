@@ -18,7 +18,8 @@
  */
 
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
-import type { ToastApi } from '@maka/ui';
+import { useToast, useUiLocale } from '@maka/ui';
+import { getSessionCollaborationCopy } from '../../locales/session-collaboration-copy.js';
 import { useSessionTurnRequestInbox } from './controller/use-turn-request-inbox.js';
 
 export interface SessionTurnRequestInboxCopy {
@@ -28,6 +29,9 @@ export interface SessionTurnRequestInboxCopy {
   readonly reviewTurnRequest: string;
   readonly turnRequests: string;
   readonly ownerTurnRequestTitle: string;
+  readonly ownerRegenerateRequestTitle: string;
+  readonly regenerateRequest: string;
+  readonly viewSourceTurn: string;
   readonly reject: string;
   readonly approve: string;
   readonly moreTurnRequests: (count: number) => string;
@@ -42,20 +46,23 @@ const SessionTurnRequestInboxContext = createContext<SessionTurnRequestInbox | n
 
 export function SessionTurnRequestInboxProvider(props: {
   readonly sessions: readonly { readonly id: string; readonly name: string }[];
-  readonly toast: ToastApi;
   readonly onOpenSession: (sessionId: string) => void;
-  readonly copy: SessionTurnRequestInboxCopy;
   readonly children?: ReactNode;
 }) {
-  const inbox = useSessionTurnRequestInbox(props);
+  const copy = getSessionCollaborationCopy(useUiLocale());
+  const inbox = useSessionTurnRequestInbox({
+    ...props,
+    toast: useToast(),
+    copy,
+  });
   const value = useMemo<SessionTurnRequestInbox>(
-    () => ({ ...inbox, copy: props.copy }),
+    () => ({ ...inbox, copy }),
     [
       inbox.decide,
       inbox.requests,
       inbox.requestsBySession,
       inbox.workingRequestIds,
-      props.copy,
+      copy,
     ],
   );
   return (

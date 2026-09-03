@@ -32,6 +32,7 @@ import {
 } from '@maka/storage/execution-stores';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import {
   type OperationOutcome,
   type SessionCatalogItem,
@@ -122,7 +123,10 @@ export interface HostSessionRetirementCoordinatorOptions {
   readonly continuity: RetirementContinuity;
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
   readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
-  readonly assertNoContextOffloadReferences?: (sessionIds: readonly string[]) => Promise<void>;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'retireSession' | 'collectGarbage'
+  >;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
   readonly purgeAgentGraphState: (sessionId: string) => Promise<void>;
   readonly worktrees?: Pick<SubagentWorktreeExecutor, 'retire'>;
@@ -194,7 +198,7 @@ export class HostSessionRetirementCoordinator {
   readonly #continuity: RetirementContinuity;
   readonly #artifacts: HostSessionRetirementCoordinatorOptions['artifacts'];
   readonly #sessionTodo: HostSessionRetirementCoordinatorOptions['sessionTodo'];
-  readonly #assertNoContextOffloadReferences: HostSessionRetirementCoordinatorOptions['assertNoContextOffloadReferences'];
+  readonly #contextOffload: HostSessionRetirementCoordinatorOptions['contextOffload'];
   readonly #purgeOperationalState: HostSessionRetirementCoordinatorOptions['purgeOperationalState'];
   readonly #purgeAgentGraphState: HostSessionRetirementCoordinatorOptions['purgeAgentGraphState'];
   readonly #worktrees: HostSessionRetirementCoordinatorOptions['worktrees'];
@@ -222,7 +226,7 @@ export class HostSessionRetirementCoordinator {
     this.#continuity = options.continuity;
     this.#artifacts = options.artifacts;
     this.#sessionTodo = options.sessionTodo;
-    this.#assertNoContextOffloadReferences = options.assertNoContextOffloadReferences;
+    this.#contextOffload = options.contextOffload;
     this.#purgeOperationalState = options.purgeOperationalState;
     this.#purgeAgentGraphState = options.purgeAgentGraphState;
     this.#worktrees = options.worktrees;
@@ -338,7 +342,6 @@ export class HostSessionRetirementCoordinator {
           if (plan.archive.sessionIds.length > 0) {
             archiveHandles = await this.#prepareRetirement(plan.archive, 'archive');
           }
-          await this.#assertNoContextOffloadReferences?.(plan.remove.sessionIds);
           const allSessionIds = [...plan.remove.sessionIds, ...plan.archive.sessionIds];
           await this.#finalizeWorkspacePatches(allSessionIds);
           await this.#disposeBackends(allSessionIds);
@@ -725,6 +728,7 @@ export class HostSessionRetirementCoordinator {
         {
           artifacts: this.#artifacts,
           sessionTodo: this.#sessionTodo,
+          ...(this.#contextOffload ? { contextOffload: this.#contextOffload } : {}),
           purgeOperationalState: this.#purgeOperationalState,
         },
         sessionId,

@@ -119,11 +119,9 @@ export interface WorkbarHostModel {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
@@ -204,11 +202,9 @@ export function WorkbarHost({ model: props }: { model: WorkbarHostModel }) {
               onRemoveQuote={props.onRemoveQuote}
               onForkVisibilityChange={props.onForkVisibilityChange}
               onContentStateChange={props.onContentStateChange}
-              onPreparingStateChange={props.onPreparingStateChange}
               onInitialPromptStarted={props.onInitialPromptStarted}
               onPromptAccepted={props.onPromptAccepted}
               onActivityStateChange={props.onActivityStateChange}
-              preparingSideChatPanelIds={props.preparingSideChatPanelIds}
               activeSideChatPanelIds={props.activeSideChatPanelIds}
               sourceSession={props.sourceSession}
               modelChoices={props.modelChoices}

@@ -48,7 +48,6 @@ import type {
   ThemePreference,
   UpdateAppSettingsResult,
   UsageRange,
-  UsageStats,
 } from '@maka/core/settings';
 import type {
   IdentifiedLlmConnection,
@@ -91,7 +90,7 @@ import { SettingsPage } from './settings-section';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { ImportTasksSettingsPage } from './import-tasks-settings-page';
 import { TasksSettingsPage, type ArchivedTasksBridge } from './tasks-settings-page';
-import { UsageSettingsPage } from './usage-settings-page';
+import { UsageScopeMount, UsageSettingsPage, type UsageScopeHandle } from './usage-settings-page';
 import { WebSearchSettingsPage } from './web-search-settings-page';
 import type { UiLocaleUpdateGate } from './ui-locale-update-gate';
 import { getSettingsSharedCopy } from '../locales/settings-shared-copy.js';
@@ -321,19 +320,12 @@ function SettingsSurfaceContent(
   const defaultRuntimeHostProfileIdRef = useRef(
     initialRuntimeHostCatalog?.defaultProfileId,
   );
-  const [usageStats, setUsageStats] = useState<{
-    hostKey: string;
-    epoch: string | undefined;
-    range: UsageRange;
-    value: UsageStats;
-  } | null>(null);
   const [clientLoading, setClientLoading] = useState(initialClientSettings === undefined);
   const settingsModalMountedRef = useMountedRef();
   const clientSettingsTicketRef = useRef(0);
   const [runtimeHostRequestAuthority] = useState(
     () => createSettingsRequestAuthority(initialRuntimeHostKey),
   );
-  const usageReloadTicketRef = useRef(0);
   const runtimeHostReloadTicketRef = useRef(0);
   const runtimeHostCatalogHydratedRef = useRef(false);
   const selectedProfileChangedByUserRef = useRef(
@@ -380,16 +372,35 @@ function SettingsSurfaceContent(
   const selectedRuntimeHostKey = selectedRuntimeHost
     ? runtimeHostSettingsKey(selectedRuntimeHost)
     : undefined;
-  const selectedRuntimeHostKeyRef = useRef(selectedRuntimeHostKey);
-  selectedRuntimeHostKeyRef.current = selectedRuntimeHostKey;
   // A same-key Host can be replaced in place (hostId stable, epoch bumped) on
   // reconnect. `runtimeHostSettingsKey` is epoch-free, so usage must key on the
   // epoch too — otherwise a reconnect clears the page but never refetches.
   const selectedRuntimeHostEpoch = selectedProfileId
     ? runtimeHostLifecycleByProfile.get(selectedProfileId)?.epoch
     : undefined;
-  const selectedRuntimeHostEpochRef = useRef(selectedRuntimeHostEpoch);
-  selectedRuntimeHostEpochRef.current = selectedRuntimeHostEpoch;
+  // Usage feature scope wiring (issue #4425). The Host-scoped stats read and the
+  // settings-update reconciliation are bound here (the `window.maka` bridge path
+  // stays in this file). The scope is mounted above the loading/error gate below,
+  // so a loaded snapshot survives a Skeleton/Banner state or a section change; it
+  // takes `usageTargetKey` (host:epoch) as a prop and clears itself when the
+  // target changes, so a Host/generation change never remounts the rest of the
+  // Settings surface. `usageScopeRef.fenceTarget()` rejects an in-flight old-Host
+  // load synchronously at a Host change, before React re-renders the new target.
+  const usageScopeRef = useRef<UsageScopeHandle>(null);
+  const usageServices = {
+    loadUsageStats: (range: UsageRange) =>
+      selectedRuntimeHost
+        ? window.maka.settings.usageStats(range, selectedRuntimeHost)
+        : Promise.resolve(null),
+    updateUsageSettings: (patch: Partial<AppSettings['usage']>) =>
+      updateSettings({ usage: patch }).then((result) => result.settings.usage),
+  };
+  // `selectedRuntimeHostKey` is the one authority for the `profileId:hostId`
+  // shape (`runtimeHostSettingsKey`); usage keys on it plus the epoch so a
+  // same-key reconnect (epoch bump) still changes the target.
+  const usageTargetKey = selectedRuntimeHostKey
+    ? `${selectedRuntimeHostKey}:${selectedRuntimeHostEpoch ?? ''}`
+    : 'no-host';
   function commitSelectedRuntimeHostProfile(
     profileId: string,
     snapshot = runtimeHosts,
@@ -399,14 +410,8 @@ function SettingsSurfaceContent(
     const nextKey = nextHost ? runtimeHostSettingsKey(nextHost) : undefined;
     // Reject old-Host reads and writes synchronously with the authority
     // change, before React renders the newly selected profile.
-    const targetChanged = runtimeHostRequestAuthority.selectTarget(
-      nextKey,
-      lifecycle?.epoch,
-    );
-    if (targetChanged) {
-      usageReloadTicketRef.current += 1;
-      setUsageStats(null);
-    }
+    const targetChanged = runtimeHostRequestAuthority.selectTarget(nextKey, lifecycle?.epoch);
+    if (targetChanged) usageScopeRef.current?.fenceTarget();
     selectedProfileIdRef.current = profileId;
     setSelectedProfileId(profileId);
   }
@@ -655,39 +660,6 @@ function SettingsSurfaceContent(
     }
   }
 
-  async function reloadUsage(range: UsageRange = settings.usage.range) {
-    const host = selectedRuntimeHost;
-    if (!host) {
-      usageReloadTicketRef.current += 1;
-      setUsageStats(null);
-      return;
-    }
-    const hostKey = runtimeHostSettingsKey(host);
-    const epoch = selectedRuntimeHostEpochRef.current;
-    const ticket = usageReloadTicketRef.current + 1;
-    usageReloadTicketRef.current = ticket;
-    try {
-      const next = await window.maka.settings.usageStats(range, host);
-      if (
-        settingsModalMountedRef.current &&
-        ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey &&
-        selectedRuntimeHostEpochRef.current === epoch
-      ) {
-        setUsageStats({ hostKey, epoch, range, value: next });
-      }
-    } catch (error) {
-      if (
-        settingsModalMountedRef.current &&
-        ticket === usageReloadTicketRef.current &&
-        selectedRuntimeHostKeyRef.current === hostKey &&
-        selectedRuntimeHostEpochRef.current === epoch
-      ) {
-        toast.error(copy.usageLoadFailed, settingsActionErrorMessage(error, locale));
-      }
-    }
-  }
-
   async function reloadRuntimeHosts(): Promise<void> {
     const ticket = ++runtimeHostReloadTicketRef.current;
     setRuntimeHostCatalog((current) => beginSettingsResourceLoad(
@@ -753,11 +725,12 @@ function SettingsSurfaceContent(
           // Fence synchronously, before the catalog refresh can resolve. The
           // previous generation's snapshots stay visible but no Host-backed
           // control may treat them as current write authority.
-          usageReloadTicketRef.current += 1;
-          setUsageStats(null);
           setRuntimeHostCatalog(invalidateSettingsResourceGeneration);
           setRuntimeHostSettings(invalidateSettingsResourceGeneration);
           setRuntimeHostConnections(invalidateSettingsResourceGeneration);
+          // Usage is Host-owned: drop its snapshot and fence its in-flight load
+          // here too, so an old-generation load cannot land before the re-render.
+          usageScopeRef.current?.fenceTarget();
         }
       }
       void reloadRuntimeHosts().catch(() => undefined);
@@ -818,14 +791,6 @@ function SettingsSurfaceContent(
       unsubscribeConnections?.();
     };
   }, [connectionsBridge, selectedRuntimeHost]);
-
-  useEffect(() => {
-    // Usage records are Host-owned while the display preferences remain
-    // client-owned. Refetch when the persisted range arrives, the selected Host
-    // changes, or the selected Host is replaced in place (epoch bump) so labels
-    // and numbers always describe one live Host generation.
-    if (section === 'usage') void reloadUsage(settings.usage.range);
-  }, [section, settings.usage.range, selectedRuntimeHostKey, selectedRuntimeHostEpoch]);
 
   // PR-SETTINGS-HEADER-COPY-MAP-0 (U1): the page header derives its title
   // and description from the section→copy map keyed by the active section,
@@ -979,6 +944,13 @@ function SettingsSurfaceContent(
               )}
               content={(
                 <LayoutContent padding={6} isScrollable={false}>
+                  <UsageScopeMount
+                    ref={usageScopeRef}
+                    targetKey={usageTargetKey}
+                    services={usageServices}
+                    loadErrorTitle={copy.usageLoadFailed}
+                    describeError={(error) => settingsActionErrorMessage(error, locale)}
+                  >
                   {loading ? (
                     <SettingsSkeleton />
                   ) : requiresRuntimeHost &&
@@ -1031,14 +1003,6 @@ function SettingsSurfaceContent(
                           <SettingsPageBody
                             section={section}
                             settings={settings}
-                            usageStats={
-                              usageStats &&
-                              usageStats.hostKey === selectedRuntimeHostKey &&
-                              usageStats.epoch === selectedRuntimeHostEpoch &&
-                              usageStats.range === settings.usage.range
-                                ? usageStats.value
-                                : null
-                            }
                             connections={connections}
                             connectionsBridge={connectionsBridge}
                             apiKeyOnboardingBridge={apiKeyOnboardingBridge}
@@ -1058,7 +1022,6 @@ function SettingsSurfaceContent(
                             onReloadSettings={reloadRuntimeHostSettings}
                             onReloadClientSettings={reloadClientSettings}
                             onRetryRuntimeHost={retryRuntimeHostContent}
-                            onReloadUsage={reloadUsage}
                             onThemeChange={props.onThemeChange}
                             onThemePaletteChange={props.onThemePaletteChange}
                             onOpenDailyReview={props.onOpenDailyReview}
@@ -1081,6 +1044,7 @@ function SettingsSurfaceContent(
                       </RuntimeHostSettingsTarget>
                     </>
                   )}
+                  </UsageScopeMount>
                 </LayoutContent>
               )}
             />
@@ -1094,7 +1058,6 @@ function SettingsSurfaceContent(
 function SettingsPageBody(props: {
   section: SettingsSection;
   settings: AppSettings;
-  usageStats: UsageStats | null;
   connections: ProjectedLlmConnection[];
   connectionsBridge: RuntimeHostSettingsConnectionsBridge | undefined;
   apiKeyOnboardingBridge:
@@ -1116,7 +1079,6 @@ function SettingsPageBody(props: {
   onReloadSettings(): Promise<void>;
   onReloadClientSettings(): Promise<void>;
   onRetryRuntimeHost(): Promise<void>;
-  onReloadUsage(range?: UsageRange): Promise<void>;
   onThemeChange(pref: ThemePreference): void;
   onThemePaletteChange(palette: ThemePalette): void;
   onOpenDailyReview?(): void;
@@ -1164,15 +1126,9 @@ function SettingsPageBody(props: {
         />
       );
     case 'usage':
-      return (
-        <UsageSettingsPage
-          settings={props.settings}
-          stats={props.usageStats}
-          onUpdate={props.onUpdateSettings}
-          onReload={props.onReloadUsage}
-          onOpenSession={props.onOpenSession}
-        />
-      );
+      // State lives in the persistent `UsageScopeMount` above the loading gate;
+      // this view is disposable and reads it from context.
+      return <UsageSettingsPage settings={props.settings.usage} onOpenSession={props.onOpenSession} />;
     case 'bot-chat':
       return (
         <BotChatSettingsPage

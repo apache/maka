@@ -19,7 +19,6 @@
 
 import { useCallback, useEffect, useRef, type ComponentProps } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
-import { Spinner } from '@astryxdesign/core/Spinner';
 import {
   ChatView,
   ChatSurfaceLayout,
@@ -33,6 +32,10 @@ import {
   type ComposerHandle,
 } from '@maka/ui';
 import type { SessionSummary } from '@maka/core/session';
+import {
+  generalizedErrorMessage,
+  generalizedErrorMessageChinese,
+} from '@maka/core/redaction';
 import { useQuoteCompanion } from './use-quote-companion';
 import { useComposerAttachments } from '../../../../use-composer-attachments';
 import { useComposerMentionsContext } from '../../../../composer-mentions.js';
@@ -40,6 +43,11 @@ import { preflightAttachmentItems } from '../../../../attachment-preflight';
 import { toComposerIngestItems } from '../../../../composer-attachments';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import { deriveTurnFooterActions } from '../../../../turn-footer-actions';
+import {
+  createQuoteCompanionCompactionPresentation,
+  dispatchQuoteCompanionInput,
+  presentQuoteCompanionCompactionResult,
+} from './quote-companion-context-compaction.js';
 import type {
   CompanionQuoteTarget,
   CompanionQuoteSnapshot,
@@ -73,7 +81,6 @@ export function QuoteCompanionPanel(props: {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
@@ -85,6 +92,22 @@ export function QuoteCompanionPanel(props: {
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const composerRef = useRef<ComposerHandle>(null);
   const initialPromptStartedRef = useRef(false);
+  const contextCompactionPresentationRef = useRef<
+    ReturnType<typeof createQuoteCompanionCompactionPresentation>
+  >(undefined);
+  if (!contextCompactionPresentationRef.current) {
+    contextCompactionPresentationRef.current = createQuoteCompanionCompactionPresentation({
+      toastApi: toast,
+      copyForLocale: (nextLocale) => getDesktopConversationCopy(nextLocale).quoteCompanion,
+      presentTerminal(sessionId, notice) {
+        if (notice.level === 'error') {
+          toast.error(notice.title, notice.description, undefined, { sessionId });
+        } else {
+          toast[notice.level](notice.title, notice.description);
+        }
+      },
+    });
+  }
   const draftKey = `quote-companion:${props.panelId}`;
   const {
     pendingAttachments,
@@ -106,13 +129,46 @@ export function QuoteCompanionPanel(props: {
     onQuotesConsumed: props.onQuotesConsumed,
     confirmBypass: props.confirmBypass,
     onForkVisibilityChange: props.onForkVisibilityChange,
+    onContextCompactionResult: (sessionId, result) => {
+      presentQuoteCompanionCompactionResult(
+        contextCompactionPresentationRef.current!,
+        sessionId,
+        result,
+        locale,
+      );
+    },
+    onContextCompactionOutcome: (sessionId, turnId, outcome) => {
+      contextCompactionPresentationRef.current!.finished(
+        sessionId,
+        turnId,
+        outcome,
+        locale,
+      );
+    },
+    onContextCompactionError: (sessionId, error) => {
+      if (isWorkspaceUnavailableError(error)) {
+        toast.error(
+          getDesktopConversationCopy(locale).quoteCompanion.workspaceUnavailableTitle,
+          getDesktopConversationCopy(locale).quoteCompanion.workspaceUnavailableDescription,
+          undefined,
+          { sessionId },
+        );
+        return;
+      }
+      const compactCopy = getDesktopConversationCopy(locale).quoteCompanion;
+      toast.error(
+        compactCopy.compactErrorTitle,
+        locale === 'zh'
+          ? generalizedErrorMessageChinese(error, compactCopy.compactErrorFallback)
+          : generalizedErrorMessage(error, compactCopy.compactErrorFallback),
+        undefined,
+        { sessionId },
+      );
+    },
   });
   useEffect(() => {
     props.onContentStateChange?.(props.panelId, companion.hasContent);
   }, [companion.hasContent, props.onContentStateChange, props.panelId]);
-  useEffect(() => {
-    props.onPreparingStateChange?.(props.panelId, companion.preparing);
-  }, [companion.preparing, props.onPreparingStateChange, props.panelId]);
   useEffect(() => {
     props.onActivityStateChange?.(
       props.panelId,
@@ -125,15 +181,14 @@ export function QuoteCompanionPanel(props: {
     props.panelId,
   ]);
   useEffect(() => {
-    if (!props.active || companion.preparing) return;
+    if (!props.active) return;
     const frame = window.requestAnimationFrame(() => composerRef.current?.focus());
     return () => window.cancelAnimationFrame(frame);
-  }, [companion.preparing, props.active]);
+  }, [props.active]);
   useEffect(() => {
     const prompt = props.initialPrompt?.trim();
     if (
       !props.active ||
-      companion.preparing ||
       !companion.modelReady ||
       !prompt ||
       initialPromptStartedRef.current
@@ -157,7 +212,6 @@ export function QuoteCompanionPanel(props: {
         composerRef.current?.focus();
       });
   }, [
-    companion.preparing,
     companion.send,
     props.active,
     props.initialPrompt,
@@ -209,10 +263,7 @@ export function QuoteCompanionPanel(props: {
   );
 
   return (
-    <div
-      className="maka-quote-companion"
-      data-preparing={companion.preparing || undefined}
-    >
+    <div className="maka-quote-companion">
       <ChatSurfaceLayout
         scrollOwner="host"
         scrollToBottomLabel={copy.scrollToBottom}
@@ -248,37 +299,42 @@ export function QuoteCompanionPanel(props: {
             )}
             <Composer
               ref={composerRef}
-              onSend={async (text) => {
-                // Mid-turn the same submit is steering — the side chat has no
-                // slash commands, so the split is just the turn's state.
-                if (companion.streaming) return companion.steer(text);
-                try {
-                  preflightAttachmentItems(pendingAttachments, locale);
-                } catch (error) {
-                  toast.error(
-                    copy.errors.sendRejected,
-                    error instanceof Error ? error.message : String(error),
-                  );
-                  return false;
-                }
-                const accepted = await companion.send(
+              onSend={(text) =>
+                dispatchQuoteCompanionInput({
                   text,
-                  pendingAttachments.length > 0
-                    ? toComposerIngestItems(pendingAttachments)
-                    : undefined,
-                );
-                if (accepted) {
-                  props.onPromptAccepted?.(props.panelId, text);
-                }
-                if (accepted) clearSubmittedAttachments(pendingAttachments);
-                return accepted;
-              }}
+                  streaming: companion.streaming,
+                  compact: companion.compact,
+                  steer: companion.steer,
+                  send: async () => {
+                    try {
+                      preflightAttachmentItems(pendingAttachments, locale);
+                    } catch (error) {
+                      toast.error(
+                        copy.errors.sendRejected,
+                        error instanceof Error ? error.message : String(error),
+                      );
+                      return false;
+                    }
+                    const accepted = await companion.send(
+                      text,
+                      pendingAttachments.length > 0
+                        ? toComposerIngestItems(pendingAttachments)
+                        : undefined,
+                    );
+                    if (accepted) {
+                      props.onPromptAccepted?.(props.panelId, text);
+                    }
+                    if (accepted) clearSubmittedAttachments(pendingAttachments);
+                    return accepted;
+                  },
+                })
+              }
               onStop={() => void companion.stop()}
               hidden={Boolean(activeInteraction)}
               streaming={companion.streaming}
               processing={companion.processing}
               draftKey={draftKey}
-              disabled={!companion.modelReady || companion.preparing}
+              disabled={!companion.modelReady}
               onPickAttachments={pickAttachments}
               onAttachFilePaths={attachFilePaths}
               pendingAttachments={pendingAttachments}
@@ -326,18 +382,20 @@ export function QuoteCompanionPanel(props: {
               void companion.regenerate(turnId);
             }
           }}
-          emptyOverride={
-            companion.preparing ? (
-              <div className="maka-quote-companion-preparing maka-turn-processing">
-                <Spinner size="sm" shade="subtle" label={copy.preparing} />
-              </div>
-            ) : (
-              <div className="maka-quote-companion-empty" aria-hidden="true" />
-            )
-          }
+          emptyOverride={<div className="maka-quote-companion-empty" aria-hidden="true" />}
           onNew={() => {}}
         />
       </ChatSurfaceLayout>
     </div>
+  );
+}
+
+function isWorkspaceUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const value = error as { code?: unknown; message?: unknown };
+  return (
+    value.code === 'SESSION_WORKSPACE_UNAVAILABLE' ||
+    (typeof value.message === 'string' &&
+      value.message.includes('SESSION_WORKSPACE_UNAVAILABLE:'))
   );
 }

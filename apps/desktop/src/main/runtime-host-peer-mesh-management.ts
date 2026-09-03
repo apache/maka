@@ -490,7 +490,11 @@ async function reconcileManagedTarget(
 
 function authorityRouteNeedsRecovery(mesh: PeerMeshQueryResult['meshes'][number]): boolean {
   const authority = mesh.members.find(({ peerId }) => peerId === mesh.authorityPeerId);
-  return authority === undefined || authority.state === 'unknown' || authority.state === 'stale';
+  return (
+    authority === undefined ||
+    authority.state === 'needs_repair' ||
+    authority.state === 'reconnecting'
+  );
 }
 
 function requireQueryResult(result: PeerMeshResult): PeerMeshQueryResult {

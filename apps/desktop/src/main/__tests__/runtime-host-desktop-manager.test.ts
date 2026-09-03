@@ -22,6 +22,7 @@ import test from 'node:test';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
   RuntimeHostOperationError,
+  RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostSpawnedProcess,
 } from '@maka/runtime-host/client';
@@ -710,7 +711,7 @@ test('reconnects after a pairing candidate becomes bound to this Client', async 
   await manager.close();
 });
 
-test('activates Guest access on a fresh stream without replaying route progress', async () => {
+test('completes Guest import at credential activation while reconnect continues', async () => {
   const local = candidateHarness({ hostId: 'host-a' });
   const remoteHostId = 'a'.repeat(64);
   const pending = candidateHarness({
@@ -718,19 +719,27 @@ test('activates Guest access on a fresh stream without replaying route progress'
     finalizeReconnectRequired: true,
   });
   const active = candidateHarness({ hostId: remoteHostId });
-  const queue = [local.candidate, pending.candidate, active.candidate];
+  let releaseActive!: () => void;
+  const activeReleased = new Promise<void>((resolve) => {
+    releaseActive = resolve;
+  });
+  let starts = 0;
   const phases: string[] = [];
   const routeRefreshes: Array<boolean | undefined> = [];
   const manager = await startRuntimeHostDesktopManager(
     {} as DesktopRuntimeHostCandidateStartInput,
     {
       startCandidate: async (input) => {
+        starts += 1;
         if (input.profileTarget) {
           routeRefreshes.push(input.refreshPeerRoutes);
           input.onConnectionPhase?.('discovering');
           input.onConnectionPhase?.('connecting');
         }
-        return ready(queue.shift()!);
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) return ready(pending.candidate);
+        await activeReleased;
+        return ready(active.candidate);
       },
       reconnectBackoff: { minMs: 0, maxMs: 0 },
     },
@@ -742,14 +751,18 @@ test('activates Guest access on a fresh stream without replaying route progress'
   );
   let activations = 0;
 
-  await manager.finalizeGuestAccess('shared-session', undefined, () => {
+  const result = await manager.finalizeGuestAccess('shared-session', undefined, () => {
     activations += 1;
   });
 
+  assert.equal(result, 'reconnecting');
+  assert.equal(manager.current('shared-session')?.readiness, 'reconnecting');
   assert.deepEqual(phases, ['discovering', 'connecting']);
-  assert.deepEqual(routeRefreshes, [undefined, false]);
   assert.equal(activations, 1);
   assert.equal(pending.closeCalls, 1);
+  releaseActive();
+  await manager.waitUntilReady('shared-session');
+  assert.deepEqual(routeRefreshes, [undefined, false]);
   assert.equal(manager.current('shared-session')?.candidate, active.candidate);
   await manager.close();
 });
@@ -1015,6 +1028,88 @@ test('keeps Local explicitly usable without routing default work away from an un
   assert.deepEqual(removedDefaults, [true]);
   assert.equal(manager.defaultProfileId(), 'offline');
   assert.equal(manager.current(), undefined);
+  await manager.close();
+});
+
+test('keeps an initially unavailable Direct target live and wakes it on new routes', async () => {
+  const local = candidateHarness();
+  const remote = candidateHarness({ hostId: 'a'.repeat(64), ownership: 'external' });
+  let starts = 0;
+  let routeListener: (() => void) | undefined;
+  let reportBackoff!: () => void;
+  const waitingForBackoff = new Promise<void>((resolve) => {
+    reportBackoff = resolve;
+  });
+  const manager = await startRuntimeHostDesktopManager(
+    {
+      peerClient: {
+        subscribeRoutes: (peerId: string, listener: () => void) => {
+          assert.equal(peerId, '12D3KooWpeer');
+          routeListener = listener;
+          return () => undefined;
+        },
+      },
+    } as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts <= 3) return { kind: 'failed', reason: 'host_unresponsive' };
+        return ready(remote.candidate);
+      },
+      reconnectBackoff: {
+        minMs: 30_000,
+        maxMs: 30_000,
+        wait: (_delayMs, signal) =>
+          new Promise<void>((_resolve, reject) => {
+            reportBackoff();
+            const onAbort = () => reject(signal.reason);
+            signal.addEventListener('abort', onAbort, { once: true });
+            if (signal.aborted) onAbort();
+          }),
+      },
+    },
+  );
+
+  await manager.enable(peerTarget('office'));
+  await waitingForBackoff;
+  assert.equal(
+    manager.entries().find((state) => state.target.profile.id === 'office')?.readiness,
+    'reconnecting',
+  );
+  assert.equal(manager.current('office')?.readiness, 'reconnecting');
+  assert.equal(manager.current('office')?.candidate, undefined);
+  assert.ok(routeListener);
+
+  routeListener();
+  await manager.waitUntilReady('office');
+  assert.equal(manager.current('office')?.candidate, remote.candidate);
+  assert.equal(starts, 4);
+  await manager.close();
+});
+
+test('does not activate a Direct target whose immediate retry fails permanently', async () => {
+  const local = candidateHarness();
+  const permanent = new RuntimeHostPermanentReconnectError('credential rejected');
+  let starts = 0;
+  const manager = await startRuntimeHostDesktopManager(
+    {} as DesktopRuntimeHostCandidateStartInput,
+    {
+      startCandidate: async () => {
+        starts += 1;
+        if (starts === 1) return ready(local.candidate);
+        if (starts === 2) throw new Error('route is temporarily unavailable');
+        throw permanent;
+      },
+    },
+  );
+
+  await assert.rejects(manager.enable(peerTarget('office')), (error: unknown) => error === permanent);
+  assert.equal(starts, 3);
+  assert.equal(manager.current('office'), undefined);
+  const state = manager.entries().find((entry) => entry.target.profile.id === 'office');
+  assert.equal(state?.readiness, 'unavailable');
+  if (state?.readiness === 'unavailable') assert.equal(state.error, permanent);
   await manager.close();
 });
 
@@ -1683,6 +1778,13 @@ function remoteTarget(
 function peerGuestTarget(
   id: string,
 ): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
+  return peerTarget(id, 'session_guest');
+}
+
+function peerTarget(
+  id: string,
+  access?: 'session_guest',
+): NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']> {
   return {
     profile: {
       id,
@@ -1690,13 +1792,27 @@ function peerGuestTarget(
       kind: 'remote',
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: [],
+        reachability: testPeerReachability('12D3KooWpeer'),
       },
       rootId: 'a'.repeat(64),
-      access: 'session_guest',
+      ...(access ? { access } : {}),
     },
     credential: 'credential-peer',
+  };
+}
+
+function testPeerReachability(peerId: string) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }

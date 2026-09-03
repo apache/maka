@@ -286,6 +286,33 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('keeps a sandbox failure unresolved after an unrelated tool succeeds', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Boundary was not widened',
+        'tool_search',
+      ),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({

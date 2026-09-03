@@ -117,6 +117,43 @@ test('applies authoritative replacement once and does not complete it again at T
   );
 });
 
+test('forwards a terminal context-compaction outcome with the synthesized complete event', () => {
+  const projector = new RuntimeHostSessionProjector(
+    snapshot(),
+    createRuntimeHostSessionProjectionSeed([], snapshot()),
+    () => 10,
+  );
+
+  const events = projector.accept({
+    kind: 'subscription.session_projection',
+    hostEpoch: 'host-1',
+    subscriptionId: 'subscription-1',
+    sequence: 1,
+    snapshot: snapshot({
+      projectionRevision: 2,
+      rootTurn: {
+        sessionId: 'session-1',
+        turnId: 'turn-1',
+        runId: 'run-1',
+        status: 'completed',
+        terminalEventId: 'compact-terminal-1',
+        contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+      },
+    }),
+  }).events;
+
+  assert.deepEqual(events, [
+    {
+      type: 'complete',
+      id: 'compact-terminal-1',
+      turnId: 'turn-1',
+      ts: 10,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    },
+  ]);
+});
+
 test('keeps a revocable in-flight lease pending', () => {
   const previous = snapshot({
     queue: {

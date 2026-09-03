@@ -44,6 +44,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
   collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
@@ -721,6 +722,17 @@ test('conversation copy rewrites owned references without changing opaque tool p
             relativePath: 'session-source/artifact-source-file.txt',
           },
         },
+        {
+          kind: 'image',
+          name: 'snapshot.png',
+          mimeType: 'image/png',
+          bytes: 4,
+          ref: {
+            kind: 'session_context',
+            sessionId: 'session-source',
+            refId: 'context-source',
+          },
+        },
       ],
     },
     {
@@ -733,6 +745,11 @@ test('conversation copy rewrites owned references without changing opaque tool p
         sessionId: 'session-source',
         runId: 'run-source',
         artifactId: 'artifact-source',
+        opaqueStorageRefShape: {
+          kind: 'session_context',
+          sessionId: 'session-source',
+          refId: 'context-opaque',
+        },
       },
       providerOptions: {
         sourceInvocationId: 'invocation-source',
@@ -800,6 +817,7 @@ test('conversation copy rewrites owned references without changing opaque tool p
     relativePaths: new Map([
       ['session-source/artifact-source-file.txt', 'session-target/artifact-target-file.txt'],
     ]),
+    contextRefs: new Map([['context-source', 'context-target']]),
     runIds: new Map([['run-source', 'run-target']]),
     invocationIds: new Map([['invocation-source', 'invocation-target']]),
     runtimeEventIds: new Map([['event-source', 'event-target']]),
@@ -812,6 +830,66 @@ test('conversation copy rewrites owned references without changing opaque tool p
     sessionId: 'session-target',
     relativePath: 'session-target/artifact-target-file.txt',
   });
+  assert.deepEqual(rewritten[0]?.type === 'user' ? rewritten[0].attachments?.[1]?.ref : undefined, {
+    kind: 'session_context',
+    sessionId: 'session-target',
+    refId: 'context-target',
+  });
+  assert.deepEqual(
+    collectConversationCopySessionContextRefIds({
+      sourceSessionId: 'session-source',
+      messages,
+      runtimeEvents: [
+        runtimeEvent({
+          id: 'selected-image-result',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-image',
+            name: 'Read',
+            result: {
+              kind: 'image',
+              mimeType: 'image/png',
+              ref: {
+                kind: 'session_context',
+                sessionId: 'session-source',
+                refId: 'context-selected-event',
+              },
+            },
+          },
+        }),
+        runtimeEvent({
+          id: 'opaque-json-result',
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'tool-opaque',
+            name: 'opaque',
+            result: {
+              kind: 'json',
+              value: {
+                kind: 'session_context',
+                sessionId: 'session-source',
+                refId: 'context-opaque-event',
+              },
+            },
+          },
+        }),
+      ],
+      archivedResults: [],
+    }),
+    ['context-selected-event', 'context-source'],
+  );
+  assert.throws(
+    () =>
+      rewriteConversationCopyMessage(messages[0]!, {
+        ...references,
+        contextRefs: new Map(),
+      }),
+    /missing Session context context-source/,
+  );
   const userMessage = messages[0];
   assert.equal(userMessage?.type, 'user');
   if (userMessage?.type !== 'user') return;
@@ -1004,44 +1082,6 @@ test('conversation copy rewrites owned references without changing opaque tool p
   );
 });
 
-test('reader-only conversation copy rejects source-owned Session context refs', () => {
-  const message: StoredMessage = {
-    type: 'user',
-    id: 'user-context',
-    turnId: 'turn-1',
-    ts: 1,
-    text: 'context',
-    attachments: [
-      {
-        kind: 'image',
-        name: 'snapshot.png',
-        mimeType: 'image/png',
-        bytes: 4,
-        ref: {
-          kind: 'session_context',
-          sessionId: 'session-source',
-          refId: 'context-source',
-        },
-      },
-    ],
-  };
-  assert.throws(
-    () =>
-      rewriteConversationCopyMessage(message, {
-        mode: 'exact',
-        sourceSessionId: 'session-source',
-        targetSessionId: 'session-target',
-        artifactIds: new Map(),
-        relativePaths: new Map(),
-        linkedChildren: { mode: 'reject' },
-        runIds: new Map(),
-        runtimeEventIds: new Map(),
-        providerTraceIds: new Map(),
-      }),
-    /does not support Session context references yet/,
-  );
-});
-
 test('conversation copy rejects continuation authority selected through the child-run closure', async () => {
   const parent = agentRunHeader({ runId: 'run-parent', turnId: 'turn-parent' });
   const child = agentRunHeader({
@@ -1167,6 +1207,68 @@ test('conversation copy rejects a retained AgentRun without RuntimeEvent facts',
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('conversation copy can use RuntimeEvents backfilled by the read model', async () => {
+  const run = agentRunHeader({
+    runId: 'run-backfilled',
+    invocationId: 'invocation-backfilled',
+    turnId: 'turn-backfilled',
+    status: 'completed',
+    updatedAt: 3,
+    completedAt: 3,
+  });
+  const legacyMessages: StoredMessage[] = [
+    {
+      type: 'user',
+      id: 'legacy-user',
+      turnId: run.turnId,
+      ts: 1,
+      text: 'hello',
+    },
+    {
+      type: 'assistant',
+      id: 'legacy-assistant',
+      turnId: run.turnId,
+      ts: 2,
+      text: 'world',
+      modelId: 'fake-model',
+    },
+    {
+      type: 'turn_state',
+      id: 'legacy-state',
+      turnId: run.turnId,
+      ts: 3,
+      status: 'completed',
+      partialOutputRetained: false,
+    },
+  ];
+  const runStore = {
+    listSessionRuns: async () => [run],
+    readEvents: async () => [],
+  } as Pick<AgentRunStore, 'listSessionRuns' | 'readEvents'>;
+  const runtimeEventStore = {
+    readRuntimeEvents: async () => [],
+    readSessionRuntimeEventEntries: async () => [],
+  } as Pick<RuntimeEventStore, 'readRuntimeEvents'>;
+  const source = await new RuntimeReadModel({
+    runStore: runStore as AgentRunStore,
+    runtimeEventStore: runtimeEventStore as RuntimeEventStore,
+    projectionCache: { readMessages: async () => legacyMessages },
+  }).getSessionView(run.sessionId);
+
+  const plan = await prepareConversationRuntimeLedgerCopy({
+    sourceSessionId: run.sessionId,
+    sourceEvents: source.events,
+    copiedMessages: source.messages,
+    runStore,
+    runtimeEventStore,
+  });
+
+  assert.deepEqual(
+    plan.runs[0]?.runtimeEvents.map((event) => event.content?.kind ?? event.status),
+    ['text', 'text', 'completed'],
+  );
 });
 
 test('conversation copy rewrites a complete tool recovery bundle atomically', async () => {
@@ -2323,6 +2425,16 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         content: { kind: 'text', text: 'first' },
       }),
       runtimeEvent({
+        id: 'event-1-assistant',
+        invocationId: 'invocation-1',
+        runId: 'run-1',
+        turnId: 'turn-1',
+        ts: 4,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'first response' },
+      }),
+      runtimeEvent({
         id: 'event-1-terminal',
         invocationId: 'invocation-1',
         runId: 'run-1',
@@ -2343,6 +2455,16 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         role: 'user',
         author: 'user',
         content: { kind: 'text', text: 'second' },
+      }),
+      runtimeEvent({
+        id: 'event-2-assistant',
+        invocationId: 'invocation-2',
+        runId: 'run-2',
+        turnId: 'turn-2',
+        ts: 4.5,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'second response' },
       }),
       runtimeEvent({
         id: 'event-2-terminal',
@@ -2377,10 +2499,26 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
         status: 'completed',
       }),
     ];
-    for (const event of [...firstEvents, ...childEvents, ...secondEvents]) {
+    for (const event of [
+      firstEvents[0]!,
+      childEvents[0]!,
+      secondEvents[0]!,
+      firstEvents[1]!,
+      secondEvents[1]!,
+      firstEvents[2]!,
+      childEvents[1]!,
+      secondEvents[2]!,
+    ]) {
       await runtimeEventStore.appendRuntimeEvent(event.sessionId, event.runId, event);
     }
-    const sourceEvents = [...firstEvents, ...secondEvents];
+    const sourceEvents = [
+      firstEvents[0]!,
+      secondEvents[0]!,
+      firstEvents[1]!,
+      secondEvents[1]!,
+      firstEvents[2]!,
+      secondEvents[2]!,
+    ];
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-source',
       coveredRuntimeEvents: sourceEvents.filter(isHistoryCompactContentEvent),
@@ -2426,14 +2564,12 @@ test('conversation copy rebuilds an inline checkpoint without legacy child event
     });
 
     const targetRuns = await runStore.listSessionRuns('session-target');
-    const targetEvents = (
-      await Promise.all(
-        targetRuns.map((run) => runtimeEventStore.readRuntimeEvents('session-target', run.runId)),
-      )
-    ).flat();
     const targetInlineRunIds = new Set(
       targetRuns.filter(isSessionInlineRun).map((run) => run.runId),
     );
+    const targetEvents = (await runtimeEventStore.readSessionRuntimeEventEntries('session-target'))
+      .map(({ event }) => event)
+      .filter((event) => targetInlineRunIds.has(event.runId));
     assert.ok(targetRuns.some((run) => !isSessionInlineRun(run)));
     const projectedCheckpoint = await runStore.readEventProjection?.(
       'session-target',

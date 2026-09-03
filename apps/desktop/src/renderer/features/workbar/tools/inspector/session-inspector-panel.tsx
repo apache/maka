@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { type ReactNode, useMemo } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { EmptyState } from '@astryxdesign/core/EmptyState';
@@ -38,6 +38,8 @@ import {
   deriveInspectorOverviewModel,
   estimatedSessionCost,
   hasUnavailableSessionUsage,
+  type InspectorDurationUsageKind,
+  type InspectorTokenUsageKind,
 } from './session-inspector-overview-model.js';
 import {
   deriveInspectorPanelModel,
@@ -269,9 +271,67 @@ function InspectorOverview(props: {
   const formatNumber = numberFormatter(props.locale);
   const formatCompactNumber = compactNumberFormatter(props.locale);
   const context = overview.context;
+  // Local bindings so the JSX guards narrow into the map callbacks below.
+  const tokenUsage = overview.tokenUsage;
+  const durationUsage = overview.durationUsage;
+  // The token ring's center names whichever share dominates the bill.
+  const dominantToken = tokenUsage?.segments.reduce((left, right) =>
+    right.tokens > left.tokens ? right : left,
+  );
 
   return (
     <VStack gap={6} data-maka-contract="session-inspector-overview">
+      {/* The two session-wide ledgers open the panel — they are what a reader
+          scanning "what did this session cost so far" wants first, ahead of
+          the cost figures they extend and the context bar, which is the one
+          block here that answers about NOW rather than about the session so
+          far. */}
+      {tokenUsage && dominantToken && (
+        <InspectorUsageRingSection
+          contract="session-inspector-token-usage"
+          title={copy.tokenUsage.title}
+          arcs={tokenUsage.segments.map((segment) => ({
+            kind: segment.kind,
+            amount: segment.tokens,
+          }))}
+          total={tokenUsage.total}
+          centerValue={formatPercent(dominantToken.tokens / tokenUsage.total)}
+          centerLabel={copy.tokenUsage.segment[dominantToken.kind]}
+          rows={tokenUsage.segments.map((segment) => ({
+            kind: segment.kind,
+            label: copy.tokenUsage.segment[segment.kind],
+            swatch: `token-${segment.kind}`,
+            value: `${formatCompactNumber(segment.tokens)} · ${formatPercent(
+              segment.tokens / tokenUsage.total,
+            )}`,
+          }))}
+        />
+      )}
+
+      {durationUsage && (
+        <InspectorUsageRingSection
+          contract="session-inspector-duration-usage"
+          title={copy.durationUsage.title}
+          arcs={durationUsage.segments.map((segment) => ({
+            kind: segment.kind,
+            amount: segment.durationMs,
+          }))}
+          total={durationUsage.totalDurationMs}
+          centerValue={formatDuration(durationUsage.totalDurationMs)}
+          centerLabel={copy.durationUsage.center}
+          rows={durationUsage.segments.map((segment) => ({
+            kind: segment.kind,
+            label: copy.durationUsage.segment[segment.kind](segment.count),
+            swatch: `duration-${segment.kind}`,
+            value: `${formatDuration(segment.durationMs)} · ${formatPercent(
+              durationUsage.totalDurationMs > 0
+                ? segment.durationMs / durationUsage.totalDurationMs
+                : 0,
+            )}`,
+          }))}
+        />
+      )}
+
       {props.showTotals && (
         <VStack gap={2} data-maka-contract="session-inspector-stats">
           <InspectorOverviewStat
@@ -327,6 +387,190 @@ function InspectorOverviewStat(props: { label: string; value: ReactNode }) {
 }
 
 /**
+ * One session-wide ledger drawn as a donut: title, ring, legend. The token
+ * and time sections are the same layout with different copy and formatters,
+ * so the layout exists once and the callers pass figures and labels.
+ *
+ * Ring and legend link in both directions: hovering either holds that
+ * segment and dims the rest, on both sides at once. The svg is `aria-hidden`
+ * and the legend is the accessible copy of it, so the hover linking is
+ * decoration over facts the legend already states; the center figure is real
+ * text, so nothing a pointer reveals is pointer-only.
+ */
+function InspectorUsageRingSection<
+  K extends InspectorTokenUsageKind | InspectorDurationUsageKind,
+>(props: {
+  contract: string;
+  title: string;
+  arcs: readonly { kind: K; amount: number }[];
+  total: number;
+  centerValue: ReactNode;
+  centerLabel: ReactNode;
+  rows: readonly { kind: K; label: ReactNode; swatch: string; value: ReactNode }[];
+}) {
+  const [active, setActive] = useState<K | null>(null);
+  return (
+    <VStack gap={2} data-maka-contract={props.contract}>
+      <div className="maka-inspector-section-head">
+        <Heading level={3} className="maka-inspector-section-title">
+          {props.title}
+        </Heading>
+      </div>
+
+      <div className="maka-inspector-usage-ring-row">
+        <div className="maka-inspector-usage-ring">
+          <UsageRing arcs={props.arcs} total={props.total} active={active} onActive={setActive} />
+          <span className="maka-inspector-usage-ring-center">
+            <span className="maka-inspector-usage-ring-value">{props.centerValue}</span>
+            <span className="maka-inspector-usage-ring-label">{props.centerLabel}</span>
+          </span>
+        </div>
+        <dl className="maka-inspector-grid maka-inspector-usage-legend">
+          {props.rows.map((row) => (
+            <FactRow
+              key={row.kind}
+              label={row.label}
+              swatch={
+                <span
+                  className="maka-inspector-usage-swatch"
+                  data-usage={row.swatch}
+                  aria-hidden="true"
+                />
+              }
+              value={row.value}
+              active={active === row.kind}
+              dimmed={active !== null && active !== row.kind}
+              onHover={(hovered) => setActive(hovered ? row.kind : null)}
+            />
+          ))}
+        </dl>
+      </div>
+    </VStack>
+  );
+}
+
+/**
+ * The donut itself: one muted track underneath, one arc per segment over it.
+ *
+ * Hover state lives in the section (arcs and legend rows both need it), so
+ * this is a controlled leaf — `active` names the held segment, and every
+ * other arc drops back rather than competing for the eye. The svg is
+ * `aria-hidden`: the legend beside it is the accessible copy of the ring.
+ */
+const RING_OUTER = 50;
+const RING_INNER = 32;
+const RING_TRACK_RADIUS = (RING_OUTER + RING_INNER) / 2;
+
+function UsageRing<
+  K extends InspectorTokenUsageKind | InspectorDurationUsageKind,
+>(props: {
+  arcs: readonly { kind: K; amount: number }[];
+  total: number;
+  active: K | null;
+  onActive: (kind: K | null) => void;
+}) {
+  const arcs = usageRingArcs(props.arcs, props.total, props.active);
+  return (
+    <svg className="maka-inspector-usage-ring-svg" viewBox="0 0 100 100" aria-hidden="true">
+      <circle
+        className="maka-inspector-usage-ring-track"
+        cx={50}
+        cy={50}
+        r={RING_TRACK_RADIUS}
+      />
+      {arcs.map((arc) => (
+        <path
+          key={arc.kind}
+          className="maka-inspector-usage-ring-path"
+          data-usage={arc.kind}
+          d={arc.d}
+          data-dimmed={props.active !== null && props.active !== arc.kind ? 'true' : undefined}
+          onMouseEnter={() => props.onActive(arc.kind)}
+          onMouseLeave={() => props.onActive(null)}
+        />
+      ))}
+    </svg>
+  );
+}
+
+/**
+ * The smallest slice a segment draws: a hairline. A share that rounds to zero
+ * — 35ms of tool time against 77s of model calls — would otherwise sweep
+ * less than a degree and vanish, and a legend row pointing at nothing on the
+ * ring reads as a bug. The hovered segment draws a thin line instead — a step
+ * above the hairline, still nowhere near a real share — so the highlight has
+ * somewhere to land; that is focus feedback, not a re-measurement, and the
+ * legend beside it keeps the true figures.
+ */
+export const RING_MIN_SWEEP = 0.5 / 360;
+export const RING_ACTIVE_MIN_SWEEP = 3 / 360;
+
+/**
+ * One arc per segment, in reading order. Any share under its floor is widened
+ * to it, taking the difference from the shares still above theirs in
+ * proportion; the last segment's end is clamped to the full turn, so neither
+ * the floors nor rounding can leave an unexplained sliver at the seam. A ring
+ * with nothing to measure draws no arcs at all and leaves the muted track
+ * visible.
+ */
+export function usageRingArcs<K extends InspectorTokenUsageKind | InspectorDurationUsageKind>(
+  items: readonly { kind: K; amount: number }[],
+  total: number,
+  active?: K | null,
+): readonly { kind: K; start: number; end: number; d: string }[] {
+  const drawn = items.filter((item) => item.amount > 0);
+  if (drawn.length === 0 || total <= 0) return [];
+  const values = drawn.map((item) => item.amount / total);
+  const mins = drawn.map((item) =>
+    item.kind === active ? RING_ACTIVE_MIN_SWEEP : RING_MIN_SWEEP,
+  );
+  for (let round = 0; round < 2; round += 1) {
+    let deficit = 0;
+    let donorBudget = 0;
+    for (let i = 0; i < values.length; i += 1) {
+      if (values[i] < mins[i]) deficit += mins[i] - values[i];
+      else donorBudget += values[i] - mins[i];
+    }
+    if (deficit === 0 || donorBudget <= 0) break;
+    for (let i = 0; i < values.length; i += 1) {
+      if (values[i] < mins[i]) values[i] = mins[i];
+      else values[i] = mins[i] + (values[i] - mins[i]) * (1 - deficit / donorBudget);
+    }
+  }
+  let cursor = 0;
+  return drawn.map((item, index) => {
+    const start = cursor;
+    const end = index === drawn.length - 1 ? 1 : Math.min(1, cursor + values[index]);
+    cursor = end;
+    return { kind: item.kind, start, end, d: ringSectorPath(start, end) };
+  });
+}
+
+/** A point on the ring, as SVG coordinates. Fraction 0 sits at 12 o'clock. */
+function ringPoint(radius: number, fraction: number): string {  const angle = fraction * 2 * Math.PI;
+  const x = 50 + radius * Math.sin(angle);
+  const y = 50 - radius * Math.cos(angle);
+  return `${x.toFixed(3)} ${y.toFixed(3)}`;
+}
+
+/**
+ * A donut sector between two fractions of one turn. A single arc cannot
+ * sweep a full circle, so a segment owning everything walks two half-turns
+ * instead — same fill, hairline seam at 12 o'clock where the reading starts.
+ */
+function ringSectorPath(from: number, to: number): string {
+  const turns: readonly (readonly [number, number])[] =
+    to - from >= 0.999_99 ? [[from, from + 0.5], [from + 0.5, to]] : [[from, to]];
+  let d = '';
+  for (const [start, end] of turns) {
+    const largeArc = end - start > 0.5 ? 1 : 0;
+    d += `M ${ringPoint(RING_OUTER, start)} A ${RING_OUTER} ${RING_OUTER} 0 ${largeArc} 1 ${ringPoint(RING_OUTER, end)} `;
+    d += `L ${ringPoint(RING_INNER, end)} A ${RING_INNER} ${RING_INNER} 0 ${largeArc} 0 ${ringPoint(RING_INNER, start)} Z `;
+  }
+  return d.trim();
+}
+
+/**
  * One legend row: band, figure.
  *
  * The share column is gone — the bar IS the share, and the section readout
@@ -334,10 +578,27 @@ function InspectorOverviewStat(props: { label: string; value: ReactNode }) {
  * number columns per row was what made this read as a spreadsheet; what is
  * left is name-left / number-right, the same skeleton as a step row, so the
  * whole panel scans on one rhythm.
+ *
+ * `active`/`dimmed`/`onHover` are the ring-linking hooks: hovering a row
+ * lights its arc and vice versa. They are opt-in, so the context and
+ * composition legends stay non-interactive.
  */
-function FactRow(props: { label: ReactNode; value: ReactNode; swatch?: ReactNode }) {
+function FactRow(props: {
+  label: ReactNode;
+  value: ReactNode;
+  swatch?: ReactNode;
+  active?: boolean;
+  dimmed?: boolean;
+  onHover?: (hovered: boolean) => void;
+}) {
   return (
-    <div className="maka-inspector-grid-row">
+    <div
+      className="maka-inspector-grid-row"
+      data-active={props.active || undefined}
+      data-dimmed={props.dimmed || undefined}
+      onMouseEnter={props.onHover ? () => props.onHover?.(true) : undefined}
+      onMouseLeave={props.onHover ? () => props.onHover?.(false) : undefined}
+    >
       <dt>
         {props.swatch}
         {props.label}

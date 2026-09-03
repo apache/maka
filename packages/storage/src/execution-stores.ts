@@ -369,6 +369,13 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
       readWorkHubSupersession: (delegationId) =>
         run(() => sessionStore.readWorkHubSupersession(delegationId)),
+      readWorkHubStopRequest: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
+      readWorkHubStopResolution: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
+      readWorkHubActionClaim: (actionId) =>
+        run(() => sessionStore.readWorkHubActionClaim(actionId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
@@ -437,6 +444,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
       hasCancelledMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.hasCancelledMessageAdmission(sessionId, messageId)),
+      claimMessageAdmissionCancellation: (sessionId, messageId, claimId) =>
+        run(() => sessionStore.claimMessageAdmissionCancellation(sessionId, messageId, claimId)),
       listMessageAdmissions: (sessionId) =>
         run(() => sessionStore.listMessageAdmissions(sessionId)),
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),

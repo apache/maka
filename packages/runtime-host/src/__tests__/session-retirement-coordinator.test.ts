@@ -41,6 +41,7 @@ import type { ConnectionContext } from '../server/operation-dispatcher.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
 import { MemoryExtractionSessionLane } from '../server/memory-extraction-session-lane.js';
 import { HostSessionRetirementCoordinator } from '../server/session-retirement-coordinator.js';
+import { purgeSessionSidecars } from '../server/session-sidecar-purge.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 const CONNECTION_CONTEXT: ConnectionContext = {
@@ -51,6 +52,37 @@ const CONNECTION_CONTEXT: ConnectionContext = {
 };
 
 describe('Host Session retirement coordinator', () => {
+  test('retires context refs before draining every physical garbage batch', async () => {
+    const contextActions: string[] = [];
+    let garbageBatches = 0;
+    await purgeSessionSidecars(
+      {
+        artifacts: { purgeSessionArtifacts: async () => {} },
+        sessionTodo: { purgeSessionState: async () => {} },
+        contextOffload: {
+          retireSession: async (sessionId) => {
+            contextActions.push(`retire:${sessionId}`);
+            return { releasedReferences: 1, releasedLogicalBytes: 10 };
+          },
+          collectGarbage: async (input) => {
+            contextActions.push(`collect:${input.maxBlobs}`);
+            garbageBatches += 1;
+            return { deletedBlobs: 1, deletedBytes: 10, hasMore: garbageBatches < 3 };
+          },
+        },
+        purgeOperationalState: async () => {},
+      },
+      'session-context',
+    );
+
+    assert.deepEqual(contextActions, [
+      'retire:session-context',
+      'collect:64',
+      'collect:64',
+      'collect:64',
+    ]);
+  });
+
   test('rejects ordinary archive and remove operations for the Coordination Session', async () => {
     await withHarness(async (harness) => {
       const created = await harness.store.createStableSession({
@@ -239,7 +271,7 @@ describe('Host Session retirement coordinator', () => {
         'parent retirement cleanup did not converge',
       );
       assert.deepEqual(new Set(harness.actions.purgedArtifacts), new Set(harness.familyIds));
-      assert.deepEqual(new Set(harness.actions.checkedContext), new Set(harness.familyIds));
+      assert.deepEqual(new Set(harness.actions.retiredContext), new Set(harness.familyIds));
     });
   });
 
@@ -1027,7 +1059,7 @@ interface RetirementActions {
   readonly retiredCapabilities: string[];
   readonly retiredMessages: string[];
   readonly purgedArtifacts: string[];
-  readonly checkedContext: string[];
+  readonly retiredContext: string[];
   readonly purgedTasks: string[];
   readonly purgedOperationalState: string[];
   readonly purgedAgentGraphs: string[];
@@ -1066,7 +1098,7 @@ async function withHarness(
       retiredCapabilities: [],
       retiredMessages: [],
       purgedArtifacts: [],
-      checkedContext: [],
+      retiredContext: [],
       purgedTasks: [],
       purgedOperationalState: [],
       purgedAgentGraphs: [],
@@ -1232,8 +1264,12 @@ async function withHarness(
           actions.purgedTasks.push(sessionId);
         },
       },
-      assertNoContextOffloadReferences: async (sessionIds) => {
-        actions.checkedContext.push(...sessionIds);
+      contextOffload: {
+        retireSession: async (sessionId) => {
+          actions.retiredContext.push(sessionId);
+          return { releasedReferences: 0, releasedLogicalBytes: 0 };
+        },
+        collectGarbage: async () => ({ deletedBlobs: 0, deletedBytes: 0, hasMore: false }),
       },
       purgeOperationalState: async (sessionId) => {
         actions.purgedOperationalState.push(sessionId);

@@ -71,3 +71,12 @@
   max-height: 80vh;
 }
 
+/* LayoutFooter owns padding but deliberately has no action layout. Give only
+   direct button groups a shared gap; wrapped HStacks keep their own sizing and
+   alignment semantics. */
+.astryx-layout-footer > div:has(> button) {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}

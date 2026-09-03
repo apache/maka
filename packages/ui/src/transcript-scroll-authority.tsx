@@ -263,7 +263,10 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
             next.closest(TRANSCRIPT_SELECTOR) !== null && isOutsideViewport(next),
         };
       };
-      const focusEventRoot = target.ownerDocument;
+      // The production root always has an ownerDocument. Keep the fallback for
+      // the lightweight root used by the state-machine tests and other DOM
+      // adapters that only implement the scroller surface.
+      const focusEventRoot = target.ownerDocument || target;
       focusEventRoot.addEventListener('focusout', onFocusOut, true);
       const onFocusIn = (event: FocusEvent): void => {
         if (!(event.target instanceof HTMLElement)) {

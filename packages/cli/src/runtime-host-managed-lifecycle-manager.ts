@@ -365,7 +365,7 @@ function presentationManager(
   config: RuntimeHostManagedDeploymentConfig,
 ): Exclude<RuntimeHostManagedServiceStatus['manager'], 'none'> {
   if (config.lifecycle.mode === 'on_demand') return 'on_demand';
-  return config.lifecycle.provider === 'systemd_user' ? 'systemd_user' : 'launch_agent';
+  return config.lifecycle.provider;
 }
 
 function projectLegacyConfig(

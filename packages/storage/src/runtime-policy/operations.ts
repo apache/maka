@@ -160,7 +160,7 @@ export interface InteractiveOAuthLoginTicket {
 
 export type InteractiveOAuthLoginProvider = Extract<
   ConnectionCatalogEntry['providerType'],
-  'openai-codex' | 'xai-oauth'
+  'openai-codex' | 'xai-oauth' | 'github-copilot'
 >;
 
 export type InteractiveOAuthLoginTarget =
@@ -280,6 +280,10 @@ export type BeginConnectionOnboardingResult =
   | { readonly kind: 'target_missing' }
   | { readonly kind: 'provider_unsupported' }
   | { readonly kind: 'catalog_full' }
+  // The create target's caller-requested slug already belongs to another
+  // connection. Nothing is derived or renamed silently — the caller picks a
+  // different slug (or omits it for the derived identity) and retries.
+  | { readonly kind: 'slug_taken' }
   | {
       readonly kind: 'ready';
       readonly ticket: ConnectionOnboardingTicket;
@@ -326,6 +330,10 @@ export type CommitConnectionOnboardingResult =
   // The explicitly targeted connection no longer exists (or changed provider
   // type) between the caller's snapshot and this commit.
   | { readonly kind: 'target_missing' }
+  // The create target's caller-requested slug was taken between begin and
+  // this commit. A derived slug colliding stays `superseded` — a retry
+  // re-derives — but a requested slug is the caller's choice to fix.
+  | { readonly kind: 'slug_taken' }
   // The discovery basis (connection revision, credential, or proxy) changed
   // between begin and complete: committing would bind another endpoint or
   // credential to a model inventory it never produced.

@@ -32,7 +32,7 @@ export const OAUTH_PRESENTATION_SERVICE_ID = 'oauth_presentation';
 export const OAUTH_PRESENTATION_SERVICE_VERSION = '1';
 export const OAUTH_PRESENTATION_URL_MAX_LENGTH = 8_192;
 export const OAUTH_PRESENTATION_STATE_HINT_MAX_LENGTH = 1_024;
-export const OAUTH_LOGIN_PROVIDERS = ['openai-codex', 'xai-oauth'] as const;
+export const OAUTH_LOGIN_PROVIDERS = ['openai-codex', 'xai-oauth', 'github-copilot'] as const;
 export const OAUTH_LOGIN_PHASES = [
   'awaiting_authorization',
   'exchanging',
@@ -88,6 +88,17 @@ export interface OAuthLoginProjection {
   readonly connection: OAuthConnectionIdentity;
   readonly phase: OAuthLoginPhase;
   readonly failure?: OAuthLoginFailureCode;
+}
+
+export interface OAuthEnrollmentQueryInput {
+  readonly provider: OAuthLoginProvider;
+}
+
+// The Host is the sole authority on whether a provider may enrol on this
+// install; the renderer asks rather than keeping a second copy of the gate.
+export interface OAuthEnrollmentProjection {
+  readonly provider: OAuthLoginProvider;
+  readonly enabled: boolean;
 }
 
 export interface OAuthLoginStartInput {
@@ -146,6 +157,17 @@ export const OAUTH_OPERATION_SPECS = {
     decodeOutput: decodeOAuthLoginProjection,
     assertOutputForInput: assertOAuthAttemptOutput,
   }),
+  'oauth.enrollment.query': defineOperation<
+    OAuthEnrollmentQueryInput,
+    OAuthEnrollmentProjection,
+    (typeof COMMON_ERRORS)[number]
+  >({
+    mode: 'query',
+    availability: 'ready',
+    errors: COMMON_ERRORS,
+    decodeInput: decodeOAuthEnrollmentQueryInput,
+    decodeOutput: decodeOAuthEnrollmentProjection,
+  }),
 } as const;
 
 export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput {
@@ -159,6 +181,25 @@ export function decodeOAuthLoginStartInput(value: unknown): OAuthLoginStartInput
 export function decodeOAuthLoginAttemptInput(value: unknown): OAuthLoginAttemptInput {
   const input = requireExactRecord(value, 'OAuth login attempt input', ['attemptId']);
   return { attemptId: requireEntityId(input.attemptId, 'attemptId') };
+}
+
+export function decodeOAuthEnrollmentQueryInput(value: unknown): OAuthEnrollmentQueryInput {
+  const input = requireExactRecord(value, 'OAuth enrollment query input', ['provider']);
+  return { provider: oauthLoginProvider(input.provider) };
+}
+
+export function decodeOAuthEnrollmentProjection(value: unknown): OAuthEnrollmentProjection {
+  const projection = requireExactRecord(value, 'OAuth enrollment projection', [
+    'provider',
+    'enabled',
+  ]);
+  if (typeof projection.enabled !== 'boolean') {
+    throw invalidProtocolFrame('Invalid OAuth enrollment projection');
+  }
+  return {
+    provider: oauthLoginProvider(projection.provider),
+    enabled: projection.enabled,
+  };
 }
 
 export function decodeOAuthLoginProjection(value: unknown): OAuthLoginProjection {

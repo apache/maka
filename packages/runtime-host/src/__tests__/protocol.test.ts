@@ -140,6 +140,10 @@ describe('Runtime Host bootstrap protocol', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 78);
   });
 
+  test('publishes a new compatibility epoch for Read image Session context refs', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 95);
+  });
+
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
     assert.throws(
       () =>
@@ -242,6 +246,13 @@ describe('Runtime Host bootstrap protocol', () => {
     // Side Conversation adds another closed branch-copy input and therefore
     // needs its own later handshake boundary.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 47);
+  });
+
+  test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
+    // Main is at 101 and open PRs already claim 102. The new OAuth provider,
+    // enrollment query, and onboarding credential shape change the closed wire
+    // vocabulary, so this branch re-derives the first unclaimed epoch.
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 102);
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {
@@ -416,6 +427,10 @@ describe('Runtime Host bootstrap protocol', () => {
 
   test('publishes a new compatibility epoch for catalog model-facts provenance', () => {
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 79);
+  });
+
+  test('publishes a new compatibility epoch for the optional conversation-copy sourceTurnId', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
   });
 
   test('selects the highest mutually supported protocol and rejects a gap', () => {
@@ -2131,6 +2146,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a bounded live Direct peer endpoint through Host status', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 94);
     const status = {
       hostEpoch: 'epoch-1',
       compositionId: 'maka.interactive',
@@ -2140,9 +2156,17 @@ describe('Runtime Host bootstrap protocol', () => {
       activeOperations: 0,
       activeResidencies: 0,
       peerEndpoint: {
-        peerId: '12D3KooWhost',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        lease: {
+          version: 1,
+          peerId: '12D3KooWhost',
+          revision: 1,
+          issuedAt: 1,
+          expiresAt: 2,
+          directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRoutes: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        },
+        publicKey: 'AA',
+        signature: 'AA',
       },
     };
     assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
@@ -2151,10 +2175,13 @@ describe('Runtime Host bootstrap protocol', () => {
         ...status,
         peerEndpoint: {
           ...status.peerEndpoint,
-          coordinationRelays: [
-            status.peerEndpoint.coordinationRelays[0],
-            status.peerEndpoint.coordinationRelays[0],
-          ],
+          lease: {
+            ...status.peerEndpoint.lease,
+            coordinationRoutes: [
+              status.peerEndpoint.lease.coordinationRoutes[0],
+              status.peerEndpoint.lease.coordinationRoutes[0],
+            ],
+          },
         },
       }),
     );

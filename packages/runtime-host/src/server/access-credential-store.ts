@@ -88,6 +88,7 @@ export const SESSION_GUEST_OPERATION_GRANTS = Object.freeze([
   'collaboration.turn-request.create',
   'collaboration.turn-request.acknowledge',
   'collaboration.turn-request.query',
+  'collaboration.turn-request.withdraw',
   'runtime.resource.query',
   'session.shared.query',
   'subscription.open',

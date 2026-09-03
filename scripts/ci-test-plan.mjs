@@ -88,6 +88,9 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
   'scripts/windows-package-source-closure.test.mjs',
+  // Reads the filter that closure test compares against, and `check:release`
+  // is the only gate that runs it against `release-windows-check.yml`.
+  'scripts/workflow-pull-request-paths.mjs',
 ]);
 
 // What decides whether a build can read durable state an earlier release wrote.
@@ -531,23 +534,6 @@ export function planTests(changedFiles, options = {}) {
   };
 }
 
-export function requiresHeavyValidation(plan) {
-  return Boolean(
-    plan.appIcons ||
-      plan.asfSource ||
-      plan.astryxSurface ||
-      plan.cliPackage ||
-      plan.code ||
-      plan.e2e ||
-      plan.releaseContract ||
-      plan.runtimeHost ||
-      plan.runtimeSandbox ||
-      plan.stateRootCompat ||
-      plan.storybook ||
-      plan.standardWorkspaces.length > 0,
-  );
-}
-
 export function formatGitHubOutputs(plan) {
   return [
     `app_icons=${plan.appIcons}`,
@@ -556,7 +542,6 @@ export function formatGitHubOutputs(plan) {
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
-    `heavy=${requiresHeavyValidation(plan)}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,

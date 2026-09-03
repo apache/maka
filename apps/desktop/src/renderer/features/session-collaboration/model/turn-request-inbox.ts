@@ -17,7 +17,11 @@
  * under the License.
  */
 
-import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
+import type {
+  SessionTurnAccessRequest,
+  SessionTurnRequestIntent,
+} from '@maka/runtime-host/protocol';
+import { userFacingText, type StoredMessage } from '@maka/core/session';
 
 export function groupPendingTurnRequests(
   requests: readonly SessionTurnAccessRequest[],
@@ -51,12 +55,75 @@ export function samePendingTurnRequests(
     return candidate !== undefined &&
       request.requestId === candidate.requestId &&
       request.intent.sessionId === candidate.intent.sessionId &&
-      request.intent.content.text === candidate.intent.content.text;
+      sameTurnRequestIntent(request.intent, candidate.intent);
   });
+}
+
+export function describeTurnRequestIntent(
+  intent: SessionTurnRequestIntent,
+  regenerateLabel: string,
+): string {
+  return 'content' in intent ? intent.content.text : regenerateLabel;
+}
+
+export function describeOwnerTurnRequestIntent(
+  intent: SessionTurnRequestIntent,
+  messages: readonly StoredMessage[],
+  regenerateLabel: string,
+): string {
+  if ('content' in intent) return intent.content.text;
+  const sourceUserMessage = messages.find(
+    (message): message is Extract<StoredMessage, { type: 'user' }> =>
+      message.type === 'user' && message.turnId === intent.sourceTurnId,
+  );
+  const sourceText = sourceUserMessage
+    ? userFacingText(sourceUserMessage)
+    : messages.find(
+        (message): message is Extract<StoredMessage, { type: 'assistant' }> =>
+          message.type === 'assistant' && message.turnId === intent.sourceTurnId,
+      )?.text;
+  return sourceText?.trim() ? `${regenerateLabel}: ${sourceText.trim()}` : regenerateLabel;
 }
 
 export function turnRequestPreview(text: string, maxLength = 120): string {
   const collapsed = text.replace(/\s+/gu, ' ').trim();
   if (collapsed.length <= maxLength) return collapsed;
   return `${collapsed.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+}
+
+export function turnRequestStateLabel(
+  request: SessionTurnAccessRequest,
+  copy: {
+    readonly turnRequestPending: string;
+    readonly turnRequestRejected: string;
+    readonly turnRequestApproved: string;
+    readonly turnRequestStarted: string;
+    readonly turnRequestBlocked: string;
+    readonly turnRequestFailed: string;
+  },
+): string {
+  if (request.state.kind === 'pending') return copy.turnRequestPending;
+  if (request.state.kind === 'rejected') return copy.turnRequestRejected;
+  if (request.state.admission === 'pending') return copy.turnRequestApproved;
+  if (request.state.admission === 'started') return copy.turnRequestStarted;
+  if (request.state.admission === 'blocked') return copy.turnRequestBlocked;
+  return copy.turnRequestFailed;
+}
+
+function sameTurnRequestIntent(
+  left: SessionTurnRequestIntent,
+  right: SessionTurnRequestIntent,
+): boolean {
+  if ('content' in left) {
+    return (
+      'content' in right &&
+      left.turnId === right.turnId &&
+      left.content.text === right.content.text
+    );
+  }
+  return (
+    !('content' in right) &&
+    left.turnId === right.turnId &&
+    left.sourceTurnId === right.sourceTurnId
+  );
 }

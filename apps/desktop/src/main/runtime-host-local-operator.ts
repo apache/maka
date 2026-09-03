@@ -425,7 +425,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
               ? ['--expected-host-json', JSON.stringify(command.expectedHost)]
               : []),
             ...managedTargetArgs(command.target),
-            ...(command.allowManualUpdate ? ['--allow-manual-update'] : []),
+            ...(command.allowManualUpdate && targetVersion ? ['--allow-manual-update'] : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
           ],
         },

@@ -31,12 +31,21 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import {
-  changedFilesBetween,
-  formatGitHubOutputs,
-  planTests,
-  requiresHeavyValidation,
-} from './ci-test-plan.mjs';
+import { changedFilesBetween, formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
+
+/**
+ * Every surface a plan selected, read off the plan itself rather than from a
+ * list of the ones worth naming. `assert.deepEqual(selections(plan), [])` is
+ * therefore the whole "this change costs nothing" claim, and a selection added
+ * later joins it without anyone editing these tests.
+ */
+function selections(plan) {
+  return Object.entries(plan)
+    .filter(([key]) => key !== 'workspaces')
+    .filter(([, value]) => (Array.isArray(value) ? value.length > 0 : Boolean(value)))
+    .map(([key]) => key)
+    .sort();
+}
 
 const dirs = [
   'packages/core',
@@ -62,34 +71,29 @@ const graph = {
   testDirs: new Set(dirs),
 };
 
-test('documentation-only changes do not select code validation', () => {
+test('documentation-only changes select nothing at all', () => {
   const plan = planTests(['docs/ci.md'], { graph });
 
-  assert.equal(plan.code, false);
-  assert.equal(plan.asfSource, false);
-  assert.equal(plan.astryxSurface, false);
-  assert.equal(requiresHeavyValidation(plan), false);
+  assert.deepEqual(selections(plan), []);
   assert.deepEqual(plan.workspaces, []);
 });
 
-test('documentation inside workspaces does not select heavy validation', () => {
+test('documentation inside workspaces selects nothing at all', () => {
   for (const path of ['packages/runtime/README.md', 'apps/desktop/README.md']) {
     const plan = planTests([path], { graph });
 
-    assert.equal(plan.code, false, path);
-    assert.equal(requiresHeavyValidation(plan), false, path);
+    assert.deepEqual(selections(plan), [], path);
     assert.deepEqual(plan.workspaces, [], path);
   }
 });
 
-test('mixed documentation and code changes still select heavy validation', () => {
+test('mixed documentation and code changes still select code validation', () => {
   const plan = planTests(['README.md', 'packages/core/src/index.ts'], { graph });
 
   assert.equal(plan.code, true);
-  assert.equal(requiresHeavyValidation(plan), true);
 });
 
-test('documentation with a dedicated contract still selects heavy validation', () => {
+test('documentation with a dedicated contract still selects that contract', () => {
   for (const path of [
     'LICENSE',
     'docs/astryx-surface-file-inventory.md',
@@ -98,7 +102,7 @@ test('documentation with a dedicated contract still selects heavy validation', (
     const plan = planTests([path], { graph });
 
     assert.equal(plan.code, false, path);
-    assert.equal(requiresHeavyValidation(plan), true, path);
+    assert.notDeepEqual(selections(plan), [], path);
   }
 });
 
@@ -117,7 +121,7 @@ test('changed files are derived from the PR merge base', () => {
   const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
 
   assert.deepEqual(changedFiles, ['packages/runtime/README.md']);
-  assert.equal(requiresHeavyValidation(planTests(changedFiles, { graph })), false);
+  assert.deepEqual(selections(planTests(changedFiles, { graph })), []);
   assert.deepEqual(calls, [
     ['merge-base', 'main-now', 'pr-head'],
     ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRDT', 'fork-point', 'pr-head'],
@@ -134,7 +138,7 @@ test('type changes remain in the PR-owned delta', () => {
   const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
 
   assert.deepEqual(changedFiles, ['packages/runtime/src/runtime.ts']);
-  assert.equal(requiresHeavyValidation(planTests(changedFiles, { graph })), true);
+  assert.equal(planTests(changedFiles, { graph }).code, true);
 });
 
 test('the Astryx inventory can run without selecting the code suite', () => {

@@ -48,22 +48,25 @@ test('validation consumers download the artifact produced by the build job', () 
 
 test('CLI validation qualifies exact published State Roots without weakening artifact identity', () => {
   const workflow = readWorkflow('cli-package-validation.yml');
-  // The predecessor is resolved on the job that already waits on the addon
-  // builds, so the exported identity comes from `build` rather than a job of
-  // its own. The exported names are the contract callers hold.
+  // The predecessor is resolved on the only job that reads it, rather than on
+  // `build`, where a registry blip forfeited the most expensive job in the
+  // workflow and everything downstream of it. The exported names are the
+  // contract callers hold; the job behind them is not, because a reusable
+  // workflow publishes its outputs only once every job has finished.
   assert.match(
     workflow,
-    /release_predecessor_version:[\s\S]*?value: \$\{\{ jobs\.build\.outputs\.release_predecessor_version \}\}/u,
+    /release_predecessor_version:[\s\S]*?value: \$\{\{ jobs\.state-root-qualification\.outputs\.release_predecessor_version \}\}/u,
   );
   assert.match(
     workflow,
-    /release_predecessor_integrity:[\s\S]*?jobs\.build\.outputs\.release_predecessor_integrity/u,
+    /release_predecessor_integrity:[\s\S]*?jobs\.state-root-qualification\.outputs\.release_predecessor_integrity/u,
   );
   assert.match(
     workflow,
     /id: predecessor\n\s+run: node scripts\/release-cli-publication\.mjs resolve-nightly-predecessor "\$GITHUB_OUTPUT"/u,
   );
   assert.match(workflow, /state-root-qualification:\n[\s\S]*?needs: build\n/u);
+  assert.doesNotMatch(workflow, /needs\.build\.outputs\.release_predecessor/u);
 
   // Both frozen transitions keep their exact digests and the epoch relation
   // each one exists to prove. They are positional arguments now, so anchor on
@@ -82,13 +85,13 @@ test('CLI validation qualifies exact published State Roots without weakening art
   // `workflow_call` output, so callers hold it too.
   assert.match(
     workflow,
-    /release_predecessor_tarball_url:[\s\S]*?value: \$\{\{ jobs\.build\.outputs\.release_predecessor_tarball_url \}\}/u,
+    /release_predecessor_tarball_url:[\s\S]*?value: \$\{\{ jobs\.state-root-qualification\.outputs\.release_predecessor_tarball_url \}\}/u,
   );
   for (const name of ['tarball_url', 'integrity']) {
     assert.match(
       workflow,
       new RegExp(
-        `PREDECESSOR_${name.toUpperCase()}: \\$\\{\\{ needs\\.build\\.outputs\\.release_predecessor_${name} \\}\\}`,
+        `PREDECESSOR_${name.toUpperCase()}: \\$\\{\\{ steps\\.predecessor\\.outputs\\.${name} \\}\\}`,
         'u',
       ),
       name,
@@ -111,12 +114,59 @@ test('CLI validation qualifies exact published State Roots without weakening art
   assert.match(qualify, /source_integrity/u);
   assert.match(qualify, /createHash\('sha512'\)/u);
   assert.match(qualify, /source_sha256="\$\(sha256sum/u);
+  // The candidate is the only transition a pull request can influence, and the
+  // three share one `set -e`, so it runs before either frozen tarball is
+  // fetched. Read as positions in the script rather than restated, so a
+  // reordering fails here instead of silently moving it back behind a `curl`.
+  const script = [
+    'current-nightly-predecessor-to-candidate',
+    'cross-epoch-74-to-76',
+    'same-epoch-76',
+  ].map((slug) => qualify.indexOf(`qualify ${slug}`));
+  assert.ok(
+    script.every((index) => index >= 0),
+    'a declared State Root transition is no longer invoked',
+  );
+  assert.deepEqual(
+    [...script].sort((left, right) => left - right),
+    script,
+  );
+
   const preserve = namedStep(steps, 'Preserve the qualification reports');
-  assert.match(preserve, /if-no-files-found: error/u);
+  // `error` on a green run, where an empty directory means a broken path, and
+  // `warn` on a red one: paired with `if: always()`, a plain `error` turned a
+  // `curl` that failed before any `tee` into a second red on an already-red
+  // job.
+  assert.match(
+    preserve,
+    /if-no-files-found: \$\{\{ job\.status == 'success' && 'error' \|\| 'warn' \}\}/u,
+  );
   const freshness = namedStep(steps, 'Require the qualified Nightly predecessor to remain current');
   assert.match(freshness, /assert-nightly-predecessor/u);
-  assert.match(freshness, /needs\.build\.outputs\.release_predecessor_version/u);
+  assert.match(freshness, /steps\.predecessor\.outputs\.version/u);
   assert.ok(steps.indexOf(freshness) > steps.indexOf(preserve));
+});
+
+test('both supported Node versions validate the tarball even when the first fails', () => {
+  // One runner and one tarball, so the two Node versions are two steps rather
+  // than two jobs. Without this the first failing would end the job and the
+  // second would never run at all — the matrix these replaced set
+  // `fail-fast: false` for exactly that.
+  const steps = workflowSteps(readWorkflow('cli-package-validation.yml'));
+  const first = namedStep(steps, 'Validate the installed tarball');
+  assert.match(first, /id: first-node-smoke/u);
+  assert.match(first, /continue-on-error: true/u);
+
+  const second = namedStep(steps, 'Validate the installed tarball on the second Node');
+  assert.match(second, /if: matrix\.second_node != ''/u);
+  assert.ok(steps.indexOf(second) > steps.indexOf(first));
+
+  // `continue-on-error` alone would report a failing first Node as green, and
+  // without `always()` a failing second Node would swallow it instead.
+  const report = namedStep(steps, 'Report the first Node result');
+  assert.match(report, /if: always\(\) && steps\.first-node-smoke\.outcome != 'success'/u);
+  assert.match(report, /exit 1/u);
+  assert.ok(steps.indexOf(report) > steps.indexOf(second));
 });
 
 test('npm mutations revalidate the exact qualified Nightly predecessor', () => {

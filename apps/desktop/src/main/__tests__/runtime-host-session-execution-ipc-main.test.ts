@@ -194,7 +194,7 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
   const calls: Array<{
     kind: "branch" | "revision";
     targetSessionId: string;
-    sourceTurnId: string;
+    sourceTurnId: string | undefined;
   }> = [];
   let fallbackIds = 0;
   const ipc = ipcHarness();
@@ -237,25 +237,23 @@ test("retries committed Branch and Revision copies with the renderer-owned ident
     {
       channel: "sessions:branchFromTurn",
       copyId: "branch-copy-1",
-      sourceTurnId: "branch-source-turn",
+      payload: { sourceTurnId: "branch-source-turn", copyId: "branch-copy-1" },
     },
     {
       channel: "sessions:reviseBeforeTurn",
       copyId: "revision-copy-1",
-      sourceTurnId: "revision-source-turn",
+      payload: { sourceTurnId: "revision-source-turn", copyId: "revision-copy-1" },
     },
   ] as const) {
     await assert.rejects(
-      ipc.invoke(input.channel, "source-session", {
-        sourceTurnId: input.sourceTurnId,
-        copyId: input.copyId,
-      }),
+      ipc.invoke(input.channel, "source-session", input.payload),
       /response was lost/,
     );
-    const retried = (await ipc.invoke(input.channel, "source-session", {
-      sourceTurnId: input.sourceTurnId,
-      copyId: input.copyId,
-    })) as { id: string };
+    const retried = (await ipc.invoke(
+      input.channel,
+      "source-session",
+      input.payload,
+    )) as { id: string };
     assert.equal(retried.id, input.copyId);
   }
 

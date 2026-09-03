@@ -658,11 +658,11 @@ export function RuntimeHostProfilesSection(props: {
                         : profile.transport.kind === "libp2p-direct"
                           ? (
                               <PeerMeshPeerIdButton
-                                peerId={profile.transport.peerId}
-                                displayValue={abbreviatePeerId(profile.transport.peerId)}
+                                peerId={profile.transport.reachability.lease.peerId}
+                                displayValue={abbreviatePeerId(profile.transport.reachability.lease.peerId)}
                                 copyLabel={locale.startsWith('zh')
-                                  ? `复制完整 Peer ID：${profile.transport.peerId}`
-                                  : `Copy full Peer ID: ${profile.transport.peerId}`}
+                                  ? `复制完整 Peer ID：${profile.transport.reachability.lease.peerId}`
+                                  : `Copy full Peer ID: ${profile.transport.reachability.lease.peerId}`}
                                 copiedTitle={locale.startsWith('zh') ? 'Peer ID 已复制' : 'Peer ID copied'}
                                 failedTitle={locale.startsWith('zh') ? '无法复制 Peer ID' : 'Could not copy Peer ID'}
                                 errorMessage={(error) => settingsActionErrorMessage(error, locale)}

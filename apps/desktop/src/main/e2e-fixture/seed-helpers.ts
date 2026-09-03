@@ -33,6 +33,7 @@ import { createSqliteSessionMetadataStore } from '@maka/storage/sqlite-session-m
 export const E2E_FIXTURE_NOW = Date.UTC(2026, 4, 22, 3, 0, 0);
 
 export const TURN_SESSION_ID = 'e2e-fixture-turn';
+export const AGENT_GRAPH_SESSION_ID = 'e2e-fixture-agent-graph';
 export const PROMPT_RAIL_SESSION_ID = 'e2e-fixture-prompt-rail';
 export const PARTIAL_HISTORY_SESSION_ID = 'e2e-fixture-partial-history';
 export const OVERSIZED_TURN_SESSION_ID = 'e2e-fixture-oversized-turn';

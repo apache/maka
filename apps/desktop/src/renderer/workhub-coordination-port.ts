@@ -37,20 +37,12 @@ import type {
   OperationOutcome,
   OperationError,
 } from '@maka/runtime-host/protocol';
-import { boundedWorkHubTimelineText } from './workhub-controller.js';
+import { boundedWorkHubTimelineText, WorkHubCoordinationFailure } from './workhub-controller.js';
+
+export { WorkHubCoordinationFailure };
 import type { WorkHubDesktopTranscriptBridge } from './workhub-session-port.js';
 
 const WORKHUB_COORDINATION_TURN_LIMIT = 40;
-
-export class WorkHubCoordinationFailure extends Error {
-  constructor(
-    readonly code: OperationError<'workhub.coordination.act'>['code'],
-    message: string,
-  ) {
-    super(message);
-    this.name = 'WorkHubCoordinationFailure';
-  }
-}
 
 export function createDesktopWorkHubCoordinationPort(deps: {
   sessionId: string;
@@ -201,13 +193,36 @@ export function projectWorkHubCoordinationTurns(
   );
   const turns: WorkHubCoordinationTurn[] = [];
   const latestUserIndexByTurnId = new Map<string, number>();
-  const terminalLinkState = new Map<string, 'superseded' | 'aborted'>();
+  const terminalLinkState = new Map<string, 'superseded' | 'aborted' | 'stopped'>();
+  const stopResolutionByDelegationId = new Map(
+    messages.flatMap((message) =>
+      message.type === 'workhub_coordination' && message.kind === 'delegation_stop_resolved'
+        ? [[message.stopsDelegationId, message] as const]
+        : [],
+    ),
+  );
   for (const message of messages) {
     const terminal = terminalDelegationLink(message);
     if (terminal) terminalLinkState.set(terminal.delegationId, terminal.state);
   }
 
   for (const message of messages) {
+    if (message.type === 'workhub_coordination' && message.kind === 'delegation_stop_requested') {
+      const resolution = stopResolutionByDelegationId.get(message.stopsDelegationId);
+      turns.push({
+        messageId: message.id,
+        turnId: message.coordinationTurnId,
+        text: boundedWorkHubTimelineText(message.userText),
+        state: resolution ? 'completed' : 'running',
+        stop: {
+          targetSessionId: message.targetSessionId,
+          targetSessionName: message.targetSessionName,
+          ...(resolution ? { outcome: resolution.outcome } : {}),
+        },
+        updatedAt: resolution ? Math.max(message.ts, resolution.ts) : message.ts,
+      });
+      continue;
+    }
     if (message.type === 'workhub_coordination' && message.kind === 'delegation_assigned') {
       turns.push({
         messageId: message.id,
@@ -262,13 +277,16 @@ export function projectWorkHubCoordinationTurns(
 
 function terminalDelegationLink(
   message: StoredMessage,
-): { readonly delegationId: string; readonly state: 'superseded' | 'aborted' } | undefined {
+): { readonly delegationId: string; readonly state: 'superseded' | 'aborted' | 'stopped' } | undefined {
   if (message.type !== 'workhub_coordination') return undefined;
   if (message.kind === 'delegation_superseded') {
     return { delegationId: message.supersededDelegationId, state: 'superseded' };
   }
   if (message.kind === 'delegation_replacement_aborted') {
     return { delegationId: message.abortedDelegationId, state: 'aborted' };
+  }
+  if (message.kind === 'delegation_stop_resolved' && message.outcome !== 'not_owned') {
+    return { delegationId: message.stopsDelegationId, state: 'stopped' };
   }
   return undefined;
 }

@@ -248,10 +248,22 @@ function runtimeCommitSinkFromEventStore(
     : undefined;
 }
 
-export interface StopSessionInput {
-  source?: 'stop_button' | 'graph_supervisor';
-  mode?: BackendStopMode;
-}
+export type StopSessionInput =
+  | {
+      source?: 'stop_button' | 'graph_supervisor';
+      workHubActionId?: never;
+      mode?: BackendStopMode;
+    }
+  | {
+      source: 'workhub_direct_stop';
+      workHubActionId: string;
+      mode?: BackendStopMode;
+    };
+
+export {
+  normalizeStopSessionSource,
+  workHubDirectStopAbortSource,
+} from './session-projection-helpers.js';
 
 export type CompactSessionInput =
   | {

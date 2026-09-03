@@ -36,6 +36,7 @@ import {
 const diagnosticEnvironment = () => ({
   appVersion: '0.1.8',
   buildMode: 'packaged' as const,
+  updateChannel: 'release' as const,
   buildCommit: null,
   electronVersion: '38.0.0',
   nodeVersion: '22.0.0',

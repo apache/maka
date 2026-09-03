@@ -31,7 +31,6 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
-import { hasModelMetadata } from '@maka/core/model-metadata';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -55,11 +54,9 @@ import { SettingsRow } from './settings-section';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
-import { useActionGuard } from './use-action-guard';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
-  useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
@@ -170,7 +167,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -203,24 +199,31 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // A model gets capability switches when Maka cannot describe it otherwise.
   // On a custom OpenAI relay that is every model: the id is whatever the
   // operator chose, so even one that collides with a known name may front
-  // something else entirely. Elsewhere it is the models the bundled metadata
-  // has never heard of — a model newer than this build, or one the user typed
-  // in on a provider whose key cannot call a model-list endpoint, which no
-  // refresh will ever describe (#1584).
+  // something else entirely. Elsewhere it is the models the Host-resolved
+  // catalog entry reports no metadata for — one the user typed in on a provider
+  // whose key cannot call a model-list endpoint, which no refresh will ever
+  // describe (#1584). The entry answers this, not the renderer's bundled table:
+  // the Host owns the catalog and may have refreshed it since this build (#4496).
   //
   // A model that already carries a declaration always keeps its row, or a
   // stale declaration would be uneditable and unclearable.
   const isRelay = isRelayProviderType(connection.providerType);
+  const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
   // commits the whole table in one write.
-  const capabilityModelIds = enabledModelIds.filter(
-    (modelId) =>
-      isRelay ||
-      relayProfileDraft[modelId] !== undefined ||
-      !hasModelMetadata(connection.providerType, modelId),
-  );
+  const capabilityModelIds = enabledModelIds.filter((modelId) => {
+    if (isRelay || relayProfileDraft[modelId] !== undefined) return true;
+    // A missing entry is a model the catalog dropped — a quarantined id the
+    // provider registry filters out of the list but `enabledModelIds` still
+    // carries so the user can untick it — not one the Host failed to describe.
+    // Treating absence as "no metadata" would grow a row `main` never showed;
+    // only a present-but-uncovered entry needs the hand row (the #1584 typed id,
+    // which `savedModelIds` always gives an entry).
+    const entry = entryById.get(modelId);
+    return entry !== undefined && !entry.describedByMetadata;
+  });
   const showsCapabilities = capabilityModelIds.length > 0;
   // The bulk control shares the 思考档位 row's relay gate — it edits exactly
   // that row — and needs repetition to be worth a control at all: with one
@@ -408,8 +411,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {needsOAuth && (
           retired ? (
             <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-          ) : usesGitHubCopilotLogin ? (
-            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
               service={oauthLoginService}
@@ -1022,70 +1023,6 @@ function connectionIssueStatus(tone: StatusSemantic): 'error' | 'success' | 'inf
   return 'info';
 }
 
-function GitHubCopilotReloginNotice(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  return (
-    <RuntimeHostSettingsGenerationBoundary>
-      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
-    </RuntimeHostSettingsGenerationBoundary>
-  );
-}
-
-function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  const host = useRuntimeHostSettingsTarget();
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).detail;
-  // connectGuard stays: it survives this component's renders and is the
-  // cross-render "one connect at a time" record. The `busy` state it used to
-  // mirror is gone — one button, so clickAction's own disable and spinner are
-  // the whole visible story.
-  const connectGuard = useActionGuard<'connect'>();
-  const mountedRef = useMountedRef();
-  const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const loggedIn = props.hasSecret === true;
-  const loading = props.hasSecret === 'loading';
-
-  async function connect() {
-    if (!connectGuard.begin('connect')) return;
-    try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
-      // A same-key Runtime Host replacement remounts this controller through
-      // the generation boundary above. The old import cannot report into, or
-      // refresh, the connection detail now owned by the replacement Host.
-      if (!mountedRef.current) return;
-      if (!result.ok) {
-        reportHostError(copy.copilotImportFailed, result.message);
-        return;
-      }
-      await props.onRelogin();
-    } catch (error) {
-      if (mountedRef.current) {
-        reportHostError(
-          copy.copilotImportFailed,
-          providerPanelActionErrorMessage(error, locale),
-        );
-      }
-    } finally {
-      connectGuard.finish();
-    }
-  }
-
-  return (
-    <Banner
-      status="info"
-      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
-      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
-      endContent={!loading ? (
-          <Button variant="primary" size="sm" clickAction={() => connect()} label={loggedIn ? copy.reimport : copy.importCredential} />
-      ) : undefined} />
-  );
-}
-
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives
 // the SAME shared browser-assisted OAuth flow the catalog cards use, so an
 // expired connection can be re-authorized right where the problem surfaces.
@@ -1137,8 +1074,7 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
-  // Codex's device page has no code in its URL — the user must type the
-  // code shown here, so hiding it makes the re-login impossible to finish.
+  // Device pages without the code in their URL require the surface to show it.
   const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner

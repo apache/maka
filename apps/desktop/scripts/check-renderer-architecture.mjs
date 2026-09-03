@@ -2125,8 +2125,9 @@ function validateViteEntryContract(desktopRoot, violations) {
   };
   const reactCall = pluginCall(0, 'react', 0);
   const dependencyPatchesCall = pluginCall(1, 'dependencyPatchesCachePlugin', 1);
-  const bundledPackagesCall = pluginCall(2, 'bundledNpmPackagesPlugin', 0);
-  const rendererContractCall = pluginCall(3, 'rendererEntryContractPlugin', 1);
+  const workspacePackagesCall = pluginCall(2, 'workspacePackagesPlugin', 1);
+  const bundledPackagesCall = pluginCall(3, 'bundledNpmPackagesPlugin', 0);
+  const rendererContractCall = pluginCall(4, 'rendererEntryContractPlugin', 1);
   const rendererContractRoot = unwrapExpression(rendererContractCall?.arguments[0]);
   const hasPinnedRendererContractRoot =
     rendererContractRoot?.type === 'CallExpression' &&
@@ -2139,6 +2140,7 @@ function validateViteEntryContract(desktopRoot, violations) {
     hasNamedImport(program, 'node:path', 'resolve') &&
     hasDefaultImport(program, '@vitejs/plugin-react', 'react') &&
     hasNamedImport(program, './vite-dependency-patches.js', 'dependencyPatchesCachePlugin') &&
+    hasNamedImport(program, './vite-workspace-packages.js', 'workspacePackagesPlugin') &&
     hasNamedImport(program, './vite-bundled-packages.js', 'bundledNpmPackagesPlugin') &&
     hasNamedImport(
       program,
@@ -2146,10 +2148,12 @@ function validateViteEntryContract(desktopRoot, violations) {
       'rendererEntryContractPlugin',
     );
   const hasPinnedPlugins =
-    pluginElements.length === 4 &&
+    pluginElements.length === 5 &&
     Boolean(reactCall) &&
     Boolean(dependencyPatchesCall) &&
     isIdentifier(dependencyPatchesCall.arguments[0], 'REPO_ROOT') &&
+    Boolean(workspacePackagesCall) &&
+    isIdentifier(workspacePackagesCall.arguments[0], 'REPO_ROOT') &&
     Boolean(bundledPackagesCall) &&
     Boolean(rendererContractCall) &&
     hasPinnedRendererContractRoot;

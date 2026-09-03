@@ -27,6 +27,7 @@ import { app, clipboard, dialog, ipcMain } from 'electron';
 import { join } from 'node:path';
 import { resolveBuildInfo } from './build-info.js';
 import { resolveUpdateTestUserDataDirectory } from './app-update-test-context.js';
+import { desktopDiagnosticUpdateChannel } from './app-update-attestation.js';
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -176,6 +177,10 @@ if (!app.requestSingleInstanceLock()) {
       captureDesktopDiagnosticEnvironment({
         appVersion: app.getVersion(),
         buildMode: buildInfo.mode,
+        updateChannel: desktopDiagnosticUpdateChannel({
+          isPackaged: app.isPackaged,
+          appPath: app.getAppPath(),
+        }),
         buildCommit: buildInfo.commit,
         locale: app.getLocale(),
         workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),
@@ -212,6 +217,10 @@ if (!app.requestSingleInstanceLock()) {
               captureDesktopDiagnosticEnvironment({
                 appVersion: app.getVersion(),
                 buildMode: buildInfo.mode,
+                updateChannel: desktopDiagnosticUpdateChannel({
+                  isPackaged: app.isPackaged,
+                  appPath: app.getAppPath(),
+                }),
                 buildCommit: buildInfo.commit,
                 locale: app.getLocale(),
                 workspacePath: join(app.getPath('userData'), 'workspaces', 'default'),

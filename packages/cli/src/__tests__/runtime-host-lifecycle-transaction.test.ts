@@ -31,7 +31,10 @@ import {
   type RuntimeHostManagedDeploymentConfig,
   type RuntimeHostSupervisorProvider,
 } from '@maka/runtime-host/operator';
-import type { connectExistingRuntimeHost } from '@maka/runtime-host/client';
+import {
+  RuntimeHostOperationError,
+  type connectExistingRuntimeHost,
+} from '@maka/runtime-host/client';
 import { resolveStorageRoot, tryAcquireStateRootOwner } from '@maka/storage/root-authority';
 import type {
   RuntimeHostLifecycleProvider,
@@ -531,6 +534,80 @@ test('does not consume replacement consent after the supervised Host exits', asy
     { code: 'owner_changed' },
   );
   assert.equal(retired, false);
+});
+
+test('requires explicit interruption authority when a supervised Host drains before diagnostics', async (t) => {
+  const stateRoot = await mkdtemp(join(tmpdir(), 'maka-lifecycle-diagnostics-drain-'));
+  t.after(() => rm(stateRoot, { recursive: true, force: true }));
+  const capability = await resolveStorageRoot({ path: stateRoot, kind: 'interactive' });
+  let owner: Awaited<ReturnType<typeof tryAcquireStateRootOwner>> =
+    await tryAcquireStateRootOwner(capability);
+  assert.ok(owner);
+  t.after(async () => owner?.close());
+  const events: string[] = [];
+  const connectExisting = (async () => {
+    events.push('connect');
+    return {
+      kind: 'connected',
+      registration: { hostEpoch: 'host-a', pid: 42 },
+      connection: {
+        request: async (operation: string) => {
+          events.push(operation);
+          throw new RuntimeHostOperationError(
+            'host.diagnostics.query',
+            'host_draining',
+            'Runtime Host is draining',
+          );
+        },
+        close: async () => {
+          events.push('close');
+        },
+      },
+    } as unknown as Awaited<ReturnType<typeof connectExistingRuntimeHost>>;
+  }) as typeof connectExistingRuntimeHost;
+  const supervisor = {
+    status: async () => {
+      events.push('status');
+      return { active: true, pid: 42 };
+    },
+    retire: async () => {
+      events.push('retire');
+      await owner?.close();
+      owner = undefined;
+    },
+  };
+
+  assert.deepEqual(
+    await retireRuntimeHostLifecycleOwner({
+      rootPath: capability.canonicalPath,
+      rootId: capability.rootId,
+      connectExisting,
+      expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+      supervisor,
+    }),
+    { kind: 'active_tasks' },
+  );
+  const retired = await retireRuntimeHostLifecycleOwner({
+    rootPath: capability.canonicalPath,
+    rootId: capability.rootId,
+    connectExisting,
+    expectedOwner: { hostEpoch: 'host-a', pid: 42 },
+    supervisor,
+    allowInterruptActiveTasks: true,
+  });
+  assert.equal(retired.kind, 'retired');
+  if (retired.kind === 'retired') await retired.owner.close();
+  assert.deepEqual(events, [
+    'connect',
+    'status',
+    'host.diagnostics.query',
+    'close',
+    'connect',
+    'status',
+    'host.diagnostics.query',
+    'retire',
+    'close',
+  ]);
 });
 
 test('requires explicit interruption authority to recover an unreachable supervised transition', async (t) => {

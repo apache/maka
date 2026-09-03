@@ -428,7 +428,9 @@ export const makaTheme = {
       "color-scheme": "dark",
       "--color-text-primary": "var(--color-on-dark)",
       "--color-icon-primary": "var(--color-on-dark)",
-      "--color-accent": "var(--color-on-dark)"
+      "--color-accent": "var(--color-on-dark)",
+      "--color-text-secondary": "var(--color-on-dark)",
+      "--color-icon-secondary": "var(--color-on-dark)"
     }
   },
   __onLight: {
@@ -436,7 +438,9 @@ export const makaTheme = {
       "color-scheme": "light",
       "--color-text-primary": "var(--color-on-light)",
       "--color-icon-primary": "var(--color-on-light)",
-      "--color-accent": "var(--color-on-light)"
+      "--color-accent": "var(--color-on-light)",
+      "--color-text-secondary": "var(--color-on-light)",
+      "--color-icon-secondary": "var(--color-on-light)"
     }
   },
   icons: neutralIconRegistry,

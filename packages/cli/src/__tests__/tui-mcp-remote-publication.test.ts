@@ -40,13 +40,32 @@ const PROFILE: RemoteRuntimeHostProfile = {
   rootId: 'a'.repeat(64),
 };
 
+function reachability(
+  peerId: string,
+  directRoutes: readonly string[],
+  coordinationRoutes: readonly string[] = [],
+  revision = 1,
+): Extract<RemoteRuntimeHostProfile['transport'], { kind: 'libp2p-direct' }>['reachability'] {
+  return {
+    lease: {
+      version: 1,
+      peerId,
+      revision,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public-key').toString('base64url'),
+    signature: Buffer.from(`signature-${revision}`).toString('base64url'),
+  };
+}
+
 const DIRECT_PROFILE: RemoteRuntimeHostProfile = {
   ...PROFILE,
   transport: {
     kind: 'libp2p-direct',
-    peerId: 'peer-a',
-    routeHints: ['/ip4/127.0.0.1/tcp/4001'],
-    coordinationRelays: [],
+    reachability: reachability('peer-a', ['/ip4/127.0.0.1/tcp/4001']),
   },
 };
 
@@ -415,9 +434,12 @@ test('remote TUI publication reconnects through current direct-peer routes', asy
     ...DIRECT_PROFILE,
     transport: {
       kind: 'libp2p-direct',
-      peerId: 'peer-a',
-      routeHints: ['/ip6/2001:db8::10/udp/4001/quic-v1'],
-      coordinationRelays: ['/dns4/relay.example.com/tcp/443/wss/p2p/relay-a'],
+      reachability: reachability(
+        'peer-a',
+        ['/ip6/2001:db8::10/udp/4001/quic-v1'],
+        ['/dns4/relay.example.com/tcp/443/wss/p2p/relay-a'],
+        2,
+      ),
     },
   };
   profiles.update(moved);

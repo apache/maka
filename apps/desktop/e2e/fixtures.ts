@@ -32,7 +32,11 @@ import {
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
-import { buildFixtureEnv, isCiLinuxDisplay } from '../../../scripts/fixture-env.mjs';
+import {
+  buildFixtureEnv,
+  inactiveWindowPlatformArgs,
+  isCiLinuxDisplay,
+} from '../../../scripts/fixture-env.mjs';
 import { closeElectronApplication } from '../../../scripts/electron-lifecycle.mjs';
 
 const DESKTOP_ROOT = process.cwd();
@@ -69,6 +73,31 @@ export async function ensureSidebarExpanded(page: Page): Promise<void> {
   await expect(
     page.getByRole('button', { name: /^(?:收起侧边栏|Collapse sidebar)$/ }),
   ).toBeVisible();
+}
+
+/**
+ * Wait until the composer is in a state where Enter is a real submission: the
+ * connections projection has produced at least one connection, the draft is
+ * non-empty, no known blocker is showing and no earlier send is still in
+ * flight. 发送 is disabled for all of that, so it is the one signal covering
+ * it; intermediate signals (a cleared draft, an updated model label) resolve
+ * earlier and mean nothing here.
+ *
+ * It does NOT cover the submission-readiness probe: an unresolved snapshot is
+ * not a hard block, so the button is enabled while the probe is in flight, and
+ * `send()` awaits the probe again on its own — a first send inside a barrier
+ * that gives up at 30s. The post-send assertions wait 20s, which covers every
+ * admission measured here but not that whole barrier. Widening them past it
+ * buys nothing: the 60s test budget is the real cap, a send admitted at 25s
+ * leaves the multi-send specs unable to finish anyway, and the only change
+ * would be trading a named assertion failure for a bare test timeout. A probe
+ * that comes back blocked still drops the send with no feedback, which is a
+ * product gap, not something a test-side fence can close.
+ */
+export async function awaitSendReady(page: Page): Promise<void> {
+  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
+    timeout: 20_000,
+  });
 }
 
 /**
@@ -432,17 +461,20 @@ async function withE2eWindow(
     // Legacy E2E specs assert Chinese labels and should not inherit the CI
     // host locale. E2e-fixture workspaces use the explicit renderer override.
     if (locale && !e2eFixtureScenario) await seedE2eLocale(userDataDir, locale);
+    // xvfb throttles a hidden window's compositor to ~1fps. Geometry fixtures
+    // opt in locally; every fixture is visible on isolated CI X.
+    const visibleWindow = showWindow || isCiLinuxDisplay();
     app = await electron.launch({
-      args: ['.'],
+      // A visible fixture window is revealed inactively, which needs XWayland
+      // on a native Wayland session.
+      args: ['.', ...(visibleWindow ? inactiveWindowPlatformArgs() : [])],
       cwd: DESKTOP_ROOT,
       env: buildFixtureEnv(userDataDir, homeDir, {
         scenario: e2eFixtureScenario,
         locale,
         platform,
         scrollMotion,
-        // xvfb throttles a hidden window's compositor to ~1fps. Geometry
-        // fixtures opt in locally; every fixture is visible on isolated CI X.
-        showWindow: showWindow || isCiLinuxDisplay(),
+        showWindow: visibleWindow,
       }),
     });
     app.on('console', (message) => {
@@ -507,7 +539,11 @@ async function setPromptRailWindowVisible(
   await worker.app.evaluate(({ BrowserWindow }, shouldShow) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error('the prompt-rail BrowserWindow is missing');
-    if (shouldShow) window.show();
+    // showInactive, not show: this worker window is re-revealed between every
+    // test in the file, and show() activates the app each time — a suite run
+    // would yank the developer's foreground away a dozen times over. The
+    // window still needs to be on screen for the compositor.
+    if (shouldShow) window.showInactive();
     else window.hide();
   }, visible);
 }
@@ -533,6 +569,7 @@ async function resetPromptRailWindow(worker: PromptRailWorker): Promise<void> {
 
 type E2eTestFixtures = {
   window: Page;
+  agentGraphWindow: Page;
   onboardingWindow: Page;
   gitReviewWindow: { page: Page; projectRoot: string };
   invocableSkillsWindow: Page;
@@ -592,6 +629,18 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   // Seeded: a pre-staged connection clears onboarding so the composer is ready.
   window: async ({}, use) => {
     await withE2eWindow({ seed: true, readinessSelector: COMPOSER_INPUT, locale: 'zh' }, use);
+  },
+  agentGraphWindow: async ({}, use) => {
+    await withE2eWindow(
+      {
+        seed: false,
+        readinessSelector: '.maka-agent-graph-panel',
+        e2eFixtureScenario: 'agent-graph-layout',
+        locale: 'zh',
+        showWindow: true,
+      },
+      use,
+    );
   },
   onboardingWindow: async ({}, use) => {
     await withE2eWindow({
@@ -678,9 +727,9 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       use,
     );
   },
-  // This scenario is read-only at the Host boundary. Keep its real Electron +
-  // Host composition warm for the worker, while the test-scoped wrapper below
-  // restores Host and renderer state between tests.
+  // Keep this scenario's real Electron + Host composition warm for the worker,
+  // while the test-scoped wrapper below restores Host and renderer state
+  // between tests. Tests on it may run a Turn, so the reset is not read-only.
   promptRailWorker: [async ({}, use) => {
     await withE2eWindow({
       seed: false,
@@ -690,6 +739,10 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       // assertion that names it.
       readinessSelector: '[data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
+      // Every other fixture window names its locale; without one the renderer
+      // takes the host's, so any test that reaches a control by its label
+      // passes on a Chinese desktop and cannot find it on an English CI runner.
+      locale: 'zh',
       showWindow: true,
     }, async (page, { app }) => {
       const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight }));
@@ -736,8 +789,17 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
   promptRailMotionWindow: async ({}, use) => {
     await withE2eWindow({
       seed: false,
-      readinessSelector: '[data-turn-id]',
+      // The transcript and the fixture attributes arrive on two unordered
+      // async paths: `runDeferredStartupRefreshes` fires `refreshSessions()`
+      // and `applyE2eFixture()` side by side, and only the second one — after
+      // its `e2eFixture.getState()` IPC resolves — writes
+      // `data-maka-scroll-motion`. A turn can therefore paint while the
+      // document still says nothing about scroll motion. Requiring both in one
+      // selector is what makes "this window scrolls smoothly" true by the time
+      // a test body reads it.
+      readinessSelector: 'html[data-maka-scroll-motion="smooth"] [data-turn-id]',
       e2eFixtureScenario: 'chat-prompt-rail',
+      locale: 'zh',
       showWindow: true,
       scrollMotion: 'smooth',
     }, use);

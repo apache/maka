@@ -23,6 +23,7 @@ import {
   clipboard,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   powerSaveBlocker,
   shell,
   type MessageBoxOptions,
@@ -49,14 +50,20 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
-  createRuntimeHostPeerClientFromEnvironment,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
   runtimeHostProfileAccess,
   type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
-import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
+import {
+  openRuntimeHostPeerMeshComponent,
+  type RuntimeHostPeerMeshComponent,
+} from '@maka/runtime-host/peer-mesh';
+import {
+  openRuntimeHostPeerEndpointOwner,
+  type RuntimeHostPeerEndpointOwner,
+} from '@maka/runtime-host/peer-reachability';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
@@ -70,6 +77,7 @@ import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import {
+  desktopDiagnosticUpdateChannel,
   desktopUpdateChannelFromManifest,
   verifyDownloadedUpdateAttestation,
 } from "./app-update-attestation.js";
@@ -110,6 +118,7 @@ import {
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
+import { resolveWindowRevealMode } from "./window-reveal.js";
 import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
 import {
   captureDesktopDiagnosticEnvironment,
@@ -263,33 +272,42 @@ const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
-let runtimeHostPeerOwner: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>> | undefined;
-let runtimeHostPeerMesh: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>>['mesh'] | undefined;
-let runtimeHostPeerClient:
-  | ReturnType<typeof createRuntimeHostPeerClientFromEnvironment>
-  | undefined;
+let runtimeHostPeerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
+let runtimeHostPeerMeshComponent: RuntimeHostPeerMeshComponent | undefined;
+let runtimeHostPeerMesh: RuntimeHostPeerMeshComponent['mesh'] | undefined;
+let runtimeHostPeerClient: RuntimeHostPeerEndpointOwner['client'] | undefined;
 if (runtimeHostPeerConfiguration) {
   try {
-    runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
+    runtimeHostPeerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
-      endpointKind: 'client',
-      onBackgroundReconcileError: (error) => {
-        console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+      onBackgroundReachabilityError: (error) => {
+        console.error('[runtime-host] peer reachability publication failed:', error);
       },
     });
-    runtimeHostPeerClient = runtimeHostPeerOwner.client;
-    runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
-    void runtimeHostPeerOwner.closed.catch((error) => {
-      runtimeHostPeerMesh = undefined;
-      console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+    runtimeHostPeerClient = runtimeHostPeerEndpointOwner.client;
+    void runtimeHostPeerEndpointOwner.closed.catch((error) => {
+      console.error('[runtime-host] peer reachability publisher stopped:', error);
     });
+    try {
+      runtimeHostPeerMeshComponent = await openRuntimeHostPeerMeshComponent({
+        dataRoot: join(userDataDir, 'peer-mesh'),
+        endpoint: runtimeHostPeerEndpointOwner,
+        endpointKind: 'client',
+        onBackgroundReconcileError: (error) => {
+          console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+        },
+      });
+      runtimeHostPeerMesh = runtimeHostPeerMeshComponent.mesh;
+      void runtimeHostPeerMeshComponent.closed.catch((error) => {
+        runtimeHostPeerMesh = undefined;
+        console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+      });
+    } catch (error) {
+      console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
+    }
   } catch (error) {
-    console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
-    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment(process.env, {
-      automaticRelayDiscovery: runtimeHostPeerConfiguration.automaticRelayDiscovery,
-      webRtcStunUrls: runtimeHostPeerConfiguration.webRtcStunUrls,
-    });
+    console.error('[runtime-host] Direct peer is unavailable:', error);
   }
 }
 const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
@@ -326,6 +344,10 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     captureDesktopDiagnosticEnvironment({
       appVersion: app.getVersion(),
       buildMode: buildInfo.mode,
+      updateChannel: desktopDiagnosticUpdateChannel({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+      }),
       buildCommit: buildInfo.commit,
       locale: app.getLocale(),
       workspacePath: workspaceRoot,
@@ -451,15 +473,17 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
-const startHidden =
-  (Boolean(e2eFixture) || isIsolatedE2e) &&
-  process.env.MAKA_E2E_SHOW_WINDOW !== "1";
+const revealMode = resolveWindowRevealMode(
+  Boolean(e2eFixture) || isIsolatedE2e,
+  process.env.MAKA_E2E_SHOW_WINDOW === "1",
+  app.isPackaged,
+);
 let onMainWindowClose = (): void => {};
 const mainWindowController = createMainWindowController({
   workspaceRoot,
   e2eFixture,
   settingsStore,
-  startHidden,
+  revealMode,
   onClose: () => onMainWindowClose(),
   onRendererProcessGone: async (details) => {
     const diagnosticInput = createDesktopMainRendererDiagnosticInput({
@@ -595,7 +619,7 @@ const guestSessionMountService = createDesktopGuestSessionMountService({
   },
   finalizeAccess: async (mountId, signal, onAccessActivated) => {
     if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
-    await runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
+    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
   },
   unmount: async (mountId) => {
     if (!runtimeHostManager) return;
@@ -1530,6 +1554,7 @@ function registerHostClientIpc(
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
+      updateChannel: desktopUpdateChannel,
       e2eFixture,
       projectManagement: targetProjectManagement,
       allowLocalProjectPaths: !usesHostWorkspace,
@@ -1874,7 +1899,7 @@ function wireLifecycle(): void {
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
-    startHidden,
+    revealMode,
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
     onIconError: (error) =>
@@ -1891,6 +1916,7 @@ function wireLifecycle(): void {
     if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
+  powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();
 }
 
@@ -1910,6 +1936,7 @@ async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
+  powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
   settingsBotsIpc?.dispose();
@@ -1920,7 +1947,15 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     .then(() => runtimeHostManager?.close());
   const runtimeHostPeerShutdown = runtimeHostManagerShutdown
     .catch(() => undefined)
-    .then(() => runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close());
+    .then(async () => {
+      const errors: unknown[] = [];
+      await runtimeHostPeerMeshComponent?.close().catch((error: unknown) => errors.push(error));
+      await runtimeHostPeerEndpointOwner?.close().catch((error: unknown) => errors.push(error));
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, 'Unable to close Desktop peer resources');
+      }
+    });
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
@@ -1945,6 +1980,10 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+}
+
+function wakePeerRecoveryAfterResume(): void {
+  runtimeHostManager?.wakePeerRecovery();
 }
 
 function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
