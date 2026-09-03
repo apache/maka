@@ -111,10 +111,7 @@ export async function inspectAgentRunReadModel(
   const runtimeEvents = runtimeRead.events;
 
   let terminalRuntimeFact: RuntimeEventTerminalFact | undefined;
-  // Classified off the events, not off the record's terminal event: an
-  // invocation the inventory leaves open because its ledger states two endings
-  // must still reach a reader as ambiguous rather than as merely unfinished.
-  if (runtimeRead.state === 'present') {
+  if (runtimeRead.state === 'present' && invocation.terminalEvent) {
     const terminalFactResult = classifyRuntimeEventTerminalFact(invocation, runtimeEvents);
     terminalRuntimeFact = terminalFactResult.fact;
     diagnostics.push(

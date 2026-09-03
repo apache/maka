@@ -232,7 +232,9 @@ export type HistoryCompactionFailReason = 'no_safe_completed_span' | 'summarizer
  * ends the span, found through each run's opening rather than by role alone —
  * everything before its first event was in a request that route accepted.
  * A ledger with no reply from this route has nothing proven, and the caller
- * must not invent a boundary.
+ * must not invent a boundary. Nor does a run whose opening could not prove its
+ * route — a migrated header with no Connection — even when the current run has
+ * no Connection of its own: two unknowns are not a match.
  */
 function acceptedInputBoundary(
   events: readonly RuntimeEvent[],

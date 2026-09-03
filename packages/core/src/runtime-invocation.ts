@@ -71,19 +71,14 @@ export function runtimeInvocationsFromSessionEvents(
       });
     }
   }
-  // A Run ends exactly once. Two terminal events are two statements that it
-  // ended, which is no statement at all: leave the invocation open so the
-  // ambiguity reaches a reader that can repair it instead of being hidden by
-  // whichever event happened to come last.
-  const terminalCounts = new Map<string, number>();
+  // A run is sealed by its terminal event — the store refuses anything after
+  // it — so an invocation has at most one, and a Session-ordered read may place
+  // it anywhere relative to other invocations' events.
   for (const event of events) {
     if (event.sessionId !== sessionId || event.partial === true) continue;
     if (!isTerminalRuntimeEvent(event)) continue;
     const record = byInvocation.get(event.invocationId);
-    if (!record) continue;
-    const seen = (terminalCounts.get(event.invocationId) ?? 0) + 1;
-    terminalCounts.set(event.invocationId, seen);
-    record.terminalEvent = seen === 1 ? event : undefined;
+    if (record && !record.terminalEvent) record.terminalEvent = event;
   }
   return [...byInvocation.values()].sort(
     (a, b) => a.openedAt - b.openedAt || a.invocationId.localeCompare(b.invocationId),
