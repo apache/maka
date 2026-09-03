@@ -23,7 +23,7 @@ import { afterEach, describe, it } from 'node:test';
 import { act, createElement, StrictMode } from 'react';
 import type { ShellRunUpdate } from '@maka/core/events';
 import type { SessionSummary } from '@maka/core/session';
-import { LocaleProvider } from '@maka/ui';
+import { LocaleProvider, type ToastApi } from '@maka/ui';
 import { cleanupFakeDom, installReactRenderer } from './fake-dom.js';
 import {
   createFakeWorkbarServices,
@@ -109,9 +109,24 @@ function controller(): WorkbarController {
   return latestController;
 }
 
+function createFakeToastApi(errors: string[] = []): ToastApi {
+  return {
+    toast: () => '',
+    success: () => '',
+    error: (title, description) => {
+      errors.push(description ? `${title}: ${description}` : title);
+      return '';
+    },
+    info: () => '',
+    warning: () => '',
+    confirm: async () => false,
+    dismiss: () => {},
+  };
+}
+
 function input(
   activeSession: SessionSummary | undefined,
-  errors: string[] = [],
+  toastApi: ToastApi = createFakeToastApi(),
 ): UseWorkbarControllerInput {
   return {
     available: true,
@@ -121,7 +136,7 @@ function input(
     authoritativeSessionIds: new Set(activeSession ? [activeSession.id] : []),
     shellObscured: false,
     modelChoices: [],
-    reportError: (title, description) => errors.push(`${title}: ${description}`),
+    toastApi,
   };
 }
 
@@ -441,18 +456,18 @@ describe('useWorkbarController', () => {
     });
 
     await act(async () =>
-      renderController(root, services, input(session('a'), currentErrors)),
+      renderController(root, services, input(session('a'), createFakeToastApi(currentErrors))),
     );
     await act(async () => controller().commands.openTool('terminal'));
     await act(async () => currentStart.reject(new Error('current failure')));
     assert.equal(currentErrors.length, 1);
 
     await act(async () =>
-      renderController(root, services, input(session('a'), staleErrors)),
+      renderController(root, services, input(session('a'), createFakeToastApi(staleErrors))),
     );
     await act(async () => controller().commands.openTool('terminal'));
     await act(async () =>
-      renderController(root, services, input(session('b'), staleErrors)),
+      renderController(root, services, input(session('b'), createFakeToastApi(staleErrors))),
     );
     await act(async () => staleStart.reject(new Error('stale failure')));
     assert.deepEqual(staleErrors, []);

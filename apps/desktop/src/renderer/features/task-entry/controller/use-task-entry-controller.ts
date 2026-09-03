@@ -35,12 +35,10 @@ import {
   type WorkspacePickerModel,
   useUiLocale,
 } from '@maka/ui';
-import {
-  getShellCopy,
-  localizedShellErrorMessage,
-} from '../../../locales/shell-copy.js';
+import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import {
   isReadyTaskEntryHost,
+  prepareTaskEntryDraft,
   resolveProjectSelection,
   selectAvailableProfile,
   taskEntryDraftKey,
@@ -91,7 +89,7 @@ export interface TaskEntryControllerCommands {
   addProject(): void;
   chooseProjectForProfile(profileId: string): Promise<void>;
   resolveWorkBoardTarget(item: WorkBoardItem): WorkBoardStartTargetResult;
-  selectTarget(target: TaskEntryTarget): boolean;
+  prepareWorkBoardDraft(target: TaskEntryTarget, draft: string): string | undefined;
 }
 
 export interface TaskEntryController {
@@ -502,20 +500,23 @@ export function useTaskEntryController(
       resolveWorkBoardStartTarget(item, catalog),
     [catalog],
   );
-  const selectTarget = useCallback((target: TaskEntryTarget): boolean => {
-    const host = catalog.hosts.find(
-      (candidate): candidate is ReadyTaskEntryHost =>
-        candidate.profile.id === target.profileId &&
-        isReadyTaskEntryHost(candidate) &&
-        candidate.hostId === target.hostId,
-    );
-    if (!host || target.projectId === null) return false;
-    const project = findProjectByIdentity(host.projects, target.projectId);
-    if (!project?.available || project.archivedAt !== undefined) return false;
-    setSelectedProfileId(host.profile.id);
-    setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
-    return true;
-  }, [catalog.hosts]);
+  const prepareWorkBoardDraft = useCallback(
+    (target: TaskEntryTarget, draft: string): string | undefined => {
+      const host = catalog.hosts.find(
+        (candidate): candidate is ReadyTaskEntryHost =>
+          candidate.profile.id === target.profileId &&
+          isReadyTaskEntryHost(candidate) &&
+          candidate.hostId === target.hostId,
+      );
+      if (!host || target.projectId === null) return undefined;
+      const project = findProjectByIdentity(host.projects, target.projectId);
+      if (!project?.available || project.archivedAt !== undefined) return undefined;
+      setSelectedProfileId(host.profile.id);
+      setProjectSelections((current) => new Map(current).set(host.profile.id, project.id));
+      return prepareTaskEntryDraft(target, draft);
+    },
+    [catalog.hosts],
+  );
   const addSelectedProject = useCallback(() => {
     if (selectedHost) void addProjectForHost(selectedHost);
   }, [addProjectForHost, selectedHost]);
@@ -557,7 +558,7 @@ export function useTaskEntryController(
       addProject: addSelectedProject,
       chooseProjectForProfile,
       resolveWorkBoardTarget,
-      selectTarget,
+      prepareWorkBoardDraft,
     },
     selectors: {
       ...(target ? { target } : {}),
@@ -587,7 +588,7 @@ export function useTaskEntryController(
     refreshCatalog,
     selectLocalProject,
     resolveWorkBoardTarget,
-    selectTarget,
+    prepareWorkBoardDraft,
     selectedHost,
     selectedHostProjection,
     selectedProfileId,

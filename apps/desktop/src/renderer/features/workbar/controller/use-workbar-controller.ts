@@ -31,12 +31,13 @@ import type { QuoteRef } from '@maka/core/events';
 import type { InteractionFormResponse } from '@maka/core/interaction';
 import type { SessionSummary } from '@maka/core/session';
 import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
-import { Composer, useUiLocale } from '@maka/ui';
+import { useUiLocale, type ComposerHandle, type ToastApi } from '@maka/ui';
 import type { ChatModelChoice } from '@maka/ui';
 import { safeLocalStorageGet, safeLocalStorageSet } from '../../../browser-storage.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
 import { getShellCopy, localizedShellErrorMessage } from '../../../locales/shell-copy.js';
 import { sideChatTitleFromPrompt } from '../../../side-chat-command.js';
+import { desktopSessionKey, parseDesktopSessionKey } from '../../../../shared/runtime-host-identity.js';
 import { useWorkbarServices } from '../services-context.js';
 import type { WorkbarHostModel } from '../ui/workbar-host.js';
 import { SKIP_SIDE_CHAT_CLOSE_CONFIRMATION_KEY } from '../ui/side-chat-close-confirmation.js';
@@ -81,6 +82,8 @@ export interface WorkbarControllerCommands {
   respondToClientCapability(response: ClientCapabilityResponse): Promise<void>;
   respondToUserForm(sessionId: string, response: InteractionFormResponse): Promise<void>;
   toggleRight(): void;
+  onNewTaskSessionResolved(sessionId: string): void;
+  onNewTaskSessionNotProjected(): void;
 }
 
 export interface WorkbarControllerSelectors {
@@ -97,11 +100,15 @@ export interface UseWorkbarControllerInput {
   authoritativeSessionIds: ReadonlySet<string> | undefined;
   shellObscured: boolean;
   modelChoices: readonly ChatModelChoice[];
-  reportError(title: string, description: string, sessionId: string): void;
-  onStartWorkBoardTask?: (item: WorkBoardItem) => void;
-  resolveWorkBoardStartTask?: (item: WorkBoardItem) => { ok: boolean; message?: string };
-  onOpenWorkBoardSession?: (link: WorkBoardLinkedSession) => void;
-  workBoardStartTaskEnabled?: boolean;
+  /** Toast surface owned by the shell composition zone. */
+  toastApi: ToastApi;
+  composerRef?: { current: Pick<ComposerHandle, 'focus' | 'setDraft'> | null };
+  openNewTaskSurface?(): void;
+  openSessionInChat?(sessionId: string): void;
+  resolveWorkBoardTarget?(item: WorkBoardItem):
+    | { ok: true; target: { profileId: string; hostId: string; projectId: string } }
+    | { ok: false; message: string };
+  prepareWorkBoardDraft?(target: { profileId: string; hostId: string; projectId: string }, draft: string): string | undefined;
 }
 
 export interface WorkbarController {
@@ -171,8 +178,11 @@ export function useWorkbarController(
   input: UseWorkbarControllerInput,
 ): WorkbarController {
   const locale = useUiLocale();
+  const workBoardStartTaskEnabled =
+    (import.meta as unknown as { env?: Record<string, string | undefined> }).env
+      ?.VITE_MAKA_WORK_BOARD_START_TASK === '1';
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
-  const { browser, sideChat, terminal } = useWorkbarServices();
+  const { browser, sideChat, terminal, workBoard } = useWorkbarServices();
   const layout = useWorkbarLayoutState();
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
@@ -190,6 +200,10 @@ export function useWorkbarController(
 
   const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
+  const pendingWorkBoardStartRef = useRef<{
+    itemId: string;
+    target: { profileId: string; hostId: string; projectId: string };
+  } | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
     resourceGenerationRef.current += 1;
@@ -199,6 +213,112 @@ export function useWorkbarController(
       activeSessionIdRef.current = undefined;
     };
   }, [activeSessionId]);
+
+  const onNewTaskSessionNotProjected = useCallback(() => {
+    pendingWorkBoardStartRef.current = undefined;
+  }, []);
+
+  const resolveWorkBoardStartTask = useCallback(
+    (item: WorkBoardItem) => {
+      const result = input.resolveWorkBoardTarget?.(item);
+      if (!result) return { ok: false, message: 'Work Board task start is unavailable.' };
+      return result.ok ? { ok: true } : { ok: false, message: result.message };
+    },
+    [input.resolveWorkBoardTarget],
+  );
+
+  const startWorkBoardTask = useCallback(
+    (item: WorkBoardItem) => {
+      if (pendingWorkBoardStartRef.current) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Finish sending the current Work Board task before starting another one.',
+        );
+        return;
+      }
+      const result = input.resolveWorkBoardTarget?.(item);
+      if (!result) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board task start is unavailable.',
+        );
+        return;
+      }
+      if (!result.ok) {
+        input.toastApi.info(getDesktopConversationCopy(locale).workBoardPanel.actionFailed, result.message);
+        return;
+      }
+      const draft = [item.title, item.notes?.trim()].filter(Boolean).join('\n\n');
+      const draftKey = input.prepareWorkBoardDraft?.(result.target, draft);
+      if (!draftKey) {
+        input.toastApi.info(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board task start is unavailable.',
+        );
+        return;
+      }
+      input.openNewTaskSurface?.();
+      pendingWorkBoardStartRef.current = { itemId: item.id, target: result.target };
+      globalThis.requestAnimationFrame(() => {
+        input.composerRef?.current?.setDraft(draftKey, draft);
+        input.composerRef?.current?.focus();
+      });
+    },
+    [input, locale],
+  );
+
+  const openWorkBoardSession = useCallback(
+    (link: WorkBoardLinkedSession) => {
+      input.openSessionInChat?.(
+        desktopSessionKey({ hostId: link.hostId, sessionId: link.sessionId }),
+      );
+    },
+    [input.openSessionInChat],
+  );
+
+  const onNewTaskSessionResolved = useCallback(
+    (sessionId: string) => {
+      const pending = pendingWorkBoardStartRef.current;
+      if (!pending) return;
+      pendingWorkBoardStartRef.current = undefined;
+      const linkedSessionId = (() => {
+        try {
+          return parseDesktopSessionKey(sessionId).sessionId;
+        } catch {
+          return sessionId;
+        }
+      })();
+      if (!workBoard) {
+        input.toastApi.error(
+          getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+          'Work Board linking is unavailable in this desktop session.',
+        );
+        return;
+      }
+      void workBoard
+        .linkSession(pending.itemId, {
+          profileId: pending.target.profileId,
+          hostId: pending.target.hostId,
+          sessionId: linkedSessionId,
+          linkedAt: Date.now(),
+        })
+        .then((result) => {
+          if (!result.ok) {
+            input.toastApi.error(
+              getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+              result.message,
+            );
+          }
+        })
+        .catch((error) => {
+          input.toastApi.error(
+            getDesktopConversationCopy(locale).workBoardPanel.actionFailed,
+            error instanceof Error ? error.message : String(error),
+          );
+        });
+    },
+    [input, locale, workBoard],
+  );
   const respondToClientCapability = useCallback<
     WorkbarControllerCommands['respondToClientCapability']
   >(
@@ -210,14 +330,15 @@ export function useWorkbarController(
       } catch (error) {
         if (activeSessionIdRef.current !== sessionId) return;
         const copy = getShellCopy(locale).chatActions;
-        input.reportError(
+        input.toastApi.error(
           copy.responseFailedTitle,
           localizedShellErrorMessage(error, copy.responseFailedFallback, locale),
-          sessionId,
+          undefined,
+          { sessionId },
         );
       }
     },
-    [input.reportError, locale, sideChat],
+    [input, locale, sideChat],
   );
   const panelsStateRef = useRef(layout.workbarPanelsState);
   useLayoutEffect(() => {
@@ -379,14 +500,15 @@ export function useWorkbarController(
               ) {
                 return;
               }
-              input.reportError(
+              input.toastApi.error(
                 terminalCopy.startFailed,
                 localizedShellErrorMessage(
                   error,
                   terminalCopy.startFailed,
                   locale,
                 ),
-                ownerSessionId,
+                undefined,
+                { sessionId: ownerSessionId },
               );
             });
           return;
@@ -396,9 +518,9 @@ export function useWorkbarController(
       }
     },
     [
-      input.reportError,
       layout.openDynamicWorkbarTab,
       layout.openWorkbarTab,
+      input,
       locale,
       openNewSideConversation,
       registerTerminal,
@@ -677,8 +799,12 @@ export function useWorkbarController(
       respondToClientCapability,
       respondToUserForm: sideChat.respondToUserForm,
       toggleRight,
+      onNewTaskSessionResolved,
+      onNewTaskSessionNotProjected,
     }),
     [
+      onNewTaskSessionNotProjected,
+      onNewTaskSessionResolved,
       openSideChatWithQuote,
       openTool,
       respondToClientCapability,
@@ -762,10 +888,10 @@ export function useWorkbarController(
       onActivityStateChange: sideConversations.setActive,
       sourceSession: input.activeSession,
       modelChoices: input.modelChoices,
-      onStartWorkBoardTask: input.onStartWorkBoardTask,
-      resolveWorkBoardStartTask: input.resolveWorkBoardStartTask,
-      onOpenWorkBoardSession: input.onOpenWorkBoardSession,
-      workBoardStartTaskEnabled: input.workBoardStartTaskEnabled,
+      onStartWorkBoardTask: startWorkBoardTask,
+      resolveWorkBoardStartTask,
+      onOpenWorkBoardSession: openWorkBoardSession,
+      workBoardStartTaskEnabled,
       closeConfirmation: {
         key:
           pendingSideChatClose.map(({ tab }) => tab.id).join(':') || 'closed',

@@ -35,6 +35,7 @@ import type { PermissionMode } from '@maka/core/permission';
 import type { RegenerateTurnInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import type { ClientCapabilityResponse } from '@maka/core/client-capability-grant';
+import type { WorkBoardItem, WorkBoardLinkedSession } from '@maka/core/work-board';
 import type {
   SessionChangedEvent,
   SessionSummary,
@@ -193,6 +194,16 @@ export interface WorkbarAttachmentsService {
   >;
 }
 
+export interface WorkbarWorkBoardService {
+  linkSession(
+    id: string,
+    link: WorkBoardLinkedSession,
+  ): Promise<
+    | { readonly ok: true; readonly value: WorkBoardItem }
+    | { readonly ok: false; readonly message: string }
+  >;
+}
+
 export type SideChatSendResult =
   | { ok: true; turnId: string; steered?: false }
   | { ok: true; turnId: string; steered: true; messageId: string }
@@ -282,5 +293,6 @@ export interface WorkbarServices {
   readonly artifacts: WorkbarArtifactsService;
   readonly inspector: WorkbarInspectorService;
   readonly attachments: WorkbarAttachmentsService;
+  readonly workBoard?: WorkbarWorkBoardService;
   readonly sideChat: SideChatSessionPort;
 }
