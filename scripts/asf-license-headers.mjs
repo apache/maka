@@ -99,6 +99,9 @@ const commentStyles = {
     close: '-->',
     prefixPattern: /^(?:<!doctype html>\n|---\n[\s\S]*?\n---\n)/i,
   },
+  // An Astro component opens with its frontmatter fence, and the header is the
+  // first thing inside it.
+  astro: { open: '/*', line: ' *', close: ' */', prefixPattern: /^---\n/ },
 };
 
 /**
@@ -106,6 +109,7 @@ const commentStyles = {
  * for each. A covered file must carry the header; nothing else may.
  */
 const coveredExtensions = new Map([
+  ['.astro', 'astro'],
   ['.cjs', 'block'],
   ['.css', 'block'],
   ['.html', 'html'],
@@ -307,6 +311,14 @@ const provenanceMarkers = [
  * they may carry the ASF header anyway.
  */
 const reviewedProvenance = new Map([
+  [
+    'website/src/copy/en.ts',
+    'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
+  ],
+  [
+    'website/src/copy/zh-CN.ts',
+    'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
+  ],
   [
     '.github/ASF_SOURCE_HEADERS.md',
     'Documents the marker patterns; the match is the policy describing its own rule.',

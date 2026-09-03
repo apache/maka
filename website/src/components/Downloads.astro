@@ -1,0 +1,76 @@
+---
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+import Site from '../layouts/Site.astro';
+import { links, localized } from '../copy/links';
+import type { Copy } from '../copy/types';
+
+interface Props {
+  copy: Copy;
+}
+
+const { copy } = Astro.props;
+const d = copy.downloads;
+const l = copy.locale;
+
+// Archive naming follows scripts/asf-source-release.mjs; <version> is the
+// release version, for example 0.1.0.
+const archive = 'apache-maka-<version>-incubating-src.tar.gz';
+const verify = [
+  `curl -O ${links.dist}KEYS`,
+  'gpg --import KEYS',
+  `curl -O ${links.dist}<version>/${archive}`,
+  `curl -O ${links.dist}<version>/${archive}.asc`,
+  `curl -O ${links.dist}<version>/${archive}.sha512`,
+  `gpg --verify ${archive}.asc ${archive}`,
+  `shasum -a 512 -c ${archive}.sha512`,
+].join('\n');
+const build = [
+  'git clone https://github.com/apache/maka.git',
+  'cd maka',
+  'npm ci',
+  'npm run build',
+].join('\n');
+---
+
+<Site copy={copy} page="downloads" title={`${d.title} · ${copy.siteName}`} description={d.lede}>
+  <main class="doc">
+    <h1>{d.title}</h1>
+    <p class="lede">{d.lede}</p>
+
+    <h2 id="apache-releases">{d.releases.h2}</h2>
+    <span class="note">{d.releases.note}</span>
+    <p>{d.releases.p}</p>
+    <p>{d.releases.distNote} <code>{links.dist}</code></p>
+
+    <h2 id="verify">{d.verify.h2}</h2>
+    <p>{d.verify.p}</p>
+    <pre><code>{verify}</code></pre>
+
+    <h2 id="nightly">{d.nightly.h2}</h2>
+    <span class="note">{d.nightly.note}</span>
+    <p>{d.nightly.p} <a href={links.windows}>{d.nightly.windows}</a></p>
+    <p><a class="btn primary" href={links.releases}>{copy.hero.nightly} <span class="arr">→</span></a></p>
+
+    <h2 id="source">{d.source.h2}</h2>
+    <p>{d.source.requirements}</p>
+    <pre><code>{build}</code></pre>
+    <p><a href={localized.contributing[l]}>{d.source.after}</a></p>
+  </main>
+</Site>

@@ -23,7 +23,8 @@
     "packages/computer-use",
     "packages/cli",
     "packages/ui",
-    "apps/desktop"
+    "apps/desktop",
+    "website"
   ],
   "scripts": {
     "prepare": "npm run sync:model-metadata && node scripts/install-husky.mjs",

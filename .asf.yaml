@@ -134,6 +134,15 @@ github:
           - name: main
             type: branch
 
+# The website workflow copies this file into every branch it publishes, so the
+# `whoami` guard matches there and nowhere else. See website/README.md.
+staging:
+  profile: ~
+  autostage: site/*
+
+publish:
+  whoami: asf-site
+
 notifications:
   commits:      commits@maka.apache.org
   discussions:  dev@maka.apache.org 
