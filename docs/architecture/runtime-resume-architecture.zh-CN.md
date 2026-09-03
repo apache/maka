@@ -7,7 +7,7 @@ counterpart: ./runtime-resume-architecture.md
 implementation_status: phase_0_2_and_phase_3a_authority_current
 document_status: current
 translation_status: synced
-last_verified: 2026-08-29
+last_verified: 2026-09-02
 owners:
   - maka-backend
 ---
@@ -627,7 +627,7 @@ Writer、projection rebuild 和 `RecoveryResolver` 共享同一个 scanner/inter
 | observation | 动作 |
 |---|---|
 | `matches_expected_state` | 只做 cleanup/finalize，合成 outcome，提交 completed bundle |
-| `matches_prior_state` | park，`redo_disabled_pending_cas` |
+| `matches_prior_state` | park，`reconcile_matches_prior_state` |
 | `diverged` | park，不覆盖外部写入 |
 | `unreadable` | park，不猜测 |
 
@@ -638,7 +638,7 @@ flowchart TD
   Expected -->|"是"| Finalize["Finalize only<br/>不再次写文件"]
   Finalize --> Completed["提交 recovered outcome<br/>+ completed decision"]
   Expected -->|"否"| Prior{"current == before?"}
-  Prior -->|"是"| ParkPrior["Park<br/>redo_disabled_pending_cas"]
+  Prior -->|"是"| ParkPrior["Park<br/>reconcile_matches_prior_state"]
   Prior -->|"否，内容分叉"| ParkDiverged["Park<br/>保护外部写入"]
   Prior -->|"无法读取"| ParkUnreadable["Park<br/>不猜测"]
 ```

@@ -100,11 +100,14 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 100 as const;
-// 100: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS` and the Host answers a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 101 as const;
+// 101: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS` and the Host answers a
 // closed `oauth.enrollment.query`. Older Hosts reject both wire values, so
 // incompatible peers must be refused at the handshake instead of mid-flow.
-// Re-derived from current `main`; epoch 99 is claimed by open PRs.
+// Re-derived from current `main`; epoch 100 is claimed by open PRs.
+// 99: ScheduledTask Agent execution templates carry immutable Connection
+// identity. Older peers cannot preserve the ID/slug/model binding and could
+// silently route a deleted Connection to a same-slug replacement.
 // 98: Peer Mesh invitations carry signed reachability leases and member route
 // projections use the convergent recovery state machine. Older peers decode a
 // different strict wire shape.

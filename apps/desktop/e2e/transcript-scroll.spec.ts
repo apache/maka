@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT, ensureSidebarExpanded } from './fixtures';
+import {
+  awaitSendReady,
+  expect,
+  test,
+  COMPOSER_INPUT,
+  ensureSidebarExpanded,
+} from './fixtures';
 import type { Page } from '@playwright/test';
 
 /**
@@ -196,6 +202,8 @@ function measureTailLag(page: Page, frames: number): Promise<{
 async function sendPrompt(page: Page, text: string): Promise<void> {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(text);
+  // Switching Session or model restarts asynchronous send admission.
+  await awaitSendReady(page);
   await composer.press('Enter');
 }
 
@@ -313,7 +321,9 @@ test('switching Sessions restores a Turn anchor while a tail Session follows bac
       .__makaBackgroundTailProbe = state;
   }, tailSessionId);
   await sendPrompt(page, LONG_PROMPT);
-  await expect(page.locator('.maka-user-message', { hasText: '第 1 行' })).toBeVisible();
+  await expect(page.locator('.maka-user-message', { hasText: '第 1 行' })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // The transcript collapses before each async replacement. This round trip
   // therefore exercises the production ordering that made a saved scrollTop

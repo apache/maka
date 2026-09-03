@@ -249,10 +249,10 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a new compatibility epoch for GitHub Copilot logins', () => {
-    // Main is at 98 and open PRs already claim 99. Adding the new OAuth provider
+    // Main is at 99 and open PRs already claim 100. Adding the new OAuth provider
     // and enrollment query changes the closed wire vocabulary, so this branch
     // re-derives the first unclaimed epoch instead of reserving one in advance.
-    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 99);
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 100);
   });
 
   test('publishes a new compatibility epoch for context-budget failure detail', () => {

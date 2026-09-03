@@ -40,7 +40,13 @@ export function useChatScroll(input: {
   scrollRef: RefObject<HTMLElement | null>;
   sessionId?: string;
   messages: readonly StoredMessage[];
-  target?: { turnId: string; nonce: number };
+  /**
+   * A turn to reveal, and where its requester wants it. `center` with the
+   * app's scroll motion is the reveal a search result wants; `start` is for a
+   * requester that is already aiming this turn itself and only needs the
+   * reveal to agree with it, instantly and at the same edge.
+   */
+  target?: { turnId: string; nonce: number; align?: 'start' | 'center' };
   restoreTarget?: { turnId: string; unavailable?: boolean };
   onReadingAnchorChange?(turnId?: string): void;
   behavior: ScrollBehavior;
@@ -182,7 +188,12 @@ export function useChatScroll(input: {
 
   useEffect(() => {
     const explicitTarget = input.target?.turnId
-      ? { kind: 'search' as const, turnId: input.target.turnId, nonce: input.target.nonce }
+      ? {
+          kind: 'search' as const,
+          turnId: input.target.turnId,
+          nonce: input.target.nonce,
+          align: input.target.align ?? ('center' as const),
+        }
       : undefined;
     const restoreTurnId = activation.current?.restoreTurnId;
     const target = explicitTarget ?? (restoreTurnId
@@ -217,9 +228,13 @@ export function useChatScroll(input: {
       }
       handledTarget.current = chosen;
       const targetElement = element as HTMLElement;
+      const alignToStart = target.kind !== 'search' || target.align === 'start';
       targetElement.scrollIntoView({
-        behavior: target.kind === 'search' ? input.behavior : 'auto',
-        block: target.kind === 'search' ? 'center' : 'start',
+        // A reveal that agrees with a requester already aiming this turn has to
+        // be instant too: an animated one is a second writer moving the
+        // scroller for a second after the requester has landed it.
+        behavior: alignToStart ? 'auto' : input.behavior,
+        block: alignToStart ? 'start' : 'center',
       });
       // A command can land at the browser's existing offset and therefore
       // produce no scroll event. Reuse the authority-backed reporter so that
