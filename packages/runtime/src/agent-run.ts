@@ -1067,8 +1067,10 @@ export class AgentRun {
     this.finalized = true;
     // A run cannot end without having begun. Finalizing one that never reached
     // its start would otherwise leave a terminal event on an invocation the
-    // inventory cannot see, because nothing opened it.
-    await this.openInvocation().catch(() => {});
+    // inventory cannot see, because nothing opened it. A continuation is the
+    // exception at both ends: its opening rides the continuation-start event,
+    // and a continuation that never committed one has no invocation to end.
+    if (!this.input.commitContinuationStart) await this.openInvocation().catch(() => {});
     await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };

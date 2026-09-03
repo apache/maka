@@ -827,7 +827,10 @@ describe('SessionManager graph operator provisioning', () => {
           role: 'system',
           author: 'system',
           status: failed ? 'failed' : 'completed',
-          actions: { endInvocation: true },
+          actions: {
+            endInvocation: true,
+            ...(failed ? { stateDelta: { failureClass: 'branch_failed' } } : {}),
+          },
         }),
       ]);
       outputs.push(
@@ -4540,8 +4543,6 @@ describe('SessionManager permission mode updates', () => {
         ['turn-2', 'completed'],
       ],
     );
-    const firstEvents = await runStore.readEvents(session.id, finalRuns[0]!.runId);
-    assert.ok(firstEvents.map((event) => event.type).includes('run_created'));
 
     const summary = await manager.setPermissionMode(session.id, 'bypass');
     assert.strictEqual(summary.permissionMode, 'bypass');
@@ -4932,8 +4933,8 @@ describe('SessionManager permission mode updates', () => {
     );
     assert.strictEqual(backend?.sendInputs[0]?.toolMode, 'code_mode');
 
-    const [run] = await runStore.listSessionInvocations(session.id);
-    if (!run) throw new Error('AgentRunStore run was not created');
+    const [run] = await runtimeEventStore.listSessionInvocations(session.id);
+    if (!run) throw new Error('the run opened no invocation');
     const runtimeEvents = await runtimeEventStore.readRuntimeEvents(session.id, run.runId);
     assert.deepStrictEqual(backend?.sendInputs[0]?.headAnchorRuntimeEvent, runtimeEvents[1]);
     assert.deepStrictEqual(
@@ -4958,7 +4959,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(runtimeEvents[3]?.status, 'completed');
   });
 
-  test('the invocation opening fact is durable before the run row and any dispatch', async () => {
+  test('the invocation opening fact is durable before any dispatch', async () => {
     const store = new MemorySessionStore();
     const trace: string[] = [];
     const runStore = new MemoryAgentRunStore({
@@ -4995,10 +4996,6 @@ describe('SessionManager permission mode updates', () => {
       trace.slice(0, openingIndex).some((entry) => entry.startsWith('runtime:')),
       false,
       'the opening fact must be the first RuntimeEvent of the invocation',
-    );
-    assert.ok(
-      openingIndex < trace.indexOf('ledger:run_created'),
-      'the opening fact must precede the operational run_created row',
     );
     assert.ok(
       openingIndex < trace.findIndex((entry) => entry.startsWith('runtime:text')),
@@ -5171,8 +5168,8 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(Object.isFrozen(providerInput?.headAnchorRuntimeEvent), true);
     assert.strictEqual(Object.isFrozen(headContent), true);
 
-    const [run] = await runStore.listSessionInvocations(session.id);
-    if (!run) throw new Error('AgentRunStore run was not created');
+    const [run] = await runtimeEventStore.listSessionInvocations(session.id);
+    if (!run) throw new Error('the run opened no invocation');
     const [openingFact, storedUserEvent] = await durableEvents.readRuntimeEvents(
       session.id,
       run.runId,
@@ -5331,7 +5328,9 @@ describe('SessionManager permission mode updates', () => {
     const sourceRunId = 'source-run';
     const sourceTurnId = 'source-turn';
     const sourceInvocationId = 'source-invocation';
-    await seedInvocationFromHeader(runStore, {
+    // The source run states its own terminal event below, so only its opening
+    // is seeded here: a second ending would leave the invocation ambiguous.
+    await seedInvocationOpening(runStore, {
       runId: sourceRunId,
       invocationId: sourceInvocationId,
       sessionId: session.id,
@@ -5507,7 +5506,8 @@ describe('SessionManager permission mode updates', () => {
         invocationId: sourceInvocationId,
         runId: sourceRunId,
         turnId: sourceTurnId,
-        highWater: sourceEvents.length,
+        // The opening fact is event 1 of the source invocation.
+        highWater: sourceEvents.length + 1,
         prefixDigest: plan.continuation.boundary?.segments.at(-1)?.prefixDigest,
       },
       replayManifestDigest: plan.continuation.boundary?.manifestDigest,
@@ -5526,7 +5526,10 @@ describe('SessionManager permission mode updates', () => {
       (await store.readMessages(session.id)).some((message) => message.type === 'user'),
       false,
     );
-    assert.deepStrictEqual(await runStore.readRuntimeEvents(session.id, sourceRunId), sourceEvents);
+    assert.deepStrictEqual(
+      (await runStore.readRuntimeEvents(session.id, sourceRunId)).slice(1),
+      sourceEvents,
+    );
     assert.deepStrictEqual(
       lifecycleEvents.map((event) => event.type),
       ['plan_approved', 'execution_started', 'execution_completed'],
@@ -5637,7 +5640,8 @@ describe('SessionManager permission mode updates', () => {
     const sourceRunId = 'source-run-cross-route';
     const sourceInvocationId = 'source-invocation-cross-route';
     const sourceTurnId = 'source-turn-cross-route';
-    await seedInvocationFromHeader(runStore, {
+    // The source run states its own terminal event below.
+    await seedInvocationOpening(runStore, {
       runId: sourceRunId,
       invocationId: sourceInvocationId,
       sessionId: session.id,
@@ -6328,7 +6332,9 @@ describe('SessionManager permission mode updates', () => {
 
   test('does not call the backend and claim recovery closes a continuation-start persistence failure', async () => {
     const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore({ failRuntimeEventAppendAfter: 2 });
+    // The source invocation's opening and its two events are the three appends
+    // that must succeed; the continuation-start is the one that fails.
+    const runStore = new MemoryAgentRunStore({ failRuntimeEventAppendAfter: 3 });
     const backends = new BackendRegistry();
     let backendCalls = 0;
     backends.register(
@@ -6352,7 +6358,9 @@ describe('SessionManager permission mode updates', () => {
     const sourceRunId = 'source-run-write-failure';
     const sourceTurnId = 'source-turn-write-failure';
     const sourceInvocationId = 'source-invocation-write-failure';
-    await seedInvocationFromHeader(runStore, {
+    // The source states its own terminal event below.
+    await seedInvocationOpening(runStore, {
+      invocationId: sourceInvocationId,
       runId: sourceRunId,
       sessionId: session.id,
       turnId: sourceTurnId,
@@ -6413,8 +6421,9 @@ describe('SessionManager permission mode updates', () => {
     );
 
     assert.strictEqual(backendCalls, 0);
-    const targetRun = await readInvocation(runStore, session.id, plan.continuation.runId);
-    assert.strictEqual(targetRun.terminalEvent, undefined);
+    // The continuation-start never reached the ledger, so nothing opened the
+    // target invocation and the inventory does not know it.
+    await assert.rejects(readInvocation(runStore, session.id, plan.continuation.runId));
     assert.deepStrictEqual(
       await runStore.readRuntimeEvents(session.id, plan.continuation.runId),
       [],
@@ -6626,7 +6635,7 @@ describe('SessionManager permission mode updates', () => {
     );
   });
 
-  test('revalidates terminal ledger consistency before executing a planned continuation', async () => {
+  test('refuses a planned continuation whose source ledger changed after planning', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -6714,9 +6723,11 @@ describe('SessionManager permission mode updates', () => {
       }),
     );
 
+    // The second ending moved the source boundary the plan was cut against, so
+    // the plan no longer describes the ledger it would continue from.
     await expectRejects(
       collectSessionEvents(manager.resumeSafeBoundaryContinuation(plan.continuation)),
-      /terminal/i,
+      /continuation boundary changed/i,
     );
     assert.strictEqual(backendCalls, 0);
   });
@@ -6813,18 +6824,9 @@ describe('SessionManager permission mode updates', () => {
     );
     assert.strictEqual(backendCalls, 0);
 
-    assert.ok(!(await manager.recoverInterruptedSessions()).includes(session.id));
-    const durableRepairEvents = await runStore.readRuntimeEvents(
-      session.id,
-      plan.continuation.runId,
-    );
-    assert.strictEqual(durableRepairEvents.length, 2);
-    assert.strictEqual(durableRepairEvents.filter(isTerminalRuntimeEvent).length, 1);
-    assert.strictEqual(
-      (await readInvocation(runStore, session.id, plan.continuation.runId)).terminalEvent,
-      undefined,
-    );
-
+    // One pass finishes the claim: the continuation-start the crash never
+    // committed, and the terminal event that ends a run nothing will dispatch.
+    // There is no second record left to settle afterwards.
     assert.ok((await manager.recoverInterruptedSessions()).includes(session.id));
     const repairedRun = await readInvocation(runStore, session.id, plan.continuation.runId);
     assert.strictEqual(runtimeInvocationOutcome(repairedRun), 'failed');
@@ -7250,113 +7252,6 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(backendCalls, 0);
   });
 
-  test('sendMessage preserves token usage fields while resuming from an empty prior runtime ledger', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    let backend: TestBackend | undefined;
-    backends.register('ai-sdk', (ctx) => {
-      backend = new TestBackend(ctx);
-      return backend;
-    });
-    const newId = nextId();
-    const now = nextNow(7_000);
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId,
-      now,
-    });
-    const session = await manager.createSession(makeInput());
-    await store.appendMessages(session.id, [
-      { type: 'user', id: 'legacy-user', turnId: 'turn-1', ts: 101, text: 'prior question' },
-      {
-        type: 'assistant',
-        id: 'legacy-assistant',
-        turnId: 'turn-1',
-        ts: 102,
-        text: 'prior answer',
-        modelId: 'fake-model',
-      },
-      {
-        type: 'token_usage',
-        id: 'legacy-usage',
-        turnId: 'turn-1',
-        ts: 103,
-        input: 100,
-        output: 25,
-        runtimeSteps: 3,
-        contextRemaining: 9000,
-        providerRequestTraceId: 'provider-trace-1',
-      },
-      {
-        type: 'turn_state',
-        id: 'legacy-state',
-        turnId: 'turn-1',
-        ts: 104,
-        status: 'completed',
-        partialOutputRetained: true,
-      },
-    ]);
-    await seedInvocationFromHeader(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'run-1',
-        turnId: 'turn-1',
-        status: 'completed',
-        createdAt: 100,
-        updatedAt: 104,
-        completedAt: 104,
-      }),
-    );
-
-    const restarted = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId,
-      now,
-    });
-    const sessionEvents = await collectSessionEvents(
-      restarted.sendMessage(session.id, { turnId: 'turn-2', text: 'follow up' }),
-    );
-
-    assert.deepStrictEqual(
-      sessionEvents.map((event) => event.type),
-      ['text_delta', 'complete'],
-    );
-    assert.deepStrictEqual(
-      backend?.sendInputs[0]?.context.map((message) => message.type),
-      ['user', 'assistant', 'token_usage', 'turn_state'],
-    );
-    assert.deepStrictEqual(
-      backend?.sendInputs[0]?.context.map((message) =>
-        'text' in message ? message.text : message.type,
-      ),
-      ['prior question', 'prior answer', 'token_usage', 'turn_state'],
-    );
-    assert.deepStrictEqual(
-      backend?.sendInputs[0]?.runtimeContext?.map((event) => event.runId),
-      ['run-1', 'run-1', 'run-1', 'run-1'],
-    );
-    const resumedUsage = backend?.sendInputs[0]?.runtimeContext?.find(
-      (event) => event.actions?.tokenUsage,
-    );
-    assert.strictEqual(resumedUsage?.actions?.tokenUsage?.runtimeSteps, 3);
-    assert.strictEqual(resumedUsage?.actions?.tokenUsage?.contextRemaining, 9000);
-    assert.strictEqual(resumedUsage?.refs?.providerRequestTraceId, 'provider-trace-1');
-    const repairedRuntimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
-    assert.deepStrictEqual(
-      repairedRuntimeEvents.map((event) => event.refs?.storedMessageId),
-      ['legacy-user', 'legacy-assistant', 'legacy-usage', 'legacy-state'],
-    );
-    assert.strictEqual(repairedRuntimeEvents.at(-1)?.status, 'completed');
-  });
-
   test('sendMessage completes interrupted imported history beside native runs', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore({ failRuntimeEventAppendAfter: 3 });
@@ -7509,99 +7404,6 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await runStore.listSessionInvocations(session.id)).length, 0);
   });
 
-  test('sendMessage rejects prior runtime context without a valid terminal fact', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const backends = new BackendRegistry();
-    let backend: TestBackend | undefined;
-    backends.register('ai-sdk', (ctx) => {
-      backend = new TestBackend(ctx);
-      return backend;
-    });
-    const manager = new SessionManager({
-      store,
-      runStore,
-      runtimeEventStore: runStore,
-      backends,
-      newId: nextId(),
-      now: nextNow(7_050),
-    });
-    const session = await manager.createSession(makeInput());
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'run-1',
-        turnId: 'turn-1',
-        status: 'completed',
-        createdAt: 100,
-        updatedAt: 103,
-        completedAt: 103,
-      }),
-      [
-        runtimeEvent({
-          id: 'rt-user',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 101,
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'prior question' },
-        }),
-        runtimeEvent({
-          id: 'rt-assistant',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 102,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: 'prior answer' },
-        }),
-        runtimeEvent({
-          id: 'rt-completed-a',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 103,
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-        runtimeEvent({
-          id: 'rt-completed-b',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 104,
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      ],
-    );
-
-    await expectRejects(
-      drain(manager.sendMessage(session.id, { turnId: 'turn-2', text: 'follow up' })),
-      /valid terminal fact/,
-    );
-    assert.strictEqual(backend?.sendInputs.length ?? 0, 0);
-    const currentRun = (await runStore.listSessionInvocations(session.id)).find(
-      (run) => run.turnId === 'turn-2',
-    );
-    if (!currentRun) throw new Error('current AgentRunStore run was not created');
-    assert.strictEqual(runtimeInvocationOutcome(currentRun), 'failed');
-    assert.strictEqual(runtimeInvocationFailureClass(currentRun), 'missing_terminal_event');
-    const currentTerminalEvents = (
-      await runStore.readRuntimeEvents(session.id, currentRun.runId)
-    ).filter(isTerminalRuntimeEvent);
-    assert.strictEqual(currentTerminalEvents.length, 1);
-    assert.strictEqual(currentTerminalEvents[0]?.status, 'failed');
-    assert.strictEqual(
-      currentTerminalEvents[0]?.actions?.stateDelta?.failureClass,
-      'missing_terminal_event',
-    );
-  });
-
   test('sendMessage replays a prior run left non-terminal by an unanswered interaction', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -7661,7 +7463,7 @@ describe('SessionManager permission mode updates', () => {
 
     assert.deepStrictEqual(
       backend?.sendInputs[0]?.runtimeContext?.map((event) => event.id),
-      ['rt-user', 'rt-assistant'],
+      ['run-1-invocation-opened', 'rt-user', 'rt-assistant'],
     );
   });
 
@@ -8070,171 +7872,6 @@ describe('SessionManager permission mode updates', () => {
     ]);
   });
 
-  test('getMessages repairs a non-empty RuntimeEvent ledger that is missing only the terminal fact', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const manager = makeManagerForReadCutover(store, runStore);
-    const session = await manager.createSession(makeInput());
-    await store.appendMessages(session.id, [
-      { type: 'user', id: 'legacy-user', turnId: 'turn-1', ts: 101, text: 'question' },
-      {
-        type: 'assistant',
-        id: 'legacy-assistant',
-        turnId: 'turn-1',
-        ts: 102,
-        text: 'answer',
-        modelId: 'fake-model',
-      },
-      {
-        type: 'turn_state',
-        id: 'legacy-state',
-        turnId: 'turn-1',
-        ts: 103,
-        status: 'completed',
-        partialOutputRetained: true,
-      },
-    ]);
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'run-1',
-        turnId: 'turn-1',
-        status: 'completed',
-        createdAt: 100,
-        updatedAt: 103,
-        completedAt: 103,
-      }),
-      [
-        runtimeEvent({
-          id: 'rt-user',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 101,
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'question' },
-        }),
-        runtimeEvent({
-          id: 'rt-assistant',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 102,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: 'answer' },
-        }),
-      ],
-    );
-
-    const messages = await manager.getMessages(session.id);
-    const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
-
-    assert.deepStrictEqual(
-      messages.map((message) => message.type),
-      ['user', 'assistant', 'turn_state'],
-    );
-    assert.deepStrictEqual(messages.at(-1), {
-      type: 'turn_state',
-      id: 'legacy-state',
-      turnId: 'turn-1',
-      ts: 103,
-      status: 'completed',
-      partialOutputRetained: true,
-    });
-    assert.deepStrictEqual(
-      runtimeEvents.slice(0, 2).map((event) => event.id),
-      ['rt-user', 'rt-assistant'],
-    );
-    assert.strictEqual(runtimeEvents.at(-1)?.status, 'completed');
-    assert.strictEqual(runtimeEvents.at(-1)?.refs?.storedMessageId, 'legacy-state');
-  });
-
-  test('getMessages repair writes terminal turn_state for a continuation run', async () => {
-    const store = new MemorySessionStore();
-    const runStore = new MemoryAgentRunStore();
-    const manager = makeManagerForReadCutover(store, runStore);
-    const session = await manager.createSession(makeInput());
-    const sourceRunId = 'repair-source-run';
-    const sourceTurnId = 'repair-source-turn';
-    const sourceInvocationId = 'repair-source-invocation';
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: sourceRunId,
-        turnId: sourceTurnId,
-        status: 'completed',
-        createdAt: 100,
-        updatedAt: 101,
-        completedAt: 101,
-      }),
-      [
-        runtimeEvent({
-          id: 'repair-source-complete',
-          invocationId: sourceInvocationId,
-          sessionId: session.id,
-          runId: sourceRunId,
-          turnId: sourceTurnId,
-          ts: 101,
-          status: 'completed',
-          actions: { endInvocation: true },
-        }),
-      ],
-    );
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'repair-continuation-run',
-        turnId: 'repair-continuation-turn',
-        status: 'completed',
-        parentRunId: sourceRunId,
-        parentTurnId: sourceTurnId,
-        continuationSource: {
-          sourceInvocationId,
-          sourceRunId,
-          sourceTurnId,
-          sourceRuntimeEventHighWater: 1,
-        },
-        createdAt: 102,
-        updatedAt: 104,
-        completedAt: 104,
-      }),
-      [
-        runtimeEvent({
-          id: 'repair-continuation-text',
-          invocationId: 'repair-continuation-invocation',
-          sessionId: session.id,
-          runId: 'repair-continuation-run',
-          turnId: 'repair-continuation-turn',
-          ts: 103,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: 'retained continuation output' },
-        }),
-      ],
-    );
-
-    await manager.getMessages(session.id);
-
-    const cachedMessages = await store.readMessages(session.id);
-    assert.partialDeepStrictEqual(
-      cachedMessages.find(
-        (message) => message.type === 'turn_state' && message.turnId === 'repair-continuation-turn',
-      ),
-      {
-        type: 'turn_state',
-        status: 'failed',
-        errorClass: 'missing_terminal_event',
-        parentTurnId: sourceTurnId,
-        partialOutputRetained: false,
-      },
-    );
-  });
-
   test('getMessages repairs missing failed header class from an existing terminal RuntimeEvent', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
@@ -8322,7 +7959,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(runtimeEvents.filter((event) => event.status === 'failed').length, 1);
   });
 
-  test('getMessages uses fallback failed header class when an existing terminal RuntimeEvent has no class', async () => {
+  test('getMessages leaves a failed terminal RuntimeEvent that states no class alone', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const manager = makeManagerForReadCutover(store, runStore);
@@ -8386,76 +8023,16 @@ describe('SessionManager permission mode updates', () => {
     );
 
     await manager.getMessages(session.id);
-    await manager.getMessages(session.id);
+    const messages = await manager.getMessages(session.id);
     const repairedRun = await readInvocation(runStore, session.id, 'run-1');
     const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
 
-    assert.strictEqual(runtimeInvocationFailureClass(repairedRun), 'missing_terminal_event');
+    // The run already ended. Its ending is immutable, so the class it never
+    // stated stays unstated, and no read appends a second ending to supply one.
+    assert.strictEqual(runtimeInvocationFailureClass(repairedRun), undefined);
     assert.strictEqual(runtimeEvents.filter((event) => event.status === 'failed').length, 1);
-  });
-
-  test('getMessages serializes concurrent terminal repairs for the same run', async () => {
-    const store = new MemorySessionStore();
-    let repairReads = 0;
-    const runStore = new MemoryAgentRunStore({
-      beforeRuntimeEventRead: async (_sessionId, runId) => {
-        if (runId !== 'run-1' || repairReads >= 2) return;
-        repairReads += 1;
-        await Promise.resolve();
-      },
-    });
-    const manager = makeManagerForReadCutover(store, runStore);
-    const session = await manager.createSession(makeInput());
-    await store.appendMessages(session.id, [
-      { type: 'user', id: 'legacy-user', turnId: 'turn-1', ts: 101, text: 'question' },
-      {
-        type: 'assistant',
-        id: 'legacy-assistant',
-        turnId: 'turn-1',
-        ts: 102,
-        text: 'answer',
-        modelId: 'fake-model',
-      },
-    ]);
-    await seedRuntimeRun(
-      runStore,
-      makeRunHeader({
-        sessionId: session.id,
-        runId: 'run-1',
-        turnId: 'turn-1',
-        status: 'completed',
-        createdAt: 100,
-        updatedAt: 103,
-        completedAt: 103,
-      }),
-      [
-        runtimeEvent({
-          id: 'rt-user',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 101,
-          role: 'user',
-          author: 'user',
-          content: { kind: 'text', text: 'question' },
-        }),
-        runtimeEvent({
-          id: 'rt-assistant',
-          sessionId: session.id,
-          runId: 'run-1',
-          turnId: 'turn-1',
-          ts: 102,
-          role: 'model',
-          author: 'agent',
-          content: { kind: 'text', text: 'answer' },
-        }),
-      ],
-    );
-
-    await Promise.all([manager.getMessages(session.id), manager.getMessages(session.id)]);
-
-    const runtimeEvents = await runStore.readRuntimeEvents(session.id, 'run-1');
-    assert.strictEqual(runtimeEvents.filter((event) => event.status === 'failed').length, 1);
+    const [turnState] = messages.filter((message) => message.type === 'turn_state');
+    assert.partialDeepStrictEqual(turnState, { status: 'failed', errorClass: 'unknown' });
   });
 
   test('getMessages includes continuation output without inlining child agent output', async () => {
@@ -9374,8 +8951,9 @@ describe('SessionManager permission mode updates', () => {
     const secondInput = backendInstances[0]?.sendInputs[0];
     if (!secondInput) throw new Error('backend input was not recorded');
     assert.deepStrictEqual(
+      // The opening fact rides the same context as the three events it opened.
       secondInput.runtimeContext?.map((event) => event.turnId),
-      ['turn-1', 'turn-1', 'turn-1'],
+      ['turn-1', 'turn-1', 'turn-1', 'turn-1'],
     );
     const turnState = secondInput.context.find(
       (message) => message.type === 'turn_state' && message.turnId === 'turn-1',
@@ -10339,7 +9917,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(output.invocation.runId, 'child-run');
     assert.deepStrictEqual(
       output.runtimeEvents.map((event) => event.id),
-      ['child-user', 'child-answer', 'child-complete'],
+      ['child-run-invocation-opened', 'child-user', 'child-answer', 'child-complete'],
     );
     assert.deepStrictEqual(
       output.artifacts.map((artifact) => artifact.id),
@@ -11232,9 +10810,6 @@ describe('SessionManager permission mode updates', () => {
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run && runtimeInvocationOutcome(run), 'cancelled');
     assert.strictEqual(run && runtimeInvocationFailureClass(run), undefined);
-    const events = (await runStore.readEvents(session.id, run!.runId)).map((event) => event.type);
-    assert.ok(events.includes('run_cancelled'));
-    assert.strictEqual(events.includes('run_failed'), false);
   });
 
   test('durable run ledger records lifecycle trace events and redacts obvious secrets', async () => {
@@ -11256,7 +10831,7 @@ describe('SessionManager permission mode updates', () => {
 
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.partialDeepStrictEqual(run?.opening.route, {
-      provenance: 'runtime',
+      provenance: 'unknown',
       backendKind: 'ai-sdk',
       llmConnectionSlug: 'fake',
       modelId: 'fake-model',
@@ -11266,7 +10841,6 @@ describe('SessionManager permission mode updates', () => {
     const events = await runStore.readEvents(session.id, run!.runId);
     assert.ok(events.map((event) => event.type).includes('model_stream_started'));
     assert.ok(events.map((event) => event.type).includes('model_stream_completed'));
-    assert.ok(events.map((event) => event.type).includes('run_completed'));
     assert.strictEqual(JSON.stringify(events).includes('sk-live-secret-token-value'), false);
   });
 
@@ -11452,12 +11026,13 @@ describe('SessionManager permission mode updates', () => {
 
   test('rejects checkpoint recording after the current AgentRun store becomes unavailable', async () => {
     const store = new MemorySessionStore();
-    const runStoreUnavailable = makeGate();
     const writeOutcomes: string[] = [];
+    // The store goes unavailable partway through the run, right before the
+    // checkpoint write asks it for anything.
+    let runStoreUnavailable = false;
     const runStore = new MemoryAgentRunStore({
-      beforeAgentRunEventAppend: async (_sessionId, _runId, event) => {
-        if (event.type === 'run_created') throw new Error('run ledger append failed');
-        if (event.type === 'trace_write_failed') runStoreUnavailable.release();
+      beforeAgentRunEventAppend: async () => {
+        if (runStoreUnavailable) throw new Error('run ledger append failed');
       },
     });
     const backends = new BackendRegistry();
@@ -11466,7 +11041,9 @@ describe('SessionManager permission mode updates', () => {
       (ctx) =>
         new CheckpointRecorderContractProbeBackend(
           ctx,
-          async () => runStoreUnavailable.promise,
+          async () => {
+            runStoreUnavailable = true;
+          },
           writeOutcomes,
         ),
     );
@@ -13694,6 +13271,9 @@ class MemoryAgentRunStore
   }
 
   async claimContinuation(input: { claim: ContinuationClaimV1 }) {
+    if (this.options.failContinuationCreate) {
+      throw new Error('continuation claim create failed');
+    }
     const claim = decodeContinuationClaim(input.claim);
     const existing = this.continuationClaims.get(claim.boundaryDigest);
     if (existing) return { kind: 'existing' as const, claim: existing };
@@ -14513,8 +14093,19 @@ async function seedInvocationTerminal(
     role: 'system',
     author: 'system',
     status: header.status === 'cancelled' ? 'aborted' : header.status,
-    ...(header.failureClass ? { failureClass: header.failureClass } : {}),
-    ...(header.abortSource ? { abortSource: header.abortSource } : {}),
+    // The failure class and abort source live where every reader looks for
+    // them: on the terminal event's own state delta.
+    actions: {
+      endInvocation: true,
+      ...(header.failureClass || header.abortSource
+        ? {
+            stateDelta: {
+              ...(header.failureClass ? { failureClass: header.failureClass } : {}),
+              ...(header.abortSource ? { abortSource: header.abortSource } : {}),
+            },
+          }
+        : {}),
+    },
     ...(header.failureMessage
       ? { content: { kind: 'error' as const, message: header.failureMessage } }
       : {}),
@@ -14806,28 +14397,40 @@ async function seedRun(
 /**
  * Seed one invocation whose ledger the test writes itself.
  *
- * The opening always comes first. The terminal event comes from the header only
- * when the test did not already state one, so a run never ends twice.
+ * The opening always comes first, and it opens the invocation the test's own
+ * events name, so nothing the test writes lands outside the run it seeded. The
+ * terminal event comes from the header only when the test did not already state
+ * one, so a run never ends twice.
  */
 async function seedRuntimeRun(
   runStore: RuntimeEventStore,
   header: TestRunHeader,
   events: RuntimeEvent[],
 ): Promise<void> {
-  await seedInvocationOpening(runStore, header);
+  const seeded: TestRunHeader = {
+    ...header,
+    invocationId:
+      header.invocationId ??
+      events.find((event) => event.runId === header.runId)?.invocationId ??
+      header.runId,
+  };
+  await seedInvocationOpening(runStore, seeded);
   for (const event of events) {
-    await runStore.appendRuntimeEvent(header.sessionId, header.runId, event);
+    await runStore.appendRuntimeEvent(seeded.sessionId, seeded.runId, event);
   }
   if (!events.some((event) => event.status !== undefined)) {
-    await seedInvocationTerminal(runStore, header);
+    await seedInvocationTerminal(runStore, seeded);
   }
 }
 
 function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
+  const runId = overrides.runId ?? 'run-1';
   return {
     id: 'rt-event',
-    invocationId: 'inv-1',
-    runId: 'run-1',
+    // One invocation per run unless a test says otherwise. A shared default
+    // would put two runs' events on one invocation, which is two endings.
+    invocationId: runId,
+    runId,
     sessionId: 'session-1',
     turnId: 'turn-1',
     ts: 100,
