@@ -443,13 +443,18 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePa
       "const { spawn } = require('node:child_process');",
       "const { writeFileSync } = require('node:fs');",
       'const [runtimeHost, serve, nativePath, expected, readyPath] = process.argv.slice(2);',
-      'require(nativePath).ownCurrentProcessTree();',
-      "if (runtimeHost !== 'runtime-host' || serve !== 'serve') process.exit(90);",
-      `if (expected !== ${JSON.stringify(hostileArgument)}) process.exit(91);`,
-      "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
-      'child.unref();',
-      'writeFileSync(readyPath, JSON.stringify({ pid: process.pid, childPid: child.pid }));',
-      'setInterval(() => {}, 1000);',
+      'try {',
+      '  require(nativePath).ownCurrentProcessTree();',
+      "  if (runtimeHost !== 'runtime-host' || serve !== 'serve') process.exit(90);",
+      `  if (expected !== ${JSON.stringify(hostileArgument)}) process.exit(91);`,
+      "  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
+      '  child.unref();',
+      '  writeFileSync(readyPath, JSON.stringify({ pid: process.pid, childPid: child.pid }));',
+      '  setInterval(() => {}, 1000);',
+      '} catch (error) {',
+      '  writeFileSync(readyPath, JSON.stringify({ error: error instanceof Error ? (error.stack ?? error.message) : String(error) }));',
+      '  process.exit(92);',
+      '}',
       '',
     ].join('\n'),
     'utf8',
@@ -486,6 +491,9 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePa
       throw new Error(`Windows scheduled task did not start: ${JSON.stringify(status)}`);
     }
     const first = JSON.parse(readFileSync(readyPath, 'utf8'));
+    if (typeof first.error === 'string') {
+      throw new Error(`Windows scheduled task Host failed to start: ${first.error}`);
+    }
     const firstStatus = await provider.supervisor.status();
     if (
       firstStatus.state !== 'running' ||
