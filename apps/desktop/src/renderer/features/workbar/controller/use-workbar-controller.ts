@@ -63,6 +63,10 @@ import {
 } from '../tools/side-chat/quote-companion-visibility.js';
 import { recoverOrphanedCompanionCopies } from '../tools/side-chat/quote-companion-core.js';
 import { useSideConversationWorkspace } from '../tools/side-chat/use-side-conversation-workspace.js';
+import {
+  isLinkedSideConversationSessionFamily,
+  linkedSideConversationFamilyRootId,
+} from '../tools/side-chat/side-conversation-session-family.js';
 import { useWorkbarLayoutState } from './use-workbar-layout-state.js';
 import { LiveContextUsageProbe } from '../tools/inspector/live-context-usage-probe.js';
 
@@ -91,6 +95,7 @@ export interface UseWorkbarControllerInput {
   /** Whether the Session workspace (rather than a module page) owns the shell. */
   available: boolean;
   activeSession: SessionSummary | undefined;
+  sessions: readonly SessionSummary[];
   projectId: string | null | undefined;
   projectAliases: readonly string[];
   authoritativeSessionIds: ReadonlySet<string> | undefined;
@@ -555,7 +560,12 @@ export function useWorkbarController(
 
   useLayoutEffect(() => {
     const stalePanels = sideConversations.panels.filter(
-      (panel) => panel.sourceSessionId !== activeSessionId,
+      (panel) =>
+        !isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          input.activeSession,
+          input.sessions,
+        ),
     );
     if (stalePanels.length === 0) return;
     const staleIds = new Set(stalePanels.map((panel) => panel.id));
@@ -571,6 +581,8 @@ export function useWorkbarController(
     sideConversations.removePanels(staleIds);
   }, [
     activeSessionId,
+    input.activeSession,
+    input.sessions,
     layout.closeWorkbarTab,
     layout.workbarPanelsState,
     sideConversations.panels,
@@ -682,15 +694,28 @@ export function useWorkbarController(
     ],
   );
 
-  const activeSideChatTabIds = useMemo(
+  const activeSideConversationPanels = useMemo(
     () =>
-      new Set(
-        sideConversations.panels
-          .filter((panel) => panel.sourceSessionId === activeSessionId)
-          .map((panel) => `side-chat:${panel.id}`),
+      sideConversations.panels.filter((panel) =>
+        isLinkedSideConversationSessionFamily(
+          panel.sourceSessionId,
+          input.activeSession,
+          input.sessions,
+        ),
       ),
-    [activeSessionId, sideConversations.panels],
+    [input.activeSession, input.sessions, sideConversations.panels],
   );
+  const activeSideChatTabIds = useMemo(
+    () => new Set(activeSideConversationPanels.map((panel) => `side-chat:${panel.id}`)),
+    [activeSideConversationPanels],
+  );
+  const sideConversationSurfaceKey = useMemo(() => {
+    if (activeSideConversationPanels.length === 0) return activeSessionId;
+    return (
+      linkedSideConversationFamilyRootId(input.activeSession, input.sessions) ??
+      activeSessionId
+    );
+  }, [activeSessionId, activeSideConversationPanels.length, input.activeSession, input.sessions]);
   const hostPanelsState = useMemo(
     () =>
       projectWorkbarPanelsForSession(
@@ -700,7 +725,6 @@ export function useWorkbarController(
       ),
     [activeSessionId, activeSideChatTabIds, layout.workbarPanelsState],
   );
-
   return {
     commands,
     LiveContextUsageProbe,
@@ -718,6 +742,7 @@ export function useWorkbarController(
       rightWidth: layout.workbarWidth,
       bottomHeight: layout.bottomPanelHeight,
       panelsState: hostPanelsState,
+      surfaceKey: sideConversationSurfaceKey,
       onActivateTab: layout.activateWorkbarTab,
       onCloseTab: closeTab,
       onCloseTabs: closeTabs,
@@ -732,9 +757,8 @@ export function useWorkbarController(
       },
       rightResizable: layout.workbarResizable,
       bottomResizable: layout.bottomPanelResizable,
-      quotes: sideConversations.panels.filter(
-        (panel) => panel.sourceSessionId === activeSessionId,
-      ),
+      quotes: activeSideConversationPanels,
+      sessions: input.sessions,
       onQuotesConsumed: (snapshot) =>
         sideConversations.updatePanel(snapshot.panelId, (panel) =>
           consumeCompanionQuoteSnapshot(panel, snapshot) ?? panel,

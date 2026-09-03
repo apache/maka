@@ -112,13 +112,16 @@ function controller(): WorkbarController {
 function input(
   activeSession: SessionSummary | undefined,
   errors: string[] = [],
+  sessionCatalog?: readonly SessionSummary[],
 ): UseWorkbarControllerInput {
+  const sessions = sessionCatalog ?? (activeSession ? [activeSession] : []);
   return {
     available: true,
     activeSession,
+    sessions,
     projectId: activeSession?.projectId,
     projectAliases: [],
-    authoritativeSessionIds: new Set(activeSession ? [activeSession.id] : []),
+    authoritativeSessionIds: new Set(sessions.map((session) => session.id)),
     shellObscured: false,
     modelChoices: [],
     reportError: (title, description) => errors.push(`${title}: ${description}`),
@@ -498,6 +501,146 @@ describe('useWorkbarController', () => {
     assert.equal(
       controller().host.panelsState.right.tabs.some(
         (candidate) => candidate.kind === 'side-chat',
+      ),
+      false,
+    );
+  });
+
+  it('preserves Side Chat across linked child navigation and restores its tabs', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+    const sessions = [parent, child];
+
+    await act(async () => renderController(root, services, input(parent, [], sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panel = controller().host.quotes?.[0];
+    assert.ok(panel);
+    const tab = controller().host.panelsState.right.tabs.find(
+      (candidate) => candidate.id === `side-chat:${panel.id}`,
+    );
+    assert.ok(tab);
+    await act(async () => controller().host.onActivityStateChange?.(panel.id, true));
+
+    await act(async () => renderController(root, services, input(child, [], sessions)));
+
+    assert.equal(controller().host.surfaceKey, parent.id);
+    assert.equal(controller().host.quotes?.[0], panel);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === tab.id,
+      ),
+      true,
+    );
+    assert.equal(controller().host.activeSideChatPanelIds?.has(panel.id), true);
+
+    await act(async () => renderController(root, services, input(parent, [], sessions)));
+    assert.equal(controller().host.surfaceKey, parent.id);
+    assert.equal(controller().host.quotes?.[0], panel);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === tab.id,
+      ),
+      true,
+    );
+  });
+
+  it('keeps Side Chat while the active source awaits its catalog row', async () => {
+    const { root } = installReactRenderer();
+    const source = session('pending-source');
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(source, [], [])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(source, [], [])));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      true,
+    );
+  });
+
+  it('keeps the family surface mounted when one of multiple source panels closes', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const sessions = [parent, child];
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, [], sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const parentPanelId = controller().host.quotes?.[0]?.id;
+    assert.ok(parentPanelId);
+
+    await act(async () => renderController(root, services, input(child, [], sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const childPanel = controller().host.quotes?.find(
+      (panel) => panel.sourceSessionId === child.id,
+    );
+    assert.ok(childPanel);
+    assert.equal(controller().host.surfaceKey, parent.id);
+
+    const parentTab = controller().host.panelsState.right.tabs.find(
+      (tab) => tab.id === `side-chat:${parentPanelId}`,
+    );
+    assert.ok(parentTab);
+    await act(async () => controller().host.onCloseTab('right', parentTab));
+
+    assert.equal(controller().host.surfaceKey, parent.id);
+    assert.equal(
+      controller().host.quotes?.some((panel) => panel.id === childPanel.id),
+      true,
+    );
+  });
+
+  it('cleans Side Chat when its source Session is removed', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(parent, [], [parent, child])));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(child, [], [child])));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
+      ),
+      false,
+    );
+  });
+
+  it('cleans a child-owned Side Chat when navigating back to its parent', async () => {
+    const { root } = installReactRenderer();
+    const parent = session('parent');
+    const child = session('child');
+    child.subagent = { parentSessionId: parent.id };
+    const sessions = [parent, child];
+    const services = createFakeWorkbarServices();
+
+    await act(async () => renderController(root, services, input(child, [], sessions)));
+    await act(async () => controller().commands.openTool('side-chat'));
+    const panelId = controller().host.quotes?.[0]?.id;
+    assert.ok(panelId);
+
+    await act(async () => renderController(root, services, input(parent, [], sessions)));
+    assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), false);
+    assert.equal(
+      controller().host.panelsState.right.tabs.some(
+        (candidate) => candidate.id === `side-chat:${panelId}`,
       ),
       false,
     );
