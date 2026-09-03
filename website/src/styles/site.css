@@ -664,10 +664,38 @@ h2 {
   color: var(--success-text);
 }
 .evs .cur {
-  width: 8px;
+  width: 2px;
   height: 22px;
-  border-radius: 2px;
   background: var(--accent-solid);
+}
+/* Events are appended one by one, then the caret keeps blinking: the log is still being written. */
+@media (prefers-reduced-motion: no-preference) {
+  .evs.armed .e,
+  .evs.armed .cur {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  .evs.play .e {
+    animation: append 0.3s ease-out forwards;
+    animation-delay: calc(var(--i) * 0.28s);
+  }
+  .evs.play .cur {
+    animation:
+      append 0.2s ease-out forwards,
+      blink 1s steps(1) infinite;
+    animation-delay: calc(var(--i) * 0.28s);
+  }
+}
+@keyframes append {
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 /* Get Maka: three paths */

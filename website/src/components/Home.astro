@@ -119,10 +119,10 @@ const reads = [
         <p>{copy.log.p}</p>
         <a class="more" href={localized.blogLog[l]}>{copy.log.more}</a>
         <div class="fig evs">
-          {copy.scene.events.map((event) => (
-            <span class:list={['e', event.tone.replace('dim', '').trim()]}>{event.name}</span>
+          {copy.scene.events.map((event, index) => (
+            <span class:list={['e', event.tone.replace('dim', '').trim()]} style={`--i: ${index}`}>{event.name}</span>
           ))}
-          <span class="cur"></span>
+          <span class="cur" style={`--i: ${copy.scene.events.length}`}></span>
         </div>
       </div>
       <div class="tile c12 plain get">
@@ -162,4 +162,17 @@ const reads = [
       ))}
     </div>
   </section>
+
+  <script is:inline>
+    // The log tile appends its events one by one the first time it scrolls into view.
+    (() => {
+      const log = document.querySelector('.evs');
+      log.classList.add('armed');
+      new IntersectionObserver((entries, observer) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        log.classList.add('play');
+        observer.disconnect();
+      }, { threshold: 0.6 }).observe(log);
+    })();
+  </script>
 </Site>
