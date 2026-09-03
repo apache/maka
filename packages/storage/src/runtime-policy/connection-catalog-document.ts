@@ -469,6 +469,10 @@ export class ConnectionCatalogDocumentOwner {
       result.models,
       {
         aliases: modelIdAliasesForProvider(previous.providerType),
+        // GitHub Copilot's filtered /models response is the account's complete
+        // usable catalog. Unlike generic provider snapshots, omission here is
+        // an entitlement answer and must remove bootstrap/stale ids.
+        authoritative: previous.providerType === 'github-copilot',
       },
     );
     // Discovery MOVES a target: a provider's model rename carries the default

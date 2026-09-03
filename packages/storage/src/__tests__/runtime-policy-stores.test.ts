@@ -1664,6 +1664,42 @@ describe('runtime policy stores', () => {
     });
   });
 
+  test('replaces Copilot bootstrap ids with the account-authorized model catalog', async () => {
+    await withInteractiveOwner(async ({ stores }) => {
+      const connection = await createConnection(
+        stores,
+        0,
+        connectionDraft('copilot-models', 'github-copilot', 'Copilot models'),
+      );
+      const configured = await stores.credentialVault.set({
+        locator: connectionCredential(connection, 'oauth_token'),
+        expected: null,
+        secret: JSON.stringify({
+          access_token: 'github-access',
+          refresh_token: 'github-refresh',
+          expires_at: Number.MAX_SAFE_INTEGER,
+        }),
+      });
+      assert.equal(configured.kind, 'committed');
+
+      const prepared = await stores.operations.beginModelFetch(connection.connectionId);
+      assert.equal(prepared.kind, 'ready');
+      if (prepared.kind !== 'ready') return;
+      const completed = await stores.operations.completeModelFetch(prepared.ticket, {
+        models: [{ id: 'account-available' }, { id: 'account-preview' }],
+        source: 'fetched',
+        fetchedAt: 43,
+      });
+      assert.equal(completed.kind, 'committed');
+      if (completed.kind !== 'committed') return;
+
+      const updated = completed.snapshot.connections[0];
+      assert.deepEqual(updated?.models, [{ id: 'account-available' }, { id: 'account-preview' }]);
+      assert.deepEqual(updated?.enabledModelIds, ['account-available', 'account-preview']);
+      assert.equal(updated?.enabledModelIds.includes('gpt-5'), false);
+    });
+  });
+
   test('keeps the canonical default target when discovery stops listing its model', async () => {
     await withInteractiveOwner(async ({ stores }) => {
       const connection = await createConnection(
