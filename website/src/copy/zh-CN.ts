@@ -59,12 +59,12 @@ export const zhCN: Copy = {
       { tone: 'dim ok', name: 'endInvocation', label: '本轮结束', detail: '运行完成' },
     ],
     highWater: '模型还能看到的部分',
-    caption: '一轮交互 · 7 个 RuntimeEvent · 只追加写入',
+    caption: '一轮交互 · 7 条运行时事件 · 只追加写入',
     formula: 'State(t) = Project(Log[0…t])',
   },
   measured: {
     h2: '只认实测数据，只信落盘记录。',
-    p: '这个站点今天能证明两件事：在同一个模型上，Maka 比其他 harness 究竟表现如何；以及 Runtime 工作时到底记下了什么。',
+    p: '这个站点今天能证明两件事：在同一个模型上，Maka 比其他 harness 究竟表现如何；以及运行时工作时到底记下了什么。',
   },
   leaderboard: {
     h3: '9 个 harness，同一个模型，官方验证器',
@@ -89,7 +89,7 @@ export const zhCN: Copy = {
   },
   log: {
     h3: '日志即运行时',
-    p: '每条消息、每次工具调用、每个权限决定和每次终止，都是一条只追加的 RuntimeEvent。界面、下一轮 prompt 和崩溃恢复都从这份日志推导出来，日志之外没有第二份权威副本。',
+    p: '每条消息、每次工具调用、每个权限决定和每次终止，都是一条只追加写入的运行时事件（RuntimeEvent）。界面、下一轮 prompt 和崩溃恢复都从这份日志推导出来，日志之外没有第二份权威副本。',
     more: 'Log Is the Runtime',
   },
   get: {
