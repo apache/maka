@@ -258,12 +258,13 @@ h1.display {
   font-weight: 500;
   letter-spacing: -0.03em;
   margin: 0 auto 14px;
-  max-width: 18ch;
+  /* Three lines at every desktop width; the balance keeps them even. */
+  max-width: 24ch;
+  text-wrap: balance;
 }
 /* CJK glyphs are a full em wide, so the Chinese headline needs its own measure to break in two lines. */
 h1.display:lang(zh-CN) {
   max-width: 15em;
-  text-wrap: balance;
 }
 h1.display b {
   font-weight: 600;
