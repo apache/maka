@@ -42,6 +42,7 @@ test('OpenRC provider owns one supervised Host and reconciliation loop', async (
   };
   const active = new Set<string>();
   const calls: [string, readonly string[]][] = [];
+  let runlevel = 'sysinit';
   const runCommand = async (command: string, args: readonly string[]) => {
     calls.push([command, args]);
     if (command === 'supervise-daemon' && args[0] === '--help') {
@@ -72,7 +73,11 @@ test('OpenRC provider owns one supervised Host and reconciliation loop', async (
         await unlink(link);
       }
     }
-    return { exitCode: 0, stdout: '', stderr: '' };
+    return {
+      exitCode: 0,
+      stdout: command === 'rc-status' ? `${runlevel}\n` : '',
+      stderr: '',
+    };
   };
   const provider = createOpenRcRuntimeHostLifecycleProvider(SERVICE_ID, 'openrc_system', {
     uid: 0,
@@ -92,6 +97,8 @@ test('OpenRC provider owns one supervised Host and reconciliation loop', async (
     command: ['/tmp/maka operator', 'reconcile-update', '--framed'] as const,
   };
 
+  await assert.rejects(provider.supervisor.preflight(), { code: 'service_manager_unavailable' });
+  runlevel = 'default';
   await provider.supervisor.preflight();
   await provider.supervisor.converge(supervisor);
   await provider.reconciliationTrigger.converge(reconciliation);
@@ -132,7 +139,7 @@ test('OpenRC provider owns one supervised Host and reconciliation loop', async (
     installed: true,
     active: true,
   });
-  assert.match(await readFile(servicePath, 'utf8'), /retry=TERM\/45\/KILL\/5[\s\S]*respawn_max=0/u);
+  assert.match(await readFile(servicePath, 'utf8'), /retry=TERM\/20\/KILL\/5[\s\S]*respawn_max=0/u);
   assert.match(
     await readFile(join(paths.artifactDirectory, 'update'), 'utf8'),
     /reconcile-update[\s\S]*sleep 86400/u,

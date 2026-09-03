@@ -59,7 +59,6 @@ interface OpenRcServiceContext {
   readonly provider: OpenRcProvider;
   readonly name: string;
   readonly servicePath: string;
-  readonly commandPath: string;
   readonly runlevelPath: string;
   readonly pidPath?: string;
   readonly stdoutPath: string;
@@ -72,8 +71,6 @@ export interface OpenRcRuntimeHostLifecycleProviderOptions {
   readonly homeDir?: string;
   readonly uid?: number;
   readonly runCommand?: OpenRcRunner;
-  /** Used by tests and administrator-controlled embeddings; normal discovery probes the OS. */
-  readonly hasUserSessionActivation?: () => Promise<boolean>;
   readonly paths?: {
     readonly initDirectory: string;
     readonly runlevelDirectory: string;
@@ -95,10 +92,8 @@ export function createOpenRcRuntimeHostLifecycleProvider(
   const run = options.runCommand ?? defaultRunOpenRcCommand;
   const host = createContext(provider, serviceId, '', 'host', paths, run);
   const update = createContext(provider, serviceId, '-update', 'update', paths, run);
+  const updateCommandPath = join(paths.artifactDirectory, 'update');
   const uid = options.uid ?? process.getuid?.();
-  const username = currentUsername();
-  const userSessionActivation =
-    options.hasUserSessionActivation ?? (() => detectOpenRcUserSessionActivation(username));
 
   const preflight = async (): Promise<void> => {
     if (provider === 'openrc_system' && uid !== 0) {
@@ -115,7 +110,7 @@ export function createOpenRcRuntimeHostLifecycleProvider(
       if (!runtime?.isDirectory()) {
         throw unavailable('OpenRC user services require an active XDG_RUNTIME_DIR');
       }
-      if (!(await userSessionActivation())) {
+      if (!(await detectOpenRcUserSessionActivation(currentUsername()))) {
         throw unavailable(
           'OpenRC user services are not configured for automatic session or boot activation; use an on-demand Runtime Host',
         );
@@ -123,7 +118,10 @@ export function createOpenRcRuntimeHostLifecycleProvider(
     }
     await requireProbe(run, 'supervise-daemon', ['--help'], false);
     await requireProbe(run, 'rc-service', ['--help'], false);
-    await requireProbe(run, 'rc-status', [...scopeArgs(provider), '--runlevel']);
+    const runlevel = await requireProbe(run, 'rc-status', [...scopeArgs(provider), '--runlevel']);
+    if (runlevel.stdout.trim() !== 'default') {
+      throw unavailable('The OpenRC default runlevel is not active');
+    }
     await requireProbe(run, 'rc-update', [...scopeArgs(provider), 'show', 'default']);
   };
 
@@ -131,8 +129,8 @@ export function createOpenRcRuntimeHostLifecycleProvider(
     supervisor: {
       provider,
       preflight,
-      converge: (definition) => convergeOpenRcService(host, definition, false),
-      verify: (definition) => verifyOpenRcService(host, definition, false),
+      converge: (definition) => convergeOpenRcService(host, definition),
+      verify: (definition) => verifyOpenRcService(host, definition),
       status: () => readOpenRcSupervisorStatus(host),
       activate: () => startOpenRcService(host),
       retire: () => stopOpenRcService(host),
@@ -141,15 +139,15 @@ export function createOpenRcRuntimeHostLifecycleProvider(
     },
     reconciliationTrigger: {
       provider: 'openrc_supervised_loop',
-      converge: (definition) => convergeOpenRcService(update, definition, true),
-      verify: (definition) => verifyOpenRcService(update, definition, true),
+      converge: (definition) => convergeOpenRcService(update, definition, updateCommandPath),
+      verify: (definition) => verifyOpenRcService(update, definition, updateCommandPath),
       status: async () => {
         const observed = await readOpenRcStatus(update);
         return { installed: observed.installed, active: observed.active };
       },
       activate: () => startOpenRcService(update),
       logs: () => readOpenRcLogs(update),
-      uninstall: () => uninstallOpenRcService(update),
+      uninstall: () => uninstallOpenRcService(update, updateCommandPath),
     },
   };
 }
@@ -175,10 +173,12 @@ function renderOpenRcReconciliationLoop(definition: RuntimeHostProviderDefinitio
 function renderOpenRcService(
   context: OpenRcServiceContext,
   definition: RuntimeHostProviderDefinition,
-  periodic: boolean,
+  periodicCommandPath?: string,
 ): string {
-  const command = periodic ? '/bin/sh' : definition.command[0];
-  const commandArguments = periodic ? [context.commandPath] : definition.command.slice(1);
+  const command = periodicCommandPath ? '/bin/sh' : definition.command[0];
+  const commandArguments = periodicCommandPath
+    ? [periodicCommandPath]
+    : definition.command.slice(1);
   return [
     '#!/sbin/openrc-run',
     `description=${quoteShellWord(context.name)}`,
@@ -187,7 +187,7 @@ function renderOpenRcService(
     `command_args=${quoteDoubleQuotedShellValue(commandArguments.map(quoteShellWord).join(' '))}`,
     `output_log=${quoteDoubleQuotedShellValue(quoteShellWord(context.stdoutPath))}`,
     `error_log=${quoteDoubleQuotedShellValue(quoteShellWord(context.stderrPath))}`,
-    'retry=TERM/45/KILL/5',
+    'retry=TERM/20/KILL/5',
     'respawn_delay=2',
     'respawn_max=0',
     '',
@@ -197,19 +197,19 @@ function renderOpenRcService(
 async function convergeOpenRcService(
   context: OpenRcServiceContext,
   definition: RuntimeHostProviderDefinition,
-  periodic: boolean,
+  periodicCommandPath?: string,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
   await stopOpenRcService(context);
   await mkdir(dirname(context.stdoutPath), { recursive: true, mode: 0o700 });
   await writeRuntimeHostServiceFile(
     context.servicePath,
-    renderOpenRcService(context, definition, periodic),
+    renderOpenRcService(context, definition, periodicCommandPath),
     0o700,
   );
-  if (periodic) {
+  if (periodicCommandPath) {
     await writeRuntimeHostServiceFile(
-      context.commandPath,
+      periodicCommandPath,
       renderOpenRcReconciliationLoop(definition),
       0o700,
     );
@@ -225,17 +225,19 @@ async function convergeOpenRcService(
 async function verifyOpenRcService(
   context: OpenRcServiceContext,
   definition: RuntimeHostProviderDefinition,
-  periodic: boolean,
+  periodicCommandPath?: string,
 ): Promise<void> {
   assertRuntimeHostProviderDefinition(definition);
-  const expectedService = renderOpenRcService(context, definition, periodic);
+  const expectedService = renderOpenRcService(context, definition, periodicCommandPath);
   const [service, enabled] = await Promise.all([
     readManagedFile(context.servicePath, expectedService),
     isEnabled(context),
   ]);
-  const expectedCommand = periodic ? renderOpenRcReconciliationLoop(definition) : undefined;
+  const expectedCommand = periodicCommandPath
+    ? renderOpenRcReconciliationLoop(definition)
+    : undefined;
   const command = expectedCommand
-    ? await readManagedFile(context.commandPath, expectedCommand)
+    ? await readManagedFile(periodicCommandPath!, expectedCommand)
     : undefined;
   if (service !== expectedService || command !== expectedCommand || !enabled) {
     throw new RuntimeHostServiceManagerError(
@@ -324,7 +326,10 @@ async function stopOpenRcService(context: OpenRcServiceContext): Promise<void> {
   );
 }
 
-async function uninstallOpenRcService(context: OpenRcServiceContext): Promise<void> {
+async function uninstallOpenRcService(
+  context: OpenRcServiceContext,
+  periodicCommandPath?: string,
+): Promise<void> {
   await stopOpenRcService(context);
   if (await pathExists(context.runlevelPath)) {
     await requireOpenRc(
@@ -336,7 +341,9 @@ async function uninstallOpenRcService(context: OpenRcServiceContext): Promise<vo
   }
   await Promise.all([
     removeRuntimeHostServiceFile(context.servicePath, 'OpenRC service'),
-    removeRuntimeHostServiceFile(context.commandPath, 'OpenRC command'),
+    ...(periodicCommandPath
+      ? [removeRuntimeHostServiceFile(periodicCommandPath, 'OpenRC command')]
+      : []),
   ]);
   const status = await readOpenRcStatus(context);
   if (
@@ -376,7 +383,6 @@ function createContext(
     provider,
     name,
     servicePath: join(paths.initDirectory, name),
-    commandPath: join(paths.artifactDirectory, artifact),
     runlevelPath: join(paths.runlevelDirectory, name),
     ...(paths.stateDirectory
       ? { pidPath: join(paths.stateDirectory, 'options', name, 'child_pid') }
@@ -426,7 +432,7 @@ async function requireProbe(
   command: OpenRcCommand,
   args: readonly string[],
   requireSuccess = true,
-): Promise<void> {
+): Promise<RuntimeHostServiceManagerCommandResult> {
   let result: RuntimeHostServiceManagerCommandResult;
   try {
     result = await run(command, args);
@@ -436,6 +442,7 @@ async function requireProbe(
   if (requireSuccess && result.exitCode !== 0) {
     throw unavailable(`${command} is unavailable${commandDetail(result)}`);
   }
+  return result;
 }
 
 async function requireOpenRc(
@@ -564,8 +571,11 @@ async function readLogTail(path: string): Promise<string> {
 async function detectOpenRcUserSessionActivation(username: string | undefined): Promise<boolean> {
   if (username) {
     try {
-      await realpath(join('/etc/runlevels/default', `user.${username}`));
-      return true;
+      const [configured, template] = await Promise.all([
+        realpath(join('/etc/runlevels/default', `user.${username}`)),
+        realpath('/etc/init.d/user'),
+      ]);
+      if (configured === template) return true;
     } catch (error) {
       if (!isNodeError(error, 'ENOENT')) throw error;
     }
