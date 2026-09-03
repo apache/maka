@@ -4409,8 +4409,8 @@ describe('AiSdkBackend model history', () => {
     const result = await backend.compactHistory({
       turnId: 'turn-compact',
       runId: 'run-1',
-      runtimeContextRunHeaders: [
-        priorModelRunHeader({ connectionId: 'test-connection-id', modelId: 'mock-model-id' }),
+      runtimeContextInvocations: [
+        priorModelInvocation({ connectionId: 'test-connection-id', modelId: 'mock-model-id' }),
       ],
       runtimeContext: [
         runtimeTextEvent({

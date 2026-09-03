@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { stableJsonStringify } from '@maka/core/tool-args-identity';
 import {
@@ -83,7 +83,7 @@ export type ContinuationReplayPlanResult =
     };
 
 export interface ContinuationReplayAdmissionRoute {
-  runHeaders: readonly AgentRunHeader[];
+  invocations: readonly RuntimeInvocationRecord[];
   targetProviderStateIdentity: `sha256:${string}` | undefined;
   targetModelId: string;
 }
@@ -112,7 +112,7 @@ export function buildContinuationReplayPlan(input: {
   const runtimeContext = segments.flatMap((segment) => segment.replayRuntimeEvents);
   const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
     runtimeContext,
-    input.admissionRoute.runHeaders,
+    input.admissionRoute.invocations,
     input.admissionRoute.targetProviderStateIdentity,
     input.admissionRoute.targetModelId,
   );

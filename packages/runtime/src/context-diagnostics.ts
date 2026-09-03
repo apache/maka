@@ -18,7 +18,6 @@
  */
 
 import {
-  isSessionInlineRun,
   supersedesLatestContext,
   type AgentRunEvent,
   type AgentRunStore,
@@ -112,11 +111,7 @@ export interface ContextDiagnosticsComposition {
 
 type ContextRunStore = Pick<
   AgentRunStore,
-  | 'listSessionRuns'
-  | 'readEvents'
-  | 'readEventProjection'
-  | 'readEventLedgerRevision'
-  | 'repairEventProjection'
+  'readEvents' | 'readEventProjection' | 'readEventLedgerRevision' | 'repairEventProjection'
 >;
 
 /**
@@ -141,6 +136,8 @@ type ContextRunStore = Pick<
 export async function readLatestContextDiagnostics(
   runStore: ContextRunStore,
   sessionId: string,
+  /** The session-inline runs to scan on the cold path, from the event spine. */
+  runIds: readonly string[],
 ): Promise<ContextDiagnostics> {
   try {
     let replaceProjectionId: string | undefined;
@@ -165,7 +162,13 @@ export async function readLatestContextDiagnostics(
       runStore.readEventLedgerRevision && runStore.repairEventProjection
         ? await runStore.readEventLedgerRevision(sessionId)
         : undefined;
-    return await rebuildContextFromLedger(runStore, sessionId, replaceProjectionId, ledgerRevision);
+    return await rebuildContextFromLedger(
+      runStore,
+      sessionId,
+      runIds,
+      replaceProjectionId,
+      ledgerRevision,
+    );
   } catch {
     return { status: 'unavailable', reason: 'trace_unavailable' };
   }
@@ -184,10 +187,10 @@ export async function readLatestContextDiagnostics(
 async function rebuildContextFromLedger(
   runStore: ContextRunStore,
   sessionId: string,
+  runIds: readonly string[],
   replaceProjectionId?: string,
   ledgerRevision?: string,
 ): Promise<ContextDiagnostics> {
-  const runs = (await runStore.listSessionRuns(sessionId)).filter(isSessionInlineRun);
   let anchor: MeteringAnchor | undefined;
   // Only consulted when the scan finds no canonical attempt at all: a session
   // written before canonical metering existed has provider attempts and
@@ -207,8 +210,8 @@ async function rebuildContextFromLedger(
   const historicalAttempts: LegacyProviderAnchor[] = [];
   const checkpoints: CheckpointCandidate[] = [];
 
-  for (const run of runs) {
-    for (const event of await runStore.readEvents(sessionId, run.runId)) {
+  for (const runId of runIds) {
+    for (const event of await runStore.readEvents(sessionId, runId)) {
       if (event.type === METERING_EVENT_TYPE) {
         sawCanonicalRecord = true;
         const candidate = meteringAnchor(event);

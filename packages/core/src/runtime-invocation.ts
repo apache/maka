@@ -32,6 +32,7 @@ import type {
   RuntimeEventInvocationOpenedContent,
   RuntimeInvocationLineage,
 } from './runtime-event.js';
+import { isTerminalRuntimeEvent } from './runtime-event.js';
 
 export interface RuntimeInvocationRecord {
   sessionId: string;
@@ -42,6 +43,43 @@ export interface RuntimeInvocationRecord {
   openedAt: number;
   opening: RuntimeEventInvocationOpenedContent;
   terminalEvent?: RuntimeEvent;
+}
+
+/**
+ * Rebuild a Session's invocation inventory from its events alone.
+ *
+ * This is the definition of the inventory, not a cache of it: a store that
+ * holds the Session's events can answer `listSessionInvocations` with this and
+ * get exactly what an indexed store returns. Events whose invocation never
+ * opened are control-plane streams and are absent by construction.
+ */
+export function runtimeInvocationsFromSessionEvents(
+  sessionId: string,
+  events: readonly RuntimeEvent[],
+): RuntimeInvocationRecord[] {
+  const byInvocation = new Map<string, RuntimeInvocationRecord>();
+  for (const event of events) {
+    if (event.sessionId !== sessionId || event.partial === true) continue;
+    if (event.content?.kind === 'invocation_opened') {
+      byInvocation.set(event.invocationId, {
+        sessionId,
+        invocationId: event.invocationId,
+        runId: event.runId,
+        turnId: event.turnId,
+        openedAt: event.ts,
+        opening: event.content,
+      });
+    }
+  }
+  for (const event of events) {
+    if (event.sessionId !== sessionId || event.partial === true) continue;
+    if (!isTerminalRuntimeEvent(event)) continue;
+    const record = byInvocation.get(event.invocationId);
+    if (record) record.terminalEvent = event;
+  }
+  return [...byInvocation.values()].sort(
+    (a, b) => a.openedAt - b.openedAt || a.invocationId.localeCompare(b.invocationId),
+  );
 }
 
 /** One invocation's position in a Session's opening order. */

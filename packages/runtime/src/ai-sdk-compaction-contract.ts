@@ -22,7 +22,7 @@ import type { HistoryCompactRoute } from '@maka/core/model-call-attempt';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import type { LoadedModelProjectionTransitions } from './model-projection-transition-ledger.js';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import type { ProviderRequestTracker } from './provider-request-telemetry.js';
 import type { ContextBudgetPolicy } from './context-budget.js';
@@ -47,7 +47,7 @@ export interface HistoryCompactSummaryInput {
   runId?: string;
   source: {
     foldedRuntimeEvents: RuntimeEvent[];
-    runHeaders?: readonly AgentRunHeader[];
+    invocations?: readonly RuntimeInvocationRecord[];
   };
   previousCheckpoint?: HistoryCompactCheckpoint;
   newlyFoldedRuntimeEvents?: RuntimeEvent[];

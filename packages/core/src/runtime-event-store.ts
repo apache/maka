@@ -81,7 +81,7 @@ export interface RuntimeEventStore {
    * same inventory. Reserved control-plane invocation streams have no opening
    * fact and therefore never appear here.
    */
-  listSessionInvocations?(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
   appendRuntimeEvent(
     sessionId: string,
     runId: string,
