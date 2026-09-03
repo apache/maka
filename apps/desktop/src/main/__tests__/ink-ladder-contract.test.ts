@@ -193,4 +193,28 @@ describe('mode expression', () => {
       'an inverted surface has one ink tier: secondary takes the same on-color as primary',
     );
   });
+
+  it('never reads a palette token as a colour', async () => {
+    // A token's declared value stopped being a colour when the mode moved into
+    // it: `light-dark()` resolves at the use site, so the declaration is a
+    // recipe. Handing one to something that wants a colour fails silently —
+    // `CSS.supports('color', …)` says yes and a canvas fillStyle ignores the
+    // assignment, which is how the Windows titlebar sampled opaque black.
+    // Read `getComputedStyle(element)` off whatever paints the token instead.
+    const files = (await Promise.all(SOURCE_ROOTS.map(sourceFilesUnder))).flat();
+    const offenders: string[] = [];
+    for (const file of files) {
+      if (!file.endsWith('.ts') && !file.endsWith('.tsx')) continue;
+      const source = withoutComments(await readFile(file, 'utf8'));
+      for (const match of source.matchAll(/getPropertyValue\(\s*['"`](--[a-z0-9-]+)/g)) {
+        offenders.push(`${relative(REPO_ROOT, file)} → ${match[1]}`);
+      }
+    }
+
+    assert.deepEqual(
+      offenders,
+      [],
+      'a custom property reads back as its declaration, not as a resolved value',
+    );
+  });
 });

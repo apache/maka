@@ -1296,6 +1296,17 @@
     font-family: var(--font-family-code);
   }
 
+  html {
+    /* The application's ground, declared on the root rather than on `body`.
+       Either one propagates to the canvas, so the two paint identically — but
+       the root is the surface the native Windows titlebar strip has to match,
+       and theme.ts samples it from here. It has to sample a painted element:
+       a token's declared value is a `light-dark()` recipe, not a colour
+       (DESIGN.md §8). On `body` this left the root transparent, with nothing
+       for the sampler to read. */
+    background: var(--background);
+  }
+
   body {
     /* The document's default text role, and the one site where declaring it
        matters most: Astryx's reset puts `line-height: 1.5` on `:where(html)`,
@@ -1309,7 +1320,6 @@
        rules change nothing when removed, and they inherit their role from
        this line. */
     font: var(--maka-text-body);
-    background: var(--background);
     color: var(--foreground);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

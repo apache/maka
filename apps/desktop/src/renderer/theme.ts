@@ -211,13 +211,10 @@ export function applyThemePalette(palette: ThemePalette): void {
 
 function syncTitleBarOverlay(root: HTMLElement): void {
   // The native Windows overlay sits on top of the renderer's content surface.
-  // Sample the actual resolved --background color instead of approximating it
+  // Sample the actual painted --background color instead of approximating it
   // with one hard-coded light and dark pair; this also follows every palette.
   const isDark = root.classList.contains(DARK_CLASS);
-  const backgroundColor = cssColorToHex(
-    getComputedStyle(root).getPropertyValue('--background'),
-    isDark ? '#1c1d21' : '#ffffff',
-  );
+  const backgroundColor = paintedBackgroundToHex(root, isDark ? '#1c1d21' : '#ffffff');
   void window.maka?.appWindow
     ?.setTitleBarOverlayTheme?.({
       isDark,
@@ -231,9 +228,7 @@ function syncTitleBarOverlay(root: HTMLElement): void {
 /**
  * The color the titlebar strip appears under an open modal: the dialog
  * backdrop scrim composited over `--background`. The scrim is sampled from
- * the open modal's own ::backdrop — the engine has already resolved its
- * `var()` indirection and `light-dark()` branch, which neither a token read
- * nor a canvas fillStyle can do — so the dim tracks theme and palette
+ * the open modal's own ::backdrop, so the dim tracks theme and palette
  * automatically.
  */
 function dimmedTitlebarColor(backgroundHex: string, isDark: boolean): string {
@@ -254,17 +249,28 @@ function readModalBackdropColor(): { r: number; g: number; b: number; a: number 
   return parseCssRgbColor(getComputedStyle(dialog, '::backdrop').backgroundColor);
 }
 
-function cssColorToHex(value: string, fallback: string): string {
-  const color = value.trim();
-  if (!color || !CSS.supports('color', color)) return fallback;
-
+/**
+ * The opaque color an element is painted, as hex. Takes the element rather
+ * than a color string because a palette token's declared value is not a
+ * color: `--background` is a `light-dark()` pair that only becomes one where
+ * it is used (DESIGN.md §8), and a canvas cannot resolve that — nor anything
+ * else that needs an element's context. Reading `background-color` off the
+ * element that paints it (`html`, maka-tokens.css) hands the canvas an
+ * already-resolved color.
+ */
+function paintedBackgroundToHex(element: Element, fallback: string): string {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
   canvas.height = 1;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return fallback;
 
-  context.fillStyle = color;
+  // A fillStyle the canvas cannot parse is ignored, leaving the previous value
+  // in place — so start transparent. Anything unparseable then reads back at
+  // alpha 0 and takes the fallback, rather than sampling the opaque black that
+  // fillStyle defaults to.
+  context.fillStyle = 'rgba(0, 0, 0, 0)';
+  context.fillStyle = getComputedStyle(element).backgroundColor;
   context.fillRect(0, 0, 1, 1);
   const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
   if (alpha !== 255) return fallback;
