@@ -405,9 +405,12 @@ async function applyHostPatchWithoutLane(
     }
   }
   if (patch.subagents) {
-    await client.updateRuntimePolicy(() => ({
+    await client.updateRuntimePolicy((policy) => ({
       kind: "set_subagents",
-      value: patch.subagents!,
+      value: {
+        ...policy.subagents,
+        ...patch.subagents,
+      },
     }));
   }
   return skippedCredentials;

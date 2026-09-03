@@ -891,7 +891,7 @@ export function mergeSettings(current: AppSettings, patch: UpdateAppSettingsInpu
     subagents:
       patch.subagents === undefined
         ? current.subagents
-        : normalizeSubagentSettings(patch.subagents),
+        : normalizeSubagentSettings({ ...current.subagents, ...patch.subagents }),
   };
 }
 

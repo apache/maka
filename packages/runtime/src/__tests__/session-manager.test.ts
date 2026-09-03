@@ -2205,6 +2205,177 @@ describe('SessionManager claimed graph intent execution', () => {
 });
 
 describe('SessionManager child-session runtime primitive', () => {
+  test('creates a host-authorized temporary-bounded child without widening its profile', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register(
+      'ai-sdk',
+      (ctx) => new TestBackend(ctx, ctx.header.subagentRuntime ? undefined : parentGate),
+    );
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => {
+          if (id !== 'temporary-bounded') throw new Error('unexpected selector');
+          return {
+            id,
+            name: 'Temporary bounded',
+            description: 'one-off',
+            profile: LOCAL_READ_AGENT_PROFILE,
+            connectionSlug: 'approved-connection',
+            connectionId: '66666666-6666-4666-8666-666666666666',
+            model: 'approved-model',
+            enabled: true,
+          };
+        },
+      },
+      newId: nextId(),
+      now: nextNow(125),
+    });
+    const parent = await manager.createSession(
+      makeInput({ llmConnectionSlug: 'parent-connection', model: 'parent-model' }),
+    );
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-ad-hoc', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    const result = await manager.spawnChildSession(parent.id, {
+      spawnedBy: {
+        parentRunId: parentRun.runId,
+        parentTurnId: parentRun.turnId,
+        toolCallId: 'tool-call-ad-hoc',
+      },
+      subagentId: 'temporary-bounded',
+      agentProfile: LOCAL_READ_AGENT_PROFILE,
+      temporaryRole: {
+        name: 'Parser specialist',
+        purpose: 'Find parser boundary regressions.',
+        instructions: 'Use only the fixed read tools.',
+      },
+      prompt: 'Inspect the parser.',
+    });
+    const child = await store.readHeader(result.childSessionId);
+    assert.equal(child.name, 'Parser specialist');
+    assert.equal(child.model, 'approved-model');
+    assert.equal(child.llmConnectionSlug, 'approved-connection');
+    assert.equal(child.subagentRuntime?.agentId, LOCAL_READ_AGENT_ID);
+    assert.match(child.subagentRuntime?.systemPrompt ?? '', /Task-specific role context/);
+    assert.deepEqual(child.subagentRuntime?.toolNames, ['Read', 'Glob', 'Grep']);
+
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('rejects a temporary profile above the parent boundary before creating metadata', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, parentGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('WebSearch')],
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          id,
+          name: 'Temporary bounded',
+          description: 'one-off',
+          profile: 'web_research',
+          connectionSlug: 'approved-connection',
+          connectionId: '77777777-7777-4777-8777-777777777777',
+          model: 'approved-model',
+          enabled: true,
+        }),
+      },
+      newId: nextId(),
+      now: nextNow(126),
+    });
+    const parent = await manager.createSession(makeInput({ permissionMode: 'explore' }));
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-narrow', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    await assert.rejects(
+      manager.spawnChildSession(parent.id, {
+        spawnedBy: {
+          parentRunId: parentRun.runId,
+          parentTurnId: parentRun.turnId,
+          toolCallId: 'tool-call-boundary',
+        },
+        subagentId: 'temporary-bounded',
+        agentProfile: 'web_research',
+        temporaryRole: { name: 'Researcher' },
+        prompt: 'Search the web.',
+      }),
+      /exceeds the parent execution boundary/,
+    );
+    assert.equal(
+      (await store.list()).some((session) => session.subagent),
+      false,
+    );
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('rejects temporary role data and nested creation before child metadata exists', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      newId: nextId(),
+      now: nextNow(126),
+    });
+    const parent = await manager.createSession(makeInput());
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-invalid-role', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+    await assert.rejects(
+      manager.spawnChildSession(parent.id, {
+        spawnedBy: {
+          parentRunId: parentRun.runId,
+          parentTurnId: parentRun.turnId,
+          toolCallId: 'tool-call-invalid-role',
+        },
+        agentProfile: LOCAL_READ_AGENT_PROFILE,
+        temporaryRole: { name: 'x'.repeat(129) },
+        prompt: 'invalid',
+      }),
+      /temporaryRole is only valid|bounded/,
+    );
+    assert.equal(
+      (await store.list()).some((session) => session.subagent),
+      false,
+    );
+    await manager.stopSession(parent.id);
+    while (!(await parentTurn.next()).done) {}
+  });
+
   test('creates a fresh read-only child with a session-inline first run and no parent history', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();

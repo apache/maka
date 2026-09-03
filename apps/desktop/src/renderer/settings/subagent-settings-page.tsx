@@ -38,6 +38,7 @@ import {
   SUBAGENT_PRESET_DESCRIPTION_MAX_CHARS,
   SUBAGENT_PRESET_ID_MAX_CHARS,
   SUBAGENT_PRESET_NAME_MAX_CHARS,
+  type AdHocSubagentPolicy,
   type SubagentPreset,
   type SubagentProfile,
 } from '@maka/core/subagent-settings';
@@ -91,6 +92,10 @@ function leadingSpace(value: string): number {
 
 /** The preset as the form holds it: `thinkingLevel` gains the Selector's ''. */
 type SubagentEditorDraft = Omit<SubagentPreset, 'thinkingLevel'> & {
+  thinkingLevel: ThinkingLevel | '';
+};
+
+type AdHocSubagentPolicyDraft = Omit<AdHocSubagentPolicy, 'thinkingLevel'> & {
   thinkingLevel: ThinkingLevel | '';
 };
 
@@ -158,7 +163,14 @@ export function SubagentSettingsPage(props: {
   ): Promise<boolean> {
     setSaving(true);
     try {
-      const result = await props.onUpdate({ subagents: { presets: nextPresets } });
+      const result = await props.onUpdate({
+        subagents: {
+          presets: nextPresets,
+          ...(props.settings.subagents.adHoc
+            ? { adHoc: props.settings.subagents.adHoc }
+            : {}),
+        },
+      });
       if (
         expectPresent !== undefined &&
         !result.settings.subagents.presets.some((candidate) => candidate.id === expectPresent)
@@ -236,6 +248,22 @@ export function SubagentSettingsPage(props: {
 
   return (
     <SettingsPage>
+      <AdHocSubagentPolicySection
+        key={JSON.stringify(props.settings.subagents.adHoc ?? null)}
+        policy={props.settings.subagents.adHoc}
+        connections={props.connections}
+        isSaving={saving}
+        onSave={async (adHoc) => {
+          setSaving(true);
+          try {
+            await props.onUpdate({ subagents: { presets, adHoc } });
+          } catch (error) {
+            reportHostError(copy.adHoc.saveFailed, settingsActionErrorMessage(error, locale));
+          } finally {
+            setSaving(false);
+          }
+        }}
+      />
       <SettingsSection
         title={copy.section.title}
         /* The 「/ 64」 was a system ceiling nobody can raise or act on;
@@ -328,6 +356,176 @@ export function SubagentSettingsPage(props: {
         })}
       </SettingsSection>
     </SettingsPage>
+  );
+}
+
+function AdHocSubagentPolicySection(props: {
+  policy: AdHocSubagentPolicy | undefined;
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[];
+  isSaving: boolean;
+  onSave(policy: AdHocSubagentPolicy): Promise<void>;
+}) {
+  const locale = useUiLocale();
+  const copy = getSubagentSettingsCopy(locale);
+  const usableConnections = useMemo(
+    () => props.connections.filter(isSelectableSubagentConnection),
+    [props.connections],
+  );
+  const policy = props.policy;
+  const initialConnection = policy
+    ? props.connections.find((connection) => connection.slug === policy.connectionSlug)
+    : usableConnections[0];
+  const initialModels = initialConnection ? offerableCatalogEntries(initialConnection) : [];
+  const [draft, setDraft] = useState<AdHocSubagentPolicyDraft>(() => ({
+    enabled: props.policy?.enabled ?? false,
+    maxProfile: props.policy?.maxProfile ?? 'local_read',
+    connectionSlug: props.policy?.connectionSlug ?? usableConnections[0]?.slug ?? '',
+    model: props.policy?.model ?? initialModels[0]?.id ?? '',
+    thinkingLevel: props.policy?.thinkingLevel ?? '',
+  }));
+  const selectedConnection = props.connections.find(
+    (connection) => connection.slug === draft.connectionSlug,
+  );
+  const offerableModels = selectedConnection ? offerableCatalogEntries(selectedConnection) : [];
+  const thinkingLevels =
+    selectedConnection?.catalogEntries.find((entry) => entry.id === draft.model)?.thinkingLevels ??
+    [];
+  const validRoute = Boolean(
+    selectedConnection &&
+      isSelectableSubagentConnection(selectedConnection) &&
+      offerableModels.some((entry) => entry.id === draft.model),
+  );
+  const canSave = validRoute || (props.policy !== undefined && !draft.enabled);
+
+  function selectConnection(connectionSlug: string): void {
+    const connection = usableConnections.find((candidate) => candidate.slug === connectionSlug);
+    const models = connection ? offerableCatalogEntries(connection) : [];
+    setDraft((current) => ({
+      ...current,
+      connectionSlug,
+      model: models[0]?.id ?? '',
+      thinkingLevel: '',
+    }));
+  }
+
+  function policyFromDraft(next: AdHocSubagentPolicyDraft): AdHocSubagentPolicy {
+    return {
+      enabled: next.enabled,
+      maxProfile: next.maxProfile,
+      connectionSlug: next.connectionSlug,
+      model: next.model,
+      ...(next.thinkingLevel ? { thinkingLevel: next.thinkingLevel } : {}),
+    };
+  }
+
+  return (
+    <SettingsSection title={copy.adHoc.title} description={copy.adHoc.description}>
+      <SettingsRow
+        label={copy.adHoc.enabled}
+        description={copy.adHoc.enabledDescription}
+        align="start"
+        end={(
+          <Switch
+            label={copy.adHoc.enabled}
+            isLabelHidden
+            value={draft.enabled}
+            isDisabled={props.isSaving || (!validRoute && !draft.enabled)}
+            onChange={(enabled) => setDraft((current) => ({ ...current, enabled }))}
+          />
+        )}
+      />
+      <SettingsRow
+        label={copy.adHoc.profile}
+        description={copy.adHoc.profileDescription}
+        end={(
+          <Selector
+            label={copy.adHoc.profile}
+            isLabelHidden
+            value={draft.maxProfile}
+            options={(Object.keys(copy.profiles) as SubagentProfile[]).map((profile) => ({
+              value: profile,
+              label: copy.profiles[profile].label,
+            }))}
+            width="100%"
+            isDisabled={props.isSaving}
+            onChange={(maxProfile) => setDraft((current) => ({
+              ...current,
+              maxProfile: maxProfile as SubagentProfile,
+            }))}
+          />
+        )}
+      />
+      <SettingsRow
+        label={copy.adHoc.connection}
+        end={(
+          <Selector
+            label={copy.adHoc.connection}
+            isLabelHidden
+            value={draft.connectionSlug}
+            options={usableConnections.map((connection) => ({
+              value: connection.slug,
+              label: connection.name,
+            }))}
+            width="100%"
+            isDisabled={props.isSaving || usableConnections.length === 0}
+            disabledMessage={usableConnections.length === 0 ? copy.adHoc.noConnection : undefined}
+            onChange={selectConnection}
+          />
+        )}
+      />
+      <SettingsRow
+        label={copy.adHoc.model}
+        end={(
+          <Selector
+            label={copy.adHoc.model}
+            isLabelHidden
+            value={draft.model}
+            options={offerableModels.map((entry) => ({
+              value: entry.id,
+              label: entry.displayName?.trim() || entry.id,
+            }))}
+            width="100%"
+            isDisabled={props.isSaving || offerableModels.length === 0}
+            disabledMessage={offerableModels.length === 0 ? copy.adHoc.noModel : undefined}
+            onChange={(model) => setDraft((current) => ({
+              ...current,
+              model,
+              thinkingLevel: '',
+            }))}
+          />
+        )}
+      />
+      {thinkingLevels.length > 0 ? (
+        <SettingsRow
+          label={copy.adHoc.thinking}
+          end={(
+            <Selector
+              label={copy.adHoc.thinking}
+              isLabelHidden
+              value={draft.thinkingLevel}
+              options={[
+                { value: '', label: copy.editor.defaultThinking },
+                ...thinkingLevels.map((level) => ({ value: level, label: copy.thinking[level] })),
+              ]}
+              width="100%"
+              isDisabled={props.isSaving}
+              onChange={(thinkingLevel) => setDraft((current) => ({
+                ...current,
+                thinkingLevel: thinkingLevel as ThinkingLevel | '',
+              }))}
+            />
+          )}
+        />
+      ) : null}
+      <HStack gap={2} wrap="wrap">
+        <Button
+          variant="primary"
+          label={copy.adHoc.save}
+          isDisabled={props.isSaving || !canSave}
+          onClick={() => void props.onSave(policyFromDraft(draft))}
+        />
+      </HStack>
+    </SettingsSection>
   );
 }
 

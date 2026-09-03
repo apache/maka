@@ -101,6 +101,29 @@ test('keeps user-approved subagent presets canonical in Runtime Policy', () => {
   );
 });
 
+test('round-trips an explicitly enabled ad-hoc child ceiling without model authority fields', () => {
+  const policy = {
+    ...createDefaultRuntimePolicy(),
+    subagents: {
+      presets: [],
+      adHoc: {
+        enabled: true,
+        maxProfile: 'local_read' as const,
+        connectionSlug: 'openrouter',
+        model: 'openrouter/free',
+      },
+    },
+  };
+  assert.deepEqual(decodeCanonicalRuntimePolicy(policy).subagents.adHoc, policy.subagents.adHoc);
+  assert.deepEqual(
+    normalizeRuntimePolicyMutation({
+      expectedRevision: 4,
+      operation: { kind: 'set_subagents', value: policy.subagents },
+    }),
+    { expectedRevision: 4, operation: { kind: 'set_subagents', value: policy.subagents } },
+  );
+});
+
 test('normalizes the explicit Git Bash preference and rejects arbitrary shell kinds', () => {
   assert.deepEqual(
     normalizeRuntimePolicyMutation({

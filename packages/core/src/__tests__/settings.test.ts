@@ -84,6 +84,55 @@ test('normalizes user-approved subagent presets without widening the catalog', (
   ]);
 });
 
+test('normalizes the ad-hoc child policy fail-closed and keeps it disabled by default', () => {
+  assert.equal(createDefaultSettings().subagents.adHoc, undefined);
+  assert.deepStrictEqual(
+    normalizeSettings({
+      subagents: {
+        presets: [],
+        adHoc: {
+          enabled: true,
+          maxProfile: 'local_read',
+          connectionSlug: ' openai-main ',
+          model: ' gpt-5-mini ',
+          thinkingLevel: 'low',
+        },
+      },
+    }).subagents.adHoc,
+    {
+      enabled: true,
+      maxProfile: 'local_read',
+      connectionSlug: 'openai-main',
+      model: 'gpt-5-mini',
+      thinkingLevel: 'low',
+    },
+  );
+  assert.equal(
+    normalizeSettings({
+      subagents: {
+        presets: [],
+        adHoc: { enabled: true, maxProfile: 'root', connectionSlug: 'x', model: 'y' },
+      },
+    }).subagents.adHoc,
+    undefined,
+  );
+  const current = normalizeSettings({
+    subagents: {
+      presets: [],
+      adHoc: {
+        enabled: true,
+        maxProfile: 'local_read',
+        connectionSlug: 'openai-main',
+        model: 'gpt-5-mini',
+      },
+    },
+  });
+  assert.equal(
+    mergeSettings(current, { subagents: { presets: [] } }).subagents.adHoc?.enabled,
+    true,
+  );
+});
+
 describe('custom pet selection settings', () => {
   test('fails closed for missing, unsafe, or malformed persisted selections', () => {
     for (const selectedPetId of [undefined, '../maodie', 42]) {

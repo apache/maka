@@ -19,7 +19,14 @@
 
 import { z } from 'zod';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
-import { isSafeSubagentPresetId } from '@maka/core/subagent-settings';
+import {
+  AD_HOC_ROLE_INSTRUCTIONS_MAX_CHARS,
+  AD_HOC_ROLE_NAME_MAX_CHARS,
+  AD_HOC_ROLE_PURPOSE_MAX_CHARS,
+  AD_HOC_SUBAGENT_ID,
+  isSafeSubagentPresetId,
+  type AdHocSubagentRole,
+} from '@maka/core/subagent-settings';
 import { type ToolResultContent } from '@maka/core/events';
 import type { MakaTool, MakaToolContext } from './tool-runtime.js';
 import {
@@ -59,6 +66,16 @@ const AGENT_LIST_PAGE_SIZE = 8;
 const AGENT_LIST_MAX_RESPONSE_CHARS = 7_000;
 const AGENT_LIST_DESCRIPTION_MAX_CHARS = 240;
 const AGENT_LIST_MODEL_MAX_CHARS = 160;
+const AD_HOC_ALLOWED_SPAWN_FIELDS = new Set([
+  'profile',
+  'subagent_id',
+  'task',
+  'name',
+  'purpose',
+  'instructions',
+  'write_back',
+  'isolation',
+]);
 
 /**
  * Which schema fields each `agent_output` locator needs. A rejection that only
@@ -94,6 +111,9 @@ export function buildSubagentSpawnTool(
     profile?: string;
     subagent_id?: string;
     task: string;
+    name?: string;
+    purpose?: string;
+    instructions?: string;
     write_back?: string;
     isolation?: string;
   },
@@ -107,7 +127,32 @@ export function buildSubagentSpawnTool(
     description:
       'Run one bounded foreground child task. Prefer agent_list, then select the user-approved subagent_id whose description fits the task; profile is retained for legacy callers. If both selectors are present, subagent_id wins and profile is ignored.',
     parameters: z.preprocess(
-      cleanSubagentSpawnInput,
+      (input, ctx) => {
+        if (input && typeof input === 'object' && !Array.isArray(input)) {
+          const raw = input as Record<string, unknown>;
+          if (raw.subagent_id === AD_HOC_SUBAGENT_ID) {
+            if (raw.profile !== undefined) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['profile'],
+                message:
+                  'temporary-bounded does not accept a second profile selector; its Host-approved profile is fixed by policy.',
+              });
+            }
+            for (const key of Object.keys(raw)) {
+              if (AD_HOC_ALLOWED_SPAWN_FIELDS.has(key)) continue;
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: [key],
+                message:
+                  `Field "${key}" is not accepted for temporary-bounded. ` +
+                  'Model, connection, tools, permission, workspace, write-back, lifecycle, and nesting are Host-controlled.',
+              });
+            }
+          }
+        }
+        return cleanSubagentSpawnInput(input);
+      },
       z
         .object({
           profile: z.enum(profiles).optional().describe('Legacy child capability profile.'),
@@ -115,7 +160,7 @@ export function buildSubagentSpawnTool(
             .string()
             .min(1)
             .max(128)
-            .refine(isSafeSubagentPresetId)
+            .refine((value) => value === AD_HOC_SUBAGENT_ID || isSafeSubagentPresetId(value))
             .optional()
             .describe('User-approved subagent preset id from agent_list.'),
           task: z
@@ -123,6 +168,25 @@ export function buildSubagentSpawnTool(
             .min(1)
             .max(60_000)
             .describe('Bounded task for the selected child agent.'),
+          name: z
+            .string()
+            .trim()
+            .min(1)
+            .max(AD_HOC_ROLE_NAME_MAX_CHARS)
+            .optional()
+            .describe('Optional bounded display name for a temporary-bounded role.'),
+          purpose: z
+            .string()
+            .trim()
+            .max(AD_HOC_ROLE_PURPOSE_MAX_CHARS)
+            .optional()
+            .describe('Optional task-scoped purpose for a temporary-bounded role.'),
+          instructions: z
+            .string()
+            .trim()
+            .max(AD_HOC_ROLE_INSTRUCTIONS_MAX_CHARS)
+            .optional()
+            .describe('Optional task-scoped instructions for a temporary-bounded role.'),
           write_back: z
             .enum(AGENT_SPAWN_WRITE_BACK_MODES)
             .optional()
@@ -145,6 +209,36 @@ export function buildSubagentSpawnTool(
                 'No child selector was provided. Call agent_list and pass a returned subagent_id to agent_spawn, ' +
                 `or pass one legacy profile: ${profiles.join(', ')}.`,
             });
+            return;
+          }
+          const hasTemporaryRole =
+            input.name !== undefined ||
+            input.purpose !== undefined ||
+            input.instructions !== undefined;
+          if (hasTemporaryRole && input.subagent_id !== AD_HOC_SUBAGENT_ID) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['subagent_id'],
+              message: `name, purpose, and instructions are only valid with subagent_id "${AD_HOC_SUBAGENT_ID}".`,
+            });
+          }
+          if (input.subagent_id === AD_HOC_SUBAGENT_ID) {
+            if (input.write_back !== undefined) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['write_back'],
+                message:
+                  'temporary-bounded uses the Host-selected write-back policy; write_back cannot be supplied.',
+              });
+            }
+            if (input.isolation !== undefined) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['isolation'],
+                message:
+                  'temporary-bounded uses the Host-selected workspace boundary; isolation cannot be supplied.',
+              });
+            }
             return;
           }
           if (input.subagent_id) return;
@@ -204,6 +298,7 @@ export function buildSubagentSpawnTool(
             agentProfile: definition.profile,
             ...(input.subagent_id ? { subagentId: input.subagent_id } : {}),
             prompt: input.task,
+            ...temporaryRoleFromSpawnInput(input),
             onEvent: (event) => progress.observe(event),
           }),
         );
@@ -221,6 +316,21 @@ export function buildSubagentSpawnTool(
       } satisfies SubagentToolResult;
     },
   };
+}
+
+function temporaryRoleFromSpawnInput(input: {
+  subagent_id?: string;
+  name?: string;
+  purpose?: string;
+  instructions?: string;
+}): { temporaryRole?: AdHocSubagentRole } {
+  if (input.subagent_id !== AD_HOC_SUBAGENT_ID) return {};
+  const role: AdHocSubagentRole = {
+    ...(input.name !== undefined ? { name: input.name } : {}),
+    ...(input.purpose !== undefined ? { purpose: input.purpose } : {}),
+    ...(input.instructions !== undefined ? { instructions: input.instructions } : {}),
+  };
+  return Object.keys(role).length > 0 ? { temporaryRole: role } : {};
 }
 
 function cleanSubagentSpawnInput(input: unknown): unknown {
@@ -252,7 +362,14 @@ async function resolvePresetDefinition(
       (candidate as { id?: unknown }).id === subagentId &&
       typeof (candidate as { profile?: unknown }).profile === 'string',
   );
-  if (!preset) throw new Error(`Unknown subagent_id "${subagentId}". Call agent_list first.`);
+  if (!preset) {
+    if (subagentId === AD_HOC_SUBAGENT_ID) {
+      throw new Error(
+        `Subagent route "${AD_HOC_SUBAGENT_ID}" is disabled or unavailable in Host policy. Call agent_list before spawning.`,
+      );
+    }
+    throw new Error(`Unknown subagent_id "${subagentId}". Call agent_list first.`);
+  }
   if (preset.availability?.status !== 'available') {
     throw new Error(`Subagent preset "${subagentId}" is unavailable.`);
   }
