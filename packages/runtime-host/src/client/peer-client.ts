@@ -84,10 +84,7 @@ export class RuntimeHostPeerReachabilityUnavailableError extends Error {
 
 export interface RuntimeHostPeerClient {
   reachability(): RuntimeHostPeerNativeReachabilitySnapshot;
-  watchReachability(
-    afterGeneration: number,
-    timeoutMs: number,
-  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot>;
+  watchReachability(afterGeneration: number, timeoutMs: number): Promise<number>;
   identity(): Readonly<{
     peerId: string;
   }>;
@@ -214,17 +211,12 @@ class RuntimeHostPeerClientImpl implements RuntimeHostPeerClient {
   }
 
   reachability(): RuntimeHostPeerNativeReachabilitySnapshot {
-    return freezeReachability(this.#requireEndpoint().reachabilitySnapshot);
+    return this.#requireEndpoint().reachabilitySnapshot;
   }
 
-  async watchReachability(
-    afterGeneration: number,
-    timeoutMs: number,
-  ): Promise<RuntimeHostPeerNativeReachabilitySnapshot> {
+  async watchReachability(afterGeneration: number, timeoutMs: number): Promise<number> {
     try {
-      return freezeReachability(
-        await this.#requireEndpoint().watchReachability(afterGeneration, timeoutMs),
-      );
+      return await this.#requireEndpoint().watchReachability(afterGeneration, timeoutMs);
     } catch (error) {
       throw normalizePeerError(error);
     }
@@ -855,16 +847,6 @@ function mergeAddresses(
   secondary: readonly string[] | undefined,
 ): readonly string[] {
   return mergeValues(primary, secondary, 32);
-}
-
-function freezeReachability(
-  snapshot: RuntimeHostPeerNativeReachabilitySnapshot,
-): RuntimeHostPeerNativeReachabilitySnapshot {
-  return Object.freeze({
-    generation: snapshot.generation,
-    listenAddresses: Object.freeze([...snapshot.listenAddresses]),
-    activeCoordinationRelays: Object.freeze([...snapshot.activeCoordinationRelays]),
-  });
 }
 
 function mergeValues(
