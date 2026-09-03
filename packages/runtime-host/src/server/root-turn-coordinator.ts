@@ -47,6 +47,7 @@ import {
   type RuntimeMessageRunIdentity,
 } from '@maka/runtime/message-authority';
 import {
+  isShutdownCancelledInteractionAdmission,
   RuntimeInteractionAdmissionRejectedError,
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
@@ -2482,7 +2483,7 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
         reason: errorMessage(commandFailure),
       });
       startSettled.reject(commandFailure);
-      this.requestHostDrain();
+      if (!isShutdownCancelledInteractionAdmission(commandFailure)) this.requestHostDrain();
       throw commandFailure;
     } finally {
       this.observeExecutionCompletion(active, {
@@ -2742,7 +2743,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
       if (
         !(error instanceof RuntimeHostedRootConflictError) &&
         !(error instanceof RuntimeHostedRootUnavailableError) &&
-        !(error instanceof HostedRootAdmissionGateError)
+        !(error instanceof HostedRootAdmissionGateError) &&
+        !isShutdownCancelledInteractionAdmission(error)
       ) {
         this.requestHostDrain();
       }
@@ -3065,22 +3067,6 @@ function isTerminalSnapshot(
     snapshot.status === 'completed' ||
     snapshot.status === 'failed' ||
     snapshot.status === 'cancelled'
-  );
-}
-
-function isShutdownCancelledInteractionAdmission(error: unknown): boolean {
-  // Drain can reach a running question admission before the Turn's stop fence
-  // closes its Interaction Run, so this expected cancellation is direct.
-  if (
-    error instanceof RuntimeInteractionAdmissionRejectedError &&
-    error.reason === 'authority_draining'
-  ) {
-    return true;
-  }
-  return (
-    error instanceof RuntimeInteractionFailStopError &&
-    error.authorityFailure instanceof RuntimeInteractionAdmissionRejectedError &&
-    error.authorityFailure.reason === 'authority_draining'
   );
 }
 
