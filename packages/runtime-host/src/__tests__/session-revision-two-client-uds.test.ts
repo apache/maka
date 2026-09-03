@@ -259,6 +259,35 @@ async function verifyConcurrentRevisionAuthority(
       }),
       { kind: 'removed', sessionId: GRAPH_SIDE_CONVERSATION_REMOVAL_TARGET_ID },
     );
+    // An empty copy (no sourceTurnId) forks a side conversation before the
+    // source has a settled turn: it commits (the lineage invariant accepts it),
+    // inherits the side-conversation label, records provenance, and fabricates
+    // no branch turn.
+    const emptySideConversation = await desktop.request('session.branch.create', {
+      sourceSessionId: linkedChildSourceSessionId,
+      targetSessionId: 'graph-side-conversation-empty-target',
+      expectedSourceRevision: linkedChildSource.revision,
+      intent: 'side_conversation',
+    });
+    assert.equal(emptySideConversation.kind, 'committed');
+    if (emptySideConversation.kind !== 'committed') {
+      assert.fail('Empty Side Conversation must commit');
+    }
+    const emptySideConversationSession = requireSessionProjection(emptySideConversation.session);
+    assert.ok(emptySideConversationSession.labels.includes('mode:side_conversation'));
+    assert.equal(emptySideConversationSession.parentSessionId, linkedChildSourceSessionId);
+    assert.equal(emptySideConversationSession.branchOfTurnId, undefined);
+    // An empty copy carries none of the source's current state — including no
+    // in-progress Todo (copyCurrent is false when sourceTurnId is absent), even
+    // though the source below has one.
+    assert.deepEqual(
+      (
+        await tui.request('session.todo.query', {
+          sessionId: 'graph-side-conversation-empty-target',
+        })
+      ).items,
+      [],
+    );
     assert.equal((await querySession(tui, graphChildSessionId)).id, graphChildSessionId);
     const graphRevision = await desktop.request('session.revision.create', {
       sourceSessionId: linkedChildSourceSessionId,
@@ -1553,6 +1582,11 @@ async function seedSource(
     await todos.replaceAll(source.id, [
       { content: 'Retained task', status: 'in_progress' },
       { content: 'Legacy child task', status: 'pending' },
+    ]);
+    // The empty side conversation forks from here before any settled turn; this
+    // in-progress Todo proves the empty copy inherits none of it.
+    await todos.replaceAll(linkedChildSource.id, [
+      { content: 'Linked child in-progress task', status: 'in_progress' },
     ]);
     return {
       sourceSessionId: source.id,

@@ -19,8 +19,8 @@
 
 import { StatTile } from '@maka/ui';
 
-/** Thin alias over the shared StatTile (convergence R4) — usage/bot call
- *  sites keep their name; the recipe lives in the primitive. */
+/** Thin alias over the shared StatTile — feature-local copy of the settings
+ *  MetricCard so the Usage feature carries no legacy import (#4425). */
 export function MetricCard(props: { title: string; value: string; detail?: string }) {
   return (
     /* One tile language across every settings summary strip: this used to ask
@@ -34,14 +34,3 @@ export function MetricCard(props: { title: string; value: string; detail?: strin
     />
   );
 }
-
-// Segmented controls are owned directly by Astryx.
-// (the retired local segmented-control implementation). PR yuejing/settings-segmented-primitive
-// (WAWQAQ msg `f1461d30` 用库的应该用库).
-
-/**
- * PR-USE-SHADCN-BASE-UI-BADGE — map the project's status-tone vocabulary
- * (success / warning / destructive / info / neutral) onto the canonical
- * shadcn `PrimitiveBadge` variants. `neutral` falls back to `secondary`
- * which is the closest "muted chip" appearance the Badge primitive ships.
- */

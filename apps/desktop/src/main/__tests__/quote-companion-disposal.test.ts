@@ -20,7 +20,10 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
-import type { SessionSummary, TurnRecord } from '@maka/core/session';
+import type {
+  SessionSummary,
+  TurnRecord,
+} from '@maka/core/session';
 import {
   abandonPendingCompanionCopy,
   createFakeWorkbarServices,

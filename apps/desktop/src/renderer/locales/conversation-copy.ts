@@ -293,12 +293,8 @@ export interface DesktopConversationCopy {
     };
   };
   quoteCompanion: {
-    /** Initial title used while the eager side-conversation fork is empty. */
-    defaultName: string;
     /** Prefix for the companion fork's session name (followed by the excerpt). */
     namePrefix: string;
-    /** Short-lived status while the eager fork is created. */
-    preparing: string;
     permissionStreaming: string;
     scrollToBottom: string;
     closeConfirmation: {
@@ -612,9 +608,7 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: '侧边对话',
       namePrefix: '侧聊：',
-      preparing: '正在建立侧边对话…',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
       scrollToBottom: '滚动侧边对话到底部',
       closeConfirmation: {
@@ -847,9 +841,7 @@ const COPY = {
       },
     },
     quoteCompanion: {
-      defaultName: 'Side chat',
       namePrefix: 'Side: ',
-      preparing: 'Preparing side chat…',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
       scrollToBottom: 'Scroll side conversation to bottom',
       closeConfirmation: {

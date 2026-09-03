@@ -222,7 +222,7 @@ export interface SideChatSessionPort {
   branchFromTurn(
     sessionId: string,
     input: {
-      sourceTurnId: string;
+      sourceTurnId?: string;
       name?: string;
       copyId: string;
       sideConversation: true;

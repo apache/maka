@@ -840,12 +840,11 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
   async openSideConversation(): Promise<MakaSideConversationOpenResult> {
     const parentSessionId = this.#requireSession('open a side conversation');
     const messages = await loadCurrentMessages(this.#connection, parentSessionId);
+    // Absent when the parent has no completed turn yet: fork with an empty
+    // context instead of failing, matching the desktop side conversation.
     const sourceTurnId = deriveTurnRecords(messages)
       .reverse()
       .find((turn) => turn.status === 'completed')?.turnId;
-    if (!sourceTurnId) {
-      throw new Error('A side conversation requires at least one completed Turn.');
-    }
     const sideSessionId = this.#newId();
     const cleanup = this.#requireSessionCopyCleanup();
     await cleanup.ownCreation(
@@ -853,7 +852,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
         sessionId: sideSessionId,
         kind: 'branch',
         sourceSessionId: parentSessionId,
-        sourceTurnId,
+        ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
         intent: 'side_conversation',
         ownerId: 'tui-side',
       },
@@ -862,7 +861,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
           sessionId: sideSessionId,
           kind: 'branch',
           sourceSessionId: parentSessionId,
-          sourceTurnId,
+          ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
           intent: 'side_conversation',
         }),
     );
@@ -1364,7 +1363,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
     sessionId: string;
     kind: 'branch' | 'revision';
     sourceSessionId: string;
-    sourceTurnId: string;
+    sourceTurnId?: string;
     intent?: 'side_conversation';
   }): Promise<void> {
     if (input.kind !== 'branch') {
@@ -1376,7 +1375,7 @@ class RuntimeHostMakaSessionDriverImpl implements RuntimeHostMakaSessionDriver {
       const result = await this.#request('session.branch.create', {
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.sessionId,
-        sourceTurnId: input.sourceTurnId,
+        ...(input.sourceTurnId === undefined ? {} : { sourceTurnId: input.sourceTurnId }),
         expectedSourceRevision: source.revision,
         ...(input.intent ? { intent: input.intent } : {}),
       });

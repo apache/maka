@@ -1476,17 +1476,25 @@ function isValidConversationCopyLineage(header: SessionHeader): boolean {
     return false;
   }
   if (copy.kind === 'branch') {
-    return (
-      header.parentSessionId === copy.sourceSessionId &&
-      header.branchOfTurnId === copy.sourceTurnId &&
+    const revisionClear =
       header.revisionRootSessionId === undefined &&
       header.revisionParentSessionId === undefined &&
       header.revisionOfTurnId === undefined &&
       header.revisionIndex === undefined &&
-      header.revisionState === undefined
-    );
+      header.revisionState === undefined;
+    if (!revisionClear || header.parentSessionId !== copy.sourceSessionId) {
+      return false;
+    }
+    // An empty copy (absent `sourceTurnId`) records provenance
+    // (`parentSessionId`) but must not fabricate a `branchOfTurnId`, and is only
+    // valid for a side conversation; a through-turn copy must anchor to it.
+    return copy.sourceTurnId === undefined
+      ? header.branchOfTurnId === undefined && copy.intent === 'side_conversation'
+      : header.branchOfTurnId === copy.sourceTurnId;
   }
+  // Revision copies always carry a turn boundary (enforced at decode).
   return (
+    copy.sourceTurnId !== undefined &&
     header.revisionParentSessionId === copy.sourceSessionId &&
     header.revisionOfTurnId === copy.sourceTurnId
   );

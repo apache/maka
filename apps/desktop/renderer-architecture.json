@@ -180,7 +180,6 @@
     "src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx",
     "src/renderer/settings/settings-error-copy.ts",
     "src/renderer/settings/settings-expandable-row.tsx",
-    "src/renderer/settings/settings-metric-card.tsx",
     "src/renderer/settings/settings-modal.tsx",
     "src/renderer/settings/settings-nav.ts",
     "src/renderer/settings/settings-request-authority.ts",
@@ -3862,17 +3861,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/settings-metric-card.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/ui": 1
-        }
-      },
       "src/renderer/settings/settings-modal.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4056,11 +4044,11 @@
           "window.removeEventListener": 1
         },
         "hookCalls": {
-          "useEffect": 10,
+          "useEffect": 9,
           "useMediaQuery": 1,
           "useMountedRef": 1,
-          "useRef": 10,
-          "useState": 12,
+          "useRef": 8,
+          "useState": 11,
           "useToast": 1,
           "useUiLocale": 2
         },
@@ -4218,30 +4206,17 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useActionGuard": 1,
-          "useOptimisticSettingsDraft": 1,
-          "useState": 1,
-          "useToast": 1,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../../shared/runtime-host-identity.js": 1,
-          "../locales/settings-usage-copy": 1,
+          "../features/usage": 3,
           "./settings-error-copy": 1,
-          "./settings-metric-card": 1,
           "./settings-section": 1,
-          "./use-action-guard": 1,
-          "./use-optimistic-settings-draft": 1,
-          "@astryxdesign/core": 1,
           "@maka/core/settings": 1,
-          "@maka/core/ui-locale": 1,
-          "@maka/core/usage-ledger-merge": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
+          "@maka/ui": 1
         }
       },
       "src/renderer/settings/use-action-guard.ts": {

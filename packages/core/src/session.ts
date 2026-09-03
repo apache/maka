@@ -165,7 +165,14 @@ export interface SubagentSessionSpawn {
 export interface SessionConversationCopy {
   kind: 'branch' | 'revision';
   sourceSessionId: string;
-  sourceTurnId: string;
+  /**
+   * Settled turn the copy branches through. Absent marks an empty copy: a side
+   * conversation opened before the source has any completed turn copies NO
+   * source messages, inheriting only the source's model / cwd / permission and
+   * recording provenance (`parentSessionId`) without a `branchOfTurnId`. Only
+   * valid together with `intent: 'side_conversation'`.
+   */
+  sourceTurnId?: string;
   requestFingerprint: `sha256:${string}`;
   state: 'preparing' | 'committed';
   intent?: 'side_conversation';
@@ -480,8 +487,8 @@ const SUBAGENT_SESSION_SPAWN_IDENTITY_SHAPE = defineObjectShape<SubagentSessionS
   [],
 );
 const SESSION_CONVERSATION_COPY_SHAPE = defineObjectShape<SessionConversationCopy>()(
-  ['kind', 'sourceSessionId', 'sourceTurnId', 'requestFingerprint', 'state'],
-  ['intent'],
+  ['kind', 'sourceSessionId', 'requestFingerprint', 'state'],
+  ['sourceTurnId', 'intent'],
 );
 const SESSION_LINEAGE_ID_MAX_CHARS = 512;
 const SESSION_LINEAGE_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
@@ -583,7 +590,9 @@ export function isSessionConversationCopy(value: unknown): value is SessionConve
     (value.intent === undefined ||
       (value.kind === 'branch' && value.intent === 'side_conversation')) &&
     isSessionLineageId(value.sourceSessionId) &&
-    isSessionLineageId(value.sourceTurnId) &&
+    (value.sourceTurnId === undefined
+      ? value.kind === 'branch' && value.intent === 'side_conversation'
+      : isSessionLineageId(value.sourceTurnId)) &&
     typeof value.requestFingerprint === 'string' &&
     /^sha256:[0-9a-f]{64}$/.test(value.requestFingerprint) &&
     (value.state === 'preparing' || value.state === 'committed')

@@ -100,11 +100,18 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 101 as const;
-// 101: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS` and the Host answers a
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 102 as const;
+// 102: `github-copilot` joins `OAUTH_LOGIN_PROVIDERS` and the Host answers a
 // closed `oauth.enrollment.query`. Older Hosts reject both wire values, so
 // incompatible peers must be refused at the handshake instead of mid-flow.
-// Re-derived from current `main`; epoch 100 is claimed by open PRs.
+// Re-derived from current `main`; epoch 101 is claimed by open PRs.
+// 100: `session.branch.create` makes `sourceTurnId` optional, so a side
+// conversation can fork with an empty context (no copied messages, no
+// fabricated `branchOfTurnId`) instead of requiring a settled turn. An older
+// Host's required-field check rejects the request that omits `sourceTurnId`;
+// the handshake keeps mixed-version peers apart. `session.revision.create`
+// still requires `sourceTurnId`, and its wire shape and fingerprint are
+// unchanged.
 // 99: ScheduledTask Agent execution templates carry immutable Connection
 // identity. Older peers cannot preserve the ID/slug/model binding and could
 // silently route a deleted Connection to a same-slug replacement.
