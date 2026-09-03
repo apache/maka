@@ -73,6 +73,7 @@ import { InlineReferenceText } from './inline-reference.js';
 import { DirectoryReferenceChip } from './directory-reference-chip.js';
 import { redactSecrets } from './redact.js';
 import { useAttachmentImageSource } from './attachment-image.js';
+import type { UiLocale } from '@maka/core/ui-locale';
 import { resolvePreviewKind } from './artifact-preview-registry.js';
 
 export function LocalizedChatMessage({
@@ -298,7 +299,7 @@ function accessibleTextExcerpt(text: string): string {
   return normalized.length > 48 ? `${normalized.slice(0, 47)}…` : normalized;
 }
 
-function accessibleActionContext(text: string, ts: number | undefined, locale: 'zh' | 'en'): string {
+function accessibleActionContext(text: string, ts: number | undefined, locale: UiLocale): string {
   return [
     accessibleTextExcerpt(text),
     ts === undefined ? undefined : formatAbsoluteTimestamp(ts, locale),

@@ -164,6 +164,111 @@ const ARTIFACT_COPY = {
       unsupported: 'Unsupported preview', name: 'Name', unnamed: '(unnamed)', type: 'Type', size: 'Size', openInFinder: 'Show in Finder', loadingImage: 'Loading image preview…',
     },
   },
+  ko: {
+  pane: {
+    refreshFailed: "생성된 파일을 새로 고치지 못했습니다.",
+    openFailed: "Finder에서 생성된 파일을 표시할 수 없습니다.",
+    copyFailed: "복사 실패",
+    readTextFailed: "생성된 파일을 텍스트로 읽을 수 없습니다.",
+    copied: "생성된 파일 텍스트가 복사되었습니다.",
+    saved: "생성된 파일이 다음 이름으로 저장됨",
+    saveFailed: "다른 이름으로 저장 실패",
+    fallbackName: "생성된 파일",
+    deleteTitle: name => `"${name}" 삭제`,
+    deleteDescription: "일시 삭제: 이 기록을 삭제된 것으로 표시하고 파일을 6시간 동안 복구 가능하게 유지합니다.",
+    delete: "삭제",
+    deleteReadOnly: "삭제(읽기 전용 파일)",
+    cancel: "취소",
+    deleted: name => `${name} 삭제됨`,
+    deleteFailed: name => `${name}을(를) 삭제하지 못했습니다.`,
+    panelAria: "생성된 파일 미리보기 패널",
+    listLoadFailed: "생성된 파일을 로드하지 못했습니다.",
+    retrying: "재시도 중…",
+    retry: "다시 해 보다",
+    listAria: "생성된 파일",
+    deletedBadge: "삭제됨",
+    previewNamed: name => `미리보기 ${name}`,
+    empty: "생성된 파일 없음",
+    emptyHint: "어시스턴트가 생성한 파일이 여기에 표시됩니다.",
+    back: "생성된 파일로 돌아가기",
+    moreActions: name => `${name}에 대한 추가 작업`,
+    openInFinder: "Finder에 표시",
+    saveAs: "다른 이름으로 저장",
+    copy: "복사",
+    saveFailures: {
+      not_found: "생성된 파일이 존재하지 않습니다.",
+      not_allowed: "생성된 파일이 경로 안전 검사에 실패했습니다.",
+      deleted: "삭제된 생성 파일은 저장할 수 없습니다.",
+      write_failed: "대상에 쓸 수 없습니다.",
+      default: "생성된 파일을 저장할 수 없습니다."
+    },
+    actionFailed: "생성된 파일 작업이 실패했습니다. 나중에 다시 시도하세요."
+  },
+  preview: {
+    loadingFile: "파일 미리보기 로드 중…",
+    loadingDiff: "차이점 미리보기 로드 중…",
+    loadingHtml: "HTML 미리보기 로드 중…",
+    externalLinks: count => `이 미리보기에서는 외부 링크가 비활성화되었습니다. · 외부 링크 ${count}개`,
+    frameTitle: name => `생성된 파일 미리보기 · ${name}`,
+    loadingPdf: "PDF 미리보기 로드 중…",
+    pdfFallback: "브라우저에 PDF 뷰어가 내장되어 있지 않은 경우 자세히 메뉴에서 \"Finder에 표시\"를 사용하세요.",
+    rendered: "시사",
+    source: "원천",
+    previewLimited: limit => `첫 번째 ${limit}을 표시합니다. 전체 파일을 열거나 저장하려면 자세히 메뉴를 사용하세요.`,
+    renderLimited: (limit, lines) => `응답성을 유지하기 위해 풍부한 미리보기는 첫 번째 ${limit} 및 ${lines} 줄로 제한됩니다. 전체 소스는 계속 사용 가능합니다.`,
+    highlightLimited: (limit, lines) => `응답성을 유지하기 위해 구문 강조 표시는 첫 번째 ${limit} 및 ${lines} 줄로 제한됩니다. 나머지는 일반 텍스트입니다.`,
+    diffLinesLimited: count => `${count} 미리보기의 반응성을 유지하기 위해 더 많은 줄이 숨겨졌습니다.`,
+    readFailed: {
+      title: "생성된 파일을 읽을 수 없습니다.",
+      description: "파일이 외부에서 삭제되었을 수 있습니다. 위치를 확인하려면 자세히 메뉴의 \"Finder에 표시\"를 사용하세요."
+    },
+    notAllowed: {
+      title: "생성된 파일을 읽을 수 없습니다.",
+      description: "파일이 더 이상 허용된 생성 파일 디렉터리에 없기 때문에 경로 안전 확인에 실패했습니다."
+    },
+    tooLarge: bytes => ({
+      title: "파일이 미리보기 크기를 초과합니다.",
+      description: `${bytes}바이트가 텍스트 미리보기 제한을 초과합니다. 전체 파일을 열거나 저장하려면 자세히 메뉴를 사용하세요.`
+    }),
+    deleted: {
+      title: "생성된 파일이 삭제되었습니다.",
+      description: "미리보기가 중지되었습니다. 원본 파일을 검사하려면 \"Finder에 표시\"를 사용하세요."
+    },
+    unsupportedMime: {
+      title: "지원되지 않는 파일 형식",
+      description: "이 생성된 파일의 MIME 유형은 인라인 미리보기에 허용되지 않습니다. \"Finder에 표시\" 또는 \"다른 이름으로 저장\"을 사용하세요."
+    }
+  },
+  registry: {
+    kindDisallowed: {
+      title: "이 유형은 여기에서 미리 볼 수 없습니다.",
+      description: "생성된 파일은 패널에서 미리 볼 수 없습니다. \"Finder에 표시\"를 사용하세요."
+    },
+    mimeDisallowed: {
+      title: "미리보기 형식은 지원되지 않습니다.",
+      description: "MIME 유형이 인식되었지만 현재 미리보기는 PNG/JPEG/GIF/WebP/AVIF만 지원합니다."
+    },
+    unknownType: {
+      title: "파일 형식을 식별할 수 없습니다.",
+      description: "파일에 MIME 메타데이터가 없으며 확장자가 일치하지 않습니다. \"Finder에 표시\"를 사용하세요."
+    },
+    oversize: {
+      title: "파일이 너무 커서 미리 볼 수 없음",
+      description: "큰 이미지가 메모리에 로드되는 것을 방지하기 위해 2MB가 넘는 파일은 여기에서 확장되지 않습니다."
+    },
+    readFailed: {
+      title: "미리보기를 로드하지 못했습니다.",
+      description: "파일을 읽을 수 없습니다. 권한에 의해 삭제, 이동 또는 차단되었을 수 있습니다. \"Finder에 표시\"를 사용하여 검사하십시오."
+    },
+    unsupported: "지원되지 않는 미리보기",
+    name: "이름",
+    unnamed: "(이름 없음)",
+    type: "유형",
+    size: "크기",
+    openInFinder: "Finder에 표시",
+    loadingImage: "이미지 미리보기 로드 중…"
+  }
+}
 } satisfies UiCatalog<ArtifactCopy>;
 
 export function getArtifactCopy(locale: UiLocale): ArtifactCopy {

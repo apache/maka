@@ -44,7 +44,7 @@ function formatCompactTokenCount(count: number): string {
   return `${thousands >= 100 ? Math.round(thousands) : Math.round(thousands * 10) / 10}k`;
 }
 
-/** Wall-clock units for the goal chip's elapsed label, per locale (zh uses spaced words, en letters). */
+/** Wall-clock units for the goal chip's elapsed label, customized per locale. */
 interface GoalElapsedUnits {
   second: string;
   minute: string;
@@ -52,7 +52,7 @@ interface GoalElapsedUnits {
   day: string;
 }
 
-/** Humanize a retry delay (seconds) — 1s granularity, locale-aware. zh: `4小时 28分 3秒`, en: `4h 28m 3s`. */
+/** Humanize a retry delay (seconds) — 1s granularity, locale-aware. */
 export function formatRetryDelay(seconds: number, locale: UiLocale): string {
   const s = Math.max(1, Math.ceil(seconds));
   const d = Math.floor(s / 86_400);
@@ -67,6 +67,14 @@ export function formatRetryDelay(seconds: number, locale: UiLocale): string {
     if (sec > 0 || parts.length === 0) parts.push(`${sec}秒`);
     return parts.join(' ');
   }
+  if (locale === 'ko') {
+    const parts: string[] = [];
+    if (d > 0) parts.push(`${d}일`);
+    if (h > 0) parts.push(`${h}시간`);
+    if (m > 0) parts.push(`${m}분`);
+    if (sec > 0 || parts.length === 0) parts.push(`${sec}초`);
+    return parts.join(' ');
+  }
   const parts: string[] = [];
   if (d > 0) parts.push(`${d}d`);
   if (h > 0) parts.push(`${h}h`);
@@ -75,7 +83,7 @@ export function formatRetryDelay(seconds: number, locale: UiLocale): string {
   return parts.join(' ');
 }
 
-/** One shared elapsed ladder so the zh/en goalElapsed entries cannot drift. */
+/** One shared elapsed ladder so the locale-specific goalElapsed entries cannot drift. */
 function formatGoalElapsedUnits(elapsedMs: number, units: GoalElapsedUnits): string {
   const seconds = Math.max(0, Math.floor(elapsedMs / 1000));
   if (seconds < 60) return `${seconds}${units.second}`;
@@ -732,6 +740,164 @@ const CONVERSATION_COPY = {
       listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
     },
   },
+  ko: {
+    empty: {
+      ariaLabel: 'Start a task',
+      surfaceAriaLabel: 'New task conversation',
+      greeting: { morning: 'Good morning', noon: 'Good afternoon', afternoon: 'Good afternoon', evening: 'Good evening' },
+      greetingTail: { morning: 'A clear morning is good for untangling ideas', noon: 'A focused midday is good for a single big push', afternoon: 'A calm afternoon is good for steady progress', evening: 'A quiet evening is good for deep thinking' },
+      headlineWithLabel: (greeting, label) => `${greeting} ${label} — what shall we tackle today?`, headlineFallback: (greeting, tail) => `${greeting} — ${tail}.`,
+    },
+    deepResearchEmpty: {
+      ariaLabel: 'Empty Deep Research task', eyebrow: 'Deep Research · Read-only exploration', title: 'Understand the project before deciding what to change.', intro: 'This task stays read only: inspect, search, and analyze first. When implementation is needed, report the files, risks, and verification commands.',
+      workflowAriaLabel: 'Deep Research workflow', workflow: [
+        { title: 'Find the entry points', body: 'Read the directory layout, configuration, startup path, and test entry points to build a project map.' },
+        { title: 'Trace the data flow', body: 'Follow key modules through IPC, storage, permissions, and runtime boundaries to the real implementation.' },
+        { title: 'Compare references', body: 'Break each reusable idea into borrow / diverge / risk / gate.' },
+        { title: 'Propose a mergeable plan', body: 'List files, risk boundaries, and verification commands without changing files in read-only mode.' },
+      ],
+      reportAriaLabel: 'Deep Research report structure', reportTitle: 'The report must be actionable', report: [
+        { title: 'Lead with conclusions', body: 'Use three to five points to explain the current state, major gaps, and priorities.' },
+        { title: 'Cite source evidence', body: 'Name files, functions, configuration, tests, and runtime paths instead of relying on impressions.' },
+        { title: 'Break down what to borrow', body: 'Describe each idea as borrow / diverge / risk / gate.' },
+        { title: 'Make it implementable', body: 'Give a small-step file plan, boundaries, and verification commands.' },
+      ],
+      scopeAriaLabel: 'Deep Research scope', scopeTitle: 'Standard depth by default', scope: [
+        { label: 'Quick', body: 'Scan entry points, key files, and the likeliest data flow for a narrowly scoped question.' },
+        { label: 'Standard', body: 'Trace the core path, related tests, and major risks before recommending changes.' },
+        { label: 'Deep', body: 'Run multi-pass investigation across modules, references, and edge cases only when explicitly requested.' },
+      ],
+      evidenceAriaLabel: 'Deep Research evidence checklist', evidenceTitle: 'Leave evidence for every investigation', evidence: [
+        { title: 'Project entry points', body: 'Check the README, package/config files, startup scripts, and directory layers to confirm how the project runs.' },
+        { title: 'Core path', body: 'Trace UI entry points, IPC/services, storage, runtime calls, and error handling.' },
+        { title: 'Boundaries', body: 'Check permissions, privacy mode, token/path exposure, retries, and user-visible feedback.' },
+        { title: 'Verification evidence', body: 'Find tests, fixtures, smoke documentation, and reproducible commands; call out missing evidence.' },
+      ],
+      progressAriaLabel: 'Deep Research checkpoints', progressTitle: 'Advance multi-step research through checkpoints', progress: [
+        { title: 'Build a checklist', body: 'When the scope has more than three related areas, list verifiable checks before tracing code.' },
+        { title: 'Mark the current check', body: 'State what is being verified and move on only after collecting evidence.' },
+        { title: 'Record blockers', body: 'Mark missing source, runtime, or test evidence as blocked instead of guessing.' },
+        { title: 'Converge on a plan', body: 'Roll completed checks into borrow / diverge / risk / gate and actionable improvements.' },
+      ],
+      startersAriaLabel: 'Deep Research starters', starters: [
+        { label: 'Research a reference project', prompt: 'Read this project without changing files. Map its structure, core modules, startup path, data flow, and tests; then list reusable design ideas, risks, and an implementation order for Maka.' },
+        { label: 'Read a reference project end to end', prompt: 'Perform a deep, read-only study of this project. Map modules and trace core features, runtime, storage, permissions, UI, tests, and docs. Express each idea as borrow / diverge / risk / gate and recommend an implementation order for Maka.' },
+        { label: 'Compare a feature implementation', prompt: 'Compare this feature in the reference project and Maka without changing files. Identify key files, runtime boundaries, UI entry points, persistence, tests, and the smallest mergeable improvement.' },
+        { label: 'Audit security boundaries', prompt: 'Audit this feature read only: permissions, token and secret flow, IPC/renderer exposure, file paths, privacy mode, logs, and telemetry. Report blocking risks and corresponding contract tests.' },
+      ],
+    },
+    composer: {
+      placeholder: 'Describe a task, @ to reference files, / for skills…', textareaAriaLabel: 'Message input', pastedQuoteLabel: 'Pasted text', selectedSkillsAriaLabel: 'Selected Skills', removeSkillAriaLabel: (name) => `Remove Skill: ${name}`, awaitingPermission: 'Waiting for your permission decision…',
+      sending: 'Sending…', importing: 'Importing…', sendLabel: 'Send',
+      queuedMessagesAriaLabel: (count) => `${count} queued message${count === 1 ? '' : 's'}`,
+      promoteQueuedEntry: 'Steer', editQueuedEntry: 'Edit', saveQueuedEntry: 'Save', cancelQueuedEntryEdit: 'Cancel editing', deleteQueuedEntry: 'Delete', reorderQueuedEntry: 'Drag to reorder',
+      stopLabel: 'Stop', stopping: 'Stopping…',
+      streaming: 'Maka is responding…', processing: 'Maka is working…', continuing: 'Maka is continuing…',
+      interruptHint: 'or click Stop to interrupt', addContext: 'Add context', stagedContext: 'staged items',
+      selectModel: 'Choose model', dropToImport: 'Drop to import file contents', addingAttachment: 'Adding attachment', addFileOrDirectory: 'Add files', referenceFolder: 'Reference folder',
+      chooseSkill: 'Choose skills', noSkillsAvailable: 'No skills available',
+      setGoal: 'Set a goal…', goalAlreadySet: 'This session already has a goal in progress',
+      switchDisabledStreaming: 'Wait for the current response to finish before switching models.', switchDisabledRunning: 'Wait for the current run to finish before switching models.', switchDisabledPermission: 'Resolve the pending tool permission before switching models.',
+      thinkingDisabledStreaming: 'Wait for the current response to finish before changing the thinking level.', thinkingDisabledRunning: 'Wait for the current run to finish before changing the thinking level.', thinkingDisabledPermission: 'Resolve the pending tool permission before changing the thinking level.',
+      orchestrationModeAriaLabel: 'Orchestration mode',
+      planModeLabel: 'Plan', enablePlanMode: 'Enable Plan Mode', disablePlanMode: 'Disable Plan Mode',
+      planModeOnTitle: 'Plan mode is on — click to turn off',
+      swarmModeLabel: 'Swarm', swarmModeOnTitle: 'Swarm mode is on — click to turn off',
+      graphModeLabel: 'Graph', graphModeOnTitle: 'Graph mode is on — click to turn off',
+      noModelHint: 'No model connection yet, so sending is unavailable.', noModelAction: 'Go to model settings', noModelSendTitle: 'Add a model connection before sending.',
+    },
+    model: {
+      thinkingLevel: 'Thinking level', thinkingUnsupported: 'This model does not support thinking-level changes', changeThinkingLevel: 'Change the current model thinking level', defaultLevel: 'Model default',
+      level: { off: 'Off', minimal: 'Minimal', low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Maximum' },
+      switching: 'Switching', model: 'Model', switchAriaLabel: 'Switch model for this task',
+      switchWarning: 'Switching may rebuild the provider prompt cache, making the next request slower or more expensive.',
+      newChatAriaLabel: (label) => `Choose a model for the new task, currently ${label}`, newChatTitle: (label) => `Model for the new task: ${label}`,
+      configureAriaLabel: (label) => `Configure model connections, currently ${label}`, configureTitle: 'Configure model connections',
+    },
+    permissions: {
+      mode: {
+        explore: { label: 'Read only', hint: 'Read and search only; asks before write or network.' },
+        ask: { label: 'Auto', hint: "Runs inside Maka's protection; asks before going further." },
+        bypass: { label: 'Full access', hint: 'Direct file and network access. Trust-only tasks.' },
+      },
+      modeAriaLabel: (label) => `Permission mode: ${label}`,
+    },
+    sandboxBoundary: {
+      title: 'Allow access outside the workspace?',
+      access: { read: 'Read', write: 'Write' },
+      scope: { exact: 'Exact path', subtree: 'Directory subtree' },
+      network: 'Network access',
+      enabled: 'Enabled',
+      reject: 'Reject',
+      allowSession: 'Allow for this task',
+    },
+    clientCapability: {
+      title: 'Allow this client capability?',
+      browser: (origin) => `Allow Browser to operate ${origin}`,
+      computerUse: 'Allow Computer Use to operate this Mac',
+      desktopMcp: (serverId, toolName) => `Allow ${toolName} from ${serverId}`,
+      sessionNotice: 'Matching operations will be allowed for the rest of this task.',
+      reject: 'Reject',
+      allowSession: 'Allow for this task',
+    },
+    questions: { other: 'Other', otherDescription: 'Enter a different answer.', otherAriaLabel: 'Other answer', otherPlaceholder: 'Enter your answer', stop: 'Stop', stopping: 'Stopping…', previous: 'Previous', submitting: 'Submitting…', submit: 'Submit answers', next: 'Next' },
+    mentions: { noFiles: 'No files found', noSkills: 'No skills available', noCommandsOrSkills: 'No matching commands or skills', filesAriaLabel: 'Workspace files', skillsAriaLabel: 'Skills', commandsAndSkillsAriaLabel: 'Commands and skills', commandsGroup: 'Commands', skillsGroup: 'Skills', loading: 'Loading…' },
+    workspace: {
+      choose: 'Choose project', current: 'Current project', addProject: 'Add project', manageProjects: 'Manage projects', noProject: 'No project', relink: 'Relink', unavailable: 'Unavailable',
+      chooseTitle: (branch) => branch ? `Choose project · ${branch}` : 'Choose project',
+      chooseAriaLabel: (label, branch) => branch ? `Choose project: ${label}, current branch ${branch}` : `Choose project: ${label}`,
+    },
+    messages: {
+      you: 'You', assistant: 'Maka', processing: 'Working…', continuing: 'Continuing…', workingPhrases: ['Pondering…', 'Tinkering…', 'Untangling…', 'Digging in…', 'Mulling…', 'Chewing on it…', 'Wrangling…', 'Piecing it together…'], providerRetryScheduled: (seconds, attempt, maxAttempts) => `Retrying in ${formatRetryDelay(seconds, 'en')} (${attempt}/${maxAttempts})`, providerRetryStarted: (attempt, maxAttempts) => `Retrying (${attempt}/${maxAttempts})`, providerRetryWaiting: (attempt, maxAttempts) => `Waiting to retry (${attempt}/${maxAttempts})`, providerRetryReason: { network: 'Network interrupted', provider_capacity: 'The model service is temporarily at capacity', provider_unavailable: 'Model service temporarily unavailable', rate_limit: 'Model rate limit reached', timeout: 'Request timed out', unknown: 'Model request failed' }, safeResumePending: 'Checking…', safeResume: 'Continue this turn', thinking: 'Thinking', truncated: 'Truncated', copied: 'Copied', copying: 'Copying', copyFailed: 'Copy failed', copy: 'Copy', editMessage: 'Edit & resend', editMessageDisabledRunning: 'Wait for this answer to finish before editing', editMessageDisabledAttachments: 'Edit & resend does not yet support messages with attachments', editMessageDisabledQuotes: 'Edit & resend does not yet support messages with quotes', editMessageDisabledTransformedText: 'Edit & resend does not yet support messages with expanded context',
+      editMessageDisabledDirectoryReferences: 'Edit & resend does not yet support messages with folder references',
+      userAriaLabel: 'Your message', systemAriaLabel: 'System message', assistantAriaLabel: "Maka's response", answerActionsAriaLabel: (context) => `Response actions${context ? `: ${context}` : ''}`, answerActionAriaLabel: (action, context) => `${action} response${context ? `: ${context}` : ''}`, messageActionAriaLabel: (action, context) => `${action} message${context ? `: ${context}` : ''}`, sourceAriaLabel: 'Source of this response', derivativesAriaLabel: 'Responses derived from this one', scheduledTaskTriggered: 'Triggered by scheduled task', scheduledTaskTitle: (id) => `Triggered by scheduled task · ${id}`, legacyAutomationTriggered: 'Legacy Automation (history only)', legacyAutomationTitle: (id) => `Triggered by legacy Automation · ${id} · Historical only; it will not run again`, goalContinued: 'Continued by Goal', goalTitle: (id) => `Continued by Goal · ${id}`, agentGraphTriggered: 'Continued by Agent Graph', agentGraphTitle: (graphId) => `Triggered by the Agent Graph scheduler · ${graphId}`,
+      thinkingTruncatedTitle: 'Some reasoning was truncated; showing the most recent content', outputTruncatedTitle: 'The assistant output exceeded the per-turn limit. Regenerate it or inspect the persisted task log for the complete content.', removeAttachmentAriaLabel: (name) => `Remove ${name}`, quoteLabel: 'Quote', quoteExpandAriaLabel: 'Show the full quoted excerpt', quoteCollapseAriaLabel: 'Collapse the quoted excerpt', removeQuoteAriaLabel: 'Remove quote', aborted: 'Interrupted', abortedByStop: 'Interrupted · Stop button',
+      systemNotes: {
+        contextCompacted: 'Context compacted to keep this session within the model window.',
+        contextCompactionFailedOpen: 'Context summary failed; the session continued without a new summary.',
+        stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
+      },
+    },
+    chat: {
+      conversationAriaLabel: (name) => `Conversation: ${name}`,
+      memory: 'Memory', memoryAriaLabel: 'Local memory enabled', memoryTitle: 'Local MEMORY.md is included in the agent system prompt. Click to manage it in Settings · Memory.', deepResearch: 'Deep Research', deepResearchAriaLabel: 'Deep Research, read-only exploration', deepResearchTitle: 'Deep Research uses a read-only boundary: inspect and analyze first, without changing files by default.',
+      deepResearchProgress: {
+        ariaLabel: 'Live Deep Research progress',
+        title: 'Research progress',
+        completedSummary: 'Research complete · Original task remains read-only',
+        activeSummary: (stage, scope, round) => `${stage} · ${scope} · Round ${round}`,
+        handoffTitle: 'Create a normal task with the research handoff. It will not send automatically or change the original research task permissions.',
+        handoffAction: 'Continue implementation in a new task',
+        checklistTitle: 'Checklist',
+        reportTitle: 'Report draft',
+        inspectedTitle: 'Inspected locations',
+        inspectedEmpty: 'Waiting for recorded files, symbols, or sources.',
+        executionTitle: 'Execution and blockers',
+        executionSummary: (steps, artifacts) => `${steps} research steps · ${artifacts} persisted evidence items`,
+        workersLabel: 'Workers',
+        noBlockers: 'No current blockers.',
+        sectionLabels: {
+          conclusion: 'Conclusion',
+          source_evidence: 'Evidence',
+          borrow_diverge_risk_gate: 'Tradeoffs and risks',
+          implementation_recommendations: 'Implementation recommendations',
+          verification: 'Verification',
+        },
+      },
+      clearGoal: (condition, iteration, max, status) => `Autonomous goal in progress: “${condition}” (iteration ${iteration}/${max}, ${status}). Maka continues after each iteration; click to clear the goal and stop continuing.`, clearGoalAriaLabel: (iteration, max) => `Clear autonomous goal after ${iteration}/${max} iterations`, goalProgress: (iteration, max) => `Goal ${iteration} of ${max}`, goalRunningAriaLabel: 'Autonomous goal running', goalWaitingAriaLabel: 'Autonomous goal waiting for conditions to change',
+      goalPausedAriaLabel: 'Autonomous goal paused', pauseGoalAriaLabel: (iteration, max) => `Pause autonomous goal after ${iteration}/${max} iterations`, resumeGoalAriaLabel: (iteration, max) => `Resume autonomous goal after ${iteration}/${max} iterations`, pauseGoal: (condition, iteration, max, status) => `Pause autonomous goal: “${condition}” (iteration ${iteration}/${max}, ${status}). Pausing stops autonomous continuation immediately — no more tokens burn; resume any time.`, resumeGoal: (condition, iteration, max) => `Resume autonomous goal: “${condition}” (iteration ${iteration}/${max}). Resuming continues autonomous iteration immediately.`, goalElapsed: (elapsedMs) => formatGoalElapsedUnits(elapsedMs, { second: 's', minute: 'm', hour: 'h', day: 'd' }), goalTokens: (spent, budget) => `${formatCompactTokenCount(spent)} / ${formatCompactTokenCount(budget)}`,
+      loadFailed: 'Task failed to load', loading: 'Loading…', retryLoad: 'Retry', quoteSelection: 'Quote', askInSidePanel: 'Ask in side panel', noMessages: 'No messages yet',
+      branchBeforeInterrupt: 'Branched before interruption', sessionContextAriaLabel: 'Task context', sessionLineageAriaLabel: 'Task origin', sessionContextMore: (count) => `More task context (${count})`,
+      titlebarIdentityAriaLabel: 'Current task', openProjectFolder: (name) => `Open “${name}” in the file manager`, openProjectFolderAction: 'Open project folder',
+      openParentSession: (name) => `Return to parent task “${name}”`, openParentSessionAction: 'Open parent task',
+      revisionVersionsAriaLabel: 'Task versions', revisionVersion: (current, total) => `Version ${current} of ${total}`, previousRevision: 'View previous version', nextRevision: 'View next version',
+    },
+    sessions: {
+      status: { active: 'Ready', running: 'Running', waiting_for_user: 'Waiting for you', blocked: 'Needs attention', aborted: 'Stopped' },
+      blockedReason: { NO_REAL_CONNECTION: 'Waiting for an available model connection', auth: 'Sign in again', permission_required: 'Waiting for permission', tool_failed: 'Tool call failed', unknown: 'Run interrupted; retry available' },
+      listAriaLabel: 'Task list', showMore: 'Show more', showMoreAriaLabel: (count) => `Show ${count} more tasks`, renameAriaLabel: 'Rename task', renameProjectTitle: 'Rename project', renameSubmit: 'Save', respondingAriaLabel: 'Responding', respondingTitle: 'This task is streaming a response', staleTitle: 'This task\'s model connection is unavailable; sending will switch to the default connection', staleAriaLabel: 'Stale task', stale: 'Stale', unreadAriaLabel: 'Unread messages', actionsAriaLabel: (name) => `${name} task actions`, pin: 'Pin', unpin: 'Unpin', rename: 'Rename', archive: 'Archive', unarchive: 'Unarchive', delete: 'Delete', pinned: 'Pinned', recent: 'Recent', groupByTime: 'By time', groupByProject: 'By project', groupingAriaLabel: 'Task grouping', projectActionsAriaLabel: (name) => `${name} project actions`, projectNewTask: 'New task', projectRename: 'Rename', projectArchive: 'Archive', projectRestore: 'Restore', projectRelink: 'Relocate', projectUnavailable: 'Project directory unavailable', archivedProjects: 'Archived projects', archivedProjectsAriaLabel: 'Expand archived projects', worktreeAriaLabel: 'Git worktree', promptRailAriaLabel: 'Jump by prompt', emptyPrompt: '(empty prompt)', jumpToPrompt: (preview) => `Jump to prompt: ${preview}`, pickedAriaLabel: 'Selected', pinCount: (count) => `Pin ${count} tasks`, unpinCount: (count) => `Unpin ${count} tasks`, archiveCount: (count) => `Archive ${count} tasks`,
+    },
+  }
 } satisfies UiCatalog<ConversationCopy>;
 
 export function getConversationCopy(locale: UiLocale): ConversationCopy {

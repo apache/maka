@@ -28,6 +28,7 @@ import {
   Button,
   useMountedRef,
   useUiLocale,
+  type UiLocale,
 } from '@maka/ui';
 import {
   Dialog,
@@ -251,7 +252,7 @@ function statusCopy(
   starting: boolean,
   error: string | null,
   copy: BotSettingsCopy['onboarding']['providers'][BotOnboardingProvider],
-  locale: 'zh' | 'en' = 'zh',
+  locale: UiLocale = 'zh',
 ): string {
   const shared = getBotSettingsCopy(locale).onboarding;
   if (starting) return shared.generating;

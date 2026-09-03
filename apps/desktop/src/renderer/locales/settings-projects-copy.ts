@@ -18,7 +18,6 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 export type SettingsProjectsCopy = {
   runtimeHost: {
     title: string;
@@ -210,16 +209,8 @@ export type SettingsProjectsCopy = {
     updatePolicyActiveTasks: string;
     updatePolicyNotNewer(version: string): string;
     updatePolicyManualAction(version: string): string;
-    updatePolicyManualReason: Record<
-      | 'current_compatibility_unknown'
-      | 'target_compatibility_unknown'
-      | 'compatibility_mismatch',
-      string
-    >;
-    updatePhase: Record<
-      'preparing_cli' | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase,
-      string
-    >;
+    updatePolicyManualReason: Record<'current_compatibility_unknown' | 'target_compatibility_unknown' | 'compatibility_mismatch', string>;
+    updatePhase: Record<'preparing_cli' | import('@maka/runtime-host/operator').RuntimeHostServiceUpdatePhase, string>;
     updateBlockedTitle: string;
     updateBlockedBody: string;
     updateInterrupt: string;
@@ -308,8 +299,7 @@ export type SettingsProjectsCopy = {
    */
   moreActions(projectName: string): string;
 };
-
-const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
+const SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE = {
   zh: {
     runtimeHost: {
       title: 'Runtime Host',
@@ -384,7 +374,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         installing_service: '正在启动 Runtime Host…',
         pairing_client: '正在配对这台设备…',
         verifying_connection: '正在验证凭据…',
-        connecting_host: '正在建立安全连接…',
+        connecting_host: '正在建立安全连接…'
       },
       add: '添加远程 Host',
       cancel: '取消',
@@ -431,7 +421,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         stopped: '已停止',
         starting: '正在启动',
         running: '运行中',
-        failed: '启动失败',
+        failed: '启动失败'
       },
       directPeer: 'Direct peer（实验性）',
       directPeerDescription: '创建独立的实验性 Direct profile。可自动发现或手动指定协调节点来辅助打洞；受限 NAT 或被阻止的 UDP 仍可能使其不可达，且不会回退到中继传输。保留 SSH profile 用于手动恢复。',
@@ -440,7 +430,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         not_configured: '未配置',
         disabled: '已停用',
         enabled: '已启用',
-        unavailable: '不可用',
+        unavailable: '不可用'
       },
       directPeerUnavailable: '无法读取 Direct peer 状态',
       directPeerUpgradeRequired: '请先更新远程 Runtime Host，再管理 Direct peer。',
@@ -456,18 +446,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerStunPolicyOptions: {
         default: '公共 STUN（推荐）',
         disabled: '不使用公共 STUN',
-        custom: '自定义 STUN',
+        custom: '自定义 STUN'
       },
       directPeerStunUrls: 'STUN 地址',
-      directPeerStunDefaultHelp:
-        '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不转发 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
-      directPeerStunDisabledHelp:
-        '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
-      directPeerStunCustomHelp:
-        '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
+      directPeerStunDefaultHelp: '使用 Cloudflare 公共 STUN 尽力发现公网映射。它不转发 Maka 流量，但提供方可观察源 IP 和请求时间；Maka 不保证其可用性。',
+      directPeerStunDisabledHelp: '仅尝试本地地址和其他已知直连路径；跨 NAT 的直连成功率可能降低。',
+      directPeerStunCustomHelp: '使用逗号分隔的 stun: 地址。STUN 只发现网络地址，不承载 Session 内容。',
       directPeerAutomaticRelayDiscovery: '自动发现协调节点',
-      directPeerAutomaticRelayDiscoveryHelp:
-        '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
+      directPeerAutomaticRelayDiscoveryHelp: '协调节点使用 Circuit Relay v2 协议，仅帮助建立端到端直连，不承载应用流量。Maka 会通过公共 IPFS 网络尽力发现可用节点；手动设置的节点优先。',
       directPeerEnable: '启用并添加',
       directPeerDisable: '停用',
       directPeerAddProfile: '添加到 Desktop',
@@ -510,7 +496,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         manual: '手动更新',
         fixed: '固定版本',
         latest: 'Latest 稳定频道',
-        next: 'Next 预览频道',
+        next: 'Next 预览频道'
       },
       updatePolicyFixedVersion: '版本',
       updatePolicySave: '保存策略',
@@ -530,14 +516,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       updatePolicyManualReason: {
         current_compatibility_unknown: '无法确认当前版本的存储兼容性',
         target_compatibility_unknown: '无法确认目标版本的存储兼容性',
-        compatibility_mismatch: '目标版本需要手动处理存储兼容性',
+        compatibility_mismatch: '目标版本需要手动处理存储兼容性'
       },
       updatePhase: {
         preparing_cli: '正在准备本地 CLI…',
         checking: '正在检查版本…',
         staging: '正在准备新版本…',
         retiring: '正在安全停止当前 Runtime Host…',
-        replacing: '正在启动并验证新版本…',
+        replacing: '正在启动并验证新版本…'
       },
       updateBlockedTitle: 'Runtime Host 可能仍在执行任务',
       updateBlockedBody: '无法确认当前 Host 可以安全停止。继续更新会中断当前执行，但会保留可恢复的任务状态和无法确认的外部效果。',
@@ -560,7 +546,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       currentDesktop: '当前 Desktop',
       accessKind: {
         owner: '客户端访问',
-        capabilityProvider: 'Capability Provider',
+        capabilityProvider: 'Capability Provider'
       },
       accessPending: '等待确认',
       accessCreated: (date: string) => `创建于 ${date}`,
@@ -590,7 +576,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       discardPairingConfirmTitle: '放弃这次配对？',
       discardPairingConfirmBody: '将删除未完成的连接并清理本机保存的临时凭据。之后仍可使用新的邀请码重新加入。',
       discardPairingFailed: '无法放弃配对',
-      moreActions: (name: string) => `更多操作：${name}`,
+      moreActions: (name: string) => `更多操作：${name}`
     },
     section: '工作区',
     // Says all three layers of the rule in one sentence, because a help line
@@ -624,7 +610,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     defaultUnavailable: '原来的默认项目已不可用，新任务暂时沿用上次使用的项目。',
     emptyTitle: '还没有项目',
     emptyBody: '添加一个项目目录后，新任务就能默认从它打开，侧边栏也会按项目归类任务。',
-    moreActions: (projectName: string) => `更多操作：${projectName}`,
+    moreActions: (projectName: string) => `更多操作：${projectName}`
   },
   en: {
     runtimeHost: {
@@ -700,7 +686,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         installing_service: 'Starting Runtime Host…',
         pairing_client: 'Pairing this device…',
         verifying_connection: 'Verifying access…',
-        connecting_host: 'Establishing the secure connection…',
+        connecting_host: 'Establishing the secure connection…'
       },
       add: 'Add remote Host',
       cancel: 'Cancel',
@@ -747,7 +733,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         stopped: 'Stopped',
         starting: 'Starting',
         running: 'Running',
-        failed: 'Failed',
+        failed: 'Failed'
       },
       directPeer: 'Direct peer (experimental)',
       directPeerDescription: 'Create an independent experimental Direct profile. Discover coordination peers automatically or provide them manually to assist hole punching; restrictive NAT or blocked UDP may still make it unreachable, and traffic does not fall back to a relay. Keep the SSH profile for manual recovery.',
@@ -756,7 +742,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         not_configured: 'Not configured',
         disabled: 'Disabled',
         enabled: 'Enabled',
-        unavailable: 'Unavailable',
+        unavailable: 'Unavailable'
       },
       directPeerUnavailable: 'Direct peer status is unavailable',
       directPeerUpgradeRequired: 'Update the remote Runtime Host before managing Direct peer.',
@@ -772,18 +758,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       directPeerStunPolicyOptions: {
         default: 'Public STUN (recommended)',
         disabled: 'No public STUN',
-        custom: 'Custom STUN',
+        custom: 'Custom STUN'
       },
       directPeerStunUrls: 'STUN addresses',
-      directPeerStunDefaultHelp:
-        'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
-      directPeerStunDisabledHelp:
-        'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
-      directPeerStunCustomHelp:
-        'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
+      directPeerStunDefaultHelp: 'Uses Cloudflare public STUN on a best-effort basis to discover public mappings. It never carries Maka traffic, but the provider can observe source IPs and request timing; Maka provides no availability guarantee.',
+      directPeerStunDisabledHelp: 'Only local addresses and other known direct paths are attempted; direct connectivity across NAT may be reduced.',
+      directPeerStunCustomHelp: 'Enter comma-separated stun: addresses. STUN discovers network addresses and never carries Session content.',
       directPeerAutomaticRelayDiscovery: 'Discover coordination peers automatically',
-      directPeerAutomaticRelayDiscoveryHelp:
-        'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',
+      directPeerAutomaticRelayDiscoveryHelp: 'Coordination peers use Circuit Relay v2 only to establish an end-to-end direct connection; they never carry application traffic. Maka discovers candidates through the public IPFS network on a best-effort basis, while manually configured peers remain preferred.',
       directPeerEnable: 'Enable and add',
       directPeerDisable: 'Disable',
       directPeerAddProfile: 'Add to Desktop',
@@ -826,22 +808,19 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
         manual: 'Manual updates',
         fixed: 'Fixed version',
         latest: 'Latest stable channel',
-        next: 'Next preview channel',
+        next: 'Next preview channel'
       },
       updatePolicyFixedVersion: 'Version',
       updatePolicySave: 'Save policy',
       updatePolicyCheckNow: 'Check now',
       updatePolicyUnavailable: 'Automatic update policy is unavailable',
       updateSchedulerUnavailable: 'Automatic updates are not available on this Runtime Host',
-      updateSchedulerUnavailableBody:
-        'Update or repair the service before choosing a fixed version or release channel',
+      updateSchedulerUnavailableBody: 'Update or repair the service before choosing a fixed version or release channel',
       updateSchedulerUnsupported: 'Unsupported',
       updateSchedulerInactive: 'Inactive',
-      updateSchedulerInactiveBody:
-        'The update scheduler is not running. Start or repair the service before enabling automatic updates',
+      updateSchedulerInactiveBody: 'The update scheduler is not running. Start or repair the service before enabling automatic updates',
       updateSchedulerNeedsRepair: 'Needs repair',
-      updateSchedulerNeedsRepairBody:
-        'The update scheduler is not running. Repair the service before enabling automatic updates',
+      updateSchedulerNeedsRepairBody: 'The update scheduler is not running. Repair the service before enabling automatic updates',
       updatePolicyDisabled: 'Automatic updates are off',
       updatePolicyActiveTasks: 'Runtime Host owns active work, so this update was deferred',
       updatePolicyNotNewer: (version: string) => `Maka ${version} is not newer than this Host`,
@@ -849,14 +828,14 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       updatePolicyManualReason: {
         current_compatibility_unknown: 'The installed version has unknown storage compatibility',
         target_compatibility_unknown: 'The target version has unknown storage compatibility',
-        compatibility_mismatch: 'The target requires a manual storage compatibility decision',
+        compatibility_mismatch: 'The target requires a manual storage compatibility decision'
       },
       updatePhase: {
         preparing_cli: 'Preparing the local CLI…',
         checking: 'Checking versions…',
         staging: 'Staging the new version…',
         retiring: 'Safely stopping the current Runtime Host…',
-        replacing: 'Starting and verifying the new version…',
+        replacing: 'Starting and verifying the new version…'
       },
       updateBlockedTitle: 'Runtime Host may still own active work',
       updateBlockedBody: 'Desktop could not prove that the current Host can stop safely. Continuing will interrupt current execution while preserving recoverable task state and unresolved external effects.',
@@ -879,7 +858,7 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       currentDesktop: 'This Desktop',
       accessKind: {
         owner: 'Client access',
-        capabilityProvider: 'Capability provider',
+        capabilityProvider: 'Capability provider'
       },
       accessPending: 'Pending confirmation',
       accessCreated: (date: string) => `Created ${date}`,
@@ -909,11 +888,10 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       discardPairingConfirmTitle: 'Discard this pairing?',
       discardPairingConfirmBody: 'This removes the unfinished connection and its locally saved temporary credential. You can join again with a new invitation.',
       discardPairingFailed: 'Could not discard pairing',
-      moreActions: (name: string) => `More actions for ${name}`,
+      moreActions: (name: string) => `More actions for ${name}`
     },
     section: 'Workspace',
-    sectionHelp:
-      'New tasks open in the default project; without one, they reuse the project you last used. You can switch any task to a different project next to the input box.',
+    sectionHelp: 'New tasks open in the default project; without one, they reuse the project you last used. You can switch any task to a different project next to the input box.',
     addProject: 'Add project',
     defaultBadge: 'Default',
     setDefault: 'Set as default',
@@ -930,21 +908,326 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
     clearDefault: 'Clear default',
     remove: 'Remove from Maka',
     removeConfirmTitle: 'Remove this project from Maka?',
-    removeConfirmBody:
-      'This only removes it from Maka’s project list; the files on disk are untouched. Tasks under this project move to “Ungrouped” and are not deleted.',
+    removeConfirmBody: 'This only removes it from Maka’s project list; the files on disk are untouched. Tasks under this project move to “Ungrouped” and are not deleted.',
     removeConfirm: 'Remove',
     removeCancel: 'Cancel',
     actionFailed: 'Action failed',
     unavailable: 'Folder unavailable',
-    defaultUnavailable:
-      'The default project is no longer available, so new tasks reuse the project you last used.',
+    defaultUnavailable: 'The default project is no longer available, so new tasks reuse the project you last used.',
     emptyTitle: 'No projects yet',
-    emptyBody:
-      'Add a project folder and new tasks can start in it, with the sidebar grouping tasks by project.',
-    moreActions: (projectName: string) => `More actions for ${projectName}`,
-  },
+    emptyBody: 'Add a project folder and new tasks can start in it, with the sidebar grouping tasks by project.',
+    moreActions: (projectName: string) => `More actions for ${projectName}`
+  }
+} satisfies Omit<UiCatalog<SettingsProjectsCopy>, 'ko'>;
+const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
+  ...SETTINGS_PROJECTS_COPY_BY_LOCALE_BASE,
+  ko: {
+    runtimeHost: {
+      title: "런타임 호스트",
+      description: "로컬 및 기타 활성화된 호스트는 함께 연결되어 있습니다. 각 작업은 해당 호스트의 소유로 유지됩니다.",
+      selected: "기본 호스트",
+      selectedHelp: "새로운 작업과 범위가 지정되지 않은 설정은 기본 호스트를 사용합니다.",
+      remoteTitle: "다른 호스트",
+      remoteDescription: "연결 코드 또는 안내 설정을 통해 런타임 호스트를 추가하고 관리하세요.",
+      addComputer: "컴퓨터 추가",
+      useConnectionCode: "연결 코드 사용",
+      useConnectionCodeDescription: "다른 컴퓨터에서 생성된 일회용 코드 붙여넣기",
+      addSshComputer: "SSH를 통해 설정",
+      addSshComputerDescription: "SSH로 접속할 수 있는 컴퓨터에 호스트를 설치하고 연결하세요.",
+      addWslEnvironment: "WSL 환경 추가",
+      addWslEnvironmentDescription: "이 Windows 컴퓨터의 WSL 내부에 호스트 설치 및 연결",
+      configureManually: "수동으로 구성",
+      configureManuallyDescription: "기존 호스트에 대한 TLS, SSH 또는 직접 피어 세부 정보를 입력하세요.",
+      thisComputerRemoteAccess: "원격 액세스",
+      thisComputerRemoteAccessHelp: "자동 공개 조정 검색을 통해 실험적인 엔드투엔드 직접 연결을 통해 이 호스트에 도달",
+      remoteAccessOn: "~에",
+      remoteAccessOff: "끄다",
+      enableRemoteAccess: "할 수 있게 하다",
+      disableRemoteAccess: "연결 끄기",
+      disableRemoteAccessConfirm: "원격 연결을 끄시겠습니까?",
+      disableRemoteAccessDescription: "이렇게 하면 직접 피어 연결만 중지됩니다. 부여된 공유 액세스 권한은 유지됩니다.",
+      revokeSharedAccess: "공유 액세스 취소",
+      revokeSharedAccessConfirm: "공유 액세스를 취소하시겠습니까?",
+      revokeSharedAccessDescription: "연결된 데스크톱의 연결이 끊어지고, 사용하지 않은 연결 코드의 작동이 중지됩니다.",
+      revokeSharedAccessDone: "공유 액세스가 취소되었습니다.",
+      createConnectionCode: "새로운 연결 코드",
+      connectionCodeTitle: "이 컴퓨터에 연결",
+      connectionCodeDescription: "15분 후에 만료되며 한 번만 사용할 수 있습니다. 다른 데스크탑은 소유자 액세스 권한을 받습니다. 직접 피어에는 대체가 없습니다.",
+      importConnectionCodeTitle: "연결 코드 사용",
+      importConnectionCodeDescription: "연결하면 이 데스크톱 소유자에게 다른 호스트에 대한 액세스 권한이 부여됩니다. 직접 피어에는 대체가 없습니다.",
+      connectionCodeHelpLabel: "연결 코드를 얻는 방법",
+      connectionCodeHelp: "대상 컴퓨터에서 Maka 설정 → 작업 공간 → 원격 액세스를 열거나 SSH 관리 호스트를 열고 새 연결 코드를 선택합니다. 대상 컴퓨터에서 maka 런타임 호스트 액세스 연결 코드를 실행할 수도 있습니다. 코드는 15분 후에 만료되며 한 번만 작동합니다.",
+      connectionCode: "연결 코드",
+      copyConnectionCode: "연결 코드 복사",
+      pasteConnectionCode: "반죽",
+      connectionCodeCopied: "연결 코드가 복사되었습니다.",
+      connectionCodeInvalid: "연결 코드가 잘못되었습니다.",
+      connectionCodeUnavailable: "연결 코드가 만료되었거나 이미 사용되었습니다. 다른 컴퓨터에서 새 코드를 만듭니다.",
+      connectionCodeHostUnreachable: "직접 피어 연결을 설정할 수 없습니다. 두 컴퓨터가 모두 온라인 상태이고 UDP가 허용되는지 확인하세요.",
+      connectionCodeHostMismatch: "코드가 연결된 호스트와 일치하지 않거나 호스트 버전이 호환되지 않습니다.",
+      connectionCodeUnknownError: "연결 결과를 알 수 없습니다. 다시 시도하기 전에 원격 호스트 목록을 확인하세요.",
+      connectWithCode: "연결하다",
+      remoteAccessActiveTasks: "이 컴퓨터에는 아직 실행 중인 작업이 있습니다.",
+      remoteAccessActiveTasksDescription: "원격 액세스를 활성화하면 로컬 호스트가 시스템 서비스로 전달됩니다. 현재 작업을 중단하고 계속하시겠습니까?",
+      uninstallActiveTasksDescription: "백그라운드 서비스를 제거하면 현재 작업이 중지됩니다. 중단하고 계속하시겠습니까?",
+      interruptAndEnable: "중단 및 활성화",
+      interruptAndUninstall: "중단 및 제거",
+      remoteAccessFailed: "원격 액세스 실패",
+      setupTitle: "런타임 호스트 추가",
+      setupSshDescription: "SSH를 통해 사용 가능한 컴퓨터에 런타임 호스트 설치 및 연결",
+      setupWslDescription: "로컬 WSL 환경에 런타임 호스트 설치 및 연결",
+      setupName: "표시 이름(선택사항)",
+      wslDistribution: "WSL 배포",
+      setupSshPort: "SSH 포트(선택 사항)",
+      setupDirectoryRootsDescription: "원격 홈 디렉터리를 사용하려면 비워 두세요. 디렉터리가 추가되면 해당 위치만 찾아 프로젝트를 추가할 수 있습니다.",
+      setupConnect: "연결하다",
+      setupCancel: "취소",
+      setupRetry: "다시 해 보다",
+      setupDone: "완료",
+      setupChooseProject: "프로젝트 선택",
+      setupComplete: "런타임 호스트가 연결됨",
+      setupPhase: {
+        preparing_cli: "로컬 CLI 준비 중…",
+        connecting_ssh: "SSH를 통해 연결하는 중…",
+        connecting_wsl: "WSL 환경에 연결하는 중…",
+        checking_environment: "원격 환경을 확인하는 중…",
+        installing_package: "마카 설치 중…",
+        installing_service: "런타임 호스트 시작 중...",
+        pairing_client: "이 기기를 페어링하는 중…",
+        verifying_connection: "액세스 확인 중…",
+        connecting_host: "보안 연결 설정 중…"
+      },
+      add: "원격 호스트 추가",
+      cancel: "취소",
+      name: "표시 이름",
+      nameHelp: "이 장치에서 이 호스트를 식별하는 데에만 사용됩니다.",
+      transport: "연결 방법",
+      transportHelp: "TLS를 선호하거나 SSH 터널을 사용하여 개인 컴퓨터의 루프백 전용 호스트에 연결",
+      tls: 'TLS',
+      ssh: "SSH 터널",
+      plaintext: "일반 웹소켓",
+      url: 'WSS URL',
+      urlHelp: "원격 런타임 호스트의 wss:// 주소",
+      plaintextUrl: 'WS URL',
+      plaintextUrlHelp: "원격 런타임 호스트의 ws:// 주소",
+      sshDestination: "SSH 대상",
+      sshDestinationHelp: "OpenSSH user@host 대상 또는 SSH 구성 별칭",
+      sshPort: "SSH 포트",
+      sshPortHelp: "선택 과목; OpenSSH 기본 또는 SSH 구성을 사용하려면 비워 두세요.",
+      remotePort: "원격 호스트 포트",
+      remotePortHelp: "런타임 호스트가 127.0.0.1을 원격으로 수신하는 WebSocket 포트",
+      websocketPath: "웹소켓 경로",
+      websocketPathHelp: "일반적으로 /runtime-host",
+      plaintextAcknowledgement: "나는 일반 텍스트의 위험을 이해합니다",
+      plaintextAcknowledgementHelp: "액세스 자격 증명 및 데이터는 네트워크의 다른 사람에 의해 가로채질 수 있습니다.",
+      plaintextWarning: "신뢰할 수 있고 격리된 네트워크에서만 사용하세요. 공개 연결은 TLS 또는 SSH 터널을 사용해야 합니다.",
+      sshTerminalTitle: "원격 런타임 호스트에 연결",
+      sshTerminalDescription: "OpenSSH 프롬프트에 따라 호스트를 신뢰하거나 비밀번호를 입력하세요. 기존 SSH 키에는 일반적으로 입력이 필요하지 않습니다.",
+      sshTerminalClosed: "SSH 연결이 종료되었습니다",
+      sshTerminalClose: "닫다",
+      rootId: "상태 루트 ID",
+      rootIdHelp: "예상 호스트를 확인하기 위해 원격 서비스 준비 출력에서 ​​복사됨",
+      credential: "액세스 자격 증명",
+      credentialHelp: "데스크탑-클라이언트 사전 설정을 사용하여 원격 시스템에서 발행하십시오.",
+      saveAndEnable: "저장 및 활성화",
+      defaultBadge: "기본",
+      experimentalBadge: "실험적",
+      defaultDisableHelp: "이 호스트를 비활성화하기 전에 다른 기본 호스트를 선택하세요",
+      unavailable: "없는",
+      manage: "관리하다",
+      managementTitle: (name: string) => `${name} 관리`,
+      serviceStatus: "서비스 상태",
+      serviceState: {
+        not_installed: "설치되지 않음",
+        stopped: "중지됨",
+        starting: "시작",
+        running: "달리기",
+        failed: "실패한"
+      },
+      directPeer: "직접 피어(실험적)",
+      directPeerDescription: "독립적인 실험적 직접 프로필을 만듭니다. 조정 피어를 자동으로 검색하거나 수동으로 제공하여 홀 펀칭을 지원합니다. 제한적인 NAT 또는 차단된 UDP로 인해 여전히 연결이 불가능할 수 있으며 트래픽은 릴레이로 대체되지 않습니다. 수동 복구를 위해 SSH 프로필을 유지하세요.",
+      directPeerState: {
+        unsupported: "업데이트 필요",
+        not_configured: "구성되지 않음",
+        disabled: "장애가 있는",
+        enabled: "활성화됨",
+        unavailable: "없는"
+      },
+      directPeerUnavailable: "다이렉트 피어 상태를 사용할 수 없습니다.",
+      directPeerUpgradeRequired: "다이렉트 피어를 관리하기 전에 원격 런타임 호스트를 업데이트하세요.",
+      directPeerClientUnavailable: "이 데스크탑 빌드에는 다이렉트 피어 지원이 포함되어 있지 않습니다.",
+      directPeerDisableProfileFirst: "먼저 런타임 호스트 목록에서 직접 피어를 비활성화합니다.",
+      directPeerId: "피어 ID",
+      directPeerRoutes: "노선",
+      directPeerCoordinationRelays: "연결 조정 피어(선택 사항)",
+      directPeerCoordinationRelaysPlaceholder: "여러 주소를 쉼표로 구분하세요.",
+      directPeerAdvancedCoordination: "조정 피어를 수동으로 설정",
+      directPeerAdvancedNatTraversal: "NAT 통과(고급)",
+      directPeerStunPolicy: "공개 주소 검색",
+      directPeerStunPolicyOptions: {
+        default: "공개 STUN(권장)",
+        disabled: "공개 STUN 없음",
+        custom: "맞춤형 기절"
+      },
+      directPeerStunUrls: "STUN 주소",
+      directPeerStunDefaultHelp: "Cloudflare 공개 STUN을 최선의 방식으로 사용하여 공개 매핑을 검색합니다. Maka 트래픽을 전달하지 않지만 공급자는 소스 IP와 요청 타이밍을 관찰할 수 있습니다. Maka는 가용성을 보장하지 않습니다.",
+      directPeerStunDisabledHelp: "로컬 주소와 기타 알려진 직접 경로만 시도됩니다. NAT를 통한 직접 연결이 줄어들 수 있습니다.",
+      directPeerStunCustomHelp: "쉼표로 구분된 stun: 주소를 입력하세요. STUN은 네트워크 주소를 검색하고 세션 콘텐츠를 전달하지 않습니다.",
+      directPeerAutomaticRelayDiscovery: "자동으로 조정 피어 검색",
+      directPeerAutomaticRelayDiscoveryHelp: "조정 피어는 종단 간 직접 연결을 설정하는 데에만 Circuit Relay v2를 사용합니다. 그들은 애플리케이션 트래픽을 전달하지 않습니다. Maka는 최선의 노력을 다해 공용 IPFS 네트워크를 통해 후보를 검색하며, 수동으로 구성된 피어는 계속 선호됩니다.",
+      directPeerEnable: "활성화 및 추가",
+      directPeerDisable: "장애를 입히다",
+      directPeerAddProfile: "데스크탑에 추가",
+      directPeerActionFailed: "직접 피어 작업 실패",
+      peerMesh: "피어 메시",
+      peerMeshHelp: "이 데스크탑 피어에 대한 비공개 메시 멤버십 및 초대를 관리합니다.",
+      managePeerMesh: "피어 메시 관리",
+      installedVersion: "버전",
+      operatingSystem: "체계",
+      processId: "프로세스 ID",
+      lastExitCode: "마지막 종료 코드",
+      stateRoot: "상태 루트",
+      directoryRoots: "프로젝트 추가용 디렉터리",
+      directoryRootsDescription: "원격 클라이언트는 이러한 디렉터리에서만 새 프로젝트를 찾아보고 추가할 수 있습니다. 하나를 제거해도 이미 추가된 프로젝트는 삭제되지 않습니다.",
+      directoryRootsUnavailable: "Desktop에서 이러한 디렉터리를 관리하려면 이 호스트를 업데이트하거나 복구하세요.",
+      directoryRootsChanged: "이 디렉토리는 다른 곳에서 변경되었습니다.",
+      directoryRootsChangedDescription: "초안이 보존됩니다. 계속하기 전에 현재 구성을 로드하세요.",
+      reloadDirectoryRoots: "현재 구성 로드",
+      noDirectoryRoots: "디렉터리 검색 및 프로젝트 등록이 비활성화되었습니다.",
+      directoryRootLabel: "표시 이름",
+      directoryRootPath: "원격 컴퓨터의 절대 경로",
+      addDirectoryRoot: "디렉토리 추가",
+      removeDirectoryRoot: "제거하다",
+      saveDirectoryRoots: "디렉토리 적용",
+      directoryRootsActiveTasks: "이 호스트에는 아직 실행 중인 작업이 있습니다.",
+      directoryRootsActiveTasksDescription: "이러한 디렉터리를 적용하려면 안전한 원격 서비스를 다시 시작해야 합니다. 작업은 명시적인 확인 후에만 중단됩니다.",
+      configureDirectoriesInterrupt: "작업을 중단하고 적용",
+      refresh: "새로 고치다",
+      startService: "시작",
+      restartService: "다시 시작",
+      restartActiveTasksDescription: "다시 시작하면 현재 작업이 중지됩니다. 중단하고 계속하시겠습니까?",
+      restartInterrupt: "작업을 중단하고 다시 시작",
+      repairService: "수리하다",
+      updateService: "일치하는 버전 설치",
+      updatePolicy: "정책 업데이트",
+      updatePolicyDescription: "이 호스트가 따르는 Maka 릴리스를 선택하세요.",
+      updatePolicyManual: "수동",
+      updatePolicyAutomatic: "오토매틱",
+      updatePolicyOptions: {
+        manual: "수동 업데이트",
+        fixed: "고정 버전",
+        latest: "최신 안정 채널",
+        next: "다음 미리보기 채널"
+      },
+      updatePolicyFixedVersion: "버전",
+      updatePolicySave: "정책 저장",
+      updatePolicyCheckNow: "지금 확인하세요",
+      updatePolicyUnavailable: "자동 업데이트 정책을 사용할 수 없습니다.",
+      updateSchedulerUnavailable: "이 런타임 호스트에서는 자동 업데이트를 사용할 수 없습니다.",
+      updateSchedulerUnavailableBody: "수정된 버전이나 출시 채널을 선택하기 전에 서비스를 업데이트하거나 복구하세요.",
+      updateSchedulerUnsupported: "지원되지 않음",
+      updateSchedulerInactive: "비활성",
+      updateSchedulerInactiveBody: "업데이트 스케줄러가 실행되고 있지 않습니다. 자동 업데이트를 활성화하기 전에 서비스를 시작하거나 복구하세요.",
+      updateSchedulerNeedsRepair: "수리가 필요함",
+      updateSchedulerNeedsRepairBody: "업데이트 스케줄러가 실행되고 있지 않습니다. 자동 업데이트를 활성화하기 전에 서비스를 복구하세요.",
+      updatePolicyDisabled: "자동 업데이트가 사용 중지되었습니다.",
+      updatePolicyActiveTasks: "런타임 호스트가 활성 작업을 소유하므로 이 업데이트가 연기되었습니다.",
+      updatePolicyNotNewer: (version: string) => `Maka ${version}은(는) 이 호스트보다 최신이 아닙니다.`,
+      updatePolicyManualAction: (version: string) => `Maka ${version}은 수동 업데이트가 필요합니다`,
+      updatePolicyManualReason: {
+        current_compatibility_unknown: "설치된 버전에 알 수 없는 저장소 호환성이 있습니다.",
+        target_compatibility_unknown: "대상 버전에 알 수 없는 저장소 호환성이 있습니다.",
+        compatibility_mismatch: "대상에는 수동 스토리지 호환성 결정이 필요합니다."
+      },
+      updatePhase: {
+        preparing_cli: "로컬 CLI 준비 중…",
+        checking: "버전 확인 중…",
+        staging: "새 버전 준비 중…",
+        retiring: "현재 런타임 호스트를 안전하게 중지하는 중…",
+        replacing: "새 버전을 시작하고 확인하는 중…"
+      },
+      updateBlockedTitle: "런타임 호스트는 여전히 활성 작업을 소유할 수 있습니다.",
+      updateBlockedBody: "데스크톱은 현재 호스트가 안전하게 중지될 수 있음을 증명할 수 없습니다. 계속하면 복구 가능한 작업 상태와 해결되지 않은 외부 효과를 유지하면서 현재 실행이 중단됩니다.",
+      updateInterrupt: "인터럽트 및 업데이트",
+      updateComplete: (from: string, to: string) => `런타임 호스트가 ${from}에서 ${to}로 업데이트되었습니다.`,
+      updateRepaired: (version: string) => `런타임 호스트 ${version}이 다시 실행 중입니다.`,
+      updateAlreadyCurrent: (version: string) => `런타임 호스트가 이미 ${version}에 있습니다.`,
+      showLogs: "로그 보기",
+      noLogs: "서비스 로그를 찾을 수 없습니다.",
+      uninstallService: "서비스 제거",
+      uninstallConfirmTitle: "이 런타임 호스트를 제거하시겠습니까?",
+      uninstallConfirmBody: "이렇게 하면 Maka 관리 서비스 및 프로그램이 중지되고 제거되며 상태 루트, 프로젝트 및 작업 데이터는 보존됩니다. 데스크탑 프로필은 제거되지 않습니다.",
+      uninstallConfirm: "서비스 제거",
+      uninstallRetained: (path: string) => `서비스가 제거되었습니다. 데이터는 ${path}에 보관되었습니다.`,
+      managementActionFailed: "런타임 호스트 서비스를 관리할 수 없습니다.",
+      managementReconnectFailed: "변경사항이 적용되었지만 데스크톱에서 다시 연결할 수 없습니다.",
+      manageAccess: "액세스 관리",
+      accessTitle: "입장",
+      noAccessCredentials: "활성 액세스 자격 증명 없음",
+      currentDesktop: "이 데스크탑",
+      accessKind: {
+        owner: "클라이언트 액세스",
+        capabilityProvider: "기능 제공자"
+      },
+      accessPending: "확인 대기 중",
+      accessCreated: (date: string) => `${date}을(를) 생성했습니다.`,
+      rotateCredential: "자격증명 순환",
+      rotateCredentialConfirmTitle: "이 데스크톱 사용자 인증 정보를 순환하시겠습니까?",
+      rotateCredentialConfirmBody: "순환은 이 런타임 호스트를 다시 연결하고 활성 작업을 중단할 수 있습니다. 계속하기 전에 활성 작업을 완료하거나 일시 중지하세요.",
+      rotateCredentialConfirm: "계속 회전",
+      enableBeforeRotate: "이 데스크탑 자격 증명을 교체하기 전에 이 런타임 호스트를 활성화하십시오.",
+      startBeforeChangingAccess: "액세스를 변경하기 전에 런타임 호스트 서비스를 시작하십시오.",
+      revokeCredential: "취소",
+      revokeCredentialConfirm: (name: string) => `${name}에 대한 액세스를 취소하시겠습니까?`,
+      revokeCredentialConfirmBody: "이 자격 증명을 사용하는 클라이언트는 즉시 연결이 끊어지며 이로 인해 활성 작업이 중단될 수 있습니다.",
+      accessActionFailed: "액세스를 관리할 수 없습니다.",
+      back: "뒤쪽에",
+      remove: "제거하다",
+      empty: "아직 원격 호스트가 없습니다.",
+      loadFailed: "런타임 호스트 프로필을 로드할 수 없습니다.",
+      selectFailed: "런타임 호스트를 업데이트할 수 없습니다.",
+      saveFailed: "런타임 호스트 프로필을 저장할 수 없습니다.",
+      removeFailed: "런타임 호스트 프로필을 제거할 수 없습니다.",
+      pairingRecoveryTitle: "페어링이 완료되지 않았습니다.",
+      pairingRecoveryDescription: "영향을 받은 호스트 메뉴에서 다시 시도하거나 페어링을 취소하여 완료되지 않은 연결을 정리하십시오.",
+      resolvePairingRecovery: "페어링 재시도",
+      resolvePairingRecoveryFailed: "페어링 복구를 해결할 수 없습니다.",
+      pairingPendingBadge: "페어링이 완료되지 않았습니다.",
+      discardPairing: "페어링 취소",
+      discardPairingConfirmTitle: "이 페어링을 삭제하시겠습니까?",
+      discardPairingConfirmBody: "완료되지 않은 연결과 로컬에 저장된 임시 자격 증명이 제거됩니다. 새로운 초대로 다시 참여할 수 있습니다.",
+      discardPairingFailed: "페어링을 삭제할 수 없습니다.",
+      moreActions: (name: string) => `${name}에 대한 추가 작업`
+    },
+    section: "작업공간",
+    sectionHelp: "기본 프로젝트에 새 작업이 열립니다. 하나도 없으면 마지막으로 사용한 프로젝트를 재사용합니다. 입력 상자 옆에 있는 작업을 다른 프로젝트로 전환할 수 있습니다.",
+    addProject: "프로젝트 추가",
+    defaultBadge: "기본",
+    setDefault: "기본값으로 설정",
+    setDefaultTitle: "이 프로젝트에서 새 작업 열기",
+    setDefaultDisabledTitle: "폴더를 사용할 수 없으므로 기본값이 될 수 없습니다.",
+    setDefaultFailed: "기본 프로젝트를 설정할 수 없습니다.",
+    rename: "이름 바꾸기",
+    renameLabel: "프로젝트 이름",
+    renameFailed: "프로젝트 이름을 바꿀 수 없습니다.",
+    openFolder: "프로젝트 폴더 열기",
+    openFolderFailed: "이 폴더를 열 수 없습니다. 이동되었거나 삭제되었을 수 있습니다.",
+    save: "구하다",
+    cancel: "취소",
+    clearDefault: "기본값 지우기",
+    remove: "마카에서 삭제",
+    removeConfirmTitle: "Maka에서 이 프로젝트를 삭제하시겠습니까?",
+    removeConfirmBody: "이렇게 하면 Maka의 프로젝트 목록에서만 제거됩니다. 디스크의 파일은 그대로 유지됩니다. 이 프로젝트의 작업은 \"그룹 해제\"로 이동되며 삭제되지 않습니다.",
+    removeConfirm: "제거하다",
+    removeCancel: "취소",
+    actionFailed: "작업 실패",
+    unavailable: "폴더를 사용할 수 없음",
+    defaultUnavailable: "기본 프로젝트는 더 이상 사용할 수 없으므로 새 작업에서는 마지막으로 사용한 프로젝트를 재사용합니다.",
+    emptyTitle: "아직 프로젝트가 없습니다.",
+    emptyBody: "프로젝트 폴더를 추가하면 프로젝트별로 작업을 그룹화하는 사이드바를 사용하여 그 안에서 새 작업을 시작할 수 있습니다.",
+    moreActions: (projectName: string) => `${projectName}에 대한 추가 작업`
+  }
 } satisfies UiCatalog<SettingsProjectsCopy>;
-
 export function getSettingsProjectsCopy(locale: UiLocale): SettingsProjectsCopy {
   return SETTINGS_PROJECTS_COPY_BY_LOCALE[locale];
 }

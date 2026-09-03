@@ -89,6 +89,72 @@ const COPY = {
       stepStatuses: { pending: 'Not started', in_progress: 'In progress', completed: 'Completed', skipped: 'Skipped' },
     },
   },
+  ko: {
+  abandonConfirmation: {
+    title: '이 계획을 포기하시겠습니까?',
+    description: title => '“' + title + '”의 실행 기록은 유지되지만 다시 시작할 수 없습니다.',
+    confirm: '계획 포기',
+    cancel: '취소'
+  },
+  proposal: {
+    ...{
+      aria: "계획 제안",
+      kicker: "계획 제안",
+      revision: "개정",
+      steps: "단계",
+      risks: "위험",
+      revise: "변경 요청",
+      execute: "계획 실행",
+      statuses: {
+        pending_approval: "승인을 기다리는 중",
+        approved: "승인됨",
+        stale: "구식"
+      }
+    },
+    aria: '계획 제안',
+    kicker: '계획 제안',
+    revision: '수정본',
+    steps: '단계',
+    risks: '위험',
+    revise: '변경 요청',
+    execute: '계획 실행',
+    statuses: {
+      pending_approval: '승인 대기 중',
+      approved: '승인됨',
+      stale: '오래됨'
+    }
+  },
+  execution: {
+    ...{
+      aria: "계획 실행 현황",
+      interrupted: "계획이 중단되었습니다",
+      running: "계획 실행",
+      approvedPlan: "승인된 계획",
+      stepCount: (completed, total) => `${completed}/${total} ${total === 1 ? 'step' : 'steps'}`,
+      resume: "재개하다",
+      abandon: "계획 포기",
+      stepStatuses: {
+        pending: "시작되지 않음",
+        in_progress: "진행중",
+        completed: "완전한",
+        skipped: "건너뛰었습니다."
+      }
+    },
+    aria: '계획 실행 상태',
+    interrupted: '계획 중단됨',
+    running: '계획 실행 중',
+    approvedPlan: '승인된 계획',
+    stepCount: (completed, total) => completed + '/' + total + '단계',
+    resume: '실행 재개',
+    abandon: '계획 포기',
+    stepStatuses: {
+      pending: '시작되지 않음',
+      in_progress: '진행 중',
+      completed: '완료',
+      skipped: '건너뜀'
+    }
+  }
+}
 } satisfies UiCatalog<PlanModeCopy>;
 
 export function getPlanModeCopy(locale: UiLocale): PlanModeCopy {

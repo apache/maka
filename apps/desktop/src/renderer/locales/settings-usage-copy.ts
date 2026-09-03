@@ -18,71 +18,263 @@
  */
 
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 export type UsageSettingsCopy = {
-  saveFailed: string; toolbarAria: string; rangeAria: string; ranges: readonly [string, string, string, string];
-  refreshingAria: string; refreshAria: string; summaryAria: string; totalRequests: string; totalCost: string; costHelp: string;
-  totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
-  viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
-  statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
-  summaryOnly: string; showDetails: string; filteredEmpty: string; filteredEmptyHelp: string; requestEmpty: string;
-  costUnavailable: string; incompleteTitle: string; incompleteBody: string;
+  saveFailed: string;
+  toolbarAria: string;
+  rangeAria: string;
+  ranges: readonly [string, string, string, string];
+  refreshingAria: string;
+  refreshAria: string;
+  summaryAria: string;
+  totalRequests: string;
+  totalCost: string;
+  costHelp: string;
+  totalTokens: string;
+  tokenDetail(input: number, output: number): string;
+  cacheTokens: string;
+  cacheDetail(miss: number, read: number, creation: number): string;
+  viewAria: string;
+  tabs: readonly [string, string, string, string, string];
+  filtersAria: string;
+  filterPlaceholder: string;
+  filterAria: string;
+  statusAria: string;
+  statuses: readonly [string, string, string, string];
+  details: string;
+  detailsAria: string;
+  recordCount(count: number): string;
+  clearFilters: string;
+  summaryOnly: string;
+  showDetails: string;
+  filteredEmpty: string;
+  filteredEmptyHelp: string;
+  requestEmpty: string;
+  costUnavailable: string;
+  incompleteTitle: string;
+  incompleteBody: string;
   tables: {
-    providersAria: string; modelsAria: string; toolsAria: string; pricingAria: string; requestsAria: string;
-    providerHeaders: string[]; modelHeaders: string[]; toolHeaders: string[]; pricingHeaders: string[]; requestHeaders: string[];
-    noPricing: string; modelKind: string; toolKind: string; unknown: string; untitledSession: string; openSession(label: string): string; success: string; error: string; aborted: string;
-    providerEmptyTitle: string; providerEmptyBody: string; modelEmptyTitle: string; modelEmptyBody: string;
-    toolEmptyTitle: string; toolEmptyBody: string; pricingEmptyBody: string;
+    providersAria: string;
+    modelsAria: string;
+    toolsAria: string;
+    pricingAria: string;
+    requestsAria: string;
+    providerHeaders: string[];
+    modelHeaders: string[];
+    toolHeaders: string[];
+    pricingHeaders: string[];
+    requestHeaders: string[];
+    noPricing: string;
+    modelKind: string;
+    toolKind: string;
+    unknown: string;
+    untitledSession: string;
+    openSession(label: string): string;
+    success: string;
+    error: string;
+    aborted: string;
+    providerEmptyTitle: string;
+    providerEmptyBody: string;
+    modelEmptyTitle: string;
+    modelEmptyBody: string;
+    toolEmptyTitle: string;
+    toolEmptyBody: string;
+    pricingEmptyBody: string;
   };
 };
-
-const SETTINGS_USAGE_COPY = {
+const SETTINGS_USAGE_COPY_BASE = {
   zh: {
-    saveFailed: '保存使用统计设置失败', toolbarAria: '使用统计范围与刷新', rangeAria: '使用统计时间范围', ranges: ['24h', '7天', '30天', '全部'],
-    refreshingAria: '正在刷新使用统计', refreshAria: '刷新使用统计', summaryAria: '使用统计汇总指标', totalRequests: '模型调用', totalCost: '总费用', costHelp: '以模型供应商最终结算为准',
-    totalTokens: '总 Token', tokenDetail: (input, output) => `输入 ${input} / 输出 ${output}`, cacheTokens: '缓存 Token',
-    cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`, viewAria: '使用统计视图', tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
-    filtersAria: '活动记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选活动记录', statusAria: '活动状态筛选',
-    statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
+    saveFailed: '保存使用统计设置失败',
+    toolbarAria: '使用统计范围与刷新',
+    rangeAria: '使用统计时间范围',
+    ranges: ['24h', '7天', '30天', '全部'],
+    refreshingAria: '正在刷新使用统计',
+    refreshAria: '刷新使用统计',
+    summaryAria: '使用统计汇总指标',
+    totalRequests: '模型调用',
+    totalCost: '总费用',
+    costHelp: '以模型供应商最终结算为准',
+    totalTokens: '总 Token',
+    tokenDetail: (input, output) => `输入 ${input} / 输出 ${output}`,
+    cacheTokens: '缓存 Token',
+    cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`,
+    viewAria: '使用统计视图',
+    tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
+    filtersAria: '活动记录筛选',
+    filterPlaceholder: '按模型或工具筛选…',
+    filterAria: '按模型或工具筛选活动记录',
+    statusAria: '活动状态筛选',
+    statuses: ['全部状态', '成功', '错误', '已中止'],
+    details: '详情记录',
+    detailsAria: '显示使用统计详情记录',
+    recordCount: count => `共 ${count} 条记录`,
+    clearFilters: '清除筛选',
     summaryOnly: '当前仅显示汇总指标。打开详情记录后，可以查看逐条模型调用和工具调用，按模型、工具或状态筛选，并用于排查费用与失败调用。',
-    showDetails: '显示明细', filteredEmpty: '没有符合筛选条件的活动记录', filteredEmptyHelp: '调整或清除筛选条件后可查看全部活动记录。', requestEmpty: '暂无活动记录',
-    costUnavailable: '费用未知', incompleteTitle: '统计可能不完整',
+    showDetails: '显示明细',
+    filteredEmpty: '没有符合筛选条件的活动记录',
+    filteredEmptyHelp: '调整或清除筛选条件后可查看全部活动记录。',
+    requestEmpty: '暂无活动记录',
+    costUnavailable: '费用未知',
+    incompleteTitle: '统计可能不完整',
     incompleteBody: '部分记录未能读取、尚未纳入统计或超出展示上限，实际用量可能高于此处显示。',
     tables: {
-      providersAria: '使用统计供应商统计表', modelsAria: '使用统计模型统计表', toolsAria: '使用统计工具统计表', pricingAria: '使用统计定价配置表', requestsAria: '使用统计活动记录表',
-      providerHeaders: ['供应商', '调用', 'Token', '费用'], modelHeaders: ['模型', '调用', 'Token', '费用'], toolHeaders: ['工具', '调用', '成功', '错误', '平均耗时'],
-      pricingHeaders: ['供应商', '模型', '输入 / 1M', '输出 / 1M'], requestHeaders: ['时间', '类型', '对象', '任务', 'Token', '费用', '延迟', '状态'],
-      noPricing: '暂无定价覆盖配置', modelKind: '模型', toolKind: '工具', unknown: '未知', untitledSession: '未命名会话', openSession: (label) => `打开会话「${label}」`, success: '成功', error: '错误', aborted: '已中止',
-      providerEmptyTitle: '暂无供应商用量', providerEmptyBody: '完成一次模型调用后，这里会按供应商聚合调用数、Token 与费用。',
-      modelEmptyTitle: '暂无模型用量', modelEmptyBody: '完成一次模型调用后，这里会按模型聚合调用数、Token 与费用。',
-      toolEmptyTitle: '暂无工具调用', toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
-      pricingEmptyBody: '未配置定价覆盖时，费用按内置模型定价表结算；在此可为特定模型登记自定义价格。',
-    },
+      providersAria: '使用统计供应商统计表',
+      modelsAria: '使用统计模型统计表',
+      toolsAria: '使用统计工具统计表',
+      pricingAria: '使用统计定价配置表',
+      requestsAria: '使用统计活动记录表',
+      providerHeaders: ['供应商', '调用', 'Token', '费用'],
+      modelHeaders: ['模型', '调用', 'Token', '费用'],
+      toolHeaders: ['工具', '调用', '成功', '错误', '平均耗时'],
+      pricingHeaders: ['供应商', '模型', '输入 / 1M', '输出 / 1M'],
+      requestHeaders: ['时间', '类型', '对象', '任务', 'Token', '费用', '延迟', '状态'],
+      noPricing: '暂无定价覆盖配置',
+      modelKind: '模型',
+      toolKind: '工具',
+      unknown: '未知',
+      untitledSession: '未命名会话',
+      openSession: label => `打开会话「${label}」`,
+      success: '成功',
+      error: '错误',
+      aborted: '已中止',
+      providerEmptyTitle: '暂无供应商用量',
+      providerEmptyBody: '完成一次模型调用后，这里会按供应商聚合调用数、Token 与费用。',
+      modelEmptyTitle: '暂无模型用量',
+      modelEmptyBody: '完成一次模型调用后，这里会按模型聚合调用数、Token 与费用。',
+      toolEmptyTitle: '暂无工具调用',
+      toolEmptyBody: '智能体调用工具后，这里会按工具聚合调用次数、成功、错误与平均耗时。',
+      pricingEmptyBody: '未配置定价覆盖时，费用按内置模型定价表结算；在此可为特定模型登记自定义价格。'
+    }
   },
   en: {
-    saveFailed: 'Failed to save usage settings', toolbarAria: 'Usage range and refresh', rangeAria: 'Usage time range', ranges: ['24h', '7 days', '30 days', 'All'],
-    refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
-    totalTokens: 'Total tokens', tokenDetail: (input, output) => `Input ${input} / output ${output}`, cacheTokens: 'Cache tokens',
-    cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
-    filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
-    statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
+    saveFailed: 'Failed to save usage settings',
+    toolbarAria: 'Usage range and refresh',
+    rangeAria: 'Usage time range',
+    ranges: ['24h', '7 days', '30 days', 'All'],
+    refreshingAria: 'Refreshing usage',
+    refreshAria: 'Refresh usage',
+    summaryAria: 'Usage summary metrics',
+    totalRequests: 'Model calls',
+    totalCost: 'Total cost',
+    costHelp: 'Final billing is determined by the model provider',
+    totalTokens: 'Total tokens',
+    tokenDetail: (input, output) => `Input ${input} / output ${output}`,
+    cacheTokens: 'Cache tokens',
+    cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`,
+    viewAria: 'Usage view',
+    tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
+    filtersAria: 'Activity filters',
+    filterPlaceholder: 'Filter by model or tool…',
+    filterAria: 'Filter activity by model or tool',
+    statusAria: 'Filter by activity status',
+    statuses: ['All statuses', 'Success', 'Error', 'Aborted'],
+    details: 'Detailed records',
+    detailsAria: 'Show detailed usage records',
+    recordCount: count => `${count}개 기록`,
+    clearFilters: 'Clear filters',
     summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model calls and tool calls, filter by model, tool, or status, and investigate costs or failures.',
-    showDetails: 'Show details', filteredEmpty: 'No activity matches these filters', filteredEmptyHelp: 'Adjust or clear the filters to see all activity records.', requestEmpty: 'No activity records',
-    costUnavailable: 'Cost unavailable', incompleteTitle: 'These numbers may be incomplete',
+    showDetails: 'Show details',
+    filteredEmpty: 'No activity matches these filters',
+    filteredEmptyHelp: 'Adjust or clear the filters to see all activity records.',
+    requestEmpty: 'No activity records',
+    costUnavailable: 'Cost unavailable',
+    incompleteTitle: 'These numbers may be incomplete',
     incompleteBody: 'Some records could not be read, are not folded in yet, or exceed the display limit, so real usage may be higher than shown.',
     tables: {
-      providersAria: 'Usage by provider', modelsAria: 'Usage by model', toolsAria: 'Usage by tool', pricingAria: 'Usage pricing configuration', requestsAria: 'Usage activity log',
-      providerHeaders: ['Provider', 'Calls', 'Tokens', 'Cost'], modelHeaders: ['Model', 'Calls', 'Tokens', 'Cost'], toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Average duration'],
-      pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'], requestHeaders: ['Time', 'Type', 'Target', 'Task', 'Tokens', 'Cost', 'Latency', 'Status'],
-      noPricing: 'No pricing overrides', modelKind: 'Model', toolKind: 'Tool', unknown: 'Unknown', untitledSession: 'Untitled session', openSession: (label) => `Open session "${label}"`, success: 'Success', error: 'Error', aborted: 'Aborted',
-      providerEmptyTitle: 'No provider usage', providerEmptyBody: 'After a model call, provider call counts, tokens, and costs appear here.',
-      modelEmptyTitle: 'No model usage', modelEmptyBody: 'After a model call, call counts, tokens, and costs appear here by model.',
-      toolEmptyTitle: 'No tool calls', toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
-      pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.',
-    },
-  },
+      providersAria: 'Usage by provider',
+      modelsAria: 'Usage by model',
+      toolsAria: 'Usage by tool',
+      pricingAria: 'Usage pricing configuration',
+      requestsAria: 'Usage activity log',
+      providerHeaders: ['Provider', 'Calls', 'Tokens', 'Cost'],
+      modelHeaders: ['Model', 'Calls', 'Tokens', 'Cost'],
+      toolHeaders: ['Tool', 'Calls', 'Success', 'Errors', 'Average duration'],
+      pricingHeaders: ['Provider', 'Model', 'Input / 1M', 'Output / 1M'],
+      requestHeaders: ['Time', 'Type', 'Target', 'Task', 'Tokens', 'Cost', 'Latency', 'Status'],
+      noPricing: 'No pricing overrides',
+      modelKind: 'Model',
+      toolKind: 'Tool',
+      unknown: 'Unknown',
+      untitledSession: 'Untitled session',
+      openSession: label => `Open session "${label}"`,
+      success: 'Success',
+      error: 'Error',
+      aborted: 'Aborted',
+      providerEmptyTitle: 'No provider usage',
+      providerEmptyBody: 'After a model call, provider call counts, tokens, and costs appear here.',
+      modelEmptyTitle: 'No model usage',
+      modelEmptyBody: 'After a model call, call counts, tokens, and costs appear here by model.',
+      toolEmptyTitle: 'No tool calls',
+      toolEmptyBody: 'After an agent calls a tool, calls, successes, errors, and average duration appear here by tool.',
+      pricingEmptyBody: 'Without pricing overrides, costs use the built-in model pricing table. Add custom prices here for specific models.'
+    }
+  }
+} satisfies Omit<UiCatalog<UsageSettingsCopy>, 'ko'>;
+const SETTINGS_USAGE_COPY = {
+  ...SETTINGS_USAGE_COPY_BASE,
+  ko: {
+    saveFailed: "사용 설정을 저장하지 못했습니다.",
+    toolbarAria: "사용 범위 및 새로고침",
+    rangeAria: "사용시간 범위",
+    ranges: ['24h', "7일", "30일", "모두"],
+    refreshingAria: "상쾌한 사용법",
+    refreshAria: "사용량 새로고침",
+    summaryAria: "사용량 요약 측정항목",
+    totalRequests: "모델 호출",
+    totalCost: "총 비용",
+    costHelp: "최종 청구는 모델 제공자가 결정합니다.",
+    totalTokens: "총 토큰",
+    tokenDetail: (input, output) => `입력 ${input} / 출력 ${output}`,
+    cacheTokens: "캐시 토큰",
+    cacheDetail: (miss, read, creation) => `새로운 ${miss} / ${read} 조회 / ${creation} 생성`,
+    viewAria: "사용량 보기",
+    tabs: ["활동 로그", "공급자", "모델", "도구", "가격"],
+    filtersAria: "활동 필터",
+    filterPlaceholder: "모델 또는 도구별로 필터링…",
+    filterAria: "모델 또는 도구별로 활동 필터링",
+    statusAria: "활동 상태로 필터링",
+    statuses: ["모든 상태", "성공", "오류", "중단됨"],
+    details: "상세한 기록",
+    detailsAria: "자세한 사용 기록 표시",
+    recordCount: count => `${count}개 기록`,
+    clearFilters: "필터 지우기",
+    summaryOnly: "요약 측정항목만 표시됩니다. 세부 기록을 활성화하여 개별 모델 호출 및 도구 호출을 검사하고, 모델, 도구 또는 상태별로 필터링하고, 비용이나 실패를 조사합니다.",
+    showDetails: "세부정보 표시",
+    filteredEmpty: "이 필터와 일치하는 활동이 없습니다.",
+    filteredEmptyHelp: "모든 활동 기록을 보려면 필터를 조정하거나 지우십시오.",
+    requestEmpty: "활동 기록 없음",
+    costUnavailable: "비용을 알 수 없음",
+    incompleteTitle: "이 숫자는 불완전할 수 있습니다.",
+    incompleteBody: "일부 기록을 읽을 수 없거나 아직 접히지 않았거나 표시 제한을 초과하여 실제 사용량이 표시된 것보다 높을 수 있습니다.",
+    tables: {
+      providersAria: "공급자별 사용량",
+      modelsAria: "모델별 사용량",
+      toolsAria: "도구별 사용법",
+      pricingAria: "사용량 가격 구성",
+      requestsAria: "사용 활동 로그",
+      providerHeaders: ["공급자", "통화", "토큰", "비용"],
+      modelHeaders: ["모델", "통화", "토큰", "비용"],
+      toolHeaders: ["도구", "통화", "성공", "오류", "평균 지속 시간"],
+      pricingHeaders: ["공급자", "모델", "입력 / 1M", "출력 / 1M"],
+      requestHeaders: ["시간", "유형", "목표", "일", "토큰", "비용", "숨어 있음", "상태"],
+      noPricing: "가격 재정의 없음",
+      modelKind: "모델",
+      toolKind: "도구",
+      unknown: "알려지지 않은",
+      untitledSession: "제목 없는 세션",
+      openSession: label => `세션 "${label}" 열기`,
+      success: "성공",
+      error: "오류",
+      aborted: "중단됨",
+      providerEmptyTitle: "공급자 사용 없음",
+      providerEmptyBody: "모델 호출 후 공급자 호출 횟수, 토큰 및 비용이 여기에 표시됩니다.",
+      modelEmptyTitle: "모델 사용 없음",
+      modelEmptyBody: "모델 호출 후 모델별로 호출 횟수, 토큰, 비용이 여기에 표시됩니다.",
+      toolEmptyTitle: "도구 호출 없음",
+      toolEmptyBody: "상담원이 도구를 호출한 후 도구별 통화, 성공, 오류 및 평균 지속 시간이 여기에 표시됩니다.",
+      pricingEmptyBody: "가격 재정의가 없으면 비용은 기본 제공 모델 가격표를 사용합니다. 특정 모델에 대한 맞춤 가격을 여기에 추가하세요."
+    }
+  }
 } satisfies UiCatalog<UsageSettingsCopy>;
-
 export function getUsageSettingsCopy(locale: UiLocale): UsageSettingsCopy {
   return SETTINGS_USAGE_COPY[locale];
 }

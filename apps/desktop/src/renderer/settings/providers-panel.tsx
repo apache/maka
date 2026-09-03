@@ -38,7 +38,7 @@ import {
   type ProjectedLlmConnection,
   type ProviderType,
 } from '@maka/core/llm-connections';
-import { dotForStatus, useMountedRef, useUiLocale } from '@maka/ui';
+import { dotForStatus, useMountedRef, useUiLocale, type UiLocale } from '@maka/ui';
 import { settingsActionErrorMessage } from './settings-error-copy';
 import { connectionChipStatus } from './provider-connection-status';
 import {
@@ -634,7 +634,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
 }
 
 /** Provider · default model — the row's second line, and the detail's subtitle. */
-function connectionSubtitle(connection: IdentifiedLlmConnection, locale: 'zh' | 'en'): string {
+function connectionSubtitle(connection: IdentifiedLlmConnection, locale: UiLocale): string {
   const providerName = providerDisplay(connection.providerType, locale).name;
   const parts = [providerName];
   if (connection.defaultModel) parts.push(connection.defaultModel);

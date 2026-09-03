@@ -35,7 +35,7 @@ import {
   type ProviderType,
 } from '@maka/core/provider-registry';
 import { PROVIDER_REGISTRY, type LlmConnection } from '@maka/core/llm-connections';
-import { Button, TextInput, useUiLocale } from '@maka/ui';
+import { Button, TextInput, useUiLocale, type UiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCardId } from './provider-oauth-section';
@@ -269,7 +269,7 @@ export function ProviderSetupPage(props: {
   );
 }
 
-function providersForCategory(category: CatalogCategory, query: string, locale: 'zh' | 'en'): ProviderType[] {
+function providersForCategory(category: CatalogCategory, query: string, locale: UiLocale): ProviderType[] {
   // 'accounts' is the OAuth-only category: every row in it comes from
   // useOAuthCards, so the keyed catalog contributes nothing.
   if (category === 'accounts') return [];

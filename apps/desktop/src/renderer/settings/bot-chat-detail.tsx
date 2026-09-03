@@ -40,6 +40,7 @@ import {
   useMountedRef,
   useToast,
   useUiLocale,
+  type UiLocale,
   Banner,
 } from '@maka/ui';
 import { PasswordInput } from './password-input';
@@ -653,7 +654,7 @@ function BotAllowedUserIdsField(props: {
   );
 }
 
-function botConnectionLabel(connection: BotStatus['connection'], locale: 'zh' | 'en'): string {
+function botConnectionLabel(connection: BotStatus['connection'], locale: UiLocale): string {
   const copy = getBotSettingsCopy(locale).status;
   switch (connection) {
     case 'polling': return copy.polling;

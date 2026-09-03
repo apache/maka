@@ -214,7 +214,7 @@ const EN = {
     pendingTurnRequestCount: (count: number) => `${count} pending Turn ${count === 1 ? 'request' : 'requests'}`,
 } satisfies SessionCollaborationCopy;
 
-const COPY = { zh: ZH, en: EN } satisfies UiCatalog<SessionCollaborationCopy>;
+const COPY = { zh: ZH, en: EN, ko: EN } satisfies UiCatalog<SessionCollaborationCopy>;
 
 export function getSessionCollaborationCopy(locale: UiLocale) {
   return COPY[locale];

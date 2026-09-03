@@ -23,7 +23,7 @@ import type { BotChannelSettings, BotProvider } from '@maka/core/bot-chat-settin
 import type { BotStatus } from '@maka/runtime/bots';
 import { BOT_PROVIDERS } from '@maka/core/settings';
 import { EmptyState, Item, StatusDot } from '@astryxdesign/core';
-import { Button, RelativeTime, useUiLocale, Banner } from '@maka/ui';
+import { Button, RelativeTime, useUiLocale, Banner, type UiLocale } from '@maka/ui';
 import { deriveBotChannelViewState } from './bot-settings-view-model';
 import { BOT_LABELS, BotBrandLogo, botReadinessCopyForSupport, botStatusDetail } from './bot-chat-shared';
 import { getBotSettingsCopy } from '../locales/settings-bot-copy';
@@ -145,7 +145,7 @@ function botOverviewDetail(
   currentError: string | undefined,
   fallback: string,
   liveOperational: boolean,
-  locale: 'zh' | 'en',
+  locale: UiLocale,
 ): ReactNode {
   const copy = getBotSettingsCopy(locale).overview;
   const identity = status?.identity?.username ?? status?.identity?.displayName;

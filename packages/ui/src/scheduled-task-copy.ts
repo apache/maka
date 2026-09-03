@@ -241,6 +241,42 @@ const SCHEDULED_TASK_COPY = {
       agentDelivery: 'Run via the Agent',
     },
   },
+  ko: {
+    templates: [
+      { id: 'daily-download-cleanup', title: 'Clean up Downloads', note: 'Organize screenshots, installers, and temporary documents in Downloads by type, then list items that can be deleted.', scheduleLabel: 'Daily at 18:30', recurrence: 'cron', cronExpression: '30 18 * * *', nextRun: { hour: 18, minute: 30 } },
+      { id: 'midday-reset', title: 'Midday reset', note: 'Review what I completed this morning and create a lightweight, actionable plan for the afternoon.', scheduleLabel: 'Weekdays at 12:30', recurrence: 'cron', cronExpression: '30 12 * * 1-5', nextRun: { hour: 12, minute: 30 } },
+      { id: 'weekend-todo-review', title: 'Weekend task review', note: 'Review completed and unfinished tasks from this week, outline next week, and flag the three highest priorities.', scheduleLabel: 'Sundays at 20:00', recurrence: 'cron', cronExpression: '0 20 * * 0', nextRun: { weekday: 0, hour: 20, minute: 0 } },
+      { id: 'daily-news-brief', title: 'Daily news brief', note: 'Summarize five important technology, AI, or Maka stories from today and add one sentence about the impact of each.', scheduleLabel: 'Daily at 09:30', recurrence: 'cron', cronExpression: '30 9 * * *', nextRun: { hour: 9, minute: 30 } },
+    ],
+    validation: { title: 'Add a title before saving this task.', timeInvalid: 'Choose a valid task time.', timePast: 'The task time must be in the future.', cron: 'Cron expressions need five fields, for example 0 9 * * 1-5.', chatId: 'Enter a Chat ID when delivering to a bot chat.' },
+    status: { active: 'Scheduled', paused: 'Paused', completed: 'Completed', expired: 'Expired' },
+    duplicateSuffix: ' copy',
+    countdown: { overdue: 'Overdue', soon: 'Soon', minutes: (count) => `in ${count} ${count === 1 ? 'minute' : 'minutes'}`, hours: (count) => `in ${count} ${count === 1 ? 'hour' : 'hours'}`, tomorrow: 'Tomorrow', days: (count) => `in ${count} days`, weeks: (count) => `in ${count} ${count === 1 ? 'week' : 'weeks'}`, months: (count) => `in ${count} ${count === 1 ? 'month' : 'months'}` },
+    recurrence: { once: 'One-time task', cron: (expression) => `Cron: ${expression}`, recurring: { daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly' }, interval: (seconds) => `Every ${seconds} seconds` },
+    runStatus: { ok: 'Triggered', blocked: 'Blocked', failed: 'Failed' },
+    delivery: { local: 'Local notification', bot: (provider, chatId) => `${provider} · ${chatId}`, fallback: (target) => `Deliver to: ${target}` },
+    form: {
+      editTitle: 'Edit scheduled task', createTitle: 'New scheduled task', useTemplate: 'Use template', field: { title: 'Title', time: 'Task time', channel: 'Method', recurrence: 'Repeat', platform: 'Platform', cron: 'Cron', chatId: 'Chat ID', note: 'Notes' }, titlePlaceholder: 'For example: Review project progress tomorrow', groupSchedule: 'Frequency', groupDelivery: 'Delivery', presetsAriaLabel: 'Quick task times', presets: [['ten-minutes', 'In 10 minutes'], ['one-hour', 'In 1 hour'], ['tomorrow-morning', 'Tomorrow at 9:00'], ['next-monday', 'Next Monday at 9:00']], recurrenceOptions: [['none', 'Does not repeat'], ['daily', 'Daily'], ['weekly', 'Weekly'], ['monthly', 'Monthly'], ['cron', 'Cron']], deliveryOptions: [['local', 'Local notification'], ['bot', 'Bot chat']], agentRunOption: 'Run via the Agent', intervalOption: 'Fixed interval (created by Agent)', cronPlaceholder: 'For example 0 9 * * 1-5', chatIdPlaceholder: 'For example Telegram chat_id', deliveryHelp: (providers) => `Available delivery providers: ${providers}. Other bot platforms are not shown as delivery targets.`, notePlaceholder: 'Optional context for this task', saving: 'Saving…', creating: 'Creating…', save: 'Save', create: 'Create',
+    },
+    page: {
+      title: 'Scheduled tasks', refreshing: 'Refreshing scheduled tasks', refresh: 'Refresh scheduled tasks', create: 'New scheduled task', keepAwake: 'Keep system awake', pageSettings: 'Scheduled task page settings', keepAwakeErrorTitle: 'Could not update Keep system awake', keepAwakeErrorFallback: 'Could not update the Keep system awake setting. Try again later.', viewsAriaLabel: 'Scheduled task views', tasks: 'My scheduled tasks', runs: 'Run history', filtersAriaLabel: 'Scheduled task filters', sort: 'Sort', sortOptions: [['created-desc', 'Newest created first'], ['next-run-asc', 'Next run first'], ['updated-desc', 'Recently updated first']], searchLabel: 'Search scheduled tasks', searchPlaceholder: 'Search titles, notes, delivery, or run history…', state: 'Status', filterOption: (label, count) => `${label} ${count}`, active: 'Active', all: 'All', range: 'Range', rangeOptions: [['day', 'Today'], ['week', 'Last 7 days'], ['month', 'Last 30 days'], ['all', 'All runs']], searchMatches: (count) => `${count} matching ${count === 1 ? 'task' : 'tasks'}`, clearSearch: 'Clear search', noSearchTitle: 'No matching tasks', noFilterTitle: 'No tasks in this filter', noSearchBody: 'Change the search terms or status filter to find other tasks.', noFilterBody: 'Change the filter or create a new scheduled task.', emptyTitle: 'No scheduled tasks yet', emptyBody: 'Create a task so Maka can continue this work at the right time.', listAriaLabel: 'Scheduled task list', inspectorOpened: (title) => `Opened the task details for ${title}`, edit: 'Edit', duplicate: 'Duplicate', triggering: 'Triggering…', triggerNow: 'Trigger now', snoozing: 'Snoozing…', snooze: 'Snooze 10 minutes', clearing: 'Clearing…', clearRuns: 'Clear history', deleting: 'Deleting…', delete: 'Delete', nextRun: (time) => `Next run: ${time}`, recentRun: (time) => `Last run ${time}`, unscheduled: 'Not scheduled', noRunsTitle: 'No run history', noRunsBody: 'Triggered tasks, manual runs, and delivery failures appear here.', showAllTime: 'All time', runsAriaLabel: 'Scheduled task run history', activeCount: (count) => `${count} active`,
+    },
+    detail: {
+      label: 'Task details',
+      enabled: 'Enabled',
+      recurrence: 'Repeats',
+      nextRun: 'Next run',
+      lastRun: 'Last run',
+      delivery: 'Delivery',
+      created: 'Created',
+      runs: 'Run history',
+      noRuns: 'This task has not run yet.',
+      agentSource: 'Agent scheduled task',
+      agentSourceHint:
+        'When due, Maka starts a new task using the execution settings captured at creation.',
+      agentDelivery: 'Run via the Agent',
+    },
+  }
 } satisfies UiCatalog<ScheduledTaskCopy>;
 
 export function getScheduledTaskCopy(locale: UiLocale): ScheduledTaskCopy {

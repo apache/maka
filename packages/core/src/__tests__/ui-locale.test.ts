@@ -25,6 +25,7 @@ import {
   formatUiMessage,
   isUiLocale,
   resolveSystemUiLocale,
+  resolveUiLocale,
   resolveUiMessageCatalog,
   uiLocaleToIntlLocale,
 } from '../ui-locale.js';
@@ -36,11 +37,13 @@ describe('UI message catalogs', () => {
       detail: { ready: string; waiting: string };
     }>()({
       en: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
+      ko: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
       zh: { title: '状态', detail: { ready: '就绪' } },
     });
 
     assert.deepEqual(resolveUiMessageCatalog(catalog), {
       en: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
+      ko: { title: 'Status', detail: { ready: 'Ready', waiting: 'Waiting' } },
       zh: { title: '状态', detail: { ready: '就绪', waiting: 'Waiting' } },
     });
   });
@@ -50,6 +53,7 @@ describe('UI message catalogs', () => {
 
     assert.equal(formatUiMessage(template, { count: 1 }, 'en'), '1 tool');
     assert.equal(formatUiMessage(template, { count: 3 }, 'en'), '3 tools');
+    assert.equal(formatUiMessage(template, { count: 1 }, 'ko'), '1 tools');
   });
 
   it('fails soft for missing or inherited interpolation values', () => {
@@ -64,5 +68,9 @@ describe('UI message catalogs', () => {
     }
     const intlLocales = UI_LOCALES.map(uiLocaleToIntlLocale);
     assert.equal(new Set(intlLocales).size, UI_LOCALES.length);
+    assert.equal(resolveSystemUiLocale(['ko-KR']), 'ko');
+    assert.equal(resolveSystemUiLocale(['ko_KR']), 'ko');
+    assert.equal(resolveUiLocale('auto', 'ko'), 'ko');
+    assert.equal(uiLocaleToIntlLocale('ko'), 'ko-KR');
   });
 });

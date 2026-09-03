@@ -149,6 +149,47 @@ const ONBOARDING_COPY_BY_LOCALE: UiCatalog<OnboardingCatalog> = {
     skip: 'Skip onboarding',
     snapshotErrorFallback: 'First-run status is temporarily unavailable. Try again later.',
   },
+  ko: {
+    hero: {
+      needs_connection: {
+        eyebrow: 'Maka에 오신 것을 환영합니다',
+        title: 'AI를 연결하고 첫 작업을 시작하세요.',
+        body: 'Maka는 로컬에서 실행되며 사용자의 모델 계정 또는 API 키를 사용합니다. 계속하려면 공급자를 선택하세요.',
+        cta: { label: '모든 공급자 보기' },
+      },
+      needs_connection_credentials: {
+        eyebrow: '연결 설정 계속',
+        title: '이 연결에 자격 증명을 추가하세요.',
+        body: 'Maka가 모델을 호출할 수 있도록 API 키를 추가하거나 계정 로그인을 완료하세요.',
+        cta: { label: '자격 증명 구성' },
+      },
+      needs_model: {
+        eyebrow: '연결 설정 계속',
+        title: '이 연결에 사용할 모델을 활성화하세요.',
+        body: '대화 가능한 모델을 활성화하면 첫 작업을 시작할 수 있습니다.',
+        cta: { label: '사용 가능한 모델 선택' },
+      },
+      'blocked:all_connections_unhealthy': {
+        eyebrow: '연결 확인 필요',
+        title: '모델 연결을 일시적으로 사용할 수 없습니다.',
+        body: '확인을 통과한 연결이 없습니다. 자격 증명, 로그인 상태 또는 네트워크를 확인한 후 다시 테스트하세요.',
+        cta: { label: '모델 연결 수정' },
+        tone: 'destructive',
+      },
+      'blocked:all_connections_retired': {
+        eyebrow: '연결 확인 필요',
+        title: '연결에서 사용하는 로그인 방식이 중단되었습니다.',
+        body: '이 연결에서 사용하는 로그인 방식이 Maka에서 제거되어 더 이상 로그인하거나 대화에 사용할 수 없습니다. 계속하려면 새 모델 연결을 추가하세요.',
+        cta: { label: '모델 연결 추가' },
+        tone: 'destructive',
+      },
+    },
+    needsConnection: { pickLabel: '공급자 선택', browseProviders: '모든 공급자 보기' },
+    refresh: { connection: '연결 다시 확인', credentials: '자격 증명 다시 확인', model: '모델 다시 확인', blocked: '연결 다시 확인' },
+    connectionLabel: '연결',
+    skip: '온보딩 건너뛰기',
+    snapshotErrorFallback: '첫 실행 상태를 일시적으로 사용할 수 없습니다. 나중에 다시 시도하세요.',
+  },
 };
 
 export function getOnboardingCopy(locale: UiLocale): OnboardingCatalog {

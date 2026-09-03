@@ -88,6 +88,25 @@ const COPY: Catalog = {
       noBundle: 'Not running from a .app bundle, so there is nothing to drag. Add it manually in System Settings.',
     },
   },
+  ko: {
+    accessibility: {
+      headline: (appName) => `${appName}을(를) 위 목록으로 드래그하여 손쉬운 사용을 허용하세요`,
+      fallback: '또는 시스템 설정에서 +를 클릭하고 응용 프로그램에서 앱을 선택하세요.',
+      granted: '손쉬운 사용 활성화됨',
+      dismiss: '닫기',
+      dragHint: '여기로 드래그',
+      noBundle: '.app 번들에서 실행되지 않아 드래그할 수 없습니다. 시스템 설정에서 수동으로 추가하세요.',
+    },
+    screen_recording: {
+      headline: (appName) => `${appName}을(를) 위 목록으로 드래그하여 화면 기록을 허용하세요`,
+      fallback: '또는 시스템 설정에서 +를 클릭하고 응용 프로그램에서 앱을 선택하세요.',
+      granted: '화면 기록 활성화됨',
+      dismiss: '닫기',
+      dragHint: '여기로 드래그',
+      restartHint: '여전히 거부됨으로 표시되면 앱을 다시 시작하세요. macOS가 이전 거부 결과를 캐시합니다.',
+      noBundle: '.app 번들에서 실행되지 않아 드래그할 수 없습니다. 시스템 설정에서 수동으로 추가하세요.',
+    },
+  },
 };
 
 export function getPermissionOverlayCopy(

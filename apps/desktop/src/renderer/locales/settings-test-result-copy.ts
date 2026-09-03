@@ -18,15 +18,10 @@
  */
 
 import type { SettingsTestResult } from '@maka/core/settings';
-
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
 type SettingsTestResultCopy = {
   proxy: {
-    reachable: (
-      endpoint: string | undefined,
-      location: string | undefined,
-    ) => string;
+    reachable: (endpoint: string | undefined, location: string | undefined) => string;
     disabled: string;
     configurationMissing: string;
     credentialMissing: string;
@@ -42,79 +37,71 @@ type SettingsTestResultCopy = {
     connectionFailed: string;
   };
 };
-
-const COPY = {
+const COPY_BASE = {
   zh: {
     proxy: {
-      reachable: (endpoint, location) =>
-        ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
+      reachable: (endpoint, location) => ["代理配置有效", endpoint, location].filter(Boolean).join(" · "),
       disabled: "请先启用代理服务器，再进行测试。",
       configurationMissing: "请填写代理服务器地址和端口后再测试。",
       credentialMissing: "代理认证已开启，请输入代理密码后再测试。",
       timeout: "代理测试超时，请检查代理服务是否可达。",
-      httpError: (status) =>
-        status === undefined
-          ? "代理测试返回了错误响应，请检查代理服务或测试地址。"
-          : `代理测试返回 HTTP ${status}，请检查代理服务或测试地址。`,
-      unreachable: "代理不可达，请检查服务器地址、端口和认证信息。",
+      httpError: status => status === undefined ? "代理测试返回了错误响应，请检查代理服务或测试地址。" : `代理测试返回 HTTP ${status}，请检查代理服务或测试地址。`,
+      unreachable: "代理不可达，请检查服务器地址、端口和认证信息。"
     },
     bot: {
-      credentialsValid: (username) =>
-        username
-          ? `凭据检查已通过 · ${username}。这不代表消息收发服务已启动。`
-          : "凭据检查已通过。这不代表消息收发服务已启动。",
+      credentialsValid: username => username ? `凭据检查已通过 · ${username}。这不代表消息收发服务已启动。` : "凭据检查已通过。这不代表消息收发服务已启动。",
       tokenMissing: "请填写 Bot Token 后再测试。",
       tokenInvalid: "Bot Token 无效，请检查后重试。",
       appCredentialsMissing: "请填写 App ID 和 App Secret 后再测试。",
-      connectionFailed: "请检查凭据和网络设置后重试。",
-    },
+      connectionFailed: "请检查凭据和网络设置后重试。"
+    }
   },
   en: {
     proxy: {
-      reachable: (endpoint, location) =>
-        ["The proxy is reachable", endpoint, location]
-          .filter(Boolean)
-          .join(" · "),
+      reachable: (endpoint, location) => ["The proxy is reachable", endpoint, location].filter(Boolean).join(" · "),
       disabled: "Enable the proxy server before testing it.",
       configurationMissing: "Enter a proxy host and port before testing it.",
-      credentialMissing:
-        "Proxy authentication is enabled. Enter a proxy password before testing.",
-      timeout:
-        "The proxy test timed out. Check whether the proxy service is reachable.",
-      httpError: (status) =>
-        status === undefined
-          ? "The proxy test returned an error response. Check the proxy service and test URL."
-          : `The proxy test returned HTTP ${status}. Check the proxy service and test URL.`,
-      unreachable:
-        "The proxy is unreachable. Check its host, port, and authentication settings.",
+      credentialMissing: "Proxy authentication is enabled. Enter a proxy password before testing.",
+      timeout: "The proxy test timed out. Check whether the proxy service is reachable.",
+      httpError: status => status === undefined ? "The proxy test returned an error response. Check the proxy service and test URL." : `The proxy test returned HTTP ${status}. Check the proxy service and test URL.`,
+      unreachable: "The proxy is unreachable. Check its host, port, and authentication settings."
     },
     bot: {
-      credentialsValid: (username) =>
-        username
-          ? `The credential check passed · ${username}. This does not mean the message listener is running.`
-          : "The credential check passed. This does not mean the message listener is running.",
+      credentialsValid: username => username ? `The credential check passed · ${username}. This does not mean the message listener is running.` : "The credential check passed. This does not mean the message listener is running.",
       tokenMissing: "Enter a Bot Token before testing the connection.",
       tokenInvalid: "The Bot Token is invalid. Check it and try again.",
-      appCredentialsMissing:
-        "Enter an App ID and App Secret before testing the connection.",
-      connectionFailed:
-        "Check the credentials and network settings, then try again.",
+      appCredentialsMissing: "Enter an App ID and App Secret before testing the connection.",
+      connectionFailed: "Check the credentials and network settings, then try again."
+    }
+  }
+} satisfies Omit<UiCatalog<SettingsTestResultCopy>, 'ko'>;
+const COPY = {
+  ...COPY_BASE,
+  ko: {
+    proxy: {
+      reachable: (endpoint, location) => ["프록시에 연결할 수 있습니다.", endpoint, location].filter(Boolean).join(" · "),
+      disabled: "테스트하기 전에 프록시 서버를 활성화하십시오.",
+      configurationMissing: "테스트하기 전에 프록시 호스트와 포트를 입력하세요.",
+      credentialMissing: "프록시 인증이 활성화되었습니다. 테스트하기 전에 프록시 비밀번호를 입력하세요.",
+      timeout: "프록시 테스트 시간이 초과되었습니다. 프록시 서비스에 연결할 수 있는지 확인하세요.",
+      httpError: status => status === undefined ? "프록시 테스트에서 오류 응답을 반환했습니다. 프록시 서비스와 테스트 URL을 확인하세요." : `프록시 테스트에서 HTTP ${status}을 반환했습니다. 프록시 서비스와 테스트 URL을 확인하세요.`,
+      unreachable: "프록시에 연결할 수 없습니다. 호스트, 포트, 인증 설정을 확인하세요."
     },
-  },
+    bot: {
+      credentialsValid: username => username ? `자격 증명 확인을 통과했습니다 · ${username}. 이는 메시지 수신기가 실행 중이라는 의미는 아닙니다.` : "자격 증명 확인이 통과되었습니다. 이는 메시지 수신기가 실행 중이라는 의미는 아닙니다.",
+      tokenMissing: "연결을 테스트하기 전에 봇 토큰을 입력하세요.",
+      tokenInvalid: "봇 토큰이 유효하지 않습니다. 확인하고 다시 시도해 보세요.",
+      appCredentialsMissing: "연결을 테스트하기 전에 앱 ID와 앱 비밀을 입력하세요.",
+      connectionFailed: "자격 증명과 네트워크 설정을 확인한 후 다시 시도하세요."
+    }
+  }
 } satisfies UiCatalog<SettingsTestResultCopy>;
-
-export function settingsTestResultMessage(
-  result: SettingsTestResult,
-  locale: UiLocale,
-): string {
+export function settingsTestResultMessage(result: SettingsTestResult, locale: UiLocale): string {
   const copy = COPY[locale];
   const status = numberDetail(result, "status");
   switch (result.code) {
     case "proxy_reachable":
-      return copy.proxy.reachable(
-        stringDetail(result, "endpoint"),
-        proxyLocation(result),
-      );
+      return copy.proxy.reachable(stringDetail(result, "endpoint"), proxyLocation(result));
     case "proxy_disabled":
       return copy.proxy.disabled;
     case "proxy_configuration_missing":
@@ -138,40 +125,28 @@ export function settingsTestResultMessage(
     case "bot_connection_failed":
       return copy.bot.connectionFailed;
     default:
-      return locale === "en" && result.message.trim()
-        ? result.message
-        : copy.bot.connectionFailed;
+      return locale === "en" && result.message.trim() ? result.message : copy.bot.connectionFailed;
   }
 }
-
 function proxyLocation(result: SettingsTestResult): string | undefined {
   const ip = stringDetail(result, "ip");
   if (!ip) return undefined;
   const flag = stringDetail(result, "countryFlag");
   return flag ? `${flag} ${ip}` : ip;
 }
-
 function identityUsername(result: SettingsTestResult): string | undefined {
   const identity = result.details?.identity;
   if (!identity || typeof identity !== "object") return undefined;
-  const username = (identity as { username?: unknown }).username;
+  const username = (identity as {
+    username?: unknown;
+  }).username;
   return typeof username === "string" && username.trim() ? username : undefined;
 }
-
-function stringDetail(
-  result: SettingsTestResult,
-  key: string,
-): string | undefined {
+function stringDetail(result: SettingsTestResult, key: string): string | undefined {
   const value = result.details?.[key];
   return typeof value === "string" && value.trim() ? value : undefined;
 }
-
-function numberDetail(
-  result: SettingsTestResult,
-  key: string,
-): number | undefined {
+function numberDetail(result: SettingsTestResult, key: string): number | undefined {
   const value = result.details?.[key];
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : undefined;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }

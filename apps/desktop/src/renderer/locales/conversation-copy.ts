@@ -373,7 +373,7 @@ export interface DesktopConversationCopy {
  * Turning them into a sentence is a copy decision, so it happens here, once.
  *
  * The call-kind tables are typed against the core union, so a kind added to the
- * runtime fails this file at compile time instead of reaching a Chinese panel
+ * runtime fails this file at compile time instead of reaching a locale panel
  * as `daily_review`. The table also labels decode-only historical kinds such as
  * `semantic_compact`; the Runtime no longer emits them.
  */
@@ -399,8 +399,19 @@ const EN_CALL_KIND: CallKindCopy = {
   daily_review: 'Daily review',
 };
 
+const KO_CALL_KIND: CallKindCopy = {
+  memory_extraction: '메모리 추출',
+  semantic_compact: '시맨틱 압축',
+  history_compact: '기록 압축',
+  goal_evaluation: '목표 평가',
+  session_title: '작업 제목',
+  session_recap: '작업 요약',
+  daily_review: '일일 검토',
+};
+
 const ZH_PERMISSION_DECISION: Record<string, string> = { allow: '已允许', deny: '已拒绝' };
 const EN_PERMISSION_DECISION: Record<string, string> = { allow: 'Allowed', deny: 'Denied' };
+const KO_PERMISSION_DECISION: Record<string, string> = { allow: '허용됨', deny: '거부됨' };
 
 const ZH_RECOVERED: Record<string, string> = { completed: '已完成', parked: '已搁置' };
 
@@ -425,12 +436,25 @@ const EN_TURN_FAILURE: Record<string, string> = {
   error: 'Run error',
 };
 
+const KO_TURN_FAILURE: Record<string, string> = {
+  tool_failed: '도구 실패',
+  model_call_failed: '모델 호출 실패',
+  turn_aborted: '턴 중단됨',
+  turn_cancelled: '턴 취소됨',
+  turn_failed: '턴 실패',
+  error: '실행 오류',
+};
+
 /** Trailing breakdown for the coverage notice, in each language's punctuation. */
 function zhDetail(parts: readonly string[]): string {
   return parts.length > 0 ? `：${parts.join('、')}` : '';
 }
 
 function enDetail(parts: readonly string[]): string {
+  return parts.length > 0 ? `: ${parts.join(', ')}` : '';
+}
+
+function koDetail(parts: readonly string[]): string {
   return parts.length > 0 ? `: ${parts.join(', ')}` : '';
 }
 
@@ -918,6 +942,504 @@ const COPY = {
     },
     turnError: { unknown: 'Something went wrong, cause unknown. Send a message to retry.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out. Send a message to retry.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity. Wait a few minutes, or switch models.', rateLimit: 'Requests were rate-limited. Wait a moment, then send a message to retry.', network: 'The network connection failed. Check the network, then send a message again.', provider: 'The model service returned an error. Retry later, or switch models.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.', partialOutput: 'This turn produced part of an answer. Worth reading before you send another message.' } },
   },
+  ko: {
+  ...{
+    actions: {
+      stopFailedTitle: "중지하지 못했습니다.",
+      stopFailedFallback: "작업 작업이 실패했습니다. 나중에 다시 시도하세요.",
+      refreshSessionsFailedTitle: "작업을 새로 고치지 못했습니다.",
+      refreshSessionsFailedFallback: "작업 목록을 새로 고칠 수 없습니다. 나중에 다시 시도하세요.",
+      conversationErrorTitle: "작업 오류",
+      conversationErrorFallback: "작업 실행이 실패했습니다. 나중에 다시 시도하세요.",
+      regenerateStartedTitle: "재생이 시작되었습니다",
+      regenerateStartedDescription: "새로운 응답 생성",
+      branchCreatedTitle: "지점이 생성되었습니다.",
+      branchCreatedDescription: name => `새 작업: ${name}`,
+      revisionStartedTitle: "초안 수정 준비됨",
+      revisionStartedDescription: "원래 작업은 유지됩니다. 보내면 새 버전이 생성됩니다.",
+      revisionReadyTitle: "편집하고 다시 보낼 준비가 되었습니다.",
+      revisionReadyDescription: "해당 메시지 이전으로 되감기합니다. 준비가 되면 편집하고 보내세요",
+      revisionUnavailableTitle: "이 메시지는 아직 편집할 수 없습니다.",
+      revisionAttachmentsUnsupported: "편집 및 재전송은 아직 기록 첨부 파일을 지원하지 않습니다. 대신 텍스트를 새 메시지에 복사하세요.",
+      revisionTransformedTextUnsupported: "편집 및 재전송은 아직 명시적인 기술로 전송된 메시지를 지원하지 않습니다. 대신 텍스트를 복사하고 스킬을 다시 선택하세요.",
+      revisionDraftAttachmentConflict: "작성자에게 이미 보류 중인 첨부 파일이 있습니다. 보낸 메시지를 편집하기 전에 보내거나 제거하세요.",
+      revisionCommandUnsupported: "보낸 메시지를 편집하는 동안에는 /compact, /side 또는 Orchestration 명령을 실행할 수 없습니다. 먼저 편집을 취소하세요.",
+      revisionAlreadyActive: "다른 메시지가 이미 편집 중입니다. 먼저 해당 수정사항을 보내거나 취소하세요.",
+      revisionCancelLabel: "취소",
+      revisionBannerTitle: "보낸 메시지 편집 중",
+      revisionBannerDetail: "· 전송 시 새 버전",
+      revisionUnchanged: "아무것도 바뀌지 않았습니다. 새로운 답변만 원할 경우 재생성을 사용하세요.",
+      operationFailedTitle: "작업 실패",
+      operationFailedFallback: "작업 작업이 실패했습니다. 나중에 다시 시도하세요.",
+      attachmentFailedTitle: "첨부파일을 추가하지 못했습니다.",
+      imageAttachmentNotDirectTitle: "첨부파일로 추가된 이미지",
+      imageAttachmentNotDirectDescription: "현재 모델은 이미지를 직접 수신하지 않습니다. 이미지는 첨부파일로 제공되었습니다.",
+      tryAgain: "나중에 다시 시도하세요.",
+      modelReboundTitle: "사용 가능한 모델로 전환됨",
+      modelReboundDescription: modelId => `이전 연결을 사용할 수 없습니다${modelId ? `· ${modelId}` : ''}`,
+      messageReadFailedTitle: "작업을 로드하지 못했습니다.",
+      partialHistoryTitle: "이전 메시지 보기",
+      returnLatest: "최신으로 돌아가기",
+      scrollMainToBottom: "기본 대화를 맨 아래로 스크롤"
+    },
+    attachments: {
+      tooMany: "최대 8개의 파일을 첨부할 수 있습니다.",
+      tooLarge: "첨부파일은 50MB 이하여야 합니다.",
+      duplicate: "이 첨부파일은 이미 추가되었습니다."
+    },
+    model: {
+      fakeBackendLabel: "로컬 시뮬레이션",
+      setupTitle: "실제 모델 구성",
+      connectionMissingTitle: "연결이 삭제되었습니다.",
+      configurationFallback: "이 모델 연결은 지금은 보낼 수 없습니다. 설정·모델에서 확인하고 다시 시도해 보세요.",
+      configurationReason: {
+        missing_default_connection: "보내기 전에 설정 · 모델에서 기본 모델을 설정하세요.",
+        connection_missing: "이 작업에서 사용된 모델 연결이 삭제되었습니다. 설정 · 모델에서 선택하거나 생성하세요.",
+        connection_disabled: "현재 모델 연결이 비활성화되었습니다. 활성화하거나 설정 · 모델에서 다른 기본값을 선택하십시오.",
+        missing_api_key: "현재 모델 연결에는 사용 가능한 자격 증명이 없습니다. API 키를 추가하거나 설정 · 모델에서 다시 로그인하세요.",
+        missing_model: "현재 연결에는 사용 가능한 모델이 없습니다. 설정 · 모델에서 기본 모델을 선택하세요.",
+        empty_model_list: "현재 연결에는 활성화된 모델이 없습니다. 설정 · 모델에서 추가하거나 활성화하세요.",
+        model_not_enabled: "이 작업을 위해 선택한 모델이 비활성화되었습니다. 설정 · 모델에서 활성화된 모델을 선택하세요.",
+        model_not_chat_capable: "이 작업을 위해 선택한 모델은 채팅을 할 수 없습니다. 설정 · 모델에서 채팅 가능 모델을 선택하세요.",
+        fake_backend: "이 작업에서는 폐기된 로컬 시뮬레이션을 사용했습니다. 설정·모델에서 실제 모델을 추가한 후 새 작업을 시작하세요.",
+        provider_retired: "이 작업의 연결에 사용되는 로그인이 Maka에서 제거되었으므로 전송할 수 없습니다. 설정 · 모델에서 다른 연결로 전환한 다음 새 작업을 시작하세요."
+      }
+    },
+    footer: {
+      labels: {
+        regenerate: "재생성",
+        branch: "나뭇가지",
+        copy: "복사",
+        info: "세부"
+      },
+      pending: "일하고 있는…",
+      regenerateRunning: "재생성하기 전에 현재 응답이 완료될 때까지 기다립니다.",
+      regenerateAgain: "재생성된 응답이 이미 존재합니다. 또 다른 병렬 응답을 생성하려면 다시 클릭하세요.",
+      regenerate: "이번 턴에 또 다른 응답을 생성합니다.",
+      requestRegenerate: "소유자에게 이 응답 재생성을 승인해 달라고 요청합니다.",
+      branchRunning: "분기하기 전에 현재 응답이 완료될 때까지 기다립니다.",
+      branchAborted: "중단 전 컨텍스트에서 분기",
+      branch: "이 응답에서 새 작업을 분기합니다.",
+      copy: "응답을 클립보드에 복사",
+      copyEmpty: "이 응답에는 복사할 콘텐츠가 없습니다."
+    },
+    lineage: {
+      regeneratedFrom: "이전 응답에서 재생성됨",
+      regeneratedFromTooltip: "이는 병렬로 재생성된 응답입니다. 보관된 이전 응답을 보려면 클릭하세요.",
+      regeneratedTo: "재생성 → 새로운 응답",
+      regeneratedToTooltip: "재생성된 응답으로 이동"
+    },
+    workbar: {
+      ariaLabel: "작업 작업 표시줄",
+      sectionsAriaLabel: "작업 작업 표시줄 탭",
+      review: "변경 사항",
+      terminal: "단말기",
+      terminalNumbered: index => `터미널 ${index}`,
+      tasks: "할 일",
+      todoLoadFailed: "할 일 목록을 로드하지 못했습니다. 다시 시도해 보세요.",
+      workBoard: "작업판",
+      browser: "브라우저",
+      files: "생성된 파일",
+      inspector: "추적하다",
+      sideChat: "사이드 채팅",
+      sideChatNumbered: index => `사이드 채팅 ${index}`,
+      openTab: "작업 표시줄 탭 열기",
+      openTools: "도구 열기",
+      closeTab: label => `${label} 닫기`,
+      tabMenu: label => `${label} 탭 메뉴`,
+      moveLeft: "왼쪽으로 이동",
+      moveRight: "오른쪽으로 이동",
+      moveToRight: "오른쪽 패널로 이동",
+      moveToBottom: "하단 패널로 이동",
+      pinTab: "핀 탭",
+      pinTabHint: "미리보기 탭. 콘텐츠를 두 번 클릭하거나 상호작용하여 고정하세요.",
+      close: "닫다",
+      closeOthers: "다른 탭 닫기",
+      closeToRight: "오른쪽 탭 닫기",
+      launcher: {
+        review: "현재 Git 작업공간의 변경사항 보기",
+        terminal: "이 작업에 대한 터미널 실행 및 실시간 출력을 검사합니다.",
+        tasks: "이 작업의 할 일 원장을 보고 유지합니다.",
+        workBoard: "지연된 작업 캡처 및 관리",
+        browser: "내장된 브라우저를 열고 현재 페이지를 유지합니다.",
+        files: "이 작업으로 생성된 파일 찾아보기",
+        inspector: "모델 호출, 도구, 타이밍 검사",
+        sideChat: "주요 작업을 중단하지 않고 읽기 전용으로 질문하고 탐색하세요."
+      }
+    },
+    workBoardPanel: {
+      inbox: "받은편지함",
+      project: "현재 프로젝트",
+      noProject: "선택한 프로젝트가 없습니다.",
+      createPlaceholder: "나중을 위해 무언가를 캡처하세요...",
+      create: "추가하다",
+      empty: "연기된 작업 없음",
+      loading: "작업 보드 로드 중…",
+      loadMore: "더 로드하기",
+      retry: "다시 해 보다",
+      loadFailed: "작업 보드를 로드하지 못했습니다.",
+      actionFailed: "작업 실패",
+      complete: "완벽한",
+      reopen: "다시 열다",
+      rename: "이름 바꾸기",
+      renameSave: "구하다",
+      moveToInbox: "받은편지함으로 이동",
+      moveToProject: "프로젝트로 이동",
+      archive: "보관소",
+      unarchive: "복원하다",
+      delete: "삭제",
+      archived: "보관됨"
+    },
+    reviewPanel: {
+      ariaLabel: "힘내 변경",
+      empty: "현재 Git 작업공간에는 변경사항이 없습니다.",
+      emptyHelp: "커밋되고, 준비되고, 수정된 파일이 여기에 표시됩니다.",
+      notGitRepository: "이 작업 디렉터리는 Git 저장소가 아닙니다.",
+      workspaceUnavailable: "이 작업 디렉터리를 사용할 수 없습니다.",
+      unbornRepository: "이 Git 저장소에는 아직 비교할 커밋이 없습니다.",
+      gitFailed: "Git 작업공간 변경사항을 읽을 수 없습니다.",
+      invalidBaseBranch: "선택한 비교 분기를 사용할 수 없습니다.",
+      truncated: "변경사항이 너무 많습니다. 첫 번째 파일만 표시",
+      showMore: remaining => `${Math.min(20, remaining)}개의 파일 더 표시`,
+      hiddenLines: count => `${count}개의 추가 줄이 표시되지 않음`,
+      changedFiles: count => `${count}개의 파일이 변경됨`,
+      addedLines: count => `${count}줄 추가됨`,
+      deletedLines: count => `${count}줄 삭제됨`,
+      added: count => `${count} 추가됨`,
+      deleted: count => `${count} 삭제됨`,
+      loadFailed: "Git 변경 사항을 읽을 수 없습니다.",
+      retry: "다시 해 보다"
+    },
+    terminalPanel: {
+      ariaLabel: "태스크 터미널",
+      empty: "이 작업에서는 아직 실행되는 터미널이 없습니다.",
+      emptyHelp: "이 작업의 터미널은 시작되면 여기에 표시됩니다.",
+      loadFailed: "터미널 실행을 읽을 수 없습니다.",
+      retry: "다시 해 보다",
+      refresh: "터미널 새로 고침",
+      readOnly: "이 작업에서 에이전트 또는 사용자가 시작한 터미널 실행을 표시합니다.",
+      runCount: count => `${count}개의 터미널 실행`,
+      newTerminal: "새로운 터미널",
+      commandPlaceholder: "명령을 입력하고 Enter를 누르세요",
+      commandLabel: "터미널 명령",
+      runCommand: "명령 실행",
+      stopTerminal: "현재 터미널 중지",
+      startFailed: "터미널을 시작할 수 없습니다",
+      writeFailed: "터미널 입력을 보낼 수 없습니다.",
+      stopFailed: "터미널을 중지할 수 없습니다."
+    },
+    inspector: {
+      ariaLabel: "태스크 추적",
+      copyPricingKey: "가격 키 복사",
+      pricingKeyCopied: "가격 키가 복사되었습니다.",
+      unpricedPricingKey: "가격이 책정되지 않은 가격 책정 키",
+      copyFailed: "복사 실패",
+      copyFailedDetail: "클립보드를 사용할 수 없거나 시스템에서 액세스를 거부했습니다.",
+      loadFailed: "추적을 읽을 수 없습니다.",
+      retry: "다시 해 보다",
+      empty: "이 작업에서는 아직 추적할 항목이 없습니다.",
+      emptyHelp: "이 작업에 대해 아직 기록된 활동이 없습니다.",
+      costUnavailable: "비용을 알 수 없음",
+      costEstimateHelp: "기록된 사용량 및 가격을 바탕으로 추정됩니다. 누락되거나 가격이 책정되지 않은 통화는 제외될 수 있습니다.",
+      loadEarlier: "이전 레코드 로드",
+      hideEarlier: "이전 기록 모두 숨기기",
+      loadingEarlier: "로드 중…",
+      loadingTrace: "타임라인 로드 중…",
+      loadingSummary: "전체 세션 사용량 추정 중…",
+      summaryUnavailable: "전체 세션을 일시적으로 사용할 수 없습니다.",
+      totals: {
+        cost: "예상 비용"
+      },
+      coveragePartial: parts => `일부 호출을 완전히 표시할 수 없어 아래 숫자는 ${koDetail(parts)}보다 적게 집계됩니다.`,
+      coverageAbsent: parts => `이 백엔드는 호출별 세부 정보를 기록하지 않습니다${koDetail(parts)}`,
+      unreadable: count => `${count}개 레코드를 읽을 수 없습니다.`,
+      oversizedRuns: count => `${count}개 실행 기록이 너무 커서 온라인으로 표시할 수 없습니다.`,
+      turnsMissing: count => `호출 기록이 없는 턴 ${count}개`,
+      turnsShort: count => `호출 기록이 불완전한 턴 ${count}개`,
+      stepKind: {
+        permission: "허가",
+        compaction: "컨텍스트 압축",
+        error: "오류"
+      },
+      callKind: kind => KO_CALL_KIND[kind as keyof CallKindCopy] ?? kind,
+      permissionDecision: decision => KO_PERMISSION_DECISION[decision] ?? decision,
+      recoveredAs: disposition => `${disposition}로 복구됨`,
+      retries: count => `${count}회 재시도`,
+      turnFailure: code => KO_TURN_FAILURE[code] ?? '턴 실패',
+      turnLabel: startedAt => `턴 · ${startedAt}`,
+      overview: {
+        context: "컨텍스트 창",
+        segment: {
+          cacheRead: "캐시 적중",
+          fresh: "캐시 미스",
+          used: "사용된",
+          free: "남은"
+        },
+        cacheHit: "캐시 적중률",
+        timelineTab: "타임라인",
+        composition: {
+          title: "예상 구성",
+          basis: "공급자가 보고한 토큰이 아닌 요청 바이트에서 추정됩니다.",
+          part: {
+            system_instructions: "시스템 지침",
+            tool_definitions: "도구 정의",
+            messages: "메시지",
+            other: "기타 옵션"
+          },
+          tools: "도구별",
+          remainingTools: count => `${count}개의 추가 도구`,
+          unlabelled: "이름이 없는 도구",
+          unrecorded: "이 통화에는 기록이 남지 않았습니다."
+        }
+      }
+    },
+    quoteCompanion: {
+      namePrefix: "옆:",
+      permissionStreaming: "사이드 채팅이 실행되는 동안에는 권한을 변경할 수 없습니다.",
+      scrollToBottom: "사이드 대화를 맨 아래로 스크롤",
+      compactSuccessTitle: "컨텍스트가 압축되었습니다",
+      compactSuccessDescription: "이전 컨텍스트가 체크포인트 요약으로 대체되었습니다.",
+      compactStartedTitle: "컨텍스트 압축 중",
+      compactStartedDescription: "이전 컨텍스트를 체크포인트로 요약하는 중입니다.",
+      compactUnchangedTitle: "압축할 내용이 없습니다",
+      compactUnchangedDescription: "이 작업은 이미 최신 체크포인트를 사용하고 있습니다.",
+      compactErrorTitle: "압축하지 못했습니다",
+      compactErrorFallback: "작업의 컨텍스트를 압축하지 못했습니다. 나중에 다시 시도하세요.",
+      workspaceUnavailableTitle: "작업 디렉터리를 사용할 수 없습니다",
+      workspaceUnavailableDescription: "작업 디렉터리가 없거나 접근할 수 없습니다. 새 작업에 사용할 폴더를 선택하세요.",
+      closeConfirmation: {
+        title: count => count > 1 ? `${count} 사이드 채팅을 종료하시겠습니까?` : "사이드 채팅을 닫으시겠어요?",
+        description: count => count > 1 ? `이러한 ${count} 임시 사이드 채팅은 영구적으로 삭제되며 복구할 수 없습니다.` : "이 임시 사이드 채팅은 영구적으로 삭제되며 복구할 수 없습니다.",
+        dontAskAgain: "다시 묻지 마세요",
+        cancel: "취소",
+        confirm: "사이드 채팅 닫기"
+      },
+      errors: {
+        forkSetupFailed: "사이드 채팅을 열 수 없습니다. 다시 시도해 주세요.",
+        forkSourceBusy: "기본 대화 또는 연결된 작업이 아직 실행 중입니다. 완료되면 다시 시도하세요.",
+        forkUnsupported: "이 대화 컨텍스트는 아직 사이드 채팅으로 열 수 없습니다.",
+        sendRejected: "동반자를 시작할 수 없습니다. 다시 시도해 주세요.",
+        sendFailed: "컴패니언 요청이 실패했습니다. 다시 시도해 주세요.",
+        settlementFailed: "실행이 종료되었지만 해당 메시지를 로드할 수 없습니다. 사이드 채팅을 다시 시도하거나 다시 열어보세요.",
+        respondFailed: "응답이 실패했습니다. 다시 시도해 주세요."
+      }
+    },
+    health: {
+      blocked: {
+        fake_backend: {
+          label: "오래된 작업 · 실제 모델 구성",
+          tooltip: () => "이 작업에서는 폐기된 로컬 시뮬레이션을 사용했습니다. 보내기 전에 설정 · 모델에서 실제 모델을 추가하고 활성화하세요."
+        },
+        provider_retired: {
+          label: "로그인이 중단됨",
+          tooltip: name => `"${name}" 연결이 사용하는 로그인이 Maka에서 제거되었으므로 전송에 실패합니다. 설정 · 모델에서 다른 연결로 전환하십시오.`
+        },
+        missing_default_connection: {
+          label: "구성된 모델이 없습니다.",
+          tooltip: () => "이 작업에는 사용 가능한 모델 연결이 없습니다. 설정 · 모델에서 하나를 추가하고 활성화하세요."
+        },
+        legacy_connection_identity: {
+          label: "모델 연결 선택",
+          tooltip: () => "이 작업은 이전 버전에서 가져온 것입니다. 사용할 연결과 모델을 선택하세요.",
+          actionLabel: "연결 및 모델 선택",
+          settingsTooltip: () => "현재 사용 가능한 연결이 없습니다. 먼저 설정 · 모델에서 하나를 추가하거나 활성화하세요."
+        },
+        connection_missing: {
+          label: "원래 연결이 삭제되었습니다.",
+          tooltip: () => "계속하려면 새 연결과 모델을 선택하세요.",
+          actionLabel: "연결 및 모델 선택",
+          settingsTooltip: () => "현재 사용 가능한 연결이 없습니다. 먼저 설정 · 모델에서 하나를 추가하거나 활성화하세요."
+        },
+        connection_identity_mismatch: {
+          label: "연결 ID 불일치",
+          tooltip: () => "다시 사용할 연결과 모델을 선택하세요.",
+          actionLabel: "연결 및 모델 선택",
+          settingsTooltip: () => "현재 사용 가능한 연결이 없습니다. 먼저 설정 · 모델에서 하나를 추가하거나 활성화하세요."
+        },
+        connection_disabled: {
+          label: "연결이 비활성화되었습니다.",
+          tooltip: name => `연결 "${name}"이 비활성화되었습니다. 활성화하거나 설정 · 모델에서 다른 연결을 선택하십시오.`
+        },
+        missing_api_key: {
+          label: "연결 자격 증명이 누락되었습니다.",
+          tooltip: name => `연결 "${name}"에 API 키가 없거나 로그인이 완료되었습니다. 설정 · 모델에서 자격 증명을 추가합니다.`
+        },
+        missing_model: {
+          label: "선택한 모델이 없습니다.",
+          tooltip: name => `연결 "${name}"에는 기본 모델이 없습니다. 설정 · 모델에서 하나를 선택하세요.`
+        },
+        empty_model_list: {
+          label: "활성화된 모델이 없습니다.",
+          tooltip: name => `연결 "${name}"에는 활성화된 모델이 없습니다. 설정 · 모델에서 하나를 추가하세요.`
+        },
+        model_not_enabled: {
+          label: "작업 모델이 비활성화되었습니다.",
+          tooltip: (name, model) => `모델 "${model}"은 "${name}" 연결에 대해 활성화되지 않습니다. 설정 · 모델에서 다른 모델을 선택하십시오.`
+        },
+        model_not_chat_capable: {
+          label: "작업 모델은 채팅할 수 없습니다.",
+          tooltip: (_name, model) => `모델 "${model}"은(는) 채팅에 사용할 수 없습니다. 설정 · 모델에서 채팅 가능 모델을 선택하세요.`
+        }
+      },
+      connectionChoicesLoading: {
+        tooltip: "연결 목록이 아직 로드되지 않았습니다.",
+        actionLabel: "연결 다시 로드"
+      },
+      reauth: {
+        label: "마지막 연결 테스트 실패 인증",
+        tooltip: "최신 테스트에서는 401/403이 반환되었습니다. 전송이 차단되지는 않지만 실패할 경우 설정 · 모델에서 다시 로그인하세요."
+      },
+      testError: {
+        label: "마지막 연결 테스트 실패",
+        tooltip: "네트워크, 시간 초과 또는 5xx 오류로 인해 최근 테스트가 실패했습니다. 전송이 차단되지 않습니다. 지속되는 경우 기본 URL 또는 프록시 설정을 확인하세요."
+      }
+    },
+    turnError: {
+      unknown: "문제가 발생했습니다. 원인을 알 수 없습니다. 다시 시도하려면 메시지를 보내세요.",
+      contextOverflow: "컨텍스트가 모델 창을 초과했습니다. 첨부 파일을 줄이거나 새 작업을 시작하세요.",
+      timeout: "모델 요청 시간이 초과되었습니다. 다시 시도하려면 메시지를 보내세요.",
+      auth: "모델 인증에 실패했습니다. 설정에서 다시 연결하거나 로그인하세요.",
+      providerBilling: "모델 과금이 제한됩니다. 계정 잔액이나 구독을 확인하세요.",
+      providerCapacity: "모델 서비스가 일시적으로 중단되었습니다. 몇 분 정도 기다리거나 모델을 전환하십시오.",
+      rateLimit: "요청 속도가 제한되었습니다. 잠시 기다린 후 메시지를 보내 다시 시도하세요.",
+      network: "네트워크 연결에 실패했습니다. 네트워크를 확인한 후 메시지를 다시 보내세요.",
+      provider: "모델 서비스에서 오류를 반환했습니다. 나중에 다시 시도하거나 모델을 전환하세요.",
+      stepCap: "도구 단계 제한에 도달했으므로 작업이 완료되지 않았을 수 있습니다. 계속하려면 메시지를 보내세요.",
+      tool: "도구 호출이 실패했습니다. 재시도 여부를 결정하기 전에 위의 도구 결과를 확인하세요.",
+      permission: "이번 턴은 허가를 기다리는 동안 종료되었습니다. 메시지를 보내면 다시 물어볼 것입니다.",
+      restarted: "이전 차례가 완료되기 전에 앱이 다시 시작되었습니다.",
+      sandboxBoundaryClosed: "앱이 다시 시작되었으므로 작업 영역 외부에 도달하기 위해 보류 중인 요청이 거부되어 종료되었습니다. 다시 결정하려면 메시지를 보내세요.",
+      executionState: {
+        erroredTool: "이번 턴에 도구에 오류가 발생했습니다. 다른 메시지를 보낼지 여부를 결정하기 전에 결과를 읽어보세요.",
+        toolRan: "이번 차례에 도구가 이미 실행되었으며 실질적인 변경이 이루어졌을 수도 있습니다. 다른 메시지를 보내기 전에 결과를 읽어보세요.",
+        partialOutput: "이번 차례에서는 답변의 일부가 나왔습니다. 다른 메시지를 보내기 전에 읽어볼 가치가 있습니다."
+      }
+    }
+  },
+  actions: {
+    ...{
+      stopFailedTitle: "중지하지 못했습니다.",
+      stopFailedFallback: "작업 작업이 실패했습니다. 나중에 다시 시도하세요.",
+      refreshSessionsFailedTitle: "작업을 새로 고치지 못했습니다.",
+      refreshSessionsFailedFallback: "작업 목록을 새로 고칠 수 없습니다. 나중에 다시 시도하세요.",
+      conversationErrorTitle: "작업 오류",
+      conversationErrorFallback: "작업 실행이 실패했습니다. 나중에 다시 시도하세요.",
+      regenerateStartedTitle: "재생이 시작되었습니다",
+      regenerateStartedDescription: "새로운 응답 생성",
+      branchCreatedTitle: "지점이 생성되었습니다.",
+      branchCreatedDescription: name => `새 작업: ${name}`,
+      revisionStartedTitle: "초안 수정 준비됨",
+      revisionStartedDescription: "원래 작업은 유지됩니다. 보내면 새 버전이 생성됩니다.",
+      revisionReadyTitle: "편집하고 다시 보낼 준비가 되었습니다.",
+      revisionReadyDescription: "해당 메시지 이전으로 되감기합니다. 준비가 되면 편집하고 보내세요",
+      revisionUnavailableTitle: "이 메시지는 아직 편집할 수 없습니다.",
+      revisionAttachmentsUnsupported: "편집 및 재전송은 아직 기록 첨부 파일을 지원하지 않습니다. 대신 텍스트를 새 메시지에 복사하세요.",
+      revisionTransformedTextUnsupported: "편집 및 재전송은 아직 명시적인 기술로 전송된 메시지를 지원하지 않습니다. 대신 텍스트를 복사하고 스킬을 다시 선택하세요.",
+      revisionDraftAttachmentConflict: "작성자에게 이미 보류 중인 첨부 파일이 있습니다. 보낸 메시지를 편집하기 전에 보내거나 제거하세요.",
+      revisionCommandUnsupported: "보낸 메시지를 편집하는 동안에는 /compact, /side 또는 Orchestration 명령을 실행할 수 없습니다. 먼저 편집을 취소하세요.",
+      revisionAlreadyActive: "다른 메시지가 이미 편집 중입니다. 먼저 해당 수정사항을 보내거나 취소하세요.",
+      revisionCancelLabel: "취소",
+      revisionBannerTitle: "보낸 메시지 편집 중",
+      revisionBannerDetail: "· 전송 시 새 버전",
+      revisionUnchanged: "아무것도 바뀌지 않았습니다. 새로운 답변만 원할 경우 재생성을 사용하세요.",
+      operationFailedTitle: "작업 실패",
+      operationFailedFallback: "작업 작업이 실패했습니다. 나중에 다시 시도하세요.",
+      attachmentFailedTitle: "첨부파일을 추가하지 못했습니다.",
+      imageAttachmentNotDirectTitle: "첨부파일로 추가된 이미지",
+      imageAttachmentNotDirectDescription: "현재 모델은 이미지를 직접 수신하지 않습니다. 이미지는 첨부파일로 제공되었습니다.",
+      tryAgain: "나중에 다시 시도하세요.",
+      modelReboundTitle: "사용 가능한 모델로 전환됨",
+      modelReboundDescription: modelId => `이전 연결을 사용할 수 없습니다${modelId ? `· ${modelId}` : ''}`,
+      messageReadFailedTitle: "작업을 로드하지 못했습니다.",
+      partialHistoryTitle: "이전 메시지 보기",
+      returnLatest: "최신으로 돌아가기",
+      scrollMainToBottom: "기본 대화를 맨 아래로 스크롤"
+    },
+    conversationErrorTitle: '대화 오류',
+    conversationErrorFallback: '작업 실행에 실패했습니다. 나중에 다시 시도하세요.',
+    regenerateStartedTitle: '재생성 시작됨',
+    regenerateStartedDescription: '새 응답을 생성하는 중입니다',
+    branchCreatedTitle: '분기 생성됨',
+    branchCreatedDescription: name => '새 작업: ' + name,
+    returnLatest: '최신 항목으로 돌아가기',
+    scrollMainToBottom: '주 대화를 아래로 스크롤'
+  },
+  footer: {
+    ...{
+      labels: {
+        regenerate: "재생성",
+        branch: "나뭇가지",
+        copy: "복사",
+        info: "세부"
+      },
+      pending: "일하고 있는…",
+      regenerateRunning: "재생성하기 전에 현재 응답이 완료될 때까지 기다립니다.",
+      regenerateAgain: "재생성된 응답이 이미 존재합니다. 또 다른 병렬 응답을 생성하려면 다시 클릭하세요.",
+      regenerate: "이번 턴에 또 다른 응답을 생성합니다.",
+      branchRunning: "분기하기 전에 현재 응답이 완료될 때까지 기다립니다.",
+      branchAborted: "중단 전 컨텍스트에서 분기",
+      branch: "이 응답에서 새 작업을 분기합니다.",
+      copy: "응답을 클립보드에 복사",
+      copyEmpty: "이 응답에는 복사할 콘텐츠가 없습니다."
+    },
+    labels: {
+      regenerate: '재생성',
+      branch: '분기',
+      copy: '복사',
+      info: '세부 정보'
+    },
+    pending: '작업 중…',
+    requestRegenerate: '소유자에게 이 응답 재생성을 승인해 달라고 요청합니다.'
+  },
+  workbar: {
+    ...{
+      ariaLabel: "작업 작업 표시줄",
+      sectionsAriaLabel: "작업 작업 표시줄 탭",
+      review: "변경 사항",
+      terminal: "단말기",
+      terminalNumbered: index => `터미널 ${index}`,
+      tasks: "할 일",
+      todoLoadFailed: "할 일 목록을 로드하지 못했습니다. 다시 시도해 보세요.",
+      workBoard: "작업판",
+      browser: "브라우저",
+      files: "생성된 파일",
+      inspector: "추적하다",
+      sideChat: "사이드 채팅",
+      sideChatNumbered: index => `사이드 채팅 ${index}`,
+      openTab: "작업 표시줄 탭 열기",
+      openTools: "도구 열기",
+      closeTab: label => `${label} 닫기`,
+      tabMenu: label => `${label} 탭 메뉴`,
+      moveLeft: "왼쪽으로 이동",
+      moveRight: "오른쪽으로 이동",
+      moveToRight: "오른쪽 패널로 이동",
+      moveToBottom: "하단 패널로 이동",
+      pinTab: "핀 탭",
+      pinTabHint: "미리보기 탭. 콘텐츠를 두 번 클릭하거나 상호작용하여 고정하세요.",
+      close: "닫다",
+      closeOthers: "다른 탭 닫기",
+      closeToRight: "오른쪽 탭 닫기",
+      launcher: {
+        review: "현재 Git 작업공간의 변경사항 보기",
+        terminal: "이 작업에 대한 터미널 실행 및 실시간 출력을 검사합니다.",
+        tasks: "이 작업의 할 일 원장을 보고 유지합니다.",
+        workBoard: "지연된 작업 캡처 및 관리",
+        browser: "내장된 브라우저를 열고 현재 페이지를 유지합니다.",
+        files: "이 작업으로 생성된 파일 찾아보기",
+        inspector: "모델 호출, 도구, 타이밍 검사",
+        sideChat: "주요 작업을 중단하지 않고 읽기 전용으로 질문하고 탐색하세요."
+      }
+    },
+    ariaLabel: '작업 워크바',
+    review: '변경 사항',
+    terminal: '터미널',
+    tasks: '할 일',
+    browser: '브라우저',
+    files: '생성된 파일',
+    inspector: '추적',
+    sideChat: '사이드 채팅'
+  }
+}
 } satisfies UiCatalog<DesktopConversationCopy>;
 
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {

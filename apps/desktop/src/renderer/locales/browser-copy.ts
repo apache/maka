@@ -93,6 +93,30 @@ const BROWSER_COPY = {
     title: 'Embedded browser',
     description: 'Enter an address, or ask the assistant to navigate and interact with a page.',
   },
+  ko: {
+  unsupportedScheme: "내장된 브라우저는 HTTP 및 HTTPS 주소만 지원합니다.",
+  invalidUrl: "이 주소는 유효하지 않습니다. 확인하고 다시 시도해 보세요.",
+  openFailed: "주소를 열 수 없습니다.",
+  navigationFailed: "브라우저 탐색 실패",
+  navigationFailedDetail: "페이지를 열 수 없습니다. 나중에 다시 시도하세요.",
+  panelAria: "내장된 브라우저",
+  panelAriaWithTitle: title => `내장된 브라우저: ${title}`,
+  insecure: "이 사이트는 HTTP를 통해 제공되므로 연결이 암호화되지 않습니다.",
+  backAria: "브라우저로 돌아가기",
+  back: "뒤쪽에",
+  forwardAria: "브라우저에서 앞으로 이동",
+  forward: "앞으로",
+  stopAria: "페이지 로딩 중지",
+  refreshAria: "페이지 새로고침",
+  stop: "멈추다",
+  refresh: "새로고침",
+  addressAria: "브라우저 주소",
+  addressPlaceholder: "주소를 입력하고 Enter를 누르세요",
+  closeAria: "브라우저 페이지 닫기",
+  close: "페이지 닫기",
+  title: "내장된 브라우저",
+  description: "주소를 입력하거나 도우미에게 페이지를 탐색하고 상호작용하도록 요청하세요."
+}
 } satisfies UiCatalog<BrowserCopy>;
 
 export function getBrowserCopy(locale: UiLocale): BrowserCopy {

@@ -86,6 +86,14 @@ const PROMPT_SUGGESTIONS_BY_LOCALE: UiCatalog<PromptSuggestion[]> = {
     { label: 'Draft message', prompt: 'Help me draft a ____ message to ____, with the goal of ____:\n\nPoints to cover:\n- \n- ' },
     { label: 'Review code', prompt: 'Please review this code — readability, error handling, performance concerns:\n\n```\n\n```' },
   ],
+  ko: [
+    { label: '코드베이스 요약', prompt: '현재 코드베이스의 디렉터리 구조와 주요 모듈을 요약해 주세요.' },
+    { label: '코드 설명', prompt: '코드 조각을 붙여넣을게요. 한 줄씩 설명하고 주의할 점을 알려 주세요:\n\n```\n\n```' },
+    { label: '긴 문서 읽기', prompt: '이 글이나 문서의 핵심 주장과 주요 사실을 정리하고 빠진 부분을 알려 주세요:\n\n' },
+    { label: '번역 및 다듬기', prompt: '아래 텍스트를 자연스럽고 전문적인 한국어로 번역해 주세요. 의미는 유지하세요:\n\n' },
+    { label: '메시지 초안', prompt: '목표가 ____인 ____에게 보낼 메시지 초안을 작성해 주세요:\n\n포함할 내용:\n- \n- ' },
+    { label: '코드 리뷰', prompt: '이 코드의 가독성, 오류 처리 및 성능 문제를 검토해 주세요:\n\n```\n\n```' },
+  ],
 };
 
 export function getPromptSuggestions(locale: UiLocale): PromptSuggestion[] {

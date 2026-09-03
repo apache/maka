@@ -179,7 +179,7 @@ const enCopy: ShellRemainingCopy = {
   },
 };
 
-const COPY = { zh: zhCopy, en: enCopy } satisfies UiCatalog<ShellRemainingCopy>;
+const COPY = { zh: zhCopy, en: enCopy, ko: enCopy } satisfies UiCatalog<ShellRemainingCopy>;
 
 export function getShellRemainingCopy(locale: UiLocale): ShellRemainingCopy {
   return COPY[locale];

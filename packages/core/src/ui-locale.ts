@@ -20,7 +20,7 @@
 import { IntlMessageFormat } from 'intl-messageformat';
 
 /** Resolved locales supported by human-facing Maka clients. */
-export const UI_LOCALES = ['zh', 'en'] as const;
+export const UI_LOCALES = ['zh', 'en', 'ko'] as const;
 
 export type UiLocale = (typeof UI_LOCALES)[number];
 
@@ -122,7 +122,7 @@ function isMessageRecord(value: unknown): value is Readonly<Record<string, unkno
 }
 
 export function isUiLocale(value: unknown): value is UiLocale {
-  return value === 'zh' || value === 'en';
+  return value === 'zh' || value === 'en' || value === 'ko';
 }
 
 export function isUiLocalePreference(value: unknown): value is UiLocalePreference {
@@ -134,6 +134,7 @@ export function resolveSystemUiLocale(languages: readonly string[] | null | unde
   for (const language of languages ?? []) {
     const normalized = language.trim();
     if (/^zh(?:[-_]|$)/iu.test(normalized)) return 'zh';
+    if (/^ko(?:[-_]|$)/iu.test(normalized)) return 'ko';
     if (/^en(?:[-_]|$)/iu.test(normalized)) return 'en';
   }
   return 'en';
@@ -156,6 +157,8 @@ export function resolveUiLocale(
 }
 
 /** Locale identifier used by every locale-sensitive Intl formatter. */
-export function uiLocaleToIntlLocale(locale: UiLocale): 'zh-CN' | 'en' {
-  return locale === 'zh' ? 'zh-CN' : 'en';
+export function uiLocaleToIntlLocale(locale: UiLocale): 'zh-CN' | 'ko-KR' | 'en' {
+  if (locale === 'zh') return 'zh-CN';
+  if (locale === 'ko') return 'ko-KR';
+  return 'en';
 }

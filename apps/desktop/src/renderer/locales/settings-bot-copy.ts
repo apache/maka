@@ -19,132 +19,923 @@
 
 import type { StatusSemantic } from '@maka/ui';
 import type { BotProvider, BotReadinessState } from '@maka/core/bot-chat-settings';
-
 import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
-
-type WidenCopy<T> = T extends string
-  ? string
-  : T extends (...args: infer Args) => string
-    ? (...args: Args) => string
-    : { [K in keyof T]: K extends 'tone' ? T[K] : WidenCopy<T[K]> };
-
+type WidenCopy<T> = T extends string ? string : T extends ((...args: infer Args) => string) ? (...args: Args) => string : { [K in keyof T]: K extends 'tone' ? T[K] : WidenCopy<T[K]> };
 const zhCopy = {
   providers: {
-    telegram: { label: 'Telegram', help: '通过 @BotFather 创建 Bot 并获取 Token' },
-    feishu: { label: '飞书', help: '在飞书开放平台创建应用并获取凭证' },
-    wecom: { label: '企业微信', help: '通过企业微信 AI 应用接入，使用 WebSocket 长连接' },
-    wechat: { label: '微信', help: '通过本机 wechat-bridge 接入个人微信，需 iOS / Android 微信 8.0.70+。' },
-    discord: { label: 'Discord', help: '在 Discord Developer Portal 创建 Bot' },
-    dingtalk: { label: '钉钉', help: '在钉钉开发者后台创建机器人应用' },
-    qq: { label: 'QQ', help: '在 QQ 开放平台创建机器人并获取 AppID 和 AppSecret' },
-    slack: { label: 'Slack', help: '使用 Bot Token 与 App-Level Token 通过 Socket Mode 接入' },
-  } satisfies Record<BotProvider, { label: string; help: string }>,
+    telegram: {
+      label: 'Telegram',
+      help: '通过 @BotFather 创建 Bot 并获取 Token'
+    },
+    feishu: {
+      label: '飞书',
+      help: '在飞书开放平台创建应用并获取凭证'
+    },
+    wecom: {
+      label: '企业微信',
+      help: '通过企业微信 AI 应用接入，使用 WebSocket 长连接'
+    },
+    wechat: {
+      label: '微信',
+      help: '通过本机 wechat-bridge 接入个人微信，需 iOS / Android 微信 8.0.70+。'
+    },
+    discord: {
+      label: 'Discord',
+      help: '在 Discord Developer Portal 创建 Bot'
+    },
+    dingtalk: {
+      label: '钉钉',
+      help: '在钉钉开发者后台创建机器人应用'
+    },
+    qq: {
+      label: 'QQ',
+      help: '在 QQ 开放平台创建机器人并获取 AppID 和 AppSecret'
+    },
+    slack: {
+      label: 'Slack',
+      help: '使用 Bot Token 与 App-Level Token 通过 Socket Mode 接入'
+    }
+  } satisfies Record<BotProvider, {
+    label: string;
+    help: string;
+  }>,
   readiness: {
-    unscaffolded: { label: '未开放', detail: '该平台当前不可作为远程接入渠道。', tone: 'neutral' },
-    scaffolded: { label: '待配置', detail: '等待补齐这个平台需要的凭据配置。', tone: 'neutral' },
-    configured: { label: '已配置', detail: '已填写配置；等待完成凭据或运行态验证。', tone: 'attention' },
-    credentials_valid: { label: '凭据有效', detail: '凭据探测通过；这不代表已能收发消息。', tone: 'attention' },
-    operational: { label: '运行可用', detail: '最近一次真实运行探测成功。', tone: 'success' },
-    degraded: { label: '运行降级', detail: '之前可用，但最近运行态探测失败。', tone: 'error' },
-  } satisfies Record<BotReadinessState, { label: string; detail: string; tone: StatusSemantic }>,
-  planned: { label: '未开放', detail: '该平台当前不会保存为远程接入渠道或定时任务投递目标。', tone: 'neutral' as const },
+    unscaffolded: {
+      label: '未开放',
+      detail: '该平台当前不可作为远程接入渠道。',
+      tone: 'neutral'
+    },
+    scaffolded: {
+      label: '待配置',
+      detail: '等待补齐这个平台需要的凭据配置。',
+      tone: 'neutral'
+    },
+    configured: {
+      label: '已配置',
+      detail: '已填写配置；等待完成凭据或运行态验证。',
+      tone: 'attention'
+    },
+    credentials_valid: {
+      label: '凭据有效',
+      detail: '凭据探测通过；这不代表已能收发消息。',
+      tone: 'attention'
+    },
+    operational: {
+      label: '运行可用',
+      detail: '最近一次真实运行探测成功。',
+      tone: 'success'
+    },
+    degraded: {
+      label: '运行降级',
+      detail: '之前可用，但最近运行态探测失败。',
+      tone: 'error'
+    }
+  } satisfies Record<BotReadinessState, {
+    label: string;
+    detail: string;
+    tone: StatusSemantic;
+  }>,
+  planned: {
+    label: '未开放',
+    detail: '该平台当前不会保存为远程接入渠道或定时任务投递目标。',
+    tone: 'neutral' as const
+  },
   status: {
-    disabled: '开关关闭', noToken: '等待填写 Bot Token', missingFeishuCredentials: '等待填写飞书 App ID 或 App Secret',
-    feishuDomainRequired: '飞书凭据有效，等待填写事件订阅域名', feishuEventsNotConnected: '飞书凭据有效，等待事件回调接入',
-    unavailable: '该平台当前不可作为远程接入渠道', stopped: '监听已停止', detailsInLogs: '运行态详情请见日志',
-    polling: '长轮询', gateway: '事件通道', webhook: 'Webhook', none: '无',
+    disabled: '开关关闭',
+    noToken: '等待填写 Bot Token',
+    missingFeishuCredentials: '等待填写飞书 App ID 或 App Secret',
+    feishuDomainRequired: '飞书凭据有效，等待填写事件订阅域名',
+    feishuEventsNotConnected: '飞书凭据有效，等待事件回调接入',
+    unavailable: '该平台当前不可作为远程接入渠道',
+    stopped: '监听已停止',
+    detailsInLogs: '运行态详情请见日志',
+    polling: '长轮询',
+    gateway: '事件通道',
+    webhook: 'Webhook',
+    none: '无'
   },
   overview: {
-    loadFailed: '远程接入状态载入失败', reload: '重新载入', active: '正在使用', sortHint: '按需要处理、最近活动排序',
-    empty: '还没有正在使用的渠道', emptyHelp: '从下方选择一个消息平台开始配置。', more: '接入更多渠道', choose: '选择平台开始配置',
-    listening: '监听中', manageAria: (name: string, status: string) => `管理 ${name}，${status}`, connectAria: (name: string) => `接入 ${name}`,
+    loadFailed: '远程接入状态载入失败',
+    reload: '重新载入',
+    active: '正在使用',
+    sortHint: '按需要处理、最近活动排序',
+    empty: '还没有正在使用的渠道',
+    emptyHelp: '从下方选择一个消息平台开始配置。',
+    more: '接入更多渠道',
+    choose: '选择平台开始配置',
+    listening: '监听中',
+    manageAria: (name: string, status: string) => `管理 ${name}，${status}`,
+    connectAria: (name: string) => `接入 ${name}`
   },
   page: {
-    saveFailed: (name: string) => `${name} 保存失败`, loadFailed: '载入远程接入状态失败', refreshFailed: '刷新远程接入状态失败',
-    credentialVerified: (name: string) => `${name} 凭据已验证`, credentialVerifiedDetail: '凭据检查已通过。', credentialTestFailed: (name: string) => `${name} 凭据测试失败`, credentialTestFailedDetail: '请检查凭据和网络设置后重试。', testError: (name: string) => `${name} 测试出错`,
-    listening: (name: string) => `${name} 已开始监听`, notListening: (name: string) => `${name} 启动后未进入监听`, startFailed: (name: string) => `${name} 启动失败`,
-    disconnectTitle: '断开微信登录？', disconnectDescription: '将清除本机保存的扫码登录凭据，之后需要重新扫码才能继续使用微信渠道。',
-    disconnect: '断开登录', cancel: '取消', disconnected: '微信登录已断开', credentialsCleared: '本机关联凭据已清除。',
+    saveFailed: (name: string) => `${name} 保存失败`,
+    loadFailed: '载入远程接入状态失败',
+    refreshFailed: '刷新远程接入状态失败',
+    credentialVerified: (name: string) => `${name} 凭据已验证`,
+    credentialVerifiedDetail: '凭据检查已通过。',
+    credentialTestFailed: (name: string) => `${name} 凭据测试失败`,
+    credentialTestFailedDetail: '请检查凭据和网络设置后重试。',
+    testError: (name: string) => `${name} 测试出错`,
+    listening: (name: string) => `${name} 已开始监听`,
+    notListening: (name: string) => `${name} 启动后未进入监听`,
+    startFailed: (name: string) => `${name} 启动失败`,
+    disconnectTitle: '断开微信登录？',
+    disconnectDescription: '将清除本机保存的扫码登录凭据，之后需要重新扫码才能继续使用微信渠道。',
+    disconnect: '断开登录',
+    cancel: '取消',
+    disconnected: '微信登录已断开',
+    credentialsCleared: '本机关联凭据已清除。'
   },
   detail: {
-    unavailableHint: '该平台未开放，暂不能启用。', scanFirstHint: '先扫码接入后才能启用。', testFirstHint: '先测试并连接后才能启用。',
-    back: '返回远程接入', configDocs: '查看配置文档', enableAria: (name: string) => `启用${name}渠道`, listening: '正在监听新消息', healthy: '连接正常，无需处理。',
-    actionsAria: (name: string) => `${name}渠道操作`, quickBind: '快捷绑定', scanLogin: '扫码登录', scanConnect: '扫码接入', disconnecting: '断开中…', disconnectWechat: '断开微信登录', bridgeQr: '本机桥接二维码',
-    testing: '测试中…', test: '测试连接', connecting: '连接中…', testAndConnect: '测试并连接', restarting: '重启中…', restart: '重启监听',
-    runtimeAria: (name: string) => `${name}运行状态`, identity: '身份', unknownIdentity: '未获取', connectionType: '通道类型', lastEvent: '最近事件', noneYet: '暂无', lastTest: '最近一次测试', neverTested: '从未测试',
-    statusRefreshFailed: '运行状态刷新失败', latestFailure: '最近一次失败', latestFailureDetail: '请检查配置、网络和运行日志后重试。', savedButNotConnected: '凭据已保存，但连接尚未成功启动。', setupMethod: '接入方式', connectionSettings: '连接配置', localCredentials: '凭据仅保存在本机', autosave: '自动保存',
-    setupAria: (name: string) => `${name}接入方式`, quickRecommended: '快捷接入（推荐）', manual: '手动配置', quickAria: (name: string) => `${name}快捷接入`,
-    quickWecomTitle: '扫码创建并绑定机器人', quickTitle: '扫码自动创建应用与机器人', quickWecomDetail: '企业管理员扫码确认后，Maka 会保存 Bot ID 与 Secret 并启动长连接。',
-    quickQqTitle: '使用手机 QQ 扫码创建并绑定机器人', quickQqDetail: '确认后，QQ 会安全返回 AppID 与 AppSecret，Maka 在本机保存凭据并启动 Gateway。',
+    unavailableHint: '该平台未开放，暂不能启用。',
+    scanFirstHint: '先扫码接入后才能启用。',
+    testFirstHint: '先测试并连接后才能启用。',
+    back: '返回远程接入',
+    configDocs: '查看配置文档',
+    enableAria: (name: string) => `启用${name}渠道`,
+    listening: '正在监听新消息',
+    healthy: '连接正常，无需处理。',
+    actionsAria: (name: string) => `${name}渠道操作`,
+    quickBind: '快捷绑定',
+    scanLogin: '扫码登录',
+    scanConnect: '扫码接入',
+    disconnecting: '断开中…',
+    disconnectWechat: '断开微信登录',
+    bridgeQr: '本机桥接二维码',
+    testing: '测试中…',
+    test: '测试连接',
+    connecting: '连接中…',
+    testAndConnect: '测试并连接',
+    restarting: '重启中…',
+    restart: '重启监听',
+    runtimeAria: (name: string) => `${name}运行状态`,
+    identity: '身份',
+    unknownIdentity: '未获取',
+    connectionType: '通道类型',
+    lastEvent: '最近事件',
+    noneYet: '暂无',
+    lastTest: '最近一次测试',
+    neverTested: '从未测试',
+    statusRefreshFailed: '运行状态刷新失败',
+    latestFailure: '最近一次失败',
+    latestFailureDetail: '请检查配置、网络和运行日志后重试。',
+    savedButNotConnected: '凭据已保存，但连接尚未成功启动。',
+    setupMethod: '接入方式',
+    connectionSettings: '连接配置',
+    localCredentials: '凭据仅保存在本机',
+    autosave: '自动保存',
+    setupAria: (name: string) => `${name}接入方式`,
+    quickRecommended: '快捷接入（推荐）',
+    manual: '手动配置',
+    quickAria: (name: string) => `${name}快捷接入`,
+    quickWecomTitle: '扫码创建并绑定机器人',
+    quickTitle: '扫码自动创建应用与机器人',
+    quickWecomDetail: '企业管理员扫码确认后，Maka 会保存 Bot ID 与 Secret 并启动长连接。',
+    quickQqTitle: '使用手机 QQ 扫码创建并绑定机器人',
+    quickQqDetail: '确认后，QQ 会安全返回 AppID 与 AppSecret，Maka 在本机保存凭据并启动 Gateway。',
     telegramOfficialFlow: 'Telegram 官方目前仅支持通过 @BotFather 获取 Bot Token，不提供扫码创建 Bot 并回传 Token 的 API。',
-    quickDetail: '扫码确认后，Maka 会在 main process 内保存凭据并启动消息连接。', feishuRegionAria: '选择飞书账号区域', feishu: '飞书',
-    beginQuickBind: '开始快捷绑定', scanWith: (name: string) => `使用${name}扫码接入`, planned: '这个平台当前只作为平台清单展示，不会进入可用渠道，也不会保存为定时任务投递目标。',
-    credentialsSaved: (name: string) => `${name}凭据已保存`, scanComplete: (name: string) => `${name}已完成扫码接入`, savedAndConnected: '凭据已安全保存并开始连接',
-    proxy: '代理地址', chinaRequired: '（国内网络必填）', authOnly: '（仅用于 Bot 鉴权）', telegramProxyAria: 'Telegram 代理地址',
-    telegramNotice: '请打开网络的 TUN 模式后重启应用，以便完成 Telegram Bot 设置', feishuCredentialId: '飞书凭据 ID', feishuSecret: '飞书 App Secret',
-    feishuDomain: '飞书域名', feishuOption: '飞书 (feishu.cn)', discordProxyAria: 'Discord 代理地址',
+    quickDetail: '扫码确认后，Maka 会在 main process 内保存凭据并启动消息连接。',
+    feishuRegionAria: '选择飞书账号区域',
+    feishu: '飞书',
+    beginQuickBind: '开始快捷绑定',
+    scanWith: (name: string) => `使用${name}扫码接入`,
+    planned: '这个平台当前只作为平台清单展示，不会进入可用渠道，也不会保存为定时任务投递目标。',
+    credentialsSaved: (name: string) => `${name}凭据已保存`,
+    scanComplete: (name: string) => `${name}已完成扫码接入`,
+    savedAndConnected: '凭据已安全保存并开始连接',
+    proxy: '代理地址',
+    chinaRequired: '（国内网络必填）',
+    authOnly: '（仅用于 Bot 鉴权）',
+    telegramProxyAria: 'Telegram 代理地址',
+    telegramNotice: '请打开网络的 TUN 模式后重启应用，以便完成 Telegram Bot 设置',
+    feishuCredentialId: '飞书凭据 ID',
+    feishuSecret: '飞书 App Secret',
+    feishuDomain: '飞书域名',
+    feishuOption: '飞书 (feishu.cn)',
+    discordProxyAria: 'Discord 代理地址',
     discordNotice: '国内网络访问 Discord：上方代理仅作用于 Bot 鉴权请求，消息收发走 WebSocket 长连接需要系统级代理。请打开网络的 TUN 模式后重启应用。',
-    dingtalkId: '钉钉应用密钥', dingtalkSecret: '钉钉 Client Secret', wecomBotPlaceholder: '企业微信 AI 应用 Bot ID', wecomBotAria: '企业微信 Bot ID',
-    wecomSecretPlaceholder: 'AI 应用 Secret', wecomSecretAria: '企业微信 Secret', qqId: 'QQ 应用编号',
-    allowedUsersLabel: (count: number, max: number) => `允许的用户 ID（${count} / ${max}）`, allowedUsersPlaceholder: '每行一个用户 ID，留空表示不限\n例如：123456789',
+    dingtalkId: '钉钉应用密钥',
+    dingtalkSecret: '钉钉 Client Secret',
+    wecomBotPlaceholder: '企业微信 AI 应用 Bot ID',
+    wecomBotAria: '企业微信 Bot ID',
+    wecomSecretPlaceholder: 'AI 应用 Secret',
+    wecomSecretAria: '企业微信 Secret',
+    qqId: 'QQ 应用编号',
+    allowedUsersLabel: (count: number, max: number) => `允许的用户 ID（${count} / ${max}）`,
+    allowedUsersPlaceholder: '每行一个用户 ID，留空表示不限\n例如：123456789',
     allowedUsersHelp: 'Telegram 用户 ID 是 64 位整数；填入后只接收列表里这些 ID 的来信，其它人发的消息会被静默忽略（不会回弹任何提示）。',
-    limitReached: '（已达到上限）', invalidUsers: (values: string) => `下列不是数字 ID，可能是用户名之类的输入，匹配不到任何人：${values}`, moreInvalid: (count: number) => ` 等 ${count} 项`,
+    limitReached: '（已达到上限）',
+    invalidUsers: (values: string) => `下列不是数字 ID，可能是用户名之类的输入，匹配不到任何人：${values}`,
+    moreInvalid: (count: number) => ` 等 ${count} 项`
   },
   onboarding: {
     providers: {
-      dingtalk: { title: '配置钉钉', ariaLabel: '配置钉钉扫码接入', qrAlt: '配置钉钉二维码', subtitle: '在钉钉中扫码完成应用注册', waiting: '请使用钉钉扫描二维码并确认授权', scanned: '已扫码，请在钉钉中完成确认' },
-      feishu: { title: '配置飞书', ariaLabel: '配置飞书扫码接入', qrAlt: '配置飞书二维码', subtitle: '使用飞书扫描二维码，自动创建并配置机器人', waiting: '请使用飞书扫描二维码并确认创建', scanned: '已扫码，请在飞书中完成确认' },
-      wecom: { title: '配置企业微信', ariaLabel: '配置企业微信扫码接入', qrAlt: '配置企业微信二维码', subtitle: '快捷绑定会自动创建并连接企业微信机器人', waiting: '打开企业微信，扫描二维码完成机器人创建', scanned: '已扫码，请在企业微信中完成确认' },
-      wechat: { title: '扫码登录', ariaLabel: '微信扫码登录', qrAlt: '微信扫码登录二维码', subtitle: '请使用微信扫描二维码完成连接', waiting: '请使用微信扫描二维码并在手机上确认', scanned: '已扫码，请在微信中完成确认' },
-      qq: { title: '配置 QQ', ariaLabel: '配置 QQ 扫码接入', qrAlt: '配置 QQ 二维码', subtitle: '使用手机 QQ 扫码创建并绑定机器人', waiting: '请使用手机 QQ 扫描二维码并确认绑定', scanned: '已扫码，请在 QQ 中完成确认' },
+      dingtalk: {
+        title: '配置钉钉',
+        ariaLabel: '配置钉钉扫码接入',
+        qrAlt: '配置钉钉二维码',
+        subtitle: '在钉钉中扫码完成应用注册',
+        waiting: '请使用钉钉扫描二维码并确认授权',
+        scanned: '已扫码，请在钉钉中完成确认'
+      },
+      feishu: {
+        title: '配置飞书',
+        ariaLabel: '配置飞书扫码接入',
+        qrAlt: '配置飞书二维码',
+        subtitle: '使用飞书扫描二维码，自动创建并配置机器人',
+        waiting: '请使用飞书扫描二维码并确认创建',
+        scanned: '已扫码，请在飞书中完成确认'
+      },
+      wecom: {
+        title: '配置企业微信',
+        ariaLabel: '配置企业微信扫码接入',
+        qrAlt: '配置企业微信二维码',
+        subtitle: '快捷绑定会自动创建并连接企业微信机器人',
+        waiting: '打开企业微信，扫描二维码完成机器人创建',
+        scanned: '已扫码，请在企业微信中完成确认'
+      },
+      wechat: {
+        title: '扫码登录',
+        ariaLabel: '微信扫码登录',
+        qrAlt: '微信扫码登录二维码',
+        subtitle: '请使用微信扫描二维码完成连接',
+        waiting: '请使用微信扫描二维码并在手机上确认',
+        scanned: '已扫码，请在微信中完成确认'
+      },
+      qq: {
+        title: '配置 QQ',
+        ariaLabel: '配置 QQ 扫码接入',
+        qrAlt: '配置 QQ 二维码',
+        subtitle: '使用手机 QQ 扫码创建并绑定机器人',
+        waiting: '请使用手机 QQ 扫描二维码并确认绑定',
+        scanned: '已扫码，请在 QQ 中完成确认'
+      }
     },
-    lark: { title: '配置 Lark', ariaLabel: '配置 Lark 扫码接入', qrAlt: '配置 Lark 二维码', subtitle: '使用 Lark 扫描二维码，自动创建并配置机器人', waiting: '请使用 Lark 扫描二维码并确认创建', scanned: '已扫码，请在 Lark 中完成确认' },
-    connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`, close: (title: string) => `关闭${title}`,
-    generatingAria: '正在生成二维码', privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。', openBrowser: '无法扫码？在浏览器中打开',
-    done: '完成', regenerate: '重新生成', refreshQr: '刷新二维码', cancel: '取消', generating: '正在生成安全二维码…', connecting: '授权完成，正在保存凭据并启动连接…',
-    connected: (name: string) => `${name} 已连接`, connectedWarning: '凭据已保存，但连接尚未成功启动。', expired: '二维码已过期，请重新生成', denied: '授权已取消，请重新生成二维码', cancelled: '扫码接入已取消', failed: '扫码接入失败，请重试', preparing: '准备扫码接入…',
+    lark: {
+      title: '配置 Lark',
+      ariaLabel: '配置 Lark 扫码接入',
+      qrAlt: '配置 Lark 二维码',
+      subtitle: '使用 Lark 扫描二维码，自动创建并配置机器人',
+      waiting: '请使用 Lark 扫描二维码并确认创建',
+      scanned: '已扫码，请在 Lark 中完成确认'
+    },
+    connectedRefreshFailed: (message: string) => `连接已完成，但状态刷新失败：${message}`,
+    close: (title: string) => `关闭${title}`,
+    generatingAria: '正在生成二维码',
+    privacy: '凭据仅保存在本机，不会传给 renderer 或 Maka 云端。',
+    openBrowser: '无法扫码？在浏览器中打开',
+    done: '完成',
+    regenerate: '重新生成',
+    refreshQr: '刷新二维码',
+    cancel: '取消',
+    generating: '正在生成安全二维码…',
+    connecting: '授权完成，正在保存凭据并启动连接…',
+    connected: (name: string) => `${name} 已连接`,
+    connectedWarning: '凭据已保存，但连接尚未成功启动。',
+    expired: '二维码已过期，请重新生成',
+    denied: '授权已取消，请重新生成二维码',
+    cancelled: '扫码接入已取消',
+    failed: '扫码接入失败，请重试',
+    preparing: '准备扫码接入…'
   },
   wechat: {
-    token: '微信 Bot Token', tokenPlaceholder: '本机 wechat-bridge Bearer Token', collapseAdvanced: '收起高级设置', expandAdvanced: '高级设置（公众号 / 本机 bridge 地址）',
-    bridgeAddress: '本机 bridge 地址', appId: '公众号 App ID', appIdPlaceholder: '微信公众号 App ID',
-    appSecret: '公众号 App Secret', appSecretPlaceholder: '微信公众号 App Secret',
+    token: '微信 Bot Token',
+    tokenPlaceholder: '本机 wechat-bridge Bearer Token',
+    collapseAdvanced: '收起高级设置',
+    expandAdvanced: '高级设置（公众号 / 本机 bridge 地址）',
+    bridgeAddress: '本机 bridge 地址',
+    appId: '公众号 App ID',
+    appIdPlaceholder: '微信公众号 App ID',
+    appSecret: '公众号 App Secret',
+    appSecretPlaceholder: '微信公众号 App Secret',
     advancedNotice: '本机 bridge 默认为 http://127.0.0.1:18400。公众号 App ID / App Secret 仅用于公众号消息发送，个人微信扫码登录走本机 bridge。',
-    readQrFailed: '读取本机 wechat-bridge 二维码失败，请确认 bridge 已启动。', title: '微信扫码登录', subtitle: '使用手机微信扫描二维码，并在手机上确认登录本机 wechat-bridge。', close: '关闭微信扫码登录',
-    generating: '正在生成二维码…', loggedIn: '微信已登录，返回后可以测试连接或重启监听。', expired: '二维码已过期', expiredHint: '刷新二维码后重新扫码即可继续登录。', refreshing: '刷新中…', refresh: '刷新二维码', qrAlt: '微信扫码登录二维码',
-    waiting: '等待扫码确认… 窗口会每 3 秒刷新登录状态。', retrying: '重试中…', retry: '重试', bridgeGenerating: 'bridge 正在生成二维码', bridgeGeneratingHint: '二维码就绪后会自动显示，也可以手动重新获取。', fetching: '获取中…', fetchAgain: '重新获取',
-  },
+    readQrFailed: '读取本机 wechat-bridge 二维码失败，请确认 bridge 已启动。',
+    title: '微信扫码登录',
+    subtitle: '使用手机微信扫描二维码，并在手机上确认登录本机 wechat-bridge。',
+    close: '关闭微信扫码登录',
+    generating: '正在生成二维码…',
+    loggedIn: '微信已登录，返回后可以测试连接或重启监听。',
+    expired: '二维码已过期',
+    expiredHint: '刷新二维码后重新扫码即可继续登录。',
+    refreshing: '刷新中…',
+    refresh: '刷新二维码',
+    qrAlt: '微信扫码登录二维码',
+    waiting: '等待扫码确认… 窗口会每 3 秒刷新登录状态。',
+    retrying: '重试中…',
+    retry: '重试',
+    bridgeGenerating: 'bridge 正在生成二维码',
+    bridgeGeneratingHint: '二维码就绪后会自动显示，也可以手动重新获取。',
+    fetching: '获取中…',
+    fetchAgain: '重新获取'
+  }
 } as const;
-
 export type BotSettingsCopy = WidenCopy<typeof zhCopy>;
-
 const enCopy: BotSettingsCopy = {
   providers: {
-    telegram: { label: 'Telegram', help: 'Create a bot with @BotFather and get its token' }, feishu: { label: 'Feishu', help: 'Create an app and credentials in Feishu Open Platform' },
-    wecom: { label: 'WeCom', help: 'Connect a WeCom AI app over a persistent WebSocket' }, wechat: { label: 'WeChat', help: 'Connect personal WeChat through the local bridge; requires WeChat 8.0.70+ on iOS or Android.' },
-    discord: { label: 'Discord', help: 'Create a bot in Discord Developer Portal' }, dingtalk: { label: 'DingTalk', help: 'Create a bot app in DingTalk Developer Console' }, qq: { label: 'QQ', help: 'Create a bot in QQ Open Platform and get its AppID and AppSecret' },
-    slack: { label: 'Slack', help: 'Connect with a Bot Token and App-Level Token over Socket Mode' },
+    telegram: {
+      label: 'Telegram',
+      help: 'Create a bot with @BotFather and get its token'
+    },
+    feishu: {
+      label: 'Feishu',
+      help: 'Create an app and credentials in Feishu Open Platform'
+    },
+    wecom: {
+      label: 'WeCom',
+      help: 'Connect a WeCom AI app over a persistent WebSocket'
+    },
+    wechat: {
+      label: 'WeChat',
+      help: 'Connect personal WeChat through the local bridge; requires WeChat 8.0.70+ on iOS or Android.'
+    },
+    discord: {
+      label: 'Discord',
+      help: 'Create a bot in Discord Developer Portal'
+    },
+    dingtalk: {
+      label: 'DingTalk',
+      help: 'Create a bot app in DingTalk Developer Console'
+    },
+    qq: {
+      label: 'QQ',
+      help: 'Create a bot in QQ Open Platform and get its AppID and AppSecret'
+    },
+    slack: {
+      label: 'Slack',
+      help: 'Connect with a Bot Token and App-Level Token over Socket Mode'
+    }
   },
   readiness: {
-    unscaffolded: { label: 'Unavailable', detail: 'This platform cannot currently be used for remote access.', tone: 'neutral' }, scaffolded: { label: 'Setup required', detail: 'Add the credentials required by this platform.', tone: 'neutral' },
-    configured: { label: 'Configured', detail: 'Configuration is saved; credential or runtime validation is still required.', tone: 'attention' }, credentials_valid: { label: 'Credentials valid', detail: 'The credential check passed; this does not prove messages can be sent or received.', tone: 'attention' },
-    operational: { label: 'Operational', detail: 'The latest live runtime check succeeded.', tone: 'success' }, degraded: { label: 'Degraded', detail: 'This channel worked before, but the latest runtime check failed.', tone: 'error' },
+    unscaffolded: {
+      label: 'Unavailable',
+      detail: 'This platform cannot currently be used for remote access.',
+      tone: 'neutral'
+    },
+    scaffolded: {
+      label: 'Setup required',
+      detail: 'Add the credentials required by this platform.',
+      tone: 'neutral'
+    },
+    configured: {
+      label: 'Configured',
+      detail: 'Configuration is saved; credential or runtime validation is still required.',
+      tone: 'attention'
+    },
+    credentials_valid: {
+      label: 'Credentials valid',
+      detail: 'The credential check passed; this does not prove messages can be sent or received.',
+      tone: 'attention'
+    },
+    operational: {
+      label: 'Operational',
+      detail: 'The latest live runtime check succeeded.',
+      tone: 'success'
+    },
+    degraded: {
+      label: 'Degraded',
+      detail: 'This channel worked before, but the latest runtime check failed.',
+      tone: 'error'
+    }
   },
-  planned: { label: 'Unavailable', detail: 'This platform is not saved as a remote-access channel or scheduled-task delivery target.', tone: 'neutral' },
-  status: { disabled: 'Turned off', noToken: 'Waiting for Bot Token', missingFeishuCredentials: 'Waiting for Feishu App ID or App Secret', feishuDomainRequired: 'Feishu credentials are valid; add the event subscription domain', feishuEventsNotConnected: 'Feishu credentials are valid; connect the event callback', unavailable: 'This platform cannot currently be used for remote access', stopped: 'Listener stopped', detailsInLogs: 'See logs for runtime details', polling: 'Long polling', gateway: 'Event channel', webhook: 'Webhook', none: 'None' },
-  overview: { loadFailed: 'Failed to load remote-access status', reload: 'Reload', active: 'In use', sortHint: 'Sorted by attention needed and recent activity', empty: 'No channels are in use', emptyHelp: 'Choose a messaging platform below to begin setup.', more: 'Connect more channels', choose: 'Choose a platform to begin setup', listening: 'Listening', manageAria: (name, status) => `Manage ${name}, ${status}`, connectAria: (name) => `Connect ${name}` },
-  page: { saveFailed: (name) => `Failed to save ${name}`, loadFailed: 'Failed to load remote-access status', refreshFailed: 'Failed to refresh remote-access status', credentialVerified: (name) => `${name} credentials verified`, credentialVerifiedDetail: 'The credential check passed.', credentialTestFailed: (name) => `${name} credential test failed`, credentialTestFailedDetail: 'Check the credentials and network settings, then try again.', testError: (name) => `${name} test error`, listening: (name) => `${name} is listening`, notListening: (name) => `${name} did not start listening`, startFailed: (name) => `Failed to start ${name}`, disconnectTitle: 'Disconnect WeChat?', disconnectDescription: 'This clears the saved local QR sign-in credentials. You will need to scan again to keep using WeChat.', disconnect: 'Disconnect', cancel: 'Cancel', disconnected: 'WeChat disconnected', credentialsCleared: 'Local linked-session credentials cleared.' },
+  planned: {
+    label: 'Unavailable',
+    detail: 'This platform is not saved as a remote-access channel or scheduled-task delivery target.',
+    tone: 'neutral'
+  },
+  status: {
+    disabled: 'Turned off',
+    noToken: 'Waiting for Bot Token',
+    missingFeishuCredentials: 'Waiting for Feishu App ID or App Secret',
+    feishuDomainRequired: 'Feishu credentials are valid; add the event subscription domain',
+    feishuEventsNotConnected: 'Feishu credentials are valid; connect the event callback',
+    unavailable: 'This platform cannot currently be used for remote access',
+    stopped: 'Listener stopped',
+    detailsInLogs: 'See logs for runtime details',
+    polling: 'Long polling',
+    gateway: 'Event channel',
+    webhook: 'Webhook',
+    none: 'None'
+  },
+  overview: {
+    loadFailed: 'Failed to load remote-access status',
+    reload: 'Reload',
+    active: 'In use',
+    sortHint: 'Sorted by attention needed and recent activity',
+    empty: 'No channels are in use',
+    emptyHelp: 'Choose a messaging platform below to begin setup.',
+    more: 'Connect more channels',
+    choose: 'Choose a platform to begin setup',
+    listening: 'Listening',
+    manageAria: (name, status) => `Manage ${name}, ${status}`,
+    connectAria: name => `Connect ${name}`
+  },
+  page: {
+    saveFailed: name => `Failed to save ${name}`,
+    loadFailed: 'Failed to load remote-access status',
+    refreshFailed: 'Failed to refresh remote-access status',
+    credentialVerified: name => `${name} credentials verified`,
+    credentialVerifiedDetail: 'The credential check passed.',
+    credentialTestFailed: name => `${name} credential test failed`,
+    credentialTestFailedDetail: 'Check the credentials and network settings, then try again.',
+    testError: name => `${name} test error`,
+    listening: name => `${name} is listening`,
+    notListening: name => `${name} did not start listening`,
+    startFailed: name => `Failed to start ${name}`,
+    disconnectTitle: 'Disconnect WeChat?',
+    disconnectDescription: 'This clears the saved local QR sign-in credentials. You will need to scan again to keep using WeChat.',
+    disconnect: 'Disconnect',
+    cancel: 'Cancel',
+    disconnected: 'WeChat disconnected',
+    credentialsCleared: 'Local linked-session credentials cleared.'
+  },
   detail: {
-    unavailableHint: 'This platform is not available and cannot be enabled.', scanFirstHint: 'Scan to connect before enabling this channel.', testFirstHint: 'Test and connect before enabling this channel.', back: 'Back to Remote access', configDocs: 'View setup guide', enableAria: (name) => `Enable ${name} channel`, listening: 'Listening for new messages', healthy: 'Connection healthy. No action needed.', actionsAria: (name) => `${name} channel actions`, quickBind: 'Quick connect', scanLogin: 'Scan to sign in', scanConnect: 'Scan to connect', disconnecting: 'Disconnecting…', disconnectWechat: 'Disconnect WeChat', bridgeQr: 'Local bridge QR code', testing: 'Testing…', test: 'Test connection', connecting: 'Connecting…', testAndConnect: 'Test and connect', restarting: 'Restarting…', restart: 'Restart listener', runtimeAria: (name) => `${name} runtime status`, identity: 'Identity', unknownIdentity: 'Unavailable', connectionType: 'Connection type', lastEvent: 'Last event', noneYet: 'None', lastTest: 'Last test', neverTested: 'Never tested', statusRefreshFailed: 'Failed to refresh runtime status', latestFailure: 'Latest failure', latestFailureDetail: 'Check the configuration, network, and runtime logs, then try again.', savedButNotConnected: 'Credentials were saved, but the connection did not start.', setupMethod: 'Connection method', connectionSettings: 'Connection settings', localCredentials: 'Credentials stay on this device', autosave: 'Saved automatically', setupAria: (name) => `${name} connection method`, quickRecommended: 'Quick setup (recommended)', manual: 'Manual setup', quickAria: (name) => `${name} quick setup`, quickWecomTitle: 'Scan to create and connect a bot', quickTitle: 'Scan to create an app and bot', quickWecomDetail: 'After an administrator confirms the scan, Maka saves the Bot ID and Secret and starts the persistent connection.', quickQqTitle: 'Scan with mobile QQ to create and bind a bot', quickQqDetail: 'After confirmation, QQ securely returns the AppID and AppSecret; Maka stores them locally and starts the Gateway.', telegramOfficialFlow: 'Telegram officially requires a Bot Token from @BotFather and does not provide an API that creates a bot by QR scan and returns its token.', quickDetail: 'After confirmation, Maka stores credentials in the main process and starts the message connection.', feishuRegionAria: 'Choose Feishu account region', feishu: 'Feishu', beginQuickBind: 'Start quick connect', scanWith: (name) => `Scan with ${name}`, planned: 'This platform is shown in the catalog only. It will not become an active channel or a scheduled-task delivery target.', credentialsSaved: (name) => `${name} credentials saved`, scanComplete: (name) => `${name} QR setup complete`, savedAndConnected: 'Credentials saved securely and connection started', proxy: 'Proxy URL', chinaRequired: '(required on networks in mainland China)', authOnly: '(Bot authentication only)', telegramProxyAria: 'Telegram proxy URL', telegramNotice: 'Enable TUN mode in your network tool and restart the app to complete Telegram Bot setup.', feishuCredentialId: 'Feishu credential ID', feishuSecret: 'Feishu App Secret', feishuDomain: 'Feishu domain', feishuOption: 'Feishu (feishu.cn)', discordProxyAria: 'Discord proxy URL', discordNotice: 'For Discord access from mainland China, the proxy above covers Bot authentication only. Message WebSockets require a system-level proxy. Enable TUN mode and restart the app.', dingtalkId: 'DingTalk app key', dingtalkSecret: 'DingTalk Client Secret', wecomBotPlaceholder: 'WeCom AI app Bot ID', wecomBotAria: 'WeCom Bot ID', wecomSecretPlaceholder: 'AI app Secret', wecomSecretAria: 'WeCom Secret', qqId: 'QQ app ID', allowedUsersLabel: (count, max) => `Allowed user IDs (${count} / ${max})`, allowedUsersPlaceholder: 'One user ID per line; leave empty to allow everyone\nExample: 123456789', allowedUsersHelp: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored.', limitReached: '(limit reached)', invalidUsers: (values) => `These entries are not numeric IDs and may be usernames, so they will not match anyone: ${values}`, moreInvalid: (count) => ` and ${count} more`,
+    unavailableHint: 'This platform is not available and cannot be enabled.',
+    scanFirstHint: 'Scan to connect before enabling this channel.',
+    testFirstHint: 'Test and connect before enabling this channel.',
+    back: 'Back to Remote access',
+    configDocs: 'View setup guide',
+    enableAria: name => `Enable ${name} channel`,
+    listening: 'Listening for new messages',
+    healthy: 'Connection healthy. No action needed.',
+    actionsAria: name => `${name} channel actions`,
+    quickBind: 'Quick connect',
+    scanLogin: 'Scan to sign in',
+    scanConnect: 'Scan to connect',
+    disconnecting: 'Disconnecting…',
+    disconnectWechat: 'Disconnect WeChat',
+    bridgeQr: 'Local bridge QR code',
+    testing: 'Testing…',
+    test: 'Test connection',
+    connecting: 'Connecting…',
+    testAndConnect: 'Test and connect',
+    restarting: 'Restarting…',
+    restart: 'Restart listener',
+    runtimeAria: name => `${name} runtime status`,
+    identity: 'Identity',
+    unknownIdentity: 'Unavailable',
+    connectionType: 'Connection type',
+    lastEvent: 'Last event',
+    noneYet: 'None',
+    lastTest: 'Last test',
+    neverTested: 'Never tested',
+    statusRefreshFailed: 'Failed to refresh runtime status',
+    latestFailure: 'Latest failure',
+    latestFailureDetail: 'Check the configuration, network, and runtime logs, then try again.',
+    savedButNotConnected: 'Credentials were saved, but the connection did not start.',
+    setupMethod: 'Connection method',
+    connectionSettings: 'Connection settings',
+    localCredentials: 'Credentials stay on this device',
+    autosave: 'Saved automatically',
+    setupAria: name => `${name} connection method`,
+    quickRecommended: 'Quick setup (recommended)',
+    manual: 'Manual setup',
+    quickAria: name => `${name} quick setup`,
+    quickWecomTitle: 'Scan to create and connect a bot',
+    quickTitle: 'Scan to create an app and bot',
+    quickWecomDetail: 'After an administrator confirms the scan, Maka saves the Bot ID and Secret and starts the persistent connection.',
+    quickQqTitle: 'Scan with mobile QQ to create and bind a bot',
+    quickQqDetail: 'After confirmation, QQ securely returns the AppID and AppSecret; Maka stores them locally and starts the Gateway.',
+    telegramOfficialFlow: 'Telegram officially requires a Bot Token from @BotFather and does not provide an API that creates a bot by QR scan and returns its token.',
+    quickDetail: 'After confirmation, Maka stores credentials in the main process and starts the message connection.',
+    feishuRegionAria: 'Choose Feishu account region',
+    feishu: 'Feishu',
+    beginQuickBind: 'Start quick connect',
+    scanWith: name => `Scan with ${name}`,
+    planned: 'This platform is shown in the catalog only. It will not become an active channel or a scheduled-task delivery target.',
+    credentialsSaved: name => `${name} credentials saved`,
+    scanComplete: name => `${name} QR setup complete`,
+    savedAndConnected: 'Credentials saved securely and connection started',
+    proxy: 'Proxy URL',
+    chinaRequired: '(required on networks in mainland China)',
+    authOnly: '(Bot authentication only)',
+    telegramProxyAria: 'Telegram proxy URL',
+    telegramNotice: 'Enable TUN mode in your network tool and restart the app to complete Telegram Bot setup.',
+    feishuCredentialId: 'Feishu credential ID',
+    feishuSecret: 'Feishu App Secret',
+    feishuDomain: 'Feishu domain',
+    feishuOption: 'Feishu (feishu.cn)',
+    discordProxyAria: 'Discord proxy URL',
+    discordNotice: 'For Discord access from mainland China, the proxy above covers Bot authentication only. Message WebSockets require a system-level proxy. Enable TUN mode and restart the app.',
+    dingtalkId: 'DingTalk app key',
+    dingtalkSecret: 'DingTalk Client Secret',
+    wecomBotPlaceholder: 'WeCom AI app Bot ID',
+    wecomBotAria: 'WeCom Bot ID',
+    wecomSecretPlaceholder: 'AI app Secret',
+    wecomSecretAria: 'WeCom Secret',
+    qqId: 'QQ app ID',
+    allowedUsersLabel: (count, max) => `Allowed user IDs (${count} / ${max})`,
+    allowedUsersPlaceholder: 'One user ID per line; leave empty to allow everyone\nExample: 123456789',
+    allowedUsersHelp: 'Telegram user IDs are 64-bit integers. When set, only messages from these IDs are accepted; all others are silently ignored.',
+    limitReached: '(limit reached)',
+    invalidUsers: values => `These entries are not numeric IDs and may be usernames, so they will not match anyone: ${values}`,
+    moreInvalid: count => ` and ${count} more`
   },
   onboarding: {
-    providers: { dingtalk: { title: 'Set up DingTalk', ariaLabel: 'Set up DingTalk with a QR code', qrAlt: 'DingTalk setup QR code', subtitle: 'Scan in DingTalk to register the app', waiting: 'Scan with DingTalk and confirm authorization', scanned: 'Scanned. Complete confirmation in DingTalk.' }, feishu: { title: 'Set up Feishu', ariaLabel: 'Set up Feishu with a QR code', qrAlt: 'Feishu setup QR code', subtitle: 'Scan with Feishu to create and configure the bot', waiting: 'Scan with Feishu and confirm creation', scanned: 'Scanned. Complete confirmation in Feishu.' }, wecom: { title: 'Set up WeCom', ariaLabel: 'Set up WeCom with a QR code', qrAlt: 'WeCom setup QR code', subtitle: 'Quick setup creates and connects a WeCom bot', waiting: 'Open WeCom and scan to create the bot', scanned: 'Scanned. Complete confirmation in WeCom.' }, wechat: { title: 'Scan to sign in', ariaLabel: 'WeChat QR sign-in', qrAlt: 'WeChat sign-in QR code', subtitle: 'Scan with WeChat to connect', waiting: 'Scan with WeChat and confirm on your phone', scanned: 'Scanned. Complete confirmation in WeChat.' }, qq: { title: 'Set up QQ', ariaLabel: 'Set up QQ with a QR code', qrAlt: 'QQ setup QR code', subtitle: 'Scan with mobile QQ to create and bind a bot', waiting: 'Scan with mobile QQ and confirm binding', scanned: 'Scanned. Complete confirmation in QQ.' } },
-    lark: { title: 'Set up Lark', ariaLabel: 'Set up Lark with a QR code', qrAlt: 'Lark setup QR code', subtitle: 'Scan with Lark to create and configure the bot', waiting: 'Scan with Lark and confirm creation', scanned: 'Scanned. Complete confirmation in Lark.' }, connectedRefreshFailed: (message) => `Connected, but status refresh failed: ${message}`, close: (title) => `Close ${title}`, generatingAria: 'Generating QR code', privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.', openBrowser: 'Cannot scan? Open in browser', done: 'Done', regenerate: 'Generate again', refreshQr: 'Refresh QR code', cancel: 'Cancel', generating: 'Generating a secure QR code…', connecting: 'Authorization complete. Saving credentials and starting connection…', connected: (name) => `${name} connected`, connectedWarning: 'Credentials were saved, but the connection did not start.', expired: 'QR code expired. Generate a new one.', denied: 'Authorization cancelled. Generate a new QR code.', cancelled: 'QR setup cancelled', failed: 'QR setup failed. Try again.', preparing: 'Preparing QR setup…',
+    providers: {
+      dingtalk: {
+        title: 'Set up DingTalk',
+        ariaLabel: 'Set up DingTalk with a QR code',
+        qrAlt: 'DingTalk setup QR code',
+        subtitle: 'Scan in DingTalk to register the app',
+        waiting: 'Scan with DingTalk and confirm authorization',
+        scanned: 'Scanned. Complete confirmation in DingTalk.'
+      },
+      feishu: {
+        title: 'Set up Feishu',
+        ariaLabel: 'Set up Feishu with a QR code',
+        qrAlt: 'Feishu setup QR code',
+        subtitle: 'Scan with Feishu to create and configure the bot',
+        waiting: 'Scan with Feishu and confirm creation',
+        scanned: 'Scanned. Complete confirmation in Feishu.'
+      },
+      wecom: {
+        title: 'Set up WeCom',
+        ariaLabel: 'Set up WeCom with a QR code',
+        qrAlt: 'WeCom setup QR code',
+        subtitle: 'Quick setup creates and connects a WeCom bot',
+        waiting: 'Open WeCom and scan to create the bot',
+        scanned: 'Scanned. Complete confirmation in WeCom.'
+      },
+      wechat: {
+        title: 'Scan to sign in',
+        ariaLabel: 'WeChat QR sign-in',
+        qrAlt: 'WeChat sign-in QR code',
+        subtitle: 'Scan with WeChat to connect',
+        waiting: 'Scan with WeChat and confirm on your phone',
+        scanned: 'Scanned. Complete confirmation in WeChat.'
+      },
+      qq: {
+        title: 'Set up QQ',
+        ariaLabel: 'Set up QQ with a QR code',
+        qrAlt: 'QQ setup QR code',
+        subtitle: 'Scan with mobile QQ to create and bind a bot',
+        waiting: 'Scan with mobile QQ and confirm binding',
+        scanned: 'Scanned. Complete confirmation in QQ.'
+      }
+    },
+    lark: {
+      title: 'Set up Lark',
+      ariaLabel: 'Set up Lark with a QR code',
+      qrAlt: 'Lark setup QR code',
+      subtitle: 'Scan with Lark to create and configure the bot',
+      waiting: 'Scan with Lark and confirm creation',
+      scanned: 'Scanned. Complete confirmation in Lark.'
+    },
+    connectedRefreshFailed: message => `Connected, but status refresh failed: ${message}`,
+    close: title => `Close ${title}`,
+    generatingAria: 'Generating QR code',
+    privacy: 'Credentials stay on this device and are never sent to the renderer or Maka cloud.',
+    openBrowser: 'Cannot scan? Open in browser',
+    done: 'Done',
+    regenerate: 'Generate again',
+    refreshQr: 'Refresh QR code',
+    cancel: 'Cancel',
+    generating: 'Generating a secure QR code…',
+    connecting: 'Authorization complete. Saving credentials and starting connection…',
+    connected: name => `${name} connected`,
+    connectedWarning: 'Credentials were saved, but the connection did not start.',
+    expired: 'QR code expired. Generate a new one.',
+    denied: 'Authorization cancelled. Generate a new QR code.',
+    cancelled: 'QR setup cancelled',
+    failed: 'QR setup failed. Try again.',
+    preparing: 'Preparing QR setup…'
   },
-  wechat: { token: 'WeChat Bot Token', tokenPlaceholder: 'Local wechat-bridge Bearer Token', collapseAdvanced: 'Hide advanced settings', expandAdvanced: 'Advanced settings (Official Account / local bridge URL)', bridgeAddress: 'Local bridge URL', appId: 'Official Account App ID', appIdPlaceholder: 'WeChat Official Account App ID', appSecret: 'Official Account App Secret', appSecretPlaceholder: 'WeChat Official Account App Secret', advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.', readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.', title: 'WeChat QR sign-in', subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.', close: 'Close WeChat QR sign-in', generating: 'Generating QR code…', loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.', expired: 'QR code expired', expiredHint: 'Refresh the QR code and scan again to continue signing in.', refreshing: 'Refreshing…', refresh: 'Refresh QR code', qrAlt: 'WeChat sign-in QR code', waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.', retrying: 'Retrying…', retry: 'Retry', bridgeGenerating: 'The bridge is generating a QR code', bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.', fetching: 'Fetching…', fetchAgain: 'Fetch again' },
+  wechat: {
+    token: 'WeChat Bot Token',
+    tokenPlaceholder: 'Local wechat-bridge Bearer Token',
+    collapseAdvanced: 'Hide advanced settings',
+    expandAdvanced: 'Advanced settings (Official Account / local bridge URL)',
+    bridgeAddress: 'Local bridge URL',
+    appId: 'Official Account App ID',
+    appIdPlaceholder: 'WeChat Official Account App ID',
+    appSecret: 'Official Account App Secret',
+    appSecretPlaceholder: 'WeChat Official Account App Secret',
+    advancedNotice: 'The local bridge defaults to http://127.0.0.1:18400. Official Account App ID and App Secret are used only for Official Account messaging; personal WeChat QR sign-in uses the local bridge.',
+    readQrFailed: 'Could not read a QR code from the local wechat-bridge. Make sure the bridge is running.',
+    title: 'WeChat QR sign-in',
+    subtitle: 'Scan the QR code with WeChat and confirm signing in to the local wechat-bridge on your phone.',
+    close: 'Close WeChat QR sign-in',
+    generating: 'Generating QR code…',
+    loggedIn: 'WeChat is signed in. Return to test the connection or restart the listener.',
+    expired: 'QR code expired',
+    expiredHint: 'Refresh the QR code and scan again to continue signing in.',
+    refreshing: 'Refreshing…',
+    refresh: 'Refresh QR code',
+    qrAlt: 'WeChat sign-in QR code',
+    waiting: 'Waiting for confirmation… Sign-in status refreshes every 3 seconds.',
+    retrying: 'Retrying…',
+    retry: 'Retry',
+    bridgeGenerating: 'The bridge is generating a QR code',
+    bridgeGeneratingHint: 'The QR code appears automatically once ready; you can also fetch it again.',
+    fetching: 'Fetching…',
+    fetchAgain: 'Fetch again'
+  }
 };
-
-const BOT_SETTINGS_COPY = { zh: zhCopy, en: enCopy } satisfies UiCatalog<BotSettingsCopy>;
-
+const BOT_SETTINGS_COPY = {
+  zh: zhCopy,
+  en: enCopy,
+  ko: {
+    providers: {
+      telegram: {
+        label: "전보",
+        help: "@BotFather로 봇을 만들고 토큰을 받으세요."
+      },
+      feishu: {
+        label: "페이슈",
+        help: "Feishu Open Platform에서 앱 및 자격 증명 만들기"
+      },
+      wecom: {
+        label: "위컴",
+        help: "영구 WebSocket을 통해 WeCom AI 앱 연결"
+      },
+      wechat: {
+        label: "위챗",
+        help: "로컬 브리지를 통해 개인 WeChat을 연결합니다. iOS 또는 Android에는 WeChat 8.0.70 이상이 필요합니다."
+      },
+      discord: {
+        label: "불화",
+        help: "Discord 개발자 포털에서 봇 만들기"
+      },
+      dingtalk: {
+        label: "딩톡",
+        help: "DingTalk 개발자 콘솔에서 봇 앱 만들기"
+      },
+      qq: {
+        label: 'QQ',
+        help: "QQ Open Platform에서 봇을 생성하고 AppID와 AppSecret을 받으세요"
+      },
+      slack: {
+        label: "느슨하게",
+        help: "소켓 모드를 통해 봇 토큰 및 앱 수준 토큰과 연결"
+      }
+    },
+    readiness: {
+      unscaffolded: {
+        label: "없는",
+        detail: "이 플랫폼은 현재 원격 액세스에 사용할 수 없습니다.",
+        tone: 'neutral'
+      },
+      scaffolded: {
+        label: "설정 필요",
+        detail: "이 플랫폼에 필요한 자격 증명을 추가합니다.",
+        tone: 'neutral'
+      },
+      configured: {
+        label: "구성됨",
+        detail: "구성이 저장되었습니다. 자격 증명 또는 런타임 유효성 검사는 여전히 필요합니다.",
+        tone: 'attention'
+      },
+      credentials_valid: {
+        label: "유효한 자격 증명",
+        detail: "자격 증명 확인을 통과했습니다. 이는 메시지를 보내거나 받을 수 있다는 것을 증명하지 않습니다.",
+        tone: 'attention'
+      },
+      operational: {
+        label: "운영",
+        detail: "최신 라이브 런타임 확인이 성공했습니다.",
+        tone: 'success'
+      },
+      degraded: {
+        label: "타락한",
+        detail: "이 채널은 이전에는 작동했지만 최신 런타임 확인에 실패했습니다.",
+        tone: 'error'
+      }
+    },
+    planned: {
+      label: "없는",
+      detail: "이 플랫폼은 원격 액세스 채널이나 예약된 작업 전달 대상으로 저장되지 않습니다.",
+      tone: 'neutral'
+    },
+    status: {
+      disabled: "꺼짐",
+      noToken: "봇 토큰을 기다리는 중",
+      missingFeishuCredentials: "Feishu 앱 ID 또는 앱 비밀을 기다리는 중",
+      feishuDomainRequired: "Feishu 자격 증명이 유효합니다. 이벤트 구독 도메인 추가",
+      feishuEventsNotConnected: "Feishu 자격 증명이 유효합니다. 이벤트 콜백 연결",
+      unavailable: "이 플랫폼은 현재 원격 액세스에 사용할 수 없습니다.",
+      stopped: "리스너가 중지되었습니다.",
+      detailsInLogs: "런타임 세부정보는 로그를 참조하세요.",
+      polling: "긴 폴링",
+      gateway: "이벤트 채널",
+      webhook: "웹훅",
+      none: "없음"
+    },
+    overview: {
+      loadFailed: "원격 액세스 상태를 로드하지 못했습니다.",
+      reload: "새로고침",
+      active: "사용 중",
+      sortHint: "주의가 필요한 항목과 최근 활동을 기준으로 정렬됨",
+      empty: "사용 중인 채널이 없습니다.",
+      emptyHelp: "설정을 시작하려면 아래에서 메시지 플랫폼을 선택하세요.",
+      more: "더 많은 채널을 연결하세요",
+      choose: "설정을 시작하려면 플랫폼을 선택하세요",
+      listening: "청취",
+      manageAria: (name, status) => `${name}, ${status} 관리`,
+      connectAria: name => `${name} 연결`
+    },
+    page: {
+      saveFailed: name => `${name}을(를) 저장하지 못했습니다.`,
+      loadFailed: "원격 액세스 상태를 로드하지 못했습니다.",
+      refreshFailed: "원격 액세스 상태를 새로 고치지 못했습니다.",
+      credentialVerified: name => `${name} 자격 증명이 확인되었습니다.`,
+      credentialVerifiedDetail: "자격 증명 확인이 통과되었습니다.",
+      credentialTestFailed: name => `${name} 자격 증명 테스트에 실패했습니다.`,
+      credentialTestFailedDetail: "자격 증명과 네트워크 설정을 확인한 후 다시 시도하세요.",
+      testError: name => `${name} 테스트 오류`,
+      listening: name => `${name}이 듣고 있습니다`,
+      notListening: name => `${name}이 듣기 시작하지 않았습니다`,
+      startFailed: name => `${name}을(를) 시작하지 못했습니다.`,
+      disconnectTitle: "WeChat을 연결 해제하시겠습니까?",
+      disconnectDescription: "이렇게 하면 저장된 로컬 QR 로그인 자격 증명이 지워집니다. WeChat을 계속 사용하려면 다시 스캔해야 합니다.",
+      disconnect: "연결 끊기",
+      cancel: "취소",
+      disconnected: "위챗 연결이 끊어졌습니다",
+      credentialsCleared: "로컬 연결 세션 자격 증명이 지워졌습니다."
+    },
+    detail: {
+      unavailableHint: "이 플랫폼은 사용할 수 없으며 활성화할 수 없습니다.",
+      scanFirstHint: "이 채널을 활성화하기 전에 연결하려면 스캔하세요.",
+      testFirstHint: "이 채널을 활성화하기 전에 테스트하고 연결하세요.",
+      back: "원격 액세스로 돌아가기",
+      configDocs: "설정 가이드 보기",
+      enableAria: name => `${name} 채널 활성화`,
+      listening: "새 메시지 듣기",
+      healthy: "연결 상태가 양호합니다. 조치가 필요하지 않습니다.",
+      actionsAria: name => `${name} 채널 작업`,
+      quickBind: "빠른 연결",
+      scanLogin: "스캔하여 로그인",
+      scanConnect: "스캔하여 연결",
+      disconnecting: "연결 해제 중…",
+      disconnectWechat: "위챗 연결 끊기",
+      bridgeQr: "지역 교량 QR 코드",
+      testing: "테스트 중…",
+      test: "테스트 연결",
+      connecting: "연결 중…",
+      testAndConnect: "테스트 및 연결",
+      restarting: "다시 시작하는 중…",
+      restart: "리스너 다시 시작",
+      runtimeAria: name => `${name} 런타임 상태`,
+      identity: "신원",
+      unknownIdentity: "없는",
+      connectionType: "연결 유형",
+      lastEvent: "마지막 이벤트",
+      noneYet: "없음",
+      lastTest: "마지막 테스트",
+      neverTested: "테스트한 적 없음",
+      statusRefreshFailed: "런타임 상태를 새로 고치지 못했습니다.",
+      latestFailure: "최근 실패",
+      latestFailureDetail: "구성, 네트워크, 런타임 로그를 확인한 후 다시 시도하세요.",
+      savedButNotConnected: "자격 증명이 저장되었지만 연결이 시작되지 않았습니다.",
+      setupMethod: "연결 방법",
+      connectionSettings: "연결 설정",
+      localCredentials: "사용자 인증 정보는 이 기기에 유지됩니다.",
+      autosave: "자동으로 저장됨",
+      setupAria: name => `${name} 연결 방법`,
+      quickRecommended: "빠른 설정(권장)",
+      manual: "수동 설정",
+      quickAria: name => `${name} 빠른 설정`,
+      quickWecomTitle: "스캔하여 봇 생성 및 연결",
+      quickTitle: "스캔하여 앱과 봇 만들기",
+      quickWecomDetail: "관리자가 스캔을 확인한 후 Maka는 봇 ID와 비밀을 저장하고 영구 연결을 시작합니다.",
+      quickQqTitle: "모바일QQ로 스캔하여 봇 생성 및 바인딩",
+      quickQqDetail: "확인 후 QQ는 AppID와 AppSecret을 안전하게 반환합니다. Maka는 이를 로컬에 저장하고 게이트웨이를 시작합니다.",
+      telegramOfficialFlow: "텔레그램은 공식적으로 @BotFather의 봇 토큰을 요구하며, QR 스캔으로 봇을 생성하고 해당 토큰을 반환하는 API를 제공하지 않습니다.",
+      quickDetail: "확인 후 Maka는 기본 프로세스에 자격 증명을 저장하고 메시지 연결을 시작합니다.",
+      feishuRegionAria: "Feishu 계정 지역을 선택하세요",
+      feishu: "페이슈",
+      beginQuickBind: "빠른 연결 시작",
+      scanWith: name => `${name}로 스캔`,
+      planned: "이 플랫폼은 카탈로그에만 표시됩니다. 활성 채널이나 예약된 작업 전달 대상이 되지 않습니다.",
+      credentialsSaved: name => `${name} 자격 증명이 저장되었습니다.`,
+      scanComplete: name => `${name} QR 설정 완료`,
+      savedAndConnected: "자격 증명이 안전하게 저장되고 연결이 시작되었습니다.",
+      proxy: "프록시 URL",
+      chinaRequired: "(중국 본토의 네트워크에 필요)",
+      authOnly: "(봇 인증만 해당)",
+      telegramProxyAria: "텔레그램 프록시 URL",
+      telegramNotice: "네트워크 도구에서 TUN 모드를 활성화하고 앱을 다시 시작하여 Telegram Bot 설정을 완료하세요.",
+      feishuCredentialId: "Feishu 자격 증명 ID",
+      feishuSecret: "Feishu 앱 비밀",
+      feishuDomain: "페이슈 도메인",
+      feishuOption: "페이슈(feishu.cn)",
+      discordProxyAria: "디스코드 프록시 URL",
+      discordNotice: "중국 본토에서 Discord에 액세스하는 경우 위 프록시는 봇 인증만 다룹니다. 메시지 WebSocket에는 시스템 수준 프록시가 필요합니다. TUN 모드를 활성화하고 앱을 다시 시작하세요.",
+      dingtalkId: "딩톡 앱 키",
+      dingtalkSecret: "DingTalk 클라이언트 비밀번호",
+      wecomBotPlaceholder: "WeCom AI 앱 봇 ID",
+      wecomBotAria: "WeCom 봇 ID",
+      wecomSecretPlaceholder: "AI 앱 비밀",
+      wecomSecretAria: "WeCom 비밀",
+      qqId: "QQ 앱 ID",
+      allowedUsersLabel: (count, max) => `허용된 사용자 ID(${count} / ${max})`,
+      allowedUsersPlaceholder: "한 줄에 하나의 사용자 ID; 모든 사람이 허용하려면 비워 두세요.\n예: 123456789",
+      allowedUsersHelp: "텔레그램 사용자 ID는 64비트 정수입니다. 설정되면 해당 ID의 메시지만 허용됩니다. 다른 모든 것은 자동으로 무시됩니다.",
+      limitReached: "(한도 도달)",
+      invalidUsers: values => `다음 항목은 숫자 ID가 아니며 사용자 이름일 수 있으므로 누구와도 일치하지 않습니다. ${values}`,
+      moreInvalid: count => `그리고 ${count} 더`
+    },
+    onboarding: {
+      providers: {
+        dingtalk: {
+          title: "딩톡 설정",
+          ariaLabel: "QR 코드로 DingTalk 설정",
+          qrAlt: "DingTalk 설정 QR 코드",
+          subtitle: "DingTalk에서 스캔하여 앱을 등록하세요.",
+          waiting: "DingTalk로 스캔하고 인증을 확인하세요",
+          scanned: "스캔했습니다. DingTalk에서 확인을 완료하세요."
+        },
+        feishu: {
+          title: "페이슈 설정",
+          ariaLabel: "QR 코드로 Feishu 설정",
+          qrAlt: "Feishu 설정 QR 코드",
+          subtitle: "Feishu로 스캔하여 봇 생성 및 구성",
+          waiting: "Feishu로 스캔하고 생성 확인",
+          scanned: "스캔했습니다. Feishu에서 확인을 완료하세요."
+        },
+        wecom: {
+          title: "WeCom 설정",
+          ariaLabel: "QR 코드로 WeCom 설정",
+          qrAlt: "WeCom 설정 QR 코드",
+          subtitle: "빠른 설정으로 WeCom 봇 생성 및 연결",
+          waiting: "WeCom을 열고 스캔하여 봇을 만듭니다.",
+          scanned: "스캔했습니다. WeCom에서 확인을 완료하세요."
+        },
+        wechat: {
+          title: "스캔하여 로그인",
+          ariaLabel: "위챗 QR 로그인",
+          qrAlt: "WeChat 로그인 QR 코드",
+          subtitle: "연결하려면 WeChat으로 스캔하세요.",
+          waiting: "WeChat으로 스캔하고 휴대폰에서 확인하세요",
+          scanned: "스캔했습니다. WeChat에서 확인을 완료하세요."
+        },
+        qq: {
+          title: "QQ 설정",
+          ariaLabel: "QR 코드로 QQ 설정",
+          qrAlt: "QQ 설정 QR 코드",
+          subtitle: "모바일QQ로 스캔하여 봇 생성 및 바인딩",
+          waiting: "모바일QQ로 스캔하고 바인딩을 확인하세요",
+          scanned: "스캔했습니다. QQ에서 확인을 완료하세요."
+        }
+      },
+      lark: {
+        title: "Lark 설정",
+        ariaLabel: "QR 코드로 Lark 설정",
+        qrAlt: "Lark 설정 QR 코드",
+        subtitle: "Lark로 스캔하여 봇 생성 및 구성",
+        waiting: "Lark로 스캔하고 생성 확인",
+        scanned: "스캔했습니다. Lark에서 확인을 완료하세요."
+      },
+      connectedRefreshFailed: message => `연결되었지만 상태 새로 고침에 실패했습니다: ${message}`,
+      close: title => `${title} 닫기`,
+      generatingAria: "QR 코드 생성 중",
+      privacy: "자격 증명은 이 장치에 유지되며 렌더러나 Maka 클라우드로 전송되지 않습니다.",
+      openBrowser: "스캔할 수 없나요? 브라우저에서 열기",
+      done: "완료",
+      regenerate: "다시 생성",
+      refreshQr: "QR 코드 새로 고침",
+      cancel: "취소",
+      generating: "보안 QR 코드 생성 중…",
+      connecting: "승인이 완료되었습니다. 사용자 인증 정보를 저장하고 연결을 시작하는 중…",
+      connected: name => `${name} 연결됨`,
+      connectedWarning: "자격 증명이 저장되었지만 연결이 시작되지 않았습니다.",
+      expired: "QR 코드가 만료되었습니다. 새로운 것을 생성하십시오.",
+      denied: "승인이 취소되었습니다. 새로운 QR 코드를 생성하세요.",
+      cancelled: "QR 설정이 취소되었습니다.",
+      failed: "QR 설정에 실패했습니다. 다시 시도해 보세요.",
+      preparing: "QR 설정 준비 중…"
+    },
+    wechat: {
+      token: "위챗 봇 토큰",
+      tokenPlaceholder: "로컬 wechat-bridge Bearer 토큰",
+      collapseAdvanced: "고급 설정 숨기기",
+      expandAdvanced: "고급 설정 (공식 계정 / 로컬 브릿지 URL)",
+      bridgeAddress: "로컬 브리지 URL",
+      appId: "공식 계정 앱 ID",
+      appIdPlaceholder: "WeChat 공식 계정 앱 ID",
+      appSecret: "공식 계정 앱 비밀",
+      appSecretPlaceholder: "WeChat 공식 계정 앱 비밀",
+      advancedNotice: "로컬 브리지의 기본값은 http://127.0.0.1:18400입니다. 공식 계정 앱 ID와 앱 비밀번호는 공식 계정 메시지에만 사용됩니다. 개인 WeChat QR 로그인은 로컬 브리지를 사용합니다.",
+      readQrFailed: "로컬 wechat-bridge에서 QR 코드를 읽을 수 없습니다. 브릿지가 작동하는지 확인하세요.",
+      title: "위챗 QR 로그인",
+      subtitle: "WeChat으로 QR 코드를 스캔하고 휴대폰에서 로컬 wechat-bridge에 로그인했는지 확인하세요.",
+      close: "WeChat QR 로그인 닫기",
+      generating: "QR 코드 생성 중…",
+      loggedIn: "WeChat에 로그인되었습니다. 돌아가서 연결을 테스트하거나 리스너를 다시 시작하세요.",
+      expired: "QR 코드가 만료되었습니다",
+      expiredHint: "로그인을 계속하려면 QR 코드를 새로고침하고 다시 스캔하세요.",
+      refreshing: "상쾌하다…",
+      refresh: "QR 코드 새로 고침",
+      qrAlt: "WeChat 로그인 QR 코드",
+      waiting: "확인 대기 중... 로그인 상태는 3초마다 새로고침됩니다.",
+      retrying: "재시도 중…",
+      retry: "다시 해 보다",
+      bridgeGenerating: "브리지에서 QR 코드를 생성하는 중입니다.",
+      bridgeGeneratingHint: "준비가 되면 QR 코드가 자동으로 나타납니다. 다시 가져올 수도 있습니다.",
+      fetching: "가져오는 중…",
+      fetchAgain: "다시 가져오기"
+    }
+  }
+} satisfies UiCatalog<BotSettingsCopy>;
 export function getBotSettingsCopy(locale: UiLocale): BotSettingsCopy {
   return BOT_SETTINGS_COPY[locale];
 }

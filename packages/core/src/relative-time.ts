@@ -50,6 +50,7 @@ const SIDEBAR_TIME_BUCKETS = [
 const JUST_NOW: UiCatalog<string> = {
   zh: '刚刚',
   en: 'just now',
+  ko: '방금 전',
 };
 
 /** Future timestamps are treated as age zero and therefore display as just now. */
