@@ -50,10 +50,12 @@ export interface AppShellTurnActions {
 export function createAppShellTurnActions(deps: {
   uiLocale: UiLocale;
   activeIdRef: RefBox<string | undefined>;
-  addPendingTurnAction: (key: string) => boolean;
-  clearPendingTurnAction: (key: string) => void;
+  turnActionRegistry: {
+    addKey(key: string): boolean;
+    clearKey(key: string): void;
+    keyOf(sessionId: string, turnId: string, actionId: string): string;
+  };
   openSessionInChat: (sessionId: string, turnId?: string) => void;
-  pendingKeyOf: (sessionId: string, turnId: string, actionId: TurnFooterActionMeta['id']) => string;
   refreshMessages: (sessionId: string) => Promise<boolean>;
   refreshSessions: () => Promise<DesktopSessionSummary[]>;
   setMessages: MessageListUpdater;
@@ -62,10 +64,8 @@ export function createAppShellTurnActions(deps: {
   const {
     uiLocale,
     activeIdRef,
-    addPendingTurnAction,
-    clearPendingTurnAction,
+    turnActionRegistry,
     openSessionInChat,
-    pendingKeyOf,
     refreshMessages,
     refreshSessions,
     setMessages,
@@ -73,15 +73,15 @@ export function createAppShellTurnActions(deps: {
   } = deps;
   const copy = getDesktopConversationCopy(uiLocale).actions;
 
-  async function handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']): Promise<void> {
+  async function handleTurnFooterAction(turnId: string, actionId: TurnFooterActionMeta['id']) {
     if (actionId === 'copy') return; // handled in-component
     const sessionId = activeIdRef.current;
     if (!sessionId) return;
-    const key = pendingKeyOf(sessionId, turnId, actionId);
+    const key = turnActionRegistry.keyOf(sessionId, turnId, actionId);
     // Ref-backed guard blocks same-frame double clicks before React has
     // committed the disabled state. State alone is too late here because
     // retry/regenerate IPC returns after starting the stream asynchronously.
-    if (!addPendingTurnAction(key)) return;
+    if (!turnActionRegistry.addKey(key)) return;
     try {
       if (actionId === 'regenerate') {
         await window.maka.sessions.regenerateTurn(sessionId, {
@@ -125,7 +125,7 @@ export function createAppShellTurnActions(deps: {
         );
       }
     } finally {
-      clearPendingTurnAction(key);
+      turnActionRegistry.clearKey(key);
     }
   }
 

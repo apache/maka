@@ -62,6 +62,7 @@ import {
   acknowledgeCollaborationTurnRequest,
   createCollaborationTurnRequest,
   decideCollaborationTurnRequest,
+  withdrawCollaborationTurnRequest,
   finalizeAccessCredential,
   prepareCollaborationInvitation,
   queryCollaborationTurnRequests,
@@ -799,6 +800,14 @@ export class RuntimeHostKernel {
               input,
             ),
           ),
+        'collaboration.turn-request.withdraw': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            withdrawCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
         'collaboration.turn-request.decide': async (input, context) =>
           this.#settleAccessCredentialMutation(
             decideCollaborationTurnRequest(this.#options.accessAuthority, context.principal, input),
@@ -836,11 +845,7 @@ export class RuntimeHostKernel {
       activeResidencies: this.#residencies.activeCount,
       ...(peer
         ? {
-            peerEndpoint: {
-              peerId: peer.peerId,
-              routeHints: peer.listenAddresses,
-              coordinationRelays: peer.coordinationRelays,
-            },
+            peerEndpoint: peer.reachability,
           }
         : {}),
     };

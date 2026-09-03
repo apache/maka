@@ -35,6 +35,7 @@ use crate::engine::{
 
 type IncomingStreamReceiver = mpsc::Receiver<std::result::Result<Vec<u8>, PeerError>>;
 const IDENTITY_PAYLOAD_MAX_BYTES: usize = 8 * 1024;
+const MAX_CONNECT_ROUTES_PER_CLASS: usize = 32;
 const MAX_TRANSIT_PEERS: usize = 64;
 const MAX_TRANSIT_RELAY_ADDRESSES: usize = 256;
 const MAX_WEBRTC_STUN_URLS: usize = 8;
@@ -43,6 +44,7 @@ const MAX_WEBRTC_STUN_URL_BYTES: usize = 512;
 #[napi(object)]
 pub struct StartPeerEndpointOptions {
     pub key_path: String,
+    pub relay_anchor_path: Option<String>,
     pub expected_peer_id: Option<String>,
     pub listen_addresses: Option<Vec<String>>,
     pub coordination_relays: Option<Vec<String>>,
@@ -58,6 +60,14 @@ pub struct ConnectPeerOptions {
     pub coordination_relays: Option<Vec<String>>,
     pub transit_relay_peer_ids: Option<Vec<String>>,
     pub direct_deadline_ms: u32,
+}
+
+#[napi(object)]
+pub struct UpdatePeerConnectOptions {
+    pub request_id: u32,
+    pub route_hints: Vec<String>,
+    pub coordination_relays: Option<Vec<String>>,
+    pub transit_relay_peer_ids: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -92,11 +102,25 @@ pub struct PeerIdentitySignature {
     pub signature: Buffer,
 }
 
+#[napi(object)]
+#[derive(Clone)]
+pub struct PeerReachabilitySnapshot {
+    pub generation: u32,
+    pub listen_addresses: Vec<String>,
+    pub active_coordination_relays: Vec<String>,
+}
+
+#[napi(object)]
+pub struct PeerConnectivitySnapshot {
+    pub generation: u32,
+    pub connected_peer_ids: Vec<String>,
+}
+
 #[napi]
 pub struct PeerEndpoint {
     peer_id: String,
-    listen_addresses: Vec<String>,
-    active_coordination_relays: Arc<RwLock<Vec<Multiaddr>>>,
+    reachability: watch::Receiver<engine::ReachabilitySnapshot>,
+    connectivity: watch::Receiver<engine::ConnectivitySnapshot>,
     transit_snapshot: Arc<RwLock<engine::TransitSnapshot>>,
     commands: mpsc::Sender<EngineCommand>,
     incoming: Arc<AsyncMutex<mpsc::Receiver<engine::PeerStream>>>,
@@ -113,16 +137,67 @@ impl PeerEndpoint {
     }
 
     #[napi(getter)]
-    pub fn listen_addresses(&self) -> Vec<String> {
-        self.listen_addresses.clone()
+    pub fn reachability_snapshot(&self) -> PeerReachabilitySnapshot {
+        reachability_snapshot(&self.reachability.borrow())
+    }
+
+    #[napi]
+    pub async fn watch_reachability(
+        &self,
+        after_generation: u32,
+        timeout_ms: u32,
+    ) -> Result<PeerReachabilitySnapshot> {
+        if !(1..=300_000).contains(&timeout_ms) {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "reachability watch timeout must be between 1 and 300000 milliseconds",
+            ));
+        }
+        let mut receiver = self.reachability.clone();
+        if receiver.borrow().generation == after_generation {
+            match tokio::time::timeout(
+                Duration::from_millis(u64::from(timeout_ms)),
+                receiver.changed(),
+            )
+            .await
+            {
+                Ok(Ok(())) | Err(_) => {}
+                Ok(Err(_)) => return Err(native_closed_error()),
+            }
+        }
+        Ok(reachability_snapshot(&receiver.borrow()))
     }
 
     #[napi(getter)]
-    pub fn active_coordination_relays(&self) -> Vec<String> {
-        self.active_coordination_relays
-            .read()
-            .map(|addresses| addresses.iter().map(ToString::to_string).collect())
-            .unwrap_or_default()
+    pub fn connectivity_snapshot(&self) -> PeerConnectivitySnapshot {
+        connectivity_snapshot(&self.connectivity.borrow())
+    }
+
+    #[napi]
+    pub async fn watch_connectivity(
+        &self,
+        after_generation: u32,
+        timeout_ms: u32,
+    ) -> Result<PeerConnectivitySnapshot> {
+        if !(1..=300_000).contains(&timeout_ms) {
+            return Err(Error::new(
+                Status::InvalidArg,
+                "connectivity watch timeout must be between 1 and 300000 milliseconds",
+            ));
+        }
+        let mut receiver = self.connectivity.clone();
+        if receiver.borrow().generation == after_generation {
+            match tokio::time::timeout(
+                Duration::from_millis(u64::from(timeout_ms)),
+                receiver.changed(),
+            )
+            .await
+            {
+                Ok(Ok(())) | Err(_) => {}
+                Ok(Err(_)) => return Err(native_closed_error()),
+            }
+        }
+        Ok(connectivity_snapshot(&receiver.borrow()))
     }
 
     #[napi(getter)]
@@ -213,6 +288,34 @@ impl PeerEndpoint {
     }
 
     #[napi]
+    pub async fn update_connect(&self, options: UpdatePeerConnectOptions) -> Result<bool> {
+        let route_hints = parse_connect_addresses(options.route_hints, "route hint")?;
+        let coordination_relays = parse_connect_addresses(
+            options.coordination_relays.unwrap_or_default(),
+            "coordination relay",
+        )?;
+        let transit_relay_peers =
+            parse_peer_id_list(options.transit_relay_peer_ids.unwrap_or_default())?;
+        let (result_tx, result_rx) = oneshot::channel();
+        self.commands
+            .send(EngineCommand::UpdateConnect {
+                request_id: options.request_id,
+                candidates: engine::ConnectCandidates {
+                    route_hints,
+                    coordination_relays,
+                    transit_relay_peers,
+                },
+                result: result_tx,
+            })
+            .await
+            .map_err(|_| native_closed_error())?;
+        result_rx
+            .await
+            .map_err(|_| native_closed_error())?
+            .map_err(peer_error)
+    }
+
+    #[napi]
     pub async fn accept(&self) -> Result<Option<PeerStream>> {
         let mut incoming = self.incoming.lock().await;
         let mut terminal = self.terminal.lock().await;
@@ -257,8 +360,8 @@ async fn connect_peer(
     stream_kind: engine::StreamKind,
 ) -> Result<PeerStream> {
     let peer_id = parse_peer_id(&options.peer_id)?;
-    let route_hints = parse_addresses(options.route_hints, "route hint")?;
-    let coordination_relays = parse_addresses(
+    let route_hints = parse_connect_addresses(options.route_hints, "route hint")?;
+    let coordination_relays = parse_connect_addresses(
         options.coordination_relays.unwrap_or_default(),
         "coordination relay",
     )?;
@@ -390,6 +493,7 @@ impl PeerStream {
 pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndpoint> {
     let started = engine::start(engine::StartOptions {
         key_path: PathBuf::from(options.key_path),
+        relay_anchor_path: options.relay_anchor_path.map(PathBuf::from),
         expected_peer_id: options
             .expected_peer_id
             .map(|value| parse_peer_id(&value))
@@ -408,12 +512,8 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
     .map_err(peer_error)?;
     Ok(PeerEndpoint {
         peer_id: started.peer_id.to_string(),
-        listen_addresses: started
-            .listen_addresses
-            .into_iter()
-            .map(|address| address.to_string())
-            .collect(),
-        active_coordination_relays: started.active_coordination_relays,
+        reachability: started.reachability,
+        connectivity: started.connectivity,
         transit_snapshot: started.transit_snapshot,
         commands: started.commands,
         incoming: Arc::new(AsyncMutex::new(started.incoming)),
@@ -421,6 +521,33 @@ pub fn start_peer_endpoint(options: StartPeerEndpointOptions) -> Result<PeerEndp
         terminal: Arc::new(AsyncMutex::new(started.terminal)),
         thread: Arc::new(Mutex::new(Some(started.thread))),
     })
+}
+
+fn reachability_snapshot(snapshot: &engine::ReachabilitySnapshot) -> PeerReachabilitySnapshot {
+    PeerReachabilitySnapshot {
+        generation: snapshot.generation,
+        listen_addresses: snapshot
+            .listen_addresses
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        active_coordination_relays: snapshot
+            .active_coordination_relays
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
+}
+
+fn connectivity_snapshot(snapshot: &engine::ConnectivitySnapshot) -> PeerConnectivitySnapshot {
+    PeerConnectivitySnapshot {
+        generation: snapshot.generation,
+        connected_peer_ids: snapshot
+            .connected_peers
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+    }
 }
 
 #[napi]
@@ -511,6 +638,16 @@ fn parse_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
             })
         })
         .collect()
+}
+
+fn parse_connect_addresses(values: Vec<String>, label: &str) -> Result<Vec<Multiaddr>> {
+    if values.len() > MAX_CONNECT_ROUTES_PER_CLASS {
+        return Err(Error::new(
+            Status::InvalidArg,
+            format!("peer connection cannot contain more than 32 {label}s"),
+        ));
+    }
+    parse_addresses(values, label)
 }
 
 fn parse_webrtc_stun_urls(values: Vec<String>) -> Result<Vec<String>> {

@@ -96,6 +96,10 @@ export interface RuntimeEventStore {
     event: RuntimeEvent,
   ): Promise<void>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
+  /** Session-wide immutable append order. */
+  readSessionRuntimeEventEntries(
+    sessionId: string,
+  ): Promise<Array<{ readonly ordinal: number; readonly event: RuntimeEvent }>>;
   /** Physical append-log rows only; excludes mutable partial snapshots. */
   readImmutableRuntimeEvents?(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   /** Versioned physical prefix with event-seq high-water and canonical digest. */

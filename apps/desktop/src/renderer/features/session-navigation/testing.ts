@@ -45,11 +45,8 @@ export { deriveSessionRail } from './model/session-rail.js';
 export { deriveSessionRevisionNavigation } from './model/session-revisions.js';
 export {
   EMPTY_SESSION_SELECTION,
-  enterSessionSelection,
-  exitSessionSelection,
+  pickSessionRow,
   pruneSessionSelection,
-  sessionSelectionMasterState,
-  setAllSessionsSelected,
   type SessionSelection,
 } from './model/session-selection.js';
 export {

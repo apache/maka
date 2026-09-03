@@ -722,7 +722,9 @@ export function registerRuntimeHostSessionExecutionIpc(
         deps.client.copySession("branch", {
           sourceSessionId: sessionId,
           targetSessionId: normalized.copyId,
-          sourceTurnId: normalized.sourceTurnId,
+          ...(normalized.sourceTurnId === undefined
+            ? {}
+            : { sourceTurnId: normalized.sourceTurnId }),
           ...(normalized.sideConversation ? { intent: 'side_conversation' as const } : {}),
         });
       let branch;
@@ -733,7 +735,9 @@ export function registerRuntimeHostSessionExecutionIpc(
                 sessionId: normalized.copyId,
                 kind: 'branch',
                 sourceSessionId: sessionId,
-                sourceTurnId: normalized.sourceTurnId,
+                ...(normalized.sourceTurnId === undefined
+                  ? {}
+                  : { sourceTurnId: normalized.sourceTurnId }),
                 intent: 'side_conversation',
                 ownerId: bindCopyOwner(event),
               },

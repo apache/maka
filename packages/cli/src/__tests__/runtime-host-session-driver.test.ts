@@ -2080,6 +2080,97 @@ describe('Runtime Host Maka Session driver', () => {
     );
   });
 
+  test('opens an empty side copy when the parent has no completed Turn yet', async (t) => {
+    const cleanupRoot = await mkdtemp(join(tmpdir(), 'maka-tui-side-empty-'));
+    t.after(() => rm(cleanupRoot, { recursive: true, force: true }));
+    // The parent's first Turn is still running (an explicit running turn_state),
+    // so there is no completed Turn to branch through. The side conversation
+    // must still open, forking with an empty context instead of erroring.
+    const sourceMessages: StoredMessage[] = [
+      userMessage('turn-running', 'In-flight question'),
+      {
+        type: 'turn_state',
+        id: 'state-turn-running',
+        turnId: 'turn-running',
+        ts: 80,
+        status: 'running',
+        partialOutputRetained: true,
+      },
+    ];
+    const subscriptions = [
+      new FakeSubscription(continuitySnapshot({ rootTurn: null }), Promise.resolve(sourceMessages)),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-copy-source',
+      ),
+      // The empty copy carries no source transcript.
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve([]),
+        'subscription-side-read',
+      ),
+      new FakeSubscription(
+        continuitySnapshot({ rootTurn: null }),
+        Promise.resolve(sourceMessages),
+        'subscription-parent-return',
+      ),
+    ];
+    const connection = new FakeConnection(subscriptions);
+    connection.sessionQueries.push(
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'session-1', revision: 4 }),
+      // The empty copy records provenance (parentSessionId) but fabricates no
+      // branchOfTurnId.
+      sessionProjection({
+        id: 'side-1',
+        labels: ['mode:side_conversation'],
+        parentSessionId: 'session-1',
+      }),
+      sessionProjection({ id: 'session-1' }),
+      sessionProjection({ id: 'side-1', labels: ['mode:side_conversation'] }),
+    );
+    const driver = createRuntimeHostMakaSessionDriver({
+      connection: connection.value,
+      cwd: '/tmp',
+      llmConnectionId: 'connection-1',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      newId: () => 'side-1',
+      sessionCopyCleanupRoot: cleanupRoot,
+    });
+    await driver.switchSession('session-1');
+
+    const opened = await driver.openSideConversation!();
+
+    assert.equal((await stat(join(cleanupRoot, 'a'.repeat(64), 'runtime.sqlite'))).isFile(), true);
+
+    assert.equal(opened.parentSessionId, 'session-1');
+    assert.equal(opened.sideSessionId, 'side-1');
+    assert.deepEqual(opened.messages, []);
+    assert.deepEqual(await driver.readMessages(), []);
+    // The branch omits sourceTurnId entirely (empty copy) while still carrying
+    // the side_conversation intent the Host requires for an empty copy.
+    assert.deepEqual(
+      connection.requests.find(({ operation }) => operation === 'session.branch.create')?.input,
+      {
+        sourceSessionId: 'session-1',
+        targetSessionId: 'side-1',
+        expectedSourceRevision: 4,
+        intent: 'side_conversation',
+      },
+    );
+
+    const closed = await driver.closeSideConversation!('side-1', 'session-1');
+    assert.equal(closed.summary.id, 'session-1');
+    assert.equal(closed.cleanup, 'removed');
+  });
+
   test('observes actionable and terminal parent status from the Host projection', async () => {
     const subscription = new FakeSubscription(
       continuitySnapshot({ interactions: { pending: [pendingPermission()] } }),

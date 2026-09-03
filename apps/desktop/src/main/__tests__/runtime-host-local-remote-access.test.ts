@@ -49,10 +49,11 @@ test('enabling remote access hands the same root to one managed service before D
     routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
     coordinationRelays: [],
   };
-  const livePeer = {
-    ...peer,
-    coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
-  };
+  const livePeer = peerReachability(
+    peer.peerId,
+    peer.routeHints,
+    ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  );
   const manager = {
     async retireOwnedLocalHost() {
       retired = true;
@@ -142,7 +143,7 @@ test('enabling remote access hands the same root to one managed service before D
   assert.deepEqual(decodeRuntimeHostOwnerConnectionCode(result.connectionCode), {
     name: decodeRuntimeHostOwnerConnectionCode(result.connectionCode).name,
     rootId: 'a'.repeat(64),
-    transport: { kind: 'libp2p-direct', ...livePeer },
+    transport: { kind: 'libp2p-direct', reachability: livePeer },
     credential: 'pending-credential',
   });
   const lifecycle = JSON.parse(
@@ -163,13 +164,14 @@ test('shares the running Local Host endpoint instead of its persisted startup ro
   await writeManagedLifecycle(clientDataRoot, rootPath, rootId);
   const configuredPeer = {
     peerId: '12D3KooWpeer',
-    routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    routeHints: [],
     coordinationRelays: [],
   };
-  const livePeer = {
-    ...configuredPeer,
-    coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
-  };
+  const livePeer = peerReachability(
+    configuredPeer.peerId,
+    ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+    ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+  );
   const service = createDesktopLocalRuntimeHostRemoteAccess({
     ipcMain: { handle() {}, removeHandler() {} },
     clientDataRoot,
@@ -212,7 +214,7 @@ test('shares the running Local Host endpoint instead of its persisted startup ro
   const target = await service.createCollaborationConnectionTarget();
   assert.deepEqual(target, {
     name: target.name,
-    transport: { kind: 'libp2p-direct', ...livePeer },
+    transport: { kind: 'libp2p-direct', reachability: livePeer },
   });
 });
 
@@ -962,6 +964,26 @@ async function writeManagedLifecycle(
       deploymentId: RECOVERY_DEPLOYMENT_ID,
     })}\n`,
   );
+}
+
+function peerReachability(
+  peerId: string,
+  directRoutes: readonly string[],
+  coordinationRoutes: readonly string[],
+) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes,
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
+  };
 }
 
 function hostRegistration(

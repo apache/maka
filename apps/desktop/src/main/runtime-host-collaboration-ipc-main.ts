@@ -36,6 +36,7 @@ export function registerRuntimeHostCollaborationIpc(
     | 'createCollaborationTurnRequest'
     | 'decideCollaborationTurnRequest'
     | 'queryCollaborationTurnRequests'
+    | 'withdrawCollaborationTurnRequest'
     | 'queryCollaborationAccess'
     | 'revokeCollaborationGrant'
     | 'revokeCollaborationPrincipal'
@@ -75,7 +76,8 @@ export function registerRuntimeHostCollaborationIpc(
             target.transport.kind === 'libp2p-direct'
               ? {
                   kind: 'peer' as const,
-                  coordinationRelayCount: target.transport.coordinationRelays.length,
+                  coordinationRelayCount:
+                    target.transport.reachability.lease.coordinationRoutes.length,
                 }
               : { kind: 'configured' as const },
         },
@@ -109,6 +111,11 @@ export function registerRuntimeHostCollaborationIpc(
     'session-collaboration:turn-request:acknowledge',
     (_event, requestId: unknown) =>
       client.acknowledgeCollaborationTurnRequest(requiredId(requestId, 'Turn request')),
+  );
+  ipcMain.handle(
+    'session-collaboration:turn-request:withdraw',
+    (_event, requestId: unknown) =>
+      client.withdrawCollaborationTurnRequest(requiredId(requestId, 'Turn request')),
   );
   ipcMain.handle(
     'session-collaboration:turn-request:decide',

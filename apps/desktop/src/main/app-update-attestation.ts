@@ -21,8 +21,8 @@ import { bundleFromJSON, type Bundle } from '@sigstore/bundle';
 import { getTrustedRoot } from '@sigstore/tuf';
 import { toSignedEntity, toTrustMaterial, Verifier } from '@sigstore/verify';
 import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
-import { basename } from 'node:path';
+import { createReadStream, readFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 
 const PRODUCT_REPOSITORY = 'apache/maka';
 const PRODUCT_RELEASE_WORKFLOW = '.github/workflows/release-cli-finalize.yml';
@@ -78,6 +78,29 @@ export function desktopUpdateChannelFromManifest(manifest: unknown): DesktopUpda
     throw new Error('Packaged Desktop does not declare a trusted update channel');
   }
   return channel;
+}
+
+/**
+ * The channel a diagnostic report names for this binary.
+ *
+ * Total by construction, unlike `desktopUpdateChannelFromManifest`: a report
+ * must still copy when the manifest is the very thing that is broken, and the
+ * report saying `unknown` is more useful than the copy failing. A checkout
+ * follows no feed at all, so it reports `dev` rather than the updater's
+ * `release` placeholder.
+ */
+export function desktopDiagnosticUpdateChannel(input: {
+  readonly isPackaged: boolean;
+  readonly appPath: string;
+}): DesktopUpdateChannel | 'dev' | 'unknown' {
+  if (!input.isPackaged) return 'dev';
+  try {
+    return desktopUpdateChannelFromManifest(
+      JSON.parse(readFileSync(join(input.appPath, 'package.json'), 'utf8')),
+    );
+  } catch {
+    return 'unknown';
+  }
 }
 
 function productWorkflowSigner(channel: DesktopUpdateChannel): RegExp {

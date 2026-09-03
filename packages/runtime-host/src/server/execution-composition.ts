@@ -1240,6 +1240,7 @@ export async function createExecutionRuntimeHostComposition(
       ? new SessionTurnAccessRequestCoordinator({
           authority: context.sessionAccessAuthority,
           startTurn: interactiveTurns.handlers['turn.start'],
+          regenerateTurn: interactiveTurns.handlers['turn.regenerate'],
           hostEpoch: context.hostEpoch,
           acquireResidency: () => context.acquireResidency('collaboration-turn-request'),
           requestDrain: context.requestDrain,

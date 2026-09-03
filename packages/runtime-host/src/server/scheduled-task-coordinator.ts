@@ -21,7 +21,13 @@ import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { messageContentsEqual } from '@maka/core/events';
-import { type ScheduledTask, type ScheduledTaskExecutionTemplate } from '@maka/core/scheduled-task';
+import { authorizeConnectionModel } from '@maka/core/llm-connections';
+import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
+import {
+  type CreateScheduledTaskInput,
+  type ScheduledTask,
+  type ScheduledTaskExecutionTemplate,
+} from '@maka/core/scheduled-task';
 import type { SessionHeader } from '@maka/core/session';
 import {
   buildAgentScheduledTaskCreatePayload,
@@ -31,6 +37,7 @@ import {
   type ScheduledTaskToolAuthority,
 } from '@maka/runtime/scheduled-task-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { stableHash } from '@maka/runtime/request-shape';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveScheduledTaskStoreWriter,
@@ -100,6 +107,19 @@ export interface HostScheduledTaskCoordinatorInput {
 
 export class HostScheduledTaskSessionBusyError extends Error {
   readonly name = 'HostScheduledTaskSessionBusyError';
+}
+
+/** Stable Agent ScheduledTask target identity used by root-admission retries. */
+export function scheduledTaskExecutionFingerprint(
+  execution: ScheduledTaskExecutionTemplate,
+): `sha256:${string}` | undefined {
+  if (!execution.llmConnectionId) return undefined;
+  return stableHash([
+    'scheduled-task-agent-run.v1',
+    execution.llmConnectionId,
+    execution.llmConnectionSlug,
+    execution.model,
+  ]);
 }
 
 export interface HostScheduledTaskSessionRetirement {
@@ -182,6 +202,10 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
         candidate.execution.turnId === admission.turnId,
     );
     const execution = claim?.execution;
+    const fingerprintMatches =
+      claim?.task.effect.kind !== 'agent_run' ||
+      admission.execution.executionFingerprint ===
+        scheduledTaskExecutionFingerprint(claim.task.effect.execution);
     if (!claim && state === 'run_recorded') return;
     if (
       !claim ||
@@ -190,6 +214,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       execution.turnId !== admission.turnId ||
       execution.runId !== admission.runId ||
       execution.userMessageId !== admission.userMessageId ||
+      !fingerprintMatches ||
       admission.normalizedInput === null ||
       !messageContentsEqual({ text: claim.task.intent.body }, admission.normalizedInput)
     ) {
@@ -453,7 +478,7 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     }
   }
 
-  async #commitCreate(input: unknown): Promise<ScheduledTask> {
+  async #commitCreate(input: CreateScheduledTaskInput): Promise<ScheduledTask> {
     return this.#exclusive(async () => {
       const incognito = (await this.#runtimePolicy.runtimePolicy.getSnapshot()).policy.privacy
         .incognitoActive;
@@ -593,10 +618,10 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       );
     }
 
-    // Persisted agent-run templates currently identify their model connection
-    // by reusable slug only. Do not resolve that slug to a potentially
-    // different Connection entity. #3927 will make the exact ID durable.
-    if (task.effect.kind === 'agent_run') {
+    // Legacy persisted Agent-run templates may still identify their model
+    // connection by reusable slug only. Never resolve that slug to a
+    // potentially different Connection entity.
+    if (task.effect.kind === 'agent_run' && !task.effect.execution.llmConnectionId) {
       return this.#settleFailure(claim, SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
     }
 
@@ -639,19 +664,20 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
       await this.#readResumableSession(identity.sessionId);
       return;
     }
+    const execution = task.effect.execution;
+    const connection = await this.#resolveAgentRunConnection(execution);
     try {
-      await this.#sessions.readHeaderSnapshot(identity.sessionId);
+      const existing = await this.#sessions.readHeaderSnapshot(identity.sessionId);
+      if (
+        existing.llmConnectionId !== execution.llmConnectionId ||
+        existing.llmConnectionSlug !== execution.llmConnectionSlug ||
+        existing.model !== execution.model
+      ) {
+        throw new Error('ScheduledTask Session model identity changed');
+      }
       return;
     } catch (error) {
       if (!isSessionNotFoundError(error) && !isMissingRecord(error)) throw error;
-    }
-    const execution = task.effect.execution;
-    const catalog = await this.#runtimePolicy.connectionCatalog.getSnapshot();
-    const connection = catalog.connections.find(
-      (candidate) => candidate.slug === execution.llmConnectionSlug,
-    );
-    if (!connection) {
-      throw new Error('ScheduledTask model connection does not exist');
     }
     await this.#createSession({
       sessionId: identity.sessionId,
@@ -674,11 +700,54 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
     });
   }
 
+  async #resolveAgentRunConnection(
+    execution: ScheduledTaskExecutionTemplate,
+  ): Promise<ConnectionCatalogEntry> {
+    if (!execution.llmConnectionId) {
+      throw new Error(SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+    }
+    const resolved = await this.#runtimePolicy.operations.resolveExecutionConnection({
+      kind: 'bound',
+      connectionId: execution.llmConnectionId,
+      connectionSlug: execution.llmConnectionSlug,
+    });
+    if (resolved.kind !== 'ready') {
+      throw new Error(
+        resolved.kind === 'identity_mismatch' || resolved.kind === 'not_found'
+          ? 'ScheduledTask model connection identity changed'
+          : resolved.kind === 'disabled'
+            ? 'ScheduledTask model connection is disabled'
+            : resolved.kind === 'credential_not_configured'
+              ? 'ScheduledTask model connection is not ready'
+              : resolved.kind === 'provider_retired'
+                ? 'ScheduledTask model connection uses a retired provider'
+                : 'ScheduledTask model connection is unavailable',
+      );
+    }
+    if (!authorizeConnectionModel(resolved.connection, execution.model)) {
+      throw new Error('ScheduledTask model is no longer enabled');
+    }
+    return resolved.connection;
+  }
+
   async #admitAgentRun(task: ScheduledTask, identity: ScheduledTaskFireExecution): Promise<void> {
+    if (task.effect.kind === 'agent_run') {
+      // Re-read the bound Connection immediately before admission. The
+      // Session/Connection stores have independent write lanes, so this
+      // second check closes the delete-and-recreate-same-slug window between
+      // Session creation and AgentRun admission.
+      await this.#resolveAgentRunConnection(task.effect.execution);
+    }
     const content = { text: task.intent.body };
     await this.#root.admit({
       ...identity,
-      execution: { kind: 'scheduled_task', scheduledTaskId: task.id },
+      execution: {
+        kind: 'scheduled_task',
+        scheduledTaskId: task.id,
+        ...(task.effect.kind === 'agent_run'
+          ? { executionFingerprint: scheduledTaskExecutionFingerprint(task.effect.execution) }
+          : {}),
+      },
       content,
       start: ({ runId, userMessageId, onRunStarted }) => {
         if (runId !== identity.runId || userMessageId !== identity.userMessageId) {
@@ -823,9 +892,13 @@ class ScheduledTaskMutationError extends Error {
 }
 
 function executionTemplateFromHeader(header: SessionHeader): ScheduledTaskExecutionTemplate {
+  if (!header.llmConnectionId) {
+    throw new Error(SCHEDULED_AGENT_RUN_IDENTITY_REQUIRED);
+  }
   return {
     cwd: header.cwd,
     ...(header.projectId === undefined ? {} : { projectId: header.projectId }),
+    llmConnectionId: header.llmConnectionId,
     llmConnectionSlug: header.llmConnectionSlug,
     model: header.model,
     ...(header.thinkingLevel === undefined ? {} : { thinkingLevel: header.thinkingLevel }),

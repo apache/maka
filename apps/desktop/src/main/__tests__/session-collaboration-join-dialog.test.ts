@@ -41,6 +41,7 @@ const originalGlobals = {
   Event: globalThis.Event,
   Node: globalThis.Node,
   CSS: globalThis.CSS,
+  getComputedStyle: globalThis.getComputedStyle,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
   cancelAnimationFrame: globalThis.cancelAnimationFrame,
@@ -67,6 +68,12 @@ test('keeps loading progress visible while an irreversible import settles', asyn
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
     removeMount: async () => undefined,
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
     getPendingTurnRequests: async () => [],
     decideTurnRequest: async () => {
       throw new Error('unused');
@@ -109,6 +116,63 @@ test('keeps loading progress visible while an irreversible import settles', asyn
   assert.doesNotMatch(document.body.textContent, /finalizingAccess/u);
 });
 
+test('closes as a retained background recovery instead of reporting a failed join', async () => {
+  let imported = 0;
+  let closed = 0;
+  const services: SessionCollaborationServices = {
+    importInvitation: async () => ({ kind: 'recovering', mountId: 'shared-1' }),
+    cancelImport: async () => 'settling',
+    readInvitationClipboard: async () => '',
+    listMounts: async () => [],
+    removeMount: async () => undefined,
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
+    getPendingTurnRequests: async () => [],
+    decideTurnRequest: async () => {
+      throw new Error('unused');
+    },
+    createOperationId: () => 'operation-1',
+  };
+  const { document } = installDom();
+  const container = document.querySelector('#root');
+  assert.ok(container);
+  mountedRoot = createRoot(container);
+  await act(async () => {
+    mountedRoot?.render(
+      createElement(LocaleProvider, {
+        locale: 'en',
+        children: createElement(AstryxLocaleProvider, {
+          children: createElement(ToastProvider, {
+            children: createElement(SessionCollaborationServicesProvider, {
+              services,
+              children: createElement(SessionCollaborationJoinDialog, {
+                copy: testCopy(),
+                onImported: () => {
+                  imported += 1;
+                },
+                onClose: () => {
+                  closed += 1;
+                },
+              }),
+            }),
+          }),
+        }),
+      }),
+    );
+    await Promise.resolve();
+  });
+  await setTextArea(document, 'invitation');
+  await clickButton(document, 'join');
+
+  assert.equal(imported, 1);
+  assert.equal(closed, 1);
+  assert.doesNotMatch(document.body.textContent, /connectionFailed/u);
+});
+
 function installDom(): { document: Document } {
   const parsed = parseHTML('<html><body><div id="root"></div></body></html>');
   const { document, window } = parsed;
@@ -122,7 +186,10 @@ function installDom(): { document: Document } {
     removeEventListener() {},
     dispatchEvent: () => false,
   });
-  Object.assign(window, { matchMedia, scrollTo() {} });
+  const getComputedStyle = () => ({
+    getPropertyValue: () => '',
+  }) as unknown as CSSStyleDeclaration;
+  Object.assign(window, { matchMedia, getComputedStyle, scrollTo() {} });
   Object.assign(window.HTMLElement.prototype, {
     showModal(this: HTMLElement) {
       this.setAttribute('open', '');
@@ -140,6 +207,7 @@ function installDom(): { document: Document } {
     Event: window.Event,
     Node: window.Node,
     CSS: { escape: (value: string) => value },
+    getComputedStyle,
     requestAnimationFrame: (callback: FrameRequestCallback) => setTimeout(callback, 0),
     cancelAnimationFrame: (handle: number) => clearTimeout(handle),
     IS_REACT_ACT_ENVIRONMENT: true,

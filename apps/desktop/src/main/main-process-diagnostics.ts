@@ -44,9 +44,18 @@ const INPUT_TRUNCATION_MARKER = '\n<diagnostic input truncated>';
 const EXECUTION_DIAGNOSTIC_TIMEOUT_MS = 2_000;
 export const MAIN_PROCESS_DIAGNOSTIC_LOG_MAX_BYTES = 256 * 1024;
 
+/**
+ * The release feed a build follows, as a report names it. `buildMode` alone
+ * cannot say this: every packaged install reports `packaged`, so a nightly and
+ * a release looked identical in a report while following different feeds and
+ * different attestation signers. `dev` is not a feed — a checkout follows none.
+ */
+export type DesktopDiagnosticChannel = 'release' | 'nightly' | 'dev' | 'unknown';
+
 export interface DesktopDiagnosticEnvironment {
   readonly appVersion: string;
   readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
   readonly buildCommit: string | null;
   readonly electronVersion: string;
   readonly nodeVersion: string;
@@ -63,6 +72,7 @@ export interface DesktopDiagnosticEnvironment {
 export interface DesktopDiagnosticEnvironmentSource {
   readonly appVersion: string;
   readonly buildMode: 'dev' | 'packaged';
+  readonly updateChannel: DesktopDiagnosticChannel;
   readonly buildCommit: string | null;
   readonly locale: string;
   readonly workspacePath: string;
@@ -431,6 +441,7 @@ export function formatDesktopDiagnosticReport(
       'Environment',
       `Maka: ${environment.appVersion}`,
       `Build: ${environment.buildMode}${environment.buildCommit ? ` @ ${environment.buildCommit.slice(0, 12)}` : ''}`,
+      `Channel: ${environment.updateChannel}`,
       `Electron: ${environment.electronVersion}`,
       `Chrome: ${environment.chromeVersion}`,
       `Node: ${environment.nodeVersion}`,

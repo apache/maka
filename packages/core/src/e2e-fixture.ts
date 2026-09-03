@@ -37,6 +37,7 @@ export type E2eFixtureScenario =
   | 'module-mcp'
   | 'module-daily-review'
   | 'scheduled-tasks'
+  | 'agent-graph-layout'
   | 'sidebar-search-modal-open';
 
 export interface E2eFixtureState {

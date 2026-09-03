@@ -121,7 +121,6 @@
     "src/renderer/session-read-state.ts",
     "src/renderer/session-status-presentation.ts",
     "src/renderer/session-trace-refresh.ts",
-    "src/renderer/session-turn-request-composer.tsx",
     "src/renderer/session-workspace-actions.ts",
     "src/renderer/session-workspace-errors.ts",
     "src/renderer/settings/about-settings-page.tsx",
@@ -181,7 +180,6 @@
     "src/renderer/settings/runtime-host-ssh-terminal-dialog.tsx",
     "src/renderer/settings/settings-error-copy.ts",
     "src/renderer/settings/settings-expandable-row.tsx",
-    "src/renderer/settings/settings-metric-card.tsx",
     "src/renderer/settings/settings-modal.tsx",
     "src/renderer/settings/settings-nav.ts",
     "src/renderer/settings/settings-request-authority.ts",
@@ -764,7 +762,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 10,
-        "nonTriviaTokens": 654
+        "nonTriviaTokens": 650
       },
       "src/renderer/app-shell-turn-view-model.ts": {
         "importDeclarations": 7,
@@ -788,10 +786,10 @@
           "react": 1
         },
         "importSpecifiers": 18,
-        "nonTriviaTokens": 1425
+        "nonTriviaTokens": 1410
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 105,
+        "importDeclarations": 103,
         "bridgePaths": {
           "window.maka.app.installUpdate": 1,
           "window.maka.app.retryUpdateDownload": 1,
@@ -924,7 +922,6 @@
           "./live-content-seed": 1,
           "./live-turn-reconciler": 1,
           "./locales/conversation-copy": 1,
-          "./locales/session-collaboration-copy": 1,
           "./locales/shell-copy": 1,
           "./locales/shell-remaining-copy.js": 1,
           "./model-connection-errors": 1,
@@ -934,7 +931,6 @@
           "./plan-mode-panel": 1,
           "./scroll-motion-policy": 1,
           "./session-collaboration-dialog": 1,
-          "./session-turn-request-composer.js": 1,
           "./session-workspace-errors": 1,
           "./settings/provider-brand-marks": 1,
           "./settings/provider-display": 1,
@@ -984,8 +980,8 @@
           "@maka/ui/icons": 1,
           "react": 1
         },
-        "importSpecifiers": 186,
-        "nonTriviaTokens": 15725
+        "importSpecifiers": 184,
+        "nonTriviaTokens": 15692
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,
@@ -2387,8 +2383,8 @@
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
+          "./features/session-collaboration": 1,
           "./locales/session-collaboration-copy.js": 1,
-          "./session-turn-request-composer.js": 1,
           "@astryxdesign/core": 1,
           "@astryxdesign/core/Dialog": 1,
           "@astryxdesign/core/Layout": 1,
@@ -2503,33 +2499,6 @@
           "@maka/core/events": 1
         }
       },
-      "src/renderer/session-turn-request-composer.tsx": {
-        "bridgePaths": {
-          "window.maka.sessionCollaboration.acknowledgeTurnRequest": 1,
-          "window.maka.sessionCollaboration.getTurnRequests": 2,
-          "window.maka.sessionCollaboration.requestTurn": 1
-        },
-        "environmentCapabilities": {
-          "window.clearTimeout": 1,
-          "window.setTimeout": 1
-        },
-        "hookCalls": {
-          "useEffect": 1,
-          "useRef": 2,
-          "useState": 6,
-          "useToast": 1,
-          "useUiLocale": 1
-        },
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "./locales/session-collaboration-copy.js": 1,
-          "@maka/runtime-host/protocol": 1,
-          "@maka/ui": 1,
-          "react": 1
-        }
-      },
       "src/renderer/session-workspace-actions.ts": {
         "bridgePaths": {
           "window.maka.sessions.queryCancelledMessages": 1
@@ -2585,17 +2554,14 @@
           "../../preload/bridge-contract.js": 1,
           "../default-runtime-host-operation.js": 1,
           "../locales/settings-preferences-copy.js": 1,
-          "../locales/settings-shared-copy.js": 1,
           "./about-update-status.js": 1,
           "./settings-error-copy.js": 1,
-          "./settings-rows.js": 1,
           "./settings-section.js": 1,
           "./settings-skeleton.js": 1,
           "./use-action-guard.js": 1,
           "@astryxdesign/core": 1,
           "@astryxdesign/core/Kbd": 1,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
           "react": 1
         }
       },
@@ -3894,17 +3860,6 @@
           "react": 1
         }
       },
-      "src/renderer/settings/settings-metric-card.tsx": {
-        "bridgePaths": {},
-        "environmentCapabilities": {},
-        "hookCalls": {},
-        "lifecycleMethods": {},
-        "unresolvedDependencies": 0,
-        "actionFactories": [],
-        "dependencyPaths": {
-          "@maka/ui": 1
-        }
-      },
       "src/renderer/settings/settings-modal.tsx": {
         "bridgePaths": {},
         "environmentCapabilities": {},
@@ -4088,11 +4043,11 @@
           "window.removeEventListener": 1
         },
         "hookCalls": {
-          "useEffect": 10,
+          "useEffect": 9,
           "useMediaQuery": 1,
           "useMountedRef": 1,
-          "useRef": 10,
-          "useState": 12,
+          "useRef": 8,
+          "useState": 11,
           "useToast": 1,
           "useUiLocale": 2
         },
@@ -4250,30 +4205,17 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useActionGuard": 1,
-          "useOptimisticSettingsDraft": 1,
-          "useState": 1,
-          "useToast": 1,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
         "actionFactories": [],
         "dependencyPaths": {
-          "../../shared/runtime-host-identity.js": 1,
-          "../locales/settings-usage-copy": 1,
+          "../features/usage": 3,
           "./settings-error-copy": 1,
-          "./settings-metric-card": 1,
           "./settings-section": 1,
-          "./use-action-guard": 1,
-          "./use-optimistic-settings-draft": 1,
-          "@astryxdesign/core": 1,
           "@maka/core/settings": 1,
-          "@maka/core/ui-locale": 1,
-          "@maka/core/usage-ledger-merge": 1,
-          "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
+          "@maka/ui": 1
         }
       },
       "src/renderer/settings/use-action-guard.ts": {

@@ -182,6 +182,7 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
   private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private runtimeEventEntries: RuntimeEvent[] = [];
 
   constructor(private readonly options: { failRuntimeEventReads?: boolean } = {}) {}
 
@@ -229,6 +230,9 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
       ...(this.runtimeEvents.get(eventKey) ?? []),
       copyRuntimeEvent(event),
     ]);
+    if (event.partial !== true && !this.runtimeEventEntries.some(({ id }) => id === event.id)) {
+      this.runtimeEventEntries.push(copyRuntimeEvent(event));
+    }
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -251,6 +255,12 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     if (this.options.failRuntimeEventReads) throw new Error('runtime ledger is corrupt');
     return (this.runtimeEvents.get(key(sessionId, runId)) ?? []).map(copyRuntimeEvent);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.runtimeEventEntries
+      .filter((event) => event.sessionId === sessionId)
+      .map((event, index) => ({ ordinal: index + 1, event: copyRuntimeEvent(event) }));
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {

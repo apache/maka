@@ -25,9 +25,16 @@ import { createRuntimeHostListenerSet } from '../server/listener-set.js';
 import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import type { RuntimeHostPeerNativeStream } from '../transport/peer-native.js';
 
+const UNUSED_REACHABILITY = {} as never;
+
 test('bounds and aborts pending peer authentication', async () => {
   const streams = Array.from({ length: 17 }, (_, index) => pendingStream(`remote-peer-${index}`));
-  const listener = createRuntimeHostPeerListener(peerWith([...streams]), {} as never, () => {});
+  const listener = createRuntimeHostPeerListener(
+    peerWith([...streams]),
+    UNUSED_REACHABILITY,
+    {} as never,
+    () => {},
+  );
   await waitForImmediate();
 
   assert.equal(streams.filter((stream) => stream.aborted).length, 1);
@@ -42,7 +49,12 @@ test('bounds and aborts pending peer authentication', async () => {
 test('expires a peer that does not send its credential', async (context) => {
   context.mock.timers.enable({ apis: ['setTimeout'] });
   const stream = pendingStream();
-  const listener = createRuntimeHostPeerListener(peerWith([stream]), {} as never, () => {});
+  const listener = createRuntimeHostPeerListener(
+    peerWith([stream]),
+    UNUSED_REACHABILITY,
+    {} as never,
+    () => {},
+  );
   await waitForImmediate();
 
   context.mock.timers.tick(5_000);
@@ -55,6 +67,7 @@ test('reports an explicit authentication rejection before closing the stream', a
   const stream = recordingStream(Buffer.from('{"v":1,"credential":"rejected"}\n'));
   const listener = createRuntimeHostPeerListener(
     peerWith([stream]),
+    UNUSED_REACHABILITY,
     { authenticate: () => null } as never,
     () => {},
   );
@@ -86,6 +99,7 @@ test('rechecks peer authority at admission after the authentication response is 
   let accepted = false;
   const listener = createRuntimeHostPeerListener(
     peerWith([stream]),
+    UNUSED_REACHABILITY,
     {
       authenticate: () => (authentications++ === 0 ? { operationGrants: 'all' } : null),
     } as never,
@@ -110,6 +124,7 @@ test('bounds active application streams from one authenticated peer', async () =
   let accepted = 0;
   const listener = createRuntimeHostPeerListener(
     peerWith([...streams]),
+    UNUSED_REACHABILITY,
     { authenticate: () => ({ operationGrants: 'all' }) } as never,
     () => {
       accepted += 1;
@@ -133,7 +148,22 @@ test('projects newly accepted coordination relays from the running peer endpoint
       coordinationRelays,
     }),
   };
-  const listener = createRuntimeHostPeerListener(peer, {} as never, () => {});
+  const reachability = {
+    current: () => ({
+      lease: {
+        version: 1 as const,
+        peerId: 'peer',
+        revision: 1,
+        issuedAt: 1,
+        expiresAt: 2,
+        directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+        coordinationRoutes: coordinationRelays,
+      },
+      publicKey: 'AA',
+      signature: 'AA',
+    }),
+  } as never;
+  const listener = createRuntimeHostPeerListener(peer, reachability, {} as never, () => {});
   const listeners = createRuntimeHostListenerSet(
     {
       kind: 'local_ipc',
@@ -144,19 +174,30 @@ test('projects newly accepted coordination relays from the running peer endpoint
     [listener],
   );
 
-  assert.deepEqual(listeners.peerListeners[0]?.coordinationRelays, []);
+  assert.deepEqual(listeners.peerListeners[0]?.reachability.lease.coordinationRoutes, []);
   coordinationRelays = ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'];
-  assert.deepEqual(listeners.peerListeners[0]?.coordinationRelays, coordinationRelays);
+  assert.deepEqual(
+    listeners.peerListeners[0]?.reachability.lease.coordinationRoutes,
+    coordinationRelays,
+  );
   await listeners.cleanup();
 });
 
 function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient {
+  const reachability = {
+    generation: 0,
+    listenAddresses: [],
+    activeCoordinationRelays: [],
+  } as const;
   return {
+    reachability: () => reachability,
+    watchReachability: async () => reachability,
     identity: () => ({ peerId: 'peer', listenAddresses: [], coordinationRelays: [] }),
     signIdentity: async () => {
       throw new Error('not used');
     },
     verifyIdentity: () => false,
+    isConnected: () => false,
     transitSnapshot: () => ({
       allowedPeerCount: 0,
       activeReservationCount: 0,
@@ -168,7 +209,11 @@ function peerWith(streams: RuntimeHostPeerNativeStream[]): RuntimeHostPeerClient
       maxCircuitBytes: 256 * 1024 * 1024,
     }),
     configureTransit: async () => undefined,
-    observeAuthenticatedRoutes: () => undefined,
+    attachRouteResolver: () => () => undefined,
+    subscribeRoutes: () => () => undefined,
+    observeAuthenticatedReachability: () => {
+      throw new Error('not used');
+    },
     connect: async () => {
       throw new Error('not used');
     },

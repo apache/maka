@@ -64,8 +64,6 @@ export type SettingsSharedCopy = {
     memoryEntriesHelp: string;
     reviewSchedule: string;
     reviewScheduleHelp: string;
-    buildInfo: string;
-    reference: string;
   };
 };
 
@@ -108,8 +106,6 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       dataLocationHelp: '任务、设置、使用统计与凭据都以文件形式存放在本机的这个位置。',
       reviewSchedule: '回顾计划',
       reviewScheduleHelp: '每日回顾的生成时间与使用的模型。',
-      buildInfo: '版本信息',
-      reference: '参考',
     },
   },
   en: {
@@ -150,8 +146,6 @@ const SETTINGS_SHARED_COPY_BY_LOCALE = {
       dataLocationHelp: 'Tasks, settings, usage statistics, and credentials are stored as files in this location on your machine.',
       reviewSchedule: 'Review schedule',
       reviewScheduleHelp: 'When the daily review runs, and which model writes it.',
-      buildInfo: 'Build info',
-      reference: 'Reference',
     },
   },
 } satisfies UiCatalog<SettingsSharedCopy>;

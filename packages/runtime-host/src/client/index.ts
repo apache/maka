@@ -181,6 +181,7 @@ export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,
+  RuntimeHostPeerReachabilityUnavailableError,
   type RuntimeHostPeerClient,
   type RuntimeHostPeerConnectInput,
 } from './peer-client.js';

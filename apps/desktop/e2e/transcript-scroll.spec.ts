@@ -17,7 +17,13 @@
  * under the License.
  */
 
-import { expect, test, COMPOSER_INPUT, ensureSidebarExpanded } from './fixtures';
+import {
+  awaitSendReady,
+  expect,
+  test,
+  COMPOSER_INPUT,
+  ensureSidebarExpanded,
+} from './fixtures';
 import type { Page } from '@playwright/test';
 
 /**
@@ -196,6 +202,8 @@ function measureTailLag(page: Page, frames: number): Promise<{
 async function sendPrompt(page: Page, text: string): Promise<void> {
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(text);
+  // Switching Session or model restarts asynchronous send admission.
+  await awaitSendReady(page);
   await composer.press('Enter');
 }
 
@@ -313,7 +321,9 @@ test('switching Sessions restores a Turn anchor while a tail Session follows bac
       .__makaBackgroundTailProbe = state;
   }, tailSessionId);
   await sendPrompt(page, LONG_PROMPT);
-  await expect(page.locator('.maka-user-message', { hasText: '第 1 行' })).toBeVisible();
+  await expect(page.locator('.maka-user-message', { hasText: '第 1 行' })).toBeVisible({
+    timeout: 20_000,
+  });
 
   // The transcript collapses before each async replacement. This round trip
   // therefore exercises the production ordering that made a saved scrollTop
@@ -623,6 +633,25 @@ test('history asked for at the very top of the scroller still lands above the re
     .first()
     .getAttribute('data-transcript-turn-id');
   const firstBefore = await firstLoadedTurn();
+
+  // The fixture is ready when the transcript exists, before its initial tail
+  // positioning necessarily completes. Writing zero while it is still at zero
+  // is a no-op, so no reader scroll event asks for earlier history. Require one
+  // geometry sample to prove both that the initial pin moved and where it
+  // landed before exercising the real move to the top.
+  await expect.poll(async () => {
+    const metrics = await scrollMetrics(page);
+    return {
+      positionedAwayFromStart: metrics.scrollTop > 0,
+      settledAtTail: metrics.distance <= 4,
+      metrics,
+    };
+  }, {
+    message: 'the initial transcript tail positioning settles',
+  }).toMatchObject({
+    positionedAwayFromStart: true,
+    settledAtTail: true,
+  });
 
   // The one position where the browser declines to anchor, and the one the
   // wheel-to-load path puts the reader in.
