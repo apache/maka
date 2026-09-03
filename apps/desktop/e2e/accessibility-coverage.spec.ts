@@ -19,7 +19,7 @@
 
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import type { CDPSession, Locator, Page } from '@playwright/test';
-import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, ensureSidebarExpanded, expect, test, COMPOSER_INPUT } from './fixtures';
 import { auditAxTree } from '../../../scripts/ax-tree-audit.mjs';
 import { groupedNav } from '../src/renderer/settings/settings-nav';
 
@@ -52,27 +52,13 @@ async function tabTo(page: Page, target: Locator, label: string, limit = 30): Pr
   ).toBe(true);
 }
 
-/**
- * Walk to the skip link from the document start, taking the start back if a
- * cold start moves it.
- *
- * Parking focus on `body` is not a one-shot the renderer respects: the composer
- * restores its draft caret with `getSelection().addRange(...)`, and a range set
- * inside a `contenteditable` focuses it — so once per cold start, tens of
- * milliseconds after the park and with no `focus()` call to fence on, focus
- * lands in the composer. A walk that starts there has to run out the tab ring
- * and wrap around, which is over budget. The restore fires once, so re-park and
- * walk again rather than widening the budget — the budget is the assertion.
- */
 async function enterMainFromSkipLink(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    document.body.tabIndex = -1;
+    document.body.focus();
+  });
   const skipLink = page.getByRole('link', { name: '跳到主要内容' });
-  await expect(async () => {
-    await page.evaluate(() => {
-      document.body.tabIndex = -1;
-      document.body.focus();
-    });
-    await tabTo(page, skipLink, 'skip link', 10);
-  }).toPass({ timeout: 30_000 });
+  await tabTo(page, skipLink, 'skip link', 10);
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main')).toBeFocused();
   await page.evaluate(() => document.body.removeAttribute('tabindex'));
@@ -321,4 +307,42 @@ test('composer and workbar entry points expose named actionable controls', async
       await expect(page.getByRole('list', { name: '打开工具' })).toBeVisible();
     }
   }
+});
+
+/**
+ * Restoring a draft is not a reason to move focus. The composer places the
+ * restored caret with a selection, and a selection inside a `contenteditable`
+ * focuses it whatever held focus before — so before the caret was held back,
+ * activating a session row took focus out from under the keyboard user who
+ * activated it. Asserted in a real browser because that is where the focus
+ * side effect lives; the unit harness models it and cannot observe it.
+ */
+test('activating a session row with an unsent draft keeps focus on the row', async ({
+  window: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const prompt = 'session for the draft focus contract';
+  await composer.fill(prompt);
+  await awaitSendReady(page);
+  await composer.press('Enter');
+  await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible({
+    timeout: 30_000,
+  });
+
+  await composer.click();
+  // Plain text, no Skill token: this contract is about the caret restore, and a
+  // token redraw writes the same selection for a reason of its own.
+  await page.keyboard.insertText('an unsent draft');
+  await expect(composer).toHaveText('an unsent draft');
+
+  await ensureSidebarExpanded(page);
+  const sidebar = page.getByRole('navigation', { name: '任务列表' });
+  await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
+  await expect(composer).toHaveText('');
+
+  const sessionRow = sidebar.locator('[data-session-id]').first();
+  await sessionRow.click();
+  await expect(composer).toHaveText('an unsent draft');
+  await expect(composer).not.toBeFocused();
+  await expect(sessionRow.locator(':focus')).toHaveCount(1);
 });
