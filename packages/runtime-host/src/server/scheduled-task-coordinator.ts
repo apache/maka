@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { botDisplayLabel } from '@maka/core/bot-events';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { messageContentsEqual } from '@maka/core/events';
@@ -26,7 +26,6 @@ import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import {
   type CreateScheduledTaskInput,
   type ScheduledTask,
-  type ScheduledTaskEffect,
   type ScheduledTaskExecutionTemplate,
 } from '@maka/core/scheduled-task';
 import type { SessionHeader } from '@maka/core/session';
@@ -38,6 +37,7 @@ import {
   type ScheduledTaskToolAuthority,
 } from '@maka/runtime/scheduled-task-tools';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
+import { stableHash } from '@maka/runtime/request-shape';
 import { type SessionManager } from '@maka/runtime/session-manager';
 import {
   authenticateInteractiveScheduledTaskStoreWriter,
@@ -114,13 +114,12 @@ export function scheduledTaskExecutionFingerprint(
   execution: ScheduledTaskExecutionTemplate,
 ): `sha256:${string}` | undefined {
   if (!execution.llmConnectionId) return undefined;
-  const identity = [
+  return stableHash([
     'scheduled-task-agent-run.v1',
     execution.llmConnectionId,
     execution.llmConnectionSlug,
     execution.model,
-  ];
-  return `sha256:${createHash('sha256').update(JSON.stringify(identity)).digest('hex')}`;
+  ]);
 }
 
 export interface HostScheduledTaskSessionRetirement {
@@ -437,31 +436,25 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           }),
         );
       }
-      const task = await this.#commitTask(
-        'updated',
-        () => {
-          if (input.kind === 'update') {
-            return this.#cancelWaitingNativeFireThen(input.taskId, () =>
-              this.#store.update(input.taskId, input.patch, this.#now()),
-            );
-          }
-          if (input.kind === 'pause') {
-            return this.#cancelWaitingNativeFireThen(input.taskId, () =>
-              this.#store.pause(input.taskId, this.#now()),
-            );
-          }
-          if (input.kind === 'resume') return this.#store.resume(input.taskId, this.#now());
-          if (input.kind === 'snooze') {
-            return this.#cancelWaitingNativeFireThen(input.taskId, () =>
-              this.#store.snooze(input.taskId, input.delayMs, this.#now()),
-            );
-          }
-          return this.#store.clearRunHistory(input.taskId, this.#now());
-        },
-        input.kind === 'update'
-          ? () => this.#validateAgentRunEffect(input.patch.effect)
-          : undefined,
-      );
+      const task = await this.#commitTask('updated', () => {
+        if (input.kind === 'update') {
+          return this.#cancelWaitingNativeFireThen(input.taskId, () =>
+            this.#store.update(input.taskId, input.patch, this.#now()),
+          );
+        }
+        if (input.kind === 'pause') {
+          return this.#cancelWaitingNativeFireThen(input.taskId, () =>
+            this.#store.pause(input.taskId, this.#now()),
+          );
+        }
+        if (input.kind === 'resume') return this.#store.resume(input.taskId, this.#now());
+        if (input.kind === 'snooze') {
+          return this.#cancelWaitingNativeFireThen(input.taskId, () =>
+            this.#store.snooze(input.taskId, input.delayMs, this.#now()),
+          );
+        }
+        return this.#store.clearRunHistory(input.taskId, this.#now());
+      });
       return taskSuccess(task);
     } catch (error) {
       if (error instanceof ScheduledTaskStoreError) {
@@ -501,7 +494,6 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
           'ScheduledTask catalog limit reached',
         );
       }
-      await this.#validateAgentRunEffect(input.effect);
       const task = await this.#store.create(input, this.#now());
       this.#publish('created', task.id);
       await this.#refreshSchedule();
@@ -512,24 +504,13 @@ export class HostScheduledTaskCoordinator implements ScheduledTaskToolAuthority 
   #commitTask(
     reason: ScheduledTaskChangedReason,
     mutate: () => Promise<ScheduledTask>,
-    beforeMutate?: () => Promise<void>,
   ): Promise<ScheduledTask> {
     return this.#exclusive(async () => {
-      await beforeMutate?.();
       const task = await mutate();
       this.#publish(reason, task.id);
       await this.#refreshSchedule();
       return task;
     });
-  }
-
-  async #validateAgentRunEffect(effect: ScheduledTaskEffect | undefined): Promise<void> {
-    if (effect?.kind !== 'agent_run') return;
-    try {
-      await this.#resolveAgentRunConnection(effect.execution);
-    } catch (error) {
-      throw new ScheduledTaskMutationError('operation_conflict', errorMessage(error));
-    }
   }
 
   async #cancelWaitingNativeFireThen<T>(taskId: string, operation: () => Promise<T>): Promise<T> {

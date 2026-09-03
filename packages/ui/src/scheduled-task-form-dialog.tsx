@@ -207,9 +207,9 @@ export function ScheduledTaskFormDialog(props: {
       const result = editingId
         ? await props.onUpdate?.(
             editingId,
-            preservesLegacyEffect ? baseInput : { ...baseInput, effect: effect! },
+            preservesLegacyEffect ? baseInput : { ...baseInput, effect },
           )
-        : await props.onCreate?.({ ...baseInput, effect: effect! });
+        : await props.onCreate?.({ ...baseInput, effect });
       if (result !== false && scheduledTaskMountedRef.current) {
         resetForm();
         props.onOpenChange(false);

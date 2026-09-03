@@ -190,13 +190,13 @@ test('ScheduledTask execution fails closed when the bound Connection identity is
   });
   try {
     await coordinator.prepareRecovery();
-    const rejectedCreate = await coordinator.handlers['scheduled-task.mutate'](
+    const created = await coordinator.handlers['scheduled-task.mutate'](
       {
         kind: 'create',
         input: {
           title: 'Rejected replacement target',
           intentBody: 'Must not persist an unresolvable Connection tuple.',
-          schedule: { kind: 'once', runAt: 2_000 },
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
           effect: {
             kind: 'agent_run',
             execution: {
@@ -213,14 +213,25 @@ test('ScheduledTask execution fails closed when the bound Connection identity is
       },
       {} as never,
     );
-    assert.deepEqual(rejectedCreate, {
-      ok: false,
-      error: {
-        code: 'operation_conflict',
-        message: 'ScheduledTask model connection identity changed',
+    assert.equal(created.ok, true);
+    if (!created.ok || created.result.kind !== 'task') return;
+    assert.equal(created.result.task.effect.kind, 'agent_run');
+    assert.equal((await store.list()).length, 1);
+
+    const updated = await coordinator.handlers['scheduled-task.mutate'](
+      {
+        kind: 'update',
+        taskId: created.result.task.id,
+        patch: {
+          title: 'Updated while temporarily unavailable',
+          effect: created.result.task.effect,
+        },
       },
-    });
-    assert.equal((await store.list()).length, 0);
+      {} as never,
+    );
+    assert.equal(updated.ok, true);
+    if (!updated.ok || updated.result.kind !== 'task') return;
+    assert.equal(updated.result.task.title, 'Updated while temporarily unavailable');
 
     const task = await store.create(
       {

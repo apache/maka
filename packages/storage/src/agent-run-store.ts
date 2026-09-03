@@ -2093,9 +2093,12 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
     return Object.freeze({ kind: 'context_compact' });
   }
   if (value.kind === 'scheduled_task') {
-    const keys = ['kind', 'scheduledTaskId', 'executionFingerprint'];
     if (
-      !Object.keys(value).every((key) => keys.includes(key)) ||
+      !hasExactKeys(value, [
+        'kind',
+        'scheduledTaskId',
+        ...(Object.hasOwn(value, 'executionFingerprint') ? ['executionFingerprint'] : []),
+      ]) ||
       typeof value.scheduledTaskId !== 'string' ||
       !isSafeId(value.scheduledTaskId) ||
       (value.executionFingerprint !== undefined && !isSha256Digest(value.executionFingerprint))
