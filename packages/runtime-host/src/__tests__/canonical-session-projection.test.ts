@@ -591,7 +591,7 @@ function createMessages(
   stores: ExecutionStoresWriter<'interactive'>,
 ): HostMessageCoordinator {
   const root: HostMessageRootPort = {
-    readSessionHeader: async () => ({ isArchived: false }),
+    readSessionAvailability: async () => ({ isArchived: false }),
     readRootState: () => ({ kind: 'active', sessionId, turnId: 'turn-1', runId: 'run-1' }),
     claimStopFence: async () => ({
       ready: Promise.resolve(),

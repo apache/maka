@@ -1075,6 +1075,91 @@ test('explicit recovery persists the selected Connection entity identity', async
   assert.equal(fixture.header().model, 'model-1');
 });
 
+test('unlocked legacy Sessions lazily adopt the current slug owner with CAS revalidation', async () => {
+  const observed: unknown[] = [];
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    header: { connectionLocked: false },
+    connection: {
+      onResolve: (ref) => observed.push(ref),
+    },
+  });
+
+  const adopted = await fixture.admission.run(fixture.sessionId, (lease) =>
+    fixture.coordinator.adoptLegacySessionConnectionIdentity(fixture.sessionId, lease),
+  );
+
+  assert.ok(adopted);
+  assert.equal(fixture.header().llmConnectionId, 'connection-1');
+  assert.deepEqual(observed, [
+    {
+      kind: 'catalog_slug',
+      connectionSlug: 'test',
+    },
+  ]);
+});
+
+test('locked legacy Sessions never guess an identity, even when the slug exists today', async () => {
+  const observed: unknown[] = [];
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    connection: {
+      onResolve: (ref) => observed.push(ref),
+    },
+  });
+
+  const adopted = await fixture.admission.run(fixture.sessionId, (lease) =>
+    fixture.coordinator.adoptLegacySessionConnectionIdentity(fixture.sessionId, lease),
+  );
+
+  assert.equal(adopted, undefined);
+  assert.equal(fixture.header().llmConnectionId, undefined);
+  assert.deepEqual(observed, []);
+});
+
+test('legacy adoption leaves a Session unbound when its metadata CAS loses a race', async () => {
+  const fixture = createFixture({
+    legacyConnectionIdentity: true,
+    header: { connectionLocked: false },
+    stores: {
+      updateHeaderVersioned: async (_sessionId, _patch, expectedRevision) => {
+        throw new SessionMetadataVersionConflictError(
+          'session-1',
+          expectedRevision,
+          expectedRevision + 1,
+        );
+      },
+    },
+  });
+
+  const adopted = await fixture.admission.run(fixture.sessionId, (lease) =>
+    fixture.coordinator.adoptLegacySessionConnectionIdentity(fixture.sessionId, lease),
+  );
+
+  assert.equal(adopted, undefined);
+  assert.equal(fixture.header().llmConnectionId, undefined);
+});
+
+for (const executionResolution of [
+  { kind: 'not_found' as const },
+  { kind: 'identity_mismatch' as const },
+]) {
+  test(`legacy adoption stays unbound when slug preflight is ${executionResolution.kind}`, async () => {
+    const fixture = createFixture({
+      legacyConnectionIdentity: true,
+      header: { connectionLocked: false },
+      connection: { executionResolution },
+    });
+
+    const adopted = await fixture.admission.run(fixture.sessionId, (lease) =>
+      fixture.coordinator.adoptLegacySessionConnectionIdentity(fixture.sessionId, lease),
+    );
+
+    assert.equal(adopted, undefined);
+    assert.equal(fixture.header().llmConnectionId, undefined);
+  });
+}
+
 test('creation persists a canonical cwd while fingerprints retain exact target intent', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-session-create-cwd-'));
   const target = join(root, 'target');
@@ -1498,6 +1583,7 @@ function createFixture(
     },
     ...options.manager,
   };
+  const admission = new SessionAdmissionGate();
   const continuity: SessionContinuity = {
     refreshCanonical: async () => undefined,
     ...options.continuity,
@@ -1506,7 +1592,7 @@ function createFixture(
     stores,
     runtimePolicy,
     manager,
-    admission: new SessionAdmissionGate(),
+    admission,
     continuity,
     workspaceResolver: new HostWorkspaceResolver(
       options.projectCatalog ?? ({ list: async () => [] } as never),
@@ -1519,6 +1605,7 @@ function createFixture(
   });
   return {
     coordinator,
+    admission,
     sessionId,
     revision: () => revision,
     header: () => header,
