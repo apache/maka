@@ -1285,14 +1285,20 @@ function assertEveryFormAnswerFitsCanonicalOutcome(request: InteractionFormReque
 
 function formFieldMaximumEnvelope(field: InteractionFormField): InteractionFormValue {
   if (field.kind === 'string') {
-    // Admission must prove every legal answer serializes. String values keep
-    // their schema semantics — maxLength in code points, raw UTF-8 bytes
-    // bounded at INTERACTION_FORM_VALUE_MAX_BYTES — while enforcement measures
-    // post-serialization bytes, where JSON escaping inflates a code point to
-    // as much as six bytes (backslash, quote, newline, control characters).
-    // The worst legal value is therefore all control characters: one code
-    // point and one raw byte each, six serialized bytes after escaping.
-    return ''.repeat(field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES);
+    // Admission must prove every legal answer serializes, so reserve the worst
+    // value inside the format's legal language, measured post-serialization.
+    // - date is a fixed-length language over [0-9-]; nothing JSON-escapes.
+    // - date-time adds only digits and `.:TZ+-`; nothing JSON-escapes, and the
+    //   fractional seconds leave the length unbounded up to the field caps.
+    // - every other string may legally hold control characters, which
+    //   JSON-escape to six bytes per code point (one raw byte each).
+    if (field.format === 'date') return '0000-01-01';
+    const maximumCodePoints = Math.min(
+      field.maxLength ?? INTERACTION_FORM_VALUE_MAX_BYTES,
+      INTERACTION_FORM_VALUE_MAX_BYTES,
+    );
+    if (field.format === 'date-time') return '0'.repeat(maximumCodePoints);
+    return '\u0001'.repeat(maximumCodePoints);
   }
   if (field.kind === 'number' || field.kind === 'integer') return -1.7976931348623157e308;
   if (field.kind === 'boolean') return false;

@@ -1526,6 +1526,45 @@ describe('Interaction decoding and validity', () => {
     );
   });
 
+  test('admits date and date-time strings without an explicit maxLength', () => {
+    // The admission envelope reserves the worst value inside each format's
+    // legal language: date is fixed-length over [0-9-], and date-time adds
+    // only characters that never JSON-escape. Neither may inflate to the
+    // unconstrained control-character worst case.
+    const request = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Schedule the deploy',
+      requester: { name: 'deploy' },
+      fields: [
+        { kind: 'string', name: 'day', label: 'Day', required: true, format: 'date' },
+        { kind: 'string', name: 'at', label: 'At', required: true, format: 'date-time' },
+      ],
+    });
+    const answer = {
+      kind: 'form' as const,
+      action: 'accept' as const,
+      values: { day: '2024-02-29', at: '2024-02-29T23:59:59Z' },
+    };
+    assert.equal(isInteractionAnswerValidForRequest(request, answer), true);
+    decodeInteractionAnswer(answer);
+
+    // Fractional seconds leave the date-time length unbounded up to the field
+    // caps, and the envelope reserves exactly that plain-character worst case.
+    const fractional = projectInteractionFormRequest({
+      toolUseId: 'tool-form',
+      message: 'Schedule the deploy',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'string', name: 'at', label: 'At', required: true, format: 'date-time' }],
+    });
+    const longFraction = {
+      kind: 'form' as const,
+      action: 'accept' as const,
+      values: { at: `2024-02-29T23:59:59.${'0'.repeat(2_020)}Z` },
+    };
+    assert.equal(isInteractionAnswerValidForRequest(fractional, longFraction), true);
+    decodeInteractionAnswer(longFraction);
+  });
+
   test('compares canonical accepted form values structurally', () => {
     const first = decodeInteractionCanonicalOutcome({
       kind: 'form_answer',
