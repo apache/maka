@@ -1927,7 +1927,9 @@ test('close waits for nested Client Capability interaction cleanup', async () =>
           request: {
             message: 'Choose a target',
             requester: { name: 'deploy' },
-            fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+            fields: [
+              { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+            ],
           },
         });
       }

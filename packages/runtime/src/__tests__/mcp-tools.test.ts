@@ -107,7 +107,9 @@ test('buildMcpTools carries the Runtime-owned form callback to the provider', as
         {
           message: 'Choose a target',
           requester: { name: 'deploy' },
-          fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
         },
         { cancellationSignal: cancellation.signal },
       );
@@ -148,7 +150,9 @@ test('prepared MCP execution receives the Runtime-owned form callback after admi
         const answer = await options.requestInteraction({
           message: 'Choose a target',
           requester: { name: 'deploy' },
-          fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+          fields: [
+            { kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 },
+          ],
         });
         assert.deepEqual(answer, { action: 'accept', values: { target: 'staging' } });
         return { content: [] };

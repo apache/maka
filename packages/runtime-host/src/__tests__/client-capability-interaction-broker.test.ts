@@ -91,7 +91,7 @@ test('Client Capability nested interaction pauses and rearms the execution timeo
     request: {
       message: 'Choose a target',
       requester: { name: 'deploy' },
-      fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+      fields: [{ kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 }],
     },
   });
   assert.equal(timers.activeCount(), 0);
@@ -156,7 +156,7 @@ test('Client Capability accepts a final result while interaction delivery is sti
     request: {
       message: 'Choose a target',
       requester: { name: 'deploy' },
-      fields: [{ kind: 'string', name: 'target', label: 'Target', required: true }],
+      fields: [{ kind: 'string', name: 'target', label: 'Target', required: true, maxLength: 256 }],
     },
   });
 
