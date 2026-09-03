@@ -1035,8 +1035,8 @@ const withGeneralCachedRevalidationBridge = withScopedMakaBridge({
 let generationStoryCatalogPending = false;
 let generationStoryRuntimeHostProfiles = runtimeHostProfiles;
 let generationStoryConnectionsPending = false;
-let generationStoryCopilotEmail = 'old-generation@example.com';
-let generationStoryCopilotAccountReads = 0;
+let generationStoryCopilotEnrollmentEnabled = true;
+let generationStoryCopilotEnrollmentReads = 0;
 let generationStoryOpenedAuthIds: string[] = [];
 let generationStoryCancelledAuthIds: string[] = [];
 let generationStoryCopilotLoginAttempts = 0;
@@ -1054,8 +1054,8 @@ function resetGenerationStoryBridge(
   generationStoryCatalogPending = false;
   generationStoryRuntimeHostProfiles = snapshot;
   generationStoryConnectionsPending = false;
-  generationStoryCopilotEmail = 'old-generation@example.com';
-  generationStoryCopilotAccountReads = 0;
+  generationStoryCopilotEnrollmentEnabled = true;
+  generationStoryCopilotEnrollmentReads = 0;
   generationStoryOpenedAuthIds = [];
   generationStoryCancelledAuthIds = [];
   generationStoryCopilotLoginAttempts = 0;
@@ -1097,13 +1097,9 @@ const withModelsOAuthGenerationRevalidationBridge = withScopedMakaBridge({
   runtimeHostProfiles: generationStoryRuntimeHostProfilesBridge,
   githubCopilotSubscription: {
     ...makaBridge.githubCopilotSubscription,
-    getAccountState: async () => {
-      generationStoryCopilotAccountReads += 1;
-      return {
-        runtimeState: 'authenticated' as const,
-        email: generationStoryCopilotEmail,
-        plan: 'Plus',
-      };
+    getEnrollmentState: async () => {
+      generationStoryCopilotEnrollmentReads += 1;
+      return { enabled: generationStoryCopilotEnrollmentEnabled };
     },
   },
 } satisfies Record<string, unknown>);
@@ -2361,10 +2357,9 @@ export const ModelsConnectionsHostGenerationRevalidation: Story = {
 };
 
 // A ready event can replace the Runtime Host without changing
-// profileId:hostId. The catalog route stays mounted, but Copilot's singleton
-// import state belongs to the Host generation and must be read again before
-// the previous account can be presented as current. Codex and xAI instead
-// project their Connection counts from the connection catalog.
+// profileId:hostId. The active setup route stays mounted, but enrollment
+// availability belongs to the selected Host generation and must be re-read
+// before its sign-in action can remain enabled.
 export const ModelsOAuthHostGenerationRevalidation: Story = {
   decorators: [withModelsOAuthGenerationRevalidationBridge],
   render: () => {
@@ -2379,12 +2374,20 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await canvas.findByText('old-generation@example.com');
-    const readsBeforeReplacement = generationStoryCopilotAccountReads;
+    await userEvent.click(await canvas.findByRole('button', {
+      name: /添加账号连接：GitHub Copilot/,
+    }));
+    const signIn = await canvas.findByRole('button', { name: '使用 GitHub 登录' });
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > 0,
+      'Initial Copilot enrollment availability was not read',
+    );
+    await expect(signIn).not.toHaveAttribute('aria-disabled', 'true');
+    const readsBeforeReplacement = generationStoryCopilotEnrollmentReads;
     const listener = generationStoryProfileListener;
     if (!listener) throw new Error('Runtime Host generation listener did not subscribe');
 
-    generationStoryCopilotEmail = 'new-generation@example.com';
+    generationStoryCopilotEnrollmentEnabled = false;
     listener({
       epoch: 'storybook-generation-2',
       profileId: 'local',
@@ -2396,11 +2399,14 @@ export const ModelsOAuthHostGenerationRevalidation: Story = {
       isDefault: true,
     });
 
-    await canvas.findByText('new-generation@example.com');
-    await expect(canvas.queryByText('old-generation@example.com')).not.toBeInTheDocument();
-    await expect(generationStoryCopilotAccountReads).toBeGreaterThan(readsBeforeReplacement);
+    await waitForStoryCondition(
+      () => generationStoryCopilotEnrollmentReads > readsBeforeReplacement,
+      'Replacement Host generation did not re-read Copilot enrollment availability',
+    );
+    await expect(await canvas.findByRole('button', { name: '使用 GitHub 登录' }))
+      .toHaveAttribute('aria-disabled', 'true');
     await expect(
-      canvasElement.querySelector('[data-maka-contract="provider-catalog"]'),
+      canvasElement.querySelector('[data-maka-contract="provider-setup"]'),
     ).toBeInTheDocument();
   },
 };
