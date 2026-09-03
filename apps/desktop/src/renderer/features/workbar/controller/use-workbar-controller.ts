@@ -168,7 +168,8 @@ export function useWorkbarController(
   const locale = useUiLocale();
   const terminalCopy = getDesktopConversationCopy(locale).terminalPanel;
   const { browser, sideChat, terminal } = useWorkbarServices();
-  const layout = useWorkbarLayoutState();
+  const activeSessionId = input.activeSession?.id;
+  const layout = useWorkbarLayoutState(activeSessionId, input.authoritativeSessionIds);
   const sideConversations = useSideConversationWorkspace();
   const [pendingSideChatClose, setPendingSideChatClose] = useState<
     Array<{ placement: SessionWorkbarPlacement; tab: SessionWorkbarTab }>
@@ -183,7 +184,6 @@ export function useWorkbarController(
   >(() => new Set());
   const [, setLiveBrowserSessionIds] = useState<readonly string[]>([]);
 
-  const activeSessionId = input.activeSession?.id;
   const activeSessionIdRef = useRef<string | undefined>(undefined);
   const resourceGenerationRef = useRef(0);
   useLayoutEffect(() => {
