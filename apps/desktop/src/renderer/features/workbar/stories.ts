@@ -31,3 +31,4 @@
  */
 
 export { WorkbarSurface } from './ui/workbar-surface.js';
+export { WorkbarTitlebarActionsView } from './ui/workbar-toggle.js';

@@ -38,9 +38,11 @@ import { AppShellTopbarActions } from '../src/renderer/app-shell-chrome-actions'
 import { SettingsOverlay } from '../src/renderer/app-shell-overlays';
 import {
   WorkbarServicesProvider,
-  WorkbarTitlebarActions,
 } from '../src/renderer/features/workbar';
-import { WorkbarSurface } from '../src/renderer/features/workbar/stories';
+import {
+  WorkbarSurface,
+  WorkbarTitlebarActionsView,
+} from '../src/renderer/features/workbar/stories';
 import {
   createFakeWorkbarServices,
   createSessionWorkbarPanelsState,
@@ -435,7 +437,7 @@ function ComposedShell(props: {
             })()}
           />
         )}
-        <WorkbarTitlebarActions
+        <WorkbarTitlebarActionsView
           available
           collapsed={props.workbarCollapsed ?? false}
           onToggle={props.onToggleWorkbar ?? noop}

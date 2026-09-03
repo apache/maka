@@ -77,8 +77,10 @@ import { AgentGraphPanel } from './agent-graph-panel';
 import { ChatComposerRegion, selectLatestRequestUsage } from './chat-composer-region';
 import {
   WorkbarHost,
+  WorkbarProvider,
+  WorkbarShellBridgeOwner,
   WorkbarTitlebarActions,
-  useWorkbarController,
+  type WorkbarShellBridge,
 } from './features/workbar';
 import { AppUpdateProvider } from './features/app-update/index.js';
 import * as Goals from './features/goals';
@@ -258,16 +260,21 @@ export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {
       <AstryxLocaleProvider>
         <ToastProvider errorAction={errorToastAction}>
           <ErrorBoundary locale={uiLocale}>
-            <AppUpdateProvider>
-              <WorkHubControlOverlay />
-              <TaskEntry.TaskEntryRoot>
-                {(taskEntry) => (
-                  <AppShellContent
-                    {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
-                  />
-                )}
-              </TaskEntry.TaskEntryRoot>
-            </AppUpdateProvider>
+            <WorkbarShellBridgeOwner>
+              {(workbarBridge) => (
+                <AppUpdateProvider>
+                  <WorkHubControlOverlay />
+                  <TaskEntry.TaskEntryRoot>
+                    {(taskEntry) => (
+                      <AppShellContent
+                        {...{ initialOnboardingSnapshot, taskEntry, uiLocale, uiLocaleOverride, setUiLocaleOverride, setUiLocalePreference }}
+                        workbarBridge={workbarBridge}
+                      />
+                    )}
+                  </TaskEntry.TaskEntryRoot>
+                </AppUpdateProvider>
+              )}
+            </WorkbarShellBridgeOwner>
           </ErrorBoundary>
         </ToastProvider>
       </AstryxLocaleProvider>
@@ -293,6 +300,7 @@ function AppShellContent({
   uiLocaleOverride,
   setUiLocaleOverride,
   setUiLocalePreference,
+  workbarBridge,
 }: {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
   taskEntry: TaskEntryShellProjection;
@@ -300,6 +308,7 @@ function AppShellContent({
   uiLocaleOverride: UiLocale | null;
   setUiLocaleOverride: Dispatch<SetStateAction<UiLocale | null>>;
   setUiLocalePreference: Dispatch<SetStateAction<UiLocalePreference>>;
+  workbarBridge: WorkbarShellBridge;
 }) {
   const toastApi = useToast();
   const sharedSessionDialog = useSessionCollaborationDialog();
@@ -1334,26 +1343,6 @@ function AppShellContent({
       }),
     [toastApi],
   );
-  const reportWorkbarError = useCallback(
-    (title: string, description: string, sessionId: string) =>
-      toastApi.error(title, description, undefined, { sessionId }),
-    [toastApi],
-  );
-  const workbarAvailable =
-    sessionsSelected && !workHubActive && Boolean(activeId);
-  const workbar = useWorkbarController({
-    available: workbarAvailable,
-    layoutSessionId: activeId,
-    activeSession: activeHostSession,
-    projectId: currentProjectId,
-    projectAliases: currentProject?.aliases ?? [],
-    authoritativeSessionIds: authoritativeSessionIds ?? undefined,
-    shellObscured,
-    modelChoices: chatModelChoices,
-    reportError: reportWorkbarError,
-  });
-  const { commands, selectors, LiveContextUsageProbe } = workbar;
-
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
   const selectSessionSurface = useCallback(
     () => setNavSelection({ section: 'sessions' }),
@@ -1394,7 +1383,7 @@ function AppShellContent({
     sessions,
     activeSessionId: activeId,
     activeSession,
-    hiddenSessionIds: selectors.hiddenSessionIds,
+    hiddenSessionIdsStore: workbarBridge.hiddenSessionIds,
   });
   const visibleSessions = sessionRail.sessions;
   const sessionListCollapsed = railLayout.collapsed;
@@ -1437,9 +1426,9 @@ function AppShellContent({
     setSearchModalOpen,
     setSessionListCollapsed: sessionRailLayoutStore.setCollapsed,
     workbar: {
-      rightCollapsed: selectors.rightCollapsed,
-      toggleRight: commands.toggleRight,
-      openTool: commands.openTool,
+      getRightCollapsed: workbarBridge.getRightCollapsed,
+      toggleRight: workbarBridge.commands.toggleRight,
+      openTool: workbarBridge.commands.openTool,
     },
     setThemePref,
     setUiLocaleOverride,
@@ -1478,7 +1467,7 @@ function AppShellContent({
     setInteractionBySession: sessionUiController.setInteractionBySession,
     onInteractionChanged: markInteractionChanged,
     onExecutionBoundaryChanged: reloadActiveExecutionBoundary,
-    respondToUserForm: commands.respondToUserForm,
+    respondToUserForm: workbarBridge.commands.respondToUserForm,
     showModelSetupToast,
     toastApi,
     newChatModel: newChatModel ?? null,
@@ -1675,7 +1664,7 @@ function AppShellContent({
         );
         return false;
       }
-      commands.openTool('side-chat', 'right', {
+      workbarBridge.commands.openTool('side-chat', 'right', {
         ...(slashCommand.command.prompt
           ? { initialPrompt: slashCommand.command.prompt }
           : {}),
@@ -2200,7 +2189,7 @@ function AppShellContent({
     },
     openProjectFolder,
     openSessionInChat,
-    openSideConversation: () => commands.openTool('side-chat'),
+    openSideConversation: () => workbarBridge.commands.openTool('side-chat'),
     openSettings,
     openSettingsSection,
     openSkillsFolder,
@@ -2227,10 +2216,22 @@ function AppShellContent({
   return (
     // Feature controllers live below the shell. Task Entry publishes a stable
     // shell projection plus reader-local Host/Workspace Picker projections;
-    // Goal state and Module Hub ownership likewise wake only their narrow
+    // Workbar, Goal, and Module Hub ownership likewise wake only their narrow
     // readers. Composer mentions still wrap the frame so one projection serves
     // every composer, including side-chat panels, without rebuilding the frame
     // on catalog moves.
+    <WorkbarProvider
+      bridge={workbarBridge}
+      available={navSelection.section === 'sessions' && !workHubActive && !!activeId}
+      layoutSessionId={activeId}
+      activeSession={activeHostSession}
+      projectId={currentProjectId}
+      projectAliases={currentProject?.aliases ?? []}
+      authoritativeSessionIds={authoritativeSessionIds ?? undefined}
+      shellObscured={shellObscured}
+      modelChoices={chatModelChoices}
+      reportError={showSessionError}
+    >
     <Goals.GoalProvider
       activeSessionId={ownerActiveId}
       canOpenDialog={activeBoundarySurface.localInteractionAvailable}
@@ -2265,11 +2266,12 @@ function AppShellContent({
          for them to disagree. */
       data-sidebar-state={sessionListCollapsed ? 'collapsed' : 'expanded'}
       /* The frame is the shared owner for dimensions consumed by both shell
-         columns and titlebar chrome. CSS clears the titlebar reserve when the
-         responsive layout moves the workbar below the conversation. */
+         columns and titlebar chrome. WorkbarProvider publishes its width on
+         an inherited CSS variable without waking AppShell; CSS clears the
+         titlebar reserve when the responsive layout moves the workbar below
+         the conversation. */
       style={
         ({
-          '--maka-session-workbar-width': `${workbar.host.rightWidth}px`,
           '--maka-sidenav-width': sessionListCollapsed ? 0 : `${sessionListWidth}px`,
         } as CSSProperties)
       }
@@ -2366,11 +2368,7 @@ function AppShellContent({
               />
             )}
             {!sharedSessionActive && !VIEWS_WITHOUT_WORKSPACE_ACTIONS.has(agentsView) && (
-              <WorkbarTitlebarActions
-                available={workbarAvailable}
-                collapsed={selectors.rightCollapsed}
-                onToggle={commands.toggleRight}
-              />
+              <WorkbarTitlebarActions />
             )}
           </>
         )}
@@ -2498,7 +2496,7 @@ function AppShellContent({
                   newTaskSendPending={newTaskSendPending}
                   stopPendingBySession={stopPendingBySession}
                   respondToSandboxBoundary={respondToSandboxBoundary}
-                  respondToClientCapability={commands.respondToClientCapability}
+                  respondToClientCapability={workbarBridge.commands.respondToClientCapability}
                   respondToUserQuestion={respondToUserQuestion}
                   respondToUserForm={respondToUserForm}
                   stop={stop}
@@ -2546,8 +2544,8 @@ function AppShellContent({
                   activeModelLabel={activeModelLabel}
                   activeProviderType={activeConnection?.providerType}
                   latestRequestUsageTokens={selectLatestRequestUsage(messages, activeTranscriptRange, activeModel, activeSessionForModelControls)}
-                  onOpenContextUsage={() => commands.openTool('inspector')}
-                  LiveContextUsageProbe={LiveContextUsageProbe}
+                  onOpenContextUsage={() => workbarBridge.commands.openTool('inspector')}
+                  LiveContextUsageProbe={workbarBridge.LiveContextUsageProbe}
                   contextUsageSessionId={ownerActiveId}
                   modelChoices={chatModelChoices}
                   modelSwitchHasHistory={modelSwitchHasHistory}
@@ -2714,7 +2712,7 @@ function AppShellContent({
                           text: input.text,
                           sourceTurnId: input.turnId,
                         };
-                        commands.openSideChatWithQuote(quote);
+                        workbarBridge.commands.openSideChatWithQuote(quote);
                       }
                     : undefined
                 }
@@ -2783,7 +2781,7 @@ function AppShellContent({
             </div>
             {/* Collapse hides the Workbar surface without unmounting its tools;
                 dynamic resources therefore keep their existing lifecycle. */}
-            <WorkbarHost model={workbar.host} />
+            <WorkbarHost />
           </div>
           </MakaUriContext.Provider>
         </AppShellDetailPanel>
@@ -2856,5 +2854,6 @@ function AppShellContent({
     </ModuleHub.ModuleHubSkillCatalogRevisionBoundary>
     </ModuleHub.ModuleHubProvider>
     </Goals.GoalProvider>
+    </WorkbarProvider>
   );
 }

@@ -290,6 +290,13 @@
       "owner": "src/renderer/features/task-entry/ui/task-entry-provider.tsx",
       "ownerSymbol": "TaskEntryRoot",
       "count": 1
+    },
+    {
+      "implementation": "src/renderer/features/workbar/controller/use-workbar-controller.ts",
+      "symbol": "useWorkbarController",
+      "owner": "src/renderer/features/workbar/ui/workbar-provider.tsx",
+      "ownerSymbol": "WorkbarProvider",
+      "count": 1
     }
   ],
   "legacyAppShell": {
@@ -436,7 +443,7 @@
           "./theme": 1
         },
         "importSpecifiers": 1,
-        "nonTriviaTokens": 642
+        "nonTriviaTokens": 641
       },
       "src/renderer/app-shell-effects.ts": {
         "importDeclarations": 10,
@@ -763,8 +770,7 @@
           "useSystemUiLocale": 1,
           "useTaskSubmissionReadiness": 1,
           "useToast": 1,
-          "useTurnActionRegistry": 1,
-          "useWorkbarController": 1
+          "useTurnActionRegistry": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -854,7 +860,7 @@
           "react": 1
         },
         "importSpecifiers": 104,
-        "nonTriviaTokens": 13386
+        "nonTriviaTokens": 13360
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 2,
