@@ -225,6 +225,7 @@ import {
   type OperationOutcome,
   type OperationOutput,
   type CollaborationTurnRequestQueryResult,
+  type CollaborationTurnRequestWithdrawResult,
   type SessionTurnAccessRequest,
 } from '@maka/runtime-host/protocol';
 import type { AgentGraphEpochDirectory } from '@maka/runtime-host/client';
@@ -1338,11 +1339,17 @@ const makaBridge = {
       return ipcRenderer.invoke(
         'session-collaboration:turn-request:create',
         session.scope,
-        {
-          sessionId: session.sessionId,
-          turnId: input.turnId,
-          content: { text: input.text },
-        },
+        input.kind === 'start'
+          ? {
+              sessionId: session.sessionId,
+              turnId: input.turnId,
+              content: { text: input.text },
+            }
+          : {
+              sessionId: session.sessionId,
+              turnId: input.turnId,
+              sourceTurnId: input.sourceTurnId,
+            },
       );
     },
     async getTurnRequests(sessionId) {
@@ -1382,6 +1389,14 @@ const makaBridge = {
         session.scope,
         requestId,
       );
+    },
+    async withdrawTurnRequest(sessionId, requestId) {
+      const session = await runtimeHostSessionRef(sessionId);
+      return ipcRenderer.invoke(
+        'session-collaboration:turn-request:withdraw',
+        session.scope,
+        requestId,
+      ) as Promise<CollaborationTurnRequestWithdrawResult>;
     },
     async decideTurnRequest(sessionId, requestId, decision) {
       const session = await runtimeHostSessionRef(sessionId);
@@ -1586,6 +1601,9 @@ const makaBridge = {
         automaticRelayDiscovery,
         webRtcStunPolicy,
       );
+    },
+    createConnectionCode(profileId: string): Promise<string> {
+      return ipcRenderer.invoke('runtime-host-management:create-connection-code', profileId);
     },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
@@ -3728,6 +3746,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         waiters.push(resolve);
         invocableSkillsWaiters.set(sessionId, waiters);
       });
+    },
+    releaseRendererObservations() {
+      return invokeActiveRuntimeHost<void>('sessions:e2e:release-renderer-observations');
     },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);

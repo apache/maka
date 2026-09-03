@@ -20,11 +20,36 @@
 import { useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
-import { Button, FormLayout, TextArea, useToast, useUiLocale } from '@maka/ui';
-import { getSettingsProjectsCopy } from '../locales/settings-projects-copy.js';
-import { settingsActionErrorMessage } from './settings-error-copy.js';
+import { Tooltip } from '@astryxdesign/core/Tooltip';
+import { Button, FormLayout, IconButton, TextArea, useToast } from '@maka/ui';
+import { HelpCircle, ICON_SIZE } from '@maka/ui/icons';
+import { useRuntimeHostManagementServices } from '../services-context.js';
+import type { RuntimeHostConnectionCodeImportResult } from '../ports.js';
+
+export interface RuntimeHostConnectionCodeCopy {
+  readonly cancel: string;
+  readonly remoteAccessFailed: string;
+  readonly connectionCodeTitle: string;
+  readonly connectionCodeDescription: string;
+  readonly importConnectionCodeTitle: string;
+  readonly importConnectionCodeDescription: string;
+  readonly connectionCodeHelpLabel: string;
+  readonly connectionCodeHelp: string;
+  readonly connectionCode: string;
+  readonly copyConnectionCode: string;
+  readonly pasteConnectionCode: string;
+  readonly connectionCodeCopied: string;
+  readonly connectionCodeInvalid: string;
+  readonly connectionCodeUnavailable: string;
+  readonly connectionCodeHostUnreachable: string;
+  readonly connectionCodeHostMismatch: string;
+  readonly connectionCodeUnknownError: string;
+  readonly connectWithCode: string;
+}
 
 type RuntimeHostConnectionCodeDialogProps = {
+  readonly copy: RuntimeHostConnectionCodeCopy;
+  readonly errorMessage: (error: unknown) => string;
   readonly onClose: () => void;
 } & (
   | { readonly mode: 'share'; readonly connectionCode: string }
@@ -32,20 +57,26 @@ type RuntimeHostConnectionCodeDialogProps = {
 );
 
 export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCodeDialogProps) {
-  const locale = useUiLocale();
-  const copy = getSettingsProjectsCopy(locale).runtimeHost;
+  const services = useRuntimeHostManagementServices().connectionCodes;
   const toast = useToast();
   const [draft, setDraft] = useState('');
   const [working, setWorking] = useState(false);
-
   const value = props.mode === 'share' ? props.connectionCode : draft;
 
   async function copyCode(): Promise<void> {
     try {
-      await navigator.clipboard.writeText(value);
-      toast.success(copy.connectionCodeCopied);
+      await services.writeClipboardText(value);
+      toast.success(props.copy.connectionCodeCopied);
     } catch (error) {
-      toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      toast.error(props.copy.remoteAccessFailed, props.errorMessage(error));
+    }
+  }
+
+  async function pasteCode(): Promise<void> {
+    try {
+      setDraft(await services.readClipboardText());
+    } catch (error) {
+      toast.error(props.copy.remoteAccessFailed, props.errorMessage(error));
     }
   }
 
@@ -53,15 +84,18 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
     if (props.mode !== 'import') return;
     setWorking(true);
     try {
-      const result = await window.maka.runtimeHostProfiles.importConnectionCode(draft.trim());
+      const result = await services.importCode(draft.trim());
       if (result.kind === 'error') {
-        toast.error(copy.remoteAccessFailed, connectionCodeError(copy, result.reason));
+        toast.error(
+          props.copy.remoteAccessFailed,
+          connectionCodeError(props.copy, result.reason),
+        );
         return;
       }
       props.onImported(result.profileId);
       props.onClose();
     } catch (error) {
-      toast.error(copy.remoteAccessFailed, settingsActionErrorMessage(error, locale));
+      toast.error(props.copy.remoteAccessFailed, props.errorMessage(error));
     } finally {
       setWorking(false);
     }
@@ -81,14 +115,24 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
           <DialogHeader
             title={
               props.mode === 'share'
-                ? copy.connectionCodeTitle
-                : copy.importConnectionCodeTitle
+                ? props.copy.connectionCodeTitle
+                : props.copy.importConnectionCodeTitle
             }
             subtitle={
               props.mode === 'share'
-                ? copy.connectionCodeDescription
-                : copy.importConnectionCodeDescription
+                ? props.copy.connectionCodeDescription
+                : props.copy.importConnectionCodeDescription
             }
+            endContent={props.mode === 'import' ? (
+              <Tooltip content={props.copy.connectionCodeHelp}>
+                <IconButton
+                  label={props.copy.connectionCodeHelpLabel}
+                  icon={<HelpCircle size={ICON_SIZE.control} aria-hidden="true" />}
+                  variant="ghost"
+                  size="sm"
+                />
+              </Tooltip>
+            ) : undefined}
             onOpenChange={(open) => {
               if (!open && !working) props.onClose();
             }}
@@ -98,7 +142,7 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
           <LayoutContent padding={4}>
             <FormLayout>
               <TextArea
-                label={copy.connectionCode}
+                label={props.copy.connectionCode}
                 value={value}
                 rows={6}
                 hasSpellCheck={false}
@@ -113,16 +157,27 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
           <LayoutFooter>
             <Button
               variant="secondary"
-              label={copy.cancel}
+              label={props.copy.cancel}
               isDisabled={working}
               onClick={props.onClose}
             />
+            {props.mode === 'import' ? (
+              <Button
+                variant="secondary"
+                label={props.copy.pasteConnectionCode}
+                isDisabled={working}
+                onClick={() => void pasteCode()}
+              />
+            ) : null}
             <Button
               variant="primary"
               label={
-                props.mode === 'share' ? copy.copyConnectionCode : copy.connectWithCode
+                props.mode === 'share'
+                  ? props.copy.copyConnectionCode
+                  : props.copy.connectWithCode
               }
               isDisabled={working || value.trim().length === 0}
+              isLoading={props.mode === 'import' && working}
               onClick={() => void (props.mode === 'share' ? copyCode() : connect())}
             />
           </LayoutFooter>
@@ -133,8 +188,8 @@ export function RuntimeHostConnectionCodeDialog(props: RuntimeHostConnectionCode
 }
 
 function connectionCodeError(
-  copy: ReturnType<typeof getSettingsProjectsCopy>['runtimeHost'],
-  reason: 'invalid_code' | 'code_unavailable' | 'host_unreachable' | 'host_mismatch' | 'unknown',
+  copy: RuntimeHostConnectionCodeCopy,
+  reason: Extract<RuntimeHostConnectionCodeImportResult, { kind: 'error' }>['reason'],
 ): string {
   switch (reason) {
     case 'invalid_code':

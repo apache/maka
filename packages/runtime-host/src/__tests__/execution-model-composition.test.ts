@@ -1716,6 +1716,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   const root = join(base, 'interactive');
   const home = join(base, 'home');
   const provider = await startProvider();
+  // This turn's compaction trigger is anchored on the input tokens the provider
+  // reports, so the stub must report a number that grows with the request.
+  provider.configurePayloadProportionalUsage();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -1974,7 +1977,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(usage.providerId, 'moonshot');
     assert.equal(usage.modelId, MODEL_ID);
-    assert.equal(usage.inputTokens, 11);
+    // The stub reports input tokens proportional to the request, so this only
+    // asserts the reported number reached the meter, not a fixed constant.
+    assert.equal(usage.inputTokens > 11, true);
     assert.equal(usage.outputTokens, 5);
     assert.equal(usage.status, 'success');
 
@@ -2023,7 +2028,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
     assert.equal(summaryCaptureFound, true);
 
-    const requestsBeforeArtifactFailure = provider.requests.length;
+    const streamRequestsBeforeArtifactFailure = provider.requests.filter(
+      (request) => request.body.stream === true,
+    ).length;
     artifacts.close();
     const failedTurnId = randomUUID();
     const failedStart = await startTurn(
@@ -2041,7 +2048,14 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       connectionContext,
     );
     assert.equal(failedTerminal.status, 'completed');
-    assert.equal(provider.requests.length, requestsBeforeArtifactFailure + 1);
+    // A closed artifact store must not stop the turn from reaching the model.
+    // Counted on the streamed turn requests alone: whether this turn also
+    // spends an auxiliary compaction or memory call is the context budget's
+    // business, not this assertion's.
+    assert.equal(
+      provider.requests.filter((request) => request.body.stream === true).length,
+      streamRequestsBeforeArtifactFailure + 1,
+    );
     assert.equal(drainRequests, 0);
   } finally {
     try {
@@ -4351,14 +4365,22 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
   let flow: ProviderFlow = { kind: 'default' };
+  // A real provider's reported input tokens grow with the request. The default
+  // constant is fine for tests that only read the number back; a test whose
+  // subject is the context-budget estimate needs usage that tracks the payload,
+  // because that estimate is anchored on exactly this number.
+  let usageTracksPayload = false;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests, flow).catch((error) => {
-      response.destroy(error as Error);
-    });
+    void handleProviderRequest(request, response, requests, flow, usageTracksPayload).catch(
+      (error) => {
+        response.destroy(error as Error);
+      },
+    );
   });
   await listen(server);
   const address = server.address();
@@ -4396,6 +4418,9 @@ async function startProvider(): Promise<{
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
     },
+    configurePayloadProportionalUsage: () => {
+      usageTracksPayload = true;
+    },
     close: () => closeServer(server),
   };
 }
@@ -4405,6 +4430,7 @@ async function handleProviderRequest(
   response: ServerResponse,
   requests: ProviderRequest[],
   flow: ProviderFlow,
+  usageTracksPayload = false,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -4644,7 +4670,11 @@ async function handleProviderRequest(
     });
     return;
   }
-  respondProviderText(response, RESPONSE_TEXT);
+  respondProviderText(
+    response,
+    RESPONSE_TEXT,
+    usageTracksPayload ? Math.max(11, Math.ceil(JSON.stringify(body).length / 4)) : 11,
+  );
 }
 
 function respondProviderResponsesText(response: ServerResponse, text: string): void {
@@ -4708,7 +4738,7 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
 }
 
-function respondProviderText(response: ServerResponse, text: string): void {
+function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.write(
     `data: ${JSON.stringify({
@@ -4732,7 +4762,11 @@ function respondProviderText(response: ServerResponse, text: string): void {
       created: 1,
       model: MODEL_ID,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: 5,
+        total_tokens: promptTokens + 5,
+      },
     })}\n\n`,
   );
   response.end('data: [DONE]\n\n');

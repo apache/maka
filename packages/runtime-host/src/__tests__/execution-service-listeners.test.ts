@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { RuntimeHostPeerMeshOwner } from '../peer-mesh/owner.js';
+import type { RuntimeHostPeerEndpointOwner } from '../peer-reachability/owner.js';
 import { attachPeerOwnerCleanup } from '../server/execution-service.js';
 import type { RuntimeHostListenerSet } from '../server/listener-set.js';
 
@@ -29,9 +29,20 @@ test('the execution service exposes relay reservations discovered after startup'
   let ownerClosed = false;
   const peerListener = {
     peerId: '12D3KooWpeer',
-    listenAddresses: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-    get coordinationRelays() {
-      return coordinationRelays;
+    get reachability() {
+      return {
+        lease: {
+          version: 1 as const,
+          peerId: '12D3KooWpeer',
+          revision: 1,
+          issuedAt: 1,
+          expiresAt: 2,
+          directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRoutes: coordinationRelays,
+        },
+        publicKey: 'AA',
+        signature: 'AA',
+      };
     },
   };
   const listeners: RuntimeHostListenerSet = {
@@ -48,13 +59,16 @@ test('the execution service exposes relay reservations discovered after startup'
     async close() {
       ownerClosed = true;
     },
-  } as unknown as RuntimeHostPeerMeshOwner;
+  } as unknown as RuntimeHostPeerEndpointOwner;
 
   const attached = attachPeerOwnerCleanup(listeners, owner);
-  assert.deepEqual(attached.peerListeners[0]?.coordinationRelays, []);
+  assert.deepEqual(attached.peerListeners[0]?.reachability.lease.coordinationRoutes, []);
 
   coordinationRelays = ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'];
-  assert.deepEqual(attached.peerListeners[0]?.coordinationRelays, coordinationRelays);
+  assert.deepEqual(
+    attached.peerListeners[0]?.reachability.lease.coordinationRoutes,
+    coordinationRelays,
+  );
 
   await attached.cleanup();
   assert.equal(listenersClosed, true);

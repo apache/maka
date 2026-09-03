@@ -1913,6 +1913,207 @@ describe('SessionManager terminal ledger invariants', () => {
     );
   });
 
+  test('RuntimeReadModel preserves per-run event order when timestamps disagree', async () => {
+    const runStore = new TinyAgentRunStore();
+    const run = makeRunHeader({
+      sessionId: 'session-durable-order',
+      runId: 'run-durable-order',
+      turnId: 'turn-durable-order',
+      status: 'completed',
+    });
+    await runStore.createRun(run);
+    for (const event of [
+      runtimeEvent({
+        id: 'rt-user-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 2,
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'hello' },
+      }),
+      runtimeEvent({
+        id: 'rt-assistant-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 1,
+        role: 'model',
+        author: 'agent',
+        content: { kind: 'text', text: 'world' },
+      }),
+      runtimeEvent({
+        id: 'rt-terminal-durable-order',
+        sessionId: run.sessionId,
+        runId: run.runId,
+        turnId: run.turnId,
+        ts: 3,
+        status: 'completed',
+        actions: { endInvocation: true },
+      }),
+    ]) {
+      await runStore.appendRuntimeEvent(run.sessionId, run.runId, event);
+    }
+
+    const view = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore: runStore,
+    }).getSessionView(run.sessionId);
+
+    assert.deepStrictEqual(
+      view.events.map((event) => event.id),
+      ['rt-user-durable-order', 'rt-assistant-durable-order', 'rt-terminal-durable-order'],
+    );
+  });
+
+  test('RuntimeReadModel places backfilled events after durable session order', async () => {
+    const sessionId = 'session-mixed-durable-order';
+    const firstRun = makeRunHeader({
+      sessionId,
+      runId: 'run-first-durable',
+      turnId: 'turn-first-durable',
+      status: 'running',
+      createdAt: 1,
+    });
+    const backfilledRun = makeRunHeader({
+      sessionId,
+      runId: 'run-backfilled',
+      turnId: 'turn-backfilled',
+      status: 'completed',
+      createdAt: 2,
+    });
+    const lastRun = makeRunHeader({
+      sessionId,
+      runId: 'run-last-durable',
+      turnId: 'turn-last-durable',
+      status: 'completed',
+      createdAt: 3,
+    });
+    const runStore = new TinyAgentRunStore();
+    for (const run of [firstRun, backfilledRun, lastRun]) await runStore.createRun(run);
+
+    const firstEvent = runtimeEvent({
+      id: 'rt-first-durable',
+      invocationId: 'inv-first-durable',
+      sessionId,
+      runId: firstRun.runId,
+      turnId: firstRun.turnId,
+      ts: 100,
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
+    const lastEvent = runtimeEvent({
+      id: 'rt-last-durable',
+      invocationId: 'inv-last-durable',
+      sessionId,
+      runId: lastRun.runId,
+      turnId: lastRun.turnId,
+      ts: 1,
+      status: 'completed',
+      actions: { endInvocation: true },
+    });
+    await runStore.appendRuntimeEvent(sessionId, firstRun.runId, firstEvent);
+    await runStore.appendRuntimeEvent(sessionId, lastRun.runId, lastEvent);
+
+    const runtimeEventStore = Object.assign(runStore, {
+      readSessionRuntimeEventEntries: async () => [
+        { ordinal: 1, event: firstEvent },
+        { ordinal: 2, event: lastEvent },
+      ],
+    });
+    const legacyMessages: StoredMessage[] = [
+      {
+        type: 'turn_state',
+        id: 'legacy-state',
+        turnId: backfilledRun.turnId,
+        ts: 50,
+        status: 'completed',
+        partialOutputRetained: false,
+      },
+    ];
+
+    const view = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+      projectionCache: { readMessages: async () => legacyMessages },
+    }).getSessionView(sessionId);
+
+    assert.deepStrictEqual(
+      view.events.map((event) => event.runId),
+      [firstRun.runId, lastRun.runId, backfilledRun.runId],
+    );
+  });
+
+  test('RuntimeReadModel retains terminal partial snapshots alongside durable events', async () => {
+    const runStore = new TinyAgentRunStore();
+    const run = makeRunHeader({ status: 'cancelled', abortSource: 'user' });
+    await runStore.createRun(run);
+    const opening = runtimeEvent({
+      id: 'rt-partial-opening',
+      sessionId: run.sessionId,
+      runId: run.runId,
+      turnId: run.turnId,
+      ts: 1,
+      role: 'user',
+      author: 'user',
+      content: { kind: 'text', text: 'hello' },
+    });
+    const partial = runtimeEvent({
+      id: 'rt-partial-snapshot',
+      sessionId: run.sessionId,
+      runId: run.runId,
+      turnId: run.turnId,
+      ts: 2,
+      partial: true,
+      role: 'model',
+      author: 'agent',
+      content: { kind: 'text', text: 'wor' },
+    });
+    const terminal = runtimeEvent({
+      id: 'rt-partial-terminal',
+      sessionId: run.sessionId,
+      runId: run.runId,
+      turnId: run.turnId,
+      ts: 3,
+      status: 'cancelled',
+      actions: { endInvocation: true },
+    });
+    const runtimeEventStore = Object.assign(runStore, {
+      readRuntimeEvents: async () => [opening, partial, terminal],
+      readSessionRuntimeEventEntries: async () => [
+        { ordinal: 1, event: opening },
+        { ordinal: 2, event: terminal },
+      ],
+    });
+
+    const view = await new RuntimeReadModel({
+      runStore,
+      runtimeEventStore,
+    }).getSessionView(run.sessionId);
+
+    assert.deepStrictEqual(
+      view.events.map((event) => event.id),
+      [opening.id, partial.id, terminal.id],
+    );
+  });
+
+  test('RuntimeReadModel rejects a failing durable-order reader', async () => {
+    const runStore = new TinyAgentRunStore();
+    const run = makeRunHeader({ status: 'completed' });
+    await runStore.createRun(run);
+    const runtimeEventStore = Object.assign(runStore, {
+      readSessionRuntimeEventEntries: async () => {
+        throw new Error('ordinal read rejected');
+      },
+    });
+
+    await assert.rejects(
+      new RuntimeReadModel({ runStore, runtimeEventStore }).getSessionView(run.sessionId),
+      /RuntimeEvent session order read failed/,
+    );
+  });
+
   test('RuntimeReadModel rejects terminal headers when the ledger has no valid terminal fact', async () => {
     const runStore = new TinyAgentRunStore();
     const run = makeRunHeader({
@@ -2423,6 +2624,7 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   private headers = new Map<string, AgentRunHeader>();
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private runtimeEventEntries: RuntimeEvent[] = [];
   /** One-shot append rejections, for latching the store availability. */
   failNextRuntimeEventAppends = 0;
   /** While true every runtime-event read rejects, a store that is down. */
@@ -2517,6 +2719,9 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
     if (isTerminalRuntimeEvent(event)) await this.options.beforeTerminalRuntimeEventAppend?.();
     const eventKey = key(sessionId, runId);
     this.runtimeEvents.set(eventKey, [...(this.runtimeEvents.get(eventKey) ?? []), clone(event)]);
+    if (event.partial !== true && !this.runtimeEventEntries.some(({ id }) => id === event.id)) {
+      this.runtimeEventEntries.push(clone(event));
+    }
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -2543,6 +2748,12 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     if (this.failRuntimeEventReads) throw new Error('runtime event read rejected');
     return clone(this.runtimeEvents.get(key(sessionId, runId)) ?? []);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.runtimeEventEntries
+      .filter((event) => event.sessionId === sessionId)
+      .map((event, index) => ({ ordinal: index + 1, event: clone(event) }));
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
@@ -2599,6 +2810,12 @@ class BatchingRuntimeEventStore implements RuntimeEventStore {
 
   async readRuntimeEvents(): Promise<RuntimeEvent[]> {
     return clone(this.events);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.events
+      .filter((event) => event.sessionId === sessionId && event.partial !== true)
+      .map((event, index) => ({ ordinal: index + 1, event: clone(event) }));
   }
 
   async readSessionRuntimeEvents(): Promise<RuntimeEvent[]> {

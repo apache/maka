@@ -175,6 +175,7 @@ describe('scheduled-task catalog', () => {
     const now = Date.UTC(2026, 0, 5, 8, 0, 0);
     const execution = {
       cwd: '/tmp/project',
+      llmConnectionId: 'connection-anthropic',
       llmConnectionSlug: 'anthropic',
       model: 'claude-sonnet-4-5-20250929',
       permissionMode: 'ask',
@@ -204,6 +205,34 @@ describe('scheduled-task catalog', () => {
       if (result.value.effect.kind !== 'agent_run') return;
       assert.equal('backend' in result.value.effect.execution, false);
     }
+  });
+
+  it('requires an immutable Connection identity for new Agent tasks', () => {
+    const now = Date.UTC(2026, 0, 5, 8, 0, 0);
+    const result = normalizeCreateScheduledTaskInput(
+      {
+        title: 'Missing identity',
+        intentBody: 'run',
+        schedule: { kind: 'once', runAt: now + 60_000 },
+        effect: {
+          kind: 'agent_run',
+          execution: {
+            cwd: '/tmp/project',
+            llmConnectionSlug: 'anthropic',
+            model: 'claude',
+            permissionMode: 'ask',
+            collaborationMode: 'agent',
+            orchestrationMode: 'default',
+          },
+        },
+        createdBy: { kind: 'user' },
+      },
+      now,
+    );
+    assert.deepEqual(result, {
+      ok: false,
+      message: 'execution.llmConnectionId is required',
+    });
   });
 
   it('rejects future recurrence anchors outside the scheduling horizon', () => {
@@ -240,6 +269,7 @@ describe('decodePersistedScheduledTask', () => {
       kind: 'agent_run',
       execution: {
         cwd: '/repo',
+        llmConnectionId: 'connection-anthropic',
         llmConnectionSlug: 'anthropic',
         model: 'claude',
         permissionMode: 'ask',
@@ -273,6 +303,19 @@ describe('decodePersistedScheduledTask', () => {
 
   it('returns the same task when nothing needs folding', () => {
     assert.equal(decodePersistedScheduledTask(markPersisted<ScheduledTask>(base)), base);
+  });
+
+  it('keeps legacy slug-only Agent tasks readable', () => {
+    const { llmConnectionId: _legacyId, ...legacyExecution } =
+      base.effect.kind === 'agent_run' ? base.effect.execution : {};
+    const legacy = {
+      ...base,
+      effect: { kind: 'agent_run' as const, execution: legacyExecution },
+    } as ScheduledTask;
+    const decoded = decodePersistedScheduledTask(markPersisted<ScheduledTask>(legacy));
+    assert.equal(decoded.effect.kind, 'agent_run');
+    if (decoded.effect.kind !== 'agent_run') return;
+    assert.equal(decoded.effect.execution.llmConnectionId, undefined);
   });
 
   it('leaves effects without an execution template alone', () => {

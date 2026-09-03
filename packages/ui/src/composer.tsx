@@ -554,6 +554,8 @@ export const Composer = forwardRef<
    * identity so neither hook re-runs an effect when the draft changes.
    */
   const caretToEndRef = useRef(false);
+  /** A caret-to-end owed to an editor that was not focused when it came due. */
+  const caretPendingRef = useRef(false);
   const redrawPendingRef = useRef(false);
   const textPortRef = useRef<ComposerTextPort>(null);
   if (!textPortRef.current) {
@@ -578,10 +580,27 @@ export const Composer = forwardRef<
    * say) then landed the caret at offset 0, so typing prepended to the restored
    * draft. Collapse to the end here when the editor holds no selection of its
    * own, which is what the retired `focusTextInputAtEnd` did unconditionally.
+   *
+   * Only on a focused editor, though. A selection inside a `contenteditable` is
+   * never only a caret: the browser focuses the element to carry it, whatever
+   * held focus before — measured in the shipping runtime, a selection placed
+   * here takes focus from a focused button exactly as it takes it from `body` —
+   * and sequential focus navigation then resumes from the selection rather than
+   * from the top of the document. So a restored draft claimed focus nobody
+   * directed at it: on a cold start, tens of milliseconds in, past the skip link
+   * and with no `focus()` call to explain it; and on a session swap, out from
+   * under the sidebar row the user had just activated. Hold the caret while the
+   * editor is not focused and land it on the editor's next real focus, which is
+   * the first moment the offset is the only thing being decided.
    */
   function caretToContentEnd() {
     const editable = editableNode();
     if (!editable) return;
+    if (document.activeElement !== editable) {
+      caretPendingRef.current = true;
+      return;
+    }
+    caretPendingRef.current = false;
     const selection = document.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editable);
@@ -596,6 +615,30 @@ export const Composer = forwardRef<
     if (!editable || (selection?.anchorNode && editable.contains(selection.anchorNode))) return;
     caretToContentEnd();
   }
+  /**
+   * Settle a held caret when focus reaches the editor for real. On the component
+   * root, like the other native listeners here: `focusin` and `pointerdown`
+   * bubble, and a disabled composer renders no editable to look up at mount.
+   *
+   * A pointer press places the caret itself and is the more specific intent, so
+   * it drops the claim rather than being overruled by it.
+   */
+  useEffect(() => {
+    const root = inputRootRef.current;
+    if (!root) return undefined;
+    const land = () => {
+      if (caretPendingRef.current) caretToContentEnd();
+    };
+    const drop = () => {
+      caretPendingRef.current = false;
+    };
+    root.addEventListener('focusin', land);
+    root.addEventListener('pointerdown', drop);
+    return () => {
+      root.removeEventListener('focusin', land);
+      root.removeEventListener('pointerdown', drop);
+    };
+  }, []);
   /**
    * The ＋ menu's Skills entry opens the same `/` menu the keyboard opens: it
    * types the trigger for the user. There is no second Skill surface to keep in
@@ -727,13 +770,27 @@ export const Composer = forwardRef<
    * The redraw gets the same treatment for the same reason, and can land a
    * render later than the write that owed it: `insertToken` parks the selection
    * after the last chip it wrote, so the caret has to be collected again.
+   *
+   * A held caret is suspended across the redraw rather than left armed. The
+   * redraw drives `insertToken` through the document selection, and its first
+   * range focuses the editor — which would otherwise fire the focus lander onto
+   * the very range the redraw is holding, collapsing it to the end so the chip
+   * landed at the end and its source text stayed in the draft. The redraw ends
+   * by collecting the caret itself, so on success the claim is settled; on a
+   * pass that redrew nothing it is handed back untouched.
    */
   useEffect(() => {
     let restoreCaret = caretToEndRef.current;
     caretToEndRef.current = false;
-    if (redrawPendingRef.current && redrawSkillTokens()) {
-      redrawPendingRef.current = false;
-      restoreCaret = true;
+    if (redrawPendingRef.current) {
+      const heldCaret = caretPendingRef.current;
+      caretPendingRef.current = false;
+      const redrew = redrawSkillTokens();
+      caretPendingRef.current = redrew ? false : heldCaret;
+      if (redrew) {
+        redrawPendingRef.current = false;
+        restoreCaret = true;
+      }
     }
     if (restoreCaret) caretToContentEnd();
   });

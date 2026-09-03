@@ -132,7 +132,8 @@ The two workflows publish in this order:
 2. publish the exact npm tarball with provenance under `nightly`;
 3. require both the exact version and `nightly` tag to be readable from the public registry;
 4. build, verify, and attest the exact Desktop packages and GitHub `dev` metadata;
-5. bind a protected `v<version>` tag to the exact source commit and verify all nine draft assets;
+5. bind a protected `v<version>` tag to the exact source commit and verify exactly the draft assets that
+   `desktopNightlyReleaseAssetNames` defines;
 6. publish the GitHub prerelease with Latest disabled only after the draft is complete.
 
 This ordering prevents Desktop from advertising a Runtime Host version that npm does not have and

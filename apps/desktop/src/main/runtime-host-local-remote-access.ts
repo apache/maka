@@ -23,11 +23,11 @@ import { hostname } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { IpcMain } from 'electron';
 import {
-  consumeAccessCredentialDelivery,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
 } from '@maka/runtime-host/client';
 import { resolveRuntimeHostManagedDeploymentAuthority } from '@maka/runtime-host/operator';
-import { REMOTE_OWNER_OPERATION_GRANTS, type HostRegistration } from '@maka/runtime-host/protocol';
+import type { HostPeerEndpoint, HostRegistration } from '@maka/runtime-host/protocol';
 import type {
   DesktopLocalRuntimeHostRemoteAccessEnableResult,
   DesktopLocalRuntimeHostRemoteAccessSnapshot,
@@ -107,9 +107,7 @@ export interface DesktopLocalRuntimeHostRemoteAccess {
     readonly name: string;
     readonly transport: {
       readonly kind: 'libp2p-direct';
-      readonly peerId: string;
-      readonly routeHints: readonly string[];
-      readonly coordinationRelays: readonly string[];
+      readonly reachability: HostPeerEndpoint;
     };
   }>;
   enable(value: unknown): Promise<DesktopLocalRuntimeHostRemoteAccessEnableResult>;
@@ -156,8 +154,6 @@ type LocalServiceLifecycle =
 
 interface LocalPeerDescriptor {
   readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
 }
 
 type DesktopRuntimeHostLocalOperator = ReturnType<
@@ -328,7 +324,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
           changed.response.restarted ? previousHostEpoch : undefined,
         );
         return enabledResult(
-          await issueConnectionCode(input.rootPath, desired.rootId, peer, localClient(input.manager)),
+          await issueConnectionCode(input.rootPath, peer, localClient(input.manager)),
         );
       }
 
@@ -349,7 +345,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
         encodeRuntimeHostOwnerConnectionCode({
           name: hostName(),
           rootId: completed.managed.rootId,
-          transport: { kind: 'libp2p-direct', ...livePeer },
+          transport: { kind: 'libp2p-direct', reachability: livePeer },
           credential: completed.credential,
         }),
       );
@@ -511,7 +507,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       );
       const peer = await readPeer(input.operator, managed);
       if (!peer) throw new Error('Remote access is not enabled on this computer');
-      return issueConnectionCode(input.rootPath, managed.rootId, peer, localClient(input.manager));
+      return issueConnectionCode(input.rootPath, peer, localClient(input.manager));
     });
 
   const createCollaborationConnectionTarget = () =>
@@ -524,7 +520,7 @@ export function createDesktopLocalRuntimeHostRemoteAccess(input: {
       const livePeer = await readLivePeer(localClient(input.manager), peer);
       return {
         name: hostName(),
-        transport: { kind: 'libp2p-direct' as const, ...livePeer },
+        transport: { kind: 'libp2p-direct' as const, reachability: livePeer },
       };
     });
 
@@ -948,15 +944,7 @@ function requireEnabledPeer(value: unknown): LocalPeerDescriptor {
   if (typeof value.peerId !== 'string' || value.peerId.length === 0 || value.peerId.length > 160) {
     throw new Error('Runtime Host returned an invalid peer identity');
   }
-  const peer = {
-    peerId: value.peerId,
-    routeHints: requireAddresses(value.routeHints),
-    coordinationRelays: requireAddresses(value.coordinationRelays),
-  };
-  if (peer.routeHints.length === 0 && peer.coordinationRelays.length === 0) {
-    throw new Error('Runtime Host Direct peer has no reachable route');
-  }
-  return peer;
+  return { peerId: value.peerId };
 }
 
 function onSnapshot(sharedAccess: boolean): Extract<
@@ -978,49 +966,30 @@ function enabledResult(
 
 async function issueConnectionCode(
   rootPath: string,
-  rootId: string,
   peer: LocalPeerDescriptor,
   client: DesktopRuntimeHostClient,
 ): Promise<string> {
-  const livePeer = await readLivePeer(client, peer);
-  const prepared = await client.request('access.credential.prepare', {
-    principalKind: 'remote_owner',
-    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
-    operationGrants: REMOTE_OWNER_OPERATION_GRANTS,
-    canPublishClientCapabilities: true,
-    canUseHostPaths: false,
-    bindClientInstance: true,
-  });
-  const credential = await consumeAccessCredentialDelivery(
+  return issueRuntimeHostOwnerConnectionCode({
     rootPath,
-    prepared.deliveryId,
-    prepared.credentialId,
-  );
-  return encodeRuntimeHostOwnerConnectionCode({
     name: hostName(),
-    rootId,
-    transport: { kind: 'libp2p-direct', ...livePeer },
-    credential,
+    principalId: LOCAL_REMOTE_ACCESS_PRINCIPAL_ID,
+    expectedPeerId: peer.peerId,
+    client,
   });
 }
 
 async function readLivePeer(
   client: DesktopRuntimeHostClient,
   configured: LocalPeerDescriptor,
-): Promise<LocalPeerDescriptor> {
+): Promise<HostPeerEndpoint> {
   const endpoint = (await client.status()).peerEndpoint;
   if (!endpoint) {
     throw new Error('Runtime Host Direct peer is not available');
   }
-  if (endpoint.peerId !== configured.peerId) {
+  if (endpoint.lease.peerId !== configured.peerId) {
     throw new Error('Runtime Host Direct peer identity changed');
   }
-  return requireEnabledPeer({
-    state: 'enabled',
-    peerId: endpoint.peerId,
-    routeHints: endpoint.routeHints,
-    coordinationRelays: endpoint.coordinationRelays,
-  });
+  return endpoint;
 }
 
 async function hasSharedAccess(
@@ -1032,6 +1001,9 @@ async function hasSharedAccess(
     target,
   });
   if (response.kind === 'error') throw new Error(response.error.message);
+  if (response.action !== 'list') {
+    throw new Error('Runtime Host operator returned an unrelated access result');
+  }
   return response.credentials.some(
     (credential) =>
       credential.principalKind === 'remote_owner' &&

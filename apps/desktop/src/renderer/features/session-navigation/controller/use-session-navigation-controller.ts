@@ -24,7 +24,6 @@ import { runtimeHostProfileUsesHostWorkspace } from '@maka/runtime-host/profile-
 import {
   useUiLocale,
   type SessionHistoryGroup,
-  type SessionRailRowSelection,
   type SessionRailSelection,
 } from '@maka/ui';
 import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
@@ -106,8 +105,6 @@ export interface SessionNavigationController {
   selectors: SessionNavigationSelectors;
   commands: SessionNavigationRowActions;
   selection: SessionRailSelection;
-  /** The narrow half every row subscribes to; see `useSessionSelection`. */
-  rowSelection: SessionRailRowSelection;
 }
 
 /**
@@ -199,10 +196,14 @@ export function useSessionNavigationController(
     [groups, sessionMeta, worktreeSessionIds],
   );
 
-  const { selection, rowSelection } = useSessionSelection({ sessions: rail.sessions, commands });
+  const selection = useSessionSelection({
+    sessions: rail.sessions,
+    commands,
+    activeId: rail.activeRowId,
+  });
 
   return useMemo(
-    () => ({ layout, selectors, commands, selection, rowSelection }),
-    [commands, layout, rowSelection, selection, selectors],
+    () => ({ layout, selectors, commands, selection }),
+    [commands, layout, selection, selectors],
   );
 }

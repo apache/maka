@@ -154,8 +154,18 @@ export function normalizeBranchFromTurnInput(input: unknown): BranchFromTurnInpu
   if (value.sideConversation !== undefined && typeof value.sideConversation !== 'boolean') {
     throw new Error('Invalid branch sideConversation');
   }
+  // Absent sourceTurnId forks with an empty context (a side conversation opened
+  // before the source has any settled turn).
+  const sourceTurnId =
+    value.sourceTurnId === undefined
+      ? undefined
+      : normalizeRequiredString(
+          value.sourceTurnId,
+          'Invalid branch sourceTurnId',
+          MAX_TURN_ID_LENGTH,
+        );
   return {
-    sourceTurnId: normalizeRequiredString(value.sourceTurnId, 'Invalid branch sourceTurnId', MAX_TURN_ID_LENGTH),
+    ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
     ...(name ? { name } : {}),
     ...(value.sideConversation === true ? { sideConversation: true } : {}),
   };

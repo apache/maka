@@ -32,6 +32,13 @@ export function createDesktopRuntimeHostManagementServices(
   bridge: DesktopRuntimeHostManagementBridge = window.maka,
 ): RuntimeHostManagementServices {
   return {
+    supportsWsl: navigator.userAgent.includes('Windows'),
+    connectionCodes: {
+      create: (profileId) => bridge.runtimeHostManagement.createConnectionCode(profileId),
+      importCode: (code) => bridge.runtimeHostProfiles.importConnectionCode(code),
+      readClipboardText: () => navigator.clipboard.readText(),
+      writeClipboardText: (value) => navigator.clipboard.writeText(value),
+    },
     peerMesh: {
       getConnectivityPolicy: () => bridge.runtimeHostPeerMesh.getConnectivityPolicy(),
       setConnectivityPolicy: (policy) => bridge.runtimeHostPeerMesh.setConnectivityPolicy(policy),

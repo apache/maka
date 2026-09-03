@@ -151,8 +151,17 @@ export function applyTheme(pref: ThemePreference): () => void {
 function setDarkClass(isDark: boolean): void {
   const root = document.documentElement;
   root.classList.toggle(DARK_CLASS, isDark);
-  // Lets native form controls and scrollbars pick up the right base colors per
-  // the Vercel Web Interface Guidelines dark-mode rule.
+  // This is what picks the mode, not just what tells native form controls and
+  // scrollbars about it: every palette colour is a `light-dark()` pair that
+  // resolves against color-scheme (maka-tokens.css, DESIGN.md §8). It must stay
+  // in lockstep with the class — which also carries the mode to Astryx — and it
+  // must keep being set before the first paint (cached-theme-bootstrap.ts).
+  //
+  // Inside the app, Astryx's <Theme> re-declares color-scheme on its own
+  // wrapper from the class (astryx-theme-mode.ts), so the subtree turns over on
+  // that React commit rather than on this line. That is one repaint later and
+  // it is the whole switch, not half of it — which is the point: the palette
+  // and Astryx's own tokens can no longer disagree for a frame.
   root.style.colorScheme = isDark ? 'dark' : 'light';
   syncTitleBarOverlay(root);
 }
@@ -183,8 +192,10 @@ export function setTitlebarModalDimmed(dimmed: boolean): void {
  * live in `maka-tokens.css`. `default` removes the attribute so the
  * original Maka palette renders.
  *
- * Light/dark variants of each palette switch automatically with the
- * existing `.dark` class — no separate IPC needed.
+ * A palette carries both of its modes inside each value, so the light/dark
+ * variants follow `color-scheme` (set on <html> beside the class by
+ * setDarkClass) with no separate IPC and no second block per palette. Flipping
+ * the class alone no longer switches anything.
  */
 export function applyThemePalette(palette: ThemePalette): void {
   const root = document.documentElement;
@@ -202,13 +213,10 @@ export function applyThemePalette(palette: ThemePalette): void {
 
 function syncTitleBarOverlay(root: HTMLElement): void {
   // The native Windows overlay sits on top of the renderer's content surface.
-  // Sample the actual resolved --background color instead of approximating it
+  // Sample the actual painted --background color instead of approximating it
   // with one hard-coded light and dark pair; this also follows every palette.
   const isDark = root.classList.contains(DARK_CLASS);
-  const backgroundColor = cssColorToHex(
-    getComputedStyle(root).getPropertyValue('--background'),
-    isDark ? '#1c1d21' : '#ffffff',
-  );
+  const backgroundColor = paintedBackgroundToHex(root, isDark ? '#1c1d21' : '#ffffff');
   void window.maka?.appWindow
     ?.setTitleBarOverlayTheme?.({
       isDark,
@@ -222,9 +230,7 @@ function syncTitleBarOverlay(root: HTMLElement): void {
 /**
  * The color the titlebar strip appears under an open modal: the dialog
  * backdrop scrim composited over `--background`. The scrim is sampled from
- * the open modal's own ::backdrop — the engine has already resolved its
- * `var()` indirection and `light-dark()` branch, which neither a token read
- * nor a canvas fillStyle can do — so the dim tracks theme and palette
+ * the open modal's own ::backdrop, so the dim tracks theme and palette
  * automatically.
  */
 function dimmedTitlebarColor(backgroundHex: string, isDark: boolean): string {
@@ -245,17 +251,28 @@ function readModalBackdropColor(): { r: number; g: number; b: number; a: number 
   return parseCssRgbColor(getComputedStyle(dialog, '::backdrop').backgroundColor);
 }
 
-function cssColorToHex(value: string, fallback: string): string {
-  const color = value.trim();
-  if (!color || !CSS.supports('color', color)) return fallback;
-
+/**
+ * The opaque color an element is painted, as hex. Takes the element rather
+ * than a color string because a palette token's declared value is not a
+ * color: `--background` is a `light-dark()` pair that only becomes one where
+ * it is used (DESIGN.md §8), and a canvas cannot resolve that — nor anything
+ * else that needs an element's context. Reading `background-color` off the
+ * element that paints it (`html`, maka-tokens.css) hands the canvas an
+ * already-resolved color.
+ */
+function paintedBackgroundToHex(element: Element, fallback: string): string {
   const canvas = document.createElement('canvas');
   canvas.width = 1;
   canvas.height = 1;
   const context = canvas.getContext('2d', { willReadFrequently: true });
   if (!context) return fallback;
 
-  context.fillStyle = color;
+  // A fillStyle the canvas cannot parse is ignored, leaving the previous value
+  // in place — so start transparent. Anything unparseable then reads back at
+  // alpha 0 and takes the fallback, rather than sampling the opaque black that
+  // fillStyle defaults to.
+  context.fillStyle = 'rgba(0, 0, 0, 0)';
+  context.fillStyle = getComputedStyle(element).backgroundColor;
   context.fillRect(0, 0, 1, 1);
   const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
   if (alpha !== 255) return fallback;

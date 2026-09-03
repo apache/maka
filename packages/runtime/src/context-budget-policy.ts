@@ -21,7 +21,6 @@ import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import { relayModelProfile } from '@maka/core/model-thinking';
 import type { ContextBudgetPolicy } from './context-budget.js';
-import { finitePositive } from './context-budget-helpers.js';
 
 export interface BuildDefaultContextBudgetPolicyOptions {
   name?: string;
@@ -125,25 +124,4 @@ function narrowestPositiveLimit(...values: Array<number | undefined>): number | 
     (value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0,
   );
   return positiveValues.length > 0 ? Math.min(...positiveValues) : undefined;
-}
-
-export interface ContextBudgetCapacity {
-  tokens: number;
-  source: 'selected_model' | 'policy_fallback';
-}
-
-export function resolveContextBudgetCapacity(
-  connection: RuntimeExecutionConnection,
-  modelId: string | undefined,
-  policy: ContextBudgetPolicy | undefined,
-): ContextBudgetCapacity | undefined {
-  const selectedWindow = resolveSelectedModelContextWindow(connection, modelId);
-  if (selectedWindow !== undefined) {
-    return { tokens: selectedWindow, source: 'selected_model' };
-  }
-
-  const historyBudget = finitePositive(policy?.maxHistoryEstimatedTokens);
-  const reserveTokens = finitePositive(policy?.historyCompact?.midTurn?.reserveTokens);
-  if (historyBudget === undefined || reserveTokens === undefined) return undefined;
-  return { tokens: historyBudget + reserveTokens, source: 'policy_fallback' };
 }

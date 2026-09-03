@@ -19,7 +19,7 @@
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
 import { parseProductReleaseVersion } from './release-version.mjs';
@@ -37,6 +37,25 @@ export const DESKTOP_NIGHTLY_UPDATE_PROVIDER = Object.freeze({
   channel: 'dev',
   updaterCacheDirName: '@makadesktop-updater',
 });
+
+/**
+ * electron-builder suffixes the Linux feed with the architecture for everything
+ * except x64, so the two Linux architectures never share a feed the way the two
+ * macOS ones do.
+ */
+export function linuxUpdateMetadataName(arch, isNightly) {
+  const channel = isNightly ? 'dev' : 'latest';
+  return arch === 'x64' ? `${channel}-linux.yml` : `${channel}-linux-${arch}.yml`;
+}
+
+/**
+ * The payloads electron-builder writes a `<file>.blockmap` beside. Only the
+ * archive and NSIS targets call `createBlockmap`, which writes that sidecar; the
+ * AppImage calls `appendBlockmap`, which puts the block map inside the AppImage,
+ * and fpm targets build none. Naming the two that have one keeps a payload with
+ * no sidecar from silently skipping the check.
+ */
+const SIDECAR_BLOCKMAP_EXTENSIONS = Object.freeze(['.exe', '.zip']);
 
 /** A stable successor lets stable, alpha, and beta candidates use one feed contract. */
 export function bumpedAutoupdateVersion(candidateVersion) {
@@ -83,15 +102,62 @@ export async function assertPackagedUpdateConfiguration(
 }
 
 /**
+ * macOS carries every architecture in one feed, and electron-updater picks its
+ * payload out of that one `files` list. Each architecture is packaged on a
+ * runner of its own, so each build writes a feed naming only its own zip;
+ * publishing either alone would offer one architecture an update it cannot
+ * install. The first document is the primary: its `path` and top-level digest
+ * survive the merge, and the rest contribute only their payloads.
+ */
+function mergeDesktopUpdateFeedDocuments(documents) {
+  const [primary, ...rest] = documents;
+  if (!primary) {
+    throw new Error('Desktop update feed merge requires at least one feed');
+  }
+  for (const document of rest) {
+    if (document?.version !== primary.version) {
+      throw new Error(
+        `Desktop update feeds disagree on version: ${JSON.stringify(primary.version)} and ${JSON.stringify(document?.version)}`,
+      );
+    }
+  }
+  const files = documents.flatMap((document) => document.files ?? []);
+  const urls = files.map((file) => file?.url);
+  if (new Set(urls).size !== urls.length) {
+    throw new Error(`Desktop update feeds advertise the same payload twice: ${urls.join(', ')}`);
+  }
+  return { ...primary, files };
+}
+
+export async function mergeDesktopUpdateFeeds({ sourcePaths, outputPath }) {
+  const documents = await Promise.all(sourcePaths.map((path) => readYaml(path)));
+  const merged = mergeDesktopUpdateFeedDocuments(documents);
+  const { stringify } = await import('yaml');
+  await writeFile(outputPath, stringify(merged), 'utf8');
+  return merged;
+}
+
+async function sha512Base64(path) {
+  return new Promise((resolvePromise, reject) => {
+    const hash = createHash('sha512');
+    const stream = createReadStream(path);
+    stream.once('error', reject);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', () => resolvePromise(hash.digest('base64')));
+  });
+}
+
+/**
  * Validates the update metadata against the bytes that will be published.
- * The release is single-platform and single-architecture, so accepting extra
- * payloads here would create an unverified update path.
+ * One feed carries every payload a client on that platform may be offered —
+ * both macOS architectures, or the AppImage and the deb — so the caller names
+ * all of them and anything else in the feed is an unverified update path.
  */
 export async function verifyDesktopUpdateArtifacts({
   directory,
   metadataName,
   version,
-  artifactName,
+  artifactNames,
 }) {
   const metadataPath = join(directory, metadataName);
   let metadata;
@@ -105,36 +171,46 @@ export async function verifyDesktopUpdateArtifacts({
       `${metadataName} advertises version ${JSON.stringify(metadata?.version)}, expected ${version}`,
     );
   }
-  if (metadata.path !== artifactName || metadata.files?.length !== 1) {
-    throw new Error(`${metadataName} must advertise only ${artifactName}`);
-  }
-  const file = metadata.files[0];
-  if (file?.url !== artifactName || file.sha512 !== metadata.sha512) {
-    throw new Error(`${metadataName} has inconsistent payload identity for ${artifactName}`);
-  }
-  const artifactPath = join(directory, artifactName);
-  const artifact = await stat(artifactPath);
-  if (!artifact.isFile()) throw new Error(`Desktop update payload is not a file: ${artifactPath}`);
-  const sha512 = await new Promise((resolvePromise, reject) => {
-    const hash = createHash('sha512');
-    const stream = createReadStream(artifactPath);
-    stream.once('error', reject);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.once('end', () => resolvePromise(hash.digest('base64')));
-  });
-  if (metadata.sha512 !== sha512 || file.sha512 !== sha512) {
-    throw new Error(`${metadataName} sha512 does not match ${artifactName}`);
-  }
-  if (file.size !== artifact.size) {
+  const expected = [...artifactNames].sort();
+  const advertised = (metadata.files ?? []).map((file) => file?.url).sort();
+  if (JSON.stringify(advertised) !== JSON.stringify(expected)) {
     throw new Error(
-      `${metadataName} records ${artifactName} size ${JSON.stringify(file.size)}, expected ${artifact.size}`,
+      `${metadataName} advertises ${JSON.stringify(advertised)}, expected ${JSON.stringify(expected)}`,
     );
   }
-  const blockmapPath = join(directory, `${artifactName}.blockmap`);
-  if (!(await stat(blockmapPath)).isFile()) {
-    throw new Error(`Desktop update blockmap is not a file: ${blockmapPath}`);
+  if (!artifactNames.includes(metadata.path)) {
+    throw new Error(
+      `${metadataName} points at ${JSON.stringify(metadata.path)}, expected one of ${JSON.stringify(expected)}`,
+    );
   }
-  return { artifactName, metadata, metadataName, version };
+  // The top-level digest belongs to the payload named by `path`; an updater
+  // that trusts it while downloading a different file would verify nothing.
+  const primary = metadata.files.find((file) => file.url === metadata.path);
+  if (primary.sha512 !== metadata.sha512) {
+    throw new Error(`${metadataName} has inconsistent payload identity for ${metadata.path}`);
+  }
+
+  for (const file of metadata.files) {
+    const artifactPath = join(directory, file.url);
+    const artifact = await stat(artifactPath);
+    if (!artifact.isFile()) {
+      throw new Error(`Desktop update payload is not a file: ${artifactPath}`);
+    }
+    if (file.sha512 !== (await sha512Base64(artifactPath))) {
+      throw new Error(`${metadataName} sha512 does not match ${file.url}`);
+    }
+    if (file.size !== artifact.size) {
+      throw new Error(
+        `${metadataName} records ${file.url} size ${JSON.stringify(file.size)}, expected ${artifact.size}`,
+      );
+    }
+    if (!SIDECAR_BLOCKMAP_EXTENSIONS.some((extension) => file.url.endsWith(extension))) continue;
+    const blockmapPath = join(directory, `${file.url}.blockmap`);
+    if (!(await stat(blockmapPath)).isFile()) {
+      throw new Error(`Desktop update blockmap is not a file: ${blockmapPath}`);
+    }
+  }
+  return { artifactNames, metadata, metadataName, version };
 }
 
 /**

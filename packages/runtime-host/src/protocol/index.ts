@@ -100,7 +100,35 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 93 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 101 as const;
+// 101: Session Turn requests can carry regeneration intents and Guests can
+// atomically withdraw pending requests. Older peers do not share this command
+// vocabulary or the expanded Guest operation grant.
+// 100: `session.branch.create` makes `sourceTurnId` optional, so a side
+// conversation can fork with an empty context (no copied messages, no
+// fabricated `branchOfTurnId`) instead of requiring a settled turn. An older
+// Host's required-field check rejects the request that omits `sourceTurnId`;
+// the handshake keeps mixed-version peers apart. `session.revision.create`
+// still requires `sourceTurnId`, and its wire shape and fingerprint are
+// unchanged.
+// 99: ScheduledTask Agent execution templates carry immutable Connection
+// identity. Older peers cannot preserve the ID/slug/model binding and could
+// silently route a deleted Connection to a same-slug replacement.
+// 98: Peer Mesh invitations carry signed reachability leases and member route
+// projections use the convergent recovery state machine. Older peers decode a
+// different strict wire shape.
+// 97: Host status replaces unsigned route arrays with a self-signed, bounded
+// reachability lease. Older peers cannot validate the locator revision or its
+// target identity before retaining it for reconnect.
+// 96: Read image tool results may carry durable `session_context` refs.
+// 95: Catalog entries carry `describedByMetadata`, so a client asks the
+// Host-resolved entry — not its own bundled table — whether a model needs a
+// hand-written capability declaration. The field is required, so a newer Host's
+// entry fails an older client's strict decoder, and an older Host's entry
+// (lacking it) fails a newer client's.
+// 94: A failed Turn snapshot no longer carries contextBudgetExhaustedDetail; the
+// retired outcome reads as context_overflow at the ledger boundary, and an older
+// Host still sending the field fails a newer client's closed snapshot decode.
 // 93: Configuration credential transfer binds proxy destinations and
 // Connection credentials to exact Host-owned targets before secret access.
 // Proxy policy and credentials commit through one recoverable Host command;

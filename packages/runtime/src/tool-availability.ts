@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import type { ToolCategory } from '@maka/core/permission';
 import type { ToolAvailabilityDiagnostic } from '@maka/core/usage-stats/types';
 import MiniSearch from 'minisearch';
 import { z } from 'zod';
@@ -51,6 +52,38 @@ const DIRECT_TOOL_NAMES: ReadonlySet<string> = new Set([
   // Provider-routed equivalent of the direct Write/Edit surface.
   'apply_patch',
 ]);
+
+/**
+ * Discovery capability-family derived from a tool's permission `categoryHint`.
+ *
+ * This reuses the existing permission taxonomy (`ToolCategory`) purely for
+ * *presentation* in the deferred-tool search inventory: it never loads a tool
+ * schema and never affects permission classification. Several permission
+ * categories intentionally collapse into one browsing family (e.g. every shell
+ * bucket → `shell`). `custom_tool` is deliberately `null` so our own
+ * session-scoped tools without a stronger hint keep falling back to `other`.
+ *
+ * The map is TOTAL over `ToolCategory` on purpose: adding a new category to the
+ * union forces an explicit decision here (family or `null`) at compile time,
+ * instead of silently collapsing the new category into `other`.
+ */
+const CATEGORY_FAMILY: Record<ToolCategory, { id: string; label: string } | null> = {
+  read: { id: 'filesystem', label: 'Filesystem & search' },
+  file_write: { id: 'filesystem', label: 'Filesystem & search' },
+  fs_destructive: { id: 'filesystem', label: 'Filesystem & search' },
+  shell_safe: { id: 'shell', label: 'Shell & processes' },
+  shell_unsafe: { id: 'shell', label: 'Shell & processes' },
+  privileged: { id: 'shell', label: 'Shell & processes' },
+  git_destructive: { id: 'shell', label: 'Shell & processes' },
+  web_read: { id: 'web', label: 'Web & network' },
+  network_send: { id: 'web', label: 'Web & network' },
+  browser: { id: 'browser', label: 'Browser automation' },
+  computer_use: { id: 'computer_use', label: 'Computer use' },
+  client_capability: { id: 'client_capability', label: 'Client capabilities' },
+  subagent: { id: 'agents', label: 'Agent orchestration' },
+  // null = intentionally ungrouped; falls back to the `other` bucket.
+  custom_tool: null,
+};
 
 /** Optional search metadata for a subset of the bound deferred tools. */
 export interface ToolGroup {
@@ -183,11 +216,48 @@ export class ToolAvailabilityRuntime {
     }
     const ungrouped = [...searchable].filter((name) => !claimed.has(name)).sort(compareExactString);
     if (ungrouped.length > 0) {
-      const fallback = groups.find((group) => group.id === 'other');
-      if (fallback) {
-        fallback.toolNames = [...fallback.toolNames, ...ungrouped].sort(compareExactString);
-      } else {
-        groups.push({ id: 'other', toolNames: ungrouped });
+      // Bucket ungrouped native tools by their permission `categoryHint` so the
+      // search inventory advertises a compact capability-family map instead of a
+      // single opaque `other` group. This reads metadata already on the bound
+      // tool (no schema is loaded) and never affects permission classification.
+      // A caller-supplied group with a colliding id keeps precedence: family
+      // members merge into it. Tools with no hint (or `custom_tool`) still fall
+      // back to `other`.
+      const familyMembers = new Map<string, { label?: string; names: string[] }>();
+      const otherNames: string[] = [];
+      for (const name of ungrouped) {
+        const hint = this.toolsByName.get(name)?.categoryHint;
+        // A mapped-but-`null` entry (e.g. custom_tool) and an absent hint both
+        // route to `other`; only a non-null family is bucketed.
+        const family = hint ? CATEGORY_FAMILY[hint] : null;
+        if (!family) {
+          otherNames.push(name);
+          continue;
+        }
+        const bucket = familyMembers.get(family.id) ?? { label: family.label, names: [] };
+        bucket.names.push(name);
+        familyMembers.set(family.id, bucket);
+      }
+      for (const id of [...familyMembers.keys()].sort(compareExactString)) {
+        const bucket = familyMembers.get(id)!;
+        const existing = groups.find((group) => group.id === id);
+        if (existing) {
+          existing.toolNames = [...existing.toolNames, ...bucket.names].sort(compareExactString);
+        } else {
+          groups.push({
+            id,
+            toolNames: [...bucket.names].sort(compareExactString),
+            ...(bucket.label !== undefined ? { label: bucket.label } : {}),
+          });
+        }
+      }
+      if (otherNames.length > 0) {
+        const fallback = groups.find((group) => group.id === 'other');
+        if (fallback) {
+          fallback.toolNames = [...fallback.toolNames, ...otherNames].sort(compareExactString);
+        } else {
+          groups.push({ id: 'other', toolNames: otherNames.sort(compareExactString) });
+        }
       }
     }
     this.groups = groups;

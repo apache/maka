@@ -73,6 +73,19 @@ export const MAX_READ_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_MODEL_IMAGE_EDGE = 2000;
 export const READ_IMAGE_TOO_LARGE_MESSAGE = `Image exceeds the ${MAX_READ_IMAGE_BYTES / 1024 / 1024}MB model input limit; downscale it and try again.`;
 
+/**
+ * What one image costs the request once materialization rehydrates it.
+ *
+ * A flat per-modality constant, because no character count answers this: both
+ * an artifact part and a legacy image result reduce to a one-line reference,
+ * and providers price an image by the area they resize it to. It sits above
+ * Anthropic's ~1,600-token ceiling for an image up to 1.15 megapixels and in
+ * the same range as the constants other agents use (opencode 1,500, Codex
+ * 1,844). Erring high is the safe direction: every consumer is reversible, so
+ * the worst an over-count buys is one compaction that was not needed.
+ */
+export const MATERIALIZED_IMAGE_TOKENS = 2_000;
+
 /** Leaves room for Base64 expansion, text, and tool schemas under provider request limits. */
 export const MAX_PROVIDER_IMAGE_REQUEST_BYTES = 12 * 1024 * 1024;
 export const PROVIDER_IMAGE_BUDGET_EXCEEDED_MESSAGE = `Image was read, but the per-request image budget (${MAX_PROVIDER_IMAGE_REQUEST_BYTES / 1024 / 1024}MB across all images this turn) was exceeded; earlier images were sent and this one was omitted. Read fewer or smaller images.`;

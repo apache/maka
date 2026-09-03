@@ -27,8 +27,9 @@ gate. The workflow creates no Draft until every required artifact job succeeds.
 
 Phase 1 requires:
 
-- signed and notarized Apple Silicon macOS Desktop artifacts;
+- signed and notarized Apple Silicon and Intel macOS Desktop artifacts;
 - the unsigned Windows x64 Desktop installer and ZIP;
+- the unsigned x64 and arm64 Linux AppImage and deb;
 - the signed, notarized, relocatable Apple Silicon CLI/TUI ZIP;
 - checksums generated after each artifact reaches its final form.
 
@@ -84,12 +85,12 @@ bytes and expected filename are not covered by that protected workflow identity.
    version, and the CLI manifest exposes only the `maka` command.
 4. Dispatch `Release` from the exact approved candidate tag and supply the same tag as
    `source_reference_tag`. A rerun must use that same tag; never select current `main` instead.
-5. Confirm `release-identity`, both Desktop matrix entries, `cli-macos-arm64`, and
+5. Confirm `release-identity`, every Desktop matrix entry, `cli-macos-arm64`, and
    `publish` pass. A skipped or failed required job must prevent Draft creation.
 6. Confirm one Draft named `v<version>` targets the approved source SHA, identifies the ASF source
    reference in its notes, is not marked as a GitHub prerelease or Latest while it remains a Draft,
-   and contains exactly the manifest
-   reported by `node scripts/product-release-artifacts.mjs list`. The manifest covers both Desktop
+   and contains exactly the release asset names
+   reported by `node scripts/product-release-artifacts.mjs list`. That list covers all three Desktop
    platforms and update metadata, the standalone CLI/TUI, and their required checksums.
 7. Inspect the CLI ZIP. It must contain `bin/maka`, `RELEASE.json`, `DISCLAIMER-WIP`, `LICENSE`, `NOTICE`,
    `THIRD_PARTY_NOTICES.txt`, the pinned Node license, and no `bin/maka-agent`.
@@ -100,7 +101,7 @@ bytes and expected filename are not covered by that protected workflow identity.
    entitlements must retain the required hardened-runtime capabilities and omit
    `com.apple.security.get-task-allow`, as required by Apple's
    [notarization guidance](https://developer.apple.com/documentation/security/resolving-common-notarization-issues).
-9. Inspect both Desktop resource trees and confirm `git/`, `bundled-git.json`, `licenses/git/`, and
+9. Inspect every Desktop resource tree and confirm `git/`, `bundled-git.json`, `licenses/git/`, and
    `licenses/dugite/` are absent.
 
 If the publish job created the product tag or Draft but failed before every asset was uploaded,
@@ -131,7 +132,11 @@ stable release Latest in the same GitHub operation. Do not publish or
 change the Latest designation manually. A failed or rejected npm candidate requires a new product
 version; never publish the Draft to work around npm state.
 
-## Acceptance on another Apple Silicon Mac
+## Acceptance on another Mac
+
+Run this section twice: once on an Apple Silicon Mac with the `mac-arm64` DMG, and once on an Intel
+Mac with the `mac-x64` DMG. The CLI/TUI ships for Apple Silicon only, so steps 4 to 7 belong to the
+Apple Silicon pass.
 
 Download the DMG, CLI ZIP, and their checksum files through a browser from the Draft. Do not move
 artifacts directly from the workflow runner; the browser path supplies the real quarantine
@@ -168,9 +173,26 @@ Download the installer, Windows Desktop ZIP, and both checksum files through a b
 7. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
    public `maka-agent@<version>` package and the remote session completes one model turn.
 
+## Acceptance on a Linux machine
+
+Run this section twice: once on x64 with the `x86_64` AppImage and the `amd64` deb, and once on
+arm64 with the `arm64` pair. Download both distributables and their checksum files through a browser
+from the same Draft.
+
+1. Run `sha256sum -c` for the AppImage and the deb.
+2. `chmod +x` the AppImage and launch it once to confirm the portable artifact starts.
+3. Install the deb with `sudo apt install ./Maka-<version>-linux-<arch>.deb` and launch Maka from the
+   desktop launcher entry.
+4. Configure a model connection, send one prompt, and run one representative file-tool task.
+5. Run one terminal task and confirm packaged `node-pty` behavior.
+6. Confirm the documented Computer Use limitation remains accurate: Computer Use is not offered on
+   Linux.
+7. Add a clean remote Runtime Host from the packaged Desktop app. Confirm setup installs the exact
+   public `maka-agent@<version>` package and the remote session completes one model turn.
+
 Immediately before approving the `product-release` Environment, reverify that the approved ASF
 candidate tag and convenience `v<version>` tag still resolve to the same recorded commit. Approve
-only after npm verification and both independent-machine acceptance passes. If any required artifact, npm step, or
+only after npm verification and every independent-machine acceptance pass. If any required artifact, npm step, or
 acceptance step fails, keep the Draft unpublished, fix the issue, increment the root product
 version, and run the full workflow again. Never replace an existing release identity.
 

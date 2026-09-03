@@ -32,6 +32,14 @@ export function createDesktopSessionCollaborationServices(
     readInvitationClipboard: () => bridge.sessionCollaboration.readInvitationClipboard(),
     listMounts: () => bridge.sessionCollaboration.listMounts(),
     removeMount: (mountId) => bridge.sessionCollaboration.removeMount(mountId),
+    requestTurn: (sessionId, input) =>
+      bridge.sessionCollaboration.requestTurn(sessionId, input),
+    getTurnRequests: (sessionId) =>
+      bridge.sessionCollaboration.getTurnRequests(sessionId),
+    acknowledgeTurnRequest: (sessionId, requestId) =>
+      bridge.sessionCollaboration.acknowledgeTurnRequest(sessionId, requestId),
+    withdrawTurnRequest: (sessionId, requestId) =>
+      bridge.sessionCollaboration.withdrawTurnRequest(sessionId, requestId),
     getPendingTurnRequests: () => bridge.sessionCollaboration.getPendingTurnRequests(),
     decideTurnRequest: (sessionId, requestId, decision) =>
       bridge.sessionCollaboration.decideTurnRequest(sessionId, requestId, decision),

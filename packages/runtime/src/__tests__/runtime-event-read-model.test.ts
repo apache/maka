@@ -32,6 +32,7 @@ import {
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 
 const ts = 1_800_000_000_000;
@@ -1560,6 +1561,48 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     assert.deepStrictEqual(out.diagnostics, []);
   });
 
+  test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {
+    // The runtime no longer decides locally that a request cannot be made to
+    // fit, so that outcome is gone from the live contract. Sessions persisted
+    // before still carry it, and must still decode — as the one name that
+    // survives.
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-budget-exhausted',
+          ts: ts + 9,
+          status: 'failed',
+          actions: {
+            endInvocation: true,
+            stateDelta: {
+              stopReason: 'context_budget_exhausted',
+              failureClass: 'context_budget_exhausted',
+              contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+            },
+          },
+        }),
+      ],
+      {
+        runHeaders: [{ ...header, status: 'failed', failureClass: 'context_budget_exhausted' }],
+      },
+    );
+
+    assert.deepStrictEqual(
+      out.messages.find((message) => message.type === 'turn_state'),
+      {
+        type: 'turn_state',
+        id: 'evt-budget-exhausted',
+        turnId,
+        ts: ts + 9,
+        status: 'failed',
+        parentTurnId: 'parent-turn',
+        errorClass: 'context_overflow',
+        partialOutputRetained: false,
+      },
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
+  });
+
   test('tool step cap terminal fact projects a persistent system notice', () => {
     const out = projectRuntimeEventsToStoredMessages(
       [
@@ -1995,6 +2038,54 @@ describe('compareRuntimeReadModelMessages', () => {
     ];
 
     assert.strictEqual(compareRuntimeReadModelMessages(projected, legacy).compatible, false);
+  });
+
+  test('carries the cross-turn request anchor both ways and compares on it', () => {
+    const lastRequestAnchor = { inputTokens: 120, payloadChars: 48_000 };
+    const anchored = ev({
+      id: 'evt-token-anchor',
+      role: 'system',
+      author: 'system',
+      actions: { tokenUsage: { input: 370, output: 60, lastRequestAnchor } },
+    });
+    const projected = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-anchor-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'read the file' },
+        }),
+        anchored,
+      ],
+      { runHeaders: [header] },
+    );
+    const usage = projected.messages.find((message) => message.type === 'token_usage');
+    assert.partialDeepStrictEqual(usage, { type: 'token_usage', input: 370, lastRequestAnchor });
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: header,
+      messages: projected.messages,
+      now: () => ts,
+    });
+    assert.deepStrictEqual(
+      backfilled.events.find((event) => event.actions?.tokenUsage)?.actions?.tokenUsage
+        ?.lastRequestAnchor,
+      lastRequestAnchor,
+    );
+
+    assert.strictEqual(
+      compareRuntimeReadModelMessages(
+        [usage as StoredMessage],
+        [
+          {
+            ...(usage as Extract<StoredMessage, { type: 'token_usage' }>),
+            lastRequestAnchor: undefined,
+          },
+        ],
+      ).compatible,
+      false,
+    );
   });
 
   test('rejects mismatched replay-critical token usage fields', () => {

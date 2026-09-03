@@ -765,6 +765,7 @@ describe('SQLite workflow stores', () => {
             execution: {
               cwd: '/workspace',
               backend: 'ai-sdk',
+              llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
               permissionMode: 'ask',
@@ -775,6 +776,10 @@ describe('SQLite workflow stores', () => {
           createdBy: { kind: 'user' },
         },
         now,
+      );
+      assert.equal(
+        task.effect.kind === 'agent_run' ? task.effect.execution.llmConnectionId : undefined,
+        'connection-default',
       );
       const claim = await store.claimNow(task.id, now);
       await store.bindFireExecution(claim.id, {
@@ -816,6 +821,7 @@ describe('SQLite workflow stores', () => {
                 kind: 'agent_run',
                 execution: {
                   cwd: '/workspace',
+                  llmConnectionId: 'connection-default',
                   llmConnectionSlug: 'default',
                   model: 'test-model',
                   permissionMode: 'execute',
@@ -838,6 +844,7 @@ describe('SQLite workflow stores', () => {
             kind: 'agent_run',
             execution: {
               cwd: '/workspace',
+              llmConnectionId: 'connection-default',
               llmConnectionSlug: 'default',
               model: 'test-model',
               permissionMode: 'ask',

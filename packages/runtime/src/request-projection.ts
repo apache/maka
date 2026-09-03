@@ -24,12 +24,26 @@ export interface CompletedProviderStep {
   usage?: NormalizedUsage;
 }
 
+/** The system prompt and active tool subset one request actually dispatches. */
+export interface DispatchRequestShape {
+  systemPromptChars: number;
+  activeTools: string[];
+}
+
 export interface RequestProjectionContext {
   completedSteps: readonly CompletedProviderStep[];
   stepNumber: number;
   model: unknown;
   messages: ModelMessage[];
   activeTools?: readonly string[];
+  /**
+   * Resolve what this step will really send, from a stage's projected active
+   * tool set. Dispatch appends step-specific system prompt fragments and can
+   * clear the tool set entirely on a finalization step, so a stage that
+   * MEASURES the request must price this shape, not the pre-dispatch inputs —
+   * otherwise a payload measure gets paired with a different request's tokens.
+   */
+  resolveDispatch: (activeTools: readonly string[] | undefined) => DispatchRequestShape;
 }
 
 export interface RequestProjection {

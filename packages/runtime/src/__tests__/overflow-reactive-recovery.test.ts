@@ -128,6 +128,11 @@ const BIG_RESULT = 'BIG_RESULT_'.repeat(200);
 interface ReactiveFixtureOptions {
   script: CallKind[];
   contextWindow?: number;
+  /**
+   * A model that declares no context window, on a provider whose default
+   * policy sets no history budget either — so nothing can synthesize one.
+   */
+  withoutContextWindow?: boolean;
   reserveTokens?: number;
   midTurnEnabled?: boolean;
   withoutPriorTurns?: boolean;
@@ -582,7 +587,12 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       ...(options.providerNative
         ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
         : {}),
-      models: [{ id: 'mock-model-id', contextWindow }],
+      ...(options.withoutContextWindow ? { providerType: 'deepseek' as const } : {}),
+      models: [
+        options.withoutContextWindow
+          ? { id: 'mock-model-id' }
+          : { id: 'mock-model-id', contextWindow },
+      ],
     },
     apiKey: 'sk-test',
     ...(options.reasoningReplayTail ? { providerStateIdentity: PROVIDER_STATE_IDENTITY } : {}),
@@ -638,7 +648,9 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
       : {}),
     contextBudget: {
       name: 'reactive-test',
-      maxHistoryEstimatedTokens: 100_000,
+      // An undeclared window on this provider carries no history budget either,
+      // matching what the default policy builds for it.
+      ...(options.withoutContextWindow ? {} : { maxHistoryEstimatedTokens: 100_000 }),
       historyCompact: {
         enabled: true,
         ...(midTurnEnabled ? { midTurn: { enabled: true, reserveTokens } } : {}),
@@ -1371,6 +1383,28 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.recorded.length, 0);
   });
 
+  test('recovers a model whose context window nothing can supply', async () => {
+    // DeepSeek publishes no window and its default policy sets no history
+    // budget, so no number could be synthesized and mid-turn state was skipped
+    // entirely. That left the one provider with no proactive threshold ALSO
+    // without reactive recovery. The overflow is a real provider rejection, so
+    // recovery needs no window of its own.
+    const fixture = buildReactiveFixture({
+      script: ['tool', 'overflow', 'done'],
+      bigPriors: true,
+      withoutContextWindow: true,
+    });
+    await runTurn(fixture);
+
+    assert.equal(complete(fixture)?.stopReason, 'end_turn');
+    assert.equal(
+      fixture.events.some((event) => event.type === 'error'),
+      false,
+    );
+    assert.equal(fixture.recorded.length, 1);
+    assert.equal(fixture.recorded[0]!.phase, 'mid_turn');
+  });
+
   test('recovers from a plain-object in-stream error part, not just Error instances (review round-8 P1-1)', async () => {
     // Providers deliver in-stream failures as parsed plain objects (or bare
     // strings), never Error instances. The recovery decision must classify
@@ -1657,7 +1691,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     // First-request overflow with no prior turns: the pool is just the current
     // user message, so there is no safe completed span to fold. Recovery is not
     // possible, so the provider error is surfaced honestly (not a fake success,
-    // and not a synthesized context_budget_exhausted — the provider rejected).
+    // and not a locally synthesized verdict — the provider rejected).
     const fixture = buildReactiveFixture({ script: ['overflow'], withoutPriorTurns: true });
     await runTurn(fixture);
 
@@ -1750,20 +1784,15 @@ describe('reactive overflow recovery in the streaming backend', () => {
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 1);
   });
 
-  test('a checkpoint fold never sneaks an injected steering message past the capacity verdict', async () => {
-    // Round-5 F2: injected steering is PINNED out of the foldable span. If a
-    // mid-turn fold could cover it, the verdict would credit the fold with
-    // chars the request never actually sheds (the accumulator re-appends the
-    // directive), passing a request whose real payload it never measured.
+  test('a checkpoint fold never covers an injected steering message', async () => {
+    // Round-5 F2: injected steering is PINNED out of the foldable span, so a
+    // measurement of the folded request is a measurement of what the provider
+    // actually receives — the accumulator re-appends the directive either way.
     //
-    // Scenario: steer once at step 1 (6k chars — folds fine, stays in the
-    // tail, measured). At step 2 a second, window-breaking steer (12k chars)
-    // arrives and the fold's cut can now reach PAST the first steering
-    // event. Unpinned, the fold covers it, the verdict sees a shrunken
-    // payload and passes, and the post-verdict re-append ships an unmeasured
-    // over-window request to a happy end_turn. Pinned, the fold cannot cover
-    // it, the honest estimate exceeds the window, and the verdict terminates
-    // explicitly BEFORE the request goes out.
+    // Scenario: steer once at step 1 (6k chars), then again at step 2 (12k)
+    // so the fold's cut can reach PAST the first steering event. Unpinned,
+    // the fold would swallow the first steer and the request that goes out
+    // would carry chars nothing measured.
     const fixture = buildReactiveFixture({
       script: ['tool', 'tool', 'done'],
       contextWindow: 2_000,
@@ -1791,15 +1820,10 @@ describe('reactive overflow recovery in the streaming backend', () => {
       return [];
     });
 
-    // The verdict measured the pinned, steering-inclusive payload and refused
-    // it explicitly instead of completing on an unmeasured over-window request
-    // (unpinned, the fold hides the first steer from the measurement and the
-    // turn ends happily on end_turn). The third request is rejected locally
-    // before the provider adapter is called.
-    assert.equal(complete(fixture)?.stopReason, 'context_budget_exhausted');
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-    // Both steers were durably delivered to the ledger before the verdict —
-    // they are owned by history, not lost.
+    // The first steer survives the fold verbatim in the last request: it was
+    // pinned out of the covered span, not summarized away.
+    assert.match(JSON.stringify(fixture.model.doStreamCalls.at(-1)?.prompt), /PIN_STEER_ONE/);
+    // Both steers were durably delivered to the ledger — owned by history.
     assert.equal(fixture.events.filter((event) => event.type === 'steering_message').length, 2);
   });
 

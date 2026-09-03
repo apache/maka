@@ -26,15 +26,14 @@ import {
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
 import { canonicalPeerMeshDisplayName } from '../peer-mesh/display-name.js';
+import { PEER_MESH_MAX_MEMBERS, PEER_MESH_MAX_MESHES } from '../peer-mesh/limits.js';
 import {
-  PEER_MESH_MAX_MEMBERS,
-  PEER_MESH_MAX_MESHES,
-  PEER_MESH_MAX_ROUTE_HINTS,
-} from '../peer-mesh/limits.js';
+  decodeSignedPeerReachabilityLease,
+  type SignedPeerReachabilityLeaseV1,
+} from '../peer-reachability/model.js';
 
 const PEER_ID_MAX_BYTES = 256;
 const MESH_ID_MAX_BYTES = 128;
-const MESH_ADDRESS_MAX_LENGTH = 1024;
 
 export interface PeerMeshInvitationV1 {
   readonly version: 1;
@@ -42,9 +41,7 @@ export interface PeerMeshInvitationV1 {
   readonly authorityPublicKey: string;
   readonly secret: string;
   readonly expiresAt: number;
-  readonly peerId: string;
-  readonly routeHints: readonly string[];
-  readonly coordinationRelays: readonly string[];
+  readonly reachability: SignedPeerReachabilityLeaseV1;
 }
 
 export interface PeerMeshProjection {
@@ -62,7 +59,7 @@ export interface PeerMeshMemberProjection {
   readonly peerId: string;
   readonly endpointKind?: 'client' | 'host';
   readonly displayName?: string;
-  readonly state: 'local' | 'route_available' | 'coordination_only' | 'stale' | 'unknown';
+  readonly state: 'local' | 'connecting' | 'reachable' | 'reconnecting' | 'needs_repair';
   readonly expiresAt?: number;
 }
 
@@ -250,9 +247,7 @@ export function decodePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
     'authorityPublicKey',
     'secret',
     'expiresAt',
-    'peerId',
-    'routeHints',
-    'coordinationRelays',
+    'reachability',
   ]);
   if (record.version !== 1) throw new Error('Unsupported Peer Mesh invitation version');
   return {
@@ -265,35 +260,8 @@ export function decodePeerMeshInvitation(value: unknown): PeerMeshInvitationV1 {
     ),
     secret: requireString(record.secret, 'Peer Mesh invitation secret', 64),
     expiresAt: requireCount(record.expiresAt, 'Peer Mesh invitation expiry'),
-    peerId: requireMeshToken(record.peerId, 'Peer Mesh authority peerId'),
-    routeHints: requireMeshAddresses(record.routeHints, 'Peer Mesh route hints'),
-    coordinationRelays: requireMeshAddresses(
-      record.coordinationRelays,
-      'Peer Mesh coordination relays',
-    ),
+    reachability: decodeSignedPeerReachabilityLease(record.reachability),
   };
-}
-
-function requireMeshToken(value: unknown, label: string): string {
-  const result = requireString(value, label, PEER_ID_MAX_BYTES);
-  if (/\s|[\u0000-\u001f\u007f]/u.test(result)) throw new Error(`Invalid ${label}`);
-  return result;
-}
-
-function requireMeshAddresses(value: unknown, label: string): readonly string[] {
-  if (!Array.isArray(value) || value.length > PEER_MESH_MAX_ROUTE_HINTS) {
-    throw new Error(`Invalid ${label}`);
-  }
-  const addresses = value.map((address) => requireString(address, label, MESH_ADDRESS_MAX_LENGTH));
-  if (
-    addresses.some(
-      (address) => !address.startsWith('/') || /\s|[\u0000-\u001f\u007f]/u.test(address),
-    ) ||
-    new Set(addresses).size !== addresses.length
-  ) {
-    throw new Error(`Invalid ${label}`);
-  }
-  return Object.freeze(addresses);
 }
 
 function decodePeerMeshRemoveInput(value: unknown): PeerMeshRemoveInput {
@@ -348,7 +316,9 @@ export function decodePeerMeshQueryResult(value: unknown): PeerMeshQueryResult {
           localPeerId: requireString(localPeerId, 'Peer Mesh localPeerId', PEER_ID_MAX_BYTES),
           ...(record.localDisplayName === undefined
             ? {}
-            : { localDisplayName: canonicalPeerMeshDisplayName(record.localDisplayName) }),
+            : {
+                localDisplayName: canonicalPeerMeshDisplayName(record.localDisplayName),
+              }),
           transit: decodePeerMeshTransitProjection(record.transit),
         }),
     meshes: Object.freeze(record.meshes.map(decodePeerMeshProjection)),
@@ -442,10 +412,10 @@ function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjectio
   ]);
   if (
     record.state !== 'local' &&
-    record.state !== 'route_available' &&
-    record.state !== 'coordination_only' &&
-    record.state !== 'stale' &&
-    record.state !== 'unknown'
+    record.state !== 'connecting' &&
+    record.state !== 'reachable' &&
+    record.state !== 'reconnecting' &&
+    record.state !== 'needs_repair'
   ) {
     throw new Error('Invalid Peer Mesh member route state');
   }
@@ -465,7 +435,9 @@ function decodePeerMeshMemberProjection(value: unknown): PeerMeshMemberProjectio
     state: record.state,
     ...(record.expiresAt === undefined
       ? {}
-      : { expiresAt: requireCount(record.expiresAt, 'Peer Mesh member route expiry') }),
+      : {
+          expiresAt: requireCount(record.expiresAt, 'Peer Mesh member route expiry'),
+        }),
   };
 }
 

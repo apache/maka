@@ -53,11 +53,13 @@ const RELEASE_CONTRACT_FILES = new Set([
   '.github/workflows/release-cli-finalize.yml',
   '.github/workflows/release-cli-stage.yml',
   '.github/workflows/release.yml',
+  '.github/workflows/release-linux-check.yml',
   '.github/workflows/release-windows-check.yml',
   '.github/workflows/windows-recovery.yml',
-  'scripts/package-macos-arm64.mjs',
+  'scripts/package-macos.mjs',
   'scripts/package-macos-autoupdate-next.mjs',
   'scripts/package-macos-arm64-cli.mjs',
+  'scripts/package-linux.mjs',
   'scripts/package-windows-autoupdate-next.mjs',
   'scripts/package-windows-x64.mjs',
   'scripts/prepare-windows-upgrade-baseline.mjs',
@@ -69,8 +71,12 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/release-version.mjs',
   'scripts/third-party-closure.test.mjs',
   'scripts/verify-macos-arm64-cli.mjs',
-  'scripts/verify-macos-arm64-dmg.mjs',
+  'scripts/verify-macos-dmg.mjs',
   'scripts/verify-macos-autoupdate.mjs',
+  'scripts/verify-linux.mjs',
+  'scripts/verify-linux-harness.test.mjs',
+  'scripts/desktop-release-targets.mjs',
+  'scripts/desktop-release-targets.test.mjs',
   'scripts/desktop-update-contract.mjs',
   'scripts/product-nightly.mjs',
   'scripts/product-nightly.test.mjs',
@@ -82,6 +88,9 @@ const RELEASE_CONTRACT_FILES = new Set([
   'scripts/windows-upgrade-baseline.json',
   'scripts/windows-package-source-closure.mjs',
   'scripts/windows-package-source-closure.test.mjs',
+  // Reads the filter that closure test compares against, and `check:release`
+  // is the only gate that runs it against `release-windows-check.yml`.
+  'scripts/workflow-pull-request-paths.mjs',
 ]);
 
 // What decides whether a build can read durable state an earlier release wrote.
@@ -525,23 +534,6 @@ export function planTests(changedFiles, options = {}) {
   };
 }
 
-export function requiresHeavyValidation(plan) {
-  return Boolean(
-    plan.appIcons ||
-      plan.asfSource ||
-      plan.astryxSurface ||
-      plan.cliPackage ||
-      plan.code ||
-      plan.e2e ||
-      plan.releaseContract ||
-      plan.runtimeHost ||
-      plan.runtimeSandbox ||
-      plan.stateRootCompat ||
-      plan.storybook ||
-      plan.standardWorkspaces.length > 0,
-  );
-}
-
 export function formatGitHubOutputs(plan) {
   return [
     `app_icons=${plan.appIcons}`,
@@ -550,7 +542,6 @@ export function formatGitHubOutputs(plan) {
     `cli_package=${plan.cliPackage}`,
     `code=${plan.code}`,
     `e2e=${plan.e2e}`,
-    `heavy=${requiresHeavyValidation(plan)}`,
     `runtime_host=${plan.runtimeHost}`,
     `runtime_sandbox=${plan.runtimeSandbox}`,
     `release_contract=${plan.releaseContract}`,

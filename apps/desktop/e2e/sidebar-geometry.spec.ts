@@ -112,23 +112,27 @@ test('resize handle drag from its vertical centre changes the column width', asy
   expect(initialWidth).toBeGreaterThanOrEqual(SESSION_LIST_EXPANDED_MIN_WIDTH);
   expect(initialWidth).toBeLessThanOrEqual(SESSION_LIST_EXPANDED_MAX_WIDTH);
 
-  const handleBox = await handle.boundingBox();
-  if (!handleBox) throw new Error('resize handle has no visible bounds');
   // Grab the vertical centre. The Astryx hitAreaOffsetX bug leaves only the top
   // half grabbable, so the centre no-ops unless sidebar.css's `transform: none
   // !important` is applied — this point is the regression probe for that rule.
+  // Let locator actionability resolve the handle's live centre before reading
+  // its endpoint; replaying a box captured before that wait can miss a moving
+  // 16px handle under load.
+  await handle.hover();
+  const handleBox = await handle.boundingBox();
+  if (!handleBox) throw new Error('resize handle has no visible bounds');
   const grabX = handleBox.x + handleBox.width / 2;
   const grabY = handleBox.y + handleBox.height / 2;
 
-  await handle.hover();
-  await page.mouse.move(grabX, grabY);
   await page.mouse.down();
-  await page.mouse.move(grabX + 80, grabY, { steps: 20 });
 
   // Astryx flags the separator while a drag is in flight; shell-layout.css keys
   // its transition-suppression (`:has([data-resizing])`) on it, so the width
-  // tracks the pointer live rather than easing behind it.
+  // tracks the pointer live rather than easing behind it. Check the second the
+  // pointer goes down, so a missed grab fails directly instead of timing out on
+  // an unrelated width assertion.
   await expect(handle).toHaveAttribute('data-resizing', /.*/);
+  await page.mouse.move(grabX + 80, grabY, { steps: 20 });
   await expect.poll(() => wrapperWidth(wrapper)).toBeGreaterThan(initialWidth + 40);
   await page.mouse.up();
   await expect(handle).not.toHaveAttribute('data-resizing', /.*/);
@@ -139,17 +143,20 @@ test('resize handle drag from its vertical centre changes the column width', asy
 
   // Drag the other way to prove the handle also narrows the column, grabbing
   // the centre again at the handle's new right-edge position.
+  await handle.hover();
   const widenedHandleBox = await handle.boundingBox();
   if (!widenedHandleBox) throw new Error('resize handle lost its bounds after widening');
   const shrinkX = widenedHandleBox.x + widenedHandleBox.width / 2;
   const shrinkY = widenedHandleBox.y + widenedHandleBox.height / 2;
 
-  await handle.hover();
-  await page.mouse.move(shrinkX, shrinkY);
   await page.mouse.down();
-  await page.mouse.move(shrinkX - 120, shrinkY, { steps: 20 });
+  await expect(handle).toHaveAttribute('data-resizing', /.*/);
+  // Undo the 80px widening. Keeping the reverse drag symmetric means every
+  // width accepted by the precondition stays above the collapsible region.
+  await page.mouse.move(shrinkX - 80, shrinkY, { steps: 20 });
   await expect.poll(() => wrapperWidth(wrapper)).toBeLessThan(widenedWidth - 40);
   await page.mouse.up();
+  await expect(handle).not.toHaveAttribute('data-resizing', /.*/);
 
   const narrowedWidth = await wrapperWidth(wrapper);
   expect(narrowedWidth).toBeLessThan(widenedWidth - 40);

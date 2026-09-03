@@ -416,6 +416,30 @@ describe('Runtime Host operator commands', () => {
     assert.deepEqual(
       parseRuntimeHostCommand([
         'access',
+        'connection-code',
+        '--name',
+        'Office Host',
+        '--root',
+        '/srv/maka',
+        '--expected-root',
+        'a'.repeat(64),
+        '--framed',
+      ]),
+      {
+        kind: 'runtime-host-access-connection-code',
+        name: 'Office Host',
+        rootPath: '/srv/maka',
+        expectedRootId: 'a'.repeat(64),
+        framed: true,
+      },
+    );
+    assert.equal(
+      parseRuntimeHostCommand(['access', 'connection-code', '--principal', 'unexpected']).kind,
+      'error',
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'access',
         'revoke',
         '--credential',
         'credential-1',
@@ -449,6 +473,7 @@ describe('Runtime Host operator commands', () => {
         'access.principal.revoke',
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
+        'collaboration.turn-request.withdraw',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',
@@ -482,8 +507,19 @@ describe('Runtime Host operator commands', () => {
       websocketEndpoints: ['wss://runtime.example.com:443/runtime-host'],
       peerListeners: [
         {
-          peerId: '12D3KooWPeer',
-          listenAddresses: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+          reachability: {
+            lease: {
+              version: 1,
+              peerId: '12D3KooWPeer',
+              revision: 1,
+              issuedAt: 1,
+              expiresAt: 2,
+              directRoutes: ['/ip4/192.0.2.10/udp/4001/quic-v1/p2p/12D3KooWPeer'],
+              coordinationRoutes: [],
+            },
+            publicKey: 'cHVibGlj',
+            signature: 'c2lnbmF0dXJl',
+          },
         },
       ],
       compositionDescriptor: { id: 'maka.interactive', revision: '2' },

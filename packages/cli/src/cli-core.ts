@@ -133,7 +133,7 @@ function helpText(cliCommand: string): string {
     '',
     'Commands:',
     `  ${cliCommand}              Start the TUI`,
-    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize only; session support in progress)`,
+    `  ${cliCommand} --acp      Serve ACP v1 over stdio (initialize, session/new, session/list)`,
     `  ${cliCommand} run ...      Run one non-interactive model turn`,
     `  ${cliCommand} activate ... Run one Cloud Session activation and emit JSONL`,
     `  ${cliCommand} -p ...       Alias for ${cliCommand} run`,
@@ -155,6 +155,7 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host service reconcile-update [--json]`,
     `  ${cliCommand} runtime-host access issue --principal <id> --grant <operation>`,
     `  ${cliCommand} runtime-host access issue --principal <id> --preset <desktop-client|terminal-client>`,
+    `  ${cliCommand} runtime-host access connection-code [--name <name>] [--root <path>]`,
     `  ${cliCommand} runtime-host access list`,
     `  ${cliCommand} runtime-host access issue --kind capability-provider --principal <id>`,
     `  ${cliCommand} runtime-host access revoke --credential <id>`,
@@ -169,7 +170,6 @@ function helpText(cliCommand: string): string {
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --tls-url <wss-url> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --ssh-destination <user@host> --ssh-remote-port <port> --expected-root <root-id> [--ssh-port <port>] [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile set --id <id> --name <name> --plaintext-url <ws-url> --acknowledge-plaintext --expected-root <root-id> [--credential-env <name>]`,
-    `  ${cliCommand} runtime-host profile set --id <id> --name <name> --peer-id <peer-id> --peer-route <multiaddr> --expected-root <root-id> [--credential-env <name>]`,
     `  ${cliCommand} runtime-host profile remove --id <id>`,
     `  ${cliCommand} runtime-host capability-provider serve --url <ws-url> --mcp-config <path> --expected-root <root-id>`,
     '',
@@ -301,7 +301,11 @@ export async function runMakaCli(
     }
     case 'acp': {
       const { runMakaAcpStdioServer } = await import('./acp/stdio-server.js');
-      return runMakaAcpStdioServer({ version });
+      return runMakaAcpStdioServer({
+        workspaceRoot: dataRoots.workspaceRoot,
+        clientDataRoot: dataRoots.clientDataRoot,
+        version,
+      });
     }
     case 'runtime-host-serve': {
       const { runRuntimeHostServiceCli } = await import('./runtime-host-service-command.js');
@@ -674,6 +678,19 @@ export async function runMakaCli(
         ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
         currentCredentialFingerprint: command.currentCredentialFingerprint,
       });
+    }
+    case 'runtime-host-access-connection-code': {
+      const { runRuntimeHostAccessConnectionCodeCli } = await import(
+        './runtime-host-access-command.js'
+      );
+      return runRuntimeHostAccessConnectionCodeCli(
+        {
+          rootPath: command.rootPath ?? dataRoots.workspaceRoot,
+          ...(command.expectedRootId ? { expectedRootId: command.expectedRootId } : {}),
+          ...(command.name ? { name: command.name } : {}),
+        },
+        command.framed,
+      );
     }
     case 'runtime-host-access-list': {
       const { runRuntimeHostAccessListCli } = await import('./runtime-host-access-command.js');

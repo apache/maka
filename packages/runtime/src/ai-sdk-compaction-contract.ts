@@ -47,9 +47,10 @@ export interface HistoryCompactSummaryInput {
   /**
    * Estimated provider-input ceiling for this compaction call. A compactor
    * should fail before dispatch when its projection cannot fit this budget.
+   * The ceiling is absent when the selected model declares no context window.
    */
   inputBudget?: {
-    maxEstimatedTokens: number;
+    maxEstimatedTokens?: number;
     charsPerToken: number;
   };
   abortSignal?: AbortSignal;

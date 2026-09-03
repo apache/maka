@@ -177,6 +177,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     | 'loadTranscriptBefore'
     | 'observe'
     | 'openTranscript'
+    | 'releaseTarget'
   >;
   resolveSideConversation(sessionId: string): Promise<boolean>;
 }
@@ -185,6 +186,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
 export function registerRuntimeHostSessionObservationIpc(
   deps: RuntimeHostSessionObservationIpcDeps,
   ipcMain: ReconnectableReadIpcMain,
+  enableE2eControls = false,
 ): void {
   handleReconnectableRead(
     ipcMain,
@@ -220,6 +222,11 @@ export function registerRuntimeHostSessionObservationIpc(
       event.sender.id,
     );
   });
+  if (enableE2eControls) {
+    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
+      deps.observations.releaseTarget(event.sender.id),
+    );
+  }
 }
 
 /**
@@ -715,7 +722,9 @@ export function registerRuntimeHostSessionExecutionIpc(
         deps.client.copySession("branch", {
           sourceSessionId: sessionId,
           targetSessionId: normalized.copyId,
-          sourceTurnId: normalized.sourceTurnId,
+          ...(normalized.sourceTurnId === undefined
+            ? {}
+            : { sourceTurnId: normalized.sourceTurnId }),
           ...(normalized.sideConversation ? { intent: 'side_conversation' as const } : {}),
         });
       let branch;
@@ -726,7 +735,9 @@ export function registerRuntimeHostSessionExecutionIpc(
                 sessionId: normalized.copyId,
                 kind: 'branch',
                 sourceSessionId: sessionId,
-                sourceTurnId: normalized.sourceTurnId,
+                ...(normalized.sourceTurnId === undefined
+                  ? {}
+                  : { sourceTurnId: normalized.sourceTurnId }),
                 intent: 'side_conversation',
                 ownerId: bindCopyOwner(event),
               },

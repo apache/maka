@@ -80,7 +80,8 @@ import {
   deriveTaskReadinessNotice,
   isTaskSubmissionHardBlocked,
   resolveTaskReadinessModelTarget,
-} from './task-readiness-notice';
+  transcriptReadingPosition,
+} from './features/conversation';
 import { deriveWorkspaceReadinessRecovery } from './workspace-readiness-recovery';
 import { LiveTurnReconciler } from './live-turn-reconciler';
 import { useAppShellSessionUiReads } from './use-app-shell-session-ui-reads';
@@ -101,16 +102,10 @@ import {
   type SessionNavigationPorts,
   type SessionNavigationRowActions,
 } from './features/session-navigation';
-import {
-  TaskEntryHost,
-  useTaskEntryController,
-  type TaskEntryError,
-} from './features/task-entry';
+import { TaskEntryHost, useTaskEntryController } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
-import { SessionTurnRequestComposer } from './session-turn-request-composer.js';
 import * as SessionCollaboration from './features/session-collaboration';
-import { getSessionCollaborationCopy } from './locales/session-collaboration-copy';
 import { NEW_TASK_PENDING_KEY } from './pending-items';
 import { parseDesktopSlashCommand } from './desktop-slash-command';
 import {
@@ -393,8 +388,10 @@ function AppShellContent({
   } = useSettingsModal();
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
-  const reportTaskEntryError = useCallback(
-    ({ title, description, profileId }: TaskEntryError) => {
+  const reportTaskEntryError = useCallback<
+    Parameters<typeof useTaskEntryController>[0]['reportError']
+  >(
+    ({ title, description, profileId }) => {
       toastApi.error(title, description, undefined, { profileId });
     },
     [toastApi],
@@ -555,6 +552,7 @@ function AppShellContent({
     stopPendingBySession,
     interactionBySession,
     messageQueueBySession,
+    transcriptRestoreUnavailableBySession,
     streamingSessionIds,
     activeLiveTurnSnapshot,
   } = useAppShellSessionUiReads(sessionUiController, activeId);
@@ -648,7 +646,6 @@ function AppShellContent({
     setUiLocalePreference,
   });
   const shellCopy = getShellCopy(uiLocale).app;
-  const sessionCollaborationCopy = getSessionCollaborationCopy(uiLocale);
   const previousInterruptionCopy =
     getShellRemainingCopy(uiLocale).previousMainProcessInterruption;
   const desktopConversationCopy = getDesktopConversationCopy(uiLocale);
@@ -967,9 +964,6 @@ function AppShellContent({
   // Session-row mutations live in Session Navigation; the per-session mode and
   // model claims live in the session UI store.
   const turnActionRegistry = useTurnActionRegistry();
-  const pendingTurnActions = turnActionRegistry.keys;
-  const pendingKeyOf = (sessionId: string, turnId: string, actionId: string) =>
-    `${sessionId}:${turnId}:${actionId}`;
 
   // A hoisted declaration on purpose: `dropDisplayEvents` is destructured
   // hundreds of lines below, and the rail does not need this identity held
@@ -1079,8 +1073,7 @@ function AppShellContent({
   // keeps the props a memoized TurnView reads stable (#2030).
   const deriveTurnPresentation = useAppShellTurnPresentation({
     activeId,
-    pendingTurnActions,
-    pendingKeyOf,
+    pendingTurnActions: turnActionRegistry.keys,
     uiLocale,
   });
 
@@ -1838,10 +1831,8 @@ function AppShellContent({
   const { handleTurnFooterAction } = useStableActions(createAppShellTurnActions, {
     uiLocale,
     activeIdRef,
-    addPendingTurnAction: turnActionRegistry.addKey,
-    clearPendingTurnAction: turnActionRegistry.clearKey,
+    turnActionRegistry,
     openSessionInChat,
-    pendingKeyOf,
     refreshMessages,
     refreshSessions,
     setMessages,
@@ -2381,75 +2372,43 @@ function AppShellContent({
     setSessionEventHealthBySession: sessionUiController.setSessionEventHealthBySession,
     toastApi,
   });
-  let newestDurablePromptSequence: number | null = null;
-  try {
-    const controller = transcriptRangeRef.current;
-    if (controller && controller.store.range().sessionId === activeId) {
-      newestDurablePromptSequence = controller.store.newestDurableUserSequence();
-    }
-  } catch {
-    newestDurablePromptSequence = null;
-  }
-  useEffect(() => {
-    const sessionId = activeId;
-    if (!sessionId) {
-      setTranscriptTurnIndex(undefined);
-      return;
-    }
-    let disposed = false;
-    if (
-      transcriptTurnIndex?.sessionId === sessionId &&
-      (newestDurablePromptSequence === null ||
-        (transcriptTurnIndex.throughSequence !== null &&
-          newestDurablePromptSequence <= transcriptTurnIndex.throughSequence))
-    ) return;
-    void window.maka.sessions.listTurnLandmarks(sessionId).then(
-      (snapshot) => {
-        if (disposed || activeIdRef.current !== sessionId) return;
-        setTranscriptTurnIndex({
-          sessionId,
-          throughSequence: snapshot.throughSequence,
-          turns: snapshot.landmarks,
-        });
-      },
-      () => undefined,
-    );
-    return () => {
-      disposed = true;
-    };
-  }, [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
-  useEffect(() => {
-    const target = searchScrollTarget;
-    if (!target || target.sessionId !== activeId || target.sequence === undefined) return;
-    const sequence = target.sequence;
-    const controller = transcriptRangeRef.current;
-    if (!controller) return;
-    let disposed = false;
-    void controller.ready()
-      .then(() => controller.loadAround(sequence))
-      .then(() => {
-        if (
-          disposed ||
-          transcriptRangeRef.current !== controller ||
-          activeIdRef.current !== target.sessionId
-        ) return;
-        setMessages([...controller.store.snapshot().messages]);
-      })
-      .catch((error) => {
-        if (disposed || activeIdRef.current !== target.sessionId) return;
-        sessionUiController.setMessageLoadErrorBySession((current) => ({
-          ...current,
-          [target.sessionId]: localizedShellErrorMessage(
-            error,
-            desktopConversationCopy.actions.operationFailedFallback,
-            uiLocale,
-          ),
-        }));
-      });
-    return () => {
-      disposed = true;
-    };
-  }, [activeId, searchScrollTarget?.nonce]);
+  const newestDurablePromptSequence = transcriptReadingPosition.newestDurablePromptSequence(
+    transcriptRangeRef.current,
+    activeId,
+  );
+  useEffect(() => transcriptReadingPosition.refreshLandmarks({
+    sessionId: activeId,
+    newestDurablePromptSequence,
+    current: transcriptTurnIndex,
+    list: (sessionId) => window.maka.sessions.listTurnLandmarks(sessionId),
+    isCurrent: (sessionId) => activeIdRef.current === sessionId,
+    setIndex: setTranscriptTurnIndex,
+  }), [activeId, activeIdRef, newestDurablePromptSequence, transcriptTurnIndex]);
+  useEffect(() => transcriptReadingPosition.restoreRange({
+    sessionId: activeId,
+    searchTarget: searchScrollTarget,
+    readingAnchor: activeId
+      ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
+      : undefined,
+    controller: transcriptRangeRef.current,
+    isCurrent: (sessionId, controller) =>
+      activeIdRef.current === sessionId && transcriptRangeRef.current === controller,
+    setMessages,
+    setReadingAnchor: sessionUiController.setTranscriptReadingAnchor,
+    onRestoreUnavailable: (sessionId, turnId) => {
+      sessionUiController.setTranscriptRestoreUnavailable(sessionId, turnId);
+    },
+    onError: (error, sessionId) => {
+      sessionUiController.setMessageLoadErrorBySession((current) => ({
+        ...current,
+        [sessionId]: localizedShellErrorMessage(
+          error,
+          desktopConversationCopy.actions.operationFailedFallback,
+          uiLocale,
+        ),
+      }));
+    },
+  }), [activeId, activeSession?.profileId, messages, searchScrollTarget?.nonce]);
   useShellRunUpdates({
     activeId,
     setShellRunUpdatesBySession: sessionUiController.setShellRunUpdatesBySession,
@@ -2603,13 +2562,27 @@ function AppShellContent({
     activeId !== undefined || taskEntry.selectors.target !== undefined;
 
   const activeMessageLoadError = activeId ? messageLoadErrorBySession[activeId] : undefined;
-  let activeTranscriptRange;
-  try {
-    const controller = transcriptRangeRef.current;
-    const range = controller?.store.range();
-    if (range?.sessionId === activeId) activeTranscriptRange = range;
-  } catch {
-    activeTranscriptRange = undefined;
+  const activeTranscriptReadingAnchor = activeId
+    ? sessionUiController.transcriptReadingAnchorBySessionRef.current[activeId]
+    : undefined;
+  const activeUnavailableTranscriptRestore = activeId
+    ? transcriptRestoreUnavailableBySession[activeId]
+    : undefined;
+  const activeTranscriptRange = transcriptReadingPosition.currentRange(
+    transcriptRangeRef.current,
+    activeId,
+  );
+  function handleTranscriptReadingAnchorChange(turnId?: string) {
+    if (activeId && activeUnavailableTranscriptRestore) {
+      sessionUiController.setTranscriptRestoreUnavailable(activeId, undefined);
+    }
+    transcriptReadingPosition.captureAnchor({
+      sessionId: activeId,
+      currentSessionId: activeIdRef.current,
+      turnId,
+      controller: transcriptRangeRef.current,
+      setAnchor: sessionUiController.setTranscriptReadingAnchor,
+    });
   }
   async function loadTranscriptHistory(target: 'earlier' | 'latest', anchorTurnId?: string) {
     const controller = transcriptRangeRef.current;
@@ -2712,9 +2685,7 @@ function AppShellContent({
     <ComposerMentionsProvider {...composerMentionsSurface}>
     <SessionCollaboration.SessionTurnRequestInboxProvider
       sessions={sessions}
-      toast={toastApi}
       onOpenSession={openSession}
-      copy={sessionCollaborationCopy}
     >
     <div
       className="appFrame agents-layout-root"
@@ -2796,7 +2767,7 @@ function AppShellContent({
                   activeDesktopSession.profileKind === 'environment'
                     ? undefined
                     : {
-                        label: getSessionCollaborationCopy(uiLocale).shareAction,
+                        label: sharedSessionDialog.shareActionLabel,
                         onClick: () => sharedSessionDialog.openSession(activeDesktopSession),
                       }
                 }
@@ -2917,6 +2888,8 @@ function AppShellContent({
                     {!sharedSessionActive && activeId ? (
                       <SessionCollaboration.SessionTurnRequestApprovalForSession
                         sessionId={activeId}
+                        messages={messages}
+                        onOpenSession={openSessionInChat}
                       />
                     ) : null}
                     {!sharedSessionActive && navSelection.section === 'sessions' &&
@@ -2941,7 +2914,9 @@ function AppShellContent({
                       />
                     ) : null}
                     {sharedSessionActive && activeId ? (
-                      <SessionTurnRequestComposer key={activeId} sessionId={activeId} />
+                      <SessionCollaboration.SessionTurnRequestComposer
+                        sessionId={activeId}
+                      />
                     ) : (
                     <ChatComposerRegion
                   workspacePicker={workspacePicker}
@@ -3103,6 +3078,13 @@ function AppShellContent({
                 }
               >
                 {navSelection.section === 'sessions' ? (
+                  <SessionCollaboration.SessionGuestTurnActionBoundary
+                    sessionId={sharedSessionActive ? activeId : undefined}
+                    deriveTurnPresentation={deriveTurnPresentation}
+                    ownerTurnFooterAction={handleTurnFooterAction}
+                    turnActionRegistry={turnActionRegistry}
+                  >
+                    {(turnActions) => (
                   <ChatMessageSurface
                 sessionUiController={sessionUiController}
                 activeSessionId={activeId}
@@ -3135,8 +3117,8 @@ function AppShellContent({
                 messageLoadError={activeId ? messageLoadErrorBySession[activeId] : undefined}
                 messageLoadRetryPending={activeId ? messageRetryPendingBySession[activeId] === true : false}
                 onRetryMessages={activeId ? () => void retryMessages(activeId) : undefined}
-                deriveTurnPresentation={deriveTurnPresentation}
-                onTurnFooterAction={sharedSessionActive ? undefined : handleTurnFooterAction}
+                deriveTurnPresentation={turnActions.deriveTurnPresentation}
+                onTurnFooterAction={turnActions.onTurnFooterAction}
                 onSwitchToBypassAndRetry={sharedSessionActive ? undefined : handleSwitchToBypassAndRetry}
                 onEditUserMessage={sharedSessionActive ? undefined : (turnId) => { void beginEditUserMessage(turnId); }}
                 safeResumeAction={!sharedSessionActive && activeId ? {
@@ -3155,6 +3137,19 @@ function AppShellContent({
                           }
                     : undefined
                 }
+                restoreTargetTurn={activeTranscriptReadingAnchor
+                  ? {
+                      turnId: activeTranscriptReadingAnchor.turnId,
+                      unavailable:
+                        activeUnavailableTranscriptRestore
+                        === activeTranscriptReadingAnchor.turnId,
+                    }
+                  : activeUnavailableTranscriptRestore
+                    ? { turnId: activeUnavailableTranscriptRestore, unavailable: true }
+                    : undefined}
+                onReadingAnchorChange={activeId
+                  ? handleTranscriptReadingAnchorChange
+                  : undefined}
                 transcriptTurnIndex={
                   transcriptTurnIndex && transcriptTurnIndex.sessionId === activeId
                     ? transcriptTurnIndex.turns
@@ -3247,6 +3242,8 @@ function AppShellContent({
                 }}
                 conversationItems={planConversationItems}
                   />
+                    )}
+                  </SessionCollaboration.SessionGuestTurnActionBoundary>
                 ) : null}
               </ChatSurfaceLayout>
               )}

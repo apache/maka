@@ -336,6 +336,7 @@ export function createAppUpdateService(deps: AppUpdateServiceDeps): AppUpdateSer
       deps.verifyDownloadedUpdate({
         downloadedFile: event.downloadedFile,
         version,
+        files: event.files,
       }),
     );
     activeVerification = verification;

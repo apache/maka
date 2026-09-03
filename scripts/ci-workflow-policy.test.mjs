@@ -32,6 +32,11 @@ import { readdirSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
 import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import {
+  readPullRequestPathFilter,
+  readTriggerPathFilter,
+  workflowTriggerBlock,
+} from './workflow-pull-request-paths.mjs';
 
 test('GitHub output matches the selections consumed by CI', () => {
   const output = formatGitHubOutputs(planTests([], { forceFull: true }));
@@ -125,35 +130,44 @@ test('contract checks run before dependency setup and can fail the job', () => {
   }
 });
 
-test('every selection that gates an installed step is one heavy validation covers', () => {
+test('every selection that gates a step needing dependencies selects the install', () => {
   const workflow = readWorkflow('ci.yml');
 
-  // `heavy` decides whether the toolchain is installed at all, so any later
-  // step gated on a selection outside that disjunction would run against a
-  // runner with no dependencies — or, if the step is a `run:` that tolerates
-  // it, report green having done nothing. Derived from the workflow rather
-  // than restated, so a new plan output cannot gate a step without joining
-  // the disjunction first.
-  const [, installed] = workflow.split(/\n\s+- uses: actions\/setup-node[^\n]*\n/u);
-  assert.ok(installed, 'ci.yml no longer installs a toolchain');
+  // `npm ci` is the only thing that decides whether a later step has anything
+  // to run against, so a step below it gated on a selection that cannot reach
+  // the install would run on a bare checkout — or, if its `run:` tolerates
+  // that, report green having done nothing. Both sides are read out of the
+  // workflow, so a step or a term added to either is covered by the edit that
+  // adds it.
+  const install = workflow.indexOf('run: npm ci');
+  assert.ok(install >= 0, 'ci.yml no longer installs dependencies');
+  const installStep = workflow.slice(
+    workflow.lastIndexOf('\n      - name:', install) + 1,
+    workflow.indexOf('\n      - ', install),
+  );
+  const installed = workflow.slice(workflow.indexOf('\n      - ', install));
 
-  const gating = [
-    ...new Set([...installed.matchAll(/steps\.plan\.outputs\.(\w+) ==/gu)].map(([, name]) => name)),
-  ].sort();
-  assert.ok(gating.length > 0, 'no installed step is gated on a selection');
+  // Any selection named inside an `if:` gates that step, whichever way the
+  // condition spells it — `== 'true'`, `!= ''` and `contains(...)` are all
+  // already in this file, and recognising one form drops the rest silently.
+  assert.doesNotMatch(installed, /\n\s+if: [>|]/u, 'a block-scalar `if:` hides its own gates');
+  const gating = conditionSelections(installed);
+  assert.ok(gating.length > 0, 'no step below the install is gated on a selection');
+  const installGate = conditionSelections(installStep);
+  assert.ok(installGate.length > 0, 'the install step is unconditional');
 
-  // The planner names selections in camelCase and publishes them in snake_case.
-  const source = readFileSync(new URL('./ci-test-plan.mjs', import.meta.url), 'utf8');
-  const disjunction = source.match(/export function requiresHeavyValidation[\s\S]*?\n\}/u)?.[0];
-  assert.ok(disjunction, 'requiresHeavyValidation is no longer a single expression');
-
-  for (const output of gating) {
-    if (output === 'heavy') continue;
-    const camel = output.replace(/_(\w)/gu, (_, letter) => letter.toUpperCase());
-    assert.match(
-      disjunction,
-      new RegExp(`plan\\.${camel}\\b`, 'u'),
-      `${output} gates an installed step but does not select the install`,
+  // The implication, not the text: `state_root_compat` is not in the install
+  // condition and never needed to be, because every path that selects it also
+  // selects `code`. That is what has to hold, and it is unwritten — moving one
+  // of those paths under `.github/`, which the planner's `code` loop skips,
+  // breaks it while every assertion phrased over the two lists stays green.
+  for (const path of plannerPathCorpus()) {
+    const plan = planTests([path]);
+    const gated = gating.filter((output) => selects(plan, output));
+    if (gated.length === 0) continue;
+    assert.ok(
+      installGate.some((output) => selects(plan, output)),
+      `${path} selects ${gated.join(', ')}, which gates a step run against no node_modules`,
     );
   }
 });
@@ -257,7 +271,7 @@ test('Rust build caches publish immutable source generations only from the defau
     .map((name) => [name, readWorkflow(name)])
     .filter(([, workflow]) => workflow.includes('tool: kache@0.16.0'));
 
-  assert.equal(workflows.length, 5);
+  assert.equal(workflows.length, 6);
   for (const [name, workflow] of workflows) {
     assert.match(workflow, /echo "revision=\$\(git rev-parse HEAD\)"/u, name);
     const primaryKeys = [...workflow.matchAll(/^\s+key: (kache-[^\n]+)$/gmu)].map(([, key]) => key);
@@ -307,6 +321,7 @@ test('pull request triggers stay on an explicit allowlist', () => {
     'dependency-audit.yml',
     'gitoxide-helper-admission.yml',
     'pr-effort-label.yml',
+    'release-linux-check.yml',
     'release-windows-check.yml',
     'runtime-host-owner-platform.yml',
     'runtime-host-peer-admission.yml',
@@ -363,9 +378,7 @@ test('the recovery lane pairs its path filter with a nightly run and a main push
   // Windows recovery run back on every pull request. The main push carries no
   // filter because `strict: false` lets a stale-base pull request go green,
   // and because a paths filter only sees the first 300 files of a diff.
-  // Stripped comment lines survive as blank ones, so the gap between the
-  // trigger and its list is any mix of blank and four-space lines.
-  assert.match(triggers, /\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u);
+  assert.ok(readPullRequestPathFilter('windows-recovery.yml').length > 0, 'no paths filter');
   assert.match(triggers, /\n {2}push:\n {4}branches: \[main\]\n/u);
   assert.doesNotMatch(
     triggers.match(/\n {2}push:\n(?:(?: {4}[^\n]*)?\n)*/u)?.[0] ?? '',
@@ -423,8 +436,8 @@ test('a lane that filters both triggers filters them on the same paths', () => {
   let checked = 0;
 
   for (const name of readdirSync(WORKFLOW_DIR).filter((file) => file.endsWith('.yml'))) {
-    const pullRequest = pathFilter(name, 'pull_request');
-    const push = pathFilter(name, 'push');
+    const pullRequest = readTriggerPathFilter(name, 'pull_request');
+    const push = readTriggerPathFilter(name, 'push');
     if (!pullRequest?.length || !push?.length) continue;
 
     assert.deepEqual(push, pullRequest, `${name}: pull_request and push filter different paths`);
@@ -470,7 +483,7 @@ test('the recovery lane keeps every run kind out of one shared concurrency group
 
 test('the recovery lane leaves the suites it executes to the required test lane', () => {
   const workflow = readWorkflow('windows-recovery.yml');
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+  const filtered = new Set(readPullRequestPathFilter('windows-recovery.yml'));
 
   // Derived from the dist paths the steps run, then widened along the workspace
   // dependency graph the planner selects with. The separator class matches the
@@ -503,7 +516,7 @@ test('the recovery lane leaves the suites it executes to the required test lane'
 });
 
 test('the recovery lane filter follows the postinstall launcher chain', () => {
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+  const filtered = new Set(readPullRequestPathFilter('windows-recovery.yml'));
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   // Derived from postinstall itself, then one hop into whatever those entry
   // points launch, because a launcher the filter cannot see still decides what
@@ -523,7 +536,7 @@ test('the recovery lane filter follows the postinstall launcher chain', () => {
 });
 
 test('the recovery lane filters pull requests by what only Windows can prove', () => {
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
+  const filtered = new Set(readPullRequestPathFilter('windows-recovery.yml'));
 
   // What is left after the workspace sources came out: how `npm.cmd ci` resolves
   // and what it produces on Windows, what `npm.cmd run build:test` cleans up
@@ -570,8 +583,8 @@ test('a filtered pull-request lane can still run when its filter misses', () => 
   // `release-windows-check.yml`, whose filter was narrowed in this branch.
   const uncovered = [];
   for (const name of readdirSync(WORKFLOW_DIR).filter((file) => file.endsWith('.yml'))) {
+    if (readPullRequestPathFilter(name).length === 0) continue;
     const triggers = triggerBlock(name);
-    if (!/\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u.test(triggers)) continue;
 
     const push = triggers.match(/\n {2}push:\n(?:(?: {4,}[^\n]*)?\n)*/u)?.[0] ?? '';
     const escapes =
@@ -588,6 +601,16 @@ test('the packaged Windows gate triggers on release orchestration changes', () =
   const workflow = readWorkflow('release-windows-check.yml');
 
   assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
+});
+
+test('the packaged Windows gate never spells the installer it built', () => {
+  // `scripts/desktop-release-targets.mjs` names every distributable. This lane
+  // hands the architecture to `verify:windows-x64`, which reads the descriptor,
+  // and discovers the one packaged `.exe` for the steps that need a path.
+  const workflow = readWorkflow('release-windows-check.yml');
+
+  assert.doesNotMatch(workflow, /win-x64\.exe/u);
+  assert.match(workflow, /exes=\(apps\/desktop\/release\/\*\.exe\)/u);
 });
 
 test('the packaged Windows gate workflow is itself a release-contract input', () => {
@@ -609,6 +632,21 @@ test('the packaged Windows gate triggers on the worker copy step it cannot impor
       "      - 'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs'",
     ),
   );
+});
+
+test('the packaged Linux gate verifies under a virtual display', () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer over CDP. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail the lane at its slowest point.
+  const runs =
+    readWorkflow('release-linux-check.yml')
+      .replaceAll(/^[ \t]*#.*$/gmu, '')
+      .match(/^[ \t]*run: .*npm run verify:linux.*$/gmu) ?? [];
+
+  assert.equal(runs.length, 1);
+  for (const run of runs) {
+    assert.match(run, /run: xvfb-run\b/u, run);
+  }
 });
 
 test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
@@ -733,28 +771,46 @@ test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
   assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
 });
 
-test('every suite that runs before dependency setup imports only node builtins', () => {
-  // The steps above `setup-node` run against a bare checkout, so a suite there
-  // that imports a devDependency throws `ERR_MODULE_NOT_FOUND` and turns the
-  // one required context red on every pull request — no merge, anywhere, until
-  // someone notices. Nothing about the file says so, which is how a closure
-  // assertion needing esbuild was very nearly added to one of them.
+test('everything that runs before dependency setup imports only node builtins', () => {
+  // The steps above `setup-node` run against a bare checkout, so a script there
+  // that imports a devDependency throws `ERR_MODULE_NOT_FOUND`. Whether that
+  // turns the one required context red on every pull request or only on the
+  // introducing one depends on how the step is gated, and neither is a state
+  // anyone should reach by accident — a closure assertion needing esbuild was
+  // very nearly added to one of them.
   //
-  // Derived from the workflow: whichever suites those steps name are the ones
-  // that carry the constraint, so moving a step below the install lifts it and
-  // adding a step above imposes it, without anyone editing this test.
+  // Derived from the workflow: whichever entry points those steps name are the
+  // ones that carry the constraint, so moving a step below the install lifts it
+  // and adding a step above imposes it, without anyone editing this test.
   const workflow = readWorkflow('ci.yml');
   const [installFree] = workflow.split(/\n\s+- uses: actions\/setup-node[^\n]*\n/u);
-  const suites = [
-    ...new Set(
-      [...installFree.matchAll(/(scripts\/[\w.-]+\.test\.mjs)/gu)].map(([, path]) => path),
-    ),
+
+  // `npm run` names a script, not a file, so expand one hop through the
+  // manifest. Four install-free entry points are reached only that way —
+  // `check:asf-headers` runs `scripts/asf-license-headers.mjs`, which carries
+  // the constraint and was outside the set that asserts it.
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const commands = [
+    installFree,
+    ...[...installFree.matchAll(/npm run ([\w:-]+)/gu)].map(([, name]) => {
+      const command = manifest.scripts?.[name];
+      assert.ok(command, `ci.yml runs npm run ${name}, which package.json does not define`);
+      return command;
+    }),
+  ].join('\n');
+
+  // `[\w./-]`, not `[\w.-]`: a class without `/` cannot match a path with a
+  // directory in it, which is how `scripts/computer-use/lab-root.test.mjs` —
+  // named by a step above the install — was dropped from this derivation while
+  // the count still looked right.
+  const entryPoints = [
+    ...new Set([...commands.matchAll(/(scripts\/[\w./-]+\.mjs)/gu)].map(([, path]) => path)),
   ].sort();
-  assert.ok(suites.length > 0, 'no suite runs before dependency setup');
+  assert.ok(entryPoints.length > 0, 'nothing runs before dependency setup');
 
   // The constraint is transitive: a local module may be imported only if it too
   // stays inside `node:`.
-  const pending = [...suites];
+  const pending = [...entryPoints];
   const seen = new Set(pending);
   while (pending.length > 0) {
     const path = pending.shift();
@@ -777,44 +833,42 @@ test('every suite that runs before dependency setup imports only node builtins',
 
 const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
 
-/**
- * Reads the `paths` list belonging to a workflow's `pull_request` trigger.
- * Anchoring to the trigger, instead of matching entry text anywhere in the
- * file, is what makes the filter assertions fail when entries move under
- * `paths-ignore`, under another trigger, or out of `on:` altogether.
- */
-function pullRequestPathFilter(name) {
-  const paths = pathFilter(name, 'pull_request');
-  assert.ok(paths !== null, `${name}: no pull_request trigger`);
-
-  return paths;
+/** Plan selections named by any `if:` in `section`, whatever the condition spells. */
+function conditionSelections(section) {
+  return [
+    ...new Set(
+      [...section.matchAll(/^\s+if: ([^\n]*)$/gmu)].flatMap(([, condition]) =>
+        [...condition.matchAll(/steps\.plan\.outputs\.(\w+)/gu)].map(([, name]) => name),
+      ),
+    ),
+  ].sort();
 }
-// Returns the trigger's `paths:` entries in order, or null when the workflow
-// does not carry that trigger at all — which is what lets a caller tell "no
-// such trigger" apart from "this trigger runs on everything".
-//
-// Reads the `on:` block with comments already stripped, so a comment between
-// the trigger and its list cannot end the scan, and accepts the quoting and
-// spacing YAML allows, so a legal rewrite reports the entries it really has
-// instead of an empty list that reads as a missing filter.
-function pathFilter(name, trigger) {
-  const lines = triggerBlock(name).split('\n');
-  const start = lines.findIndex((line) => new RegExp(`^ {2}${trigger}:\\s*$`, 'u').test(line));
-  if (start < 0) return null;
 
-  const paths = [];
-  let inPaths = false;
-  for (const line of lines.slice(start + 1)) {
-    if (line.trim() === '') continue;
-    if (/^ {0,2}\S/u.test(line)) break;
-    if (/^ {4}\S/u.test(line)) {
-      inPaths = /^ {4}paths:\s*$/u.test(line);
-      continue;
-    }
-    const entry = inPaths ? /^\s+-\s+['"]?(.+?)['"]?\s*$/u.exec(line) : null;
-    if (entry) paths.push(entry[1]);
-  }
-  return paths;
+/** The planner names selections in camelCase and publishes them in snake_case. */
+function selects(plan, output) {
+  const key = output.replace(/_(\w)/gu, (_, letter) => letter.toUpperCase());
+  assert.ok(key in plan, `CI gates on ${output}, which the planner does not select`);
+  const value = plan[key];
+  return Array.isArray(value) ? value.length > 0 : Boolean(value);
+}
+
+/**
+ * Changed-file inputs to test an implication between selections with: every
+ * repository path the planner's own source names, plus a probe under each,
+ * because several selections are decided by `startsWith`. Derived from the
+ * planner, so a path added to one of its sets is exercised by the edit that
+ * adds it rather than by whoever remembers this list exists.
+ */
+function plannerPathCorpus() {
+  const source = readFileSync(new URL('./ci-test-plan.mjs', import.meta.url), 'utf8');
+  const literals = [...source.matchAll(/'([\w.@][\w./@-]*)'/gu)]
+    .map(([, value]) => value)
+    .filter((value) => value.includes('/') || value.includes('.'));
+  assert.ok(literals.length > 0, 'the planner names no repository path');
+
+  return [
+    ...new Set(literals.flatMap((value) => [value, `${value}probe.ts`, `${value}/probe.ts`])),
+  ];
 }
 
 /**
@@ -841,14 +895,8 @@ function readWorkflow(name) {
   return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
 }
 
-/**
- * Reads the `on:` block only, so a workflow cannot escape a trigger contract by
- * writing `on: [pull_request]`, and prose elsewhere in the file cannot fake one.
- */
 function triggerBlock(name) {
-  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
-
-  return withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
+  return workflowTriggerBlock(readWorkflow(name));
 }
 
 function hasPullRequestTrigger(name) {

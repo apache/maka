@@ -45,7 +45,7 @@
 .maka-deep-research-workflow-body {
   font: var(--maka-text-body);
   display: block;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-deep-research-report,
@@ -104,7 +104,7 @@
 .maka-deep-research-progress-body {
   font: var(--maka-text-body);
   min-width: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-deep-research-run-panel {
@@ -140,7 +140,7 @@
 .maka-deep-research-run-summary span,
 .maka-deep-research-run-panel p {
   font: var(--maka-text-supporting);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-deep-research-run-actions {
@@ -206,7 +206,7 @@
 .maka-deep-research-run-grid h3 {
   font: var(--maka-text-heading-5);
   margin: 0 0 var(--space-1-5);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-deep-research-run-grid ul {
@@ -222,7 +222,7 @@
   display: flex;
   gap: var(--space-1-5);
   min-width: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-deep-research-run-grid li[data-status="completed"] > span {

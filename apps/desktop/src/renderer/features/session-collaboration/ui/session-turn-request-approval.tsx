@@ -18,68 +18,103 @@
  */
 
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
+import type { StoredMessage } from '@maka/core/session';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { Banner, Button } from '@maka/ui';
 import {
   useSessionTurnRequestInboxContext,
   type SessionTurnRequestInboxCopy,
 } from '../turn-request-inbox-context.js';
+import { describeOwnerTurnRequestIntent } from '../model/turn-request-inbox.js';
 
-export function SessionTurnRequestApprovalForSession(props: { readonly sessionId: string }) {
+export function SessionTurnRequestApprovalForSession(props: {
+  readonly sessionId: string;
+  readonly messages: readonly StoredMessage[];
+  readonly onOpenSession: (sessionId: string, turnId?: string) => void;
+}) {
   const inbox = useSessionTurnRequestInboxContext();
   return (
     <SessionTurnRequestApproval
       requests={inbox.requestsBySession.get(props.sessionId) ?? []}
+      messages={props.messages}
       workingRequestIds={inbox.workingRequestIds}
       copy={inbox.copy}
       onDecide={inbox.decide}
+      onOpenSource={(turnId) => props.onOpenSession(props.sessionId, turnId)}
     />
   );
 }
 
 export function SessionTurnRequestApproval(props: {
   readonly requests: readonly SessionTurnAccessRequest[];
+  readonly messages: readonly StoredMessage[];
   readonly workingRequestIds: ReadonlySet<string>;
   readonly copy: Pick<
     SessionTurnRequestInboxCopy,
-    'ownerTurnRequestTitle' | 'reject' | 'approve' | 'moreTurnRequests'
+    | 'ownerTurnRequestTitle'
+    | 'ownerRegenerateRequestTitle'
+    | 'regenerateRequest'
+    | 'viewSourceTurn'
+    | 'reject'
+    | 'approve'
+    | 'moreTurnRequests'
   >;
   readonly onDecide: (
     request: SessionTurnAccessRequest,
     decision: 'approve' | 'reject',
   ) => void | Promise<void>;
+  readonly onOpenSource: (turnId: string) => void;
 }) {
   const request = props.requests[0];
   const copy = props.copy;
   if (!request) return null;
   const working = props.workingRequestIds.has(request.requestId);
+  const sourceTurnId = 'content' in request.intent
+    ? undefined
+    : request.intent.sourceTurnId;
+  const description = describeOwnerTurnRequestIntent(
+    request.intent,
+    props.messages,
+    copy.regenerateRequest,
+  );
+  const title = sourceTurnId === undefined
+    ? copy.ownerTurnRequestTitle
+    : copy.ownerRegenerateRequestTitle;
   return (
     <div className="sessionTurnRequestApproval">
       <Banner
         className="sessionTurnRequestApprovalBanner"
         status="warning"
         role="status"
-        title={copy.ownerTurnRequestTitle}
+        title={title}
         description={(
           <HoverCard
             content={(
               <div className="sessionTurnRequestApprovalDetails">
-                {request.intent.content.text}
+                {description}
               </div>
             )}
-            label={copy.ownerTurnRequestTitle}
+            label={title}
             placement="above"
             alignment="start"
             focusTrigger="always"
             hasHoverIndication={false}
           >
             <span className="sessionTurnRequestApprovalIntent" tabIndex={0}>
-              {request.intent.content.text}
+              {description}
             </span>
           </HoverCard>
         )}
         endContent={(
           <div className="sessionTurnRequestApprovalActions">
+            {sourceTurnId ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                label={copy.viewSourceTurn}
+                onClick={() => props.onOpenSource(sourceTurnId)}
+              />
+            ) : null}
             <Button
               variant="secondary"
               size="sm"

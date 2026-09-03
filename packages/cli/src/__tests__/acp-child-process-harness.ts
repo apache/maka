@@ -18,7 +18,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PassThrough, Readable, Writable } from 'node:stream';
@@ -34,6 +34,7 @@ import {
   startExecutionRuntimeHostService,
   type RuntimeHostKernel,
 } from '@maka/runtime-host/server';
+import { STORAGE_ROOT_MARKER_FILE } from '@maka/storage/root-authority';
 import { deriveMakaDataRoots, resolveMakaClientDataRoot } from '../workspace-root.js';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -115,6 +116,16 @@ export class AcpChildProcessHarness {
 
   get stderr(): string {
     return Buffer.concat(this.#stderr).toString('utf8');
+  }
+
+  async hasRuntimeHostRootMarker(): Promise<boolean> {
+    try {
+      await lstat(join(this.#workspaceRoot, STORAGE_ROOT_MARKER_FILE));
+      return true;
+    } catch (error) {
+      if (isErrorWithCode(error, 'ENOENT')) return false;
+      throw error;
+    }
   }
 
   async withClient<T>(
@@ -514,4 +525,8 @@ class StartupTimeoutError extends Error {}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isErrorWithCode(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
 }

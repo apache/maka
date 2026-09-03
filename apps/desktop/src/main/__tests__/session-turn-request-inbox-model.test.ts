@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { SessionTurnAccessRequest } from '@maka/runtime-host/protocol';
 import {
+  describeOwnerTurnRequestIntent,
+  describeTurnRequestIntent,
   groupPendingTurnRequests,
   samePendingTurnRequests,
   turnRequestPreview,
@@ -45,7 +47,40 @@ test('Turn-request inbox keeps only actionable requests and detects new arrivals
   assert.deepEqual(unseenTurnRequests([first, second], new Set(['request-1'])), [second]);
   assert.equal(samePendingTurnRequests([first, second], [first, second]), true);
   assert.equal(samePendingTurnRequests([first], [second]), false);
-  assert.equal(turnRequestPreview(first.intent.content.text), 'Review this change');
+  assert.equal(
+    turnRequestPreview(describeTurnRequestIntent(first.intent, 'Regenerate response')),
+    'Review this change',
+  );
+  assert.equal(
+    describeTurnRequestIntent(
+      {
+        sessionId: 'session-1',
+        turnId: 'turn-regenerated',
+        sourceTurnId: 'turn-original',
+      },
+      'Regenerate response',
+    ),
+    'Regenerate response',
+  );
+  assert.equal(
+    describeOwnerTurnRequestIntent(
+      {
+        sessionId: 'session-1',
+        turnId: 'turn-regenerated',
+        sourceTurnId: 'turn-original',
+      },
+      [{
+        type: 'user',
+        id: 'message-original',
+        turnId: 'turn-original',
+        ts: 1,
+        text: 'Explain the failed deployment',
+        displayText: 'Why did deployment fail?',
+      }],
+      'Regenerate response',
+    ),
+    'Regenerate response: Why did deployment fail?',
+  );
 });
 
 function request(

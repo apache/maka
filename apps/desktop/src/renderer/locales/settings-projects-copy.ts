@@ -29,7 +29,13 @@ export type SettingsProjectsCopy = {
     remoteDescription: string;
     addComputer: string;
     useConnectionCode: string;
+    useConnectionCodeDescription: string;
+    addSshComputer: string;
+    addSshComputerDescription: string;
+    addWslEnvironment: string;
+    addWslEnvironmentDescription: string;
     configureManually: string;
+    configureManuallyDescription: string;
     thisComputerRemoteAccess: string;
     thisComputerRemoteAccessHelp: string;
     remoteAccessOn: string;
@@ -47,8 +53,11 @@ export type SettingsProjectsCopy = {
     connectionCodeDescription: string;
     importConnectionCodeTitle: string;
     importConnectionCodeDescription: string;
+    connectionCodeHelpLabel: string;
+    connectionCodeHelp: string;
     connectionCode: string;
     copyConnectionCode: string;
+    pasteConnectionCode: string;
     connectionCodeCopied: string;
     connectionCodeInvalid: string;
     connectionCodeUnavailable: string;
@@ -63,11 +72,9 @@ export type SettingsProjectsCopy = {
     interruptAndUninstall: string;
     remoteAccessFailed: string;
     setupTitle: string;
-    setupDescription: string;
+    setupSshDescription: string;
+    setupWslDescription: string;
     setupName: string;
-    setupTarget: string;
-    sshComputer: string;
-    wslEnvironment: string;
     wslDistribution: string;
     setupSshPort: string;
     setupDirectoryRootsDescription: string;
@@ -310,10 +317,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selected: '默认 Host',
       selectedHelp: '新任务和未指定 Host 的设置使用默认 Host',
       remoteTitle: '其他 Host',
-      remoteDescription: '在 SSH 电脑或本地 WSL 环境中设置 Runtime Host，也可手动连接已有 Host。',
+      remoteDescription: '通过连接码或引导设置添加并管理其他 Runtime Host。',
       addComputer: '添加电脑',
       useConnectionCode: '使用连接码',
+      useConnectionCodeDescription: '粘贴另一台电脑生成的一次性连接码',
+      addSshComputer: '通过 SSH 设置',
+      addSshComputerDescription: '在可通过 SSH 登录的电脑上安装并连接 Host',
+      addWslEnvironment: '添加 WSL 环境',
+      addWslEnvironmentDescription: '在这台 Windows 电脑的 WSL 中安装并连接 Host',
       configureManually: '手动配置',
+      configureManuallyDescription: '为已有 Host 填写 TLS、SSH 或 Direct peer 参数',
       thisComputerRemoteAccess: '远程访问',
       thisComputerRemoteAccessHelp: '通过实验性端到端直连访问此 Host；可自动发现公共协调节点来辅助打洞',
       remoteAccessOn: '已开启',
@@ -331,8 +344,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       connectionCodeDescription: '连接码将在 15 分钟后过期且只能使用一次。对方将获得 Owner 权限；Direct peer 无后备连接。',
       importConnectionCodeTitle: '使用连接码',
       importConnectionCodeDescription: '连接后将获得对方 Host 的 Owner 权限。Direct peer 无后备连接。',
+      connectionCodeHelpLabel: '如何获得连接码',
+      connectionCodeHelp: '在目标电脑的 Maka 中打开“设置 → 工作区 → 远程访问”，或打开已通过 SSH 管理的 Host 并选择“新建连接码”。也可在目标电脑运行 maka runtime-host access connection-code。连接码将在 15 分钟后过期且只能使用一次。',
       connectionCode: '连接码',
       copyConnectionCode: '复制连接码',
+      pasteConnectionCode: '粘贴',
       connectionCodeCopied: '连接码已复制',
       connectionCodeInvalid: '连接码格式无效。',
       connectionCodeUnavailable: '连接码已过期或已被使用。请在另一台电脑上新建连接码。',
@@ -347,11 +363,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndUninstall: '中断任务并移除',
       remoteAccessFailed: '远程访问操作失败',
       setupTitle: '添加 Runtime Host',
-      setupDescription: '在 SSH 电脑或 WSL 环境中安装并连接 Runtime Host',
+      setupSshDescription: '在可通过 SSH 登录的电脑上安装并连接 Runtime Host',
+      setupWslDescription: '在本机 WSL 环境中安装并连接 Runtime Host',
       setupName: '显示名称（可选）',
-      setupTarget: '运行位置',
-      sshComputer: 'SSH 计算机',
-      wslEnvironment: 'WSL 环境',
       wslDistribution: 'WSL 发行版',
       setupSshPort: 'SSH 端口（可选）',
       setupDirectoryRootsDescription: '留空时使用远端 Home。添加目录后，只有这些目录可用于浏览并添加项目。',
@@ -619,11 +633,16 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       selected: 'Default Host',
       selectedHelp: 'New tasks and unscoped settings use the default Host',
       remoteTitle: 'Other Hosts',
-      remoteDescription:
-        'Set up a Runtime Host on an SSH computer or local WSL environment, or connect an existing Host manually.',
+      remoteDescription: 'Add and manage Runtime Hosts with a connection code or guided setup.',
       addComputer: 'Add computer',
       useConnectionCode: 'Use connection code',
+      useConnectionCodeDescription: 'Paste a one-time code created on another computer',
+      addSshComputer: 'Set up over SSH',
+      addSshComputerDescription: 'Install and connect a Host on a computer you can access with SSH',
+      addWslEnvironment: 'Add WSL environment',
+      addWslEnvironmentDescription: 'Install and connect a Host inside WSL on this Windows computer',
       configureManually: 'Configure manually',
+      configureManuallyDescription: 'Enter TLS, SSH, or Direct peer details for an existing Host',
       thisComputerRemoteAccess: 'Remote access',
       thisComputerRemoteAccessHelp: 'Reach this Host through experimental end-to-end direct connections, with automatic public coordination discovery',
       remoteAccessOn: 'On',
@@ -641,8 +660,11 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       connectionCodeDescription: 'Expires in 15 minutes and can be used once. The other Desktop receives Owner access. Direct peer has no fallback.',
       importConnectionCodeTitle: 'Use a connection code',
       importConnectionCodeDescription: 'Connecting grants this Desktop Owner access to the other Host. Direct peer has no fallback.',
+      connectionCodeHelpLabel: 'How to get a connection code',
+      connectionCodeHelp: 'On the target computer, open Maka Settings → Workspace → Remote access, or open an SSH-managed Host and choose New connection code. You can also run maka runtime-host access connection-code on the target computer. A code expires after 15 minutes and works once.',
       connectionCode: 'Connection code',
       copyConnectionCode: 'Copy connection code',
+      pasteConnectionCode: 'Paste',
       connectionCodeCopied: 'Connection code copied',
       connectionCodeInvalid: 'The connection code is invalid.',
       connectionCodeUnavailable: 'The connection code expired or was already used. Create a new code on the other computer.',
@@ -657,11 +679,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       interruptAndUninstall: 'Interrupt and remove',
       remoteAccessFailed: 'Remote access failed',
       setupTitle: 'Add Runtime Host',
-      setupDescription: 'Install and connect Runtime Host on an SSH computer or WSL environment',
+      setupSshDescription: 'Install and connect Runtime Host on a computer available over SSH',
+      setupWslDescription: 'Install and connect Runtime Host in a local WSL environment',
       setupName: 'Display name (optional)',
-      setupTarget: 'Run on',
-      sshComputer: 'SSH computer',
-      wslEnvironment: 'WSL environment',
       wslDistribution: 'WSL distribution',
       setupSshPort: 'SSH port (optional)',
       setupDirectoryRootsDescription: 'Leave empty to use the remote Home directory. When directories are added, only those locations can be browsed to add projects.',
