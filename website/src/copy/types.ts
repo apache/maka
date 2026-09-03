@@ -26,6 +26,7 @@ export interface Copy {
   langLabel: string;
   siteName: string;
   positioning: string;
+  theme: { toDark: string; toLight: string };
   nav: {
     docs: string;
     downloads: string;

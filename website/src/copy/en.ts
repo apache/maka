@@ -30,6 +30,7 @@ export const en: Copy = {
   siteName: 'Apache Maka (Incubating)',
   positioning:
     'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.',
+  theme: { toDark: 'Switch to dark mode', toLight: 'Switch to light mode' },
   nav: {
     docs: 'Docs',
     downloads: 'Downloads',

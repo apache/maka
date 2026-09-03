@@ -19,7 +19,7 @@
 
 /* Colour and radius tokens are the desktop app's defaults, copied by value
    from apps/desktop/src/renderer/maka-tokens.css and astryx-theme/maka.css.
-   The site follows the viewer's colour scheme; there is no toggle. */
+   The scheme follows the OS until the viewer picks one with the toggle. */
 :root {
   color-scheme: light dark;
   --background: light-dark(oklch(1 0 0), oklch(0.205 0.004 286));
@@ -55,6 +55,12 @@
     "Geist Mono Variable", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}
 html {
   margin: 0;
   background: var(--page);
@@ -147,6 +153,30 @@ code {
 .lang .on {
   background: var(--foreground);
   color: var(--page);
+}
+.theme {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  margin: 0 10px 0 6px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+.theme:hover {
+  color: var(--foreground);
+  background: var(--surface-sunken);
+}
+.theme svg {
+  display: none;
+}
+:root[data-theme="dark"] .theme .sun,
+:root:not([data-theme="dark"]) .theme .moon {
+  display: block;
 }
 .btn {
   display: inline-flex;

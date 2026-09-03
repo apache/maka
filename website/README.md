@@ -36,7 +36,7 @@ npm --workspace @maka/website run test:dist
 
 ## Design
 
-Colour, radius and surface tokens are the desktop app's defaults, copied by value from `apps/desktop/src/renderer/maka-tokens.css` into `src/styles/site.css`. The site follows the viewer's colour scheme. Fonts are Geist and Geist Mono (SIL Open Font License 1.1), self-hosted from the `@fontsource-variable` packages the desktop app already depends on; nothing loads from a third party. The logo is `apps/desktop/assets/app-icons/sky.png`, the same file the README uses.
+Colour, radius and surface tokens are the desktop app's defaults, copied by value from `apps/desktop/src/renderer/maka-tokens.css` into `src/styles/site.css`. The site follows the viewer's colour scheme until they pick one with the toggle in the top bar, which is remembered in that browser. Fonts are Geist and Geist Mono (SIL Open Font License 1.1), self-hosted from the `@fontsource-variable` packages the desktop app already depends on; nothing loads from a third party. The logo is `apps/desktop/assets/app-icons/sky.png`, the same file the README uses.
 
 ## Publishing
 
