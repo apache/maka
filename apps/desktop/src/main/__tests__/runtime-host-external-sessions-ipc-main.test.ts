@@ -134,6 +134,35 @@ test('an uncertain commit still asks the shell to re-read the catalog', async ()
   assert.deepEqual(events, [{ reason: 'created', sessionId: undefined }]);
 });
 
+test('maps a pre-commit source failure to a distinct non-recovering reason', async () => {
+  const events: unknown[] = [];
+  const ipc = ipcHarness();
+  registerRuntimeHostExternalSessionsIpc(
+    {
+      client: clientFixture({
+        importExternalSession: async () => {
+          throw new RuntimeHostOperationError(
+            'external-session.import',
+            'source_unreadable',
+            'External Session could not be read or converted',
+          );
+        },
+      }),
+      emitSessionsChanged: (reason, sessionId) => events.push({ reason, sessionId }),
+    },
+    ipc,
+  );
+
+  assert.deepEqual(
+    await ipc.invoke('external-sessions:import', {
+      adapterId: 'codex',
+      sourceSessionId: 'source-1',
+    }),
+    { ok: false, reason: 'source_unreadable' },
+  );
+  assert.deepEqual(events, []);
+});
+
 test('rejects malformed renderer requests before they reach the Host client', async () => {
   let calls = 0;
   const ipc = ipcHarness();

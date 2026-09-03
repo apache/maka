@@ -694,7 +694,14 @@ export function ImportTasksSettingsPage(props: {
         // the user has left steering the shell somewhere they did not ask for.
         if (!mountedRef.current) return;
         if (!outcome.ok) {
-          await recoverUnknownImport(attempt);
+          if (outcome.reason === 'commit_outcome_unknown') {
+            await recoverUnknownImport(attempt);
+          } else if (outcome.reason === 'source_unreadable') {
+            setImportError(copy.importFailedSourceUnreadable);
+          } else {
+            const _exhaustive: never = outcome.reason;
+            return _exhaustive;
+          }
           return;
         }
         props.onImported(outcome.session);
@@ -773,30 +780,45 @@ export function ImportTasksSettingsPage(props: {
         try {
           const result = await requestImport(attempt.adapterId, attempt.sourceSessionId);
           if (!mountedRef.current) return;
-          outcome = recordImportBatchResult(
-            outcome,
-            session.id,
-            // Not `failed`: the call did not answer, and only a catalog read
-            // settles whether the conversion landed. Calling it a failure is
-            // what invites the retry that makes a second copy.
-            result.ok ? (wasImported ? 'duplicated' : 'imported') : 'unknown',
-          );
-          if (!result.ok) {
-            // Recorded, not recovered. A single import recovers inline, but
-            // recovery re-reads the whole catalog window per attempt, and doing
-            // that between conversions would interleave N full reads with the
-            // batch and race the writes it is making. The unconfirmed banner
-            // names every one of these and its 重试 resolves them a press at a
-            // time, removing each as it settles.
-            setUncertainImports((current) =>
-              current.some(
-                (entry) =>
-                  entry.adapterId === attempt.adapterId &&
-                  entry.sourceSessionId === attempt.sourceSessionId,
-              )
-                ? current
-                : [...current, attempt],
+          if (result.ok) {
+            outcome = recordImportBatchResult(
+              outcome,
+              session.id,
+              wasImported ? 'duplicated' : 'imported',
             );
+          } else {
+            switch (result.reason) {
+              case 'commit_outcome_unknown':
+                // Not `failed`: the call did not answer, and only a catalog read
+                // settles whether the conversion landed. Calling it a failure is
+                // what invites the retry that makes a second copy.
+                outcome = recordImportBatchResult(outcome, session.id, 'unknown');
+                // Recorded, not recovered. A single import recovers inline, but
+                // recovery re-reads the whole catalog window per attempt, and doing
+                // that between conversions would interleave N full reads with the
+                // batch and race the writes it is making. The unconfirmed banner
+                // names every one of these and its 重试 resolves them a press at a
+                // time, removing each as it settles.
+                setUncertainImports((current) =>
+                  current.some(
+                    (entry) =>
+                      entry.adapterId === attempt.adapterId &&
+                      entry.sourceSessionId === attempt.sourceSessionId,
+                  )
+                    ? current
+                    : [...current, attempt],
+                );
+                break;
+              case 'source_unreadable':
+                // Conversion failed before persistence, so this one definitely
+                // did not land and must never enter unknown-outcome recovery.
+                outcome = recordImportBatchResult(outcome, session.id, 'failed');
+                break;
+              default: {
+                const _exhaustive: never = result.reason;
+                return _exhaustive;
+              }
+            }
           }
         } catch {
           if (!mountedRef.current) return;

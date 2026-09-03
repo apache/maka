@@ -19,7 +19,11 @@
 
 import type { SessionSummary } from '@maka/core/session';
 
-/** Stable Desktop IPC result for the one import failure that must not be retried blindly. */
+export type ExternalSessionImportFailureReason =
+  | 'commit_outcome_unknown'
+  | 'source_unreadable';
+
+/** Stable Desktop IPC result for import failures that require distinct handling. */
 export type ExternalSessionImportIpcResult<T extends SessionSummary = SessionSummary> =
   | { readonly ok: true; readonly session: T }
-  | { readonly ok: false; readonly reason: 'commit_outcome_unknown' };
+  | { readonly ok: false; readonly reason: ExternalSessionImportFailureReason };
