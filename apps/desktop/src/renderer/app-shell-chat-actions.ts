@@ -542,7 +542,14 @@ export function createAppShellChatActions(deps: {
           return false;
         }
         unsentSessionId = undefined;
-        options.onSessionResolved?.(session.id);
+        // The callback only fires when this send's first message actually
+        // projected. `unreconciled` (outcome_unknown) may well have been
+        // admitted, but nothing proves it — reporting it would bind a consumer
+        // to a Session whose first message was never confirmed as projected,
+        // and the caller cannot correct that after `send()` returns `true`.
+        if (submitted.kind === 'projected') {
+          options.onSessionResolved?.(session.id);
+        }
         await refreshSessions();
         return true;
       }
@@ -616,7 +623,9 @@ export function createAppShellChatActions(deps: {
       // and whose first message projected (the new-Session branch above). An
       // existing-Session send must never report it, or a consumer that binds
       // follow-up state to a newly resolved Session would bind it to an
-      // unrelated pre-existing conversation.
+      // unrelated pre-existing conversation. An `unreconciled` first send is
+      // also excluded: `send()` reports it as `true`, but the callback never
+      // fires because the message was never confirmed as projected.
       return true;
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
