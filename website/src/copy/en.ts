@@ -77,7 +77,7 @@ export const en: Copy = {
       { tone: 'dim', name: 'FunctionCall', label: 'Edits a file', detail: 'resume.ts' },
       { tone: 'dim ok', name: 'endInvocation', label: 'Turn ends', detail: 'run completed' },
     ],
-    highWater: 'what the model still sees',
+    highWater: 'confirmed up to here',
     caption: 'one turn · seven RuntimeEvents · append-only',
     formula: 'State(t) = Project(Log[0…t])',
   },

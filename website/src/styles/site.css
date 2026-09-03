@@ -680,6 +680,34 @@ h2 {
     transform: none;
   }
 }
+/* The hero scene appends the same way; its cards keep their offsets, so only opacity moves. */
+@media (prefers-reduced-motion: no-preference) {
+  .turn.armed .ev-pill,
+  .turn.armed .hwline {
+    opacity: 0;
+  }
+  .turn.play .ev-pill {
+    animation: appear 0.35s ease-out forwards;
+    animation-delay: calc(0.2s + var(--i) * 0.28s);
+  }
+  .turn.play .hwline {
+    animation: appear 0.3s ease-out forwards;
+    animation-delay: calc(0.2s + var(--i) * 0.28s);
+  }
+  .turn.play .ev-pill.dim {
+    animation-name: appear-dim;
+  }
+}
+@keyframes appear {
+  to {
+    opacity: 1;
+  }
+}
+@keyframes appear-dim {
+  to {
+    opacity: 0.45;
+  }
+}
 @keyframes blink {
   50% {
     opacity: 0;

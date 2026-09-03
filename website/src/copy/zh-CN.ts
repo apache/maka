@@ -58,7 +58,7 @@ export const zhCN: Copy = {
       { tone: 'dim', name: 'FunctionCall', label: '编辑文件', detail: 'resume.ts' },
       { tone: 'dim ok', name: 'endInvocation', label: '本轮结束', detail: '运行完成' },
     ],
-    highWater: '模型还能看到的部分',
+    highWater: '到这里已确认',
     caption: '一轮交互 · 7 条运行时事件 · 只追加写入',
     formula: 'State(t) = Project(Log[0…t])',
   },
