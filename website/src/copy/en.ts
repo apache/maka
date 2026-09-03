@@ -41,13 +41,12 @@ export const en: Copy = {
     getMaka: 'Get Maka',
   },
   hero: {
-    eyebrow: 'Apache Maka (Incubating)',
     headline: [
       'A high-performance agent workspace that ',
       'keeps a complete record',
       ' of everything it did.',
     ],
-    lede: 'An agent harness exists to finish tasks. We hold it to one measure, how many it completes and what that costs, and we publish every run: same model, same official verifier, full per-task record.',
+    lede: 'An agent harness exists to finish tasks. We hold it to one measure: how many it completes and at what cost. We publish every run: same model, same official verifier, full per-task record.',
     nightly: 'Try Desktop Nightly',
     source: 'Build from source',
     fine: 'Nightly is a developer build, not an ASF release',
@@ -75,7 +74,7 @@ export const en: Copy = {
     h3: 'Nine harnesses, one model, the official verifier',
     p: 'Terminal-Bench 2.1 on DeepSeek V4 Flash, every task, scored by the official verifier. The ranking is descriptive; the per-task CSV ships with the report.',
     more: 'Read the report',
-    caption: 'pass@1 · reasoning max · cost/pass Maka $0.026',
+    caption: 'pass@1 · reasoning max · Maka cost per pass $0.026',
   },
   paired: {
     h3: 'Head to head, same suite',
@@ -165,7 +164,7 @@ export const en: Copy = {
     copy: 'Copy',
     copied: 'Copied',
     status: {
-      h3: 'Where things stand',
+      h3: 'Current status',
       release: {
         label: 'Apache release',
         value: 'None yet. The first one appears here after its vote.',
@@ -185,7 +184,7 @@ export const en: Copy = {
     releases: {
       h2: 'Apache releases',
       note: 'NO APACHE RELEASE YET',
-      p: 'Apache Maka (Incubating) has not made an Apache release. When the first one passes its vote, this section lists it: the source archive, its SHA-512 checksum and detached GPG signature from the ASF distribution directory, and the KEYS file the signature verifies against.',
+      p: 'Apache Maka (Incubating) has not made an Apache release. When the first one passes its vote, this section will list it: the source archive, its SHA-512 checksum and detached GPG signature from the ASF distribution directory, and the KEYS file the signature verifies against.',
       distNote: 'Until then the distribution directory does not exist:',
     },
     verify: {

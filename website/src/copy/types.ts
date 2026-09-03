@@ -37,7 +37,6 @@ export interface Copy {
     getMaka: string;
   };
   hero: {
-    eyebrow: string;
     headline: [string, string, string];
     lede: string;
     nightly: string;
