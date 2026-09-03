@@ -491,7 +491,6 @@ function SessionListGroups(props: {
           label={group.label}
           project={project}
           sessions={sessions}
-          summarySessions={group.sessions}
           streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
@@ -504,6 +503,11 @@ function SessionListGroups(props: {
       );
     }
 
+    // Two sibling sections, the same shape the time view has. A section groups
+    // items; it is not one of them. Putting the pinned section next to bare
+    // project rows would make the same level hold both a group heading and
+    // navigation items, and the pinned zone would be the only one there without
+    // a folder icon, a disclosure or a row menu.
     return (
       <>
         {renameDialog}
@@ -512,20 +516,24 @@ function SessionListGroups(props: {
             {pinnedSessions.map((session) => renderSessionRow(session))}
           </SideNavSection>
         )}
-        {activeGroups.map((group) => renderProjectGroup(group))}
-        {archivedGroups.length > 0 && (
-          <SideNavItem
-            label={copy.archivedProjects}
-            collapsible={{
-              isCollapsed: !archivedExpanded,
-              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
-            }}
-          >
-            {/* Always mount children: Astryx derives collapsible chrome from
-                !!children. Nulling on collapse removes the chevron and makes
-                the controlled isCollapsed prop a no-op. */}
-            {archivedGroups.map((group) => renderProjectGroup(group, true))}
-          </SideNavItem>
+        {(activeGroups.length > 0 || archivedGroups.length > 0) && (
+          <SideNavSection title={copy.projects} className="maka-session-group">
+            {activeGroups.map((group) => renderProjectGroup(group))}
+            {archivedGroups.length > 0 && (
+              <SideNavItem
+                label={copy.archivedProjects}
+                collapsible={{
+                  isCollapsed: !archivedExpanded,
+                  onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
+                }}
+              >
+                {/* Always mount children: Astryx derives collapsible chrome from
+                    !!children. Nulling on collapse removes the chevron and makes
+                    the controlled isCollapsed prop a no-op. */}
+                {archivedGroups.map((group) => renderProjectGroup(group, true))}
+              </SideNavItem>
+            )}
+          </SideNavSection>
         )}
       </>
     );
@@ -560,7 +568,6 @@ function ProjectNavRow(props: {
   label: string;
   project?: ProjectRecord;
   sessions: SessionSummary[];
-  summarySessions?: SessionSummary[];
   streamingSessionIds?: ReadonlySet<string>;
   projectActions?: ProjectRowActions;
   onStartRename(opener: HTMLElement | null): void;
@@ -568,14 +575,18 @@ function ProjectNavRow(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
+  // The same list the row draws its subtree from. A summary counting rows that
+  // were hoisted into the pinned section describes a project row that has no
+  // disclosure and no children, and puts its menu somewhere else than the count
+  // implies.
   const hoverSummary = useMemo(
     () =>
       createProjectHoverCardSummary(
         props.project,
-        props.summarySessions ?? props.sessions,
+        props.sessions,
         props.streamingSessionIds,
       ),
-    [props.project, props.sessions, props.streamingSessionIds, props.summarySessions],
+    [props.project, props.sessions, props.streamingSessionIds],
   );
   // Collapsible only when there is a real session subtree. An empty VStack is
   // still truthy children for Astryx (!!children) and fabricates a disclosure.
