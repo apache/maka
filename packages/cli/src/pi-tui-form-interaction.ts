@@ -144,9 +144,10 @@ export class FormInteractionOverlay implements Component {
     },
   ) {
     this.#copy = FORM_COPY[input.locale];
-    this.#drafts = input.initialDrafts?.length === input.request.fields.length
-      ? cloneTuiFormDrafts(input.initialDrafts)
-      : createTuiFormDrafts(input.request.fields);
+    this.#drafts =
+      input.initialDrafts?.length === input.request.fields.length
+        ? cloneTuiFormDrafts(input.initialDrafts)
+        : createTuiFormDrafts(input.request.fields);
     this.#editor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.#editor.onChange = (value) => {
       if (this.#mode.kind !== 'text') return;
@@ -491,53 +492,113 @@ export class FormInteractionOverlay implements Component {
     const constraints: string[] = [];
     if (field.kind === 'string') {
       if (field.minLength !== undefined && field.maxLength !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.lengthRange, {
-          minimum: field.minLength,
-          maximum: field.maxLength,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.lengthRange,
+            {
+              minimum: field.minLength,
+              maximum: field.maxLength,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.minLength !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.minimumLength, {
-          minimum: field.minLength,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.minimumLength,
+            {
+              minimum: field.minLength,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.maxLength !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.maximumLength, {
-          maximum: field.maxLength,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.maximumLength,
+            {
+              maximum: field.maxLength,
+            },
+            this.input.locale,
+          ),
+        );
       }
       if (field.format !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.format, {
-          format: field.format,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.format,
+            {
+              format: field.format,
+            },
+            this.input.locale,
+          ),
+        );
       }
     } else if (field.kind === 'number' || field.kind === 'integer') {
       if (field.minimum !== undefined && field.maximum !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.valueRange, {
-          minimum: field.minimum,
-          maximum: field.maximum,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.valueRange,
+            {
+              minimum: field.minimum,
+              maximum: field.maximum,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.minimum !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.minimumValue, {
-          minimum: field.minimum,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.minimumValue,
+            {
+              minimum: field.minimum,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.maximum !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.maximumValue, {
-          maximum: field.maximum,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.maximumValue,
+            {
+              maximum: field.maximum,
+            },
+            this.input.locale,
+          ),
+        );
       }
     } else if (field.kind === 'multi_select') {
       if (field.minItems !== undefined && field.maxItems !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.itemRange, {
-          minimum: field.minItems,
-          maximum: field.maxItems,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.itemRange,
+            {
+              minimum: field.minItems,
+              maximum: field.maxItems,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.minItems !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.minimumItems, {
-          minimum: field.minItems,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.minimumItems,
+            {
+              minimum: field.minItems,
+            },
+            this.input.locale,
+          ),
+        );
       } else if (field.maxItems !== undefined) {
-        constraints.push(formatUiMessage(this.#copy.maximumItems, {
-          maximum: field.maxItems,
-        }, this.input.locale));
+        constraints.push(
+          formatUiMessage(
+            this.#copy.maximumItems,
+            {
+              maximum: field.maxItems,
+            },
+            this.input.locale,
+          ),
+        );
       }
     }
     return constraints.length === 0 ? undefined : constraints.join(' · ');

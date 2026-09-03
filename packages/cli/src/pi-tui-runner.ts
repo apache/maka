@@ -2286,10 +2286,8 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     ) {
       retainedFormDraft = undefined;
     }
-    if (
-      formOverlaySessionId !== sessionId ||
-      formOverlayRequestId !== request.requestId
-    ) closeFormOverlay();
+    if (formOverlaySessionId !== sessionId || formOverlayRequestId !== request.requestId)
+      closeFormOverlay();
     if (formResponseInFlightRequestId || formOverlayComponent) return;
     const schema = JSON.stringify(request.fields);
     const restoredDrafts =

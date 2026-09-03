@@ -135,15 +135,17 @@ test('overlay retains invalid drafts, then submits the corrected value', () => {
 test('overlay restores a same-request draft and explains active constraints', () => {
   const request = {
     ...REQUEST,
-    fields: [{
-      kind: 'string',
-      name: 'version',
-      label: 'Version',
-      required: true,
-      minLength: 2,
-      maxLength: 12,
-      format: 'date-time',
-    }],
+    fields: [
+      {
+        kind: 'string',
+        name: 'version',
+        label: 'Version',
+        required: true,
+        minLength: 2,
+        maxLength: 12,
+        format: 'date-time',
+      },
+    ],
   } satisfies FormRequestEvent;
   const first = new FormInteractionOverlay(fakeTui(), {
     locale: 'en',

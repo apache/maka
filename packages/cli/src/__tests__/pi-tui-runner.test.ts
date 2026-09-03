@@ -2346,14 +2346,18 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     terminal.input('v2');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'),
+    );
 
     driver.publishReconnect();
-    await waitFor(() =>
-      !plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
+    await waitFor(
+      () => !plainTerminalOutput(terminal.screenOutput()).includes('Configure deployment'),
     );
     driver.replayForm();
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'));
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('Version (required): v2'),
+    );
 
     terminal.input('\u001b');
     await waitFor(() => driver.responses.length === 1);
