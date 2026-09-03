@@ -1595,6 +1595,14 @@ function validateDependencies({
         violations.push(`${fileRelative}: Desktop adapter imports an outer or legacy implementation: ${dependency}`);
       }
     }
+
+    if (
+      sourceZone.kind === 'legacy' &&
+      targetZone.kind === 'application' &&
+      !isPublicApplicationPath(targetRelative)
+    ) {
+      violations.push(`${fileRelative}: legacy renderer code imports application implementation instead of a public entry: ${dependency}`);
+    }
   }
 }
 
@@ -2273,21 +2281,14 @@ function inspectCopyCatalog(source, file) {
           }
         }
       }
-      const typeOnly =
-        statement.importKind === 'type' ||
-        (statement.specifiers.length > 0 &&
-          statement.specifiers.every((specifier) => specifier.importKind === 'type'));
-      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+      if (!typeOnlySourceDependency(statement)) runtimeDependencies.push(statement.source.value);
     }
     if (
       (statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportAllDeclaration') &&
-      statement.source
+      statement.source &&
+      !typeOnlySourceDependency(statement)
     ) {
-      const typeOnly =
-        statement.exportKind === 'type' ||
-        (statement.specifiers?.length > 0 &&
-          statement.specifiers.every((specifier) => specifier.exportKind === 'type'));
-      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+      runtimeDependencies.push(statement.source.value);
     }
     if (
       statement.type === 'TSImportEqualsDeclaration' &&

@@ -2616,6 +2616,27 @@ describe('validated copy catalog dependencies', () => {
     });
   }
 
+  it('rejects a legacy type-only edge into an application implementation as a hard violation', async () => {
+    await withDesktopFixture(
+      transitiveAppShellFiles(
+        `
+          import type { FixtureService } from './application/sessions/fixture-service.js';
+          export const legacySessionHelper: FixtureService = { kind: 'legacy' };
+        `,
+        { 'src/renderer/application/sessions/fixture-service.ts': `export interface FixtureService { kind: string }` },
+      ),
+      (desktopRoot) => {
+        const currentConfig = generateArchitectureConfig(desktopRoot, catalogSeedConfig());
+        const violations = violationsFor(desktopRoot, currentConfig, structuredClone(currentConfig));
+        assertHasViolation(
+          violations,
+          /^src\/renderer\/legacy-session-helper\.ts: legacy renderer code imports application implementation instead of a public entry: \.\/application\/sessions\/fixture-service\.js$/u,
+        );
+        assert.ok(!violations.some((violation) => violation.includes('dependency debt')), violations.join('\n'));
+      },
+    );
+  });
+
   it('keeps pricing every non-catalog edge for a root entry', async () => {
     const source = `
       import { AlphaFeature } from './features/alpha/index.js';
