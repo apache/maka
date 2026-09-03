@@ -31,8 +31,10 @@ import type {
   SessionSummary,
   TurnRecord,
 } from '@maka/core/session';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import {
   createFakeWorkbarServices,
+  dispatchQuoteCompanionInput,
   useQuoteCompanion,
   sessionHasExactModelChoice,
   WorkbarServicesProvider,
@@ -136,6 +138,7 @@ async function renderProbe(
     onStop?: (stop: () => Promise<void>) => void;
     onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
     confirmBypass?: () => Promise<boolean>;
+    onContextCompactionError?: (sessionId: string, error: unknown) => void;
     pendingQuotes?: readonly StagedCompanionQuote[];
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   } = {},
@@ -159,6 +162,7 @@ async function renderProbe(
         onSteer: options.onSteer,
         onStop: options.onStop,
         onSetPermissionMode: options.onSetPermissionMode,
+        onContextCompactionError: options.onContextCompactionError,
         pendingQuotes: options.pendingQuotes,
         onQuotesConsumed: options.onQuotesConsumed,
         sourceSession: options.sourceSession,
@@ -191,6 +195,7 @@ async function renderOwnershipProbe(
     onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
     sourceSession?: SessionSummary;
     modelChoices?: readonly ChatModelChoice[];
+    onContextCompactionError?: (sessionId: string, error: unknown) => void;
   } = {},
 ) {
   let send!: (text: string) => Promise<boolean>;
@@ -231,6 +236,16 @@ async function renderOwnershipProbe(
       eventHandler(event);
     },
   };
+}
+
+async function commitIdleCompanion(
+  rendered: Awaited<ReturnType<typeof renderOwnershipProbe>>,
+): Promise<void> {
+  await act(async () => {
+    assert.equal(await rendered.send('prepare side conversation'), false);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
 }
 
 const REBOUND_MODEL: Partial<SessionSummary> = {
@@ -359,6 +374,319 @@ test('first send after a completed turn forks through the settled turn', async (
   // A settled turn exists, so the fork carries the full context through it.
   assert.deepEqual(branchInputs, ['done-turn']);
   assert.equal(probe.getAttribute('data-error'), '');
+});
+
+test('dispatches /compact to the committed companion fork without sending model input', async () => {
+  const compactCalls: string[] = [];
+  let sendCalls = 0;
+  let steerCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls.push(sessionId);
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn',
+          runId: 'compact-run',
+          status: 'completed' as const,
+          terminalEventId: 'compact-complete',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+    send: async () => {
+      sendCalls += 1;
+      return { ok: false as const, reason: 'seed only' };
+    },
+    steer: async () => {
+      steerCalls += 1;
+      return { kind: 'started' as const, turnId: 'unexpected-steer' };
+    },
+  });
+
+  await commitIdleCompanion(rendered);
+  sendCalls = 0;
+  assert.equal(await rendered.send('  /compact  '), true);
+  assert.deepEqual(compactCalls, ['side-conversation']);
+  assert.equal(sendCalls, 0);
+  assert.equal(steerCalls, 0);
+});
+
+test('dispatches the exact /compact Composer command before steering or ordinary send', async () => {
+  const calls: string[] = [];
+  assert.equal(
+    await dispatchQuoteCompanionInput({
+      text: '  /compact  ',
+      streaming: true,
+      compact: async () => {
+        calls.push('compact');
+        return true;
+      },
+      steer: async () => {
+        calls.push('steer');
+        return true;
+      },
+      send: async () => {
+        calls.push('send');
+        return true;
+      },
+    }),
+    true,
+  );
+  assert.deepEqual(calls, ['compact']);
+});
+
+test('keeps an async companion compaction exclusive until its terminal event', async () => {
+  let compactCalls = 0;
+  let sendCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      return {
+        kind: 'started' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn',
+          runId: 'compact-run',
+          status: 'running' as const,
+        },
+      };
+    },
+    send: async () => {
+      sendCalls += 1;
+      return { ok: false as const, reason: 'seed only' };
+    },
+  });
+
+  await commitIdleCompanion(rendered);
+  sendCalls = 0;
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(await rendered.send('ordinary question'), false);
+  assert.equal(compactCalls, 1);
+  assert.equal(sendCalls, 0);
+});
+
+test('releases an async companion compaction after a Host interruption', async () => {
+  let compactCalls = 0;
+  const compactionErrors: Array<{ sessionId: string; error: unknown }> = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      compact: async (sessionId) => {
+        compactCalls += 1;
+        return {
+          kind: 'started' as const,
+          turn: {
+            sessionId,
+            turnId: `compact-turn-${compactCalls}`,
+            runId: `compact-run-${compactCalls}`,
+            status: 'running' as const,
+          },
+        };
+      },
+    },
+    {
+      onContextCompactionError: (sessionId, error) => {
+        compactionErrors.push({ sessionId, error });
+      },
+    },
+  );
+
+  await commitIdleCompanion(rendered);
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(await rendered.send('/compact'), false);
+  await act(async () => {
+    rendered.emit({
+      type: 'abort',
+      id: 'compact-aborted',
+      turnId: 'compact-turn-1',
+      ts: 1,
+      reason: 'crash',
+    });
+    await Promise.resolve();
+  });
+
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
+  assert.equal(compactionErrors.length, 1);
+  assert.equal(compactionErrors[0]?.sessionId, 'side-conversation');
+  assert.equal((compactionErrors[0]?.error as SessionEvent | undefined)?.type, 'abort');
+});
+
+test('does not settle a pending companion compaction from another turn outcome', async () => {
+  const pendingCompact = deferred<ContextCompactResult>();
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      if (compactCalls === 1) return pendingCompact.promise;
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn-after-guard',
+          runId: 'compact-run-after-guard',
+          status: 'completed' as const,
+          terminalEventId: 'compact-complete-after-guard',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+  });
+
+  await commitIdleCompanion(rendered);
+  let compactResult!: Promise<boolean>;
+  await act(async () => {
+    compactResult = rendered.send('/compact');
+    await Promise.resolve();
+  });
+  await act(async () => {
+    rendered.emit({
+      type: 'complete',
+      id: 'unrelated-complete',
+      turnId: 'unrelated-turn',
+      ts: 1,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    });
+    await Promise.resolve();
+  });
+
+  assert.equal(await rendered.send('/compact'), false);
+  pendingCompact.resolve({
+    kind: 'started',
+    turn: {
+      sessionId: 'side-conversation',
+      turnId: 'compact-turn-unrelated-guard',
+      runId: 'compact-run-unrelated-guard',
+      status: 'running',
+    },
+  });
+  assert.equal(await compactResult, true);
+  assert.equal(compactCalls, 1);
+
+  await act(async () => {
+    rendered.emit({
+      type: 'complete',
+      id: 'compact-complete',
+      turnId: 'compact-turn-unrelated-guard',
+      ts: 2,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    });
+    await Promise.resolve();
+  });
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
+});
+
+test('clears a failed companion compaction request so it can be retried', async () => {
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      if (compactCalls === 1) throw new Error('temporary compact failure');
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-retry-turn',
+          runId: 'compact-retry-run',
+          status: 'completed' as const,
+          terminalEventId: 'compact-retry-complete',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+  });
+
+  await commitIdleCompanion(rendered);
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
+});
+
+test('rejects /compact while the companion is running without consuming staged quotes', async () => {
+  const pendingSend = deferred<{ ok: true; turnId: string }>();
+  let compactCalls = 0;
+  const consumed: CompanionQuoteSnapshot[] = [];
+  const rendered = await renderOwnershipProbe(
+    {
+      compact: async () => {
+        compactCalls += 1;
+        throw new Error('compact should not run while busy');
+      },
+      send: () => pendingSend.promise,
+    },
+    {
+      pendingQuotes: [{ id: 'quote-1', value: { text: 'quoted context' } }],
+      onQuotesConsumed: (snapshot) => consumed.push(snapshot),
+    },
+  );
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = rendered.send('ordinary question');
+    await Promise.resolve();
+  });
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(compactCalls, 0);
+  assert.deepEqual(consumed, []);
+
+  await act(async () => {
+    pendingSend.resolve({ ok: true, turnId: 'running-turn' });
+    assert.equal(await sendResult, true);
+  });
+});
+
+test('rejects /compact while the companion fork is preparing', async () => {
+  const pendingFork = deferred<SessionSummary>();
+  let compactCalls = 0;
+  let branchStarted = false;
+  const rendered = await renderOwnershipProbe({
+    branchFromTurn: async () => {
+      branchStarted = true;
+      return { ok: true as const, session: await pendingFork.promise };
+    },
+    compact: async () => {
+      compactCalls += 1;
+      throw new Error('compact should not run before fork commit');
+    },
+  });
+
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = rendered.send('prepare pending fork');
+    await Promise.resolve();
+  });
+  await waitUntil(() => branchStarted);
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(compactCalls, 0);
+  await act(async () => {
+    pendingFork.resolve(session('side-conversation'));
+    assert.equal(await sendResult, false);
+  });
+});
+
+test('rejects /compact for an archived companion fork without invoking Runtime Host', async () => {
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    branchFromTurn: async () => ({
+      ok: true as const,
+      session: session('side-conversation', { isArchived: true }),
+    }),
+    compact: async () => {
+      compactCalls += 1;
+      throw new Error('compact should not run for an archived fork');
+    },
+  });
+
+  await commitIdleCompanion(rendered);
+  assert.equal(await rendered.send('/compact'), false);
+  assert.equal(compactCalls, 0);
 });
 
 test('does not fork on mount or when the source Session object refreshes', async () => {
@@ -1610,6 +1938,7 @@ function QuoteCompanionOwnershipProbe(props: {
   onSteer?: (steer: (text: string) => Promise<boolean>) => void;
   onStop?: (stop: () => Promise<void>) => void;
   onSetPermissionMode?: (set: (mode: PermissionMode) => Promise<boolean>) => void;
+  onContextCompactionError?: (sessionId: string, error: unknown) => void;
   pendingQuotes?: readonly StagedCompanionQuote[];
   onQuotesConsumed?: (snapshot: CompanionQuoteSnapshot) => void;
   sourceSession?: SessionSummary;
@@ -1624,6 +1953,7 @@ function QuoteCompanionOwnershipProbe(props: {
     locale: 'en',
     onQuotesConsumed: props.onQuotesConsumed ?? (() => undefined),
     confirmBypass: async () => true,
+    onContextCompactionError: props.onContextCompactionError,
   });
   props.onSend(companion.send);
   props.onSteer?.(companion.steer);

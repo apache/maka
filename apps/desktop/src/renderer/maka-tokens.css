@@ -1321,8 +1321,11 @@
        this line. */
     font: var(--maka-text-body);
     color: var(--foreground);
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
+    /* Astryx's reset puts `antialiased` on `:where(body)`, which strips the
+       stroke dilation macOS applies and thins 14px Han glyphs. Maka is
+       CJK-first, so the platform default wins here, for the whole document. */
+    -webkit-font-smoothing: auto;
+    -moz-osx-font-smoothing: auto;
     overflow: hidden;          /* main shell handles its own scrolling */
   }
 

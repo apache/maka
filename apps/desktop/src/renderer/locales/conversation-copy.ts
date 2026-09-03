@@ -298,6 +298,16 @@ export interface DesktopConversationCopy {
     namePrefix: string;
     permissionStreaming: string;
     scrollToBottom: string;
+    compactSuccessTitle: string;
+    compactSuccessDescription: string;
+    compactStartedTitle: string;
+    compactStartedDescription: string;
+    compactUnchangedTitle: string;
+    compactUnchangedDescription: string;
+    compactErrorTitle: string;
+    compactErrorFallback: string;
+    workspaceUnavailableTitle: string;
+    workspaceUnavailableDescription: string;
     closeConfirmation: {
       title(count: number): string;
       description(count: number): string;
@@ -612,6 +622,16 @@ const COPY = {
       namePrefix: '侧聊：',
       permissionStreaming: '侧边对话运行中暂时不能更改权限',
       scrollToBottom: '滚动侧边对话到底部',
+      compactSuccessTitle: '上下文已压缩',
+      compactSuccessDescription: '较早的上下文已替换为检查点摘要。',
+      compactStartedTitle: '正在压缩上下文',
+      compactStartedDescription: '正在将较早的上下文整理为检查点摘要。',
+      compactUnchangedTitle: '无需压缩',
+      compactUnchangedDescription: '任务已使用最新的检查点。',
+      compactErrorTitle: '压缩失败',
+      compactErrorFallback: '任务暂时无法压缩，请稍后重试。',
+      workspaceUnavailableTitle: '工作目录不可用',
+      workspaceUnavailableDescription: '工作目录不存在或无法访问。请选择有效目录创建新任务。',
       closeConfirmation: {
         title: (count) => count > 1 ? `关闭 ${count} 个侧边对话？` : '关闭侧边对话？',
         description: (count) =>
@@ -845,6 +865,17 @@ const COPY = {
       namePrefix: 'Side: ',
       permissionStreaming: 'Permissions cannot change while the side chat is running',
       scrollToBottom: 'Scroll side conversation to bottom',
+      compactSuccessTitle: 'Context compacted',
+      compactSuccessDescription: 'Older context was replaced with a checkpoint summary.',
+      compactStartedTitle: 'Compacting context',
+      compactStartedDescription: 'Summarizing older context into a checkpoint.',
+      compactUnchangedTitle: 'Nothing to compact',
+      compactUnchangedDescription: 'The task already uses the latest checkpoint.',
+      compactErrorTitle: 'Compaction failed',
+      compactErrorFallback: 'The task could not be compacted. Try again later.',
+      workspaceUnavailableTitle: 'Working directory unavailable',
+      workspaceUnavailableDescription:
+        'The working directory does not exist or cannot be accessed. Select a valid folder for a new task.',
       closeConfirmation: {
         title: (count) => count > 1 ? `Close ${count} side chats?` : 'Close side chat?',
         description: (count) =>

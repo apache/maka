@@ -285,11 +285,18 @@ const VOLCENGINE_CODING_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'kimi-k2.6': planModel('Kimi-K2.6', true, 256_000, 32_000),
   'kimi-k2.7-code': planModel('Kimi-K2.7-Code', true, 256_000, 32_000),
 };
+// Hand-maintained mirror of the official Agent Plan personal plan page
+// (docs.volcengine.com/docs/82379/2366394) and its model release/retirement
+// announcements (82379/2578669, 82379/2578673): the gateway has no
+// model-list endpoint its plan key can reach and models.dev has no snapshot.
+// The page's table lists windows as "1024k"/"128k"; transcribe those
+// literals as 1_024_000/128_000 (its prose "1M" is the same figure rounded).
+// Re-check the page before editing an entry here.
 const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'ark-code-latest': agentPlanModel('Ark Code Latest', 256_000, 32_000, { vision: true }),
-  // Agent Plan currently exposes GLM-5.3 in its ark-code-latest routing catalog.
-  // The underlying model's published limits are 1M context and 128K output.
-  'glm-5.3': agentPlanModel('GLM-5.3', 1_000_000, 131_072),
+  // The plan page lists "glm-5.3 (glm-latest)": thinking is on by default and
+  // cannot be turned off.
+  'glm-5.3': agentPlanModel('GLM-5.3', 1_024_000, 128_000),
   'doubao-seed-2.0-mini': agentPlanModel('Doubao Seed 2.0 Mini', 256_000, 128_000, {
     vision: true,
   }),
@@ -309,11 +316,23 @@ const VOLCENGINE_AGENT_PLAN_MODEL_METADATA: Record<string, ModelMetadata> = {
   'doubao-seed-2.0-pro': agentPlanModel('Doubao Seed 2.0 Pro', 256_000, 128_000, {
     lifecycle: 'deprecated',
   }),
-  'minimax-m2.7': agentPlanModel('MiniMax-M2.7', 200_000, 128_000),
-  'minimax-m3': agentPlanModel('MiniMax-M3', 512_000, 128_000, { vision: true }),
-  'glm-5.2': agentPlanModel('GLM-5.2', 1_024_000, 128_000),
+  'minimax-m2.7': agentPlanModel('MiniMax-M2.7', 200_000, 128_000, {
+    // Upstream retirement notice of 2026-08-04; the gateway routes to minimax-m3.
+    lifecycle: 'deprecated',
+  }),
+  'minimax-m3': agentPlanModel('MiniMax-M3', 1_024_000, 128_000, { vision: true }),
+  'glm-5.2': agentPlanModel('GLM-5.2', 1_024_000, 128_000, {
+    // Upstream service ended 2026-08-31; the gateway routes to glm-5.3.
+    lifecycle: 'deprecated',
+  }),
+  // Official alias of glm-5.3 (the plan page lists "glm-5.3 (glm-latest)").
   'glm-latest': agentPlanModel('GLM Latest', 1_024_000, 128_000),
-  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000, { vision: true }),
+  'glm-5.3-flash': agentPlanModel('GLM-5.3-Flash', 1_024_000, 128_000, { vision: true }),
+  'kimi-k2.6': agentPlanModel('Kimi-K2.6', 256_000, 32_000, {
+    // Upstream service ended 2026-08-18; migrate to kimi-k2.7-code or kimi-k3.
+    lifecycle: 'deprecated',
+    vision: true,
+  }),
   'kimi-k2.7-code': agentPlanModel('Kimi-K2.7-Code', 256_000, 32_000, { vision: true }),
   'deepseek-v4-pro': agentPlanModel('DeepSeek-V4-Pro', 1_024_000, 384_000),
   'kimi-k3': agentPlanModel('Kimi-K3', 1_024_000, 128_000, { vision: true }),

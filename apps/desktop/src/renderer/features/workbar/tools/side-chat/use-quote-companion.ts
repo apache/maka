@@ -31,6 +31,7 @@ import {
 import type {
   SandboxBoundaryRequestEvent,
   ClientCapabilityRequestEvent,
+  ContextCompactionOutcome,
   QuoteRef,
   SessionEvent,
   UserQuestionRequestEvent,
@@ -42,6 +43,7 @@ import type { SessionSummary, StoredMessage } from '@maka/core/session';
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { ChatModelChoice } from '@maka/core/chat-model-choice';
 import type { UserQuestionResponse } from '@maka/core/user-question';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import { useWorkbarServices } from '../../services-context.js';
 import type { WorkbarIngestInput } from '../../ports.js';
 import {
@@ -57,6 +59,7 @@ import {
   type CompanionErrorCode,
   type EnsureCompanionForkResult,
 } from './quote-companion-core.js';
+import { isExactCompactCommand } from './quote-companion-context-compaction.js';
 import { mergeSettledMessages } from '../../../../settled-message-merge.js';
 import { getDesktopConversationCopy } from '../../../../locales/conversation-copy.js';
 import {
@@ -74,6 +77,14 @@ type PendingAdmission = {
   consumeOnAdmission?: () => void;
   stopPromise?: Promise<'confirmed' | 'unknown'>;
 };
+
+type PendingCompactionTerminal =
+  | { kind: 'outcome'; turnId: string; outcome: ContextCompactionOutcome }
+  | { kind: 'error'; turnId: string; error: unknown };
+
+function readMutableRef<T>(ref: { current: T }): T {
+  return ref.current;
+}
 
 type AdmissionOutcome =
   | { kind: 'admitted'; turnId: string }
@@ -119,6 +130,15 @@ export interface UseQuoteCompanionInput {
   /** Reports creation and authoritative cleanup so the host can keep every
    *  ephemeral fork hidden for its complete lifetime. */
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
+  /** Presents the immediate result of an explicit companion compaction. */
+  onContextCompactionResult?: (sessionId: string, result: ContextCompactResult) => void;
+  /** Presents the terminal event for an asynchronous companion compaction. */
+  onContextCompactionOutcome?: (
+    sessionId: string,
+    turnId: string,
+    outcome: ContextCompactionOutcome,
+  ) => void;
+  onContextCompactionError?: (sessionId: string, error: unknown) => void;
 }
 
 export async function requestPermissionModeWithConfirmation(
@@ -153,6 +173,8 @@ export interface UseQuoteCompanionResult {
   activeSandboxBoundary: SandboxBoundaryRequestEvent | undefined;
   activeClientCapability: ClientCapabilityRequestEvent | undefined;
   activeQuestion: UserQuestionRequestEvent | undefined;
+  /** Runs `/compact` against the committed companion fork when it is idle. */
+  compact: () => Promise<boolean>;
   /** Returns whether the send was accepted; false leaves the draft + staged
    *  quotes in place so the user can retry. */
   send: (text: string, attachmentItems?: WorkbarIngestInput[]) => Promise<boolean>;
@@ -197,6 +219,9 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     pendingQuotes,
     onQuotesConsumed,
     onForkVisibilityChange,
+    onContextCompactionResult,
+    onContextCompactionOutcome,
+    onContextCompactionError,
   } = input;
   const copy = getDesktopConversationCopy(locale).quoteCompanion;
   const [companion, setCompanion] = useState<SessionSummary | undefined>(undefined);
@@ -225,11 +250,20 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const settlingTurnIdsRef = useRef<Set<string>>(new Set());
   const onForkVisibilityChangeRef = useRef(onForkVisibilityChange);
   onForkVisibilityChangeRef.current = onForkVisibilityChange;
+  const onContextCompactionResultRef = useRef(onContextCompactionResult);
+  onContextCompactionResultRef.current = onContextCompactionResult;
+  const onContextCompactionOutcomeRef = useRef(onContextCompactionOutcome);
+  onContextCompactionOutcomeRef.current = onContextCompactionOutcome;
+  const onContextCompactionErrorRef = useRef(onContextCompactionError);
+  onContextCompactionErrorRef.current = onContextCompactionError;
   const localeRef = useRef(locale);
   localeRef.current = locale;
   const copyRef = useRef(copy);
   copyRef.current = copy;
   const ownTurnIdsRef = useRef<Set<string>>(new Set());
+  const compactionRequestInFlightRef = useRef(false);
+  const compactionTurnIdRef = useRef<string | null>(null);
+  const pendingCompactionTerminalRef = useRef<PendingCompactionTerminal | null>(null);
   const [allMessages, setAllMessages] = useState<StoredMessage[]>([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
@@ -312,6 +346,28 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
+      const terminal: PendingCompactionTerminal | undefined =
+        event.type === 'complete' && event.contextCompactionOutcome
+          ? { kind: 'outcome', turnId: event.turnId, outcome: event.contextCompactionOutcome }
+          : event.type === 'abort' || (event.type === 'error' && !event.recoverable)
+            ? { kind: 'error', turnId: event.turnId, error: event }
+            : undefined;
+      if (terminal) {
+        if (compactionTurnIdRef.current === terminal.turnId) {
+          compactionTurnIdRef.current = null;
+          compactionRequestInFlightRef.current = false;
+          if (terminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(forkId, terminal.turnId, terminal.outcome);
+          } else {
+            onContextCompactionErrorRef.current?.(forkId, terminal.error);
+          }
+        } else if (compactionRequestInFlightRef.current) {
+          // The Host can publish the terminal event before the compact RPC
+          // returns its turn identity. Keep it fenced until the response
+          // proves that this event belongs to the pending compaction.
+          pendingCompactionTerminalRef.current = terminal;
+        }
+      }
       const effect = companionRunEventEffect(
         event,
         activeTurnIdRef.current,
@@ -702,16 +758,75 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     };
   }, [panelId, sideChat]);
 
+  const compact = useCallback(async (): Promise<boolean> => {
+    const fork = companionRef.current;
+    if (
+      !mountedRef.current ||
+      !fork ||
+      fork.isArchived ||
+      !sessionHasExactModelChoice(fork, modelChoicesRef.current) ||
+      compactionRequestInFlightRef.current ||
+      submitLockRef.current ||
+      pendingAdmissionRef.current ||
+      activeTurnIdRef.current ||
+      (fork.runningTurnIds?.length ?? 0) > 0
+    ) {
+      return false;
+    }
+    compactionRequestInFlightRef.current = true;
+    pendingCompactionTerminalRef.current = null;
+    let awaitingTerminal = false;
+    try {
+      const result = await sideChat.compact(fork.id);
+      if (!mountedRef.current) return false;
+      awaitingTerminal = result.kind === 'started';
+      compactionTurnIdRef.current = result.turn.turnId;
+      onContextCompactionResultRef.current?.(fork.id, result);
+      const pendingTerminal = readMutableRef(pendingCompactionTerminalRef);
+      if (pendingTerminal?.turnId === result.turn.turnId) {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+        if (result.kind === 'started') {
+          if (pendingTerminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(
+              fork.id,
+              pendingTerminal.turnId,
+              pendingTerminal.outcome,
+            );
+          } else {
+            onContextCompactionErrorRef.current?.(fork.id, pendingTerminal.error);
+          }
+        }
+      } else if (result.kind === 'finished') {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+      }
+      return result.kind === 'started' || result.outcome.kind !== 'failed';
+    } catch (error) {
+      onContextCompactionErrorRef.current?.(fork.id, error);
+      return false;
+    } finally {
+      if (!mountedRef.current || !awaitingTerminal) {
+        compactionRequestInFlightRef.current = false;
+        if (!awaitingTerminal) compactionTurnIdRef.current = null;
+      }
+    }
+  }, [mountedRef, sideChat]);
+
   const send = useCallback(
     async (
       text: string,
       attachmentItems?: WorkbarIngestInput[],
     ): Promise<boolean> => {
       const trimmed = text.trim();
+      if (isExactCompactCommand(trimmed)) return compact();
       if (
         !mountedRef.current ||
         !trimmed ||
         submitLockRef.current ||
+        compactionRequestInFlightRef.current ||
         activeTurnIdRef.current ||
         pendingAdmissionRef.current ||
         !sourceSession
@@ -872,6 +987,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       mountedRef,
       sideChat,
       bindAdmittedTurn,
+      compact,
       releaseAdmission,
       resolveAdmission,
       setPendingAdmission,
@@ -1126,6 +1242,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
     activeSandboxBoundary,
     activeClientCapability,
     activeQuestion,
+    compact,
     send,
     steer,
     setPermissionMode,
