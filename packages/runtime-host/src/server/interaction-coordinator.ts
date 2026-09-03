@@ -886,7 +886,16 @@ export class HostInteractionCoordinator implements RuntimeInteractionAuthority {
     await this.#refreshCanonicalContinuity(request.sessionId, admission);
     this.#throwIfPoisoned();
     await this.#applySandboxBoundaryDecisionAndDelete(entry, settlement);
-    await this.#onSandboxBoundarySettled(request.sessionId);
+    // The answer owns Session admission. Graph-wake reconciliation may need to
+    // acquire the activity lease held by the wake turn that is parked on this
+    // very answer, so awaiting it here deadlocks the Session (#3328, #3866).
+    // Start it after the durable answer is applied, but keep failures visible
+    // to the Host's fail-stop path instead of creating an unhandled rejection.
+    void Promise.resolve()
+      .then(() => this.#onSandboxBoundarySettled(request.sessionId))
+      .catch((error: unknown) => {
+        this.#poison(error);
+      });
     const result = projectSandboxBoundaryInteraction(settlement.request);
     if (result.status !== 'answered') {
       throw this.#poison(
