@@ -137,90 +137,122 @@ interface ActivePromptRailSnapshot {
   sourceTurnId: string | null;
 }
 
-async function activePromptRailSnapshot(page: Page): Promise<ActivePromptRailSnapshot> {
-  return page.evaluate(async ({ promptCount }) => {
-    const root = document.querySelector<HTMLElement>('[data-chat-scroll-container="true"]');
-    if (!root) throw new Error('the chat scroll container is missing');
-    const ticks = [...document.querySelectorAll<HTMLElement>('.maka-prompt-rail-tick')];
-    const currentIds = ticks
-      .filter((tick) => tick.getAttribute('aria-current') === 'true')
-      .map((tick) => tick.dataset.promptTurnId ?? '');
-    const rootBounds = root.getBoundingClientRect();
-    const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
-    const turns = [...root.querySelectorAll<HTMLElement>('[data-transcript-turn-id]')]
-      .map((turn) => ({
-        element: turn,
-        id: turn.dataset.transcriptTurnId ?? '',
-        index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
-      }))
-      .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
-    const readingBandTurns = turns
-      .filter(({ element }) => {
-        const bounds = element.getBoundingClientRect();
-        return bounds.bottom > rootBounds.top
-          && bounds.top < rootBounds.top + rootBounds.height * 0.34;
-      })
-      .sort((left, right) => left.index - right.index);
-    const scrollportTurns = turns
-      .filter(({ element }) => {
-        const bounds = element.getBoundingClientRect();
-        return bounds.bottom > rootBounds.top && bounds.top < rootBounds.bottom;
-      })
-      .sort((left, right) => left.index - right.index);
-    const sourceTurn = atEnd
-      ? turns.reduce<typeof turns[number] | null>(
-        (latest, turn) => latest === null || turn.index > latest.index ? turn : latest,
-        null,
-      )
-      : readingBandTurns[0] ?? scrollportTurns[0] ?? null;
-    const expectedRailIndex = sourceTurn === null || ticks.length === 0
-      ? null
-      : Math.round(
-        sourceTurn.index * (ticks.length - 1) / (promptCount - 1),
-      );
-    const expectedId = expectedRailIndex === null
-      ? null
-      : ticks[expectedRailIndex]?.dataset.promptTurnId ?? null;
-    return {
-      currentIds,
-      expectedId,
-      sourceTurnId: sourceTurn?.id ?? null,
-    };
-  }, { promptCount: PROMPT_RAIL_PROMPT_COUNT });
+interface RailStateSnapshot extends ActivePromptRailSnapshot {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
 }
 
-// The transcript can still be settling right after a scroll, so one agreeing
-// snapshot can pass mid-settle (#4675). Two protocol reads alone are not
-// enough either: both can execute inside one rendered frame, so an update the
-// rail queued on requestAnimationFrame lands only after they agreed. The rail
-// resolves on the frame after a scroll and keeps re-resolving for six frames
-// after a mutation (packages/ui/src/prompt-anchor-rail.tsx), so the two reads
-// are separated by that whole window: agreement across six painted frames is
-// a settled rail, and nothing is read after the poll that the poll did not
-// see.
-const RAIL_SETTLE_FRAMES = 6;
+interface RailSettleOutcome {
+  settled: boolean;
+  state: RailStateSnapshot | null;
+}
+
+// One full rail read, in-page: the tick mapping plus the scroll metrics that
+// feed it. A source string so the settle loop below and any diagnostic read
+// run the exact same logic.
+const READ_PROMPT_RAIL_STATE = `() => {
+  const promptCount = ${PROMPT_RAIL_PROMPT_COUNT};
+  const root = document.querySelector('[data-chat-scroll-container="true"]');
+  if (!root) throw new Error('the chat scroll container is missing');
+  const ticks = [...document.querySelectorAll('.maka-prompt-rail-tick')];
+  const currentIds = ticks
+    .filter((tick) => tick.getAttribute('aria-current') === 'true')
+    .map((tick) => tick.dataset.promptTurnId ?? '');
+  const rootBounds = root.getBoundingClientRect();
+  const atEnd = root.scrollHeight - root.scrollTop - root.clientHeight <= 2;
+  const turns = [...root.querySelectorAll('[data-transcript-turn-id]')]
+    .map((turn) => ({
+      element: turn,
+      id: turn.dataset.transcriptTurnId ?? '',
+      index: Number(turn.dataset.transcriptTurnId?.split('-').at(-1)) - 1,
+    }))
+    .filter((turn) => turn.id.length > 0 && Number.isFinite(turn.index));
+  const readingBandTurns = turns
+    .filter(({ element }) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > rootBounds.top
+        && bounds.top < rootBounds.top + rootBounds.height * 0.34;
+    })
+    .sort((left, right) => left.index - right.index);
+  const scrollportTurns = turns
+    .filter(({ element }) => {
+      const bounds = element.getBoundingClientRect();
+      return bounds.bottom > rootBounds.top && bounds.top < rootBounds.bottom;
+    })
+    .sort((left, right) => left.index - right.index);
+  const sourceTurn = atEnd
+    ? turns.reduce((latest, turn) => latest === null || turn.index > latest.index ? turn : latest, null)
+    : readingBandTurns[0] ?? scrollportTurns[0] ?? null;
+  const expectedRailIndex = sourceTurn === null || ticks.length === 0
+    ? null
+    : Math.round(sourceTurn.index * (ticks.length - 1) / (promptCount - 1));
+  const expectedId = expectedRailIndex === null
+    ? null
+    : ticks[expectedRailIndex]?.dataset.promptTurnId ?? null;
+  return {
+    currentIds,
+    expectedId,
+    sourceTurnId: sourceTurn?.id ?? null,
+    scrollTop: root.scrollTop,
+    scrollHeight: root.scrollHeight,
+    clientHeight: root.clientHeight,
+  };
+}`;
+
+// The rail resolves on the frame after a scroll and keeps re-resolving for
+// six frames after each transcript mutation, and the transcript keeps
+// remeasuring under them — so a snapshot can agree mid-settle and differ one
+// mutation later. No fixed delay or pair of protocol reads proves the rail
+// settled; that is how #4675 flaked and how frame-count fixes kept flaking
+// under 4-worker stress. The observable quiet state is instead one read —
+// mapping plus the scroll metrics that feed it — unchanged across six
+// consecutive painted frames while mapping to the Turn being read. Every
+// input the rail's resolver reacts to (scroll, mutation, geometry) is then
+// exactly what produced the asserted state, so the reads a test makes after
+// this helper see the same rail. The loop resolves with the state it
+// verified; the passing path reads nothing after it.
+const RAIL_QUIET_FRAMES = 6;
+const RAIL_SETTLE_TIMEOUT_MS = 10_000;
+
+const SETTLE_PROMPT_RAIL_SOURCE = `({ quietFrames, timeoutMs }) => new Promise((resolve) => {
+  const read = ${READ_PROMPT_RAIL_STATE};
+  let previousKey = null;
+  let quietFramesSeen = 0;
+  let lastState = null;
+  const timer = setTimeout(
+    () => resolve({ settled: false, state: lastState }),
+    timeoutMs,
+  );
+  const frame = () => {
+    const state = read();
+    const key = JSON.stringify(state);
+    quietFramesSeen = key === previousKey ? quietFramesSeen + 1 : 0;
+    previousKey = key;
+    lastState = state;
+    const agreed = state.expectedId !== null
+      && state.currentIds.length === 1
+      && state.currentIds[0] === state.expectedId;
+    if (agreed && quietFramesSeen >= quietFrames) {
+      clearTimeout(timer);
+      resolve({ settled: true, state });
+      return;
+    }
+    requestAnimationFrame(frame);
+  };
+  frame();
+})`;
 
 async function expectPromptRailMatchesReadingPosition(page: Page): Promise<void> {
-  let lastSnapshot: ActivePromptRailSnapshot | null = null;
-  try {
-    await expect.poll(async () => {
-      const first = await activePromptRailSnapshot(page);
-      await waitForPaintedFrames(page, RAIL_SETTLE_FRAMES);
-      const second = await activePromptRailSnapshot(page);
-      lastSnapshot = second;
-      return second.expectedId !== null
-        && second.currentIds.length === 1
-        && second.currentIds[0] === second.expectedId
-        && first.expectedId === second.expectedId
-        && first.currentIds.length === 1
-        && first.currentIds[0] === second.expectedId;
-    }, {
-      message: 'the one current tick maps from the Turn being read, across six painted frames',
-      timeout: 15_000,
-    }).toBe(true);
-  } catch {
-    throw new Error(`the prompt rail did not settle on the reading position: ${JSON.stringify(lastSnapshot)}`);
+  const outcome = await page.evaluate(SETTLE_PROMPT_RAIL_SOURCE, {
+    quietFrames: RAIL_QUIET_FRAMES,
+    timeoutMs: RAIL_SETTLE_TIMEOUT_MS,
+  }) as RailSettleOutcome;
+  if (!outcome.settled) {
+    throw new Error(`the prompt rail did not settle on the reading position: ${JSON.stringify(outcome.state)}`);
   }
+  expect(outcome.state?.expectedId, `no visible Turn in ${JSON.stringify(outcome.state)}`).not.toBeNull();
+  expect(outcome.state?.currentIds).toEqual([outcome.state?.expectedId]);
 }
 
 async function scrollTranscriptThroughHistory(page: Page): Promise<void> {
