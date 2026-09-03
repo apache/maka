@@ -316,8 +316,8 @@ const reviewedProvenance = new Map([
     'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
   ],
   [
-    'website/src/copy/zh-CN.ts',
-    'Website footer copy. The copyright line it carries is the ASF’s own, as the site footer must show it.',
+    'website/test/site.test.mjs',
+    'Website test. It quotes the ASF copyright line to assert the built footer carries it.',
   ],
   [
     '.github/ASF_SOURCE_HEADERS.md',

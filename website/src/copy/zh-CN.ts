@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { incubatorDisclaimer } from './en';
+import { en, incubatorDisclaimer } from './en';
 import type { Copy } from './types';
 
 export const zhCN: Copy = {
@@ -146,8 +146,7 @@ export const zhCN: Copy = {
     sponsorship: '赞助',
     thanks: '致谢',
     disclaimer: incubatorDisclaimer,
-    trademark:
-      'Copyright © 2026 The Apache Software Foundation，以 Apache License, Version 2.0 授权。Apache Maka、Apache Incubator、Apache 与 Apache 羽毛标志是 The Apache Software Foundation 的商标。',
+    trademark: en.footer.trademark,
   },
   downloads: {
     title: '下载',

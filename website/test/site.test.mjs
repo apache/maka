@@ -34,6 +34,9 @@ const positioning =
   'Apache Maka (Incubating) is a high-performance agent workspace that keeps a complete record of everything it did.';
 const disclaimer =
   'Apache Maka is an effort undergoing incubation at The Apache Software Foundation (ASF), sponsored by the Apache Incubator.';
+// The copyright and trademark line stays in English on every page, like the disclaimer.
+const trademark =
+  'Copyright © 2026 The Apache Software Foundation, licensed under the Apache License, Version 2.0. Apache Maka, Apache Incubator, Apache and the Apache feather logo are trademarks of The Apache Software Foundation.';
 // The links the ASF website policy requires, plus the Incubator and the code of conduct.
 const footer = [
   'https://www.apache.org/',
@@ -63,6 +66,7 @@ test('every page identifies the podling and carries the Incubator disclaimer', (
       const html = page(`${locale}/${path}`);
       assert.ok(html.includes('Apache Maka (Incubating)'), `${locale}/${path}`);
       assert.ok(html.includes(disclaimer), `${locale}/${path}`);
+      assert.ok(html.includes(trademark), `${locale}/${path}`);
       for (const href of footer) assert.ok(hrefs(html).has(href), `${locale}/${path} ${href}`);
     }
   }
