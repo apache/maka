@@ -71,7 +71,7 @@ export function lastMessagePreviewForMessages(
       if (text) return truncatePreview(text);
     }
     if (message.type === 'workhub_coordination') {
-      const text = normalizePreviewText(message.userText);
+      const text = 'userText' in message ? normalizePreviewText(message.userText) : '';
       if (text) return truncatePreview(text);
     }
   }

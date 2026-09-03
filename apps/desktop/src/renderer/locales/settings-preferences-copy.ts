@@ -207,6 +207,7 @@ export type SettingsPreferencesCopy = {
     enableProxyAuth: string;
     username: string;
     password: string;
+    passwordSavedPlaceholder: string;
     bypassList: string;
     bypassHelp: string;
     autoBypass(count: number): string;
@@ -225,8 +226,14 @@ export type SettingsPreferencesCopy = {
     copyFailed: string;
     clipboardUnavailable: string;
     devBuild: string;
-    packagedBuild: string;
-    subtitle: string;
+    nightlyBuild: string;
+    buildLabel: string;
+    /** One sentence saying what following this channel means for the user. */
+    channelSummaries: Record<'dev' | 'nightly' | 'release', string>;
+    supportTitle: string;
+    reportIssueHelp: string;
+    reportIssueOpen: string;
+    copyAction: string;
     privacyLabel: string;
     privacyTitle: string;
     privacyPoints: readonly string[];
@@ -237,11 +244,8 @@ export type SettingsPreferencesCopy = {
     keyboardShortcutsHelp: string;
     keyboardShortcutsOpen: string;
     reportIssueLabel: string;
-    updatesTitle: string;
     checkForUpdates: string;
     checkingForUpdates: string;
-    updateHelp: string;
-    updateDevBuildHelp: string;
     updateIdle: string;
     updateNotAvailable: string;
     updateAvailable: (version: string) => string;
@@ -335,14 +339,22 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
       defaultModel: '默认模型', defaultModelHelp: '新任务默认使用的模型。', notSet: '未设置', saveDefaultModelFailed: '保存默认模型失败', defaultPermission: '默认权限模式', defaultPermissionHelp: '新任务默认使用的权限模式；可在任务内随时切换。', saveDefaultPermissionFailed: '保存默认权限模式失败', defaultThinking: '默认思考级别', defaultThinkingHelp: '新任务的思考级别；当前模型不支持所选级别时用模型默认。', followModelDefault: '跟随模型默认', saveDefaultThinkingFailed: '保存默认思考级别失败',
       shellPreference: 'Bash 工具 shell', shellPreferenceHelp: '自动模式保持 Windows 的 PowerShell 优先规则；Git Bash 是仅对当前 Runtime Host 生效的显式覆盖。', shellAuto: '自动（推荐）', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash 可执行文件', shellExecutableHelp: '填写 Runtime Host 所在 Windows 机器上 bash.exe 的绝对路径。也支持该机器上的旧版 System32 WSL Bash；保存时会验证 GNU Bash。', saveShell: '保存 shell 设置', savingShell: '正在保存…', shellSaved: '已保存', saveShellFailed: '保存 shell 设置失败', shellExecutableRejected: '当前 Runtime Host 无法把该路径作为 GNU Bash 运行。请检查 Host 是否为 Windows、路径是否存在，并确认文件名为 bash.exe。',
       proxy: '代理服务器', proxyHelp: '为 AI 模型请求配置网络代理', enableProxy: '启用代理服务器', saveNetworkFailed: '保存网络设置失败', proxyProtocol: '代理协议', serverAddress: '服务器地址', port: '端口', proxyAuth: '代理认证', proxyAuthHelp: '需要用户名和密码时开启。', enableProxyAuth: '启用代理认证', username: '用户名', password: '密码', bypassList: '代理白名单', bypassHelp: '这些域名将绕过代理直连，多个用逗号分隔。', autoBypass: (count) => `已自动添加 ${count} 个域名。代理仅作用于 AI 模型请求。`, testing: '测试中…', testCurrent: '测试当前配置', proxyReachable: '代理可达', proxyTestFailed: '代理测试失败', proxyTestError: '代理测试出错',
+      passwordSavedPlaceholder: '密码已保存；输入新密码以替换',
     },
     about: {
-      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', packagedBuild: '正式版', subtitle: '本地优先的 AI 助手 · 桌面端运行环境', privacyLabel: '隐私与安全', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['所有任务、设置、凭据和 Skill 指令文件都保留在本机工作区。', '模型密钥保存在本机凭据文件内；订阅账号令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权。', '每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'], copying: '复制中…', copyDiagnostics: '复制诊断信息', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径，以及近期脱敏的 Desktop 与 Runtime Host 日志；仅写入剪贴板，不会自动上传。', keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看', reportIssueLabel: '报告问题',
-      updatesTitle: '软件更新',
+      loadFailed: '载入关于信息失败', loading: '正在加载关于页', unavailable: '无法载入关于信息', copied: '已复制诊断信息', pasteHint: '检查内容后，可直接粘贴到问题报告', copyFailed: '复制失败', clipboardUnavailable: '剪贴板不可用或被系统拒绝。', devBuild: '本地开发版', nightlyBuild: 'Nightly', buildLabel: '构建',
+      channelSummaries: {
+        dev: '本地开发构建，不检查更新。',
+        nightly: '每日构建的预发布版，自动更新到最新 nightly，会覆盖正式版安装。',
+        release: '正式发布版，自动接收稳定更新。',
+      },
+      supportTitle: '支持',
+      copying: '复制中…', copyDiagnostics: '复制诊断信息', copyAction: '复制', copyHelp: '复制版本、平台、隐藏主目录后的工作区路径与近期脱敏日志；仅写入剪贴板，不会自动上传。',
+      reportIssueLabel: '报告问题', reportIssueHelp: '带上诊断信息去 GitHub Issues，回复更快。', reportIssueOpen: '打开',
+      keyboardShortcuts: '键盘快捷键', keyboardShortcutsHelp: 'Maka 支持的全部快捷键一览。', keyboardShortcutsOpen: '查看',
+      privacyLabel: '隐私承诺', privacyTitle: '本地优先 · 隐私默认', privacyPoints: ['任务、设置、凭据和 Skill 指令文件都留在本机；模型密钥保存在本机凭据文件内，订阅令牌使用系统安全存储。', 'Maka 不发送使用遥测；只在你显式启用时与所选模型供应商通信。', '高风险工具操作需要在任务内明示授权；每个任务都会在本机保留消息、工具调用、权限决策与模式变更记录。'],
       checkForUpdates: '检查更新',
       checkingForUpdates: '检查中…',
-      updateHelp: '后台也会定期检查；需要重启安装时侧栏会提示。',
-      updateDevBuildHelp: '本地开发版不检查 GitHub 发布更新。请使用正式安装包。',
       updateIdle: '尚未检查更新。',
       updateNotAvailable: '已是最新版本。',
       updateAvailable: (version) => `发现新版本 v${version}，正在准备下载…`,
@@ -388,14 +400,22 @@ const SETTINGS_PREFERENCES_COPY_BY_LOCALE = {
     general: {
       incognito: 'Incognito mode', incognitoHelp: 'Pause local memory, web search, and scheduled task triggers.', enableIncognito: 'Enable incognito mode', incognitoFailed: 'Could not change incognito mode', notifications: 'Send a system notification when finished', notificationsHelp: 'Notify when a response finishes or fails while the window is in the background.', notificationsFailed: 'Could not change notification settings', workspaceInstructions: 'Follow project instructions', workspaceInstructionsHelp: 'Automatically read existing AGENTS.md, CLAUDE.md, or GEMINI.md files in each project. Manage the files in their respective projects.', workspaceInstructionsFailed: 'Could not change project instruction settings', workHub: 'Enable WorkHub', workHubHelp: 'WorkHub is not available yet. This toggle is for development testing and does not enable a usable feature.', workHubFailed: 'Could not change WorkHub setting', updateFailed: 'The setting was not applied. Try again later.', defaultModel: 'Default model', defaultModelHelp: 'Model used by new tasks.', notSet: 'Not set', saveDefaultModelFailed: 'Could not save the default model', defaultPermission: 'Default permission mode', defaultPermissionHelp: 'Initial permission mode for new tasks; it can be changed at any time.', saveDefaultPermissionFailed: 'Could not save the default permission mode', defaultThinking: 'Default thinking level', defaultThinkingHelp: 'Thinking level for new tasks; models that do not offer the chosen level use their own default.', followModelDefault: 'Follow model default', saveDefaultThinkingFailed: 'Could not save the default thinking level', proxy: 'Proxy server', proxyHelp: 'Configure a network proxy for AI model requests', enableProxy: 'Enable proxy server', saveNetworkFailed: 'Could not save network settings', proxyProtocol: 'Proxy protocol', serverAddress: 'Server address', port: 'Port', proxyAuth: 'Proxy authentication', proxyAuthHelp: 'Enable this when a username and password are required.', enableProxyAuth: 'Enable proxy authentication', username: 'Username', password: 'Password', bypassList: 'Proxy bypass list', bypassHelp: 'These domains connect directly. Separate multiple domains with commas.', autoBypass: (count) => `${count} ${count === 1 ? 'domain was' : 'domains were'} added automatically. The proxy applies to AI model requests only.`, testing: 'Testing…', testCurrent: 'Test current configuration', proxyReachable: 'Proxy is reachable', proxyTestFailed: 'Proxy test failed', proxyTestError: 'Could not test proxy',
       shellPreference: 'Bash tool shell', shellPreferenceHelp: 'Automatic keeps the PowerShell-first Windows default. Git Bash is an explicit override for the current Runtime Host.', shellAuto: 'Automatic (recommended)', shellGitBash: 'Git Bash', shellExecutable: 'Git Bash executable', shellExecutableHelp: 'Enter the absolute path to bash.exe on the Windows machine running the Runtime Host. The legacy System32 WSL Bash shim is also recognized; Maka verifies GNU Bash before saving.', saveShell: 'Save shell setting', savingShell: 'Saving…', shellSaved: 'Saved', saveShellFailed: 'Could not save shell setting', shellExecutableRejected: 'The current Runtime Host could not run that path as GNU Bash. Check that the Host runs Windows, the path exists, and the file is named bash.exe.',
+      passwordSavedPlaceholder: 'Password saved; enter a new password to replace it',
     },
     about: {
-      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', packagedBuild: 'Release build', subtitle: 'A local-first AI assistant · Desktop runtime', privacyLabel: 'Privacy and security', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay in the local workspace.', 'Model keys stay in a local credential file; subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task.', 'Messages, tool calls, permission decisions, and mode changes are retained locally for each task.'], copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted Desktop and Runtime Host logs. The report is written only to the clipboard and is never uploaded automatically.', keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View', reportIssueLabel: 'Report an issue',
-      updatesTitle: 'Software updates',
+      loadFailed: 'Could not load About information', loading: 'Loading About', unavailable: 'About information is unavailable', copied: 'Diagnostics copied', pasteHint: 'Review the content, then paste it into an issue report', copyFailed: 'Copy failed', clipboardUnavailable: 'The clipboard is unavailable or access was denied.', devBuild: 'Local development build', nightlyBuild: 'Nightly', buildLabel: 'Build',
+      channelSummaries: {
+        dev: 'A local development build. It does not check for updates.',
+        nightly: 'A daily prerelease build. It updates itself to the latest nightly and replaces a release install.',
+        release: 'The official release build. It receives stable updates automatically.',
+      },
+      supportTitle: 'Support',
+      copying: 'Copying…', copyDiagnostics: 'Copy diagnostics', copyAction: 'Copy', copyHelp: 'Copy version, platform, a home-redacted workspace path, and recent redacted logs. The report is written only to the clipboard and is never uploaded automatically.',
+      reportIssueLabel: 'Report an issue', reportIssueHelp: 'Open a GitHub issue with your diagnostics attached — replies come faster.', reportIssueOpen: 'Open',
+      keyboardShortcuts: 'Keyboard shortcuts', keyboardShortcutsHelp: 'Every shortcut Maka responds to.', keyboardShortcutsOpen: 'View',
+      privacyLabel: 'Privacy commitments', privacyTitle: 'Local first · Private by default', privacyPoints: ['Tasks, settings, credentials, and Skill instructions stay on this machine; model keys live in a local credential file and subscription tokens use secure system storage.', 'Maka sends no usage telemetry and contacts a model provider only when you enable it.', 'High-risk tool operations require explicit permission in the task; messages, tool calls, permission decisions, and mode changes are retained locally for each task.'],
       checkForUpdates: 'Check for updates',
       checkingForUpdates: 'Checking…',
-      updateHelp: 'Maka also checks in the background. When a restart is required, the sidebar will prompt you.',
-      updateDevBuildHelp: 'Development builds do not check GitHub releases. Use a packaged install.',
       updateIdle: 'No update check has run yet.',
       updateNotAvailable: 'You are on the latest version.',
       updateAvailable: (version) => `Version v${version} is available and will download shortly…`,

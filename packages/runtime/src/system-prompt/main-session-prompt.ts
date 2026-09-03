@@ -34,7 +34,7 @@
  * fragment order.
  *
  * The identity and response-format guidance are pure static text: constant
- * across turns, so they never churn the systemPromptHash / prefix-cache (see
+ * across turns, so they never churn the provider-stable request prefix (see
  * request-shape.ts). They are intentionally NOT injected into sub-agent
  * (childInstruction) paths, which already carry their own role identities.
  */

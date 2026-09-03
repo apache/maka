@@ -17,16 +17,12 @@
  * under the License.
  */
 
+import { resolveConnectionModelCatalog, type ModelCatalogEntry } from '@maka/core/model-catalog';
 import {
-  buildConnectionModelCatalogEntries,
-  type ModelCatalogEntry,
-  type SavedModelChoice,
-} from '@maka/core/model-catalog';
-import {
-  CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS,
-  PROVIDER_DEFAULTS,
-  connectionEnabledModelIds,
+  offerableCatalogEntries,
   providerDefaultsOf,
+  providerMenuLabel,
+  type HostResolvedConnectionCatalog,
 } from '@maka/core/llm-connections';
 import type { LlmConnection, ProviderType } from '@maka/core/llm-connections';
 import type { UiLocale } from '@maka/core/ui-locale';
@@ -34,17 +30,23 @@ import { getShellRemainingCopy } from './locales/shell-remaining-copy.js';
 
 const DAILY_REVIEW_MODEL_KEY_SEPARATOR = '::';
 
+/**
+ * The model to pre-fill when adding a provider. No connection exists yet, so
+ * there is no Host-resolved catalog to read: this is the one place a client
+ * still resolves a catalog itself, and it answers a question about the
+ * provider rather than about a connection.
+ */
 export function buildCatalogRecommendedDefaultModel(providerType: ProviderType): string {
-  const entry = selectableCatalogEntries({
+  const entries = resolveConnectionModelCatalog({
     slug: providerType,
     providerType,
     defaultModel: '',
-  })[0];
-  return entry?.id ?? '';
+  }).filter((entry) => entry.canUseAsChatDefault);
+  return entries[0]?.id ?? '';
 }
 
 export function buildCatalogDailyReviewModelOptions(
-  connections: readonly LlmConnection[],
+  connections: readonly (LlmConnection & HostResolvedConnectionCatalog)[],
   currentModelKey: string,
   locale: UiLocale = 'zh',
 ): Array<readonly [string, string]> {
@@ -55,15 +57,14 @@ export function buildCatalogDailyReviewModelOptions(
 
   for (const connection of connections) {
     if (!isModelConsumerConnection(connection)) continue;
-    const savedModelIds: SavedModelChoice[] = current?.connectionSlug === connection.slug
-      ? [{ id: current.model, source: 'daily_review_model' }]
-      : [];
     const safeSourceLabel = safeConnectionLabel(connection.providerType, connection.slug, providerCounts);
-    for (const entry of dailyReviewCatalogEntries(connection, savedModelIds)) {
+    // The Host decides what is offerable; the caller appends a saved-but-
+    // unavailable selection itself, with a label that says so.
+    for (const entry of offerableCatalogEntries(connection)) {
       const key = dailyReviewModelKey(connection.slug, entry.id);
       if (seenKeys.has(key)) continue;
       seenKeys.add(key);
-      candidates.push({ key, label: dailyReviewModelDisplayLabel(entry, locale), safeSourceLabel });
+      candidates.push({ key, label: modelDisplayLabel(entry), safeSourceLabel });
     }
   }
 
@@ -89,72 +90,8 @@ export function buildCatalogDailyReviewModelOptions(
   return options;
 }
 
-function dailyReviewCatalogEntries(
-  connection: Pick<
-    LlmConnection,
-    'slug' | 'providerType' | 'defaultModel' | 'enabledModelIds' | 'models' | 'modelSource' | 'modelsFetchedAt'
-  >,
-  savedModelIds: Iterable<SavedModelChoice | undefined | null>,
-): ModelCatalogEntry[] {
-  const savedChoices = Array.from(savedModelIds);
-  const enabledIds = new Set(connectionEnabledModelIds(connection));
-  const visibleIds = new Set(enabledIds);
-  for (const choice of savedChoices) {
-    const id = typeof choice === 'string' ? choice.trim() : choice?.id.trim();
-    if (id) visibleIds.add(id);
-  }
-  return filterUnsupportedCodexModels(
-    connection.providerType,
-    buildConnectionModelCatalogEntries({ connection, savedModelIds: savedChoices }),
-  )
-    .filter((entry) => visibleIds.has(entry.id) && (
-      entry.canUseAsChatDefault || entry.provenance.sources?.userChoice?.includes('daily_review_model')
-    ))
-    .map((entry) => enabledIds.has(entry.id) ? entry : { ...entry, canUseAsChatDefault: false });
-}
-
-function selectableCatalogEntries(
-  connection: Pick<
-    LlmConnection,
-    'slug' | 'providerType' | 'defaultModel' | 'models' | 'modelSource' | 'modelsFetchedAt'
-  >,
-  savedModelIds?: Iterable<string | undefined | null>,
-): ModelCatalogEntry[] {
-  const entries = filterUnsupportedCodexModels(
-    connection.providerType,
-    buildConnectionModelCatalogEntries({ connection, savedModelIds }),
-  ).filter((entry) => entry.canUseAsChatDefault);
-  if (entries.length > 0 || connection.providerType !== 'openai-codex') return entries;
-  return filterUnsupportedCodexModels(
-    connection.providerType,
-    buildConnectionModelCatalogEntries({
-      connection: {
-        ...connection,
-        defaultModel: '',
-        models: undefined,
-        modelSource: undefined,
-        modelsFetchedAt: undefined,
-      },
-      savedModelIds,
-    }),
-  ).filter((entry) => entry.canUseAsChatDefault);
-}
-
-function filterUnsupportedCodexModels(providerType: ProviderType, entries: ModelCatalogEntry[]): ModelCatalogEntry[] {
-  if (providerType !== 'openai-codex') return entries;
-  return entries.filter((entry) => !CODEX_SUBSCRIPTION_UNSUPPORTED_CHATGPT_MODELS.has(entry.id.trim()));
-}
-
 function modelDisplayLabel(entry: Pick<ModelCatalogEntry, 'id' | 'displayName'>): string {
   return entry.displayName?.trim() || entry.id;
-}
-
-function dailyReviewModelDisplayLabel(
-  entry: Pick<ModelCatalogEntry, 'id' | 'displayName' | 'canUseAsChatDefault'>,
-  locale: UiLocale = 'zh',
-): string {
-  const label = modelDisplayLabel(entry);
-  return entry.canUseAsChatDefault ? label : `${label} · ${getShellRemainingCopy(locale).models.unavailable}`;
 }
 
 function isModelConsumerConnection(connection: Pick<LlmConnection, 'enabled' | 'providerType'>): boolean {
@@ -178,7 +115,7 @@ function safeConnectionLabel(
   connectionSlug: string,
   providerCounts: ReadonlyMap<ProviderType, number>,
 ): string {
-  const label = PROVIDER_DEFAULTS[providerType].label;
+  const label = providerMenuLabel(providerType) ?? providerType;
   return (providerCounts.get(providerType) ?? 0) > 1 ? `${label} · ${connectionSlug}` : label;
 }
 

@@ -464,7 +464,11 @@ class RuntimeHostRunRuntime implements MakaRunRuntime {
   }
 
   async #stopTurn(turn: { sessionId: string; turnId: string; runId: string }): Promise<void> {
-    await this.#connection.request('turn.stop', turn);
+    await this.#connection.request('turn.stop', {
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      runId: turn.runId,
+    });
   }
 
   async #stopGraph(sessionId: string): Promise<void> {
@@ -588,7 +592,10 @@ class TurnOutcomeClassifier {
   >();
   readonly #unresolvedSandboxFailures = new Map<
     string,
-    { readonly failedStepId: string | undefined }
+    {
+      readonly failedStepId: string | undefined;
+      readonly failedToolName: string | undefined;
+    }
   >();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
@@ -621,6 +628,7 @@ class TurnOutcomeClassifier {
         if (observation.outcome === 'sandbox_failure') {
           this.#unresolvedSandboxFailures.set(observation.toolUseId, {
             failedStepId: call?.stepId,
+            failedToolName: call?.toolName,
           });
           return;
         }
@@ -633,7 +641,8 @@ class TurnOutcomeClassifier {
           unresolved.length === 1 &&
           call?.stepId !== undefined &&
           unresolved[0]?.failedStepId !== undefined &&
-          call.stepId !== unresolved[0].failedStepId
+          call.stepId !== unresolved[0].failedStepId &&
+          call.toolName === unresolved[0].failedToolName
         ) {
           this.#unresolvedSandboxFailures.clear();
           this.#sandboxBoundaryRecovered = true;

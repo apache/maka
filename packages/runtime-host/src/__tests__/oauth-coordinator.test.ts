@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -42,7 +43,10 @@ import {
 import { HostClientCapabilityCoordinator } from '../server/client-capability-coordinator.js';
 import { HostOAuthCoordinator } from '../server/oauth-coordinator.js';
 import { RuntimePolicyActivationGate } from '../server/runtime-policy-activation-gate.js';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 
 const NOW = 1_800_000_000_000;
 
@@ -889,6 +893,7 @@ async function attachPresentation(
         connection.accept({
           kind: 'client.capability.accepted',
           invocationId: frame.invocationId,
+          admissionEvidence: { kind: 'none' },
         });
         return;
       }
@@ -969,15 +974,6 @@ function tokenFixture(
     ...extra,
   };
 }
-
-function deferred(): { promise: Promise<void>; resolve(): void } {
-  let resolve!: () => void;
-  const promise = new Promise<void>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 function operationContext(connectionId: string, acquireResidency: () => { release(): void }) {
   return {
     hostEpoch: 'host-epoch',
@@ -1022,6 +1018,7 @@ async function withFixture(
   assert.ok(connection);
   const activation = new RuntimePolicyActivationGate();
   const capabilities = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation,
     onModelToolsChanged: () => undefined,
   });

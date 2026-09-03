@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { IpcMain } from "electron";
@@ -686,14 +687,4 @@ function ipcHarness() {
 
 function scope(targetEpoch: string) {
   return { hostId: `host-${targetEpoch}`, targetEpoch };
-}
-
-function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((settle, fail) => {
-    resolve = settle;
-    reject = fail;
-  });
-  return { promise, reject, resolve };
 }

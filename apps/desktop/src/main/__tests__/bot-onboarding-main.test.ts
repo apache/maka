@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import {
@@ -34,13 +35,6 @@ import {
 } from '../bot-onboarding-main.js';
 
 const QR_DATA = 'data:image/png;base64,ZmFrZQ==';
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => { resolve = next; });
-  return { promise, resolve };
-}
-
 function harness(
   adapter: BotOnboardingProviderAdapter,
   applyEffect?: (settings: AppSettings, patch: UpdateAppSettingsInput) => Promise<void>,

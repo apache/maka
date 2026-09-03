@@ -157,7 +157,6 @@ const sidebarRowActions: NonNullable<SessionListPanelProps['rowActions']> = {
   onArchive: noop,
   onUnarchive: noop,
   onRename: noop,
-  onDelete: noop,
 };
 const projectRowActions: NonNullable<SessionListPanelProps['projectActions']> = {
   onNew: noop,

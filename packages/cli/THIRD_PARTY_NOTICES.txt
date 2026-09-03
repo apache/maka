@@ -4108,7 +4108,7 @@ SOFTWARE.
 
 ================================================================================
 
-Package: fast-uri@3.1.5
+Package: fast-uri@3.1.7
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: git+https://github.com/fastify/fast-uri.git
@@ -6483,7 +6483,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ================================================================================
 
-Package: qs@6.15.3
+Package: qs@6.16.0
 Declared license: BSD-3-Clause
 Selected license: BSD-3-Clause
 Repository: https://github.com/ljharb/qs.git

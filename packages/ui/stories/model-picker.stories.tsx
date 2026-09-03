@@ -339,7 +339,8 @@ export const ThinkingLevelSeparate: Story = {
   play: async ({ canvasElement }) => {
     const thinking = within(canvasElement).getByRole('button', { name: /思考级别/ });
     await userEvent.click(thinking);
-    await within(document.body).findByRole('menuitem', { name: '中' });
+    const medium = await within(document.body).findByRole('menuitemradio', { name: '中' });
+    await expect(medium).toHaveAttribute('aria-checked', 'true');
   },
 };
 
@@ -431,7 +432,7 @@ export const ManyConnections: Story = {
     // tests / e2e, not asserted here.
     const groups = await menu.findAllByRole('group');
     await expect(groups.length).toBeGreaterThanOrEqual(7);
-    await menu.findByRole('menuitem', { name: 'vendor/gamma' });
+    await menu.findByRole('menuitemradio', { name: 'vendor/gamma' });
   },
 };
 
@@ -456,10 +457,10 @@ export const LongModelNames: Story = {
       name: /选择新任务模型|Choose a model for the new task/,
     });
     await userEvent.click(trigger);
-    // Verifies the long-labelled model is reachable as a menuitem. Whether the
+    // Verifies the long-labelled model is reachable as a radio menu item. Whether the
     // long text truncates or wraps within the menu bounds is a visual check,
     // not asserted here.
-    await within(document.body).findByRole('menuitem', {
+    await within(document.body).findByRole('menuitemradio', {
       name: /A very long model name that keeps going/,
     });
   },
@@ -507,8 +508,8 @@ export const StaleCurrentModel: Story = {
     await userEvent.click(trigger);
     const menu = within(document.body);
     // The dropped model leads the menu as the current selection…
-    await menu.findByRole('menuitem', { name: /claude-opus-3-retired/ });
+    await menu.findByRole('menuitemradio', { name: /claude-opus-3-retired/ });
     // …while its connection's remaining models still follow underneath.
-    await menu.findByRole('menuitem', { name: 'Claude Sonnet 4' });
+    await menu.findByRole('menuitemradio', { name: 'Claude Sonnet 4' });
   },
 };

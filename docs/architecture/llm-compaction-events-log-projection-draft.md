@@ -180,7 +180,7 @@ Third, the checkpoint is not itself a canonical RuntimeEvent. Coverage and tail 
 
 ## Triggering ends before compaction begins
 
-Runtime derives one capacity from the selected model's metadata. For a known context window it reserves one quarter of the window, capped at 16,384 tokens; most providers without a known window use a 32,000-token history budget plus the classic 16,384-token reserve.
+Capacity is the selected model's declared context window or nothing at all; Runtime never manufactures one. For a declared window it reserves one quarter of the window, capped at 16,384 tokens, and shapes history against the rest. Where no window is declared there is no capacity to weigh a request against, and the pre-turn gate falls back to the policy's own history-shaping budget — 32,000 tokens for most providers, and none where the provider publishes neither. Either way an estimate only asks for compaction; it never ends a request.
 
 Trigger owners use that capacity but do not participate in compaction:
 
@@ -393,7 +393,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Failure point | Current behavior | What must not happen |
 |---|---|---|
 | Below high water | Keep the existing projection or apply ordinary budget selection | Create an unsourced summary as a speculative optimization |
-| LLM returns an empty summary | Record no new checkpoint. Automatic pre-turn compaction keeps the original source-derived projection and, if it remains over budget, terminates with `context_budget_exhausted` without writing a failure note; manual compaction records one visible `context_compaction_failed_open` note | Treat an empty projection as covered history |
+| LLM returns an empty summary | Record no new checkpoint. Automatic pre-turn compaction keeps the original source-derived projection and dispatches it without writing a failure note, leaving the provider to say whether it fits; manual compaction records one visible `context_compaction_failed_open` note | Treat an empty projection as covered history |
 | Text summary is malformed | Spend one stricter repair attempt, then fail open with a granular reason; do not redispatch an unchanged failed fingerprint | Persist incomplete structure or loop on the same doomed compaction input |
 | Codex returns no unique valid compact item | Try one portable text-summary checkpoint, then fail open if that also fails | Persist partial or ambiguous provider state |
 | Native compaction input cannot fit after bounded Tool Result omission | Do not dispatch the native request; try one bounded text-summary checkpoint | Ask the provider to compact an already over-capacity request |
@@ -404,7 +404,7 @@ Compaction crosses token estimation, an LLM call, schema construction, durable a
 | Bounded projection is damaged | Recover from canonical AgentRun ledgers and repair the projection | Treat the cache as the only source of truth |
 | User stops manual compaction | Abort the summarizer/write path without poisoning the next Turn | Persist a late result or reuse aborted state |
 
-Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An automatic pre-turn initial V2 summary failure leaves the original source-derived projection untouched; if that projection still exceeds the budget, the backend terminates with `context_budget_exhausted` before the failure-note path. Manual compaction records one visible `context_compaction_failed_open` note for the same failed outcome. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
+Fail-open here does not mean “always send the complete raw history.” Once history exceeds the model budget, the full raw prefix may itself be impossible to send. An automatic pre-turn initial V2 summary failure leaves the original source-derived projection untouched, and whether that projection still fits is the provider's answer: a rejected request is compacted and retried once, and a second rejection surfaces as a `context_overflow` provider error. Manual compaction records one visible `context_compaction_failed_open` note for the same failed outcome. A rolling failure may reuse the old checkpoint, but it never expands that checkpoint's coverage claim.
 
 The correct interpretation is:
 

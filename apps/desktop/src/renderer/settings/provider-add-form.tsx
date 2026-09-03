@@ -18,16 +18,13 @@
  */
 
 import { useState, type FormEvent } from 'react';
-import {
-  OPENCODE_FREE_DEFAULT_ENABLED_MODELS,
-  type ProviderType,
-} from '@maka/core/llm-connections';
-import { PROVIDER_DEFAULTS, deriveConnectionSlug } from '@maka/core/llm-connections';
+import type { ProviderType } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, deriveConnectionSlug } from '@maka/core/llm-connections';
 import {
   providerAuthRequiresSecret,
   providerAuthSupportsApiKey,
 } from '@maka/core/llm-connections';
-import { Banner, HStack, VStack } from '@astryxdesign/core';
+import { Banner, HStack, MultiSelector, Text, VStack } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
 import {
   Button,
@@ -43,10 +40,12 @@ import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
   categoryLabel,
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  type ApiKeyOnboardingBridge,
   type ConnectionsBridge,
-} from './provider-panel-shared';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
+  type DesktopConnectionOnboardingIdentity,
+} from '../features/connection-settings';
 import {
   newRequestHeaders,
   parseRequestBodyOverlay,
@@ -55,6 +54,10 @@ import {
 } from './request-customization-editor';
 import {
   createProviderWithDiscovery,
+  apiKeyOnboardingRoute,
+  initialOnboardingModelIds,
+  shouldShowManagedOnboardingOutcomeUnknown,
+  stableOnboardingModels,
   validateAddProviderDraft,
   type AddProviderIssue,
 } from './provider-add-submission';
@@ -70,16 +73,28 @@ type ProviderFormError = {
   message: string;
 };
 
+type ManagedOnboardingPhase =
+  | { readonly kind: 'input' }
+  | {
+      readonly kind: 'models';
+      readonly models: ReturnType<typeof stableOnboardingModels>;
+      readonly selectedIds: readonly string[];
+    };
+
 export function AddProviderForm(props: {
   bridge: ConnectionsBridge;
+  apiKeyOnboardingBridge?: ApiKeyOnboardingBridge;
   providerType: ProviderType;
   existingSlugs: string[];
   onCancel(): void;
   onCreated(slug: string, modelDiscoveryError?: unknown): Promise<void>;
+  onOnboarded?(identity: DesktopConnectionOnboardingIdentity): Promise<void>;
+  onOnboardingOutcomeUnknown?(): Promise<void>;
+  hasSaveUncertainty?: boolean;
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).add;
-  const defaults = PROVIDER_DEFAULTS[props.providerType];
+  const defaults = PROVIDER_REGISTRY[props.providerType];
   const display = providerDisplay(props.providerType, locale);
   const recommendedDefaultModel = buildCatalogRecommendedDefaultModel(props.providerType);
   const [slug, setSlug] = useState(() =>
@@ -93,7 +108,14 @@ export function AddProviderForm(props: {
   const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
   const [requestBodyText, setRequestBodyText] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [error, setError] = useState<ProviderFormError | null>(null);
+  const [formState, setFormState] = useState<{
+    readonly managedPhase: ManagedOnboardingPhase;
+    readonly error: ProviderFormError | null;
+  }>(() => ({
+    managedPhase: { kind: 'input' },
+    error: null,
+  }));
+  const { managedPhase, error } = formState;
   const [busy, setBusy] = useState(false);
   const submitGuard = useActionGuard<'submit'>();
   const addProviderMountedRef = useMountedRef();
@@ -105,6 +127,27 @@ export function AddProviderForm(props: {
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
   const usesApiKeyDialog = usesQuickApiKeyDialog(props.providerType);
+
+  function setManagedPhase(next: ManagedOnboardingPhase) {
+    setFormState((current) => ({ ...current, managedPhase: next }));
+  }
+
+  function setError(
+    next:
+      | ProviderFormError
+      | null
+      | ((current: ProviderFormError | null) => ProviderFormError | null),
+  ) {
+    setFormState((current) => ({
+      ...current,
+      error: typeof next === 'function' ? next(current.error) : next,
+    }));
+  }
+
+  function resetManagedVerification(options?: { clearKey?: boolean }) {
+    setManagedPhase({ kind: 'input' });
+    if (options?.clearKey) setApiKey('');
+  }
 
   function clearFieldError(field: ProviderFormField) {
     setError((current) =>
@@ -129,18 +172,133 @@ export function AddProviderForm(props: {
     return copy.accountLogin;
   }
 
+  function onboardingFailureMessage(
+    result:
+      | Exclude<Awaited<ReturnType<ApiKeyOnboardingBridge['verify']>>, { kind: 'verified' }>
+      | Exclude<
+          Extract<Awaited<ReturnType<ApiKeyOnboardingBridge['save']>>, { kind: 'result' }>['result'],
+          { kind: 'saved' }
+        >,
+  ): string {
+    if (result.kind === 'failed') {
+      if (result.errorClass === 'auth') return copy.onboardingAuthFailed;
+      if (result.errorClass === 'timeout') return copy.onboardingTimeout;
+      if (result.errorClass === 'network') return copy.onboardingNetwork;
+      if (result.errorClass === 'provider_unavailable') return copy.onboardingUnavailable;
+      return copy.onboardingInvalidResponse;
+    }
+    if (result.reason === 'catalog_full') return copy.onboardingCatalogFull;
+    if (result.reason === 'model_unavailable' || result.reason === 'superseded') {
+      return copy.onboardingModelsChanged;
+    }
+    if (result.reason === 'credential_not_configured') return copy.keyRequired(display.name);
+    return copy.onboardingUnavailable;
+  }
+
+  async function verifyManagedApiKey(normalizedApiKey: string) {
+    const onboarding = props.apiKeyOnboardingBridge;
+    if (!onboarding) return;
+    submitGuard.begin('submit');
+    setBusy(true);
+    try {
+      const result = await onboarding.verify({
+        target: { kind: 'create', providerType: props.providerType },
+        apiKey: normalizedApiKey || null,
+        baseUrl: null,
+      });
+      if (!addProviderMountedRef.current) return;
+      if (result.kind !== 'verified') {
+        setError({
+          field:
+            result.kind === 'failed' && result.errorClass === 'auth'
+              ? 'apiKey'
+              : 'form',
+          message: onboardingFailureMessage(result),
+        });
+        return;
+      }
+      const models = stableOnboardingModels(result.models);
+      const selectedIds = initialOnboardingModelIds(models, recommendedDefaultModel);
+      if (selectedIds.length === 0) {
+        setError({ field: 'form', message: copy.onboardingNoModels });
+        return;
+      }
+      setManagedPhase({ kind: 'models', models, selectedIds });
+    } catch (err) {
+      if (addProviderMountedRef.current) {
+        setError({ field: 'form', message: providerPanelActionErrorMessage(err, locale) });
+      }
+    } finally {
+      submitGuard.finish();
+      if (addProviderMountedRef.current) setBusy(false);
+    }
+  }
+
+  async function saveManagedApiKey(
+    normalizedApiKey: string,
+    phase: Extract<ManagedOnboardingPhase, { kind: 'models' }>,
+  ) {
+    const onboarding = props.apiKeyOnboardingBridge;
+    if (!onboarding || phase.selectedIds.length === 0) {
+      setError({ field: 'form', message: copy.onboardingSelectModel });
+      return;
+    }
+    const selected = new Set(phase.selectedIds);
+    const stableIds = phase.models
+      .map((model) => model.id)
+      .filter((modelId) => selected.has(modelId));
+    if (selected.has(recommendedDefaultModel)) {
+      stableIds.splice(stableIds.indexOf(recommendedDefaultModel), 1);
+      stableIds.unshift(recommendedDefaultModel);
+    }
+    submitGuard.begin('submit');
+    setBusy(true);
+    try {
+      const outcome = await onboarding.save({
+        target: { kind: 'create', providerType: props.providerType },
+        apiKey: normalizedApiKey || null,
+        baseUrl: null,
+        enabledModelIds: stableIds,
+      });
+      if (!addProviderMountedRef.current) return;
+      if (outcome.kind === 'outcome_unknown') {
+        setApiKey('');
+        return;
+      }
+      if (outcome.kind === 'not_saved') {
+        setError({ field: 'form', message: copy.onboardingUnavailable });
+        return;
+      }
+      const result = outcome.result;
+      if (result.kind === 'saved') {
+        setApiKey('');
+        await props.onOnboarded?.(result.connection);
+        return;
+      }
+      if (
+        result.kind === 'rejected' &&
+        (result.reason === 'model_unavailable' || result.reason === 'superseded')
+      ) {
+        setManagedPhase({ kind: 'input' });
+      }
+      if (result.kind === 'failed' && result.errorClass === 'auth') {
+        setManagedPhase({ kind: 'input' });
+      }
+      setError({
+        field: result.kind === 'failed' && result.errorClass === 'auth' ? 'apiKey' : 'form',
+        message: onboardingFailureMessage(result),
+      });
+    } catch {
+      if (addProviderMountedRef.current) setApiKey('');
+    } finally {
+      submitGuard.finish();
+      if (addProviderMountedRef.current) setBusy(false);
+    }
+  }
+
   async function submit() {
     if (submitGuard.current !== null) return;
     setError(null);
-    const issue = validateAddProviderDraft({
-      providerType: props.providerType,
-      slug,
-      existingSlugs: props.existingSlugs,
-      apiKey,
-      cloudflareAccountId,
-      baseUrl,
-    });
-    if (issue) return setError({ field: issue.field, message: issueMessage(issue) });
     const normalizedApiKey = apiKey.trim();
     const normalizedCloudflareAccountId = cloudflareAccountId.trim();
     const normalizedDefaultModel = defaultModel.trim();
@@ -153,6 +311,31 @@ export function AddProviderForm(props: {
       setAdvancedOpen(true);
       return setError({ field: 'advancedRequest', message: copy.requestCustomizationInvalid });
     }
+    const onboardingRoute = apiKeyOnboardingRoute({
+      providerType: props.providerType,
+      requestHeaderCount: Object.keys(normalizedRequestHeaders).length,
+      hasRequestBodyOverlay: requestBodyOverlay !== undefined,
+    });
+    if (onboardingRoute.kind === 'host' && props.apiKeyOnboardingBridge) {
+      if (requiresApiKey && !normalizedApiKey) {
+        return setError({ field: 'apiKey', message: copy.keyRequired(display.name) });
+      }
+      if (managedPhase.kind === 'models') {
+        await saveManagedApiKey(normalizedApiKey, managedPhase);
+      } else if (managedPhase.kind === 'input') {
+        await verifyManagedApiKey(normalizedApiKey);
+      }
+      return;
+    }
+    const issue = validateAddProviderDraft({
+      providerType: props.providerType,
+      slug,
+      existingSlugs: props.existingSlugs,
+      apiKey,
+      cloudflareAccountId,
+      baseUrl,
+    });
+    if (issue) return setError({ field: issue.field, message: issueMessage(issue) });
     submitGuard.begin('submit');
     setBusy(true);
     try {
@@ -169,9 +352,6 @@ export function AddProviderForm(props: {
         providerType: props.providerType,
         baseUrl: resolvedBaseUrl,
         defaultModel: createdDefaultModel,
-        ...(props.providerType === 'opencode-free'
-          ? { enabledModelIds: [...OPENCODE_FREE_DEFAULT_ENABLED_MODELS] }
-          : {}),
         ...(normalizedApiKey ? { apiKey: normalizedApiKey } : {}),
         ...(Object.keys(normalizedRequestHeaders).length > 0
           ? { requestHeaders: normalizedRequestHeaders }
@@ -209,11 +389,13 @@ export function AddProviderForm(props: {
           headers={requestHeaders}
           onHeadersChange={(headers) => {
             setRequestHeaders(headers);
+            resetManagedVerification();
             clearFieldError('advancedRequest');
           }}
           bodyText={requestBodyText}
           onBodyTextChange={(value) => {
             setRequestBodyText(value);
+            resetManagedVerification();
             clearFieldError('advancedRequest');
           }}
           disabled={busy}
@@ -235,6 +417,88 @@ export function AddProviderForm(props: {
       </VStack>
     </Collapsible>
   );
+  const quickUsesManagedOnboarding = Boolean(
+    props.apiKeyOnboardingBridge &&
+      apiKeyOnboardingRoute({
+        providerType: props.providerType,
+        requestHeaderCount: requestHeaders.length,
+        hasRequestBodyOverlay: requestBodyText.trim().length > 0,
+      }).kind === 'host',
+  );
+
+  if (
+    usesApiKeyDialog &&
+    shouldShowManagedOnboardingOutcomeUnknown(props.hasSaveUncertainty === true, busy)
+  ) {
+    return (
+      <VStack gap={3} data-maka-contract="api-key-onboarding-outcome-unknown">
+        <Banner
+          status="warning"
+          role="status"
+          title={copy.onboardingOutcomeUnknown}
+          description={copy.onboardingOutcomeUnknownDetail}
+        />
+        <HStack gap={2} justify="end">
+          <Button
+            variant="secondary"
+            label={copy.onboardingReloadConnections}
+            clickAction={async () => props.onOnboardingOutcomeUnknown?.()}
+          />
+        </HStack>
+      </VStack>
+    );
+  }
+
+  if (usesApiKeyDialog && managedPhase.kind === 'models') {
+    const options = managedPhase.models.map((model) => ({
+      value: model.id,
+      label: model.displayName?.trim() || model.id,
+    }));
+    return (
+      <VStack as="form" gap={3} onSubmit={submitApiKey} data-maka-contract="api-key-onboarding-models">
+        <VStack gap={1}>
+          <Text weight="semibold">{copy.onboardingChooseModels}</Text>
+          <Text type="supporting" color="secondary">{copy.onboardingChooseModelsHelp}</Text>
+        </VStack>
+        <MultiSelector
+          label={copy.onboardingEnabledModels}
+          options={options}
+          value={[...managedPhase.selectedIds]}
+          onChange={(selectedIds) => {
+            setManagedPhase({ ...managedPhase, selectedIds });
+            clearFieldError('form');
+          }}
+          isDisabled={busy}
+          placeholder={copy.onboardingSelectModel}
+          triggerDisplay="labels"
+          hasSearch
+          searchPlaceholder={copy.onboardingSearchModels}
+          width="100%"
+        />
+        <div role="status" aria-live="polite">
+          {busy ? <Text type="supporting">{copy.saving}</Text> : null}
+        </div>
+        {error?.field === 'form' && <Banner status="error" title={error.message} />}
+        <HStack gap={2} justify="end">
+          <Button
+            variant="ghost"
+            isDisabled={busy}
+            onClick={() => {
+              resetManagedVerification();
+              setError(null);
+            }}
+            label={copy.onboardingBack}
+          />
+          <Button
+            variant="primary"
+            type="submit"
+            isDisabled={busy || managedPhase.selectedIds.length === 0}
+            label={busy ? copy.saving : copy.onboardingAddConnection}
+          />
+        </HStack>
+      </VStack>
+    );
+  }
 
   if (usesApiKeyDialog) {
     return (
@@ -243,6 +507,7 @@ export function AddProviderForm(props: {
           value={apiKey}
           onChange={(next) => {
             setApiKey(next);
+            resetManagedVerification();
             clearFieldError('apiKey');
           }}
           placeholder={copy.apiKeyPlaceholder}
@@ -258,12 +523,30 @@ export function AddProviderForm(props: {
           hasAutoFocus
         />
         {advancedRequestEditor}
+        <div role="status" aria-live="polite">
+          {busy ? (
+            <Text type="supporting">
+              {quickUsesManagedOnboarding ? copy.onboardingVerifying : copy.saving}
+            </Text>
+          ) : null}
+        </div>
         {error?.field === 'form' && (
           <Banner status="error" title={error.message} />
         )}
         <HStack gap={2} justify="end">
           <Button variant="ghost" isDisabled={busy} onClick={props.onCancel} label={copy.cancel} />
-          <Button variant="primary" type="submit" isDisabled={busy} label={busy ? copy.saving : copy.save} />
+          <Button
+            variant="primary"
+            type="submit"
+            isDisabled={busy}
+            label={quickUsesManagedOnboarding
+              ? busy
+                ? copy.onboardingVerifying
+                : copy.onboardingVerifyAndChoose
+              : busy
+                ? copy.saving
+                : copy.save}
+          />
         </HStack>
       </VStack>
     );
@@ -283,6 +566,7 @@ export function AddProviderForm(props: {
             value={apiKey}
             onChange={(next) => {
               setApiKey(next);
+              resetManagedVerification();
               clearFieldError('apiKey');
             }}
             placeholder={copy.apiKeyPlaceholder}
@@ -301,6 +585,7 @@ export function AddProviderForm(props: {
           value={slug}
           onChange={(value) => {
             setSlug(value);
+            resetManagedVerification();
             clearFieldError('slug');
           }}
           placeholder="my-provider"
@@ -314,7 +599,10 @@ export function AddProviderForm(props: {
         />
         <TextInput
           value={name}
-          onChange={(value) => setName(value)}
+          onChange={(value) => {
+            setName(value);
+            resetManagedVerification();
+          }}
           placeholder={display.name}
           isDisabled={isExperimental || busy}
           label={copy.name}
@@ -324,6 +612,7 @@ export function AddProviderForm(props: {
             value={cloudflareAccountId}
             onChange={(value) => {
               setCloudflareAccountId(value);
+              resetManagedVerification();
               clearFieldError('accountId');
             }}
             placeholder={copy.accountIdPlaceholder}
@@ -341,6 +630,7 @@ export function AddProviderForm(props: {
             value={baseUrl}
             onChange={(value) => {
               setBaseUrl(value);
+              resetManagedVerification();
               clearFieldError('baseUrl');
             }}
             placeholder={defaults.baseUrl || 'https://…'}
@@ -357,7 +647,10 @@ export function AddProviderForm(props: {
         {showsDefaultModel && (
           <TextInput
             value={defaultModel}
-            onChange={setDefaultModel}
+            onChange={(value) => {
+              setDefaultModel(value);
+              resetManagedVerification();
+            }}
             placeholder={copy.defaultModelPlaceholder}
             isDisabled={isExperimental || busy}
             label={copy.defaultModel}
@@ -378,6 +671,6 @@ export function AddProviderForm(props: {
 }
 
 function usesQuickApiKeyDialog(providerType: ProviderType): boolean {
-  const defaults = PROVIDER_DEFAULTS[providerType];
+  const defaults = PROVIDER_REGISTRY[providerType];
   return defaults.authKind === 'api_key' && Boolean(defaults.baseUrl);
 }

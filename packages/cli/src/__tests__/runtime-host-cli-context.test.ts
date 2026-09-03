@@ -42,6 +42,7 @@ import {
 } from '@maka/runtime-host/protocol';
 import {
   connectRuntimeHostCli,
+  connectRuntimeHostCliConnection,
   resolveRuntimeHostCliConflictDecision,
   RuntimeHostCliConflictError,
   shouldRetryRuntimeHostConflict,
@@ -61,6 +62,7 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
     closed: new Promise<void>(() => {}),
     status: async () => ({ state: 'ready' }),
     subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
     subscribeScheduledTaskChanges: () => () => {},
@@ -94,8 +96,38 @@ test('CLI Runtime Host bootstrap launches the execution composition', async () =
   assert.ok(candidateEntrypoint instanceof URL);
   assert.equal(basename(fileURLToPath(candidateEntrypoint)), 'execution-candidate-main.js');
   assert.ok(clientInstanceId);
+  assert.equal(context.clientInstanceId, clientInstanceId);
   await context.close();
   assert.equal(closes, 1);
+});
+
+test('connection-only CLI bootstrap does not read the model connection catalog', async () => {
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {},
+  } as unknown as RuntimeHostConnection;
+  const context = await connectRuntimeHostCliConnection(
+    { rootPath: '/runtime-host-root' },
+    {
+      connectOrSpawn: async () => connectedHostResult(connection),
+      readConnectionCatalog: async () => {
+        throw new Error('model connection catalog unavailable');
+      },
+    },
+  );
+
+  assert.equal(context.connection.connectionId, connection.connectionId);
+  await context.close();
 });
 
 test('CLI refuses a staged Host whose durable installation claim is missing', async () => {
@@ -121,6 +153,83 @@ test('CLI refuses a staged Host whose durable installation claim is missing', as
     /RUNTIME_HOST_RECOVERY_REQUIRED/u,
   );
   assert.equal(closes, 1);
+});
+
+test('CLI Runtime Host bootstrap aborts a stalled catalog read and closes its connection', async () => {
+  const controller = new AbortController();
+  const catalogStarted = deferred<void>();
+  const abortReason = new Error('ACP connection closed');
+  let closes = 0;
+  let connectSignal: AbortSignal | undefined;
+  const connection = {
+    rootId: 'root-id',
+    hostEpoch: 'host-epoch',
+    connectionId: 'connection-id',
+    selectedProtocol: 0,
+    closed: new Promise<void>(() => {}),
+    status: async () => ({ state: 'ready' }),
+    subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
+    subscribeProjectCatalogChanges: () => () => {},
+    subscribeSessionCatalogChanges: () => () => {},
+    subscribeScheduledTaskChanges: () => () => {},
+    close: async () => {
+      closes += 1;
+    },
+  } as unknown as RuntimeHostConnection;
+
+  const connecting = connectRuntimeHostCli(
+    { rootPath: '/runtime-host-root', signal: controller.signal },
+    {
+      connectOrSpawn: async (input) => {
+        connectSignal = input.signal;
+        return {
+          kind: 'connected',
+          connection,
+          registration: hostRegistration(),
+        };
+      },
+      readConnectionCatalog: async () => {
+        catalogStarted.resolve();
+        return new Promise(() => {});
+      },
+    },
+  );
+  await catalogStarted.promise;
+  controller.abort(abortReason);
+
+  await assert.rejects(connecting, (error: unknown) => error === abortReason);
+  assert.equal(connectSignal, controller.signal);
+  assert.equal(closes, 1);
+});
+
+test('CLI Runtime Host bootstrap closes an initial connection acquired after abort', async () => {
+  const controller = new AbortController();
+  const connectStarted = deferred<void>();
+  const acquired = deferred<ReturnType<typeof connectedHostResult>>();
+  const abortReason = new Error('ACP connection closed');
+  let closes = 0;
+  const connection = {
+    close: async () => {
+      closes += 1;
+    },
+  } as unknown as RuntimeHostConnection;
+
+  const connecting = connectRuntimeHostCli(
+    { rootPath: '/runtime-host-root', signal: controller.signal },
+    {
+      connectOrSpawn: async () => {
+        connectStarted.resolve();
+        return acquired.promise;
+      },
+    },
+  );
+  await connectStarted.promise;
+  controller.abort(abortReason);
+
+  await assert.rejects(connecting, (error: unknown) => error === abortReason);
+  acquired.resolve(connectedHostResult(connection));
+  await waitFor(() => closes === 1);
 });
 
 test('non-interactive CLI reports how to retire an incompatible Runtime Host', async () => {
@@ -246,6 +355,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
     closed: new Promise<void>(() => {}),
     status: async () => ({ state: 'ready' }),
     subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
     subscribeScheduledTaskChanges: () => () => {},
@@ -263,7 +373,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
       },
       profileCatalog: {
         read: async () => ({
-          schemaVersion: 3,
+          schemaVersion: 4,
           profiles: [
             {
               id: 'office',
@@ -283,6 +393,7 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
             rootId,
           },
           credential: 'opaque-token',
+          profileIncarnationId: 'incarnation-a',
         }),
         create: async () => {
           throw new Error('unexpected write');
@@ -299,6 +410,15 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
         rebindIfCurrent: async () => {
           throw new Error('unexpected write');
         },
+        updateRemoteProfileIfCurrent: async () => {
+          throw new Error('unexpected write');
+        },
+        mutateRemoteProfileIfCurrent: async () => {
+          throw new Error('unexpected write');
+        },
+        readRemoteProfileIfCurrent: async () => {
+          throw new Error('unexpected read');
+        },
       },
       loadClientInstanceId: async () => '11111111-1111-4111-8111-111111111111',
       readConnectionCatalog: async () => ({ revision: 1, defaultTarget: null, connections: [] }),
@@ -309,6 +429,8 @@ test('remote CLI profiles pin root identity and resolve credential outside the p
   assert.equal(remoteInput?.profile.rootId, rootId);
   assert.equal(remoteInput?.credential, 'opaque-token');
   assert.equal(remoteInput?.clientInstanceId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(context.clientInstanceId, '11111111-1111-4111-8111-111111111111');
+  assert.equal(context.profileIncarnationId, 'incarnation-a');
   assert.equal(Object.hasOwn(context.profile, 'credential'), false);
   await context.close();
 });
@@ -337,6 +459,7 @@ test('remote CLI profile state and Client identity use the explicit Client Data 
     closed: new Promise<void>(() => {}),
     status: async () => ({ state: 'ready' }),
     subscribeConfigurationChanges: () => () => {},
+    subscribeConnectionCatalogChanges: () => () => {},
     subscribeProjectCatalogChanges: () => () => {},
     subscribeSessionCatalogChanges: () => () => {},
     subscribeScheduledTaskChanges: () => () => {},
@@ -415,6 +538,7 @@ test('remote CLI enables SSH prompts only for an explicitly interactive TTY', as
             closed: new Promise<void>(() => {}),
             status: async () => ({ state: 'ready' }),
             subscribeConfigurationChanges: () => () => {},
+            subscribeConnectionCatalogChanges: () => () => {},
             subscribeProjectCatalogChanges: () => () => {},
             subscribeSessionCatalogChanges: () => () => {},
             subscribeScheduledTaskChanges: () => () => {},
@@ -528,6 +652,14 @@ function hostRegistration(overrides: Partial<HostRegistration> = {}): HostRegist
   };
 }
 
+function connectedHostResult(connection: RuntimeHostConnection) {
+  return {
+    kind: 'connected' as const,
+    connection,
+    registration: hostRegistration(),
+  };
+}
+
 function incompatibleRemoteHandshake(overrides: Partial<HostIncompatible> = {}): HostIncompatible {
   return {
     kind: 'incompatible',
@@ -545,15 +677,40 @@ function incompatibleRemoteHandshake(overrides: Partial<HostIncompatible> = {}):
 
 function singleRemoteProfileCatalog(profile: RemoteRuntimeHostProfile): RuntimeHostProfileCatalog {
   return {
-    read: async () => ({ schemaVersion: 3, profiles: [profile] }),
+    read: async () => ({ schemaVersion: 4, profiles: [profile] }),
     resolve: async (profileId) => {
       assert.equal(profileId, profile.id);
-      return { profile, credential: 'opaque-token' };
+      return {
+        profile,
+        credential: 'opaque-token',
+        profileIncarnationId: 'incarnation-a',
+      };
     },
     create: async () => assert.fail('unexpected write'),
     save: async () => assert.fail('unexpected write'),
     remove: async () => assert.fail('unexpected write'),
     removeIfCurrent: async () => assert.fail('unexpected write'),
     rebindIfCurrent: async () => assert.fail('unexpected write'),
+    updateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
+    mutateRemoteProfileIfCurrent: async () => assert.fail('unexpected write'),
+    readRemoteProfileIfCurrent: async () => assert.fail('unexpected read'),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail('condition was not reached');
 }

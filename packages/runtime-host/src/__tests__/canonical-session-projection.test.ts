@@ -335,12 +335,6 @@ test('preflights the worst-case failed Turn before accepting more queued content
     );
     const worstCaseFailedTurn = worstCaseFailedTurnSnapshot(capacityCanonical.rootTurn!);
     assert.equal(worstCaseFailedTurn.status, 'failed');
-    if (worstCaseFailedTurn.status === 'failed') {
-      assert.equal(
-        worstCaseFailedTurn.contextBudgetExhaustedDetail,
-        'malformed_summary_too_small_for_fold',
-      );
-    }
     assert.throws(() =>
       createSessionContinuitySnapshot(
         {
@@ -429,7 +423,7 @@ test('projects a failed Turn message from the canonical terminal event', async (
   });
 });
 
-test('projects context-budget exhaustion detail from the canonical terminal event', async () => {
+test('a legacy context_budget_exhausted terminal event still projects, as a context overflow', async () => {
   await withStores(async (root, stores) => {
     const { sessionId, rootAdmissions } = await createRunningRoot(root, stores);
     const context = {
@@ -450,18 +444,30 @@ test('projects context-budget exhaustion detail from the canonical terminal even
       newId: () => 'unused',
       now: () => 12,
     } as const;
-    const terminalEvent = mapSessionEventToRuntimeEvent(
+    // Exactly what a session written before this outcome was retired holds: the
+    // runtime can no longer emit it, so the durable shape is rebuilt here.
+    const mapped = mapSessionEventToRuntimeEvent(
       {
         type: 'complete',
         id: 'terminal-context-budget-1',
         turnId: 'turn-1',
         ts: 13,
-        stopReason: 'context_budget_exhausted',
-        contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+        stopReason: 'error',
       },
       context,
       createSessionEventMapMemory(),
     );
+    const terminalEvent = {
+      ...mapped,
+      actions: {
+        ...mapped.actions,
+        stateDelta: {
+          stopReason: 'context_budget_exhausted',
+          failureClass: 'context_budget_exhausted',
+          contextBudgetExhaustedDetail: 'malformed_summary_missing_section',
+        },
+      },
+    };
     await stores.runtimeEventStore.appendRuntimeEvent(sessionId, 'run-1', terminalEvent);
     await stores.agentRunStore.updateRun(sessionId, 'run-1', {
       status: 'failed',
@@ -480,10 +486,7 @@ test('projects context-budget exhaustion detail from the canonical terminal even
     const canonical = await reader.read(sessionId);
     assert.equal(canonical?.rootTurn?.status, 'failed');
     if (canonical?.rootTurn?.status === 'failed') {
-      assert.equal(
-        canonical.rootTurn.contextBudgetExhaustedDetail,
-        'malformed_summary_missing_section',
-      );
+      assert.equal(canonical.rootTurn.failureClass, 'context_overflow');
     }
   });
 });

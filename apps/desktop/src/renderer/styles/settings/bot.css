@@ -65,7 +65,7 @@
 }
 
 .settingsRemoteAccessChannelRow[data-attention="true"] {
-  background: var(--warning-wash);
+  background: var(--color-warning-muted);
 }
 
 .settingsRemoteAccessItemActions {
@@ -123,14 +123,14 @@
 .settingsBotDetailHeader p {
   font: var(--maka-text-body);
   margin: 0;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .settingsBotEnableHint {
   font: var(--maka-text-supporting);
   display: block;
   margin-top: var(--space-1);
-  color: var(--warning-text, var(--foreground-secondary));
+  color: var(--warning-text, var(--muted-foreground));
 }
 
 .settingsBotConfigDocLink {
@@ -226,7 +226,7 @@
 
 .settingsBotOnboardingQrFrame[data-state="starting"],
 .settingsBotOnboardingQrFrame[data-state="connecting"] {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   background: var(--foreground-3);
 }
 
@@ -242,12 +242,12 @@
 
 .settingsBotOnboardingSuccess {
   color: var(--success-text);
-  background: var(--success-wash);
+  background: var(--color-success-muted);
 }
 
 .settingsBotOnboardingEmpty {
   color: var(--destructive);
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
 }
 
 .settingsBotOnboardingStatus,

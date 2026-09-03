@@ -36,12 +36,7 @@ export function createRuntimeHostUpgradePrompts(
   return {
     restartable: async (conflict): Promise<RuntimeHostRestartDecision> => {
       const locale = await resolveLocale();
-      const canWait = conflict.registration.lifecycleMode !== 'service';
-      const dialog = buildRuntimeHostUpgradeDialog(
-        conflict,
-        { action: 'restart', canWait },
-        locale,
-      );
+      const dialog = buildRuntimeHostUpgradeDialog(conflict, 'restart', locale);
       const { response } = await showDialog(
         dialog.options,
         locale,
@@ -51,14 +46,10 @@ export function createRuntimeHostUpgradePrompts(
     },
     nonRestartable: async (
       conflict,
-      actions,
+      action,
     ): Promise<RuntimeHostNonRestartableDecision> => {
       const locale = await resolveLocale();
-      const dialog = buildRuntimeHostUpgradeDialog(
-        conflict,
-        { action: actions.canReplace ? 'replace' : undefined, canWait: actions.canWait },
-        locale,
-      );
+      const dialog = buildRuntimeHostUpgradeDialog(conflict, action, locale);
       const { response } = await showDialog(
         dialog.options,
         locale,

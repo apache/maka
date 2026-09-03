@@ -224,7 +224,7 @@ test('local Peer Mesh join keeps invitations off argv and accepts bounded large 
         peerId: `peer-${meshIndex}-${memberIndex}-${'x'.repeat(48)}`,
         endpointKind: 'client' as const,
         displayName: `Member ${meshIndex}-${memberIndex} ${'x'.repeat(60)}`,
-        state: 'route_available' as const,
+        state: 'reachable' as const,
         expiresAt: 4_000_000_000_000,
       })),
       pendingInvitationCount: 0,

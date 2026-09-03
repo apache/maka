@@ -562,6 +562,12 @@ export class RuntimeHostSessionObserver {
         status: answered.outcome.status,
         revision: answered.revision,
       });
+    } else if (answered.outcome.kind === "client_capability_decision") {
+      this.#broadcast(answered.sessionId, {
+        type: "client_capability_decision_ack",
+        ...base,
+        decision: answered.outcome.decision,
+      });
     }
   }
 

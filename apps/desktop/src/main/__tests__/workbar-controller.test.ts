@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, StrictMode } from 'react';
@@ -59,17 +60,6 @@ function shellUpdate(sessionId: string, ref: string): ShellRunUpdate {
     result: { ref },
   } as ShellRunUpdate;
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 let latestController: WorkbarController | undefined;
 let controllerRenderSnapshots: Array<{
   activeId: string | undefined;
@@ -155,6 +145,32 @@ describe('useWorkbarController', () => {
 
     assert.equal(controller().host.projectId, 'project-canonical');
     assert.deepEqual(controller().host.projectAliases, ['project-absorbed']);
+  });
+
+  it('routes Client Capability decisions to the active Session', async () => {
+    const { root } = installReactRenderer();
+    const responses: Array<{ sessionId: string; requestId: string; decision: string }> = [];
+    const defaults = createFakeWorkbarServices();
+    const services = createFakeWorkbarServices({
+      sideChat: {
+        ...defaults.sideChat,
+        respondToClientCapability: async (sessionId, response) => {
+          responses.push({ sessionId, ...response });
+        },
+      },
+    });
+
+    await act(async () => renderController(root, services, input(session('a'))));
+    await act(async () =>
+      controller().commands.respondToClientCapability({
+        requestId: 'capability-1',
+        decision: 'allow',
+      }),
+    );
+
+    assert.deepEqual(responses, [
+      { sessionId: 'a', requestId: 'capability-1', decision: 'allow' },
+    ]);
   });
 
   it('keeps the initial Session active after StrictMode replays mount effects', async () => {

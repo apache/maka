@@ -17,8 +17,8 @@
  * under the License.
  */
 
+import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { expect } from './test-helpers.js';
 import {
   aggregateMessageContents,
   decodeToolStepProgress,
@@ -26,7 +26,7 @@ import {
 } from '../events.js';
 
 test('aggregates inline references against the combined display text', () => {
-  expect(
+  assert.deepStrictEqual(
     aggregateMessageContents([
       {
         text: '<skill>Alpha</skill>\n\nFirst',
@@ -39,18 +39,19 @@ test('aggregates inline references against the combined display text', () => {
         inlineReferences: [{ kind: 'skill', value: '/skill:beta', label: 'Beta', start: 0 }],
       },
     ]),
-  ).toEqual({
-    text: '<skill>Alpha</skill>\n\nFirst\n\n<skill>Beta</skill>\n\nSecond',
-    displayText: '/skill:alpha First\n\n/skill:beta Second',
-    inlineReferences: [
-      { kind: 'skill', value: '/skill:alpha', label: 'Alpha', start: 0 },
-      { kind: 'skill', value: '/skill:beta', label: 'Beta', start: 20 },
-    ],
-  });
+    {
+      text: '<skill>Alpha</skill>\n\nFirst\n\n<skill>Beta</skill>\n\nSecond',
+      displayText: '/skill:alpha First\n\n/skill:beta Second',
+      inlineReferences: [
+        { kind: 'skill', value: '/skill:alpha', label: 'Alpha', start: 0 },
+        { kind: 'skill', value: '/skill:beta', label: 'Beta', start: 20 },
+      ],
+    },
+  );
 });
 
 test('preserves an explicit empty inline-reference marker while aggregating', () => {
-  expect(aggregateMessageContents([{ text: 'plain', inlineReferences: [] }])).toEqual({
+  assert.deepStrictEqual(aggregateMessageContents([{ text: 'plain', inlineReferences: [] }]), {
     text: 'plain',
     inlineReferences: [],
   });
@@ -59,19 +60,20 @@ test('preserves an explicit empty inline-reference marker while aggregating', ()
 test('round-trips bounded tool step progress through the shared wire codec', () => {
   const encoded = encodeToolStepProgress({ current: 1, total: 2 });
 
-  expect(encoded).toBe('steps:1/2');
-  expect(decodeToolStepProgress(encoded!)).toEqual({ current: 1, total: 2 });
-  expect(
+  assert.strictEqual(encoded, 'steps:1/2');
+  assert.deepStrictEqual(decodeToolStepProgress(encoded!), { current: 1, total: 2 });
+  assert.deepStrictEqual(
     decodeToolStepProgress(
       encodeToolStepProgress({
         current: Number.MAX_SAFE_INTEGER,
         total: Number.MAX_SAFE_INTEGER,
       })!,
     ),
-  ).toEqual({
-    current: Number.MAX_SAFE_INTEGER,
-    total: Number.MAX_SAFE_INTEGER,
-  });
+    {
+      current: Number.MAX_SAFE_INTEGER,
+      total: Number.MAX_SAFE_INTEGER,
+    },
+  );
 });
 
 test('rejects invalid tool step progress at both codec boundaries', () => {
@@ -82,7 +84,7 @@ test('rejects invalid tool step progress at both codec boundaries', () => {
     { current: 0.5, total: 2 },
     { current: Number.MAX_SAFE_INTEGER + 1, total: Number.MAX_SAFE_INTEGER + 1 },
   ]) {
-    expect(encodeToolStepProgress(progress)).toBe(undefined);
+    assert.strictEqual(encodeToolStepProgress(progress), undefined);
   }
 
   for (const chunk of [
@@ -93,7 +95,7 @@ test('rejects invalid tool step progress at both codec boundaries', () => {
     'steps:0.5/2',
     'steps:9007199254740992/9007199254740992',
   ]) {
-    expect(decodeToolStepProgress(chunk)).toBe(undefined);
+    assert.strictEqual(decodeToolStepProgress(chunk), undefined);
   }
-  expect(decodeToolStepProgress({ kind: 'stdout', text: 'steps:1/2' })).toBe(undefined);
+  assert.strictEqual(decodeToolStepProgress({ kind: 'stdout', text: 'steps:1/2' }), undefined);
 });

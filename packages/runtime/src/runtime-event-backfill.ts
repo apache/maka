@@ -129,6 +129,9 @@ export function backfillRuntimeEventsFromStoredMessages(
             ...(message.quotes !== undefined && message.quotes.length > 0
               ? { quotes: message.quotes }
               : {}),
+            ...(message.directoryReferences
+              ? { directoryReferences: message.directoryReferences }
+              : {}),
             ...(message.inlineReferences !== undefined
               ? { inlineReferences: message.inlineReferences }
               : {}),
@@ -542,6 +545,9 @@ function tokenUsageFromMessage(
       : {}),
     ...(message.promptSegments !== undefined ? { promptSegments: message.promptSegments } : {}),
     ...(message.contextBudget !== undefined ? { contextBudget: message.contextBudget } : {}),
+    ...(message.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: message.lastRequestAnchor }
+      : {}),
   };
 }
 

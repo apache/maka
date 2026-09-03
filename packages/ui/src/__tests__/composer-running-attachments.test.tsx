@@ -77,7 +77,7 @@ test('only an attachment-capable running-turn host accepts a pasted image', asyn
 
   function attachmentPickerItem(): HTMLElement | undefined {
     return [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(
-      (item) => item.textContent?.includes('Add file or directory'),
+      (item) => item.textContent?.includes('Add files'),
     );
   }
 

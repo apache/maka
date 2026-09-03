@@ -25,17 +25,20 @@ import { type MakaTool, type MakaToolContext } from '@maka/runtime/tool-runtime'
 import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   decodeClientCapabilityReplaceInput,
+  type ClientCapabilityAdmissionEvidence,
   type ClientCapabilityCallFrame,
   type ClientCapabilityServiceCallFrame,
 } from '@maka/runtime-host/protocol';
 import { z } from 'zod';
 import { buildClientSettingsTools } from '../client-settings-tools.js';
+import { browserOriginAdmission } from '../browser/browser-origin-admission.js';
 import { buildRiveWorkflowTool } from '../rive-workflow-tool.js';
 import { createDesktopNativeCapabilityProvider } from '../runtime-host-native-capabilities.js';
 
 test('publishes self-described session-affine Browser and Computer Use offers', () => {
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({ includeHidden: z.boolean().optional() }), async () => 'ok')],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(async () => ({ text: 'ok' })),
     releaseComputerUseSession() {},
@@ -91,6 +94,7 @@ test('remote providers do not request Host paths and use a Client-owned cwd', as
           return 'ok';
         }),
       ],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
       releaseComputerUseSession() {},
@@ -111,6 +115,7 @@ test('publishes the semantic-only Computer Use schema through the Client Capabil
   const computerUseTools = buildComputerUseTools({ backend: computerBackend() });
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools,
     releaseComputerUseSession: (sessionId) => computerUseTools.clearSession(sessionId),
@@ -144,6 +149,7 @@ test('publishes every production Desktop-owned tool schema through the protocol'
   });
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
     releaseComputerUseSession() {},
@@ -176,6 +182,7 @@ test('publishes and admits additional Desktop native-effect services', async () 
   const provider = createDesktopNativeCapabilityProvider(
     {
       browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
       releaseComputerUseSession() {},
@@ -208,6 +215,8 @@ test('publishes and admits additional Desktop native-effect services', async () 
 test('validates before admission and invokes the exact offered tool with Host context', async () => {
   let admitted = false;
   let invoked = false;
+  const resolvedUrls: string[] = [];
+  let acceptedEvidence: ClientCapabilityAdmissionEvidence | undefined;
   let received:
     | {
         args: unknown;
@@ -219,6 +228,10 @@ test('validates before admission and invokes the exact offered tool with Host co
       browserTools: [
         tool('browser_navigate', z.object({ url: z.string().url() }), async (args, context) => {
           assert.equal(admitted, true);
+          assert.deepEqual(browserOriginAdmission(context.sessionId), {
+            sessionId: 'host-a:session-1',
+            url: 'https://example.com/path',
+          });
           invoked = true;
           received = {
             args,
@@ -232,6 +245,13 @@ test('validates before admission and invokes the exact offered tool with Host co
           return 'Loaded';
         }),
       ],
+      resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
+        assert.equal(sessionId, 'host-a:session-1');
+        assert.equal(toolName, 'browser_navigate');
+        const url = String(args.url);
+        resolvedUrls.push(url);
+        return url;
+      },
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
       releaseComputerUseSession() {},
@@ -245,13 +265,19 @@ test('validates before admission and invokes the exact offered tool with Host co
   );
   assert.equal(invoked, false);
   assert.equal(admitted, false);
+  assert.deepEqual(resolvedUrls, []);
 
-  const result = await call(provider, capabilityFrame({ arguments: { url: 'https://example.com' } }), () => {
-    admitted = true;
-  });
+  const result = await call(
+    provider,
+    capabilityFrame({ arguments: { url: 'https://example.com/path' } }),
+    (evidence) => {
+      acceptedEvidence = evidence;
+      admitted = true;
+    },
+  );
   assert.deepEqual(result, { content: [{ type: 'text', text: 'Loaded' }] });
   assert.deepEqual(received, {
-    args: { url: 'https://example.com' },
+    args: { url: 'https://example.com/path' },
     context: {
       sessionId: 'host-a:session-1',
       turnId: 'turn-1',
@@ -259,6 +285,42 @@ test('validates before admission and invokes the exact offered tool with Host co
       toolCallId: 'tool-call-1',
     },
   });
+  assert.deepEqual(acceptedEvidence, {
+    kind: 'browser_url',
+    url: 'https://example.com/path',
+  });
+  assert.deepEqual(resolvedUrls, [
+    'https://example.com/path',
+    'https://example.com/path',
+  ]);
+});
+
+test('does not execute Browser work when its Origin changes while admission is pending', async () => {
+  let resolveCount = 0;
+  let invoked = false;
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [
+      tool('browser_snapshot', z.object({}), async () => {
+        invoked = true;
+        return 'snapshot';
+      }),
+    ],
+    resolveBrowserUrl: () =>
+      resolveCount++ === 0 ? 'https://first.example/page' : 'https://second.example/page',
+    releaseBrowserSession() {},
+    computerUseTools: computerTools(),
+    releaseComputerUseSession() {},
+  });
+
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({ toolName: 'browser_snapshot', arguments: {} }),
+      ),
+    /Browser origin changed while admission was pending/u,
+  );
+  assert.equal(invoked, false);
 });
 
 test('watches Computer Use turns without widening Browser lifecycle', async () => {
@@ -268,6 +330,7 @@ test('watches Computer Use turns without widening Browser lifecycle', async () =
   const provider = createDesktopNativeCapabilityProvider(
     {
       browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(async (_args, context) => {
         computerUseSessionId = context.sessionId;
@@ -325,6 +388,7 @@ test('projects Computer Use screenshots and releases all native resources for a 
   );
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({}), async () => 'snapshot')],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession: (sessionId) => {
       browserReleased.push(sessionId);
     },
@@ -382,6 +446,7 @@ test('projects Computer Use screenshots and releases all native resources for a 
 test('does not advertise unavailable capability groups or dispatch unknown identities', async () => {
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
     releaseComputerUseSession() {},
@@ -413,6 +478,7 @@ test('dispatches through the same immutable tool snapshot it advertised', async 
   ];
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
     releaseComputerUseSession() {},
@@ -460,6 +526,7 @@ test('reports provider retirement once after its registration is released', asyn
   const provider = createDesktopNativeCapabilityProvider(
     {
       browserTools: [tool('snapshot', z.object({}), async () => 'snapshot')],
+      resolveBrowserUrl: () => 'https://example.com/',
       releaseBrowserSession() {},
       computerUseTools: computerTools(),
       releaseComputerUseSession() {},
@@ -485,6 +552,7 @@ test('settles every native Session cleanup before reporting a release failure', 
   let computerReleased = false;
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {
       throw new Error('browser release failed');
     },
@@ -521,6 +589,7 @@ test('forwards Host cancellation to an admitted Desktop invocation', async () =>
         });
       }),
     ],
+    resolveBrowserUrl: () => 'https://example.com/',
     releaseBrowserSession() {},
     computerUseTools: computerTools(),
     releaseComputerUseSession() {},
@@ -645,11 +714,11 @@ function computerFrame(overrides: Partial<ClientCapabilityCallFrame> = {}): Clie
 async function call(
   provider: ClientCapabilityProvider,
   frame: ClientCapabilityCallFrame,
-  accept: () => void = () => undefined,
+  accept: (evidence: ClientCapabilityAdmissionEvidence) => void = () => undefined,
 ) {
   if (!provider.call) throw new Error('Expected a callable provider');
   return provider.call(frame, {
     signal: new AbortController().signal,
-    accept: async () => accept(),
+    accept: async (evidence) => accept(evidence),
   });
 }

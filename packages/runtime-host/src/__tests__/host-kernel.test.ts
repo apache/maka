@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import { defineInteractiveRuntimeHostComposition } from '../server/host-composition.js';
 import assert from 'node:assert/strict';
@@ -1060,6 +1061,45 @@ describe('non-serving Runtime Host kernel', () => {
       const successor = await tryAcquireInteractiveRootOwner(capability);
       assert.ok(successor);
       await successor?.close();
+    });
+  });
+
+  test('safe retirement refuses a second client that connected after discovery', async () => {
+    await withHostPaths(async (paths) => {
+      const capability = await resolveStorageRoot({ path: paths.root, kind: 'interactive' });
+      const owner = await tryAcquireInteractiveRootOwner(capability);
+      assert.ok(owner);
+      const host = await RuntimeHostKernel.start({
+        owner,
+        lifecycleMode: 'service',
+        composition: KERNEL_COMPOSITION,
+      });
+      const replacement = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(replacement.kind, 'connected');
+      if (replacement.kind !== 'connected') return;
+      const lateClient = await retryConnect(paths, CURRENT_PROTOCOL);
+      assert.equal(lateClient.kind, 'connected');
+      if (lateClient.kind !== 'connected') return;
+
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'active_tasks' },
+      );
+      assert.equal(host.state, 'ready');
+
+      await lateClient.connection.close();
+      assert.deepEqual(
+        await replacement.connection.request('host.upgrade.prepare', {
+          expectedHostEpoch: host.hostEpoch,
+          allowInterruptActiveTasks: false,
+        }),
+        { kind: 'prepared', pid: process.pid },
+      );
+      await host.closed;
+      assert.equal(host.shutdownReason, 'retirement');
     });
   });
 
@@ -2410,7 +2450,7 @@ describe('non-serving Runtime Host kernel', () => {
     });
   });
 
-  test('rejects a previous-epoch Client before admitting ScheduledTask commands', async () => {
+  test('rejects a previous-epoch Client before admitting catalog commands', async () => {
     await withHostPaths(async (paths) => {
       const candidate = await startTestRuntimeHostCandidate(paths, {
         rootPath: paths.root,
@@ -2438,9 +2478,9 @@ describe('non-serving Runtime Host kernel', () => {
         await assert.rejects(
           () =>
             writeClientFrame(transport, {
-              requestId: 'post-epoch-mismatch-scheduled-task-query',
-              operation: 'scheduled-task.query',
-              input: { kind: 'list' },
+              requestId: 'post-epoch-mismatch-catalog-query',
+              operation: 'connection.catalog.query',
+              input: { kind: 'start' },
             }),
           (error: unknown) => error instanceof RuntimeHostTransportError && error.code === 'closed',
         );
@@ -3679,19 +3719,6 @@ function terminateProcess(pid: number | undefined): void {
     }
   }
 }
-
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: NodeJS.Timeout | undefined;
-  return Promise.race([
-    promise,
-    new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-    }),
-  ]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
-}
-
 function openSocket(path: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
     const socket = connect(path);

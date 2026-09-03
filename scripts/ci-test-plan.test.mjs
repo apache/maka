@@ -17,11 +17,35 @@
  * under the License.
  */
 
+/**
+ * Behaviour of the test planner itself: which lanes a set of changed files
+ * selects. Assertions about the workflows that consume those selections live in
+ * `ci-workflow-policy.test.mjs`.
+ *
+ * This suite runs before `npm ci` installs anything, so it may import only
+ * `node:` builtins and repository modules that do the same.
+ * `ci-workflow-policy.test.mjs` asserts that constraint for every suite the
+ * install-free steps run.
+ */
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { formatGitHubOutputs, loadWorkspaceGraph, planTests } from './ci-test-plan.mjs';
+import { changedFilesBetween, formatGitHubOutputs, planTests } from './ci-test-plan.mjs';
+
+/**
+ * Every surface a plan selected, read off the plan itself rather than from a
+ * list of the ones worth naming. `assert.deepEqual(selections(plan), [])` is
+ * therefore the whole "this change costs nothing" claim, and a selection added
+ * later joins it without anyone editing these tests.
+ */
+function selections(plan) {
+  return Object.entries(plan)
+    .filter(([key]) => key !== 'workspaces')
+    .filter(([, value]) => (Array.isArray(value) ? value.length > 0 : Boolean(value)))
+    .map(([key]) => key)
+    .sort();
+}
 
 const dirs = [
   'packages/core',
@@ -47,13 +71,74 @@ const graph = {
   testDirs: new Set(dirs),
 };
 
-test('documentation-only changes do not select code validation', () => {
+test('documentation-only changes select nothing at all', () => {
   const plan = planTests(['docs/ci.md'], { graph });
 
-  assert.equal(plan.code, false);
-  assert.equal(plan.asfSource, false);
-  assert.equal(plan.astryxSurface, false);
+  assert.deepEqual(selections(plan), []);
   assert.deepEqual(plan.workspaces, []);
+});
+
+test('documentation inside workspaces selects nothing at all', () => {
+  for (const path of ['packages/runtime/README.md', 'apps/desktop/README.md']) {
+    const plan = planTests([path], { graph });
+
+    assert.deepEqual(selections(plan), [], path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('mixed documentation and code changes still select code validation', () => {
+  const plan = planTests(['README.md', 'packages/core/src/index.ts'], { graph });
+
+  assert.equal(plan.code, true);
+});
+
+test('documentation with a dedicated contract still selects that contract', () => {
+  for (const path of [
+    'LICENSE',
+    'docs/astryx-surface-file-inventory.md',
+    'apps/desktop/resources/licenses/renderer/SIMPLE_ICONS_LICENSE.md',
+  ]) {
+    const plan = planTests([path], { graph });
+
+    assert.equal(plan.code, false, path);
+    assert.notDeepEqual(selections(plan), [], path);
+  }
+});
+
+test('changed files are derived from the PR merge base', () => {
+  const calls = [];
+  const exec = (_command, args) => {
+    calls.push(args);
+    if (args[0] === 'merge-base') return 'fork-point\n';
+    if (args.at(-2) === 'fork-point') return 'packages/runtime/README.md\n';
+    if (args.at(-2) === 'main-now') {
+      return 'packages/core/src/main-only.ts\npackages/runtime/README.md\n';
+    }
+    throw new Error(`Unexpected git invocation: ${args.join(' ')}`);
+  };
+
+  const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
+
+  assert.deepEqual(changedFiles, ['packages/runtime/README.md']);
+  assert.deepEqual(selections(planTests(changedFiles, { graph })), []);
+  assert.deepEqual(calls, [
+    ['merge-base', 'main-now', 'pr-head'],
+    ['diff', '--no-renames', '--name-only', '--diff-filter=ACMRDT', 'fork-point', 'pr-head'],
+  ]);
+});
+
+test('type changes remain in the PR-owned delta', () => {
+  const exec = (_command, args) => {
+    if (args[0] === 'merge-base') return 'fork-point\n';
+    assert.ok(args.includes('--diff-filter=ACMRDT'));
+    return 'packages/runtime/src/runtime.ts\n';
+  };
+
+  const changedFiles = changedFilesBetween('main-now', 'pr-head', exec);
+
+  assert.deepEqual(changedFiles, ['packages/runtime/src/runtime.ts']);
+  assert.equal(planTests(changedFiles, { graph }).code, true);
 });
 
 test('the Astryx inventory can run without selecting the code suite', () => {
@@ -138,9 +223,10 @@ test('release authority changes select their dedicated contract gate', () => {
     '.github/workflows/release-cli-finalize.yml',
     '.github/workflows/release-cli-stage.yml',
     '.github/workflows/release.yml',
-    'scripts/package-macos-arm64.mjs',
+    'scripts/package-macos.mjs',
     'scripts/package-macos-autoupdate-next.mjs',
     'scripts/package-macos-arm64-cli.mjs',
+    'scripts/package-linux.mjs',
     'scripts/package-windows-x64.mjs',
     'scripts/prepare-windows-upgrade-baseline.mjs',
     'scripts/prepare-windows-cu-helper.mjs',
@@ -155,8 +241,11 @@ test('release authority changes select their dedicated contract gate', () => {
     'scripts/release-version.mjs',
     'scripts/release-cli-publication.test.mjs',
     'scripts/verify-macos-arm64-cli.mjs',
-    'scripts/verify-macos-arm64-dmg.mjs',
+    'scripts/verify-macos-dmg.mjs',
     'scripts/verify-macos-autoupdate.mjs',
+    'scripts/verify-linux.mjs',
+    'scripts/desktop-release-targets.mjs',
+    'scripts/desktop-release-targets.test.mjs',
     'scripts/desktop-update-contract.mjs',
     'scripts/verify-packaged-app.mjs',
     'scripts/verify-windows-x64.mjs',
@@ -167,6 +256,50 @@ test('release authority changes select their dedicated contract gate', () => {
     assert.equal(planTests([path], { graph }).releaseContract, true, path);
   }
   assert.equal(planTests(['.github/RELEASE_CHECKLIST.md'], { graph }).releaseContract, false);
+});
+
+// Derived from the gate scripts themselves, because the sets above are hand
+// maintained and drift silently in both directions: a test the gate runs but
+// no lane selects can be edited green, and a listed path that no longer exists
+// is dead weight nothing reports. Both had happened — three of the release
+// gate's own tests reached no lane, and the set named a
+// `prepare-windows-upgrade-baseline.test.mjs` that never existed.
+test('every test a gate script runs reaches a lane that runs that gate', () => {
+  const { scripts } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const lanesByTest = new Map();
+  for (const [script, lane] of [
+    ['check:release', 'releaseContract'],
+    ['check:asf-source', 'asfSource'],
+  ]) {
+    for (const file of scripts[script].match(/scripts\/[\w.-]+\.test\.mjs/gu) ?? []) {
+      lanesByTest.set(file, (lanesByTest.get(file) ?? new Set()).add(lane));
+    }
+  }
+  assert.ok(lanesByTest.size > 0, 'no gate script names a test file');
+
+  // A test two gates share needs only one of them: either run executes it.
+  for (const [file, lanes] of lanesByTest) {
+    const plan = planTests([file], { graph });
+    assert.ok(
+      [...lanes].some((lane) => plan[lane]),
+      `${file} reaches no ${[...lanes].join('/')}`,
+    );
+  }
+});
+
+// The other direction of the same drift. Every literal path in the planner is
+// matched against a changed file, so one that no longer exists can never match
+// and nothing reports it: the phantom baseline test sat here for a month, and
+// `agent-run-store.test.ts` stayed in the storage stress set for a month after
+// #1994 deleted it.
+test('the planner names no path that no longer exists', () => {
+  const source = readFileSync(new URL('ci-test-plan.mjs', import.meta.url), 'utf8');
+  const paths = [...source.matchAll(/^ {2}'([\w.-]+(?:\/[\w.-]+)+)',$/gmu)].map(([, path]) => path);
+  assert.ok(paths.length > 0, 'the planner names no paths');
+
+  for (const path of paths) {
+    assert.ok(existsSync(new URL(`../${path}`, import.meta.url)), path);
+  }
 });
 
 test('Product Nightly authority changes select the release contract gate', () => {
@@ -248,548 +381,123 @@ test('unknown top-level code fails safe to full selection', () => {
   assert.equal(planTests(['unknown.config'], { graph }).full, true);
 });
 
+// Everything below reached that fail-safe until now. `native/` alone was the
+// largest single source of full-suite runs — 14 of the last 300 first-parent
+// commits, ahead of `package-lock.json` — because the classifier had no opinion
+// about a directory that three dedicated lanes already own.
+
+test('a Rust crate with its own admission lane selects no JavaScript surface', () => {
+  // `gitoxide-helper-admission.yml` owns `cargo fmt`, `cargo test`, and the
+  // JavaScript invocation contract for this crate on three operating systems.
+  // No step in `ci.yml` reads it, so the plan has nothing to select.
+  for (const path of ['native/gitoxide-helper/src/main.rs', 'native/gitoxide-helper/Cargo.toml']) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.code, false, path);
+    assert.equal(plan.cliPackage, false, path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('the direct-peer crate and its lint policy select CLI packaging alone', () => {
+  // `release:cli:pack` builds this addon into the tarball and runs `cargo deny`
+  // against that policy, so CLI packaging is the one JavaScript gate with a
+  // stake here. Lint, typecheck, Storybook, and a real window have none.
+  for (const path of [
+    'native/runtime-host-peer/src/engine.rs',
+    'native/runtime-host-peer/Cargo.lock',
+    'deny.toml',
+  ]) {
+    const plan = planTests([path], { graph });
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.cliPackage, true, path);
+    assert.equal(plan.releaseContract, true, path);
+    assert.equal(plan.e2e, false, path);
+    assert.equal(plan.storybook, false, path);
+    assert.equal(plan.appIcons, false, path);
+    assert.deepEqual(plan.workspaces, [], path);
+  }
+});
+
+test('a native root without an admission lane still fails safe to full', () => {
+  // The exemption above is owned by a lane, not by the language. A crate added
+  // under `native/` has no lane on the commit that introduces it, so nothing
+  // but this fallback would compile or test it at all.
+  for (const path of ['native/new-helper/src/main.rs', 'native/new-helper/Cargo.toml']) {
+    assert.equal(planTests([path], { graph }).full, true, path);
+  }
+});
+
+test('branch protection reaches the suite that parses it', () => {
+  // `.asf.yaml` names the required contexts and the release-environment
+  // admission rules. `product-release.test.mjs` is the only suite that reads
+  // it, and it runs behind `check:release` — so selecting the release contract
+  // is what proves a change to the merge gate still passes its own policy test.
+  const plan = planTests(['.asf.yaml'], { graph });
+  assert.equal(plan.full, false);
+  assert.equal(plan.releaseContract, true);
+  assert.equal(plan.code, false);
+  assert.deepEqual(plan.workspaces, []);
+});
+
+test('a dependency patch keeps the full suite until a consumer map exists', () => {
+  // A patch rewrites a dependency's behaviour, and which suite proves that
+  // behaviour is a property of the patch rather than of the directory. The
+  // node-pty patch is regressed by
+  // `packages/runtime/src/__tests__/node-pty-write-lifecycle.test.ts`, while
+  // the packaging smoke that a build-shaped selection would run only asserts
+  // that a method name still appears in the tarball. Narrowing this bucket
+  // needs an explicit patch-to-consumer mapping; until then it stays here,
+  // where the cost is runner minutes rather than a silent regression.
+  assert.equal(planTests(['patches/node-pty+1.2.0-beta.15.patch'], { graph }).full, true);
+});
+
 test('full-suite authority files select every surface', () => {
   for (const path of ['package-lock.json', '.github/workflows/ci.yml']) {
     assert.equal(planTests([path], { graph }).full, true, path);
   }
 });
 
-test('GitHub output matches the selections consumed by CI', () => {
-  const output = formatGitHubOutputs(planTests([], { graph, forceFull: true }));
-  const outputKeys = new Set(output.split('\n').map((line) => line.split('=', 1)[0]));
-  const workflow = readWorkflow('ci.yml');
-  const consumedKeys = new Set(
-    [...workflow.matchAll(/steps\.plan\.outputs\.([a-z0-9_]+)/gu)].map((match) => match[1]),
+// The SessionTodo cutover (#4351) retired an operation and stranded every
+// workspace holding a credential issued before it (#4420). It changed the
+// vocabulary, not the decoders — so a trigger listing only decoders stays green
+// on the exact change shape this guard exists to catch.
+test('retiring an operation selects the released forward roll', () => {
+  const plan = planTests(
+    [
+      'packages/runtime-host/src/protocol/operations.ts',
+      'apps/desktop/src/renderer/features/workbar/tools/tasks/use-session-todo.ts',
+    ],
+    { graph },
   );
 
-  assert.deepEqual(outputKeys, consumedKeys);
+  assert.equal(plan.stateRootCompat, true);
+  assert.equal(plan.full, false);
 });
 
-test('core CI validates pull requests and the resulting main branch state', () => {
-  const workflow = readWorkflow('ci.yml');
+test('a durable-state decoder selects the released forward roll', () => {
+  const plan = planTests(['packages/runtime-host/src/server/access-credential-store.ts'], {
+    graph,
+  });
 
-  assert.match(workflow, /pull_request:\n\s+branches: \[main\]/u);
-  assert.match(workflow, /push:\n\s+branches: \[main\]/u);
-  assert.match(
-    workflow,
-    /BASE_SHA: \$\{\{ github\.event_name == 'push' && github\.event\.before \|\| github\.event\.pull_request\.base\.sha \}\}/u,
-  );
-  assert.match(
-    workflow,
-    /HEAD_SHA: \$\{\{ github\.event_name == 'push' && github\.sha \|\| github\.event\.pull_request\.head\.sha \}\}/u,
-  );
-  assert.match(workflow, /\[\[ "\$BASE_SHA" =~ \^0\+\$ \]\]/u);
+  assert.equal(plan.stateRootCompat, true);
 });
 
-test('core CI uses the Windows inventory package-script authority', () => {
-  const workflow = readWorkflow('ci.yml');
+test('ordinary changes do not pay for the released forward roll', () => {
+  const plan = planTests(['apps/desktop/src/renderer/features/workbar/ports.ts'], { graph });
 
-  assert.match(workflow, /run: npm run windows:inventory/u);
-  assert.doesNotMatch(workflow, /run: node scripts\/windows-test-inventory\.mjs --check/u);
+  assert.equal(plan.stateRootCompat, false);
 });
 
-test('contract checks run before dependency setup and can fail the job', () => {
-  const workflow = readWorkflow('ci.yml');
-  const setupNodeStart = workflow.indexOf('      - uses: actions/setup-node@');
-
-  // These contracts need nothing but the checkout, so they run on every change
-  // rather than behind a surface flag — and a gate that cannot fail the job is
-  // not a gate.
-  for (const name of [
-    'Test CI planner',
-    'Check Windows test inventory',
-    'Verify ASF npm preflight policy',
-  ]) {
-    const start = workflow.indexOf(`      - name: ${name}\n`);
-    assert.ok(start >= 0, name);
-    assert.ok(start < setupNodeStart, name);
-
-    const step = workflow.slice(start, workflow.indexOf('\n      - ', start + 1));
-    assert.doesNotMatch(step, /\n\s+if:/u, name);
-    assert.doesNotMatch(step, /continue-on-error/u, name);
-  }
-});
-
-test('core CI checks the Astryx inventory for every code change before building', () => {
-  const workflow = readWorkflow('ci.yml');
-  const inventoryStart = workflow.indexOf('      - name: Astryx surface inventory\n');
-  const inventoryEnd = workflow.indexOf('\n      - ', inventoryStart + 1);
-  const buildStart = workflow.indexOf('      - name: Build\n');
-
-  assert.ok(inventoryStart >= 0);
-  assert.ok(inventoryStart < buildStart);
-
-  const inventoryStep = workflow.slice(inventoryStart, inventoryEnd);
-  assert.match(
-    inventoryStep,
-    /if: steps\.plan\.outputs\.code == 'true' \|\| steps\.plan\.outputs\.astryx_surface == 'true'/u,
-  );
-  assert.doesNotMatch(inventoryStep, /continue-on-error/u);
-});
-
-test('CI installs dependencies whenever the Astryx surface inventory runs', () => {
-  const workflow = readWorkflow('ci.yml');
-  // The inventory step imports the generator, which resolves @astryxdesign/core
-  // and parses the @maka/ui barrel. An inventory-doc-only PR is `astryx_surface`
-  // without `code`, so the `npm ci` step must gate on astryx_surface too — else
-  // the generator runs with no dependencies installed and fails closed.
-  const npmCi = workflow.indexOf('run: npm ci');
-  assert.ok(npmCi >= 0, 'expected an `npm ci` install step');
-  const stepStart = workflow.lastIndexOf('\n      - name:', npmCi) + 1;
-  const stepEnd = workflow.indexOf('\n      - ', npmCi);
-  const installStep = workflow.slice(stepStart, stepEnd);
-  assert.match(installStep, /steps\.plan\.outputs\.astryx_surface == 'true'/u);
-});
-
-test('core CI validates affected installed CLI packages on its existing runner', () => {
-  const workflow = readWorkflow('ci.yml');
-  const toolchain = workflow.indexOf(
-    'npm install --global --no-audit --no-fund "$(node -p \'require("./package.json").packageManager\')"',
-  );
-  const pack = workflow.indexOf('run: npm run release:cli:pack');
-
-  assert.match(workflow, /if: steps\.plan\.outputs\.cli_package == 'true'/u);
-  assert.ok(toolchain >= 0);
-  assert.ok(toolchain < pack);
-  assert.match(workflow, /run: npm run release:cli:smoke/u);
-});
-
-test('release contracts run against built CLI outputs', () => {
-  const workflow = readWorkflow('ci.yml');
-  const buildIndex = workflow.indexOf('      - name: Build\n');
-  const buildEnd = workflow.indexOf('\n      - ', buildIndex + 1);
-  const releaseIndex = workflow.indexOf('      - name: Release contracts\n');
-
-  assert.ok(buildIndex >= 0);
-  assert.match(workflow.slice(buildIndex, buildEnd), /release_contract == 'true'/u);
-  assert.ok(buildIndex < releaseIndex);
-  assert.match(
-    workflow.slice(releaseIndex),
-    /if: steps\.plan\.outputs\.release_contract == 'true'/u,
-  );
-});
-
-test('pull request triggers stay on an explicit allowlist', () => {
-  // Naming the lanes that must not run on pull requests only covers the ones
-  // someone remembered to name; W0 kept an unbounded trigger that way.
-  const onPullRequests = readdirSync(WORKFLOW_DIR).filter(hasPullRequestTrigger).sort();
-
-  assert.deepEqual(onPullRequests, [
-    'ci.yml',
-    'cli-package-validation.yml',
-    'copilot-auto-review.yml',
-    'dependency-audit.yml',
-    'gitoxide-helper-admission.yml',
-    'pr-effort-label.yml',
-    'release-windows-check.yml',
-    'runtime-host-owner-platform.yml',
-    'runtime-host-peer-admission.yml',
-    'windows-recovery.yml',
-    'windows-sandbox-w0.yml',
-  ]);
-});
-
-test('every pull request lane holds a scarce runner for the same bounded time', () => {
-  // One tier, not per-lane values. The worst observed successful runs are 19
-  // minutes (ci.yml) and 20 (release-windows-check), so 45 is about 2.3x the
-  // slowest lane: enough headroom for a cold cache and a flake retry, and far
-  // short of the 120 and 90 a hung job used to hold. A lane with no limit at
-  // all inherits GitHub's 360 and fails here.
-  // `pull_request` only: a `pull_request_target` lane reads the pull request
-  // rather than gating it, so it is not competing for a runner the author is
-  // waiting on and keeps its own tighter limit.
-  // Granularity is the file, not the job: a job inside a gating workflow that
-  // opts out of pull requests still carries the tier, because reading a job's
-  // `if:` would need the YAML parser this file cannot install.
-  const gates = readdirSync(WORKFLOW_DIR).filter((name) =>
-    /\bpull_request\b/u.test(triggerBlock(name)),
-  );
-  assert.ok(gates.length > 0, 'no pull request lane found');
-
-  for (const name of gates) {
-    // From `jobs:` on, with comment lines stripped, so prose above the triggers
-    // cannot be read as a job.
-    const workflow = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
-    const start = workflow.indexOf('\njobs:');
-    assert.ok(start >= 0, `${name}: no jobs block`);
-    const jobs = workflow.slice(start);
-
-    const limits = [...jobs.matchAll(/^ {4}timeout-minutes: (\d+)$/gmu)].map((match) => match[1]);
-    // Counted by `runs-on`, one per job that consumes a runner, rather than by
-    // job id: a quoted id escapes an id pattern, and a two-space line inside a
-    // `run: |` block satisfies one.
-    const runners = [...jobs.matchAll(/^ {4}runs-on:/gmu)].length;
-    assert.ok(runners > 0, `${name}: no job consumes a runner`);
-    assert.deepEqual(
-      limits,
-      Array.from({ length: runners }, () => '45'),
-      name,
-    );
-  }
-});
-
-test('the recovery lane pairs its path filter with a nightly run and a main push', () => {
-  // Read from the `on:` block with comments stripped, so documenting a trigger
-  // cannot break its contract.
-  const triggers = triggerBlock('windows-recovery.yml');
-
-  // Same contract as the sandbox lane: the filter is a pre-filter, not the
-  // lane's import closure, so dropping the schedule would silently lose every
-  // transitive edit it cannot match, and dropping the filter would put every
-  // Windows recovery run back on every pull request. The main push carries no
-  // filter because `strict: false` lets a stale-base pull request go green,
-  // and because a paths filter only sees the first 300 files of a diff.
-  // Stripped comment lines survive as blank ones, so the gap between the
-  // trigger and its list is any mix of blank and four-space lines.
-  assert.match(triggers, /\n {2}pull_request:\n(?:(?: {4}[^\n]*)?\n)* {4}paths:/u);
-  assert.match(triggers, /\n {2}push:\n {4}branches: \[main\]\n/u);
-  assert.doesNotMatch(
-    triggers.match(/\n {2}push:\n(?:(?: {4}[^\n]*)?\n)*/u)?.[0] ?? '',
-    /\bpaths(-ignore)?:/u,
-  );
-  assert.match(triggers, /\n {2}schedule:\n/u);
-  assert.match(triggers, /\n {2}workflow_dispatch:/u);
-  assert.match(readWorkflow('windows-recovery.yml'), /\n {4}name: windows_recovery/u);
-});
-
-test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
-  const workflow = readWorkflow('windows-recovery.yml');
-
-  // github.head_ref is a bare branch name, so two forks pushing their own
-  // `main` would share a group and cancel each other; github.ref is
-  // refs/heads/main for the nightly, a dispatch and a main push alike, so a
-  // ref-keyed group made a dispatch queue behind the nightly and let the next
-  // dispatch discard it while pending.
-  assert.match(
-    workflow,
-    /group: windows-recovery-\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}/u,
-  );
-  assert.match(workflow, /\n {2}cancel-in-progress: true/u);
-});
-
-test('the recovery lane filters pull requests by the workspaces its steps execute', () => {
-  const workflow = readWorkflow('windows-recovery.yml');
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
-
-  // Derived from the dist paths the steps run, then widened along the workspace
-  // dependency graph the planner selects with. The separator class matches the
-  // backslash form too, because these steps run under pwsh where both are
-  // legal. A new workspace on this lane, or a new dependency under one of them,
-  // fails here until the filter admits its sources and project file.
-  const executed = [
-    ...new Set(
-      [...workflow.matchAll(/packages[/\\]([^/\\]+)[/\\]dist[/\\]/gu)].map((match) => match[1]),
-    ),
-  ].sort();
-  assert.deepEqual(executed, ['runtime', 'runtime-host', 'storage']);
-
-  const closure = dependencyClosure(executed.map((workspace) => `packages/${workspace}`));
-  assert.ok(closure.includes('packages/core'), 'dependency closure must reach core');
-  for (const dir of closure) {
-    assert.ok(filtered.has(`${dir}/src/**`), `${dir}: sources`);
-    assert.ok(filtered.has(`${dir}/tsconfig.json`), `${dir}: project file`);
-    assert.ok(filtered.has(`${dir}/package.json`), `${dir}: manifest`);
-  }
-});
-
-test('the recovery lane filter follows the postinstall launcher chain', () => {
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
-  const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-  // Derived from postinstall itself, then one hop into whatever those entry
-  // points launch, because a launcher the filter cannot see still decides what
-  // `npm ci` produces on Windows. A restated list missed exactly that hop.
-  const entrypoints = [...manifest.scripts.postinstall.matchAll(/node (scripts\/[\w.-]+)/gu)].map(
-    (match) => match[1],
-  );
-  assert.ok(entrypoints.length > 0, 'postinstall runs no script');
-
-  for (const entrypoint of entrypoints) {
-    assert.ok(filtered.has(entrypoint), entrypoint);
-    const source = readFileSync(new URL(`../${entrypoint}`, import.meta.url), 'utf8');
-    for (const launched of source.matchAll(/new URL\('\.\/([\w.-]+)'/gu)) {
-      assert.ok(filtered.has(`scripts/${launched[1]}`), `${entrypoint} launches ${launched[1]}`);
-    }
-  }
-});
-
-test('the recovery lane filters pull requests by what its install and clean steps consume', () => {
-  const filtered = new Set(pullRequestPathFilter('windows-recovery.yml'));
-
-  // `npm.cmd ci` and `npm.cmd run build:test` run unconditionally, so these are
-  // first-class inputs of the lane rather than transitive edits the nightly can
-  // be left to cover. A grouped dependabot bump touches only the manifests, and
-  // the crash gates sit on a native file lock the Linux `test` lane never sees.
+// Which files select the app icon gate is derived in `ci-workflow-policy.test.mjs`
+// from the suites the step runs. What stays here is the complement: regenerating
+// the artwork costs about a minute, and ordinary product code must stop paying it.
+test('ordinary product code does not pay for app icon drift', () => {
   for (const path of [
-    'package.json',
-    'package-lock.json',
-    'patches/**',
-    'scripts/apply-dependency-patches.mjs',
-    'scripts/install-electron-with-retry.mjs',
-    'scripts/clean-build.mjs',
-    'scripts/clean-paths.mjs',
-    'scripts/windows-runtime-host-local-ipc-trust.ps1',
-    'tsconfig.base.json',
-    'tsconfig.lib.json',
-    'packages/runtime/scripts/**',
-    '.github/workflows/windows-recovery.yml',
+    'apps/desktop/src/renderer/app-shell.tsx',
+    'packages/core/src/artifacts.ts',
+    'packages/runtime/src/edit-replace.ts',
   ]) {
-    assert.ok(filtered.has(path), path);
+    assert.equal(planTests([path], { graph }).appIcons, false, path);
   }
 });
-
-test('the sandbox lane pairs its path filter with a nightly run', () => {
-  const workflow = readWorkflow('windows-sandbox-w0.yml');
-
-  // The filter is a pre-filter, not the lane's import closure, so dropping the
-  // schedule would silently lose every transitive edit it cannot match, and
-  // dropping the filter would put the whole runtime back on pull requests.
-  assert.match(workflow, /\n {2}pull_request:\n {4}paths:/u);
-  assert.match(workflow, /\n {2}schedule:/u);
-});
-
-test('the packaged Windows gate owns Runtime Host candidate election changes', () => {
-  const workflow = readWorkflow('release-windows-check.yml');
-
-  assert.match(workflow, /'packages\/runtime-host\/src\/client\/connect-or-spawn\.ts'/u);
-  assert.match(workflow, /'packages\/runtime-host\/src\/client\/launcher\.ts'/u);
-});
-
-test('the packaged Windows gate triggers on release orchestration changes', () => {
-  const workflow = readWorkflow('release-windows-check.yml');
-
-  assert.match(workflow, /'\.github\/workflows\/release\.yml'/u);
-});
-
-test('the packaged Windows gate workflow is itself a release-contract input', () => {
-  assert.equal(
-    planTests(['.github/workflows/release-windows-check.yml'], { graph }).releaseContract,
-    true,
-  );
-  assert.match(
-    readWorkflow('release-windows-check.yml'),
-    /'\.github\/workflows\/release-windows-check\.yml'/u,
-  );
-});
-
-test('the packaged Windows gate triggers on packaged sandbox inputs', () => {
-  const workflow = readWorkflow('release-windows-check.yml');
-
-  for (const path of [
-    'apps/desktop/scripts/copy-runtime-filesystem-worker.mjs',
-    'packages/runtime/scripts/build-filesystem-worker.mjs',
-    'packages/runtime/src/filesystem-worker/**',
-    'packages/runtime/src/sandbox/**',
-    'packages/runtime/src/path-containment.ts',
-    'packages/runtime/src/sandbox-boundary-path.ts',
-    'packages/core/src/permission-profile.ts',
-    'packages/core/src/permission-profile-compiler.ts',
-  ]) {
-    assert.ok(workflow.includes(`      - '${path}'`), path);
-  }
-});
-
-test('pull-request and release lanes share the packaged sandbox lifecycle verifier', () => {
-  for (const name of ['release-windows-check.yml', 'release.yml']) {
-    assert.match(readWorkflow(name), /npm run verify:windows-x64/u, name);
-  }
-
-  const verifier = readFileSync(new URL('verify-windows-x64.mjs', import.meta.url), 'utf8');
-  assert.match(
-    verifier,
-    /await verifyPackagedWindowsSandboxLifecycle\(sandboxExecutable, \{ run \}\)/u,
-  );
-});
-
-test('the Gitoxide gate owns repository admission changes', () => {
-  const workflow = readWorkflow('gitoxide-helper-admission.yml');
-
-  assert.match(
-    workflow,
-    /'packages\/runtime-host\/src\/server\/gitoxide-repository-admission-authority-internal\.ts'/u,
-  );
-  assert.match(
-    workflow,
-    /'packages\/runtime-host\/src\/__tests__\/gitoxide-repository-admission-authority-internal\.test\.ts'/u,
-  );
-});
-
-test('specialized platform workflows stay reachable without pull requests', () => {
-  const cli = readWorkflow('cli-package-validation.yml');
-  const baseline = readWorkflow('windows-baseline.yml');
-  const recovery = readWorkflow('windows-recovery.yml');
-
-  for (const workflow of [cli, baseline, recovery]) {
-    assert.match(workflow, /\n  workflow_dispatch:/u);
-  }
-  assert.match(cli, /\n  workflow_call:/u);
-  assert.match(baseline, /\n  schedule:/u);
-});
-
-test('Windows recovery executes the exact managed dependency ADS regressions', () => {
-  const recovery = readWorkflow('windows-recovery.yml');
-
-  assert.match(recovery, /name: Verify managed dependency alternate streams/u);
-  assert.match(recovery, /--test-name-pattern="NTFS alternate stream"/u);
-  assert.match(
-    recovery,
-    /packages\/storage\/dist\/__tests__\/managed-dependency-environment\.test\.js/u,
-  );
-  assert.match(recovery, /# tests 3/u);
-  assert.match(recovery, /# pass 3/u);
-  assert.match(recovery, /# skipped 0/u);
-});
-
-test('Windows recovery executes the root initialization replacement race', () => {
-  const recovery = readWorkflow('windows-recovery.yml');
-
-  assert.match(recovery, /name: Verify root initialization replacement race/u);
-  assert.match(
-    recovery,
-    /--test-name-pattern="rejects replacement before opening the temporary marker"/u,
-  );
-  assert.match(recovery, /packages\/storage\/dist\/__tests__\/root-authority\.test\.js/u);
-  assert.match(recovery, /# tests 1/u);
-  assert.match(recovery, /# pass 1/u);
-  assert.match(recovery, /# skipped 0/u);
-});
-
-test('Windows recovery executes the complete Skill catalog suite', () => {
-  const recovery = readWorkflow('windows-recovery.yml');
-
-  assert.match(recovery, /skill-catalog-coordinator\.test\.js/u);
-  assert.match(recovery, /skill-catalog-protocol\.test\.js/u);
-  assert.match(recovery, /skill-catalog-repository\.test\.js/u);
-  assert.match(recovery, /skill-catalog-transaction\.test\.js/u);
-  assert.match(recovery, /skill-catalog-two-client-uds\.test\.js/u);
-  assert.match(recovery, /# tests 91/u);
-  assert.match(recovery, /# pass 91/u);
-  assert.match(recovery, /# skipped 0/u);
-});
-
-test('workflows never persist the job credential into the checkout', () => {
-  for (const name of readdirSync(WORKFLOW_DIR)) {
-    for (const step of checkoutSteps(name)) {
-      assert.match(step, /persist-credentials: false/u, `${name}: ${step.trim()}`);
-    }
-  }
-});
-
-test('a pull_request_target checkout is pinned to the trusted base commit', () => {
-  // This event hands the job a writable token while the pull request is fork
-  // controlled, so what gets checked out is what decides whether that token can
-  // reach author-supplied code. `github.sha` is the base branch commit here;
-  // `head.sha` and a bare checkout under a merge-ref event are both the pull
-  // request's own tree. Nothing else in CI would notice that edit, which is why
-  // the rule lives here rather than in a comment.
-  for (const name of readdirSync(WORKFLOW_DIR)) {
-    if (!/\bpull_request_target\b/u.test(triggerBlock(name))) continue;
-
-    for (const step of checkoutSteps(name)) {
-      assert.match(step, /\n\s+ref: \$\{\{ github\.sha \}\}\n/u, `${name}: ${step.trim()}`);
-    }
-  }
-});
-
-test('core CI runs the live Eval proxy lifecycle when Eval is selected', () => {
-  const workflow = readWorkflow('ci.yml');
-  const evalPackage = JSON.parse(
-    readFileSync(new URL('../packages/eval/package.json', import.meta.url), 'utf8'),
-  );
-
-  assert.match(
-    workflow,
-    /if: contains\(steps\.plan\.outputs\.standard_workspaces, 'packages\/eval'\)/u,
-  );
-  assert.match(workflow, /MAKA_EVAL_EGRESS_PROXY_TEST: '1'/u);
-  assert.match(workflow, /docker build[\s\S]*maka-eval-egress-proxy:12\.2\.3/u);
-  assert.match(workflow, /npm --workspace @maka\/eval run test:egress-proxy:live/u);
-  assert.equal(
-    evalPackage.scripts['test:egress-proxy:live'],
-    'python3 harbor/test_egress_filter_live.py',
-  );
-  assert.doesNotMatch(evalPackage.scripts['test:dist'], /test_egress_filter_live\.py/u);
-});
-
-const WORKFLOW_DIR = new URL('../.github/workflows/', import.meta.url);
-
-/**
- * Reads the `paths` list belonging to a workflow's `pull_request` trigger.
- * Anchoring to the trigger, instead of matching entry text anywhere in the
- * file, is what makes the filter assertions fail when entries move under
- * `paths-ignore`, under another trigger, or out of `on:` altogether.
- */
-function pullRequestPathFilter(name) {
-  // Reads the `on:` block with comments already stripped, so a comment between
-  // the trigger and its list cannot end the scan, and accepts the quoting and
-  // spacing YAML allows, so a legal rewrite reports the entries it really has
-  // instead of an empty list that reads as a missing filter.
-  const lines = triggerBlock(name).split('\n');
-  const start = lines.findIndex((line) => /^ {2}pull_request:\s*$/u.test(line));
-  assert.ok(start >= 0, `${name}: no pull_request trigger`);
-
-  const paths = [];
-  let inPaths = false;
-  for (const line of lines.slice(start + 1)) {
-    if (line.trim() === '') continue;
-    if (/^ {0,2}\S/u.test(line)) break;
-    if (/^ {4}\S/u.test(line)) {
-      inPaths = /^ {4}paths:\s*$/u.test(line);
-      continue;
-    }
-    const entry = inPaths ? /^\s+-\s+['"]?(.+?)['"]?\s*$/u.exec(line) : null;
-    if (entry) paths.push(entry[1]);
-  }
-  return paths;
-}
-
-/**
- * Workspace dirs `seeds` depend on, transitively, read off the same graph the
- * planner selects with rather than a second definition of the same edges. The
- * graph stores dependents, so a dependency is any dir listing one of ours.
- */
-function dependencyClosure(seeds) {
-  const graph = loadWorkspaceGraph();
-  const selected = new Set(seeds);
-  const pending = [...seeds];
-  while (pending.length > 0) {
-    const dir = pending.shift();
-    for (const [dependency, dependents] of graph.dependents) {
-      if (!dependents.has(dir) || selected.has(dependency)) continue;
-      selected.add(dependency);
-      pending.push(dependency);
-    }
-  }
-  return [...selected].sort();
-}
-
-function readWorkflow(name) {
-  return readFileSync(new URL(name, WORKFLOW_DIR), 'utf8');
-}
-
-/**
- * Reads the `on:` block only, so a workflow cannot escape a trigger contract by
- * writing `on: [pull_request]`, and prose elsewhere in the file cannot fake one.
- */
-function triggerBlock(name) {
-  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
-
-  return withoutComments.match(/^on:(.*(?:\n(?![^\s#]).*)*)/mu)?.[1] ?? '';
-}
-
-function hasPullRequestTrigger(name) {
-  return /\bpull_request(_target)?\b/u.test(triggerBlock(name));
-}
-
-/**
- * Slices each checkout step from its `uses:` line to the next step, so the
- * assertion is per checkout: a bare one cannot be balanced out by a sibling
- * step that opts out, or by the string appearing in a comment.
- */
-function checkoutSteps(name) {
-  const withoutComments = readWorkflow(name).replaceAll(/^[ \t]*#.*$/gmu, '');
-
-  return (
-    withoutComments.match(/^[ \t]*- uses: actions\/checkout@.*\n(?:(?![ \t]*- )[ \t]+.*\n)*/gmu) ??
-    []
-  );
-}

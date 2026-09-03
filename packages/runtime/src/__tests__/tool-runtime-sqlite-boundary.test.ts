@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
@@ -149,7 +150,11 @@ describe('ToolRuntime with real SQLite boundary', () => {
             return { content: [{ type: 'text', text: 'ok' }] };
           },
         },
-        { categoryHint: 'client_capability', recoveryMode: 'outcome_unknown' },
+        {
+          categoryHint: 'custom_tool',
+          hostAdmission: 'client_capability',
+          recoveryMode: 'outcome_unknown',
+        },
       );
       assert.ok(clientTool);
       const runtime = createTestToolRuntime({
@@ -182,7 +187,7 @@ describe('ToolRuntime with real SQLite boundary', () => {
       });
 
       assert.equal(implementationCalls, 0);
-      assert.match(JSON.stringify(result.result), /require the Bypass execution boundary/u);
+      assert.match(JSON.stringify(result.result), /missing its Host admission/u);
       const toolEvents = published.filter(
         (event) => event.type === 'tool_start' || event.type === 'tool_result',
       );
@@ -734,12 +739,6 @@ function connection(): LlmConnection {
     updatedAt: 1,
   };
 }
-
-function nextId(): () => string {
-  let value = 0;
-  return () => `id-${++value}`;
-}
-
 function nextNow(): () => number {
   let value = 0;
   return () => ++value;

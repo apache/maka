@@ -115,4 +115,88 @@ describe('WorkHub Coordination stored records', () => {
       /Invalid stored message schema/u,
     );
   });
+
+  test('decodes the durable replacement intent and linked supersession proof', () => {
+    const replacement = {
+      type: 'workhub_coordination',
+      id: 'replacement-intent-id',
+      turnId: 'replacement-action',
+      ts: 2,
+      schemaVersion: 2,
+      kind: 'delegation_replacement_requested',
+      actionId: 'replacement-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'replacement-action',
+      targetSessionId: 'login',
+      targetSessionName: 'Login',
+      disposition: 'delegate_existing',
+      userText: 'No, use login instead',
+      replacesActionId: 'original-action',
+      replacesDelegationId: 'original-delegation',
+      replacedTargetSessionId: 'payments',
+      replacedTargetMessageId: 'payments-message',
+    } as const;
+    const assigned = {
+      type: 'workhub_coordination',
+      id: 'replacement-assignment-id',
+      turnId: 'replacement-action',
+      ts: 3,
+      schemaVersion: 2,
+      kind: 'delegation_assigned',
+      actionId: 'replacement-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'replacement-action',
+      targetSessionId: 'login',
+      targetSessionName: 'Login',
+      disposition: 'delegate_existing',
+      userText: 'No, use login instead',
+      delegationId: 'replacement-delegation',
+      targetTurnId: 'login-turn',
+      targetMessageId: 'login-message',
+      replacesActionId: 'original-action',
+      replacesDelegationId: 'original-delegation',
+    } as const;
+    const superseded = {
+      type: 'workhub_coordination',
+      id: 'supersession-id',
+      turnId: 'replacement-action',
+      ts: 3,
+      schemaVersion: 2,
+      kind: 'delegation_superseded',
+      actionId: 'replacement-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'replacement-action',
+      supersededActionId: 'original-action',
+      supersededDelegationId: 'original-delegation',
+      replacementDelegationId: 'replacement-delegation',
+    } as const;
+    const aborted = {
+      type: 'workhub_coordination',
+      id: 'replacement-aborted-id',
+      turnId: 'replacement-action',
+      ts: 3,
+      schemaVersion: 2,
+      kind: 'delegation_replacement_aborted',
+      actionId: 'replacement-action',
+      actionFingerprint: FINGERPRINT,
+      coordinationTurnId: 'replacement-action',
+      abortedActionId: 'original-action',
+      abortedDelegationId: 'original-delegation',
+      targetSessionId: 'login',
+      reason: 'target_unavailable',
+    } as const;
+
+    assert.deepEqual(decodeCanonicalMessage(replacement), replacement);
+    assert.deepEqual(decodeCanonicalMessage(assigned), assigned);
+    assert.deepEqual(decodeCanonicalMessage(superseded), superseded);
+    assert.deepEqual(decodeCanonicalMessage(aborted), aborted);
+    assert.throws(
+      () => decodeCanonicalMessage({ ...superseded, replacementDelegationId: '' }),
+      /Invalid stored message schema/u,
+    );
+    assert.throws(
+      () => decodeCanonicalMessage({ ...aborted, reason: 'retry_later' }),
+      /Invalid stored message schema/u,
+    );
+  });
 });

@@ -75,14 +75,22 @@ export type DesktopRuntimeHostDevelopmentPeerTarget =
 
 export interface RuntimeHostSetupPackageResolver {
   readonly mode: 'published' | 'development';
+  /** Resolve for a peer target the caller chose, such as a probed SSH host. */
   resolve(
     peerTarget: DesktopRuntimeHostDevelopmentPeerTarget,
     signal?: AbortSignal,
   ): Promise<DesktopRuntimeHostSetupPackage>;
+  /**
+   * Resolve for the desktop's own machine. The development peer target is read
+   * only where a development build needs it to pick an npm prebuild, so a
+   * packaged build on a tuple that has no prebuild — macOS x64 — still resolves
+   * the setup package it ships with.
+   */
+  resolveForThisDesktop(signal?: AbortSignal): Promise<DesktopRuntimeHostSetupPackage>;
   close(): Promise<void>;
 }
 
-export function desktopRuntimeHostDevelopmentPeerTarget(
+function desktopRuntimeHostDevelopmentPeerTarget(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
 ): Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> {
@@ -174,29 +182,37 @@ export function createRuntimeHostSetupPackageResolver(input: {
     }
   };
 
+  const resolveSetupPackage = async (
+    readPeerTarget: () => DesktopRuntimeHostDevelopmentPeerTarget,
+    signal?: AbortSignal,
+  ): Promise<DesktopRuntimeHostSetupPackage> => {
+    if (closed) throw new Error('Runtime Host setup package resolver is closed');
+    if (input.isPackaged) return packagedSetupPackage(input.appPath);
+
+    const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
+    if (override) {
+      const snapshot = await waitForPackage(resolveOverrideSnapshot(override), signal);
+      return snapshot.setupPackage;
+    }
+
+    const peerTarget = readPeerTarget();
+    const build = await acquireBuild(peerTarget, signal);
+    build.waiters += 1;
+    try {
+      return await waitForPackage(build.result, signal);
+    } finally {
+      build.waiters -= 1;
+      if (signal?.aborted && build.waiters === 0 && !build.settled) {
+        await stopBuild(peerTarget, build);
+      }
+    }
+  };
+
   return {
     mode: input.isPackaged ? 'published' : 'development',
-    async resolve(peerTarget, signal) {
-      if (closed) throw new Error('Runtime Host setup package resolver is closed');
-      if (input.isPackaged) return packagedSetupPackage(input.appPath);
-
-      const override = input.environment[DEVELOPMENT_ARCHIVE_ENV];
-      if (override) {
-        const snapshot = await waitForPackage(resolveOverrideSnapshot(override), signal);
-        return snapshot.setupPackage;
-      }
-
-      const build = await acquireBuild(peerTarget, signal);
-      build.waiters += 1;
-      try {
-        return await waitForPackage(build.result, signal);
-      } finally {
-        build.waiters -= 1;
-        if (signal?.aborted && build.waiters === 0 && !build.settled) {
-          await stopBuild(peerTarget, build);
-        }
-      }
-    },
+    resolve: (peerTarget, signal) => resolveSetupPackage(() => peerTarget, signal),
+    resolveForThisDesktop: (signal) =>
+      resolveSetupPackage(desktopRuntimeHostDevelopmentPeerTarget, signal),
     async close() {
       if (closed) return;
       closed = true;

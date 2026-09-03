@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -27,21 +28,26 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { z } from 'zod';
-import { clientCapabilityConnectionIdentity } from './fixtures/client-capability.js';
+import {
+  clientCapabilityConnectionIdentity,
+  clientCapabilityCoordinatorTestAdmission,
+} from './fixtures/client-capability.js';
 import {
   createBypassExecutionBoundary,
   createManagedExecutionBoundary,
   type ExecutionBoundary,
 } from '@maka/core/sandbox-boundary';
-import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
+import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { BackendCompactHistoryInput } from '@maka/core/backend-types';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
 import { type ModelCallAttempt, type ModelCallKind } from '@maka/core/model-call-attempt';
 import { type RuntimeEvent } from '@maka/core/runtime-event';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import type { PlanSessionState, PlanStore } from '@maka/core/plan';
-import type { TaskLedgerStore } from '@maka/core/task-ledger';
+import type { SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import {
   serializeOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
@@ -72,7 +78,7 @@ import {
   type RuntimePolicyStoresWriter,
 } from '@maka/storage/runtime-policy-stores';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   openInteractiveUsageStoresForWrite,
   type InteractiveUsageStoresWriter,
@@ -89,6 +95,7 @@ import {
 } from '../server/execution-model-authority.js';
 import {
   createHostAiSdkBackend,
+  prepareHostAiSdkBackend,
   resolveCollaborationPermissionMode,
   type HostAiSdkBackendInput,
 } from '../server/execution-model-composition.js';
@@ -136,7 +143,7 @@ const MAX_IMPLEMENTATION_CHILD_REQUESTS =
 const HEADLESS_CODING_V1_PROMPT_HASH =
   'sha256:b2773282ac4755dc8d8a663eafdec68c3fa6f5680ec8557d261b5f723672b467';
 const HEADLESS_CODING_V1_TOOLS_HASH =
-  'sha256:c062194603f93b568da5ca59b865b316156b5f218ba854c291aa9582859b3de4';
+  'sha256:aa3ab56a7b67dde133fffe885f4def81735c93015202e31ecb339a84863f6d03';
 const execFileAsync = promisify(execFile);
 test('backend creation resolves a bound Session by immutable Connection identity', async () => {
   let observedRef: unknown;
@@ -157,6 +164,24 @@ test('backend creation resolves a bound Session by immutable Connection identity
     connectionId: '11111111-1111-4111-8111-111111111111',
     connectionSlug: 'backend-creation-connection',
   });
+});
+
+test('prepared backend activation builds from its admitted provider snapshot', async () => {
+  let providerReadAvailable = true;
+  const input = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    resolveExecutionConnection: async () => {
+      if (!providerReadAvailable) throw new Error('provider state was read after admission');
+      return readyExecutionConnection();
+    },
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+  });
+  const { context, ...dependencies } = input;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  providerReadAvailable = false;
+
+  const backend = await prepared.build(context);
+  await backend.dispose();
 });
 
 test('backend creation aborts a stalled canonical connection read', async () => {
@@ -813,95 +838,99 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
       resolve: async () => oauthTokens,
     }),
   } as unknown as HostOAuthExecutionAuthority;
-  const backend = await createHostAiSdkBackend(
-    backendCreationFixture({
-      abortSignal: new AbortController().signal,
-      modelId,
-      oauthCredentials,
-      resolveExecutionConnection: async () => ({
-        kind: 'ready',
-        connection: {
-          slug: 'backend-creation-connection',
-          providerType: 'openai-codex',
-          enabledModelIds: [modelId],
-          models: [
-            {
-              id: modelId,
-              capabilities: { chat: true, functionCalling: true },
-              contextWindow: 32_768,
-              maxOutputTokens: 1_024,
-            },
-          ],
-        },
-        networkProxy: { enabled: false },
-        secretMaterial: { connection: { secret: 'oauth-material' } },
-      }),
-      readPricing: async () => ({ revision: 0, overrides: [] }),
-      recordHistoryCompactCheckpoint: async (checkpoint) => {
-        recordedTextCheckpoint = 'summary' in checkpoint;
+  const fixture = backendCreationFixture({
+    abortSignal: new AbortController().signal,
+    modelId,
+    oauthCredentials,
+    resolveExecutionConnection: async () => ({
+      kind: 'ready',
+      connection: {
+        slug: 'backend-creation-connection',
+        providerType: 'openai-codex',
+        enabledModelIds: [modelId],
+        models: [
+          {
+            id: modelId,
+            capabilities: { chat: true, functionCalling: true },
+            contextWindow: 32_768,
+            maxOutputTokens: 1_024,
+          },
+        ],
       },
-      recordModelCallAttempt: async ({ attempt }) => {
-        attempts.push(attempt);
-      },
-      createFetchTransport: () => ({
-        fetch: async (url, init) => {
-          const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-          requests.push({
-            url: String(url),
-            body,
-          });
-          const providerInput = Array.isArray(body.input) ? body.input : [];
-          if (
-            !providerInput.some(
-              (item) =>
-                typeof item === 'object' &&
-                item !== null &&
-                'type' in item &&
-                item.type === 'compaction_trigger',
-            )
-          ) {
-            return Response.json({
-              id: 'resp-text-fallback',
-              object: 'response',
-              created_at: 1,
-              status: 'completed',
-              model: modelId,
-              output: [
-                {
-                  type: 'message',
-                  id: 'msg-text-fallback',
-                  status: 'completed',
-                  role: 'assistant',
-                  content: [
-                    {
-                      type: 'output_text',
-                      text: fallbackSummary,
-                      annotations: [],
-                      logprobs: [],
-                    },
-                  ],
-                },
-              ],
-              usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
-            });
-          }
-          return Response.json(
-            {
-              error: {
-                message: 'request rejected without echoing this body',
-                code: 'missing_required_parameter',
-              },
-            },
-            {
-              status: 400,
-              headers: { 'x-request-id': 'req-codex-compact' },
-            },
-          );
-        },
-        close: async () => undefined,
-      }),
+      networkProxy: { enabled: false },
+      secretMaterial: { connection: { secret: 'oauth-material' } },
     }),
-  );
+    readPricing: async () => ({ revision: 0, overrides: [] }),
+    recordHistoryCompactCheckpoint: async (checkpoint) => {
+      recordedTextCheckpoint = 'summary' in checkpoint;
+    },
+    recordModelCallAttempt: async ({ attempt }) => {
+      attempts.push(attempt);
+    },
+    createFetchTransport: () => ({
+      fetch: async (url, init) => {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        requests.push({
+          url: String(url),
+          body,
+        });
+        const providerInput = Array.isArray(body.input) ? body.input : [];
+        if (
+          !providerInput.some(
+            (item) =>
+              typeof item === 'object' &&
+              item !== null &&
+              'type' in item &&
+              item.type === 'compaction_trigger',
+          )
+        ) {
+          return Response.json({
+            id: 'resp-text-fallback',
+            object: 'response',
+            created_at: 1,
+            status: 'completed',
+            model: modelId,
+            output: [
+              {
+                type: 'message',
+                id: 'msg-text-fallback',
+                status: 'completed',
+                role: 'assistant',
+                content: [
+                  {
+                    type: 'output_text',
+                    text: fallbackSummary,
+                    annotations: [],
+                    logprobs: [],
+                  },
+                ],
+              },
+            ],
+            usage: { input_tokens: 4_000, output_tokens: 60, total_tokens: 4_060 },
+          });
+        }
+        return Response.json(
+          {
+            error: {
+              message: 'request rejected without echoing this body',
+              code: 'missing_required_parameter',
+            },
+          },
+          {
+            status: 400,
+            headers: { 'x-request-id': 'req-codex-compact' },
+          },
+        );
+      },
+      close: async () => undefined,
+    }),
+  });
+  const { context, ...dependencies } = fixture;
+  const prepared = await prepareHostAiSdkBackend({ context, ...dependencies });
+  const providerStateIdentity = prepared.providerStateIdentity;
+  assert.ok(providerStateIdentity);
+  const backend = await prepared.build(context);
+  assert.ok(backend.compactHistory);
 
   try {
     const runtimeContext: RuntimeEvent[] = [
@@ -919,6 +948,87 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
         'agent',
         'b'.repeat(8_000),
       ),
+      {
+        id: 'compact-old-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-source-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-old-model',
+        ts: 2,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'CROSS_MODEL_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'cross-model-reasoning-item',
+              reasoningEncryptedContent: 'CROSS_MODEL_ENCRYPTED_REASONING',
+            },
+          },
+        },
+      },
+      {
+        id: 'compact-current-route-reasoning',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 3,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'thinking',
+          text: 'SAME_ROUTE_PROVIDER_REASONING',
+          providerOptions: {
+            openai: {
+              itemId: 'same-route-reasoning-item',
+              reasoningEncryptedContent: 'SAME_ROUTE_ENCRYPTED_REASONING',
+            },
+          },
+        },
+      },
+      {
+        id: 'compact-provider-tool-call',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 4,
+        partial: false,
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          args: { query: 'latest Maka' },
+          providerExecuted: true,
+        },
+        refs: { stepId: 'compact-provider-step' },
+      },
+      {
+        id: 'compact-provider-tool-result',
+        invocationId: 'compact-invocation',
+        runId: 'compact-same-route-run',
+        sessionId: 'backend-creation-session',
+        turnId: 'turn-current-route-model',
+        ts: 5,
+        partial: false,
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'compact-web-search',
+          name: 'WebSearch',
+          result: { type: 'web_search_result', query: 'latest Maka' },
+          providerOutput: { type: 'web_search_result', id: 'ws_compact' },
+          providerExecuted: true,
+          isError: false,
+        },
+      },
       compactRuntimeTextEvent(
         'compact-recent-user',
         'turn-recent-user',
@@ -927,11 +1037,45 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
         'recent context',
       ),
     ];
-    const result = await backend.compactHistory({
+    const compactInput = {
       turnId: 'turn-compact',
       runId: 'run-compact',
       runtimeContext,
-    });
+      runtimeContextRunHeaders: [
+        {
+          runId: 'compact-source-run',
+          sessionId: 'backend-creation-session',
+          turnId: 'turn-old-model',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
+          llmConnectionSlug: 'backend-creation-connection',
+          modelId: 'gpt-5.2',
+          cwd: '/workspace',
+          permissionMode: 'bypass',
+          createdAt: 1,
+          updatedAt: 2,
+          completedAt: 2,
+        } satisfies AgentRunHeader,
+        {
+          runId: 'compact-same-route-run',
+          sessionId: 'backend-creation-session',
+          turnId: 'turn-current-route-model',
+          status: 'completed',
+          backendKind: 'ai-sdk',
+          llmConnectionId: '11111111-1111-4111-8111-111111111111',
+          llmConnectionSlug: 'backend-creation-connection',
+          modelId,
+          providerStateIdentity,
+          cwd: '/workspace',
+          permissionMode: 'bypass',
+          createdAt: 2,
+          updatedAt: 3,
+          completedAt: 3,
+        } satisfies AgentRunHeader,
+      ],
+    } satisfies BackendCompactHistoryInput;
+    const result = await backend.compactHistory(compactInput);
 
     assert.equal(requests.length, 2, JSON.stringify(result));
     assert.match(requests[0]!.url, /\/codex\/responses$/);
@@ -939,7 +1083,34 @@ test('Codex OAuth history compaction falls back to a text checkpoint after nativ
     const nativeRequestText = JSON.stringify(requests[0]!.body);
     const fallbackRequestText = JSON.stringify(requests[1]!.body);
     assert.match(nativeRequestText, /"type":"compaction_trigger"/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_PROVIDER_REASONING/);
+    assert.doesNotMatch(nativeRequestText, /CROSS_MODEL_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_PROVIDER_REASONING/);
+    assert.match(nativeRequestText, /SAME_ROUTE_ENCRYPTED_REASONING/);
+    assert.match(nativeRequestText, /recent context/);
     assert.doesNotMatch(nativeRequestText, /context summarization assistant/i);
+    const nativeInput = requests[0]!.body.input;
+    assert.ok(Array.isArray(nativeInput));
+    const functionCallIds = new Set(
+      nativeInput
+        .filter(
+          (item): item is Record<string, unknown> =>
+            typeof item === 'object' && item !== null && item.type === 'function_call',
+        )
+        .map((item) => String(item.call_id)),
+    );
+    const functionOutputIds = nativeInput
+      .filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === 'object' && item !== null && item.type === 'function_call_output',
+      )
+      .map((item) => String(item.call_id));
+    assert.deepEqual([...functionCallIds], ['compact-web-search']);
+    assert.deepEqual(functionOutputIds, ['compact-web-search']);
+    assert.deepEqual(
+      functionOutputIds.filter((callId) => !functionCallIds.has(callId)),
+      [],
+    );
     assert.doesNotMatch(fallbackRequestText, /"type":"compaction_trigger"/);
     assert.match(fallbackRequestText, /context summarization assistant/i);
     assert.equal(result.outcome.kind, 'compacted');
@@ -976,7 +1147,7 @@ test('backend abort cannot cancel the authority-owned OAuth refresh used by its 
   let transports: ReturnType<typeof controlledOAuthTransports> | undefined;
   try {
     const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
-    const subscriptionModelId = PROVIDER_DEFAULTS['openai-codex'].fallbackModels[0] ?? '';
+    const subscriptionModelId = PROVIDER_REGISTRY['openai-codex'].fallbackModels[0] ?? '';
     assert.ok(subscriptionModelId);
     const created = await policy.connectionCatalog.create({
       expectedCatalogRevision: 0,
@@ -1138,6 +1309,7 @@ test('backend creation does not acquire Client Capabilities beyond a bound tool 
 
 test('production backend creation continues after a Session Client Capability is lost', async () => {
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1203,6 +1375,7 @@ test('production backend preserves coordinator Client Capability semantics acros
   const trace: RunTraceEvent[] = [];
   const calls: Array<Extract<ClientCapabilityHostFrame, { kind: 'client.capability.call' }>> = [];
   const coordinator = new HostClientCapabilityCoordinator({
+    ...clientCapabilityCoordinatorTestAdmission(),
     activation: new RuntimePolicyActivationGate(),
     onModelToolsChanged: () => undefined,
   });
@@ -1213,21 +1386,26 @@ test('production backend preserves coordinator Client Capability semantics acros
       clientCapabilityConnectionIdentity('client-capability-provider'),
       {
         send: async (frame) => {
-          if (frame.kind !== 'client.capability.call') return;
-          calls.push(frame);
-          queueMicrotask(() => {
-            connection?.accept({
-              kind: 'client.capability.accepted',
-              invocationId: frame.invocationId,
+          if (frame.kind === 'client.capability.call') {
+            calls.push(frame);
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.accepted',
+                invocationId: frame.invocationId,
+                admissionEvidence: { kind: 'none' },
+              });
             });
-            connection?.accept({
-              kind: 'client.capability.result',
-              invocationId: frame.invocationId,
-              result: {
-                content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
-              },
+          } else if (frame.kind === 'client.capability.admitted') {
+            queueMicrotask(() => {
+              connection?.accept({
+                kind: 'client.capability.result',
+                invocationId: frame.invocationId,
+                result: {
+                  content: [{ type: 'text', text: CLIENT_CAPABILITY_RESULT_TEXT }],
+                },
+              });
             });
-          });
+          }
         },
       },
     );
@@ -1341,7 +1519,7 @@ test('production backend preserves coordinator Client Capability semantics acros
         (event) =>
           event.type === 'tool_started' &&
           event.data?.toolName === tool.name &&
-          event.data?.categoryHint === 'client_capability',
+          event.data?.categoryHint === 'custom_tool',
       ),
     );
     const runtimeEvents = await store.readImmutableRuntimeEvents(sessionId, runId);
@@ -1538,6 +1716,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
   const root = join(base, 'interactive');
   const home = join(base, 'home');
   const provider = await startProvider();
+  // This turn's compaction trigger is anchored on the input tokens the provider
+  // reports, so the stub must report a number that grows with the request.
+  provider.configurePayloadProportionalUsage();
   const capability = await resolveStorageRoot({ path: root, kind: 'interactive' });
   const owner = await tryAcquireInteractiveRootOwner(capability);
   assert.ok(owner);
@@ -1630,6 +1811,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(webSearchEnabled.kind, 'committed');
 
     const execution = await openInteractiveExecutionStoresForWrite(owner.lease);
+    const usageStores = await openInteractiveUsageStoresForWrite(owner.lease);
     const session = await execution.sessionStore.create({
       cwd: root,
       llmConnectionId: connection.connectionId,
@@ -1637,8 +1819,10 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       model: MODEL_ID,
       permissionMode: 'ask',
     });
-    const taskLedger = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    await taskLedger.create(session.id, [{ subject: 'HOSTED_TASK_LEDGER_SENTINEL' }]);
+    const sessionTodo = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    await sessionTodo.replaceAll(session.id, [
+      { content: 'HOSTED_SESSION_TODO_SENTINEL', status: 'pending' },
+    ]);
 
     composition = await createExecutionRuntimeHostComposition(
       {
@@ -1738,7 +1922,7 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.match(requestText, /HOSTED_SKILL_DESCRIPTION_SENTINEL/);
     assert.doesNotMatch(requestText, /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
     assert.match(requestText, /HOSTED_WORKSPACE_SENTINEL/);
-    assert.doesNotMatch(requestText, /HOSTED_TASK_LEDGER_SENTINEL/);
+    assert.doesNotMatch(requestText, /HOSTED_SESSION_TODO_SENTINEL/);
     assert.match(requestText, /HOSTED_PERSONALIZATION_SENTINEL/);
     assert.match(requestText, /HOSTED_MEMORY_SENTINEL/);
     assert.match(JSON.stringify(mainRequests[1]?.body), /HOSTED_SKILL_BODY_MUST_STAY_LAZY/);
@@ -1793,7 +1977,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     );
     assert.equal(usage.providerId, 'moonshot');
     assert.equal(usage.modelId, MODEL_ID);
-    assert.equal(usage.inputTokens, 11);
+    // The stub reports input tokens proportional to the request, so this only
+    // asserts the reported number reached the meter, not a fixed constant.
+    assert.equal(usage.inputTokens > 11, true);
     assert.equal(usage.outputTokens, 5);
     assert.equal(usage.status, 'success');
 
@@ -1806,14 +1992,30 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(compactUsage.inputTokens, 7);
     assert.equal(compactUsage.outputTokens, 3);
     const capturedRequestCount = mainRequests.length + compactRequests.length;
-    const evidence = await waitForProviderEvidence(execution, session.id, capturedRequestCount);
-    assert.equal(evidence.captures.length, capturedRequestCount);
-    assert.equal(evidence.attempts.length, capturedRequestCount);
+    const attempts = await waitForCanonicalAttempts(usageStores, session.id, capturedRequestCount);
+    assert.equal(attempts.length, capturedRequestCount);
+    assert.ok(attempts.every((attempt) => attempt.requestObservation));
+    const contextDiagnostics = await composition.handlers['context.diagnostics.query'](
+      { sessionId: session.id },
+      connectionContext,
+    );
+    assert.equal(contextDiagnostics.ok, true);
+    if (contextDiagnostics.ok) {
+      assert.equal(contextDiagnostics.result.status, 'available');
+      if (contextDiagnostics.result.status === 'available') {
+        assert.ok(
+          contextDiagnostics.result.composition?.segments.some(
+            (segment) => segment.kind === 'messages',
+          ),
+        );
+      }
+    }
 
     const artifacts = await openInteractiveArtifactStoreForWrite(owner.lease);
-    const artifactPage = await artifacts.listPage(session.id, { offset: 0, limit: 100 });
-    const captureArtifacts = artifactPage.records.filter(
-      (artifact) => artifact.source === 'provider_request_capture',
+    const captureArtifacts = await waitForCaptureArtifacts(
+      artifacts,
+      session.id,
+      capturedRequestCount,
     );
     assert.equal(captureArtifacts.length, capturedRequestCount);
     let summaryCaptureFound = false;
@@ -1826,7 +2028,9 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     }
     assert.equal(summaryCaptureFound, true);
 
-    const requestsBeforeArtifactFailure = provider.requests.length;
+    const streamRequestsBeforeArtifactFailure = provider.requests.filter(
+      (request) => request.body.stream === true,
+    ).length;
     artifacts.close();
     const failedTurnId = randomUUID();
     const failedStart = await startTurn(
@@ -1843,9 +2047,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
       failedStart,
       connectionContext,
     );
-    assert.equal(failedTerminal.status, 'failed');
-    assert.equal(provider.requests.length, requestsBeforeArtifactFailure);
-    assert.equal(drainRequests, 1);
+    assert.equal(failedTerminal.status, 'completed');
+    // A closed artifact store must not stop the turn from reaching the model.
+    // Counted on the streamed turn requests alone: whether this turn also
+    // spends an auxiliary compaction or memory call is the context budget's
+    // business, not this assertion's.
+    assert.equal(
+      provider.requests.filter((request) => request.body.stream === true).length,
+      streamRequestsBeforeArtifactFailure + 1,
+    );
+    assert.equal(drainRequests, 0);
   } finally {
     try {
       await composition?.close();
@@ -3097,7 +3308,7 @@ test('one turn shares one canonical Skill inventory across prompt and lazy tools
     runtimePolicy: policy,
     skills,
     memory,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const firstContext = {
     sessionId: 'session',
@@ -3183,7 +3394,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   const context = {
     sessionId: 'session',
@@ -3234,7 +3445,7 @@ test('one composer freezes Runtime Policy while each Run freezes its remaining p
         body: memoryBody,
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
   });
   assert.deepEqual(
     (await nextComposition.resolveSystemPrompt({ ...context, turnId: 'turn-3' })).sourceRevisions,
@@ -3284,7 +3495,7 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
         body: '',
       }),
     } as unknown as HostMemoryCoordinator,
-    taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     clientCapabilities: {
       snapshotForSession: () => undefined,
     } as unknown as HostClientCapabilityCoordinator,
@@ -3351,7 +3562,6 @@ test('backend composition survives a moved saved Git Bash executable while Bash 
     },
   };
   const capturedChildTools = createHostChildAgentToolComposition({
-    taskLedger: {} as TaskLedgerStore,
     builtinTools: { shell: capturedChildShell },
     hostTools: [],
     worktreePatchWriteBackAvailable: true,
@@ -3387,7 +3597,6 @@ test('child execution Bash carries the configured shell guidance and spawn plan'
     },
   };
   const composition = createHostChildAgentToolComposition({
-    taskLedger: {} as TaskLedgerStore,
     builtinTools: {
       shell,
       shellRuns: {
@@ -3463,7 +3672,7 @@ test('a bound tool ceiling excludes dynamic Client Capability tools', () => {
       readCanonicalModelInventory: async () => ({ inventory: [] }),
     } as unknown as HostSkillCatalogCoordinator,
     memory: {} as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     boundTools: [boundTool],
     parentAgentTools: buildParentAgentTools(),
     scheduledTaskTool,
@@ -3500,7 +3709,7 @@ test('the headless coding profile freezes the Eval prompt and tool ceiling', asy
         throw new Error('Profiled prompt must not read product Memory');
       },
     } as unknown as HostMemoryCoordinator,
-    taskLedger: {} as TaskLedgerStore,
+    sessionTodo: {} as SessionTodoToolStore,
     builtinTools: {},
     toolProfile: 'headless-coding-v1',
     parentAgentTools: buildParentAgentTools(),
@@ -3621,34 +3830,46 @@ async function waitForUsage(
   throw new Error('Hosted real-model usage attribution was not persisted');
 }
 
-async function waitForProviderEvidence(
-  execution: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
+async function waitForCanonicalAttempts(
+  usage: InteractiveUsageStoresWriter,
   sessionId: string,
   expectedRequests: number,
-): Promise<{ captures: unknown[]; attempts: unknown[] }> {
+): Promise<readonly ModelCallAttempt[]> {
   for (let attempt = 0; attempt < 100; attempt += 1) {
-    const runs = await execution.agentRunStore.listSessionRuns(sessionId);
-    const events = (
-      await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
-    ).flat();
-    const captures = events.filter((event) => event.type === 'provider_request_captured');
-    const attempts = events.filter((event) => event.type === 'provider_request_attempt_recorded');
-    if (captures.length >= expectedRequests && attempts.length >= expectedRequests) {
-      return { captures, attempts };
-    }
+    const page = await usage.modelCalls.modelCallAttempts(
+      { from: 0, to: Number.MAX_SAFE_INTEGER },
+      sessionId,
+    );
+    if (page.attempts.length >= expectedRequests) return page.attempts;
     await new Promise<void>((resolve) => setTimeout(resolve, 10));
   }
-  const runs = await execution.agentRunStore.listSessionRuns(sessionId);
-  const events = (
-    await Promise.all(runs.map((run) => execution.agentRunStore.readEvents(sessionId, run.runId)))
-  ).flat();
+  const page = await usage.modelCalls.modelCallAttempts(
+    { from: 0, to: Number.MAX_SAFE_INTEGER },
+    sessionId,
+  );
   throw new Error(
-    `Hosted provider request evidence was not persisted: ${JSON.stringify({
+    `Hosted canonical model-call attempts were not persisted: ${JSON.stringify({
       expectedRequests,
-      captures: events.filter((event) => event.type === 'provider_request_captured').length,
-      attempts: events.filter((event) => event.type === 'provider_request_attempt_recorded').length,
+      attempts: page.attempts.length,
+      unreadableRecords: page.unreadableRecords,
     })}`,
   );
+}
+
+async function waitForCaptureArtifacts(
+  artifacts: Awaited<ReturnType<typeof openInteractiveArtifactStoreForWrite>>,
+  sessionId: string,
+  expectedRequests: number,
+) {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const page = await artifacts.listPage(sessionId, { offset: 0, limit: 100 });
+    const captures = page.records.filter(
+      (artifact) => artifact.source === 'provider_request_capture',
+    );
+    if (captures.length >= expectedRequests) return captures;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Hosted request artifacts did not reach ${expectedRequests}`);
 }
 
 async function waitForAutomaticMemoryRequestsToSettle(
@@ -3765,7 +3986,7 @@ function backendCreationFixture(input: {
           body: '',
         }),
       } as unknown as HostMemoryCoordinator,
-      taskLedger: { list: async () => [] } as unknown as TaskLedgerStore,
+      sessionTodo: {} as SessionTodoToolStore,
       clientCapabilities: {
         snapshotForSession: input.snapshotClientCapabilities ?? (() => undefined),
       } as unknown as HostClientCapabilityCoordinator,
@@ -3917,17 +4138,6 @@ async function settleWithin<T>(pending: Promise<T>): Promise<T> {
 }
 
 const SETTLE_TIMEOUT_MESSAGE = 'Operation did not settle within five seconds';
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((next, fail) => {
-    resolve = next;
-    reject = fail;
-  });
-  return { promise, resolve, reject };
-}
-
 function controlledOAuthTransports(): {
   readonly create: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport;
   readonly refreshStarted: Promise<void>;
@@ -4155,14 +4365,22 @@ async function startProvider(): Promise<{
   configureChildAgentFlow(): void;
   configureImplementationChildAgentFlow(): void;
   configureAgentGraphFlow(): void;
+  configurePayloadProportionalUsage(): void;
   close(): Promise<void>;
 }> {
   const requests: ProviderRequest[] = [];
   let flow: ProviderFlow = { kind: 'default' };
+  // A real provider's reported input tokens grow with the request. The default
+  // constant is fine for tests that only read the number back; a test whose
+  // subject is the context-budget estimate needs usage that tracks the payload,
+  // because that estimate is anchored on exactly this number.
+  let usageTracksPayload = false;
   const server = createServer((request, response) => {
-    void handleProviderRequest(request, response, requests, flow).catch((error) => {
-      response.destroy(error as Error);
-    });
+    void handleProviderRequest(request, response, requests, flow, usageTracksPayload).catch(
+      (error) => {
+        response.destroy(error as Error);
+      },
+    );
   });
   await listen(server);
   const address = server.address();
@@ -4200,6 +4418,9 @@ async function startProvider(): Promise<{
         scenario: new AgentGraphProviderScenario(CHILD_AGENT_RESULT_TEXT),
       };
     },
+    configurePayloadProportionalUsage: () => {
+      usageTracksPayload = true;
+    },
     close: () => closeServer(server),
   };
 }
@@ -4209,6 +4430,7 @@ async function handleProviderRequest(
   response: ServerResponse,
   requests: ProviderRequest[],
   flow: ProviderFlow,
+  usageTracksPayload = false,
 ): Promise<void> {
   assert.equal(request.method, 'POST');
   const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
@@ -4448,7 +4670,11 @@ async function handleProviderRequest(
     });
     return;
   }
-  respondProviderText(response, RESPONSE_TEXT);
+  respondProviderText(
+    response,
+    RESPONSE_TEXT,
+    usageTracksPayload ? Math.max(11, Math.ceil(JSON.stringify(body).length / 4)) : 11,
+  );
 }
 
 function respondProviderResponsesText(response: ServerResponse, text: string): void {
@@ -4512,7 +4738,7 @@ function respondProviderResponsesText(response: ServerResponse, text: string): v
   response.end(`${events.map((event) => `data: ${JSON.stringify(event)}`).join('\n\n')}\n\n`);
 }
 
-function respondProviderText(response: ServerResponse, text: string): void {
+function respondProviderText(response: ServerResponse, text: string, promptTokens = 11): void {
   response.writeHead(200, { 'content-type': 'text/event-stream' });
   response.write(
     `data: ${JSON.stringify({
@@ -4536,7 +4762,11 @@ function respondProviderText(response: ServerResponse, text: string): void {
       created: 1,
       model: MODEL_ID,
       choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
-      usage: { prompt_tokens: 11, completion_tokens: 5, total_tokens: 16 },
+      usage: {
+        prompt_tokens: promptTokens,
+        completion_tokens: 5,
+        total_tokens: promptTokens + 5,
+      },
     })}\n\n`,
   );
   response.end('data: [DONE]\n\n');

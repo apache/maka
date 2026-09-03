@@ -28,15 +28,21 @@ import {
   RuntimeHostRemoteCompatibilityError,
 } from '../client/index.js';
 import {
+  connectPeerRuntimeHost,
   connectRemoteRuntimeHostProfile,
   createFileRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
+  decodeRemoteRuntimeHostProfile,
   decodeRuntimeHostProfileDocument,
   RUNTIME_HOST_PLAINTEXT_ACKNOWLEDGEMENT,
+  RuntimeHostProfileConnectionError,
   sameRemoteRuntimeHostProfileTarget,
   type RemoteRuntimeHostProfile,
+  type RuntimeHostProfileCredential,
   type RuntimeHostProfileCredentialStore,
 } from '../client/host-profile.js';
+import type { RuntimeHostPeerClient } from '../client/peer-client.js';
 import { RuntimeHostPermanentReconnectError } from '../client/reconnect-lifecycle.js';
 import {
   INTERACTIVE_RUNTIME_HOST_COMPOSITION_ID,
@@ -44,6 +50,7 @@ import {
   RUNTIME_HOST_PROTOCOL_VERSION,
   type HostIncompatible,
 } from '../protocol/index.js';
+import { RuntimeHostPeerError } from '../transport/peer-native.js';
 
 const ROOT_A = 'a'.repeat(64);
 const ROOT_B = 'b'.repeat(64);
@@ -57,7 +64,7 @@ describe('Runtime Host profiles', () => {
   test('persists WSL environments without projecting a remote credential', async () => {
     const path = await profilePath();
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
-    assert.deepEqual(await catalog.read(), { schemaVersion: 3, profiles: [] });
+    assert.deepEqual(await catalog.read(), { schemaVersion: 4, profiles: [] });
     await catalog.create({
       id: 'ubuntu',
       name: 'Ubuntu',
@@ -117,7 +124,7 @@ describe('Runtime Host profiles', () => {
     );
 
     assert.deepEqual(await catalog.read(), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       profiles: [
         {
           id: 'office',
@@ -140,7 +147,7 @@ describe('Runtime Host profiles', () => {
     if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
 
     assert.deepEqual(await catalog.remove('office'), {
-      schemaVersion: 3,
+      schemaVersion: 4,
       profiles: [
         {
           id: 'backup',
@@ -193,7 +200,7 @@ describe('Runtime Host profiles', () => {
 
     const catalog = createFileRuntimeHostProfileCatalog(path, memoryCredentials());
     const document = await catalog.read();
-    assert.equal(document.schemaVersion, 3);
+    assert.equal(document.schemaVersion, 4);
     assert.equal(
       (JSON.parse(await readFile(path, 'utf8')) as { schemaVersion: number }).schemaVersion,
       1,
@@ -267,13 +274,14 @@ describe('Runtime Host profiles', () => {
 
     await desktop.create(profile, 'desktop-token');
     const created = await desktop.resolve(profile.id);
+    assert.ok(created.profileIncarnationId);
     await assert.rejects(() => cli.create(profile, 'duplicate-token'), /new profile id/u);
     await cli.save({ ...profile, name: 'Rotated' }, 'rotated-token');
 
     assert.deepEqual(await desktop.removeIfCurrent(created), {
       removed: false,
       document: {
-        schemaVersion: 3,
+        schemaVersion: 4,
         profiles: [
           {
             ...profile,
@@ -285,8 +293,9 @@ describe('Runtime Host profiles', () => {
     });
     const rotated = await desktop.resolve(profile.id);
     assert.equal(rotated.credential, 'rotated-token');
+    assert.equal(rotated.profileIncarnationId, created.profileIncarnationId);
     assert.equal((await desktop.removeIfCurrent(rotated)).removed, true);
-    assert.deepEqual(await desktop.read(), { schemaVersion: 3, profiles: [] });
+    assert.deepEqual(await desktop.read(), { schemaVersion: 4, profiles: [] });
   });
 
   test('conditionally updates one Host connection and credential', async () => {
@@ -299,13 +308,16 @@ describe('Runtime Host profiles', () => {
 
     await desktop.create(original, 'old-token');
     const expected = await desktop.resolve(original.id);
+    assert.ok(expected.profileIncarnationId);
     assert.equal((await desktop.rebindIfCurrent(expected, replacement, 'new-token')).rebound, true);
-    assert.deepEqual(await desktop.resolve(original.id), {
+    const rebound = await desktop.resolve(original.id);
+    assert.deepEqual(rebound, {
       profile: {
         ...replacement,
         transport: { kind: 'tls', url: 'wss://runtime.example.com/' },
       },
       credential: 'new-token',
+      profileIncarnationId: expected.profileIncarnationId,
     });
 
     await external.save({ ...replacement, name: 'Externally updated' }, 'external-token');
@@ -411,29 +423,248 @@ describe('Runtime Host profiles', () => {
     const resolved = await first.resolve('office');
     assert.equal(resolved.credential, 'token-a');
 
-    await credentials.set(targetB, 'token-b');
-    assert.equal(await credentials.get(targetA), 'token-a');
-    assert.equal(await credentials.get(targetB), 'token-b');
+    await credentials.set(targetB, {
+      credential: 'token-b',
+      profileIncarnationId: 'target-b-incarnation',
+    });
+    assert.equal((await credentials.get(targetA))?.credential, 'token-a');
+    assert.equal((await credentials.get(targetB))?.credential, 'token-b');
     await credentials.delete(targetB);
-    assert.equal(await credentials.get(targetA), 'token-a');
+    assert.equal((await credentials.get(targetA))?.credential, 'token-a');
+  });
+
+  test('keeps legacy access credentials readable while assigning a stable incarnation', async () => {
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    let stored = 'legacy-token';
+    const credentials = createRuntimeHostProfileCredentialStore({
+      getSecret: async () => stored,
+      setSecret: async (_slot, _kind, value) => {
+        stored = value;
+      },
+      deleteSecret: async () => {
+        stored = '';
+      },
+    });
+
+    const first = await credentials.get(profile);
+    const second = await credentials.get(profile);
+    assert.equal(first?.credential, 'legacy-token');
+    assert.equal(first?.profileIncarnationId, second?.profileIncarnationId);
+    assert.ok(first?.profileIncarnationId);
+
+    await credentials.set(profile, {
+      credential: 'rotated-token',
+      profileIncarnationId: first.profileIncarnationId,
+    });
+    assert.deepEqual(await credentials.get(profile), {
+      credential: 'rotated-token',
+      profileIncarnationId: first.profileIncarnationId,
+    });
+  });
+
+  test('isolates capability-provider credentials by target and owning Client', async () => {
+    const path = await profilePath();
+    const credentials = createRuntimeHostCapabilityProviderCredentialStore(
+      createFileCredentialStore(join(dirname(path), 'credentials')),
+    );
+    const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    const targetB = remoteProfile('office', 'wss://b.example.com', ROOT_B);
+    const incarnationA = { profile: targetA, profileIncarnationId: 'incarnation-a' };
+    const recreatedIncarnationA = {
+      profile: targetA,
+      profileIncarnationId: 'incarnation-a-recreated',
+    };
+    const incarnationB = { profile: targetB, profileIncarnationId: 'incarnation-b' };
+
+    await assert.rejects(
+      () => credentials.set(incarnationA, 'owner-a', 'not a token'),
+      /credential is invalid/,
+    );
+    await credentials.set(incarnationA, 'owner-a', 'provider-a');
+    assert.equal(await credentials.get(incarnationA, 'owner-b'), null);
+    await credentials.set(incarnationA, 'owner-b', 'provider-b');
+    await credentials.set(incarnationB, 'owner-a', 'provider-other-target');
+
+    assert.equal(await credentials.get(incarnationA, 'owner-a'), null);
+    assert.equal(await credentials.get(incarnationA, 'owner-b'), 'provider-b');
+    assert.equal(await credentials.get(recreatedIncarnationA, 'owner-b'), null);
+    assert.equal(await credentials.get(incarnationB, 'owner-a'), 'provider-other-target');
+    await credentials.delete(incarnationA, 'owner-a');
+    assert.equal(await credentials.get(incarnationA, 'owner-a'), null);
+    assert.equal(await credentials.get(incarnationA, 'owner-b'), 'provider-b');
+  });
+
+  test('removing a profile retires its terminal and provider credentials together', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const catalog = createFileRuntimeHostProfileCatalog(
+      path,
+      createRuntimeHostProfileCredentialStore(credentialStore),
+    );
+    const providers = createRuntimeHostCapabilityProviderCredentialStore(credentialStore);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await catalog.save(profile, 'terminal-token');
+    const target = await catalog.resolve(profile.id);
+    assert.ok(target.profileIncarnationId);
+    const incarnation = { profile, profileIncarnationId: target.profileIncarnationId };
+    await providers.set(incarnation, 'owner-a', 'provider-token');
+
+    await catalog.remove(profile.id);
+
+    assert.equal(await providers.get(incarnation, 'owner-a'), null);
+  });
+
+  test('profile removal excludes a queued provider credential mutation', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const stored = createRuntimeHostProfileCredentialStore(credentialStore);
+    const removalStarted = deferred();
+    const allowRemoval = deferred();
+    const credentials: RuntimeHostProfileCredentialStore = {
+      ...stored,
+      delete: async (profile) => {
+        removalStarted.resolve();
+        await allowRemoval.promise;
+        await stored.delete(profile);
+      },
+    };
+    const removingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const mutatingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const providers = createRuntimeHostCapabilityProviderCredentialStore(credentialStore);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await removingCatalog.save(profile, 'terminal-token');
+    const resolved = await removingCatalog.resolve(profile.id);
+    assert.ok(resolved.profileIncarnationId);
+    const incarnation = { profile, profileIncarnationId: resolved.profileIncarnationId };
+
+    const removal = removingCatalog.remove(profile.id);
+    await removalStarted.promise;
+    let mutationRan = false;
+    const mutation = mutatingCatalog.mutateRemoteProfileIfCurrent(incarnation, async (current) => {
+      mutationRan = true;
+      await providers.set(
+        { profile: current, profileIncarnationId: incarnation.profileIncarnationId },
+        'owner-a',
+        'provider-token',
+      );
+    });
+    allowRemoval.resolve();
+
+    await removal;
+    assert.equal(await mutation, false);
+    assert.equal(mutationRan, false);
+    assert.equal(await providers.get(incarnation, 'owner-a'), null);
+  });
+
+  test('profile incarnation validation waits for removal rollback', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const stored = createRuntimeHostProfileCredentialStore(credentialStore);
+    const removalStarted = deferred();
+    const allowRemovalFailure = deferred();
+    const credentials: RuntimeHostProfileCredentialStore = {
+      ...stored,
+      delete: async () => {
+        removalStarted.resolve();
+        await allowRemovalFailure.promise;
+        throw new Error('credential store unavailable');
+      },
+    };
+    const removingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const validatingCatalog = createFileRuntimeHostProfileCatalog(path, credentials);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await removingCatalog.save(profile, 'terminal-token');
+    const resolved = await removingCatalog.resolve(profile.id);
+    assert.ok(resolved.profileIncarnationId);
+    const incarnation = { profile, profileIncarnationId: resolved.profileIncarnationId };
+
+    const removal = removingCatalog.remove(profile.id);
+    await removalStarted.promise;
+    let validationSettled = false;
+    const validation = validatingCatalog.readRemoteProfileIfCurrent(incarnation).then((current) => {
+      validationSettled = true;
+      return current;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(validationSettled, false);
+
+    allowRemovalFailure.resolve();
+    await assert.rejects(removal, /credential store unavailable/u);
+    assert.deepEqual(await validation, decodeRemoteRuntimeHostProfile(profile));
+  });
+
+  test('recreating the same profile id and target assigns a new incarnation', async () => {
+    const path = await profilePath();
+    const credentialStore = createFileCredentialStore(join(dirname(path), 'credentials'));
+    const catalog = createFileRuntimeHostProfileCatalog(
+      path,
+      createRuntimeHostProfileCredentialStore(credentialStore),
+    );
+    const providers = createRuntimeHostCapabilityProviderCredentialStore(credentialStore);
+    const profile = remoteProfile('office', 'wss://a.example.com', ROOT_A);
+    await catalog.create(profile, 'terminal-token');
+    const first = await catalog.resolve(profile.id);
+    assert.ok(first.profileIncarnationId);
+    const firstIncarnation = {
+      profile,
+      profileIncarnationId: first.profileIncarnationId,
+    };
+    await providers.set(firstIncarnation, 'owner-a', 'provider-token');
+
+    await catalog.remove(profile.id);
+    await catalog.create(profile, 'terminal-token');
+    const second = await catalog.resolve(profile.id);
+    assert.ok(second.profileIncarnationId);
+    const secondIncarnation = {
+      profile,
+      profileIncarnationId: second.profileIncarnationId,
+    };
+
+    assert.notEqual(second.profileIncarnationId, first.profileIncarnationId);
+    assert.equal(await catalog.readRemoteProfileIfCurrent(firstIncarnation), undefined);
+    assert.deepEqual(
+      await catalog.readRemoteProfileIfCurrent(secondIncarnation),
+      decodeRemoteRuntimeHostProfile(profile),
+    );
+    assert.equal(await providers.get(secondIncarnation, 'owner-a'), null);
+    let staleMutationRan = false;
+    assert.equal(
+      await catalog.mutateRemoteProfileIfCurrent(firstIncarnation, async () => {
+        staleMutationRan = true;
+      }),
+      false,
+    );
+    assert.equal(staleMutationRan, false);
+    let staleUpdateRan = false;
+    assert.equal(
+      await catalog.updateRemoteProfileIfCurrent(firstIncarnation, (current) => {
+        staleUpdateRan = true;
+        return current;
+      }),
+      false,
+    );
+    assert.equal(staleUpdateRan, false);
   });
 
   test('pins a direct-peer profile to its PeerId while allowing route discovery to change', () => {
     const original = directPeerProfile('peer-a', ['/ip4/192.0.2.10/udp/4001/quic-v1']);
     const moved = directPeerProfile('peer-a', ['/ip6/2001:db8::10/udp/4001/quic-v1']);
-    const replacement = directPeerProfile('peer-b', moved.transport.routeHints);
+    const replacement = directPeerProfile(
+      'peer-b',
+      moved.transport.reachability.lease.directRoutes,
+    );
 
     assert.equal(sameRemoteRuntimeHostProfileTarget(original, moved), true);
     assert.equal(sameRemoteRuntimeHostProfileTarget(original, replacement), false);
     assert.deepEqual(
-      decodeRuntimeHostProfileDocument({ schemaVersion: 1, profiles: [moved] }).profiles[0],
+      decodeRuntimeHostProfileDocument({ schemaVersion: 4, profiles: [moved] }).profiles[0],
       moved,
     );
   });
 
   test('keeps profile metadata when credential removal fails', async () => {
     const path = await profilePath();
-    const values = new Map<string, string>();
+    const values = new Map<string, RuntimeHostProfileCredential>();
     const credentials: RuntimeHostProfileCredentialStore = {
       get: async (profile) => values.get(profile.id) ?? null,
       set: async (profile, credential) => {
@@ -472,6 +703,8 @@ describe('Runtime Host profiles', () => {
     const targetA = remoteProfile('office', 'wss://a.example.com', ROOT_A);
     const targetB = { ...targetA, name: 'updated' };
     await catalog.save(targetA, 'token-a');
+    const original = await catalog.resolve('office');
+    assert.ok(original.profileIncarnationId);
 
     rejectNextSet = true;
     await assert.rejects(() => catalog.save(targetB, 'token-b'), /credential store unavailable/);
@@ -481,6 +714,7 @@ describe('Runtime Host profiles', () => {
         transport: { kind: 'tls', url: 'wss://a.example.com/' },
       },
       credential: 'token-a',
+      profileIncarnationId: original.profileIncarnationId,
     });
   });
 
@@ -689,7 +923,11 @@ describe('Runtime Host profiles', () => {
             connect: async () => ({ kind: 'unavailable', reason: 'root_mismatch' }),
           },
         ),
-      RuntimeHostPermanentReconnectError,
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'target_mismatch');
+        return true;
+      },
     );
   });
 
@@ -873,10 +1111,76 @@ describe('Runtime Host profiles', () => {
         ),
       (error: unknown) => {
         assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'credential_rejected');
         assert.match(error.message, /rejected its access credential/u);
         return true;
       },
     );
+  });
+
+  test('treats missing, immutable, and native Direct capability failures as terminal', async () => {
+    const profile = directPeerProfile('peer-a', ['/memory/peer-a']);
+    const connect = (peerClient: RuntimeHostPeerClient) =>
+      connectPeerRuntimeHost({
+        profileId: profile.id,
+        transport: profile.transport,
+        credential: 'opaque-token',
+        expectedRootId: profile.rootId,
+        clientInstanceId: 'client-1',
+        peerClient,
+      });
+    await assert.rejects(
+      () =>
+        connectRemoteRuntimeHostProfile({
+          profile,
+          credential: 'opaque-token',
+          clientInstanceId: 'client-1',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.ok(error.cause instanceof RuntimeHostPeerError);
+        assert.equal(error.cause.code, 'peer_native_unavailable');
+        return true;
+      },
+    );
+    const invalidEvidence = new Error('signature is invalid');
+    await assert.rejects(
+      () =>
+        connect({
+          observeAuthenticatedReachability: () => {
+            throw invalidEvidence;
+          },
+        } as unknown as RuntimeHostPeerClient),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostProfileConnectionError);
+        assert.equal(error.reason, 'target_mismatch');
+        assert.equal(error.cause, invalidEvidence);
+        return true;
+      },
+    );
+
+    for (const code of ['peer_identity_mismatch', 'peer_native_unavailable'] as const) {
+      const failure = new RuntimeHostPeerError(code, code);
+      await assert.rejects(
+        () =>
+          connect({
+            observeAuthenticatedReachability: () => profile.transport.reachability,
+            connect: async () => {
+              throw failure;
+            },
+          } as unknown as RuntimeHostPeerClient),
+        (error: unknown) => {
+          assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+          assert.equal(error.cause, failure);
+          if (code === 'peer_identity_mismatch') {
+            assert.ok(error instanceof RuntimeHostProfileConnectionError);
+            assert.equal(error.reason, 'target_mismatch');
+          }
+          return true;
+        },
+      );
+    }
   });
 
   test('reports retryable remote connection failure categories', async () => {
@@ -927,12 +1231,28 @@ function directPeerProfile(
     name: 'Peer',
     kind: 'remote',
     rootId: ROOT_A,
-    transport: { kind: 'libp2p-direct', peerId, routeHints, coordinationRelays: [] },
+    transport: { kind: 'libp2p-direct', reachability: reachability(peerId, routeHints) },
+  };
+}
+
+function reachability(peerId: string, directRoutes: readonly string[]) {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId,
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes,
+      coordinationRoutes: [],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
   };
 }
 
 function memoryCredentials(): RuntimeHostProfileCredentialStore {
-  const values = new Map<string, string>();
+  const values = new Map<string, RuntimeHostProfileCredential>();
   const key = (profile: RemoteRuntimeHostProfile) =>
     `${profile.id}\0${JSON.stringify(profile.transport)}\0${profile.rootId}`;
   return {
@@ -944,6 +1264,14 @@ function memoryCredentials(): RuntimeHostProfileCredentialStore {
       values.delete(key(profile));
     },
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 }
 
 function incompatibleHandshake(overrides: Partial<HostIncompatible> = {}): HostIncompatible {

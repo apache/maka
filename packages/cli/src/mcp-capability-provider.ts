@@ -104,7 +104,7 @@ export function createMcpCapabilityProvider(
         capabilityBindingKey(frame.offerId, frame.serverId, frame.toolName),
       );
       if (!binding) throw new Error('MCP capability is not part of the published snapshot');
-      await options.accept();
+      await options.accept({ kind: 'none' });
       return projectMcpResult(
         await manager.callTool(binding, frame.arguments, { signal: options.signal }),
       );

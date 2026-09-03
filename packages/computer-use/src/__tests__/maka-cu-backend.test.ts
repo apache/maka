@@ -24,7 +24,7 @@
 // NDJSON log the test inspects, the same way the cua-driver backend test does.
 //
 // Run (from repo root), after @maka/core + @maka/runtime are built:
-//   npm --workspace @maka/computer-use run test
+//   npm run build && npm --workspace @maka/computer-use run test:dist
 import assert from 'node:assert/strict';
 import { chmodSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';

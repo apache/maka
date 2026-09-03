@@ -109,8 +109,8 @@ export const makaTheme = defineTheme({
         '"Liberation Mono", monospace',
     },
   },
-  // The neutral background stack and the hairline, pointed back at the product
-  // palette.
+  // The neutral background stack, the hairlines, and the text/icon ink, pointed
+  // back at the product palette.
   //
   // Astryx ships these as static light-dark() pairs, which cannot follow Maka's
   // eleven switchable palettes — every one of them overrides --background and
@@ -142,6 +142,23 @@ export const makaTheme = defineTheme({
   // than an opaque literal, so it is defined RELATIVE to whatever it sits on and
   // cannot invert in any palette or mode — the failure above is unrepresentable
   // rather than merely fixed.
+  //
+  // The radius rungs below are the same convergence one tier down. Maka and
+  // Astryx name one ladder twice — control/inner, surface/element,
+  // modal/container, pill/full — and both vocabularies are live in product
+  // CSS. They carried independent literals that happened to agree, in
+  // different units: the product's absolute px against Astryx's rem, which
+  // the root font-size note above is the reason to keep out. Aliasing makes
+  // the px side the single authority, so an upstream rung change can no
+  // longer move one name out from under the other without anyone seeing it.
+  //
+  // The three status tints belong here too, for the same reason --color-border
+  // does: nothing in maka.css re-declares them below the root, so a root
+  // declaration inside the theme's own @scope is enough. Their fourth sibling
+  // --color-accent-muted is NOT here — maka.css re-declares the accent pair at
+  // component level, which beats a root rule in the same layer, so that one
+  // needs the unlayered bridge in maka-tokens.css. 0.24 is the alpha the
+  // neutral theme's own pastels already sit at.
   tokens: {
     '--color-background-body': 'var(--surface-canvas)',
     '--color-background-surface': 'var(--background)',
@@ -149,34 +166,53 @@ export const makaTheme = defineTheme({
     '--color-background-popover': 'var(--background-elevated)',
     '--color-background-muted': 'var(--muted)',
     '--color-border': 'var(--border)',
-  },
-  // The column edge itself. Astryx draws a divider only on
-  // `AppShell variant="section"`, which is a hardcoded `variant === 'section'`
-  // in AppShell.tsx and pairs the line with no wash at all. Cursor and Codex
-  // both do the opposite of one-or-the-other: a 1px rule AND a wash, with the
-  // wash pulled far back (measured off their windows, sidebar→content ΔL 0.025
-  // and ~0.010 against Maka's 0.045). The line states the boundary; the wash
-  // only says the two columns are different material. Authored here rather than
-  // as a product override so the shell keeps one paint authority — this emits
-  // `.astryx-app-shell-sidenav { border-inline-end }` inside the theme's own
-  // @scope. It draws with --color-border, the same token Divider, Card and the
-  // generated `hr` rule use, so the column edge cannot drift away from every
-  // other hairline in the app; that token is remapped to the product's --border
-  // just above. Keyed on the variant, not `base`: the edge belongs to the
-  // elevated treatment, so a future variant change re-decides it instead of
-  // inheriting a line that no longer matches the columns.
-  components: {
-    'app-shell-sidenav': {
-      // No color ease on the column: neither half of the edge changes across the
-      // collapse any more. The wash is one material in both states (the rail
-      // wears --color-background-body throughout, see shell-layout.css) and the
-      // hairline is transparent in both, so a background-color/border-color
-      // transition here had nothing left to interpolate.
-      'variant:elevated': {
-        borderInlineEndWidth: '1px',
-        borderInlineEndStyle: 'solid',
-        borderInlineEndColor: 'var(--color-border)',
-      },
-    },
+    // Text and icon ink, pointed at the product's two prose tiers (DESIGN.md
+    // §3). maka.css writes these as Astryx literals at the root —
+    // light-dark(#171717, #fafafa) and light-dark(#525252, #a3a3a3) — so every
+    // `<Text color="secondary">` in the app painted a fixed neutral that
+    // followed neither the palette nor the product foreground. 62 such call
+    // sites existed and the five-selector bridge in astryx-mount.css reached
+    // exactly five of them (issue #3446 F2); the other 57 were the drift.
+    // Root is the right place: nothing in maka.css re-declares this pair below
+    // the root except the on-dark/on-light blocks and the four Banner status
+    // rules, both of which are deliberate inversions that must keep winning.
+    //
+    // --color-text-disabled is deliberately NOT here. Astryx's
+    // light-dark(#a3a3a3, #525252) measures 2.52:1 / 2.29:1, under the AA floor
+    // the prose tiers hold, and that is the point: a disabled control read at
+    // prose contrast stops reading as disabled. DESIGN.md §3 records it as the
+    // one standing exemption (issue #3446 F6), not an omission.
+    //
+    // Deleting the five-selector seam in astryx-mount.css moved three values
+    // for the containers it used to cover (the composer's model picker, the
+    // workspace picker, the plus menu, permissionModeIcon and the inspector
+    // panel): --color-accent-muted goes 0.12 → 0.24, converging on the one
+    // status-tint rung (#4465 review); --color-accent goes from raw --accent to
+    // --accent-solid, the only accent tier that clears text contrast; and
+    // --color-text-disabled falls back to Astryx's literal, which is the F6
+    // exemption above rather than a regression.
+    '--color-text-primary': 'var(--foreground)',
+    '--color-text-secondary': 'var(--muted-foreground)',
+    '--color-icon-primary': 'var(--foreground)',
+    '--color-icon-secondary': 'var(--muted-foreground)',
+    // The emphasis hairline and the chrome hover wash, for the same reason as
+    // --color-border above: both were static light-dark() pairs that no palette
+    // could reach, and both are read by Astryx internals the product cannot
+    // restyle from outside (Switch's track, ProgressBar's rail, every menu
+    // row's hover). Neither is re-declared below the root in maka.css.
+    '--color-border-emphasized': 'var(--border-strong)',
+    '--color-overlay-hover': 'var(--state-hover-bg)',
+    '--color-success-muted': 'oklch(from var(--success) l c h / 0.24)',
+    '--color-warning-muted': 'oklch(from var(--warning) l c h / 0.24)',
+    '--color-error-muted': 'oklch(from var(--destructive) l c h / 0.24)',
+    '--radius-inner': 'var(--radius-control)',
+    '--radius-element': 'var(--radius-surface)',
+    '--radius-container': 'var(--radius-modal)',
+    '--radius-full': 'var(--radius-pill)',
+    // --radius-page has no Maka tier and no product consumer, so it is not an
+    // alias — but it is on the same ladder, and a rem rung would track the root
+    // font-size the rest of the ladder keeps out (DESIGN.md §6). 28px is what
+    // its `1.75rem` resolves to at a 16px root: no pixel moves.
+    '--radius-page': '28px',
   },
 });

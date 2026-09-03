@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { nextId } from '@maka/core/test-only/async-primitives';
 import { createTestToolRuntime } from './execution-boundary-test-helpers.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -489,12 +490,6 @@ test('Computer Use validation failures still persist a redacted call and result'
   );
   assert.equal(invocations[0]?.errorClass, 'InvalidArguments');
 });
-
-function nextId(): () => string {
-  let sequence = 0;
-  return () => `id-${++sequence}`;
-}
-
 function header(): SessionHeader {
   return {
     id: 'session-1',

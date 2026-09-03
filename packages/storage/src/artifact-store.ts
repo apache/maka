@@ -52,6 +52,7 @@ import {
   isDeepResearchArtifactRole,
   type DeepResearchArtifactRole,
 } from '@maka/core/deep-research-run';
+import { sniffAttachmentMimeType } from '@maka/core/attachments';
 import { publishMarkerFile, readBoundedMarkerFile } from './marker-file.js';
 import {
   ARTIFACT_PUBLICATION_STAGING_PATTERN,
@@ -1928,31 +1929,15 @@ function isAlreadyExists(error: unknown): boolean {
 }
 
 function sniffAllowedBinaryMime(bytes: Uint8Array): string | null {
-  if (startsWith(bytes, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
-  if (startsWith(bytes, [0xff, 0xd8, 0xff])) return 'image/jpeg';
-  if (asciiStartsWith(bytes, 'GIF87a') || asciiStartsWith(bytes, 'GIF89a')) return 'image/gif';
-  if (
-    asciiStartsWith(bytes, 'RIFF') &&
-    bytes.length >= 12 &&
-    String.fromCharCode(...bytes.slice(8, 12)) === 'WEBP'
-  ) {
-    return 'image/webp';
-  }
-  if (asciiStartsWith(bytes, '%PDF-')) return 'application/pdf';
+  // Core owns the binary signatures, shared with the attachment and image-read
+  // paths so the three cannot drift. SVG needs a wider text scan than a fixed
+  // prefix, so it stays local to this reader.
+  const sniffed = sniffAttachmentMimeType(bytes);
+  if (sniffed) return sniffed;
   const leading = new TextDecoder('utf-8', { fatal: false })
     .decode(bytes.slice(0, Math.min(bytes.length, 512)))
     .trimStart();
   if (/^<svg[\s>]/i.test(leading) || /^<\?xml[\s\S]*<svg[\s>]/i.test(leading))
     return 'image/svg+xml';
   return null;
-}
-
-function startsWith(bytes: Uint8Array, prefix: number[]): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.every((value, index) => bytes[index] === value);
-}
-
-function asciiStartsWith(bytes: Uint8Array, prefix: string): boolean {
-  if (bytes.length < prefix.length) return false;
-  return prefix.split('').every((char, index) => bytes[index] === char.charCodeAt(0));
 }

@@ -94,9 +94,9 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
     if (provider !== 'xai-oauth') {
       deps.ipcMain.handle(channel('is-experimental-enabled'), () => providerEnabled(provider));
     }
-    deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawConnectionId: unknown) => {
+    deps.ipcMain.handle(channel('get-auth-url'), async (_event, rawTarget: unknown) => {
       if (!providerEnabled(provider)) return providerDisabled();
-      const selection = decodeOAuthConnectionSelection(rawConnectionId);
+      const selection = decodeOAuthLoginSelection(rawTarget);
       if (selection.kind === 'invalid') return invalidConnectionIdentity();
       const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
       if (connectionId) {
@@ -129,7 +129,11 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
           provider,
           connection: started.connection,
         });
-        return { authRequestId: attemptId, stateHint: presented.stateHint };
+        return {
+          authRequestId: attemptId,
+          stateHint: presented.stateHint,
+          connection: started.connection,
+        };
       } catch (error) {
         expectation?.cancel(error);
         if (startedOnHost) {
@@ -176,7 +180,7 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
             terminal.connection.connectionId,
           ).catch(() => undefined);
           deps.emitConnectionListChanged();
-          return { ok: true as const };
+          return { ok: true as const, connection: terminal.connection };
         } catch {
           activeAttempts.delete(attemptId);
           return actionFailure('Unable to complete OAuth authorization');
@@ -192,44 +196,43 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
       return { ok: true as const };
     });
     handleReconnectableRead(deps.ipcMain, channel('get-account-state'), async (_event, rawConnectionId: unknown) => {
-      const selection = decodeOAuthConnectionSelection(rawConnectionId);
-      if (selection.kind === 'invalid') return invalidConnectionIdentity();
-      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      const connectionId = decodeExactOAuthConnectionId(rawConnectionId);
+      if (!connectionId) return invalidConnectionIdentity();
       const candidates = oauthAccountCandidates(
         await deps.client.loadConnectionCatalog(),
         provider,
         connectionId,
       );
+      if (candidates.length === 0) {
+        return actionFailure('OAuth account does not match this provider');
+      }
       const authorizing = [...activeAttempts.values()].some(
         (attempt) =>
           attempt.provider === provider &&
-          (connectionId === undefined || attempt.connection.connectionId === connectionId),
+          attempt.connection.connectionId === connectionId,
       );
-      if (candidates.length === 0) {
-        return accountState(provider, authorizing ? 'authorizing' : 'not_logged_in');
-      }
       if ((await configuredOAuthAccountConnections(deps.client, candidates)).length > 0) {
         return accountState(provider, 'authenticated');
       }
       return accountState(provider, authorizing ? 'authorizing' : 'not_logged_in');
     });
     deps.ipcMain.handle(channel('refresh-tokens'), async (_event, rawConnectionId: unknown) => {
-      const selection = decodeOAuthConnectionSelection(rawConnectionId);
-      if (selection.kind === 'invalid') return invalidConnectionIdentity('refresh_failed');
-      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      const connectionId = decodeExactOAuthConnectionId(rawConnectionId);
+      if (!connectionId) return invalidConnectionIdentity('refresh_failed');
+      const candidates = oauthAccountCandidates(
+        await deps.client.loadConnectionCatalog(),
+        provider,
+        connectionId,
+      );
+      if (candidates.length === 0) {
+        return actionFailure('OAuth account does not match this provider', 'refresh_failed');
+      }
       const connections = await configuredOAuthAccountConnections(
         deps.client,
-        oauthAccountCandidates(
-          await deps.client.loadConnectionCatalog(),
-          provider,
-          connectionId,
-        ),
+        candidates,
       );
       if (connections.length === 0) {
         return actionFailure('OAuth account is not connected', 'refresh_failed');
-      }
-      if (connectionId === undefined && connections.length > 1) {
-        return actionFailure('Select a specific OAuth account to refresh', 'refresh_failed');
       }
       const connection = connections[0]!;
       const refreshed = await deps.client.fetchConnectionModels(connection.connectionId);
@@ -238,34 +241,25 @@ export function registerRuntimeHostOAuthIpc(deps: RuntimeHostOAuthIpcDeps): void
         : actionFailure('Unable to refresh OAuth account', 'refresh_failed');
     });
     deps.ipcMain.handle(channel('logout'), async (_event, rawConnectionId: unknown) => {
-      const selection = decodeOAuthConnectionSelection(rawConnectionId);
-      if (selection.kind === 'invalid') return invalidConnectionIdentity();
-      const connectionId = selection.kind === 'exact' ? selection.connectionId : undefined;
+      const connectionId = decodeExactOAuthConnectionId(rawConnectionId);
+      if (!connectionId) return invalidConnectionIdentity();
       try {
         const candidates = oauthAccountCandidates(
           await deps.client.loadConnectionCatalog(),
           provider,
           connectionId,
         );
-        if (connectionId !== undefined && candidates.length === 0) {
+        if (candidates.length === 0) {
           return actionFailure('OAuth account does not match this provider');
         }
-        const connections =
-          connectionId !== undefined
-            ? candidates
-            : await configuredOAuthAccountConnections(deps.client, candidates);
-        if (connectionId === undefined && connections.length > 1) {
-          return actionFailure('Select a specific OAuth account to log out');
-        }
-        const connection = connections[0];
+        const connection = candidates[0]!;
         await cancelProviderAttempts(
           deps,
           activeAttempts,
           provider,
-          connection?.connectionId,
+          connection.connectionId,
         );
-        if (connection)
-          await disableRuntimeHostAccountConnectionById(deps.client, connection.connectionId);
+        await disableRuntimeHostAccountConnectionById(deps.client, connection.connectionId);
       } catch {
         return actionFailure('Unable to remove OAuth account');
       }
@@ -370,27 +364,43 @@ function accountState(
 function oauthAccountCandidates(
   catalog: Awaited<ReturnType<OAuthClient['loadConnectionCatalog']>>,
   provider: OAuthLoginProvider,
-  connectionId: string | undefined,
+  connectionId: string,
 ): ConnectionCatalogEntry[] {
-  if (connectionId !== undefined) {
-    const connection = findRuntimeHostAccountConnectionById(catalog, connectionId);
-    return connection?.providerType === provider ? [connection] : [];
-  }
-  return catalog.connections.filter((connection) => connection.providerType === provider);
+  const connection = findRuntimeHostAccountConnectionById(catalog, connectionId);
+  return connection?.providerType === provider ? [connection] : [];
 }
 
-type OAuthConnectionSelection =
-  | { readonly kind: 'aggregate' }
+type OAuthLoginSelection =
+  | { readonly kind: 'create' }
   | { readonly kind: 'exact'; readonly connectionId: string }
   | { readonly kind: 'invalid' };
 
-function decodeOAuthConnectionSelection(value: unknown): OAuthConnectionSelection {
-  if (value === undefined) return { kind: 'aggregate' };
-  if (typeof value !== 'string') return { kind: 'invalid' };
+function decodeOAuthLoginSelection(value: unknown): OAuthLoginSelection {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'invalid' };
+  const candidate = value as { readonly kind?: unknown; readonly connectionId?: unknown };
+  const keys = Object.keys(value).sort();
+  if (candidate.kind === 'create') {
+    return keys.length === 1 && keys[0] === 'kind' ? { kind: 'create' } : { kind: 'invalid' };
+  }
+  if (candidate.kind !== 'existing' || typeof candidate.connectionId !== 'string') {
+    return { kind: 'invalid' };
+  }
+  if (keys.length !== 2 || keys[0] !== 'connectionId' || keys[1] !== 'kind') {
+    return { kind: 'invalid' };
+  }
   try {
-    return { kind: 'exact', connectionId: decodeRuntimePolicyEntityId(value) };
+    return { kind: 'exact', connectionId: decodeRuntimePolicyEntityId(candidate.connectionId) };
   } catch {
     return { kind: 'invalid' };
+  }
+}
+
+function decodeExactOAuthConnectionId(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  try {
+    return decodeRuntimePolicyEntityId(value);
+  } catch {
+    return undefined;
   }
 }
 

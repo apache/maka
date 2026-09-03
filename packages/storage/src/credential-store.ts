@@ -52,7 +52,8 @@ type StoredCredentialKind =
   | 'botAppSecret'
   | 'proxyPassword'
   | 'tavilyApiKey'
-  | 'runtimeHostAccess';
+  | 'runtimeHostAccess'
+  | 'runtimeHostCapabilityProvider';
 export type CredentialKind =
   | 'api_key'
   | 'oauth_token'
@@ -61,7 +62,8 @@ export type CredentialKind =
   | 'app_secret'
   | 'proxy_password'
   | 'tavily_api_key'
-  | 'runtime_host_access';
+  | 'runtime_host_access'
+  | 'runtime_host_capability_provider';
 
 /** Current on-disk schema version. Unknown versions fail closed on read. */
 export const CREDENTIAL_SCHEMA_VERSION = 1;
@@ -349,6 +351,7 @@ const STORED_CREDENTIAL_KINDS = [
   'proxyPassword',
   'tavilyApiKey',
   'runtimeHostAccess',
+  'runtimeHostCapabilityProvider',
 ] as const satisfies readonly StoredCredentialKind[];
 
 function toStoredKind(kind: CredentialKind): StoredCredentialKind {
@@ -369,5 +372,7 @@ function toStoredKind(kind: CredentialKind): StoredCredentialKind {
       return 'tavilyApiKey';
     case 'runtime_host_access':
       return 'runtimeHostAccess';
+    case 'runtime_host_capability_provider':
+      return 'runtimeHostCapabilityProvider';
   }
 }

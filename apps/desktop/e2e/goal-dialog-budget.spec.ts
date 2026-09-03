@@ -82,4 +82,20 @@ test('an unsendable budget blocks Start instead of arming a different one', asyn
       };
     })
     .toEqual({ condition: '所有测试通过', maxIterations: 25, tokenBudget: 5000 });
+
+  // The Host read above proves persistence; this proves the same broadcast now
+  // reaches the provider-owned chat projection without AppShell reading it.
+  const goalContext = page
+    .getByRole('region', { name: '任务上下文' })
+    .filter({ visible: true });
+  await expect(
+    goalContext
+      .getByText(/目标 0 \/ 25 · .* · 0 \/ 5k/)
+      .filter({ visible: true }),
+  ).toBeVisible();
+  await expect(
+    goalContext
+      .getByRole('button', { name: '暂停自主执行目标（已进行 0/25 轮）' })
+      .filter({ visible: true }),
+  ).toBeVisible();
 });

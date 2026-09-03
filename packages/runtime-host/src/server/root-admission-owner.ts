@@ -176,6 +176,8 @@ function snapshotMessageContent(content: MessageContent): MessageContent {
     Object.freeze(attachment);
   }
   if (snapshot.attachments) Object.freeze(snapshot.attachments);
+  for (const reference of snapshot.directoryReferences ?? []) Object.freeze(reference);
+  if (snapshot.directoryReferences) Object.freeze(snapshot.directoryReferences);
   for (const quote of snapshot.quotes ?? []) Object.freeze(quote);
   if (snapshot.quotes) Object.freeze(snapshot.quotes);
   return Object.freeze(snapshot);

@@ -24,7 +24,11 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
-import { resolveDesktopBuildVersion, resolveRuntimeHostSetupPackage } from './desktop-nightly.mjs';
+import {
+  resolveDesktopBuildVersion,
+  resolveDesktopReleaseTarget,
+  resolveRuntimeHostSetupPackage,
+} from './desktop-nightly.mjs';
 import {
   assertMissing,
   assertPackagedDependencyClosure,
@@ -127,9 +131,14 @@ export async function verifyPackagedWindowsApp(
     expectedVersion,
     artifactContract = 'current',
     environment = process.env,
+    // Which channel the packaged client points at is the descriptor's to decide,
+    // so the caller that resolved the target passes it. The installer-lifecycle
+    // and autoupdate verifications run on the formal release lanes alone, which
+    // have no nightly descriptor to resolve.
+    channel = 'release',
   } = {},
 ) {
-  if (artifactContract !== 'current' && artifactContract !== 'legacy-baseline') {
+  if (artifactContract !== 'current' && artifactContract !== 'upgrade-baseline') {
     throw new Error(`Unknown packaged Windows artifact contract: ${artifactContract}`);
   }
   const requiresCurrentContract = artifactContract === 'current';
@@ -146,17 +155,17 @@ export async function verifyPackagedWindowsApp(
     forbidPath,
     requireWindowsSandbox: requiresCurrentContract,
     requireDisclaimer: requiresCurrentContract,
-    bundledGitContract: requiresCurrentContract ? 'forbidden' : 'legacy-required',
     requireCanonicalIcon: requiresCurrentContract,
     requireAppIconCatalog: requiresCurrentContract,
     requireDirectPeerArtifact: requiresCurrentContract,
   });
+  // The upgrade baseline is a build that shipped on its own channel, from its
+  // own commit: its update feed and dependency closure are the ones that were
+  // right for it, not the ones this checkout expects.
   if (requiresCurrentContract) {
-    await assertPackagedUpdateConfiguration(resources, {
-      channel: environment.MAKA_DESKTOP_NIGHTLY_VERSION ? 'nightly' : 'release',
-    });
+    await assertPackagedUpdateConfiguration(resources, { channel });
     await assertPackagedDependencyClosure(resources);
-  } else await requirePath(join(resources, 'git', 'cmd', 'git.exe'));
+  }
 
   step('reading the executable architecture');
   const machine = await readMachine(executable);
@@ -282,21 +291,26 @@ export async function verifyPackagedWindowsApp(
 // checklist step. (macOS mounts its DMG instead because notarizing and stapling
 // rewrite the DMG after packaging, so only the final artifact can be trusted.)
 export async function verifyWindowsX64Release(
-  inputPath,
-  { platform = process.platform, verifyApp = verifyPackagedWindowsApp, checksum = sha256File } = {},
+  arch,
+  {
+    platform = process.platform,
+    verifyApp = verifyPackagedWindowsApp,
+    checksum = sha256File,
+    environment = process.env,
+  } = {},
 ) {
   if (platform !== 'win32') {
     throw new Error('Windows release verification requires Windows.');
   }
-  if (!inputPath) {
-    throw new Error('Usage: npm run verify:windows-x64 -- <path-to-exe>');
-  }
 
-  const exePath = resolve(inputPath);
-  if (!exePath.endsWith('.exe')) {
-    throw new Error(`Expected the NSIS installer .exe, found ${basename(exePath)}.`);
-  }
-  const zipPath = `${exePath.slice(0, -'.exe'.length)}.zip`;
+  // Named from the descriptor rather than handed in as a path, the way
+  // `verify:linux` and `verify:macos` already resolve their own payloads. The
+  // workflows used to spell the installer name out in YAML, which put a second
+  // authority on the artifact name beside the descriptor — and, unlike it, that
+  // copy was checked by nothing.
+  const target = await resolveDesktopReleaseTarget(`windows-${arch}`, { environment });
+  const exePath = resolve(target.payloadPath('.exe'));
+  const zipPath = resolve(target.payloadPath('.zip'));
   const unpackedDirectory = join(dirname(exePath), 'win-unpacked');
   await access(exePath);
   await access(zipPath);
@@ -307,11 +321,16 @@ export async function verifyWindowsX64Release(
   const temporaryDirectory = await mkdtemp(join(tmpdir(), 'maka-release-verify-'));
 
   try {
-    await verifyApp(unpackedDirectory, { workingDirectory: temporaryDirectory });
+    await verifyApp(unpackedDirectory, {
+      workingDirectory: temporaryDirectory,
+      channel: target.nightly ? 'nightly' : 'release',
+    });
 
     step('checksumming the release artifacts');
+    // Which payloads a formal release publishes a `.sha256` beside is the
+    // descriptor's to decide, the way `verify:linux` already reads it.
     const checksums = [];
-    for (const path of [exePath, zipPath]) {
+    for (const path of target.checksumPaths()) {
       const sha256 = await checksum(path);
       const checksumPath = `${path}.sha256`;
       await writeFile(checksumPath, `${sha256}  ${basename(path)}\n`, 'utf8');
@@ -334,7 +353,7 @@ export async function verifyWindowsX64Release(
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const result = await verifyWindowsX64Release(process.argv[2]);
+  const result = await verifyWindowsX64Release(process.argv[2] ?? process.arch);
   console.log(`Verified ${result.exePath}`);
   for (const { path, sha256 } of result.checksums) {
     console.log(`SHA-256 ${sha256}  ${basename(path)}`);

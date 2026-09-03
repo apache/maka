@@ -17,15 +17,13 @@
  * under the License.
  */
 
-import {
-  estimateTokens,
-  estimateRuntimeEventsTokens,
-  stableJsonLength,
-} from './context-budget-helpers.js';
+import { estimateTokens, stableJsonLength } from './context-budget-helpers.js';
+import { estimateRuntimeEventsTokens } from './model-history.js';
 
 // Public re-export surface for @maka/runtime consumers. Explicit list keeps
 // the ./context-budget subpath from leaking leaf-internal collaboration symbols.
-export { estimateRuntimeEventsTokens, estimateTokens } from './context-budget-helpers.js';
+export { estimateTokens } from './context-budget-helpers.js';
+export { estimateRuntimeEventsTokens } from './model-history.js';
 export {
   ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND,
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -40,7 +38,6 @@ export type {
   ToolResultArchiveReaderInput,
   ToolResultArchiveReadFailureReason,
   ToolResultArchiveReadResult,
-  ToolResultArchiveRef,
   ArchivedToolResultPlaceholder,
 } from './tool-result-archive.js';
 export type { ArchivedToolResultReason } from './tool-result-archive.js';
@@ -48,15 +45,7 @@ export type {
   HistoryCompactionPolicy,
   HistoryCompactionReplayResult,
 } from './history-compaction.js';
-export { ACTIVE_ARCHIVED_TOOL_RESULT_PLACEHOLDER_KIND } from './active-tool-result-prune.js';
-export type { ActiveArchivedToolResultPlaceholder } from './active-tool-result-prune.js';
-
-import {
-  collectStaleToolResultArchiveCandidates as collectStaleToolResultArchiveCandidatesNarrow,
-  pruneStaleToolResultsBeforeCompact,
-  type StaleToolResultPrunePolicy,
-  type StaleToolResultArchiveCandidate,
-} from './tool-result-archive.js';
+import type { StaleToolResultPrunePolicy } from './tool-result-archive.js';
 import { type ActiveToolResultPrunePolicy } from './active-tool-result-prune.js';
 import {
   applyRuntimeEventHistoryCompact as applyRuntimeEventHistoryCompactNarrow,
@@ -68,12 +57,10 @@ import {
   type HistoryCompactionCheckpointReplayFit,
 } from './history-compaction.js';
 
-import type { ModelMessage } from './model-protocol.js';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type {
   CompactionDecisionDiagnostic,
   ContextBudgetDiagnostic,
-  PromptSegmentEstimate,
 } from '@maka/core/usage-stats/types';
 import { compactionDecisionDiagnosticPatch } from './compaction-boundary.js';
 import type { HistoryCompactCheckpoint } from './history-compact-checkpoint.js';
@@ -113,16 +100,6 @@ export interface BudgetedRuntimeContext {
   historyCompactCheckpoint?: HistoryCompactCheckpoint;
 }
 
-export interface PromptSegmentInput {
-  systemPrompt?: string;
-  toolSchemaChars: number;
-  toolCount: number;
-  priorMessages: readonly ModelMessage[];
-  priorRuntimeEventCount?: number;
-  currentUserContent: string;
-  charsPerToken?: number;
-}
-
 export function applyRuntimeEventContextBudget(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,
@@ -144,12 +121,12 @@ export function applyRuntimeEventContextBudget(
     policy?.maxHistoryEstimatedTokens,
     { charsPerToken },
   );
-  const pruned = pruneStaleToolResultsBeforeCompact(
-    compacted.events,
-    policy?.staleToolResultPrune,
-    charsPerToken,
-  );
-  const keptEvents = pruned.events;
+  // Stale Tool Result pruning is no longer a step of the budget: it is a
+  // durable projection transition committed before this projection runs, and
+  // the events arriving here have already been folded through the reducer
+  // (#4283). A second rewrite here could only disagree with the ledger about
+  // what the model is allowed to see.
+  const keptEvents = compacted.events;
   const keptTurnIds = new Set(keptEvents.map((event) => runtimeEventTurnKey(event)));
   const originalTurnIds = new Set(events.map((event) => runtimeEventTurnKey(event)));
 
@@ -166,89 +143,11 @@ export function applyRuntimeEventContextBudget(
     keptEvents: keptEvents.length,
     droppedEvents: Math.max(0, events.length - keptEvents.length),
     ...compacted.diagnosticPatch,
-    ...(pruned.prunedToolResults > 0
-      ? {
-          prunedToolResults: pruned.prunedToolResults,
-          prunedToolResultEstimatedTokensBefore: pruned.estimatedTokensBefore,
-          prunedToolResultEstimatedTokensAfter: pruned.estimatedTokensAfter,
-          archivePlaceholders: pruned.prunedToolResults,
-          archivePlaceholderReasonCounts: {
-            stale_tool_result_pruned_before_compact: pruned.prunedToolResults,
-          },
-        }
-      : {}),
-    ...(pruned.archiveWriteFailures > 0
-      ? {
-          archiveWriteFailures: pruned.archiveWriteFailures,
-          unarchivedToolResults: pruned.archiveWriteFailures,
-        }
-      : {}),
   };
   return {
     events: keptEvents,
     diagnostic,
     ...(compacted.checkpoint ? { historyCompactCheckpoint: compacted.checkpoint } : {}),
-  };
-}
-
-export function buildPromptSegmentEstimates(input: PromptSegmentInput): PromptSegmentEstimate[] {
-  const charsPerToken = input.charsPerToken ?? 4;
-  return [
-    segment('system_prompt', input.systemPrompt?.length ?? 0, charsPerToken),
-    {
-      ...segment('tool_schema', input.toolSchemaChars, charsPerToken),
-      toolCount: input.toolCount,
-    },
-    {
-      ...segment('prior_history', estimateModelMessagesChars(input.priorMessages), charsPerToken),
-      messageCount: input.priorMessages.length,
-      ...(input.priorRuntimeEventCount !== undefined
-        ? { eventCount: input.priorRuntimeEventCount }
-        : {}),
-    },
-    segment('current_user', input.currentUserContent.length, charsPerToken),
-  ];
-}
-
-export function estimateModelMessagesChars(messages: readonly ModelMessage[]): number {
-  return messages.reduce((total, message) => total + estimateModelMessageChars(message), 0);
-}
-
-function estimateModelMessageChars(message: ModelMessage): number {
-  const raw = message as unknown as { content?: unknown };
-  return estimateContentChars(raw.content);
-}
-
-function estimateContentChars(content: unknown): number {
-  if (typeof content === 'string') return content.length;
-  if (Array.isArray(content)) {
-    return content.reduce((total, part) => total + estimatePartChars(part), 0);
-  }
-  return stableJsonLength(content);
-}
-
-function estimatePartChars(part: unknown): number {
-  if (!part || typeof part !== 'object') return stableJsonLength(part);
-  const value = part as Record<string, unknown>;
-  let total = 0;
-  for (const key of ['text', 'toolName', 'toolCallId'] as const) {
-    if (typeof value[key] === 'string') total += value[key].length;
-  }
-  for (const key of ['input', 'output'] as const) {
-    if (value[key] !== undefined) total += stableJsonLength(value[key]);
-  }
-  return total;
-}
-
-function segment(
-  kind: PromptSegmentEstimate['kind'],
-  chars: number,
-  charsPerToken: number,
-): PromptSegmentEstimate {
-  return {
-    kind,
-    chars,
-    estimatedTokens: estimateTokens(chars, charsPerToken),
   };
 }
 
@@ -387,17 +286,6 @@ function mergeCompactionDecisionDiagnostics(
 // Public compat wrappers: preserve the pre-split `(events, policy, options)`
 // signature for @maka/runtime consumers. Internal callers (this module and
 // ai-sdk-backend) import the narrow leaf API directly from the leaf modules.
-export function collectStaleToolResultArchiveCandidates(
-  events: readonly RuntimeEvent[],
-  policy: ContextBudgetPolicy | undefined,
-): StaleToolResultArchiveCandidate[] {
-  return collectStaleToolResultArchiveCandidatesNarrow(
-    events,
-    policy?.staleToolResultPrune,
-    policy?.charsPerToken ?? 4,
-  );
-}
-
 export function applyRuntimeEventHistoryCompact(
   events: readonly RuntimeEvent[],
   policy: ContextBudgetPolicy | undefined,

@@ -112,6 +112,25 @@ export function migrateSqliteCoreExecutionDatabase(db: DatabaseSync): void {
         ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS core_client_capability_session_grants (
+      session_id TEXT NOT NULL,
+      provider_id TEXT NOT NULL,
+      contract_id TEXT NOT NULL,
+      server_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      capability TEXT NOT NULL,
+      scope_kind TEXT NOT NULL,
+      scope_value TEXT NOT NULL,
+      granted_at INTEGER NOT NULL,
+      record_json TEXT NOT NULL,
+      PRIMARY KEY (
+        session_id, provider_id, contract_id, capability, scope_kind, scope_value
+      )
+    );
+
+    CREATE INDEX IF NOT EXISTS core_client_capability_session_grants_session
+      ON core_client_capability_session_grants(session_id, granted_at);
+
     CREATE TABLE IF NOT EXISTS core_shell_runs (
       session_id TEXT NOT NULL,
       shell_run_id TEXT NOT NULL,

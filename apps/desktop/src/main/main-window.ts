@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { app, BrowserWindow, dialog, nativeTheme, screen, shell } from 'electron';
+import { app, BrowserWindow, dialog, nativeTheme, screen, shell, webFrameMain } from 'electron';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
@@ -29,7 +29,11 @@ import { BrowserViewManager } from './browser/view-manager.js';
 import type { E2eFixture } from './e2e-fixture.js';
 import { installMainWindowPermissionPolicy } from './main-window-permission-policy.js';
 import { loadMainRenderer, resolveMainRendererEntry } from './main-renderer-loader.js';
-import { observeMainRendererProcessGone } from './main-renderer-process-gone.js';
+import {
+  type MainRendererFrameIdentity,
+  observeMainRendererProcessGone,
+  reloadMainRendererProcess,
+} from './main-renderer-process-gone.js';
 import { isDarkAppearance, isThemePreference, toNativeThemeSource } from './theme-source.js';
 import { createWindowRevealGate } from './window-reveal.js';
 import { createWindowsMaximizeRendererSync } from './windows-maximize-renderer-sync.js';
@@ -43,10 +47,18 @@ type SettingsReader = {
 
 export interface MainWindowController {
   createWindow(signal: AbortSignal): Promise<void>;
+  /**
+   * Reload only the crashed main Renderer, preserving the Desktop process,
+   * Runtime Host, background services, and current BrowserWindow.
+   */
+  reloadMainRenderer(): Promise<boolean>;
   send(channel: string, ...args: unknown[]): void;
   // PR-SHOW-AFTER-FIRST-COMMIT: reveal the hidden window after the renderer's
   // first React commit. Idempotent + e2e-fixture-safe (see notifyRendererReady).
-  notifyRendererReady(): void;
+  notifyRendererReady(
+    sender: Electron.WebContents,
+    senderFrame: Electron.WebFrameMain | null,
+  ): void;
   setTitlebarControlsVisible(sender: Electron.WebContents, visible: unknown): void;
   setThemeSource(sender: Electron.WebContents, themePref: unknown): void;
   setTitleBarOverlayTheme(sender: Electron.WebContents, theme: unknown): void;
@@ -170,11 +182,44 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
   // skeleton anyway. The gate defers those focus requests until markReady.
   const revealGate = createWindowRevealGate(keepHiddenForE2eFixture);
   let showFallbackTimer: NodeJS.Timeout | undefined;
+  let rendererRecoveryReadiness:
+    | {
+        readonly contents: Electron.WebContents;
+        listener?: (frame: MainRendererFrameIdentity) => boolean;
+      }
+    | undefined;
+  let mainWindowShutdownSignal: AbortSignal | undefined;
   const clearShowFallbackTimer = (): void => {
     if (showFallbackTimer) {
       clearTimeout(showFallbackTimer);
       showFallbackTimer = undefined;
     }
+  };
+  const armShowFallbackTimer = (target: BrowserWindow): void => {
+    clearShowFallbackTimer();
+    if (keepHiddenForE2eFixture || target.isDestroyed() || target.isVisible()) return;
+    showFallbackTimer = setTimeout(() => {
+      showFallbackTimer = undefined;
+      if (!target.isDestroyed()) revealGate.markReady(target);
+    }, SHOW_FALLBACK_TIMEOUT_MS);
+  };
+
+  const observeRendererProcess = (target: BrowserWindow, signal: AbortSignal): void => {
+    observeMainRendererProcessGone({
+      source: target.webContents,
+      shutdownSignal: signal,
+      onUnexpectedExit: (details) => {
+        console.error(
+          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
+        );
+        void Promise.resolve()
+          .then(() => deps.onRendererProcessGone(details))
+          .catch((error) => {
+            console.error('[renderer] failed to handle main Renderer process exit:', error);
+            app.quit();
+          });
+      },
+    });
   };
 
   function getBrowserViews(): BrowserViewManager<BrowserViewController> {
@@ -374,21 +419,8 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
-    observeMainRendererProcessGone({
-      source: mainWindow.webContents,
-      shutdownSignal: signal,
-      onUnexpectedExit: (details) => {
-        console.error(
-          `[renderer] main Renderer process exited unexpectedly: reason=${details.reason} exitCode=${details.exitCode}`,
-        );
-        void Promise.resolve()
-          .then(() => deps.onRendererProcessGone(details))
-          .catch((error) => {
-            console.error('[renderer] failed to handle main Renderer process exit:', error);
-            app.quit();
-          });
-      },
-    });
+    mainWindowShutdownSignal = signal;
+    observeRendererProcess(mainWindow, signal);
     installMainWindowPermissionPolicy(mainWindow.webContents, rendererEntry.url);
 
     // Two-layer external-link hygiene: assistant markdown often emits `<a href>`
@@ -500,12 +532,7 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     // If renderer-ready arrived while loadURL/loadFile was resolving, the
     // window is already visible and no timer is needed. E2e-fixture windows
     // remain hidden for their whole lifecycle.
-    if (!keepHiddenForE2eFixture && !mainWindow.isVisible()) {
-      showFallbackTimer = setTimeout(() => {
-        showFallbackTimer = undefined;
-        revealGate.markReady(mainWindow);
-      }, SHOW_FALLBACK_TIMEOUT_MS);
-    }
+    armShowFallbackTimer(mainWindow);
     if (process.env.MAKA_REAL_WINDOW_SMOKE === '1') {
       emitRealWindowSmokeDiagnostic('after-load');
       setTimeout(() => emitRealWindowSmokeDiagnostic('settled-1000ms'), 1000);
@@ -514,8 +541,77 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
 
   return {
     createWindow,
+    async reloadMainRenderer() {
+      const target = mainWindow;
+      const signal = mainWindowShutdownSignal;
+      if (
+        !target ||
+        target.isDestroyed() ||
+        target.webContents.isDestroyed() ||
+        !signal ||
+        signal.aborted
+      ) return false;
+      clearShowFallbackTimer();
+      revealGate.reset();
+      target.hide();
+      const contents = target.webContents;
+      const readiness: {
+        readonly contents: Electron.WebContents;
+        listener?: (frame: MainRendererFrameIdentity) => boolean;
+      } = { contents };
+      rendererRecoveryReadiness = readiness;
+      let loaded = false;
+      try {
+        loaded = await reloadMainRendererProcess({
+          source: contents,
+          shutdownSignal: signal,
+          subscribeMainFrameCommitted: (listener) => {
+            const onFrameNavigated = (
+              _event: Electron.Event,
+              _url: string,
+              _httpResponseCode: number,
+              _httpStatusText: string,
+              isMainFrame: boolean,
+              frameProcessId: number,
+              frameRoutingId: number,
+            ): void => {
+              if (!isMainFrame) return;
+              const frame = webFrameMain.fromId(frameProcessId, frameRoutingId);
+              if (frame) listener(rendererFrameIdentity(frame));
+            };
+            contents.on('did-frame-navigate', onFrameNavigated);
+            return () => contents.off('did-frame-navigate', onFrameNavigated);
+          },
+          subscribeRendererReady: (listener) => {
+            readiness.listener = listener;
+            return () => {
+              if (readiness.listener === listener) readiness.listener = undefined;
+            };
+          },
+          onReady: () => {
+            // The previous one-shot observer was consumed by the crash. Re-arm
+            // it before successful recovery is exposed to the caller.
+            observeRendererProcess(target, signal);
+          },
+        });
+        if (!loaded) console.error('[renderer] main Renderer reload did not become ready');
+        return loaded;
+      } finally {
+        if (rendererRecoveryReadiness === readiness) {
+          if (loaded) rendererRecoveryReadiness = undefined;
+          else readiness.listener = undefined;
+        }
+      }
+    },
     send: safeSendToRenderer,
-    notifyRendererReady() {
+    notifyRendererReady(sender, senderFrame) {
+      if (!mainWindow || mainWindow.isDestroyed() || sender !== mainWindow.webContents) return;
+      const recovery = rendererRecoveryReadiness;
+      if (recovery?.contents === sender) {
+        // A failed attempt stays as a tombstone, and a retry accepts ready only
+        // from the main frame committed by that exact reload navigation.
+        if (!senderFrame || !recovery.listener?.(rendererFrameIdentity(senderFrame))) return;
+      }
       // PR-SHOW-AFTER-FIRST-COMMIT: the renderer finished its first React
       // commit. Cancel the fallback timer and reveal the window through the
       // shared gate — idempotent, so an HMR reload re-firing this signal (or a
@@ -602,6 +698,13 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
     isFocused() {
       return !!mainWindow && !mainWindow.isDestroyed() && mainWindow.isFocused();
     },
+  };
+}
+
+function rendererFrameIdentity(frame: Electron.WebFrameMain): MainRendererFrameIdentity {
+  return {
+    processId: frame.processId,
+    frameToken: frame.frameToken,
   };
 }
 

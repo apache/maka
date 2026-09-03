@@ -87,9 +87,20 @@ jobs:
       matrix:
         include:
           - platform: macos
+            arch: arm64
             runner: macos-15
+          - platform: macos
+            arch: x64
+            runner: macos-15-intel
           - platform: windows
+            arch: x64
             runner: windows-2025
+          - platform: linux
+            arch: x64
+            runner: ubuntu-24.04
+          - platform: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     environment: nightly
     timeout-minutes: 75
@@ -145,7 +156,7 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-        run: npm run package:macos-arm64
+        run: npm run package:macos-${{ matrix.arch }}
 
       - name: Notarize and verify the macOS Nightly
         if: matrix.platform == 'macos'
@@ -153,15 +164,23 @@ jobs:
           APPLE_API_KEY: ${{ runner.temp }}/AuthKey_Maka.p8
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
-          DMG_PATH: apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-mac-arm64.dmg
         run: |
+          # Discovered, not spelled out — see the same step in release.yml.
+          shopt -s nullglob
+          dmgs=(apps/desktop/release/*.dmg)
+          if [[ ${#dmgs[@]} -ne 1 ]]; then
+            echo "Expected exactly one DMG to notarize, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          DMG_PATH="${dmgs[0]}"
+
           xcrun notarytool submit "$DMG_PATH" \
             --key "$APPLE_API_KEY" \
             --key-id "$APPLE_API_KEY_ID" \
             --issuer "$APPLE_API_ISSUER" \
             --wait
           xcrun stapler staple "$DMG_PATH"
-          npm run verify:macos-arm64 -- "$DMG_PATH"
+          npm run verify:macos -- "${{ matrix.arch }}"
 
       - name: Package the Windows Nightly
         if: matrix.platform == 'windows'
@@ -169,36 +188,37 @@ jobs:
 
       - name: Verify the Windows Nightly
         if: matrix.platform == 'windows'
-        run: >-
-          npm run verify:windows-x64 --
-          "apps/desktop/release/Maka-${{ needs.identity.outputs.version }}-win-x64.exe"
+        run: npm run verify:windows-x64 -- "${{ matrix.arch }}"
+
+      - name: Package the Linux Nightly
+        if: matrix.platform == 'linux'
+        run: npm run package:linux
+
+      - name: Ensure xvfb
+        if: matrix.platform == 'linux'
+        run: command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      # `xvfb-run` because the verification launches the extracted AppImage's
+      # renderer over CDP, the way the macOS and Windows verifications do.
+      - name: Verify the Linux Nightly
+        if: matrix.platform == 'linux'
+        run: xvfb-run -a npm run verify:linux -- "${{ matrix.arch }}"
 
       - name: Stage the exact Nightly artifacts
         env:
           NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
           STAGE_DIRECTORY: ${{ runner.temp }}/desktop-nightly
         run: |
-          mkdir -p "$STAGE_DIRECTORY"
-          if [[ "${{ matrix.platform }}" = macos ]]; then
-            cp -- \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.dmg" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-mac-arm64.zip.blockmap" \
-              apps/desktop/release/dev-mac.yml \
-              "$STAGE_DIRECTORY/"
-          else
-            cp -- \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.exe.blockmap" \
-              "apps/desktop/release/Maka-$NIGHTLY_VERSION-win-x64.zip" \
-              apps/desktop/release/dev.yml \
-              "$STAGE_DIRECTORY/"
-          fi
+          node scripts/desktop-nightly.mjs stage-target \
+            "${{ matrix.platform }}-${{ matrix.arch }}" \
+            apps/desktop/release \
+            "$STAGE_DIRECTORY" \
+            "$NIGHTLY_VERSION"
 
       - name: Preserve the verified Nightly artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-nightly-${{ matrix.platform }}
+          name: desktop-nightly-${{ matrix.platform }}-${{ matrix.arch }}
           path: ${{ runner.temp }}/desktop-nightly
           if-no-files-found: error
           compression-level: 0
@@ -236,7 +256,7 @@ jobs:
       - name: Install publisher dependencies
         run: npm ci --ignore-scripts
 
-      - name: Download both verified Desktop builds
+      - name: Download every verified Desktop build
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: desktop-nightly-*
@@ -263,7 +283,15 @@ jobs:
           ATTESTATION_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
           CERTIFICATE_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main
           GH_TOKEN: ${{ github.token }}
+          NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
         run: |
+          # Verify what is on disk, and prove the count matches what the target
+          # descriptor says was attested. The list is written to a file first
+          # because a process substitution hides its exit code, which would let
+          # a failing lister leave this step green with nothing verified.
+          node scripts/desktop-nightly.mjs attested-assets "$NIGHTLY_VERSION" \
+            > "$RUNNER_TEMP/attested-assets.txt"
+          expected="$(wc -l < "$RUNNER_TEMP/attested-assets.txt")"
           verified=0
           while IFS= read -r -d '' artifact; do
             gh attestation verify "$artifact" \
@@ -273,8 +301,8 @@ jobs:
               --cert-oidc-issuer https://token.actions.githubusercontent.com
             verified=$((verified + 1))
           done < <(find "$GITHUB_WORKSPACE/.nightly-stage/release" -maxdepth 1 -type f -print0)
-          if (( verified != 8 )); then
-            echo "Expected 8 verified Desktop Nightly subjects, found $verified" >&2
+          if (( verified != expected )); then
+            echo "Expected $expected verified Desktop Nightly subjects, found $verified" >&2
             exit 1
           fi
 

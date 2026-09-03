@@ -28,6 +28,10 @@ import {
   requireUtf8String,
 } from './codec.js';
 import { defineOperation } from './operation-spec.js';
+import {
+  decodeSignedPeerReachabilityLease,
+  type SignedPeerReachabilityLeaseV1,
+} from '../peer-reachability/model.js';
 
 export type HostLifecycleState = 'starting' | 'containing' | 'recovering' | 'ready' | 'draining';
 export type HostStatusInput = Record<string, never>;
@@ -37,6 +41,14 @@ export interface HostActivitySnapshot {
   readonly activeOperations: number;
   readonly processUptimeSeconds: number;
   readonly residencies: readonly { readonly label: string; readonly count: number }[];
+}
+
+export function isHostActivityIdle(activity: HostActivitySnapshot): boolean {
+  return (
+    activity.connections === 0 &&
+    activity.activeOperations === 0 &&
+    activity.residencies.length === 0
+  );
 }
 
 export interface HostUpgradePrepareInput {
@@ -60,7 +72,10 @@ export interface HostStatusResult {
   connections: number;
   activeOperations: number;
   activeResidencies: number;
+  peerEndpoint?: HostPeerEndpoint;
 }
+
+export type HostPeerEndpoint = SignedPeerReachabilityLeaseV1;
 
 export interface HostDiagnosticsResult extends HostStatusResult {
   compositionModules: readonly string[];
@@ -106,6 +121,7 @@ function decodeEmptyHostInput(value: unknown, label: string): HostStatusInput {
 }
 
 function decodeHostStatusResult(value: unknown): HostStatusResult {
+  const valueRecord = requireRecord(value, 'host.status result');
   const record = requireExactRecord(value, 'host.status result', [
     'hostEpoch',
     'compositionId',
@@ -114,6 +130,7 @@ function decodeHostStatusResult(value: unknown): HostStatusResult {
     'connections',
     'activeOperations',
     'activeResidencies',
+    ...(valueRecord.peerEndpoint === undefined ? [] : ['peerEndpoint']),
   ]);
   return decodeHostStatusFields(record);
 }
@@ -124,6 +141,7 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
     'host.diagnostics.query result',
     HOST_DIAGNOSTICS_RESULT_MAX_BYTES,
   );
+  const valueRecord = requireRecord(value, 'host.diagnostics.query result');
   const record = requireExactRecord(value, 'host.diagnostics.query result', [
     'hostEpoch',
     'compositionId',
@@ -132,6 +150,7 @@ function decodeHostDiagnosticsResult(value: unknown): HostDiagnosticsResult {
     'connections',
     'activeOperations',
     'activeResidencies',
+    ...(valueRecord.peerEndpoint === undefined ? [] : ['peerEndpoint']),
     'compositionModules',
     'residencies',
     'protocolVersion',
@@ -262,7 +281,18 @@ function decodeHostStatusFields(record: Record<string, unknown>): HostStatusResu
     connections: requireCount(record.connections, 'connections'),
     activeOperations: requireCount(record.activeOperations, 'activeOperations'),
     activeResidencies: requireCount(record.activeResidencies, 'activeResidencies'),
+    ...(record.peerEndpoint === undefined
+      ? {}
+      : { peerEndpoint: decodeHostPeerEndpoint(record.peerEndpoint) }),
   };
+}
+
+function decodeHostPeerEndpoint(value: unknown): HostPeerEndpoint {
+  try {
+    return decodeSignedPeerReachabilityLease(value);
+  } catch {
+    throw invalidProtocolFrame('Invalid Runtime Host peer reachability lease');
+  }
 }
 
 function requirePlatform(value: unknown): NodeJS.Platform {
