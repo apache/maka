@@ -457,6 +457,98 @@ test('onboarding probes with the custom request headers the models path sends, a
   });
 });
 
+test('a transient probe never reuses an existing relay key or headers for a new endpoint', async () => {
+  await withFixture(async ({ stores }) => {
+    // A canonical-slug relay already exists with a stored key and a custom
+    // header secret. The add-provider catalog probe is transient and targets
+    // a DIFFERENT endpoint, so neither credential may reach it (#3442 review).
+    const existingKey = 'existing-key-must-not-leak';
+    const existingHeader = 'existing-header-must-not-leak';
+    const connection = await createConnection(stores, 0, {
+      ...connectionDraft('openai-compatible', 'openai-compatible'),
+      baseUrl: 'https://existing-relay.example.test/v1',
+      enabledModelIds: ['existing/model'],
+    });
+    await setConnectionCredential(stores, connection, existingKey);
+    const headersSet = await stores.credentialVault.set({
+      locator: {
+        scope: 'connection' as const,
+        connectionId: connection.connectionId,
+        kind: 'request_headers' as const,
+      },
+      expected: null,
+      secret: JSON.stringify({ 'X-Existing-Auth': existingHeader }),
+    });
+    assert.equal(headersSet.kind, 'committed');
+
+    const probes: Array<{ header: string | null }> = [];
+    let observedBaseUrl: string | undefined;
+    let observedSecret: string | undefined;
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => ({
+        fetch: (async (input, init) => {
+          const request = new Request(input, init);
+          probes.push({ header: request.headers.get('x-existing-auth') });
+          return new Response('{}', { status: 200 });
+        }) as typeof globalThis.fetch,
+        close: async () => {},
+      }),
+      runModelDiscovery: async (target, secret, options) => {
+        observedBaseUrl = target.baseUrl;
+        observedSecret = secret;
+        await options.fetch('https://new-relay.example.test/v1/models', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ probe: true }),
+        });
+        return { ok: true, models: [{ id: 'new/model' }] };
+      },
+    });
+
+    // A blank key on a transient probe rejects instead of silently borrowing
+    // the existing relay's stored key for the new endpoint.
+    assert.deepEqual(
+      await coordinator.handlers['connection.onboarding.verify'](
+        {
+          providerType: 'openai-compatible',
+          connectionId: null,
+          apiKey: '',
+          baseUrl: 'https://new-relay.example.test/v1',
+          transient: true,
+        },
+        context,
+      ),
+      { ok: true, result: { kind: 'rejected', reason: 'credential_not_configured' } },
+    );
+    assert.equal(observedSecret, undefined);
+    assert.equal(observedBaseUrl, undefined);
+
+    // Supplying the new relay's key runs discovery against the new endpoint
+    // with only that material: neither the existing key nor its header leaks.
+    const verified = await coordinator.handlers['connection.onboarding.verify'](
+      {
+        providerType: 'openai-compatible',
+        connectionId: null,
+        apiKey: 'new-relay-key',
+        baseUrl: 'https://new-relay.example.test/v1',
+        transient: true,
+      },
+      context,
+    );
+    assert.deepEqual(verified, {
+      ok: true,
+      result: { kind: 'verified', models: [{ id: 'new/model' }] },
+    });
+    assert.equal(observedBaseUrl, 'https://new-relay.example.test/v1');
+    assert.equal(observedSecret, 'new-relay-key');
+    assert.deepEqual(probes, [{ header: null }]);
+    assertRedacted(verified, [existingKey, existingHeader]);
+  });
+});
+
 test('saves a verified first-run target through the canonical Host authorities', async () => {
   await withFixture(async ({ stores }) => {
     const coordinator = new HostConnectionEffectCoordinator({

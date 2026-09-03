@@ -379,6 +379,7 @@ export function AddProviderForm(props: {
               providerType={props.providerType}
               baseUrl={baseUrl}
               apiKey={apiKey}
+              requestHeaders={requestHeaders}
               value={defaultModel}
               isDisabled={isExperimental || busy}
               probeModels={(request) => props.bridge.probeModels(request)}
@@ -408,6 +409,7 @@ function CatalogProbeField(props: {
   providerType: ProviderType;
   baseUrl: string;
   apiKey: string;
+  requestHeaders: readonly RequestHeaderDraft[];
   value: string;
   isDisabled: boolean;
   probeModels: (
@@ -425,13 +427,14 @@ function CatalogProbeField(props: {
   useEffect(() => {
     requestToken.current += 1;
     setView({ kind: 'idle' });
-  }, [props.baseUrl, props.apiKey]);
+  }, [props.baseUrl, props.apiKey, props.requestHeaders]);
 
   async function probe() {
     const request = catalogProbeRequest({
       providerType: props.providerType,
       baseUrl: props.baseUrl,
       apiKey: props.apiKey,
+      requestHeaders: props.requestHeaders,
     });
     if (!request || !probeGuard.begin('probe')) return;
     const token = ++requestToken.current;

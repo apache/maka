@@ -296,9 +296,11 @@ export function registerRuntimeHostConnectionsIpc(
     };
   });
   // Probe the model catalog an endpoint serves BEFORE a connection exists, so
-  // the custom-relay form can offer a real choice instead of a guess. Runs the
-  // same discovery the post-create fetch uses against a transient connection;
-  // `connectionId` is null because there is nothing to edit yet.
+  // the custom-relay form can offer a real choice instead of a guess. The
+  // probe is transient: it never resolves or reuses an existing connection's
+  // stored credential or headers, so adding a second relay can't leak the
+  // first relay's secrets to the new endpoint. Request headers from the form's
+  // advanced editor ride along, matching what the save path sends.
   deps.ipcMain.handle('connections:probeModels', async (_event, raw: unknown) => {
     const input = normalizeConnectionCatalogProbeInput(raw);
     const result = await deps.client.probeConnectionModels({
@@ -306,6 +308,8 @@ export function registerRuntimeHostConnectionsIpc(
       connectionId: null,
       apiKey: input.apiKey,
       baseUrl: input.baseUrl,
+      transient: true,
+      ...(input.requestHeaders ? { requestHeaders: input.requestHeaders } : {}),
     });
     return projectConnectionCatalogProbe(result);
   });

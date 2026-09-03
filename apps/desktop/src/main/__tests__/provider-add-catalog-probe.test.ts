@@ -32,6 +32,7 @@ function draft(over: Partial<CatalogProbeDraft> = {}): CatalogProbeDraft {
     providerType: 'openai-compatible',
     baseUrl: 'https://relay.example.test/v1',
     apiKey: 'sk-relay',
+    requestHeaders: [],
     ...over,
   };
 }
@@ -54,6 +55,30 @@ test('trims the endpoint and passes a trimmed key, or none when the key is blank
     providerType: 'openai-compatible',
     baseUrl: 'https://relay.example.test/v1',
     apiKey: null,
+  });
+});
+
+test('carries the form request headers into the probe request', () => {
+  assert.deepEqual(
+    catalogProbeRequest(draft({
+      requestHeaders: [
+        { id: 1, name: 'X-Relay-Token', value: 'token-1', retained: false },
+      ],
+    })),
+    {
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example.test/v1',
+      apiKey: 'sk-relay',
+      requestHeaders: [{ name: 'X-Relay-Token', value: 'token-1' }],
+    },
+  );
+});
+
+test('omits request headers when the draft has none', () => {
+  assert.deepEqual(catalogProbeRequest(draft({ requestHeaders: [] })), {
+    providerType: 'openai-compatible',
+    baseUrl: 'https://relay.example.test/v1',
+    apiKey: 'sk-relay',
   });
 });
 

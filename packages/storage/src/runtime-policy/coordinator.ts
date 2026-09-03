@@ -993,7 +993,12 @@ export class RuntimePolicyCoordinator {
         );
       }
       const catalog = await this.catalog.read(root);
-      const located = locateOnboardingTarget(catalog, input.providerType, input.connectionId);
+      // A transient probe never resolves the canonical-slug connection, so an
+      // existing relay's stored credential and headers cannot leak into a
+      // discovery request headed for a different endpoint.
+      const located = input.transient
+        ? { kind: 'ready' as const, existing: undefined }
+        : locateOnboardingTarget(catalog, input.providerType, input.connectionId);
       if (located.kind !== 'ready') return deepFreeze({ kind: located.kind });
       const existing = located.existing;
       const policy = await this.policy.read(root);

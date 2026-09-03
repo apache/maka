@@ -367,11 +367,13 @@ test('probes a relay catalog through the host before a connection exists', async
       probeConnectionModels: async (input: ConnectionOnboardingVerifyInput) => {
         assert.deepEqual(input, {
           providerType: 'openai-compatible',
-          // No connection exists to edit yet: the probe targets the canonical
-          // slug as null, exactly like the post-create discovery fetch.
+          // A transient probe never resolves an existing connection, so the
+          // host can't reuse a saved relay's credential or headers for the
+          // new endpoint.
           connectionId: null,
           apiKey: 'relay-key',
           baseUrl: 'https://relay.example.test/v1',
+          transient: true,
         });
         return {
           kind: 'verified',
@@ -396,6 +398,42 @@ test('probes a relay catalog through the host before a connection exists', async
     kind: 'ready',
     models: [{ id: 'relay-model', contextWindow: 128_000 }],
   });
+});
+
+test('carries form request headers into the transient catalog probe', async () => {
+  const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  registerRuntimeHostConnectionsIpc({
+    ipcMain: {
+      handle: (channel, handler) => {
+        handlers.set(channel, handler as (...args: unknown[]) => unknown);
+      },
+    },
+    client: {
+      probeConnectionModels: async (input: ConnectionOnboardingVerifyInput) => {
+        assert.deepEqual(input, {
+          providerType: 'openai-compatible',
+          connectionId: null,
+          apiKey: 'relay-key',
+          baseUrl: 'https://relay.example.test/v1',
+          transient: true,
+          requestHeaders: [{ name: 'X-Relay-Token', value: 'token-1' }],
+        });
+        return { kind: 'verified', models: [{ id: 'relay-model' }] };
+      },
+    } as never,
+    emitConnectionListChanged() {},
+  });
+
+  const outcome = await handlers.get('connections:probeModels')?.(
+    {},
+    {
+      providerType: 'openai-compatible',
+      baseUrl: 'https://relay.example.test/v1',
+      apiKey: 'relay-key',
+      requestHeaders: [{ name: 'X-Relay-Token', value: 'token-1' }],
+    },
+  );
+  assert.deepEqual(outcome, { kind: 'ready', models: [{ id: 'relay-model' }] });
 });
 
 test('projects the host onboarding verdict onto the probe outcome contract', () => {

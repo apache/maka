@@ -25,12 +25,16 @@ import {
   decodeConnectionTestSummary,
   decodeConnectionVersionBasis,
   normalizeCatalogConnectionBaseUrl,
+  normalizeRequestHeaderUpdates,
+  RequestCustomizationValidationError,
   RuntimePolicyDomainDecodeError,
   type ConnectionVersionBasis,
   type ModelDiscoverySource,
+  type RequestHeaderUpdate,
 } from '@maka/core/runtime-policy';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import {
+  assertAllowedKeys,
   requireCount,
   requireEntityId,
   requireExactRecord,
@@ -101,6 +105,19 @@ export interface ConnectionOnboardingVerifyInput {
    * "use the registry default or the existing connection's persisted URL".
    */
   readonly baseUrl: string | null;
+  /**
+   * Custom request headers to send with a transient discovery request. Only
+   * honored when `transient` is true — an edit reuses the connection's stored
+   * headers instead. Absent means "no custom headers".
+   */
+  readonly requestHeaders?: readonly RequestHeaderUpdate[];
+  /**
+   * A transient probe discovers the endpoint `baseUrl` describes using only
+   * the material in this input: it never resolves or reuses an existing
+   * connection's stored credential or request headers. This is the pre-save
+   * catalog read for a relay the app has not met yet.
+   */
+  readonly transient?: boolean;
 }
 
 export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
@@ -305,13 +322,25 @@ export function decodeConnectionOnboardingSaveResult(
 export function decodeConnectionOnboardingVerifyInput(
   value: unknown,
 ): ConnectionOnboardingVerifyInput {
-  const input = requireExactRecord(value, 'connection onboarding verification input', [
+  const input = requireRecord(value, 'connection onboarding verification input');
+  assertAllowedKeys(input, 'connection onboarding verification input', [
     'providerType',
     'connectionId',
     'apiKey',
     'baseUrl',
+    'requestHeaders',
+    'transient',
   ]);
+  for (const field of ['providerType', 'connectionId', 'apiKey', 'baseUrl'] as const) {
+    if (!Object.hasOwn(input, field)) {
+      throw invalidProtocolFrame('Invalid connection onboarding verification input fields');
+    }
+  }
   const providerType = decodeDomain(() => decodeProviderType(input.providerType));
+  const transient =
+    input.transient === undefined
+      ? undefined
+      : decodeTransient(input.transient, 'connection onboarding transient');
   return {
     providerType,
     connectionId:
@@ -329,7 +358,27 @@ export function decodeConnectionOnboardingVerifyInput(
         ? null
         : (decodeDomain(() => normalizeCatalogConnectionBaseUrl(input.baseUrl, providerType)) ??
           null),
+    ...(input.requestHeaders === undefined
+      ? {}
+      : { requestHeaders: decodeRequestHeaders(input.requestHeaders) }),
+    ...(transient === undefined ? {} : { transient }),
   };
+}
+
+function decodeTransient(value: unknown, label: string): boolean {
+  if (typeof value !== 'boolean') throw invalidProtocolFrame(`Invalid ${label}`);
+  return value;
+}
+
+function decodeRequestHeaders(value: unknown): readonly RequestHeaderUpdate[] {
+  try {
+    return normalizeRequestHeaderUpdates(value);
+  } catch (error) {
+    if (error instanceof RequestCustomizationValidationError) {
+      throw invalidProtocolFrame(error.message);
+    }
+    throw error;
+  }
 }
 
 export function decodeConnectionOnboardingVerifyResult(

@@ -18,11 +18,22 @@
  */
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import { normalizeRequestHeaderUpdates, type RequestHeaderUpdate } from '@maka/core/runtime-policy';
 import type {
   ConnectionCatalogProbeModel,
   ConnectionCatalogProbeOutcome,
   ConnectionCatalogProbeRequest,
 } from '../../shared/connection-catalog-probe.js';
+
+/** The editor's request-header draft shape, mirrored here instead of importing
+ * the editor's `.tsx` module so this module stays compilable by the main
+ * tsconfig that runs its unit test without a DOM. */
+interface ProbeHeaderDraft {
+  readonly id: number;
+  readonly name: string;
+  readonly value: string;
+  readonly retained: boolean;
+}
 
 /**
  * The catalog probe behind the custom-relay add form.
@@ -39,6 +50,10 @@ export interface CatalogProbeDraft {
   readonly providerType: ProviderType;
   readonly baseUrl: string;
   readonly apiKey: string;
+  /** The form's custom request-headers draft; normalized into the request the
+   * same way the save path does, so a relay whose /models endpoint demands a
+   * header can still be read before it is saved. */
+  readonly requestHeaders: readonly ProbeHeaderDraft[];
 }
 
 /**
@@ -53,11 +68,35 @@ export function catalogProbeRequest(
   const baseUrl = draft.baseUrl.trim();
   if (baseUrl.length === 0) return null;
   const apiKey = draft.apiKey.trim();
+  const requestHeaders = probeRequestHeaders(draft.requestHeaders);
   return {
     providerType: draft.providerType,
     baseUrl,
     apiKey: apiKey.length > 0 ? apiKey : null,
+    ...(requestHeaders === undefined ? {} : { requestHeaders }),
   };
+}
+
+/** Normalize the header draft for the probe, or omit it when there is nothing
+ * valid to send. Mirrors the editor's `requestHeaderUpdates` (a retained header
+ * left blank becomes a name-only "reuse the stored secret" marker) without
+ * importing the `.tsx` module. An invalid draft will already be surfaced by the
+ * save gate, so the probe reads without it rather than blocking the read on a
+ * header the user is still fixing. */
+function probeRequestHeaders(
+  drafts: readonly ProbeHeaderDraft[],
+): readonly RequestHeaderUpdate[] | undefined {
+  if (drafts.length === 0) return undefined;
+  try {
+    const normalized = normalizeRequestHeaderUpdates(
+      drafts.map(({ name, value, retained }) =>
+        retained && value.length === 0 ? { name } : { name, value },
+      ),
+    );
+    return normalized.length > 0 ? normalized : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The chooser's view of a probe run: idle and probing are form-local; the

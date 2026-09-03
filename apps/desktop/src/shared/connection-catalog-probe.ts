@@ -18,6 +18,7 @@
  */
 
 import type { ProviderType } from '@maka/core/llm-connections';
+import type { RequestHeaderUpdate } from '@maka/core/runtime-policy';
 
 /** The catalog-probe contract shared by main, preload, and renderer. */
 export interface ConnectionCatalogProbeRequest {
@@ -26,6 +27,10 @@ export interface ConnectionCatalogProbeRequest {
    * learn about an endpoint the app has not met yet. */
   readonly baseUrl: string;
   readonly apiKey: string | null;
+  /** Custom request headers the discovery request should carry. Mirrors the
+   * save path, so a relay whose /models endpoint demands a header can still be
+   * read before it is saved. */
+  readonly requestHeaders?: readonly RequestHeaderUpdate[];
 }
 
 export interface ConnectionCatalogProbeModel {

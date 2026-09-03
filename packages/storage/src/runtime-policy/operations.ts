@@ -224,6 +224,12 @@ export interface BeginConnectionOnboardingInput {
    * canonical-slug connection, creating it when absent.
    */
   readonly connectionId: string | null;
+  /**
+   * A transient probe never resolves or reuses an existing connection: no
+   * stored credential or request-headers secret is read, so the caller can
+   * discover an endpoint using only material it supplied itself.
+   */
+  readonly transient?: boolean;
 }
 
 /**

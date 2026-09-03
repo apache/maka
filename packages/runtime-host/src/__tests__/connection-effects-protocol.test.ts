@@ -105,6 +105,56 @@ describe('Runtime Host connection effects protocol', () => {
     });
   });
 
+  test('decodes the transient catalog probe fields and rejects malformed ones', () => {
+    const transientProbe = request('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      connectionId: null,
+      apiKey: 'relay-key',
+      baseUrl: 'https://relay.example.test/v1',
+      transient: true,
+      requestHeaders: [{ name: 'X-Relay-Token', value: 'token-1' }],
+    });
+    assert.deepEqual(decodeClientFrame(transientProbe), transientProbe);
+
+    // A header update without a value is a delete marker; it decodes name-only.
+    assert.deepEqual(
+      decodeClientFrame(
+        request('connection.onboarding.verify', {
+          providerType: 'openai-compatible',
+          connectionId: null,
+          apiKey: 'relay-key',
+          baseUrl: 'https://relay.example.test/v1',
+          transient: true,
+          requestHeaders: [{ name: 'X-Relay-Token' }],
+        }),
+      ),
+      request('connection.onboarding.verify', {
+        providerType: 'openai-compatible',
+        connectionId: null,
+        apiKey: 'relay-key',
+        baseUrl: 'https://relay.example.test/v1',
+        transient: true,
+        requestHeaders: [{ name: 'X-Relay-Token' }],
+      }),
+    );
+
+    // transient is boolean-only; headers go through the shared normalizer.
+    assertInvalidRequest('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      connectionId: null,
+      apiKey: 'relay-key',
+      baseUrl: 'https://relay.example.test/v1',
+      transient: 'yes',
+    });
+    assertInvalidRequest('connection.onboarding.verify', {
+      providerType: 'openai-compatible',
+      connectionId: null,
+      apiKey: 'relay-key',
+      baseUrl: 'https://relay.example.test/v1',
+      requestHeaders: [{ name: 42 }],
+    });
+  });
+
   test('requires a stable connection identity and an explicit nullable test model', () => {
     const fetch = request('connection.models.fetch', { connectionId: EXPECTED.connectionId });
     const connectionTest = request('connection.test.run', {

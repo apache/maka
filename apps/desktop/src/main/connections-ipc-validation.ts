@@ -23,7 +23,12 @@ import {
   type ProviderType,
   type UpdateConnectionInput,
 } from '@maka/core/llm-connections';
-import { normalizeOptionalRequestBodyOverlay, normalizeRequestHeaders } from '@maka/core/runtime-policy';
+import {
+  normalizeOptionalRequestBodyOverlay,
+  normalizeRequestHeaders,
+  normalizeRequestHeaderUpdates,
+  type RequestHeaderUpdate,
+} from '@maka/core/runtime-policy';
 import { PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
 import { normalizeRelayModelProfiles } from '@maka/core/model-thinking';
 
@@ -133,11 +138,13 @@ export function normalizeConnectionBaseUrlValueForIpc(
 }
 
 /** The probe's contract over the renderer boundary: a provider type, the
- * endpoint the catalog should be read from, and an optional API key. */
+ * endpoint the catalog should be read from, an optional API key, and the
+ * custom request headers the form carries. */
 export interface ConnectionCatalogProbeInput {
   readonly providerType: ProviderType;
   readonly baseUrl: string;
   readonly apiKey: string | null;
+  readonly requestHeaders?: readonly RequestHeaderUpdate[];
 }
 
 /**
@@ -165,5 +172,14 @@ export function normalizeConnectionCatalogProbeInput(value: unknown): Connection
     String(raw.baseUrl ?? ''),
   );
   if (baseUrl.length === 0) throw new Error('An endpoint is required to probe the model catalog');
-  return { providerType: typedProviderType, baseUrl, apiKey };
+  const requestHeaders =
+    raw.requestHeaders === undefined
+      ? undefined
+      : normalizeRequestHeaderUpdates(raw.requestHeaders);
+  return {
+    providerType: typedProviderType,
+    baseUrl,
+    apiKey,
+    ...(requestHeaders && requestHeaders.length > 0 ? { requestHeaders } : {}),
+  };
 }

@@ -23,7 +23,7 @@ import type {
   ConnectionTestErrorClass,
   ConnectionTestSummary,
 } from '@maka/core/runtime-policy';
-import { parseRequestHeaders } from '@maka/core/runtime-policy';
+import { parseRequestHeaders, type RequestHeaderUpdate } from '@maka/core/runtime-policy';
 import {
   PROVIDER_DEFAULTS,
   deriveConnectionSlug,
@@ -223,6 +223,7 @@ export class HostConnectionEffectCoordinator {
     const begun = await this.#stores.operations.beginConnectionOnboarding({
       providerType: input.providerType,
       connectionId: input.connectionId,
+      ...(input.transient === undefined ? {} : { transient: input.transient }),
     });
     if (begun.kind === 'target_missing') {
       // Identity supplied by the client names a connection that is gone or
@@ -261,9 +262,11 @@ export class HostConnectionEffectCoordinator {
       // pinned by the ticket whose basis the commit revalidates.
       const effect = await this.#runModelDiscovery(base, secret, {
         fetch: createRequestCustomizationFetch(transport.fetch, {
-          headers: begun.requestHeadersSecret
-            ? parseRequestHeaders(begun.requestHeadersSecret)
-            : {},
+          headers: input.transient
+            ? transientRequestHeaders(input.requestHeaders)
+            : begun.requestHeadersSecret
+              ? parseRequestHeaders(begun.requestHeadersSecret)
+              : {},
           bodyOverlay: base.requestBodyOverlay,
         }),
       });
@@ -616,4 +619,19 @@ function transientConnection(
     modelSource: 'fallback',
     modelsFetchedAt: 0,
   };
+}
+
+/** Collapse a transient probe's header updates into the record the request
+ * customization layer consumes. A `value === undefined` update is a "delete"
+ * marker for the edit flow; against a fresh probe there is nothing to delete,
+ * so it is dropped. */
+function transientRequestHeaders(
+  updates: readonly RequestHeaderUpdate[] | undefined,
+): Readonly<Record<string, string>> {
+  if (!updates || updates.length === 0) return {};
+  const headers: Record<string, string> = {};
+  for (const { name, value } of updates) {
+    if (value !== undefined) headers[name] = value;
+  }
+  return headers;
 }
