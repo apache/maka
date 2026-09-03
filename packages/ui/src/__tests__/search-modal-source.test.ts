@@ -20,8 +20,9 @@
 import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { SearchResult } from '@maka/core/search';
-import { createThreadSearchSource } from '../search-modal.js';
+import type { SearchErrorReason, SearchResult } from '@maka/core/search';
+import { createThreadSearchSource, searchErrorText } from '../search-modal.js';
+import { getShellControlsCopy } from '../shell-controls-copy.js';
 function result(sessionId: string): SearchResult {
   return {
     source: 'thread',
@@ -61,12 +62,11 @@ function createHarness() {
     resultsLabel: 'Results',
     onQueryChange: () => {},
     onErrorChange: (error) => {
-      visibleError = error?.message ?? null;
+      visibleError = error?.reason ?? null;
     },
     onItemsChange: (items) => {
       visibleItemIds = items.map((item) => item.id);
     },
-    thrownErrorMessage: () => 'Thrown error',
   });
   return {
     source,
@@ -122,5 +122,26 @@ describe('thread search source', () => {
     await older;
     assert.equal(harness.getVisibleError(), null);
     assert.deepEqual(harness.getVisibleItemIds(), ['current-session::0']);
+  });
+});
+
+describe('search error copy', () => {
+  it('maps the reasons thread search emits per locale and falls back for the rest', () => {
+    const zh = getShellControlsCopy('zh-CN').search;
+    const en = getShellControlsCopy('en').search;
+    const mapped = ['incognito_active', 'invalid_query', 'aborted', 'disabled', 'provider_error'];
+    assert.deepEqual(Object.keys(zh.errorByReason).sort(), [...mapped].sort());
+    assert.deepEqual(Object.keys(en.errorByReason).sort(), [...mapped].sort());
+    assert.equal(searchErrorText('incognito_active', zh), '关闭隐私模式后可以继续按关键词查找历史任务。');
+    assert.equal(searchErrorText('invalid_query', zh), '搜索词包含凭据内容，无法搜索。');
+    assert.equal(searchErrorText('disabled', zh), '搜索当前不可用。');
+    assert.equal(searchErrorText('aborted', en), 'Search was canceled.');
+    assert.equal(searchErrorText('provider_error', en), 'Search failed. Try again.');
+    assert.equal(searchErrorText('timeout', en), 'Search needs to be refreshed. Try again.');
+    assert.equal(searchErrorText('timeout', zh), '搜索服务需要刷新，请重试。');
+    assert.equal(
+      searchErrorText('constructor' as SearchErrorReason, en),
+      'Search needs to be refreshed. Try again.',
+    );
   });
 });

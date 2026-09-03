@@ -17,7 +17,38 @@
  * under the License.
  */
 
-import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
+import { type UiCatalog, type UiLocale, lookupCopy } from '@maka/core/ui-locale';
+
+// Mirrors RuntimeHostServiceErrorCode from @maka/runtime-host/operator; expected-failure-copy.test.ts pins the two together.
+export type RuntimeHostManagementErrorCode =
+  | 'active_tasks'
+  | 'not_installed'
+  | 'unsupported_platform'
+  | 'service_manager_unavailable'
+  | 'linger_disabled'
+  | 'invalid_config'
+  | 'invalid_launch'
+  | 'target_mismatch'
+  | 'configuration_changed'
+  | 'configuration_incomplete'
+  | 'retirement_failed'
+  | 'update_requires_retirement'
+  | 'update_incomplete'
+  | 'service_manager_operation_failed'
+  | 'uninstall_incomplete'
+  | 'deployment_io_failed'
+  | 'deployment_commit_unknown'
+  | 'target_unavailable'
+  | 'registry_unavailable'
+  | 'invalid_registry_metadata'
+  | 'package_download_failed'
+  | 'package_integrity_mismatch'
+  | 'invalid_package'
+  | 'invalid_update_policy'
+  | 'update_policy_write_failed'
+  | 'update_policy_commit_outcome_unknown'
+  | 'update_policy_changed'
+  | 'update_not_admitted';
 
 export type SettingsProjectsCopy = {
   runtimeHost: {
@@ -235,6 +266,7 @@ export type SettingsProjectsCopy = {
     uninstallConfirm: string;
     uninstallRetained(path: string): string;
     managementActionFailed: string;
+    managementError: Record<RuntimeHostManagementErrorCode | 'unknown', string>;
     managementReconnectFailed: string;
     manageAccess: string;
     accessTitle: string;
@@ -555,6 +587,37 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '卸载服务',
       uninstallRetained: (path: string) => `服务已卸载，数据保留在 ${path}`,
       managementActionFailed: '无法管理 Runtime Host 服务',
+      managementError: {
+        active_tasks: 'Runtime Host 正在执行任务，请稍后再试',
+        not_installed: '此 Runtime Host 服务尚未安装',
+        unsupported_platform: '当前系统不支持受管理的 Runtime Host 服务',
+        service_manager_unavailable: '系统服务管理器（systemd、launchd 或 OpenRC）不可用',
+        linger_disabled: '请先为当前用户启用 systemd linger，服务才能在登出后继续运行',
+        invalid_config: 'Runtime Host 服务配置无效',
+        invalid_launch: 'Runtime Host 服务启动参数无效，请重新安装',
+        target_mismatch: '服务已被其他安装接管，请刷新后重试',
+        configuration_changed: '服务配置已在别处修改，请刷新后重试',
+        configuration_incomplete: '服务配置不完整，请重新安装',
+        retirement_failed: '无法安全停止当前 Runtime Host',
+        update_requires_retirement: '更新前需要先停止当前 Runtime Host',
+        update_incomplete: '更新未完成，请查看服务日志',
+        service_manager_operation_failed: '系统服务管理器操作失败，请查看服务日志',
+        uninstall_incomplete: '卸载未完成，请重试',
+        deployment_io_failed: '无法写入 Runtime Host 部署文件',
+        deployment_commit_unknown: '请查看服务日志了解详情',
+        target_unavailable: '找不到所选版本',
+        registry_unavailable: '无法连接更新源，请检查网络',
+        invalid_registry_metadata: '更新源返回了无效的版本信息',
+        package_download_failed: '更新包下载失败',
+        package_integrity_mismatch: '更新包校验失败',
+        invalid_package: '更新包无效',
+        invalid_update_policy: '更新策略无效',
+        update_policy_write_failed: '无法保存更新策略',
+        update_policy_commit_outcome_unknown: '请查看服务日志了解详情',
+        update_policy_changed: '更新策略已变化，请刷新后重试',
+        update_not_admitted: '当前版本不允许此更新',
+        unknown: '请查看服务日志了解详情',
+      },
       managementReconnectFailed: '更改已应用，但 Desktop 未能重新连接',
       manageAccess: '管理访问权限',
       accessTitle: '访问权限',
@@ -858,6 +921,37 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: '解除安裝服務',
       uninstallRetained: (path: string) => `服務已解除安裝，資料保留在 ${path}`,
       managementActionFailed: '無法管理 Runtime Host 服務',
+      managementError: {
+        active_tasks: 'Runtime Host 正在執行任務，請稍後再試',
+        not_installed: '此 Runtime Host 服務尚未安裝',
+        unsupported_platform: '目前系統不支援受管理的 Runtime Host 服務',
+        service_manager_unavailable: '系統服務管理器（systemd、launchd 或 OpenRC）無法使用',
+        linger_disabled: '請先為目前使用者啟用 systemd linger，服務才能在登出後繼續執行',
+        invalid_config: 'Runtime Host 服務設定無效',
+        invalid_launch: 'Runtime Host 服務啟動參數無效，請重新安裝',
+        target_mismatch: '服務已被其他安裝接管，請重新整理後重試',
+        configuration_changed: '服務設定已在別處修改，請重新整理後重試',
+        configuration_incomplete: '服務設定不完整，請重新安裝',
+        retirement_failed: '無法安全停止目前的 Runtime Host',
+        update_requires_retirement: '更新前需要先停止目前的 Runtime Host',
+        update_incomplete: '更新未完成，請查看服務日誌',
+        service_manager_operation_failed: '系統服務管理器操作失敗，請查看服務日誌',
+        uninstall_incomplete: '解除安裝未完成，請重試',
+        deployment_io_failed: '無法寫入 Runtime Host 部署檔案',
+        deployment_commit_unknown: '請查看服務日誌了解詳情',
+        target_unavailable: '找不到所選版本',
+        registry_unavailable: '無法連線更新來源，請檢查網路',
+        invalid_registry_metadata: '更新來源回傳了無效的版本資訊',
+        package_download_failed: '更新套件下載失敗',
+        package_integrity_mismatch: '更新套件校驗失敗',
+        invalid_package: '更新套件無效',
+        invalid_update_policy: '更新策略無效',
+        update_policy_write_failed: '無法儲存更新策略',
+        update_policy_commit_outcome_unknown: '請查看服務日誌了解詳情',
+        update_policy_changed: '更新策略已變更，請重新整理後重試',
+        update_not_admitted: '目前版本不允許此更新',
+        unknown: '請查看服務日誌了解詳情',
+      },
       managementReconnectFailed: '變更已套用，但 Desktop 無法重新連線',
       manageAccess: '管理存取權限',
       accessTitle: '存取權限',
@@ -1178,6 +1272,40 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
       uninstallConfirm: 'Uninstall service',
       uninstallRetained: (path: string) => `Service uninstalled. Data was retained at ${path}`,
       managementActionFailed: 'Unable to manage the Runtime Host service',
+      managementError: {
+        active_tasks: 'Runtime Host still owns active work. Try again later.',
+        not_installed: 'This Runtime Host service is not installed.',
+        unsupported_platform: 'Managed Runtime Host services are not supported on this platform.',
+        service_manager_unavailable:
+          'The system service manager (systemd, launchd, or OpenRC) is unavailable.',
+        linger_disabled:
+          'Enable systemd linger for this user so the service keeps running after logout.',
+        invalid_config: 'The Runtime Host service configuration is invalid.',
+        invalid_launch: 'The Runtime Host service launch definition is invalid. Reinstall the service.',
+        target_mismatch: 'Another installation now owns this service. Refresh and try again.',
+        configuration_changed: 'The service configuration changed elsewhere. Refresh and try again.',
+        configuration_incomplete: 'The service configuration is incomplete. Reinstall the service.',
+        retirement_failed: 'The current Runtime Host could not be stopped safely.',
+        update_requires_retirement: 'Stop the current Runtime Host before updating.',
+        update_incomplete: 'The update did not complete. Check the service logs.',
+        service_manager_operation_failed:
+          'The system service manager operation failed. Check the service logs.',
+        uninstall_incomplete: 'The uninstall did not complete. Try again.',
+        deployment_io_failed: 'Runtime Host deployment files could not be written.',
+        deployment_commit_unknown: 'Check the service logs for details.',
+        target_unavailable: 'The selected version is unavailable.',
+        registry_unavailable: 'The update registry is unreachable. Check the network.',
+        invalid_registry_metadata: 'The update registry returned invalid version metadata.',
+        package_download_failed: 'The update package could not be downloaded.',
+        package_integrity_mismatch: 'The update package failed its integrity check.',
+        invalid_package: 'The update package is invalid.',
+        invalid_update_policy: 'The update policy is invalid.',
+        update_policy_write_failed: 'The update policy could not be saved.',
+        update_policy_commit_outcome_unknown: 'Check the service logs for details.',
+        update_policy_changed: 'The update policy changed. Refresh and try again.',
+        update_not_admitted: 'This update is not permitted for the installed version.',
+        unknown: 'Check the service logs for details.',
+      },
       managementReconnectFailed: 'Change applied, but Desktop could not reconnect',
       manageAccess: 'Manage access',
       accessTitle: 'Access',
@@ -1253,4 +1381,9 @@ const SETTINGS_PROJECTS_COPY_BY_LOCALE = {
 
 export function getSettingsProjectsCopy(locale: UiLocale): SettingsProjectsCopy {
   return SETTINGS_PROJECTS_COPY_BY_LOCALE[locale];
+}
+
+export function runtimeHostManagementErrorMessage(code: string, locale: UiLocale): string {
+  const messages = getSettingsProjectsCopy(locale).runtimeHost.managementError;
+  return lookupCopy(messages, code) ?? messages.unknown;
 }

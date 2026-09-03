@@ -32,13 +32,8 @@ export function providerPanelActionErrorMessage(error: unknown, locale: UiLocale
   // wrapper — channel names like 'connections:fetchModels' contain "fetch",
   // which the keyword classifier reads as a network error.
   const cleaned = redactSecrets(cleanErrorMessage(error)).trim();
-  // Main-process handlers throw display-ready Chinese copy; keep it instead
-  // of flattening it into a coarser classification or the generic fallback.
-  if (locale === 'zh-CN' && /[\u3400-\u9fff]/.test(cleaned)) return cleaned;
   if (/connection_stale|Unable to delete Connection: connection_stale/i.test(cleaned)) {
-    if (locale === 'zh-CN') return '连接状态已更新，请刷新列表后再删除。';
-    if (locale === 'zh-TW') return '連線狀態已更新，請重新整理清單後再刪除。';
-    return 'The connection changed while deleting. Refresh the list and try again.';
+    return shared.connectionStale;
   }
   const classified = generalizedErrorMessageForLocale(new Error(cleaned), '', locale);
   return classified || shared.actionFallback;
