@@ -19,7 +19,6 @@
 
 import { homedir } from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
-import { posix as pathPosix } from 'node:path';
 import type { IpcMain } from 'electron';
 import type { IPty } from 'node-pty';
 import { spawn as spawnPty } from 'node-pty';
@@ -28,6 +27,7 @@ import {
   activateRuntimeHostSshOperator,
   normalizeRuntimeHostSshDestination,
   openRuntimeHostSshTunnel,
+  runtimeHostSshOperatorRemoteCommand,
   type RuntimeHostSshOperatorActivationInput,
   type RuntimeHostSshProcess,
   type RuntimeHostSshProcessFactory,
@@ -62,6 +62,8 @@ import {
   type RuntimeHostPeerMeshManagementAction,
   type RuntimeHostPeerMeshManagementFrame,
   type RuntimeHostOperatorCapability,
+  type RuntimeHostOperatorCommand,
+  type RuntimeHostOperatorPlatform,
   type RuntimeHostServiceManagementAction,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
@@ -110,6 +112,7 @@ export interface DesktopRuntimeHostSshSetupInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
+  readonly remotePlatform: RuntimeHostOperatorPlatform;
   readonly principalId: string;
   readonly lifecycle?: 'supervised' | 'on_demand';
   readonly projectDirectoryRoots?: readonly { readonly label: string; readonly path: string }[];
@@ -122,10 +125,15 @@ export interface DesktopRuntimeHostSshTargetInput {
   readonly signal?: AbortSignal;
 }
 
+export interface DesktopRuntimeHostSshNodeIdentity {
+  readonly platform: string;
+  readonly architecture: string;
+}
+
 export interface DesktopRuntimeHostSshManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly action: Exclude<
     RuntimeHostServiceManagementAction,
     'check_update' | 'update' | 'update_policy' | 'reconcile_update'
@@ -151,6 +159,7 @@ export interface DesktopRuntimeHostSshUpdateInput {
   readonly destination: string;
   readonly sshPort?: number;
   readonly setupPackage: DesktopRuntimeHostSetupPackage;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly allowInterruptActiveTasks?: boolean;
   readonly signal?: AbortSignal;
@@ -159,7 +168,7 @@ export interface DesktopRuntimeHostSshUpdateInput {
 export interface DesktopRuntimeHostSshUpdatePolicyInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly policy?: RuntimeHostManagedUpdatePolicy;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
@@ -168,7 +177,7 @@ export interface DesktopRuntimeHostSshUpdatePolicyInput {
 export interface DesktopRuntimeHostSshUpdateReconciliationInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly signal?: AbortSignal;
 }
@@ -176,7 +185,7 @@ export interface DesktopRuntimeHostSshUpdateReconciliationInput {
 export interface DesktopRuntimeHostSshPeerManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly action: Extract<RuntimeHostPeerManagementAction, 'enable' | 'disable' | 'status'>;
   readonly coordinationRelays?: readonly string[];
   readonly automaticRelayDiscovery?: boolean;
@@ -189,7 +198,7 @@ export interface DesktopRuntimeHostSshPeerManagementInput {
 export interface DesktopRuntimeHostSshPeerMeshManagementInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly action: RuntimeHostPeerMeshManagementAction;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly meshId?: string | null;
@@ -202,7 +211,7 @@ export interface DesktopRuntimeHostSshPeerMeshManagementInput {
 export interface DesktopRuntimeHostSshCleanupInput {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly expectedTarget: DesktopRuntimeHostSshManagementInput['expectedTarget'];
   readonly finalize?: boolean;
   readonly signal?: AbortSignal;
@@ -211,7 +220,7 @@ export interface DesktopRuntimeHostSshCleanupInput {
 interface DesktopRuntimeHostSshAccessTarget {
   readonly destination: string;
   readonly sshPort?: number;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly rootPath: string;
   readonly expectedRootId: string;
   readonly signal?: AbortSignal;
@@ -262,9 +271,9 @@ export function createDesktopRuntimeHostSshTerminal(input: {
     input: RuntimeHostSshOperatorActivationInput,
   ): Promise<RuntimeHostActivationResult>;
   openSshTunnel(input: RuntimeHostSshTunnelInput): Promise<RuntimeHostSshTunnel>;
-  resolveDevelopmentPeerTarget(
+  resolveNodeIdentity(
     input: DesktopRuntimeHostSshTargetInput,
-  ): Promise<Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'>>;
+  ): Promise<DesktopRuntimeHostSshNodeIdentity>;
   runSetup(
     input: DesktopRuntimeHostSshSetupInput,
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
@@ -644,7 +653,7 @@ export function createDesktopRuntimeHostSshTerminal(input: {
       }
       return tunnel;
     },
-    resolveDevelopmentPeerTarget: async (targetInput) => {
+    resolveNodeIdentity: async (targetInput) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
       targetInput.signal?.throwIfAborted();
       const destination = normalizeRuntimeHostSshDestination(targetInput.destination);
@@ -652,57 +661,70 @@ export function createDesktopRuntimeHostSshTerminal(input: {
         ? undefined
         : requireSetupPort(targetInput.sshPort);
       const marker = `__MAKA_RUNTIME_HOST_TARGET_${randomUUID().replaceAll('-', '')}__`;
-      const remoteCommand = `printf '${marker}%s:%s\\n' "$(uname -s)" "$(uname -m)"`;
-      let target: Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> | undefined;
-      let failure: Error | undefined;
-      const filter = createRuntimeHostFramedOutputFilter({
-        prefix: marker,
-        pendingMaxBytes: 256,
-        decode: (line) => line.slice(marker.length).replaceAll('\r', '').trimEnd(),
-        label: 'Remote Runtime Host target detection',
-        onFrame: (identity) => {
-          if (target) {
-            failure = new Error('Remote Runtime Host target detection returned multiple results');
-            return;
-          }
-          const [system, machine, ...extra] = identity.split(':');
-          if (!system || !machine || extra.length > 0) {
-            failure = new Error('Remote Runtime Host target detection returned an invalid result');
-            return;
-          }
-          try {
-            target = runtimeHostDevelopmentPeerTargetFromUname(system, machine);
-          } catch (error) {
-            failure = error instanceof Error ? error : new Error(String(error));
-          }
-        },
-        onError: (error) => {
-          failure = error;
-        },
-      });
-      const { process, terminal } = startTerminalProcess(
-        'ssh',
-        sshRemoteCommandArgs(destination, sshPort, remoteCommand),
-        filter.push,
-        true,
-      );
-      const wait = await waitForTerminalProcess(process, {
-        signal: targetInput.signal,
-        timeoutMs: input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
-        stopGraceMs: input.processStopGraceMs,
-        onAbort: () => dismissPresentation(terminal),
-      }, input.terminateProcessTree);
-      if (wait.timedOut) throw new Error('Remote Runtime Host target detection timed out');
-      if (wait.exit.code !== 0) {
+      const nodeProbe = `node -e "process.stdout.write('${marker}'+process.platform+':'+process.arch+'\\n')"`;
+      const detect = async (remoteCommand: string) => {
+        let identity: DesktopRuntimeHostSshNodeIdentity | undefined;
+        let failure: Error | undefined;
+        const filter = createRuntimeHostFramedOutputFilter({
+          prefix: marker,
+          pendingMaxBytes: 256,
+          decode: (line) => line.slice(marker.length).replaceAll('\r', '').trimEnd(),
+          label: 'Remote Runtime Host target detection',
+          onFrame: (value) => {
+            if (identity) {
+              failure = new Error('Remote Runtime Host target detection returned multiple results');
+              return;
+            }
+            const [platform, architecture, ...extra] = value.split(':');
+            if (!platform || !architecture || extra.length > 0) {
+              failure = new Error('Remote Runtime Host target detection returned an invalid result');
+              return;
+            }
+            identity = { platform, architecture };
+          },
+          onError: (error) => {
+            failure = error;
+          },
+        });
+        const { process, terminal } = startTerminalProcess(
+          'ssh',
+          sshRemoteCommandArgs(destination, sshPort, remoteCommand),
+          filter.push,
+          true,
+        );
+        const wait = await waitForTerminalProcess(process, {
+          signal: targetInput.signal,
+          timeoutMs: input.managementTimeoutMs ?? MANAGEMENT_TIMEOUT_MS,
+          stopGraceMs: input.processStopGraceMs,
+          onAbort: () => dismissPresentation(terminal),
+        }, input.terminateProcessTree);
+        if (wait.timedOut) throw new Error('Remote Runtime Host target detection timed out');
+        filter.finish();
+        if (failure) throw failure;
+        completePresentation(terminal);
+        return { identity, exitCode: wait.exit.code };
+      };
+      const direct = await detect(nodeProbe);
+      if (direct.exitCode === 0) {
+        if (!direct.identity)
+          throw new Error('Remote Runtime Host target detection returned no result');
+        return direct.identity;
+      }
+      if (direct.exitCode !== 127) {
         throw new Error(
-          `Remote Runtime Host target detection exited with code ${String(wait.exit.code)}`,
+          `Remote Runtime Host target detection exited with code ${String(direct.exitCode)}`,
         );
       }
-      filter.finish();
-      if (failure) throw failure;
-      completePresentation(terminal);
-      if (!target) throw new Error('Remote Runtime Host target detection returned no result');
-      return target;
+      const loginProbe = `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${nodeProbe}`)}`;
+      const login = await detect(loginProbe);
+      if (login.exitCode !== 0) {
+        throw new Error(
+          `Remote Runtime Host target detection exited with code ${String(login.exitCode)}`,
+        );
+      }
+      if (!login.identity)
+        throw new Error('Remote Runtime Host target detection returned no result');
+      return login.identity;
     },
     runSetup: async (setupInput, onProgress, onComplete) => {
       if (closed) throw new Error('Runtime Host SSH terminal is closed');
@@ -961,19 +983,18 @@ export function createDesktopRuntimeHostSshTerminal(input: {
   };
 }
 
-export function runtimeHostDevelopmentPeerTargetFromUname(
-  system: string,
-  machine: string,
+export function runtimeHostPeerTargetFromNode(
+  platform: string,
+  arch: string,
 ): Exclude<DesktopRuntimeHostDevelopmentPeerTarget, 'none'> {
-  const normalizedMachine = machine.toLowerCase();
-  if (system === 'Darwin' && normalizedMachine === 'arm64') return 'darwin-arm64';
-  if (system === 'Linux') {
-    if (normalizedMachine === 'x86_64') return 'linux-x64';
-    if (normalizedMachine === 'aarch64' || normalizedMachine === 'arm64') {
-      return 'linux-arm64';
-    }
-  }
-  throw new Error(`Direct peer is not available on ${system}/${machine}`);
+  const target = `${platform}-${arch}`;
+  if (
+    target === 'darwin-arm64' ||
+    target === 'linux-arm64' ||
+    target === 'linux-x64' ||
+    target === 'win32-x64'
+  ) return target;
+  throw new Error(`Direct peer is not available on ${target}`);
 }
 
 function cancellableUntilComplete(signal: AbortSignal | undefined): {
@@ -1169,7 +1190,7 @@ function runtimeHostSetupRemoteCommand(
   setupPackage: PreparedSetupPackage,
   input: Pick<
     DesktopRuntimeHostSshSetupInput,
-    'principalId' | 'projectDirectoryRoots' | 'lifecycle'
+    'principalId' | 'projectDirectoryRoots' | 'lifecycle' | 'remotePlatform'
   >,
 ): string {
   if (!/^[A-Za-z0-9_.:-]{1,128}$/u.test(input.principalId)) {
@@ -1198,29 +1219,24 @@ function runtimeHostSetupRemoteCommand(
             JSON.stringify({ label, path }),
           ])),
     '--json',
-  ]);
+  ], {}, input.remotePlatform);
 }
 
 function runtimeHostActivationRemoteCommand(
   input: RuntimeHostSshOperatorActivationInput,
 ): string {
-  if (!pathPosix.isAbsolute(input.operatorPath)) {
-    throw new Error('Runtime Host operator path must be absolute');
-  }
-  return [
-    input.operatorPath,
+  return runtimeHostSshOperatorRemoteCommand(input.operator, [
     'activate',
     '--framed',
     '--root-id',
     input.rootId,
-  ].map(quotePosix).join(' ');
+  ]);
 }
 
 function runtimeHostServiceManagementRemoteCommand(
   input: DesktopRuntimeHostSshManagementInput,
 ): string {
-  const command = [
-    input.operatorPath,
+  const args = [
     input.action,
     '--framed',
     ...(input.rootPath ? ['--root', input.rootPath] : []),
@@ -1242,12 +1258,12 @@ function runtimeHostServiceManagementRemoteCommand(
     ...(input.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
     ...(input.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
-  ].map(quotePosix).join(' ');
-  const invocation =
-    `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
-    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
-    `${quotePosix(input.capabilityRequest ?? RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY)} exec ${command}`;
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args, {
+    [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
+    [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
+      input.capabilityRequest ?? RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
+  });
 }
 
 function runtimeHostUpdateRemoteCommand(
@@ -1276,6 +1292,7 @@ function runtimeHostUpdateRemoteCommand(
         RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
       [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
     },
+    input.operator.kind === 'legacy_posix_executable' ? 'posix' : input.operator.platform,
   );
 }
 
@@ -1286,35 +1303,31 @@ function runtimeHostUpdatePolicyRemoteCommand(
   const target = policy === undefined
     ? []
     : ['--target', policy.kind === 'channel' ? policy.channel : policy.kind === 'fixed' ? policy.version : 'manual'];
-  const command = [
-    input.operatorPath,
+  const args = [
     'update-policy',
     '--framed',
     ...target,
     ...managedServiceTargetArgs(input.expectedTarget),
-  ].map(quotePosix).join(' ');
-  const invocation =
-    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
-    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args, {
+    [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
+      RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+  });
 }
 
 function runtimeHostUpdateReconciliationRemoteCommand(
   input: DesktopRuntimeHostSshUpdateReconciliationInput,
 ): string {
-  const command = [
-    input.operatorPath,
+  const args = [
     'reconcile-update',
     '--framed',
     ...managedServiceTargetArgs(input.expectedTarget),
-  ]
-    .map(quotePosix)
-    .join(' ');
-  const invocation =
-    `${RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV}=1 ` +
-    `${RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV}=` +
-    `${quotePosix(RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY)} exec ${command}`;
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args, {
+    [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
+    [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
+      RUNTIME_HOST_OPERATOR_UPDATE_SCHEDULER_CAPABILITY,
+  });
 }
 
 function runtimeHostAccessManagementRemoteCommand(
@@ -1330,8 +1343,7 @@ function runtimeHostAccessManagementRemoteCommand(
       : input.action === 'connection-code'
         ? ['--name', input.name]
         : [];
-  const command = [
-    input.operatorPath,
+  const args = [
     'access',
     input.action,
     '--framed',
@@ -1340,15 +1352,14 @@ function runtimeHostAccessManagementRemoteCommand(
     '--expected-root',
     input.expectedRootId,
     ...actionArgs,
-  ].map(quotePosix).join(' ');
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args);
 }
 
 function runtimeHostPeerManagementRemoteCommand(
   input: DesktopRuntimeHostSshPeerManagementInput,
 ): string {
-  const command = [
-    input.operatorPath,
+  const args = [
     'peer',
     input.action,
     '--framed',
@@ -1372,15 +1383,14 @@ function runtimeHostPeerManagementRemoteCommand(
           : input.webRtcStunPolicy.urls.flatMap((url) => ['--webrtc-stun', url])
       : []),
     ...managedServiceTargetArgs(input.expectedTarget),
-  ].map(quotePosix).join(' ');
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args);
 }
 
 function runtimeHostPeerMeshManagementRemoteCommand(
   input: DesktopRuntimeHostSshPeerMeshManagementInput,
 ): string {
-  const command = [
-    input.operatorPath,
+  const args = [
     'mesh',
     input.action,
     '--framed',
@@ -1396,27 +1406,21 @@ function runtimeHostPeerMeshManagementRemoteCommand(
         ? ['--name', input.displayName]
         : []),
     ...managedServiceTargetArgs(input.expectedTarget),
-  ].map(quotePosix).join(' ');
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(`exec ${command}`)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args);
 }
 
 function runtimeHostManagedDeploymentCleanupRemoteCommand(
   input: DesktopRuntimeHostSshCleanupInput,
 ): string {
-  const operator = quotePosix(input.operatorPath);
-  const deploymentRoot = quotePosix(pathPosix.dirname(input.operatorPath));
-  const cleanup = [
-    input.operatorPath,
+  const args = [
     '__cleanup-managed-deployment',
     ...(input.finalize ? ['--finalize'] : []),
     ...managedServiceTargetArgs(input.expectedTarget),
-  ].map(quotePosix).join(' ');
-  const invocation =
-    `if [ ! -e ${operator} ]; then ` +
-    `if [ ! -e ${deploymentRoot} ]; then exit 0; fi; ` +
-    `exit 1; fi; ` +
-    `exec ${cleanup}`;
-  return `exec "\${SHELL:-/bin/sh}" -lic ${quotePosix(invocation)}`;
+  ];
+  return runtimeHostSshOperatorRemoteCommand(input.operator, args, {}, {
+    missingOperatorIsSuccess: true,
+  });
 }
 
 function managedServiceTargetArgs(input: {
@@ -1437,14 +1441,36 @@ function runtimeHostPackageRemoteCommand(
   setupPackage: PreparedSetupPackage,
   args: readonly string[],
   environment: Readonly<Record<string, string>> = {},
+  platform: RuntimeHostOperatorPlatform = 'posix',
 ): string {
-  const commandArgs = ['maka', ...args].map(quotePosix).join(' ');
-  const environmentPrefix = Object.entries({
+  const completeEnvironment = {
     ...environment,
     ...(setupPackage.kind === 'development_archive'
       ? { [RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV]: setupPackage.integrity }
       : {}),
-  })
+  };
+  if (platform === 'win32') {
+    const payload = Buffer.from(JSON.stringify({
+      kind: setupPackage.kind,
+      specifier: setupPackage.specifier,
+      args: ['maka', ...args],
+      environment: completeEnvironment,
+      ...(setupPackage.kind === 'development_archive'
+        ? { removeAfterSetup: setupPackage.removeAfterSetup }
+        : {}),
+    }), 'utf8').toString('base64');
+    const script = [
+      `$p=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}'))|ConvertFrom-Json`,
+      `foreach($e in $p.environment.psobject.Properties){[Environment]::SetEnvironmentVariable($e.Name,[string]$e.Value,'Process')}`,
+      `$prefix=Join-Path ([IO.Path]::GetTempPath()) ('maka-runtime-host-command-'+[guid]::NewGuid().ToString('N'))`,
+      `$code=1`,
+      `try{if($p.kind -eq 'npm'){New-Item -ItemType Directory -Path $prefix|Out-Null;$n=@('--yes','--prefix',$prefix,'--package',[string]$p.specifier)}else{$n=@('--yes','--package',[string]$p.specifier)};$n+=@($p.args|ForEach-Object {[string]$_});& 'npx.cmd' @n;$code=if($null -eq $LASTEXITCODE){1}else{$LASTEXITCODE}}finally{if($p.kind -eq 'npm'){Remove-Item -LiteralPath $prefix -Recurse -Force -ErrorAction SilentlyContinue}elseif($p.removeAfterSetup){Remove-Item -LiteralPath ([string]$p.removeAfterSetup) -Force -ErrorAction SilentlyContinue}}`,
+      `exit $code`,
+    ].join(';');
+    return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`;
+  }
+  const commandArgs = ['maka', ...args].map(quotePosix).join(' ');
+  const environmentPrefix = Object.entries(completeEnvironment)
     .map(([name, value]) => `${name}=${quotePosix(value)}`)
     .join(' ');
   const invocationPrefix = environmentPrefix ? `${environmentPrefix} ` : '';

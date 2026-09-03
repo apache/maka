@@ -21,7 +21,6 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { Readable } from 'node:stream';
 import {
   normalizeRuntimeHostWslDistribution,
-  normalizeRuntimeHostWslOperatorPath,
   resolveSystemRuntimeHostWslExecutable,
   type RuntimeHostWslProcessFactory,
 } from '@maka/runtime-host/client';
@@ -32,6 +31,11 @@ import {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
+  createRuntimeHostOperatorCommand,
+  decodeRuntimeHostPosixOperatorCommand,
+  runtimeHostOperatorInvocation,
+  type RuntimeHostNodeOperatorCommand,
+  type RuntimeHostPosixOperatorCommand,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
   type RuntimeHostServiceManagementFrame,
@@ -44,6 +48,9 @@ const WSL_SETUP_OUTPUT_MAX_BYTES = 64 * 1024;
 const WSL_SETUP_STDERR_MAX_BYTES = 8 * 1024;
 
 type RuntimeHostSetupCompleteFrame = Extract<RuntimeHostSetupFrame, { kind: 'complete' }>;
+type RuntimeHostWslSetupCompleteFrame = Omit<RuntimeHostSetupCompleteFrame, 'operator'> & {
+  readonly operator: RuntimeHostNodeOperatorCommand<'posix'>;
+};
 type RuntimeHostManagementTerminalFrame = Exclude<
   RuntimeHostServiceManagementFrame,
   { readonly kind: 'progress' }
@@ -51,7 +58,7 @@ type RuntimeHostManagementTerminalFrame = Exclude<
 
 export interface DesktopRuntimeHostWslManagementInput {
   readonly distribution: string;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostPosixOperatorCommand;
   readonly action: 'status' | 'configure';
   readonly expectedTarget: {
     readonly serviceId: string;
@@ -83,12 +90,8 @@ export async function runDesktopRuntimeHostWslManagement(
 ): Promise<RuntimeHostManagementTerminalFrame> {
   input.signal?.throwIfAborted();
   const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
-  const operatorPath = normalizeRuntimeHostWslOperatorPath(input.operatorPath);
-  const args = [
-    '--distribution',
-    distribution,
-    '--exec',
-    operatorPath,
+  const operator = decodeRuntimeHostPosixOperatorCommand(input.operator);
+  const invocation = runtimeHostOperatorInvocation(operator, [
     input.action,
     '--framed',
     ...(input.projectDirectoryRoots === undefined
@@ -112,6 +115,13 @@ export async function runDesktopRuntimeHostWslManagement(
     ...(input.expectedTarget.deploymentId
       ? ['--expected-deployment-id', input.expectedTarget.deploymentId]
       : []),
+  ]);
+  const args = [
+    '--distribution',
+    distribution,
+    '--exec',
+    invocation.executable,
+    ...invocation.args,
   ];
   const environment = passEnvironmentToWsl(
     process.env,
@@ -161,7 +171,7 @@ export async function runDesktopRuntimeHostWslSetup(
     readonly processFactory?: RuntimeHostWslProcessFactory;
     readonly wslExecutable?: string;
   } = {},
-): Promise<RuntimeHostSetupCompleteFrame> {
+): Promise<RuntimeHostWslSetupCompleteFrame> {
   input.signal?.throwIfAborted();
   const distribution = normalizeRuntimeHostWslDistribution(input.distribution);
   const processFactory = overrides.processFactory ?? spawnWsl;
@@ -186,7 +196,17 @@ export async function runDesktopRuntimeHostWslSetup(
         return undefined;
       }
       if (frame.kind === 'error') throw new Error(frame.error.message);
-      return frame;
+      if (frame.operator.platform !== 'posix') {
+        throw new Error('WSL Runtime Host setup returned a non-POSIX operator');
+      }
+      return {
+        ...frame,
+        operator: createRuntimeHostOperatorCommand({
+          platform: 'posix',
+          nodePath: frame.operator.nodePath,
+          modulePath: frame.operator.modulePath,
+        }),
+      };
     },
     onResult: () => onComplete?.(),
   });

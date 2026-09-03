@@ -782,7 +782,7 @@ export async function runMakaCli(
             id: command.id,
             name: command.name,
             distribution: command.distribution,
-            operatorPath: command.operatorPath,
+            operator: command.operator,
             expectedRootId: command.expectedRootId,
           },
           {},

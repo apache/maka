@@ -34,9 +34,11 @@ import {
   encodeRuntimeHostSetupFrame,
   isSha512PackageIntegrity,
   resolveRuntimeHostManagedDeployment,
+  runtimeHostManagedOperatorCommand,
   RUNTIME_HOST_SETUP_ERROR_CODE_MAX_BYTES,
   RUNTIME_HOST_SETUP_ERROR_MESSAGE_MAX_BYTES,
   type RuntimeHostManagedDeploymentConfig,
+  type RuntimeHostNodeOperatorCommand,
   type RuntimeHostSetupFrame,
   type RuntimeHostSetupPhase,
   type RuntimeHostSupervisorProvider,
@@ -349,7 +351,7 @@ async function runRuntimeHostSupervisedSetupLocked(
 ): Promise<{
   readonly serviceId: string;
   readonly deploymentId: string;
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostNodeOperatorCommand;
   readonly rootPath: string;
   readonly endpoint: string;
   readonly directPeer?: {
@@ -541,7 +543,10 @@ async function runRuntimeHostSupervisedSetupLocked(
       return {
         serviceId: capability.rootId,
         deploymentId: desired.deploymentId,
-        operatorPath: deployment.operatorPath,
+        operator: runtimeHostManagedOperatorCommand(
+          desired,
+          process.platform === 'win32' ? 'win32' : 'posix',
+        ),
         rootPath: capability.canonicalPath,
         endpoint: websocketUrl(websocket),
         ...(directPeer
@@ -808,7 +813,6 @@ async function runRuntimeHostOnDemandSetupLocked(
   const reuseCurrent =
     current?.lifecycle.mode === 'on_demand' && sameDesiredManagedDeployment(current, draft);
   const config = reuseCurrent ? current : draft;
-  let operatorPath: string | undefined;
   let activation: Awaited<ReturnType<typeof activateRuntimeHostManagedDeployment>> | undefined;
   const lifecycleDeps: RuntimeHostLifecycleTransactionDeps = {
     convergeOperator: (currentConfig, desiredConfig) =>
@@ -819,7 +823,7 @@ async function runRuntimeHostOnDemandSetupLocked(
       ? legacyMigrationDeps(legacyToMigrate, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
   };
-  await resolvedPackage.use(async (packageRoot) => {
+  const deployedConfig = await resolvedPackage.use(async (packageRoot) => {
     let committed = false;
     const created = !current;
     let deployment: Awaited<ReturnType<typeof deps.prepareDeployment>> | undefined;
@@ -849,7 +853,6 @@ async function runRuntimeHostOnDemandSetupLocked(
       const desiredConfig: RuntimeHostManagedDeploymentConfig = current
         ? config
         : { ...config, deploymentRoot: deployment.root };
-      operatorPath = deployment.operatorPath;
       emit({ kind: 'progress', phase: 'installing_service' });
       if (legacyToMigrate && legacyBackend) {
         await legacyBackend.verifyDeployment(legacyToMigrate, {
@@ -893,6 +896,7 @@ async function runRuntimeHostOnDemandSetupLocked(
       await deps.prunePackages(
         (await resolveRuntimeHostManagedDeployment(capability.rootId)).config,
       );
+      return desiredConfig;
     } catch (error) {
       if (!committed && canDiscardRuntimeHostLifecycleDesiredArtifacts(error)) {
         if (packageChanged && deployment) await deployment.rollback().catch(() => undefined);
@@ -905,9 +909,6 @@ async function runRuntimeHostOnDemandSetupLocked(
       throw error;
     }
   });
-  if (!operatorPath)
-    throw new RuntimeHostSetupError('deployment_failed', 'Setup did not install an operator');
-
   activation = await deps.activateManaged({ rootId: capability.rootId });
   if (legacyConfig) {
     await removeRuntimeHostServiceFile(
@@ -925,8 +926,11 @@ async function runRuntimeHostOnDemandSetupLocked(
     options,
     {
       serviceId,
-      deploymentId: config.deploymentId,
-      operatorPath,
+      deploymentId: deployedConfig.deploymentId,
+      operator: runtimeHostManagedOperatorCommand(
+        deployedConfig,
+        process.platform === 'win32' ? 'win32' : 'posix',
+      ),
       rootPath: capability.canonicalPath,
       endpoint: websocketUrl({
         host: activation.endpoint.host,
@@ -1079,7 +1083,7 @@ async function pairAndVerifyRuntimeHostSetup(
   target: {
     readonly serviceId: string;
     readonly deploymentId: string;
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostNodeOperatorCommand;
     readonly rootPath: string;
     readonly endpoint: string;
     readonly directPeer?: {
@@ -1145,7 +1149,7 @@ async function pairAndVerifyRuntimeHostSetup(
       version: options.version,
       serviceId: target.serviceId,
       deploymentId: target.deploymentId,
-      operatorPath: target.operatorPath,
+      operator: target.operator,
       rootPath: target.rootPath,
       rootId: paired.rootId,
       endpoint: target.endpoint,

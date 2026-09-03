@@ -18,7 +18,6 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   resolveExistingStorageRoot,
@@ -41,6 +40,7 @@ import {
   readRuntimeHostManagedDeploymentAuthorityRecord,
   resolveRuntimeHostManagedDeploymentAuthority,
   resolveRuntimeHostNpmDeploymentLayout,
+  runtimeHostManagedOperatorModulePath,
   rollbackRuntimeHostManagedDeploymentTransition,
   RuntimeHostManagedDeploymentError,
   type RuntimeHostManagedDeploymentAuthorityOptions,
@@ -859,7 +859,15 @@ export function runtimeHostReconciliationTriggerDefinition(
 ): RuntimeHostProviderDefinition {
   const canonical = decodeRuntimeHostManagedDeploymentConfig(config);
   return {
-    command: [join(canonical.deploymentRoot, 'operator'), 'reconcile-update', '--framed'],
+    command: [
+      canonical.launch.nodePath,
+      runtimeHostManagedOperatorModulePath(
+        canonical.deploymentRoot,
+        process.platform === 'win32' ? 'win32' : 'posix',
+      ),
+      'reconcile-update',
+      '--framed',
+    ],
   };
 }
 

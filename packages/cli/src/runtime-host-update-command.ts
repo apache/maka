@@ -22,6 +22,8 @@ import { dirname, join, resolve } from 'node:path';
 import { truncateUtf8 } from '@maka/core/diagnostic-log';
 import { activateRuntimeHostManagedDeployment } from '@maka/runtime-host/client';
 import {
+  createRuntimeHostLegacyPosixOperatorCommand,
+  runtimeHostManagedOperatorCommand,
   decodeRuntimeHostServiceManagementFrame,
   encodeRuntimeHostServiceManagementFrame,
   RUNTIME_HOST_SERVICE_ERROR_CODE_MAX_BYTES,
@@ -29,7 +31,9 @@ import {
   RUNTIME_HOST_OPERATOR_ACCESS_MANAGEMENT_CAPABILITY,
   RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV,
   RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
+  runtimeHostOperatorInvocation,
   type RuntimeHostOperatorCapability,
+  type RuntimeHostOperatorCommand,
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
   RuntimeHostManagedDeploymentError as RuntimeHostDeploymentAuthorityError,
@@ -130,7 +134,7 @@ interface RuntimeHostUpdateCliDeps {
   readonly createBackend: (serviceId: string, clientDataRoot: string) => RuntimeHostServiceBackend;
   readonly verifyReady: typeof verifyRuntimeHostManagedServiceReady;
   readonly runOperator: (
-    operatorPath: string,
+    operator: RuntimeHostOperatorCommand,
     args: readonly string[],
     invocation?: RuntimeHostOperatorInvocation,
   ) => Promise<RuntimeHostServiceManagementFrame>;
@@ -349,14 +353,16 @@ export async function runManagedRuntimeHostUpdateCli(
           }
         }
 
-        const currentOperatorPath = join(serviceConfig.managedDeploymentRoot, 'operator');
+        const currentOperator = createRuntimeHostLegacyPosixOperatorCommand(
+          join(serviceConfig.managedDeploymentRoot, 'operator'),
+        );
         let currentOperatorUsesProcessLifetimeLock = false;
         let currentOperatorUnavailable = false;
         if (status.service.active) {
           try {
             currentOperatorUsesProcessLifetimeLock = operatorUsesProcessLifetimeLock(
               await deps.runOperator(
-                currentOperatorPath,
+                currentOperator,
                 ['status', '--framed', ...expectedTargetArgs(options.expectedTarget)],
                 {
                   capabilityRequest: RUNTIME_HOST_OPERATOR_PROCESS_LIFETIME_LOCK_CAPABILITY,
@@ -409,9 +415,9 @@ export async function runManagedRuntimeHostUpdateCli(
           emit(progress('retiring', currentVersion, options.version));
           const runCurrentOperator = (args: readonly string[]) =>
             currentOperatorUsesProcessLifetimeLock
-              ? deps.runOperator(currentOperatorPath, args)
+              ? deps.runOperator(currentOperator, args)
               : deps.withLegacyOperatorLeases(options.clientDataRoot, (inheritedFds) =>
-                  deps.runOperator(currentOperatorPath, args, {
+                  deps.runOperator(currentOperator, args, {
                     inheritedFds,
                   }),
                 );
@@ -1090,13 +1096,14 @@ function operatorCapabilities(): {
 }
 
 async function runManagedRuntimeHostOperator(
-  operatorPath: string,
+  operator: RuntimeHostOperatorCommand,
   args: readonly string[],
   invocation: RuntimeHostOperatorInvocation = {},
 ): Promise<RuntimeHostServiceManagementFrame> {
   return new Promise((resolve, reject) => {
     const inheritedFds = invocation.inheritedFds ?? [];
-    const child = spawn(operatorPath, [...args], {
+    const command = runtimeHostOperatorInvocation(operator, args);
+    const child = spawn(command.executable, [...command.args], {
       // A detached legacy operator keeps the inherited advisory leases alive if
       // this updater is interrupted, so an exact retry never steals active work.
       detached: process.platform !== 'win32',

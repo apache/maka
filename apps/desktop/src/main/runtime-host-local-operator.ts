@@ -42,6 +42,7 @@ import {
   RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_FRAME_PREFIX,
   RUNTIME_HOST_SETUP_SOURCE_PACKAGE_INTEGRITY_ENV,
+  runtimeHostOperatorInvocation,
   type RuntimeHostAccessManagementFrame,
   type RuntimeHostManagedUpdatePolicy,
   type RuntimeHostPeerManagementFrame,
@@ -50,6 +51,7 @@ import {
   type RuntimeHostServiceManagementFrame,
   type RuntimeHostServiceUpdatePhase,
   type RuntimeHostSetupFrame,
+  type RuntimeHostOperatorCommand,
 } from '@maka/runtime-host/operator';
 import { createRuntimeHostFramedOutputFilter } from './runtime-host-framed-output.js';
 import {
@@ -87,7 +89,7 @@ export interface DesktopRuntimeHostLocalSetupCommand {
 }
 
 export interface DesktopRuntimeHostLocalServiceManagementInput {
-  readonly operatorPath: string;
+  readonly operator: RuntimeHostOperatorCommand;
   readonly action:
     | 'status'
     | 'start'
@@ -168,7 +170,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     onProgress: (frame: Extract<RuntimeHostSetupFrame, { kind: 'progress' }>) => void,
   ): Promise<RuntimeHostSetupCompleteFrame>;
   runPeer(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly action: 'enable' | 'disable' | 'status';
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly coordinationRelays?: readonly string[];
@@ -176,7 +178,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostPeerManagementFrame>;
   runPeerMesh(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly action: RuntimeHostPeerMeshManagementAction;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly meshId?: string | null;
@@ -186,7 +188,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     readonly signal?: AbortSignal;
   }): Promise<Exclude<RuntimeHostPeerMeshManagementFrame, { kind: 'input' }>>;
   runAccess(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostAccessManagementFrame>;
@@ -205,21 +207,21 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceManagementFrame>;
   runUpdatePolicy(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly policy?: RuntimeHostManagedUpdatePolicy;
     readonly signal?: AbortSignal;
   }): Promise<RuntimeHostServiceManagementFrame>;
   runUpdateReconciliation(
     input: {
-      readonly operatorPath: string;
+      readonly operator: RuntimeHostOperatorCommand;
       readonly target: DesktopRuntimeHostLocalServiceTarget;
       readonly signal?: AbortSignal;
     },
     onProgress: (phase: RuntimeHostServiceUpdatePhase) => void,
   ): Promise<RuntimeHostServiceManagementFrame>;
   cleanupManagedDeployment(input: {
-    readonly operatorPath: string;
+    readonly operator: RuntimeHostOperatorCommand;
     readonly target: DesktopRuntimeHostLocalServiceTarget;
     readonly finalize?: boolean;
     readonly signal?: AbortSignal;
@@ -271,9 +273,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runPeer(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'peer',
             command.action,
             '--framed',
@@ -287,8 +287,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
               : []),
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_PEER_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostPeerManagementFrame,
         label: 'Local Runtime Host peer management',
@@ -303,9 +302,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runPeerMesh(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runPeerMeshFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'mesh',
             command.action,
             '--framed',
@@ -321,8 +318,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
                 ? ['--name', command.displayName]
                 : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         environment: input.environment ?? process.env,
         spawnProcess: input.spawnProcess ?? spawn,
         timeoutMs: input.setupTimeoutMs ?? SETUP_TIMEOUT_MS,
@@ -336,9 +332,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runAccess(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'access',
             'list',
             '--framed',
@@ -346,8 +340,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             command.target.rootPath,
             '--expected-root',
             command.target.rootId,
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_ACCESS_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostAccessManagementFrame,
         label: 'Local Runtime Host access management',
@@ -362,9 +355,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runService(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runSingleFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             command.action,
             '--framed',
             ...(command.projectDirectoryRoots === undefined
@@ -381,8 +372,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
             ...(command.allowInterruptActiveTasks ? ['--allow-interrupt-active-tasks'] : []),
             ...(command.retainManagedDeployment ? ['--retain-managed-deployment'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         prefix: RUNTIME_HOST_SERVICE_MANAGEMENT_FRAME_PREFIX,
         decode: decodeRuntimeHostServiceManagementFrame,
         label: 'Local Runtime Host service management',
@@ -449,9 +439,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       const policy = command.policy;
       return runServiceFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             'update-policy',
             '--framed',
             ...(policy
@@ -465,8 +453,7 @@ export function createDesktopRuntimeHostLocalOperator(input: {
                 ]
               : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         environment: {
           ...(input.environment ?? process.env),
           [RUNTIME_HOST_OPERATOR_CAPABILITY_REQUEST_ENV]:
@@ -483,10 +470,11 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     runUpdateReconciliation(command, onProgress) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
       return runServiceFrameProcess({
-        command: {
-          executable: command.operatorPath,
-          args: ['reconcile-update', '--framed', ...managedTargetArgs(command.target)],
-        },
+        command: runtimeHostOperatorInvocation(command.operator, [
+          'reconcile-update',
+          '--framed',
+          ...managedTargetArgs(command.target),
+        ]),
         environment: {
           ...(input.environment ?? process.env),
           [RUNTIME_HOST_OPERATOR_PROJECT_DIRECTORY_CONFIGURATION_REQUEST_ENV]: '1',
@@ -504,26 +492,26 @@ export function createDesktopRuntimeHostLocalOperator(input: {
     },
     async cleanupManagedDeployment(command) {
       if (closed) throw new Error('Local Runtime Host operator is closed');
+      const operatorPath = command.operator.kind === 'node'
+        ? command.operator.modulePath
+        : command.operator.executablePath;
       try {
-        await stat(command.operatorPath);
+        await stat(operatorPath);
       } catch (error) {
         if (!isNodeError(error, 'ENOENT')) throw error;
         try {
-          await rmdir(dirname(command.operatorPath));
+          await rmdir(dirname(operatorPath));
         } catch (directoryError) {
           if (!isNodeError(directoryError, 'ENOENT')) throw directoryError;
         }
         return;
       }
       await runExitProcess({
-        command: {
-          executable: command.operatorPath,
-          args: [
+        command: runtimeHostOperatorInvocation(command.operator, [
             '__cleanup-managed-deployment',
             ...(command.finalize ? ['--finalize'] : []),
             ...managedTargetArgs(command.target),
-          ],
-        },
+          ]),
         label: 'Local Runtime Host deployment cleanup',
         environment: input.environment ?? process.env,
         spawnProcess: input.spawnProcess ?? spawn,
