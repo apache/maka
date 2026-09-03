@@ -64,6 +64,7 @@ import {
   type UpdateAgentGraphToolInput,
 } from '../stream-graph-supervisor-tools.js';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('host-managed agent graph coordinator', () => {
   test('authorizes only selected committed results from an earlier epoch of the same root', async () => {
@@ -77,9 +78,7 @@ describe('host-managed agent graph coordinator', () => {
       turnId: 'source-turn',
       invocationId: 'source-invocation',
       openedAt: 1,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
+      opening: testInvocationOpening({
         route: {
           provenance: 'runtime',
           backendKind: 'fake',
@@ -87,17 +86,8 @@ describe('host-managed agent graph coordinator', () => {
           llmConnectionSlug: 'fake',
           modelId: 'fake',
         },
-        configuration: {
-          cwd: '/workspace',
-          permissionMode: 'explore',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          toolMode: 'direct',
-        },
-        root: { kind: 'user' },
-        source: { kind: 'fresh' },
-      },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
       terminalEvent: {
         id: 'source-terminal',
         sessionId: 'source-child',
@@ -1450,9 +1440,7 @@ describe('host-managed agent graph coordinator', () => {
       runId,
       turnId,
       openedAt: 12,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
+      opening: testInvocationOpening({
         route: {
           provenance: 'runtime',
           backendKind: 'fake',
@@ -1460,17 +1448,8 @@ describe('host-managed agent graph coordinator', () => {
           llmConnectionSlug: 'fake',
           modelId: 'fake',
         },
-        configuration: {
-          cwd: '/workspace',
-          permissionMode: 'explore',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          toolMode: 'direct',
-        },
-        root: { kind: 'user' },
-        source: { kind: 'fresh' },
-      },
+        configuration: { cwd: '/workspace', permissionMode: 'explore' },
+      }),
     };
     const runningEvent: RuntimeEvent = {
       id: 'child-started',

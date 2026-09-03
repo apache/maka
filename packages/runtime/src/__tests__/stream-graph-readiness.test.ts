@@ -28,6 +28,7 @@ import {
 } from '../stream-graph-readiness.js';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 import type { AgentGraphTraceTopology } from '../stream-graph-trace.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
@@ -579,51 +580,14 @@ function runInvocation(
   status: 'running' | 'completed' | 'failed' | 'aborted' = 'running',
   sessionId = `session-${name}`,
 ): RuntimeInvocationRecord {
-  const identity = {
+  return testInvocationRecord({
     sessionId,
     invocationId: `invocation-${name}`,
     runId: `run-${name}`,
     turnId: `turn-${name}`,
-  };
-  return {
-    ...identity,
     openedAt,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
-      route: {
-        provenance: 'runtime',
-        backendKind: 'ai-sdk',
-        llmConnectionId: 'deepseek-connection',
-        llmConnectionSlug: 'deepseek',
-        modelId: 'deepseek-chat',
-      },
-      configuration: {
-        cwd: '/workspace',
-        permissionMode: 'explore',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
-    ...(status === 'running'
-      ? {}
-      : {
-          terminalEvent: {
-            ...identity,
-            id: `run-${name}-terminal`,
-            ts: openedAt + 1,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            status,
-            actions: { endInvocation: true },
-          },
-        }),
-  };
+    ...(status === 'running' ? {} : { outcome: status }),
+  });
 }
 
 function binding(run: RuntimeInvocationRecord, operatorId: string) {

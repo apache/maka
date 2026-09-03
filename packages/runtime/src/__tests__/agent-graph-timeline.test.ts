@@ -31,6 +31,7 @@ import {
   readAgentGraphTimelinePage,
 } from '../agent-graph-timeline.js';
 import { readCommittedAgentGraphProjection } from '../stream-graph-projection.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 describe('agent graph replay timeline', () => {
   test('reconstructs control, child records, parent completion, and supervisor wake chronologically', async () => {
@@ -570,57 +571,27 @@ function runInvocation(input: {
   status?: 'completed' | 'failed' | 'aborted';
   wake?: { wakeId: string; attemptId: string };
 }): RuntimeInvocationRecord {
-  const identity = {
+  return testInvocationRecord({
     sessionId: input.sessionId,
     invocationId: `invocation-${input.runId}`,
     runId: input.runId,
     turnId: input.turnId,
-  };
-  return {
-    ...identity,
     openedAt: input.createdAt,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
-      route: {
-        provenance: 'runtime',
-        backendKind: 'ai-sdk',
-        llmConnectionId: 'deepseek-connection',
-        llmConnectionSlug: 'deepseek',
-        modelId: 'deepseek-chat',
-      },
-      configuration: {
-        cwd: '/workspace',
-        permissionMode: 'explore',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: input.wake
-        ? {
-            kind: 'agent_graph_supervisor_wake',
-            wakeId: input.wake.wakeId,
-            attemptId: input.wake.attemptId,
-          }
-        : { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
-    ...(input.completedAt !== undefined
+    ...(input.wake
       ? {
-          terminalEvent: {
-            ...identity,
-            id: `${input.runId}-terminal`,
-            ts: input.completedAt,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            status: input.status ?? 'completed',
-            actions: { endInvocation: true },
-          } satisfies RuntimeEvent,
+          opening: {
+            root: {
+              kind: 'agent_graph_supervisor_wake',
+              wakeId: input.wake.wakeId,
+              attemptId: input.wake.attemptId,
+            },
+          },
         }
       : {}),
-  };
+    ...(input.completedAt !== undefined
+      ? { closedAt: input.completedAt, outcome: input.status ?? 'completed' }
+      : {}),
+  });
 }
 
 function runtimeEvent(

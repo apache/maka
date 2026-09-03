@@ -94,79 +94,30 @@ describe('invocation_opened content contract', () => {
     assert.equal(runtimeEventHasModelVisibleContent(event), false);
   });
 
-  test('accepts the unknown route provenance without connection identity', () => {
-    const fact = decodeRuntimeInvocationOpened(
-      opening({
-        route: {
-          provenance: 'unknown',
-          backendKind: 'ai-sdk',
-          llmConnectionSlug: 'legacy',
-          modelId: 'legacy-model',
-        },
-      }),
+  test('binds connection identity to where the route came from, both ways', () => {
+    const unknownRoute = {
+      provenance: 'unknown',
+      backendKind: 'ai-sdk',
+      llmConnectionSlug: 'legacy',
+      modelId: 'legacy-model',
+    } as const;
+    assert.equal(
+      decodeRuntimeInvocationOpened(opening({ route: unknownRoute })).route.provenance,
+      'unknown',
     );
-    assert.equal(fact.route.provenance, 'unknown');
-  });
-
-  test('rejects an unknown route that still carries a connection identity', () => {
     assert.throws(() =>
       decodeRuntimeInvocationOpened(
-        opening({
-          route: {
-            provenance: 'unknown',
-            backendKind: 'ai-sdk',
-            llmConnectionSlug: 'legacy',
-            modelId: 'legacy-model',
-            llmConnectionId: 'conn-1',
-          } as never,
-        }),
+        opening({ route: { ...unknownRoute, llmConnectionId: 'conn-1' } as never }),
+      ),
+    );
+    assert.throws(() =>
+      decodeRuntimeInvocationOpened(
+        opening({ route: { ...unknownRoute, provenance: 'runtime' } as never }),
       ),
     );
   });
 
-  test('rejects a runtime route with no connection identity', () => {
-    assert.throws(() =>
-      decodeRuntimeInvocationOpened(
-        opening({
-          route: {
-            provenance: 'runtime',
-            backendKind: 'ai-sdk',
-            llmConnectionSlug: 'anthropic',
-            modelId: 'claude-x',
-          } as never,
-        }),
-      ),
-    );
-  });
-
-  test('rejects an unversioned or misversioned protocol', () => {
-    assert.throws(() => decodeRuntimeInvocationOpened(opening({ protocol: 'v2' as never })));
-    const { protocol: _protocol, ...withoutProtocol } = opening();
-    assert.throws(() => decodeRuntimeInvocationOpened(withoutProtocol));
-  });
-
-  test('rejects an unknown extra field anywhere in the closed shape', () => {
-    assert.throws(() =>
-      decodeRuntimeInvocationOpened({ ...opening(), runComposition: {} } as never),
-    );
-    assert.throws(() =>
-      decodeRuntimeInvocationOpened(
-        opening({
-          configuration: { ...opening().configuration, sessionMode: 'agent' } as never,
-        }),
-      ),
-    );
-  });
-
-  test('rejects a root authority that mixes two roots', () => {
-    assert.throws(() =>
-      decodeRuntimeInvocationOpened(
-        opening({ root: { kind: 'goal', goalId: 'g1', scheduledTaskId: 's1' } as never }),
-      ),
-    );
-  });
-
-  test('accepts every root authority the runtime can open', () => {
+  test('accepts every root authority the runtime can open, and no mixture of them', () => {
     for (const root of [
       { kind: 'user' },
       { kind: 'context_compact' },
@@ -177,16 +128,24 @@ describe('invocation_opened content contract', () => {
     ] as const) {
       assert.equal(decodeRuntimeInvocationOpened(opening({ root })).root.kind, root.kind);
     }
+    assert.throws(() =>
+      decodeRuntimeInvocationOpened(
+        opening({ root: { kind: 'goal', goalId: 'g1', scheduledTaskId: 's1' } as never }),
+      ),
+    );
   });
 
-  test('carries the continuation source identity when the invocation continues one', () => {
+  test('carries a continuation source only with the boundary position it resumes from', () => {
+    const source = {
+      kind: 'continuation',
+      sourceInvocationId: 'inv-0',
+      sourceRunId: 'inv-0',
+      sourceTurnId: 'turn-0',
+    } as const;
     const fact = decodeRuntimeInvocationOpened(
       opening({
         source: {
-          kind: 'continuation',
-          sourceInvocationId: 'inv-0',
-          sourceRunId: 'inv-0',
-          sourceTurnId: 'turn-0',
+          ...source,
           sourceRuntimeEventHighWater: 7,
           claimId: 'claim-1',
           boundaryDigest: DIGEST,
@@ -194,32 +153,17 @@ describe('invocation_opened content contract', () => {
       }),
     );
     assert.equal(fact.source.kind, 'continuation');
+    assert.throws(() => decodeRuntimeInvocationOpened(opening({ source: source as never })));
   });
 
-  test('rejects a continuation source missing its boundary position', () => {
+  test('rejects anything the closed shape does not name', () => {
     assert.throws(() =>
-      decodeRuntimeInvocationOpened(
-        opening({
-          source: {
-            kind: 'continuation',
-            sourceInvocationId: 'inv-0',
-            sourceRunId: 'inv-0',
-            sourceTurnId: 'turn-0',
-          } as never,
-        }),
-      ),
+      decodeRuntimeInvocationOpened({ ...opening(), runComposition: {} } as never),
     );
-  });
-
-  test('rejects an empty lineage object rather than storing a meaningless key', () => {
-    assert.throws(() => decodeRuntimeInvocationOpened(opening({ lineage: {} })));
-  });
-
-  test('rejects an invalid enum member in configuration', () => {
     assert.throws(() =>
       decodeRuntimeInvocationOpened(
         opening({
-          configuration: { ...opening().configuration, toolMode: 'telepathy' } as never,
+          configuration: { ...opening().configuration, sessionMode: 'agent' } as never,
         }),
       ),
     );

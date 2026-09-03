@@ -78,6 +78,7 @@ import {
   buildArchivedToolResultPlaceholder,
   isArchivedToolResultPlaceholder,
 } from '../tool-result-archive.js';
+import { testInvocationOpening, testInvocationRecord } from './invocation-fixture.js';
 
 test('archived tool-result copy preflight detects conversation-owned references', () => {
   const serialized = (value: unknown): string => JSON.stringify(value);
@@ -3248,31 +3249,17 @@ function runFacts(overrides: SeededRun): SeededRun {
 function invocationRecord(
   run: SeededRun & { source?: RuntimeEventInvocationOpenedContent['source'] } = {},
 ): RuntimeInvocationRecord {
-  const identity = {
+  const openedAt = run.openedAt ?? 1;
+  return testInvocationRecord({
     sessionId: run.sessionId ?? 'session-source',
     invocationId: run.invocationId ?? 'invocation',
     runId: run.runId ?? 'run',
     turnId: run.turnId ?? 'turn',
-  };
-  const openedAt = run.openedAt ?? 1;
-  return {
-    ...identity,
     openedAt,
+    closedAt: run.closedAt ?? openedAt + 1,
+    ...(run.outcome === 'open' ? {} : { outcome: run.outcome ?? 'completed' }),
     opening: invocationOpening(run),
-    ...(run.outcome === 'open'
-      ? {}
-      : {
-          terminalEvent: {
-            id: `${identity.runId}-terminal`,
-            ...identity,
-            ts: run.closedAt ?? openedAt + 1,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            status: run.outcome ?? 'completed',
-          },
-        }),
-  };
+  });
 }
 
 function invocationOpening(
@@ -3284,9 +3271,7 @@ function invocationOpening(
     ...(run.agentId ? { agentId: run.agentId } : {}),
     ...(run.agentName ? { agentName: run.agentName } : {}),
   };
-  return {
-    kind: 'invocation_opened',
-    protocol: 'invocation_opened_v1',
+  return testInvocationOpening({
     route: {
       provenance: 'runtime',
       backendKind: 'fake',
@@ -3294,18 +3279,10 @@ function invocationOpening(
       llmConnectionSlug: 'fake',
       modelId: 'model',
     },
-    configuration: {
-      cwd: run.cwd ?? '/tmp',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      toolMode: 'direct',
-    },
-    root: { kind: 'user' },
-    source: run.source ?? { kind: 'fresh' },
+    configuration: { cwd: run.cwd ?? '/tmp' },
+    ...(run.source ? { source: run.source } : {}),
     ...(Object.keys(lineage).length > 0 ? { lineage } : {}),
-  };
+  });
 }
 
 /**

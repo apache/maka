@@ -62,6 +62,7 @@ import {
 import { RuntimeReadModel } from '../runtime-read-model.js';
 import { RuntimeKernel } from '../runtime-kernel.js';
 import type { RuntimeInteractionAuthority } from '../interaction-authority.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('SessionManager terminal ledger invariants', () => {
   test('coalesces one partial stream and flushes it before the final model event', async () => {
@@ -2544,9 +2545,7 @@ async function seedOpening(
       id: `${run.runId}-invocation-opened`,
       run: { ...run, invocationId: run.runId },
       openedAt,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
+      opening: testInvocationOpening({
         route: {
           provenance: 'runtime',
           backendKind: 'fake',
@@ -2554,17 +2553,8 @@ async function seedOpening(
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
         },
-        configuration: {
-          cwd: '/tmp/cwd',
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          toolMode: 'direct',
-        },
-        root: { kind: 'user' },
-        source: { kind: 'fresh' },
-      },
+        configuration: { cwd: '/tmp/cwd' },
+      }),
     }),
   );
   return run;

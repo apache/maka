@@ -55,6 +55,7 @@ import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const RAW_SPAN_ONE = 'RAW_SPAN_ONE_'.repeat(24);
 const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
@@ -1917,9 +1918,7 @@ function priorRunInvocation(): RuntimeInvocationRecord {
   return {
     ...identity,
     openedAt: 1,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'ai-sdk',
@@ -1927,17 +1926,8 @@ function priorRunInvocation(): RuntimeInvocationRecord {
         llmConnectionSlug: 'anthropic-main',
         modelId: 'mock-model-id',
       },
-      configuration: {
-        cwd: '/tmp/maka',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+      configuration: { cwd: '/tmp/maka' },
+    }),
     terminalEvent: {
       ...identity,
       id: `${identity.runId}-terminal`,

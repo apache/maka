@@ -40,6 +40,7 @@ import {
   buildSafeBoundaryContinuationPlan,
   type RuntimeContinuation,
 } from '../runtime-resume.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 test('local continuation safety inspector returns current authoritative workspace facts', async () => {
   const inspect = createLocalContinuationSafetyInspector({
@@ -895,20 +896,18 @@ interface RunFacts {
 /** One source invocation as the planner reads it back off the spine. */
 function runInvocation(runId: string, facts: RunFacts = {}): RuntimeInvocationRecord {
   const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
-  const identity = {
+  const outcome = facts.outcome ?? 'failed';
+  const failureClass = outcome === 'failed' ? (facts.failureClass ?? 'test_failure') : undefined;
+  return testInvocationRecord({
     sessionId: 'session-1',
     invocationId: `invocation-${ordinal}`,
     runId,
     turnId: `turn-${ordinal}`,
-  };
-  const outcome = facts.outcome ?? 'failed';
-  const failureClass = outcome === 'failed' ? (facts.failureClass ?? 'test_failure') : undefined;
-  return {
-    ...identity,
     openedAt: 1,
+    closedAt: 1,
+    ...(outcome === 'open' ? {} : { outcome }),
+    ...(failureClass ? { failureClass } : {}),
     opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
       route: {
         provenance: 'runtime',
         backendKind: 'fake',
@@ -919,34 +918,10 @@ function runInvocation(runId: string, facts: RunFacts = {}): RuntimeInvocationRe
           ? { providerStateIdentity: facts.providerStateIdentity }
           : {}),
       },
-      configuration: {
-        cwd: facts.cwd ?? '/workspace/repo',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: facts.source ?? { kind: 'fresh' },
+      configuration: { cwd: facts.cwd ?? '/workspace/repo' },
+      ...(facts.source ? { source: facts.source } : {}),
     },
-    ...(outcome === 'open'
-      ? {}
-      : {
-          terminalEvent: {
-            id: `${runId}-terminal`,
-            ...identity,
-            ts: 1,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            status: outcome,
-            ...(failureClass
-              ? { actions: { endInvocation: true, stateDelta: { failureClass } } }
-              : { actions: { endInvocation: true } }),
-          },
-        }),
-  };
+  });
 }
 
 function event(overrides: Partial<RuntimeEvent>): RuntimeEvent {

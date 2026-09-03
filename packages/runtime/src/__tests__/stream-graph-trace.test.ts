@@ -27,6 +27,7 @@ import {
   buildAgentGraphTraceSnapshot,
   type AgentGraphTraceTopology,
 } from '../stream-graph-trace.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
@@ -492,34 +493,13 @@ describe('stream graph trace topology', () => {
 
 /** One still-open invocation, as its opening fact describes it. */
 function runInvocation(name: string, openedAt: number): RuntimeInvocationRecord {
-  return {
+  return testInvocationRecord({
     sessionId: `session-${name}`,
     invocationId: `invocation-${name}`,
     runId: `run-${name}`,
     turnId: `turn-${name}`,
     openedAt,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
-      route: {
-        provenance: 'runtime',
-        backendKind: 'ai-sdk',
-        llmConnectionId: 'deepseek-connection',
-        llmConnectionSlug: 'deepseek',
-        modelId: 'deepseek-chat',
-      },
-      configuration: {
-        cwd: '/workspace',
-        permissionMode: 'explore',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
-  };
+  });
 }
 
 function binding(run: RuntimeInvocationRecord, operatorId: string) {

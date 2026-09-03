@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { classifyAgentRunRecovery } from '../agent-run-recovery.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('AgentRun startup recovery', () => {
   test('fails a graph supervisor permission handoff once its live waiter is lost', () => {
@@ -30,9 +31,7 @@ describe('AgentRun startup recovery', () => {
       runId: 'run-1',
       turnId: 'turn-1',
       openedAt: 1,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
+      opening: testInvocationOpening({
         route: {
           provenance: 'runtime',
           backendKind: 'fake',
@@ -40,17 +39,9 @@ describe('AgentRun startup recovery', () => {
           llmConnectionSlug: 'fake',
           modelId: 'fake-model',
         },
-        configuration: {
-          cwd: '/tmp/workspace',
-          permissionMode: 'ask',
-          collaborationMode: 'agent',
-          orchestrationMode: 'default',
-          orchestrationSource: 'session',
-          toolMode: 'direct',
-        },
+        configuration: { cwd: '/tmp/workspace' },
         root: { kind: 'agent_graph_supervisor_wake', wakeId: 'wake-1', attemptId: 'attempt-1' },
-        source: { kind: 'fresh' },
-      },
+      }),
     };
 
     const decision = classifyAgentRunRecovery(invocation, [

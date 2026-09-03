@@ -29,6 +29,7 @@ import { createSessionStore } from '@maka/storage/session-store';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { inspectAgentRunDocument, renderAgentRunInspectTree } from '../execution-inspect.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('versioned execution inspect documents', () => {
   test('reports unknown tool outcomes without copying Runtime payloads', async () => {
@@ -113,9 +114,7 @@ function openingEvent(sessionId: string) {
     id: 'rt-open',
     run: { sessionId, invocationId: 'invocation-1', runId: RUN_ID, turnId: TURN_ID },
     openedAt: TS,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'fake',
@@ -123,17 +122,8 @@ function openingEvent(sessionId: string) {
         llmConnectionSlug: 'fake',
         modelId: 'fake-model',
       },
-      configuration: {
-        cwd: '/tmp/workspace',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+      configuration: { cwd: '/tmp/workspace' },
+    }),
   });
 }
 

@@ -40,6 +40,7 @@ import { type RuntimeContinuationFailpoint } from '../agent-run.js';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 import { FakeBackend } from '../test-only/fake-backend.js';
 import { terminateChildProcessTree } from '../process-tree-terminator.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const CRASH_CHILD_ENV = 'MAKA_RUNTIME_CONTINUATION_CRASH_CHILD';
 const CRASH_CHILD_READY_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 10_000;
@@ -382,9 +383,7 @@ function sourceEvents(sessionId: string, cwd: string): RuntimeEvent[] {
       id: 'source-open',
       run: identity,
       openedAt: 1,
-      opening: {
-        kind: 'invocation_opened',
-        protocol: 'invocation_opened_v1',
+      opening: testInvocationOpening({
         route: {
           provenance: 'runtime',
           backendKind: 'fake',
@@ -401,9 +400,7 @@ function sourceEvents(sessionId: string, cwd: string): RuntimeEvent[] {
           orchestrationSource: 'session',
           toolMode: 'direct',
         },
-        root: { kind: 'user' },
-        source: { kind: 'fresh' },
-      },
+      }),
     }),
     {
       ...identity,

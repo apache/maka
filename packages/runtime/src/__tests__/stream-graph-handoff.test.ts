@@ -26,6 +26,7 @@ import {
   renderAgentGraphScheduledWorkPrompt,
 } from '../stream-graph-handoff.js';
 import { projectAgentGraphRecords } from '../stream-graph-projection.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 describe('agent graph operator handoffs', () => {
   test('hydrates a selected result or terminal record from the authoritative RuntimeEvent stream', async () => {
@@ -203,47 +204,15 @@ describe('agent graph operator handoffs', () => {
 
 /** The child's one finished invocation, as its own events describe it. */
 function runInvocation(): RuntimeInvocationRecord {
-  const identity = {
+  return testInvocationRecord({
     sessionId: 'child-session',
     invocationId: 'invocation-child',
     runId: 'run-child',
     turnId: 'turn-child',
-  };
-  return {
-    ...identity,
     openedAt: 10,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
-      route: {
-        provenance: 'runtime',
-        backendKind: 'ai-sdk',
-        llmConnectionId: 'deepseek-connection',
-        llmConnectionSlug: 'deepseek',
-        modelId: 'deepseek-chat',
-      },
-      configuration: {
-        cwd: '/workspace',
-        permissionMode: 'explore',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
-    terminalEvent: {
-      ...identity,
-      id: 'run-child-terminal',
-      ts: 12,
-      partial: false,
-      role: 'system',
-      author: 'system',
-      status: 'completed',
-      actions: { endInvocation: true },
-    },
-  };
+    closedAt: 12,
+    outcome: 'completed',
+  });
 }
 
 function runtimeEvent(

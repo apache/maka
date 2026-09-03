@@ -27,6 +27,7 @@ import {
   readCommittedAgentGraphProjection,
   replayAgentGraphRecords,
 } from '../stream-graph-projection.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 const baseTs = 1_800_000_000_000;
 
@@ -722,55 +723,18 @@ function runInvocation(input: {
   status: 'created' | 'running' | 'completed' | 'failed' | 'aborted';
   createdAt: number;
 }): RuntimeInvocationRecord {
-  const identity = {
-    sessionId: input.sessionId,
-    invocationId: `invocation-${input.runId}`,
-    runId: input.runId,
-    turnId: input.turnId,
-  };
   const ended =
     input.status === 'completed' || input.status === 'failed' || input.status === 'aborted'
       ? input.status
       : undefined;
-  return {
-    ...identity,
+  return testInvocationRecord({
+    sessionId: input.sessionId,
+    invocationId: `invocation-${input.runId}`,
+    runId: input.runId,
+    turnId: input.turnId,
     openedAt: input.createdAt,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
-      route: {
-        provenance: 'runtime',
-        backendKind: 'ai-sdk',
-        llmConnectionId: 'deepseek-connection',
-        llmConnectionSlug: 'deepseek',
-        modelId: 'deepseek-chat',
-      },
-      configuration: {
-        cwd: '/workspace',
-        permissionMode: 'explore',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
-    ...(ended
-      ? {
-          terminalEvent: {
-            ...identity,
-            id: `${input.runId}-terminal`,
-            ts: input.createdAt + 1,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            status: ended,
-            actions: { endInvocation: true },
-          } satisfies RuntimeEvent,
-        }
-      : {}),
-  };
+    ...(ended ? { outcome: ended } : {}),
+  });
 }
 
 function runtimeEvent(

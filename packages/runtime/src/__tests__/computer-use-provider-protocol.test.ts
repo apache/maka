@@ -42,6 +42,7 @@ import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfi
 import { createDurableTurnHarness } from './durable-turn-harness.js';
 import { createTestAiSdkBackend } from './execution-boundary-test-helpers.js';
 import { latestObservationIn } from './observation-text-reader.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const servers: Array<{ close(): Promise<void> }> = [];
 const PROVIDER_STATE_IDENTITY = `sha256:${'1'.repeat(64)}` as const;
@@ -1604,9 +1605,7 @@ function sourceInvocation(input: {
   return {
     ...identity,
     openedAt: input.openedAt,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'ai-sdk',
@@ -1623,9 +1622,7 @@ function sourceInvocation(input: {
         orchestrationSource: 'session',
         toolMode: 'direct',
       },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+    }),
     terminalEvent: {
       ...identity,
       id: `${input.runId}-terminal`,

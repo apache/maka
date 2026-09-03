@@ -50,6 +50,7 @@ import {
   createTestAiSdkBackend,
   testToolResultArchive,
 } from './execution-boundary-test-helpers.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 // The checkpoint write gate validates summary structure and floors the size
 // for large folds (#3029), so the stub summary is shaped like a real
@@ -2004,9 +2005,7 @@ function priorRunInvocation(
   return {
     ...identity,
     openedAt: 1,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'ai-sdk',
@@ -2016,17 +2015,8 @@ function priorRunInvocation(
         providerStateIdentity:
           runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
       },
-      configuration: {
-        cwd: '/tmp/maka',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+      configuration: { cwd: '/tmp/maka' },
+    }),
     terminalEvent: {
       ...identity,
       id: `${identity.runId}-terminal`,

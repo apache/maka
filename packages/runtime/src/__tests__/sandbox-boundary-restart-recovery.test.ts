@@ -36,6 +36,7 @@ import { createSessionStore, type SessionAuthorityStore } from '@maka/storage/se
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 /**
  * Restart behaviour against the canonical SQLite stores. Memory stores can
@@ -239,9 +240,7 @@ function openingEvent(sessionId: string) {
     id: 'run-1-open',
     run: { sessionId, invocationId: 'run-1', runId: 'run-1', turnId: 'turn-1' },
     openedAt: 10,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'fake',
@@ -249,17 +248,8 @@ function openingEvent(sessionId: string) {
         llmConnectionSlug: 'fake',
         modelId: 'fake-model',
       },
-      configuration: {
-        cwd: '/tmp/cwd',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+      configuration: { cwd: '/tmp/cwd' },
+    }),
   });
 }
 

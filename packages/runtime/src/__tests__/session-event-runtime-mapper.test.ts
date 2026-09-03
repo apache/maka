@@ -43,6 +43,7 @@ import {
 } from '../runtime-event-read-model.js';
 import { isNonTerminalErrorRuntimeEvent } from '../agent-run.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 // ============================================================================
 // Event builders
@@ -659,9 +660,7 @@ const projectionInvocation: RuntimeInvocationRecord = {
   runId: 'run-1',
   turnId: 'turn-1',
   openedAt: 1,
-  opening: {
-    kind: 'invocation_opened',
-    protocol: 'invocation_opened_v1',
+  opening: testInvocationOpening({
     route: {
       provenance: 'runtime',
       backendKind: 'ai-sdk',
@@ -669,17 +668,8 @@ const projectionInvocation: RuntimeInvocationRecord = {
       llmConnectionSlug: 'anthropic',
       modelId: 'model-1',
     },
-    configuration: {
-      cwd: '/tmp',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      toolMode: 'direct',
-    },
-    root: { kind: 'user' },
-    source: { kind: 'fresh' },
-  },
+    configuration: { cwd: '/tmp' },
+  }),
 };
 
 describe('SessionEvent projection coverage', () => {

@@ -34,6 +34,7 @@ import {
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
 import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const ts = 1_800_000_000_000;
 const sessionId = 'sess-1';
@@ -63,9 +64,7 @@ const invocation: RuntimeInvocationRecord = {
   runId,
   turnId,
   openedAt: ts,
-  opening: {
-    kind: 'invocation_opened',
-    protocol: 'invocation_opened_v1',
+  opening: testInvocationOpening({
     route: {
       provenance: 'runtime',
       backendKind: 'ai-sdk',
@@ -73,18 +72,9 @@ const invocation: RuntimeInvocationRecord = {
       llmConnectionSlug: 'anthropic',
       modelId: 'claude-sonnet-4-5',
     },
-    configuration: {
-      cwd: '/tmp/work',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      toolMode: 'direct',
-    },
-    root: { kind: 'user' },
-    source: { kind: 'fresh' },
+    configuration: { cwd: '/tmp/work' },
     lineage: { parentTurnId: 'parent-turn' },
-  },
+  }),
   terminalEvent: {
     id: `${runId}-terminal`,
     sessionId,

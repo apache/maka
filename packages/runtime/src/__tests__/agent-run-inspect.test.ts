@@ -28,6 +28,7 @@ import {
   runtimeInvocationsFromSessionEvents,
 } from '@maka/core/runtime-invocation';
 import { inspectAgentRunReadModel } from '../agent-run-inspect.js';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 const sessionId = 'session-1';
 const invocationId = 'inv-1';
@@ -243,27 +244,9 @@ class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {
 }
 
 function makeOpening(): RuntimeEventInvocationOpenedContent {
-  return {
-    kind: 'invocation_opened',
-    protocol: 'invocation_opened_v1',
-    route: {
-      provenance: 'runtime',
-      backendKind: 'fake',
-      llmConnectionId: 'fake-connection',
-      llmConnectionSlug: 'fake',
-      modelId: 'fake-model',
-    },
-    configuration: {
-      cwd: '/tmp/cwd',
-      permissionMode: 'ask',
-      collaborationMode: 'agent',
-      orchestrationMode: 'default',
-      orchestrationSource: 'session',
-      toolMode: 'direct',
-    },
-    root: { kind: 'user' },
-    source: { kind: 'fresh' },
-  };
+  return testInvocationOpening({
+    configuration: { cwd: '/tmp/cwd' },
+  });
 }
 
 /** The invocation a run is named by, for the cases whose ledger is unreadable. */

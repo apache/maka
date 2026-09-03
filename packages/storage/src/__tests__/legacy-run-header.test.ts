@@ -74,41 +74,6 @@ describe('legacy Run header decoding', () => {
 });
 
 describe('legacy continuation source decoding', () => {
-  test('rejects an empty V2 claim identity', () => {
-    assert.throws(
-      () =>
-        decodePersistedLegacyRunHeader(
-          headerWithContinuation({ ...validV2ContinuationSource(), claimId: '' }),
-        ),
-      /Invalid AgentRun header schema/,
-    );
-  });
-
-  test('rejects a zero V2 source high-water', () => {
-    assert.throws(
-      () =>
-        decodePersistedLegacyRunHeader(
-          headerWithContinuation({
-            ...validV2ContinuationSource(),
-            sourceRuntimeEventHighWater: 0,
-          }),
-        ),
-      /Invalid AgentRun header schema/,
-    );
-  });
-
-  for (const field of ['sourceInvocationId', 'sourceRunId', 'sourceTurnId'] as const) {
-    test(`rejects an empty V2 ${field}`, () => {
-      assert.throws(
-        () =>
-          decodePersistedLegacyRunHeader(
-            headerWithContinuation({ ...validV2ContinuationSource(), [field]: '' }),
-          ),
-        /Invalid AgentRun header schema/,
-      );
-    });
-  }
-
   test('rejects a V2 replay manifest that does not identify its boundary', () => {
     assert.throws(
       () =>

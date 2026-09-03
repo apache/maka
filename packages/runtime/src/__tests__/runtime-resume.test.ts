@@ -39,6 +39,7 @@ import {
   buildResumeReplayRuntimeEvents,
   projectToolOperationsFromRuntimeEvents,
 } from '../runtime-resume.js';
+import { testInvocationRecord } from './invocation-fixture.js';
 
 describe('runtime resume phase 0 projection', () => {
   test('publishes the stable P0-P11 crash failpoint catalog', () => {
@@ -745,18 +746,16 @@ function runInvocation(
   facts: { source?: RuntimeEventInvocationOpenedContent['source'] } = {},
 ): RuntimeInvocationRecord {
   const ordinal = runId.match(/(\d+)$/)?.[1] ?? '1';
-  const identity = {
+  return testInvocationRecord({
     sessionId: 'session-1',
     invocationId: `invocation-${ordinal}`,
     runId,
     turnId: `turn-${ordinal}`,
-  };
-  return {
-    ...identity,
     openedAt: 1,
+    closedAt: 1,
+    outcome: 'failed',
+    failureClass: 'test_failure',
     opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
       route: {
         provenance: 'runtime',
         backendKind: 'fake',
@@ -764,28 +763,10 @@ function runInvocation(
         llmConnectionSlug: 'test',
         modelId: 'test-model',
       },
-      configuration: {
-        cwd: '/workspace/repo',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
-      root: { kind: 'user' },
-      source: facts.source ?? { kind: 'fresh' },
+      configuration: { cwd: '/workspace/repo' },
+      ...(facts.source ? { source: facts.source } : {}),
     },
-    terminalEvent: {
-      id: `${runId}-terminal`,
-      ...identity,
-      ts: 1,
-      partial: false,
-      role: 'system',
-      author: 'system',
-      status: 'failed',
-      actions: { endInvocation: true, stateDelta: { failureClass: 'test_failure' } },
-    },
-  };
+  });
 }
 
 function base(overrides: Partial<RuntimeEvent>): RuntimeEvent {

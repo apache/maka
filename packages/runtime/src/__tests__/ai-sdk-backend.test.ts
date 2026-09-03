@@ -95,6 +95,7 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { testInvocationOpening } from './invocation-fixture.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -16310,9 +16311,7 @@ function priorModelInvocation(input: {
   return {
     ...identity,
     openedAt: 1,
-    opening: {
-      kind: 'invocation_opened',
-      protocol: 'invocation_opened_v1',
+    opening: testInvocationOpening({
       route: {
         provenance: 'runtime',
         backendKind: 'ai-sdk',
@@ -16321,17 +16320,9 @@ function priorModelInvocation(input: {
         modelId: input.modelId,
         providerStateIdentity: input.providerStateIdentity ?? `sha256:${'1'.repeat(64)}`,
       },
-      configuration: {
-        cwd: '/tmp/maka',
-        permissionMode: 'ask',
-        collaborationMode: 'agent',
-        orchestrationMode: 'default',
-        orchestrationSource: 'session',
-        toolMode: 'direct',
-      },
+      configuration: { cwd: '/tmp/maka' },
       root: input.root ?? { kind: 'user' },
-      source: { kind: 'fresh' },
-    },
+    }),
     terminalEvent: {
       id: `${identity.runId}-terminal`,
       ...identity,

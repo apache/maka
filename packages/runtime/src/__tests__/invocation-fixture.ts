@@ -31,19 +31,31 @@ export interface SeededInvocationIdentity {
   readonly turnId: string;
 }
 
+export type TestInvocationOpeningOverrides = Omit<
+  Partial<RuntimeEventInvocationOpenedContent>,
+  'configuration'
+> & { configuration?: Partial<RuntimeEventInvocationOpenedContent['configuration']> };
+
 export interface SeedInvocationInput {
   readonly sessionId: string;
   readonly runId: string;
   readonly turnId: string;
   readonly invocationId?: string;
   readonly openedAt?: number;
-  readonly opening?: Partial<RuntimeEventInvocationOpenedContent>;
+  readonly opening?: TestInvocationOpeningOverrides;
 }
 
-/** The opening a test gets when it does not care what the run was routed to. */
+/**
+ * The opening a test gets when it does not care what the run was routed to.
+ *
+ * `configuration` merges field by field, so a test states only the setting it
+ * is about. `route` replaces whole: which fields it carries depends on where
+ * the route came from, and merging halves of two routes makes neither.
+ */
 export function testInvocationOpening(
-  overrides: Partial<RuntimeEventInvocationOpenedContent> = {},
+  overrides: TestInvocationOpeningOverrides = {},
 ): RuntimeEventInvocationOpenedContent {
+  const { configuration, ...rest } = overrides;
   return {
     kind: 'invocation_opened',
     protocol: 'invocation_opened_v1',
@@ -54,6 +66,7 @@ export function testInvocationOpening(
       llmConnectionSlug: 'fake',
       modelId: 'fake-model',
     },
+    ...rest,
     configuration: {
       cwd: '/tmp',
       permissionMode: 'ask',
@@ -61,10 +74,10 @@ export function testInvocationOpening(
       orchestrationMode: 'default',
       orchestrationSource: 'session',
       toolMode: 'direct',
+      ...configuration,
     },
-    root: { kind: 'user' },
-    source: { kind: 'fresh' },
-    ...overrides,
+    root: overrides.root ?? { kind: 'user' },
+    source: overrides.source ?? { kind: 'fresh' },
   };
 }
 
@@ -83,7 +96,7 @@ export function testInvocationRecord(input: {
   closedAt?: number;
   outcome?: 'completed' | 'failed' | 'aborted';
   failureClass?: string;
-  opening?: Partial<RuntimeEventInvocationOpenedContent>;
+  opening?: TestInvocationOpeningOverrides;
 }): RuntimeInvocationRecord {
   const invocationId = input.invocationId ?? input.runId;
   const openedAt = input.openedAt ?? 1;
@@ -107,7 +120,10 @@ export function testInvocationRecord(input: {
             role: 'system',
             author: 'system',
             status: input.outcome,
-            ...(input.failureClass ? { failureClass: input.failureClass } : {}),
+            actions: {
+              endInvocation: true,
+              ...(input.failureClass ? { stateDelta: { failureClass: input.failureClass } } : {}),
+            },
           },
         }
       : {}),
