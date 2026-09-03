@@ -650,10 +650,7 @@ export async function connectPeerRuntimeHost(input: {
       );
     }
     if (cause instanceof RuntimeHostPeerError && cause.code === 'peer_native_unavailable') {
-      throw new RuntimeHostPermanentReconnectError(
-        'Runtime Host peer networking is unavailable in this Maka build',
-        { cause },
-      );
+      throw runtimeHostPeerUnavailableError(cause);
     }
     throw cause;
   }
@@ -739,9 +736,20 @@ function requireRuntimeHostPeerClient(
   peerClient: RuntimeHostPeerClient | undefined,
 ): RuntimeHostPeerClient {
   if (peerClient) return peerClient;
-  throw new RuntimeHostPeerError(
-    'peer_native_unavailable',
-    'Experimental direct peer requires a Client peer endpoint owner',
+  throw runtimeHostPeerUnavailableError(
+    new RuntimeHostPeerError(
+      'peer_native_unavailable',
+      'Experimental direct peer requires a Client peer endpoint owner',
+    ),
+  );
+}
+
+function runtimeHostPeerUnavailableError(
+  cause: RuntimeHostPeerError,
+): RuntimeHostPermanentReconnectError {
+  return new RuntimeHostPermanentReconnectError(
+    'Runtime Host peer networking is unavailable in this Maka build',
+    { cause },
   );
 }
 

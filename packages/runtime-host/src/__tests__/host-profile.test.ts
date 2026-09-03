@@ -1119,7 +1119,7 @@ describe('Runtime Host profiles', () => {
     );
   });
 
-  test('treats immutable Direct target and native capability failures as terminal', async () => {
+  test('treats missing, immutable, and native Direct capability failures as terminal', async () => {
     const profile = directPeerProfile('peer-a', ['/memory/peer-a']);
     const connect = (peerClient: RuntimeHostPeerClient) =>
       connectPeerRuntimeHost({
@@ -1130,6 +1130,20 @@ describe('Runtime Host profiles', () => {
         clientInstanceId: 'client-1',
         peerClient,
       });
+    await assert.rejects(
+      () =>
+        connectRemoteRuntimeHostProfile({
+          profile,
+          credential: 'opaque-token',
+          clientInstanceId: 'client-1',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof RuntimeHostPermanentReconnectError);
+        assert.ok(error.cause instanceof RuntimeHostPeerError);
+        assert.equal(error.cause.code, 'peer_native_unavailable');
+        return true;
+      },
+    );
     const invalidEvidence = new Error('signature is invalid');
     await assert.rejects(
       () =>
