@@ -263,7 +263,8 @@ code {
 }
 
 /* Hero: the Astryx Centered Hero template */
-/* The hero and the scene share one laptop screen (900px tall), so the scene animation plays in view. */
+/* Gaps follow the centered-hero template: 12 / 24 / 12 / 40. The hero and the scene still share one
+   900px laptop screen, so the scene animation plays in view. */
 .hero {
   padding: 40px 0 24px;
   text-align: center;
@@ -273,7 +274,7 @@ h1.display {
   line-height: 1.12;
   font-weight: 500;
   letter-spacing: -0.03em;
-  margin: 0 auto 14px;
+  margin: 0 auto 12px;
   /* Three lines at every desktop width; the balance keeps them even. */
   max-width: 24ch;
   text-wrap: balance;
@@ -290,13 +291,13 @@ h1.display b {
   line-height: 1.55;
   color: var(--muted-foreground);
   max-width: 60ch;
-  margin: 0 auto 22px;
+  margin: 0 auto 24px;
   text-wrap: balance;
 }
 .cta {
   display: flex;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -315,7 +316,7 @@ h1.display b {
 
 /* Hero scene: one turn of RuntimeEvents on a page-radius tinted ground */
 .scene {
-  margin: 28px auto 0;
+  margin: 40px auto 0;
   border-radius: var(--radius-page);
   background: var(--tint);
   overflow: hidden;
