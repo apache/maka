@@ -23,28 +23,28 @@
 
 ## Deferred Tools: Even an Unused Tool Has a Cost
 
-In an ordinary program, a function that is never called has almost no runtime cost. It can sit in a codebase or a dynamic library without consuming CPU or occupying the call stack.
+In standard programs, an uncalled function incurs negligible runtime overhead. It can sit in a source repository or a dynamic library without consuming CPU cycles or occupying stack frames.
 
-Tools in an agent do not work that way.
+Tools in an agent architecture behave fundamentally differently.
 
-Before a model can call a tool, it must know the tool's name, purpose, and argument format. The runtime therefore sends tool definitions to the model together with the system prompt and conversation history. Even when a tool is never invoked, its description and JSON Schema have already participated in every inference.
+Before a large language model can invoke a tool, it requires explicit awareness of the tool name, behavioral description, and structured parameter schema. Consequently, the runtime must transmit these definitions alongside the system prompt and conversation history on every request. Even if a tool is never triggered during an entire session, its schema continually consumes input tokens across every inference step.
 
-A tool starts costing tokens before it starts executing. Its schema occupies context, influences the model's next-action decision, and changes the request prefix available for provider-side caching. More tools give the model a larger action space, but leave less room for the task itself and introduce more competing choices.
+Tool overhead begins long before execution starts. Schemas occupy scarce context windows, dilute model attention during planning, and degrade prefix cache reuse across provider endpoints. As registries expand, the broader action space comes at the expense of task-specific context and introduces higher decision variance.
 
-This is barely noticeable when an agent has only a few tools such as `Read`, `Write`, and `Bash`. It becomes a scaling problem once browsers, computer use, subagents, external services, and MCP connectors join the tool registry. Keeping every schema resident in every model request is not a sustainable architecture.
+When an agent exposes only elementary tools like `Read`, `Write`, and `Bash`, the overhead remains manageable. Once the registry includes browser drivers, OS automation routines, subagent delegations, enterprise services, and dozens of Model Context Protocol (MCP) connectors, keeping all schemas resident across all requests breaks scalability.
 
-Maka's deferred tools begin with this observation. "Deferred" does not mean delayed execution or background execution. It means delaying the moment when the complete tool schema becomes visible to the model.
+Maka addresses this limitation through Deferred Tools. The mechanism does not alter execution timing; its purpose is to control when complete schemas become visible to the model.
 
-The runtime still holds every tool binding available to the current run. On the first model request, however, the model sees only a small set of frequently used tools and a lightweight `tool_search`. Other tools appear in a compact search inventory by group and name, without their full descriptions or argument schemas.
+The runtime continuously retains all registered tool bindings for the active run. However, the initial request exposes only high-frequency primitives alongside a compact `tool_search` utility. Extended tools register solely by name and category in a lightweight inventory, omitting full descriptions and parameter schemas.
 
 ```text
 Bound Tool Registry
         │
-        ├── Direct Tools ───────────────→ Full schemas in this request
+        ├──── Direct Tools ───────────────→ Full schemas in this request
         │
-        └── Deferred Tools
+        └──── Deferred Tools
                 │
-                └── Lightweight Search Inventory
+                └──── Lightweight Search Inventory
                            │
                       tool_search
                            │
@@ -55,38 +55,38 @@ Bound Tool Registry
                     injects matched schemas
 ```
 
-`tool_search` does not search files, web pages, or application data. It searches capabilities already owned by the runtime. Maka performs the lookup locally against tool names, descriptions, and capability groups, then selects a bounded set of matches with bounded schema size. The result contains only the activated tool names. Full schemas are not duplicated inside the tool result; they appear through the normal tool projection in the next provider request.
+The `tool_search` utility performs local lookups across capabilities already registered with the runtime. Maka matches queries against tool names, descriptions, and functional categories, returning a size-bounded candidate set. The payload returned to the model contains only the activated tool identifiers. Full schemas are never dumped directly into the tool result payload; they are injected into the subsequent model turn through standard tool projection.
 
-This separates several concepts that are easy to conflate:
+In Maka, tool state is organized into three distinct tiers:
 
-- **Bound:** the runtime owns an executable tool binding. This defines the capability ceiling of the run.
-- **Discoverable:** the tool appears in the lightweight inventory, so the model knows that the capability exists.
-- **Visible:** the complete schema is present in the current provider request, so the model can construct a valid call.
+- **Bound:** The runtime possesses an executable implementation, defining the absolute capability ceiling of the run.
+- **Discoverable:** The tool is cataloged in the lightweight inventory, making the model aware of its availability.
+- **Visible:** The complete schema is injected into the active provider request, enabling the model to construct valid calls.
 
-Search does not bind a new tool and cannot exceed the run's binding ceiling. It changes only the tool projection visible to the next model call.
+Capability discovery does not introduce unregistered implementations or exceed the binding ceiling. It serves exclusively to reshape the tool projection presented to subsequent inference steps.
 
-"Next" is an important boundary. Once a provider step begins, its tool schemas are fixed. If the model emits both of these calls in one response:
+Step boundaries enforce strict temporal separation. Once a provider step is dispatched, its schema set is immutable. If a model generates the following sequence within a single completion:
 
 ```text
 tool_search("browser click")
 browser_click(...)
 ```
 
-Maka still rejects the second call. A search result can affect a later request, but it cannot rewrite the schema set of a request already sent to the provider. Only in the next step does the full `browser_click` definition enter context, allowing the model to generate arguments for an interface it has actually seen.
+Maka rejects the second call. Results from `tool_search` apply only to subsequent provider interactions; they cannot retroactively amend schemas already committed to the provider. The complete definition of `browser_click` enters context in the next step, allowing the model to construct arguments against a validated interface.
 
-Deferred activation is scoped to the current turn. Tools discovered during a turn accumulate monotonically, and provider retries inherit that working set. When the turn ends, the activation set is released. The next user turn starts again from the stable base set instead of permanently paying for every capability used in the past.
+Deferred activation is strictly scoped to the active turn. Discovered tools accumulate monotonically across retries within the turn, and release upon completion. Subsequent user turns reset to the baseline tool set, preventing intermittent tool usage from permanently burdening long-term inference context.
 
-Visibility is also not authorization. A visible tool still passes through permission checks, argument validation, and runtime execution boundaries when called. `tool_search` manages the model's cognitive action space, not the user's permission space.
+Visibility does not equate to authorization. A visible schema still requires parameter validation, concurrency checks, and permission gates upon invocation. The `tool_search` mechanism regulates cognitive surface area; system safety remains the sole responsibility of runtime enforcement.
 
-Deferred tools therefore do not answer "how should a tool execute?" They answer "which tools deserve to enter the model's next thought?" The runtime retains the complete capability space while the model sees only the working set relevant to the current task.
+Deferred Tools constrain the action space presented to the model. The runtime preserves comprehensive capabilities while exposing only task-relevant subsets per step.
 
-## Tool Calls: Giving the LLM Hands and Feet
+## The Action Boundary: Bridging Probability and System Side Effects
 
-Once a tool schema enters context, the model merely knows which actions are available. Until it emits a tool call, everything remains tokens.
+Injecting a tool schema into context only informs the model of available actions. Until the model produces a tool call, the interaction remains strictly within the domain of text tokens.
 
-An LLM cannot read a file, start a process, or click a screen. It consumes input and predicts output. Even if it says, "I have modified the file," that sentence changes nothing on disk. Language describes the world; by itself, it does not alter the world.
+Language models cannot directly manipulate host systems. They consume input sequences and predict subsequent tokens. Emitting the statement "I have updated the configuration" does not alter any byte on disk. A physical boundary separates descriptive language from concrete system state.
 
-A tool call creates a channel between the two. Instead of producing only natural language, the model emits a structured action request: a tool name, arguments, and an ID that associates the eventual result with the call. The runtime receives the request, executes the corresponding operation in a real environment, and returns the observation to the model.
+Tool calls bridge this boundary. The model ceases freeform generation and emits a structured action intent specifying the target tool, call arguments, and a correlation identifier (Call ID). The runtime intercepts this intent, executes the real operation within a sandboxed environment, and returns observed outcomes to the model.
 
 ```text
 LLM
@@ -95,145 +95,139 @@ LLM
  ▼
 Runtime
  │
- ├── Resolve the tool binding
- ├── Validate arguments and execution boundaries
- ├── Request permission when necessary
- ├── Invoke the real implementation
+ ├── Resolve tool binding
+ ├── Validate arguments and execution bounds
+ ├── Request required permissions
+ ├── Invoke concrete system operation
  ▼
 Filesystem / Process / Browser / Network / Human
  │
  │  function_response(call_id, result)
  ▼
-The LLM's next inference
+Next LLM inference step
 ```
 
-This closed loop is where a model becomes an agent. File reads give it observations of a codebase. Commands expose compiler and test feedback. File edits let it change the workspace. Browser and network tools connect it to systems outside the local process. Questions let it pause for new facts when information is missing.
+This feedback loop allows the model to interact with external environments. File reads inspect workspace state, command executions capture compiler and test diagnostics, file modifications update working trees, network calls interface with external services, and user interaction tools pause for clarification.
 
-If tools are the agent's hands and feet, tool results are its senses. Without feedback, the model cannot tell whether an action succeeded or whether reality matches its prediction. A complete agent step is therefore not simply "the model thought once." It combines intention, execution, and observation:
+Tool results provide the empirical ground truth for subsequent decisions. Without observational feedback, models cannot verify whether operations succeeded or correct invalid assumptions. An end-to-end agent step consists of a closed loop across reasoning, dispatch, and observation:
 
 ```text
 Reason → Act → Observe → Reason
 ```
 
-This resembles a function call, but differs in a fundamental way. When a program calls an internal function, caller and callee usually share one deterministic execution environment. A model issuing a tool call is proposing an action from a probability distribution. Its arguments may be incomplete, its target may have changed, and its understanding of the environment may be wrong.
+This interaction differs fundamentally from regular software invocation. Conventional programs link callers and callees inside deterministic execution environments. Tool calls generated by language models represent probabilistic action proposals. Arguments may be malformed, environmental preconditions may be stale, and assumptions regarding system state may be incorrect.
 
-It is more accurate to say that the LLM does not grow its own hands and feet. The runtime lends it a controlled set.
+Language models do not possess ambient execution authority. External side effects occur strictly through runtime arbitration, validation, and policy checks.
 
-In Maka, a model-generated call cannot bypass the runtime and reach the outside world directly. The runtime verifies that the binding exists, that it is visible in the current step, and that the arguments conform to its schema. The call must also pass concurrency limits, permission policies, and execution boundaries before the implementation can run.
+In Maka, invocations face rigorous validation before dispatch: bindings are checked, turn visibility is verified, parameter schemas are enforced, and concurrency policies are applied. Underlying system implementations execute only after all checks pass.
 
-This boundary separates model intent from system authority. A model may request an action, but emitting a syntactically valid call does not create a capability or grant permission. The schema teaches the model how to express the request, the binding determines whether the runtime possesses the capability, and permission determines whether this particular invocation may proceed.
+This boundary decouples model intent from system authorization. The model possesses proposal authority; producing syntactically valid JSON cannot grant environmental privileges. Tool schemas define the wire format for proposals, bindings register available capabilities, and runtime permissions arbitrate individual calls.
 
-After execution, the runtime converts the outcome into a provider-independent tool result and pairs it with the original call ID. In Maka's `RuntimeEvent Log`, the two sides become `function_call` and `function_response`. What the model requested and what the runtime actually returned both become replayable, auditable facts.
+Upon completion, the runtime normalizes external payloads into provider-neutral tool results, paired via stable Call IDs. Within Maka's `RuntimeEvent Log`, these events are committed as immutable `function_call` and `function_response` entries, establishing an auditable factual foundation for replay and crash recovery.
 
-The call ID is more than a message-format field. A turn may launch several calls at once, and completion order may differ from call order. Stable identities allow the runtime to route every result to the correct call and reconstruct the same causal relationships during recovery.
+Call IDs serve as architectural anchors. When an agent dispatches multiple concurrent calls, disparate I/O latencies shuffle completion order. The runtime relies on deterministic identifiers to route results back to their respective causal chains and preserve structural topology during replay.
 
-Tool calling completes a crucial transition: model output is no longer only language for a human reader. It can become a request to inspect private data, consume resources, start processes, or mutate state. Deferred tools decide which capabilities enter the model's field of thought. A tool call lets one selected capability cross the language boundary and attempt to change reality.
+Tool calls transform model output from human-directed prose into system invocations with irreversible side effects. The runtime must therefore implement rigorous engineering boundaries to manage external consequences safely.
 
-At that moment, the systems problem changes. A failed generation produces disappointing text. A failed tool call may occur after the real-world effect happened but before its result returned. Once the model has hands and feet, the runtime must become responsible for the consequences.
+## Reliable Execution: Crash Recovery Over Committed History
 
-## Reliable Tool Calls: Resume Replays History, Not Actions
+Introducing external side effects exposes the agent runtime to real-world infrastructure failures.
 
-Tool calling connects the model to the real world, and imports the real world's uncertainty into the agent runtime.
+Consider a scenario where a model calls `Edit` to update a port from `3000` to `4000`. The disk write completes, but the host process loses power immediately afterward. Upon restart, the runtime observes a dangling call without an associated result. This absence does not mean the filesystem remained untouched.
 
-Suppose the model calls `Edit` to change a configuration port from `3000` to `4000`. The file write finishes, and the Maka process crashes immediately afterward. After restart, the runtime can see that the call has no result, but that does not prove the file was never modified.
+A missing tool result can signify several conflicting states: the call was never dispatched, execution is still in progress, disk writes succeeded while metadata commits failed, or external processes modified state post-write. Blindly re-executing such calls risks duplicate writes, redundant financial transactions, or persistent data corruption.
 
-A missing result can represent several realities: dispatch never began; the tool is still running; the side effect completed but its result was never persisted; or the external state changed again after execution. If resume simply executes the call again, it can duplicate writes, messages, object creation, or even payments.
+Unlike text generation, external system actions cannot be assumed nonexistent simply because the runtime missed the return signal.
 
-This is the most important difference between a tool call and text generation. Missing text can be regenerated. An action that already crossed a process boundary cannot be assumed absent merely because the runtime did not receive its result.
-
-Maka places two durable boundaries around real tool execution:
+Maka encloses every external tool invocation within a lightweight two-phase persistence boundary:
 
 ```text
-Model emits function_call
+Model generates function_call
           │
           ▼
-Arguments, availability, permission, and boundary checks
+Validate parameters, visibility, permissions, and bounds
           │
           ▼
 T1: Commit Tool Dispatch
           │
           ▼
-Execute the real-world operation
+Execute real-world operation
           │
           ▼
 T2: Commit function_response
           │
           ▼
-Expose Tool Result to the model
+Deliver Tool Result to model
 ```
 
-T1 means that the runtime has completed every pre-execution check and has formally crossed the dispatch boundary. From this point onward, the system can no longer safely claim that the tool did not run. T1 must commit before the implementation begins; if the commit fails, the side effect is not allowed to start.
+T1 signifies that all pre-flight validations passed and execution crossed the dispatch threshold. From this point forward, the runtime cannot safely assume the operation never occurred. T1 must commit before concrete implementations are invoked; if T1 persistence fails, external actions remain blocked.
 
-T2 means that the outcome has become a durable `function_response`. Only after T2 commits may the result enter the next model inference. Even if a tool returns successfully, the runtime cannot show the model a result that it would be unable to reconstruct after restart.
+T2 certifies that execution results have committed as an immutable `function_response` event. Only after T2 commits may the outcome enter subsequent model inference steps. Even if an external operation succeeds, missing T2 persistence prohibits feeding unverified state into the active reasoning loop.
 
-Maka does not try to wrap the entire tool call in a database transaction. Filesystem operations, shell commands, browser actions, and network requests can take seconds or hours, and SQLite cannot participate in a true distributed transaction with all of those systems. Maka instead uses two short transactions to make the side-effect window explicit:
+Maka avoids distributed database transactions across external systems. File I/O, shell tasks, browser drivers, and network requests exhibit wide variance in latency, making global ACID transactions impractical. Maka uses two localized storage transactions to bound the external side-effect window:
 
 ```text
 Committed T1 → External Side Effect → Committed T2
 ```
 
-Wherever the process crashes, the committed append-only prefix gives the restarted runtime a precise classification:
+When unexpected crashes occur, recovery logic derives exact status from the append-only event prefix:
 
-| Durable facts | Runtime conclusion |
+| Log State | Recovery Disposition |
 |---|---|
-| T1 was never crossed | The tool was definitely not dispatched |
-| Both T1 and T2 exist | The tool completed; reuse the existing result and never execute it again |
-| T1 exists but T2 is missing | The side-effect state is unknown; reconcile or park |
-| Call, dispatch, or response identities conflict | The ledger is corrupt; fail closed |
+| No T1 committed | Operation never dispatched; safe to discard or re-evaluate |
+| Both T1 and T2 present | Operation completed; reuse committed result without re-execution |
+| T1 present, T2 missing | State indeterminate; force reconcile or park |
+| Broken ID causality or ordering conflicts | Ledger corrupted; fail closed |
 
-The interval between T1 and T2 is the dangerous case. The system knows that execution was authorized, but not whether the external effect finished. Maka does not let the model guess, and does not reinterpret "no result" as "not executed." Tool bindings can declare recovery semantics, such as natural idempotency, support for observing an existing outcome, or a prohibition on automatic retry. Without enough evidence, the runtime parks the operation for stronger observation or human intervention.
+The interval between T1 and T2 represents the critical failure window. The system knows dispatch was authorized, but cannot confirm external completion. Maka prohibits speculative guessing and never defaults missing outcomes to failure. Tool bindings declare specific recovery policies: natural idempotency, queryable status checks, or strict prohibition of automatic retries. When definitive evidence is lacking, the runtime parks the operation, awaiting automated probes or operator intervention.
 
-Recovery remains append-only. The runtime does not edit the old `function_call` or fabricate a past that never happened. Dispatch, outcome, reconciliation, and recovery decisions are appended as new facts. Old facts remain unchanged; later facts explain how the operation eventually converged.
+Recovery operations remain append-only. The runtime never edits prior `function_call` events or fabricates missing history. Dispatches, outcomes, reconciliations, and operator decisions append to the log tail as new facts. Historical facts remain immutable; subsequent events record how dangling operations converged.
 
-Resume becomes safe only after every tool call has been classified as completed or definitely not dispatched.
+Resume routines initiate fresh execution cycles only after all pending operations resolve to Completed or Definitely Not Dispatched.
 
-"Replay" is easy to misunderstand here. Maka does not execute historical tools again, nor does it resurrect the old process's promises, JavaScript stack, sockets, or child processes. It replays the valid history that the model had already observed: user messages, model output, paired `function_call` and `function_response` events, and other facts admissible to provider context.
+Replay follows strict architectural boundaries. Maka never re-runs historical tool implementations, nor does it resurrect transient in-memory objects, unresolved promises, or dropped sockets. Replay reconstructs verified causal history: user inputs, reasoning traces, and paired `function_call` and `function_response` events.
 
 ```text
 Immutable RuntimeEvent Prefix
             │
-            ├── Resolve tool operations
-            ├── Discard streaming partials
-            ├── Preserve paired calls and responses
-            ├── Trim an interrupted, non-replayable suffix
-            └── Validate high-water and digest
+            ├── Resolve and converge tool states
+            ├── Strip transient streaming chunks
+            ├── Retain paired Call / Response events
+            ├── Prune uncommitted dangling suffixes
+            └── Verify High-Water mark and Digest
                          │
                          ▼
-              Verified Provider Replay
+              Verified Provider Replay Plan
                          │
                          ▼
-              New Run / Invocation / Turn
+              Fresh Run / Invocation Instance
 ```
 
-The append-only structure makes this natural. Resume does not infer progress from objects left in old process memory or reconstruct execution from UI state. It reads the immutable event prefix through a recorded high-water mark, verifies its digest, and projects the provider history required for the next inference.
+Leveraging append-only logs, recovery operates independently of volatile memory dumps. The runtime reads the immutable event slice up to the recorded high-water mark, validates its cryptographic digest, and projects canonical context for the subsequent step.
 
-The continuation receives new run, invocation, and turn identities, and records the source run and event high-water from which it continues. It does not duplicate the original user message, and completed tools do not execute again. A continuation inherits verified causal history, not a list of commands waiting to be rerun.
+The resumed instance receives distinct Run and Invocation identifiers, noting its parent run and high-water anchor. Original user prompts are not duplicated, and finished operations do not re-run. The continuation inherits verified historical facts rather than an imperative re-execution script.
 
-Before invoking the model, Maka also rechecks the external conditions on which that history depends: whether the workspace is still the same workspace, whether required tool bindings still exist, whether background processes and child tasks have converged, and whether another continuation already claimed the same recovery boundary. If any condition cannot be proven, resume parks instead of carrying old conclusions into a changed world.
+Before dispatching model requests, Maka verifies fundamental environmental invariants: matching workspace paths, active tool bindings, converged background tasks, and absence of conflicting recoveries. If any condition cannot be confirmed, resume aborts to a parked state, preventing execution within compromised environments.
 
-Maka's Resume is therefore not "continue executing code from the crash instruction pointer." It first gives every real-world action a trustworthy conclusion in the log, then creates a new execution from an immutable and verified history. Tool-call recovery answers whether an action happened. The append-only log answers which facts the model may continue from.
+Maka crash recovery reconstructs execution from verified append-only history, rather than attempting to resurrect volatile process state.
 
-Once real-world actions reliably settle into log facts, resume stops being an attempt to rescue an old process. It becomes the problem of constructing a new runtime from history.
+## Code Mode: Programmatic Orchestration and Folded Call Trees
 
-## Code Mode: When a Tool Call Becomes a Program
+Standard tool calling adheres to a sequential turn pattern: the model proposes an action, the runtime executes it, and the model re-evaluates the prompt. For workflows requiring continuous semantic reasoning at every step, this pattern provides necessary control.
 
-So far, every tool call in this discussion has happened one at a time.
+However, for deterministic data transformations, this round-trip structure creates severe latency and token overhead.
 
-The model chooses a next action, the runtime executes it, and the result returns to context. The model reads the observation, reasons again, and decides whether to call another tool. When every step requires semantic judgment, this is exactly how an agent should work.
-
-But not every step deserves another model invocation.
-
-Imagine an agent that must read twenty files, identify those containing a dependency, inspect each configuration, and report only projects with inconsistent versions. With ordinary tool calling, the model may request one read, inspect the result, request the next, and repeat. Every intermediate result enters context, while loops, filtering, and aggregation advance through repeated inference.
+Consider multi-package dependency audits: an agent must traverse dozens of directories, inspect `package.json` files, extract version constraints, and report discrepancies. Under sequential tool calling, the agent repeats dozens of inference cycles: generating read requests, waiting for file contents, parsing results, and emitting subsequent calls. Raw file contents flood the context window, and model round trips compound latency.
 
 ```text
 Reason → Call → Observe → Reason → Call → Observe → ...
 ```
 
-The task may require model judgment only when forming the initial plan and interpreting the final anomalies. Most of the middle is deterministic control flow. Asking an LLM to impersonate a `for` loop is slow, and burdens future context with every raw result.
+In these workflows, reasoning is essential for initial planning and final error analysis, while intermediate steps involve deterministic control flow. Forcing models to emulate loops and string parsers incurs unnecessary inference cost and pollutes context with intermediate noise.
 
-Code Mode changes this layer.
+Code Mode replaces discrete invocations with programmatic orchestration.
 
-Rather than emitting a separate top-level call for every action, the model writes a small program that invokes multiple tools. Loops, parallelism, branches, field extraction, and aggregation run inside a constrained code environment. The model sees only what the program elects to return.
+Instead of emitting fragmented tool calls, the model produces an executable program. Iteration, concurrency, branching, parsing, and aggregation execute inside a sandboxed interpreter. The model receives only the final structured output.
 
 ```text
                   ┌─ Tool A ─┐
@@ -241,13 +235,13 @@ Reason → Program ─┼─ Tool B ─┼→ Filter / Join / Reduce → Observe
                   └─ Tool C ─┘
 ```
 
-OpenAI Codex calls this execution shape Code Mode. The public Responses API describes the same class of capability as Programmatic Tool Calling: the model writes JavaScript that orchestrates available tools through `tools.*` in an isolated V8 runtime. Claude also provides Programmatic Tool Calling, using Python in a Code Execution Container and `allowed_callers` to specify which tools code may invoke.
+Implementations vary across ecosystem providers: OpenAI exposes Programmatic Tool Calling within the Responses API, executing model-generated JavaScript in a secure V8 environment with access to `tools.*`; Anthropic allows Claude to execute Python scripts within a containerized environment, calling whitelisted tools programmatically.
 
-The protocols differ, but express the same judgment: LLMs are good at forming plans and resolving semantic uncertainty; programs are better at executing control flow that has already become explicit.
+Both approaches share common architectural principles: delegating non-deterministic planning to the model while offloading deterministic control flow to an execution engine.
 
-This does not give the model an unbounded machine. A Code Mode program can reach only the capabilities exposed by the runtime. Writing network code does not create network access, and writing filesystem code does not bypass filesystem permissions. The program is an orchestration layer over tools, not a new source of authority.
+Sandboxes operate under strict isolation. Code executed within the container accesses only tools explicitly surfaced by the runtime. Writing custom network or filesystem logic cannot bypass runtime permissions. The script acts as an orchestration layer, not an escalation of privilege.
 
-Nor does it replace tool calling. Programmatic Tool Calling turns a linear sequence into a call tree: a model-generated program sits at the root, and the tools invoked by that program become its children. Every leaf still requires runtime validation, authorization, and execution.
+Code Mode does not displace standard tool mechanisms. Instead, it reorganizes linear call sequences into a hierarchical call tree: the root node contains the program payload, while branch nodes represent concrete tool calls issued by the script. Each leaf operation must still pass through runtime validation, permission gates, and transaction boundaries.
 
 ```text
 Program / exec
@@ -261,34 +255,30 @@ Program / exec
    Program Result
 ```
 
-The most visible gain is fewer model round trips. A loop or batch query that once required repeated sampling can run inside one program. Equally important, programmatic execution reduces context pollution. Code can process dozens of raw results and return only the few lines that matter. Tool results have not vanished; the portions that require no model understanding simply never enter the model's state space.
+Folding invocations into trees yields two primary benefits: it minimizes round-trip inference steps, and it shields the context window from intermediate telemetry. The sandbox absorbs raw operational payloads, returning only consolidated summaries to the outer context. Full operational details are preserved in audit logs without consuming inference memory.
 
-Code Mode and deferred tools therefore address two different kinds of tool-context pressure. Deferred tools reduce tool definitions loaded before inference. Code Mode reduces tool-result accumulation and model round trips during execution. The first controls the working set of capability descriptions; the second controls the working set of observations.
+Programmatic orchestration should not be applied universally. Irreversible side effects, actions requiring human authorization, or workflows where subsequent steps depend on unstructured semantic observations benefit from explicit top-level tool calls. Code Mode is designed for deterministic data pipelines, not for concealing agent decisions.
 
-Not every sequence belongs inside a program. A write may need human approval. A search result may change the direction of an investigation. An unexpected UI message may require fresh semantic interpretation. Irreversible effects are also often easier for humans to understand and control as explicit top-level calls. Code Mode should move deterministic work downward, not hide every agent decision inside code.
+Maka enforces clear operational bounds within Code Mode. The model submits JavaScript cells via an `exec` primitive, restricted to registered tools marked for nested invocation. The execution environment lacks ambient OS capabilities, constrained by quotas on execution time, memory usage, script size, response size, and concurrency.
 
-Maka's Code Mode preserves that boundary. The model submits a JavaScript cell through an `exec` tool. The cell can invoke only currently active tools that explicitly allow nesting. The execution environment has no ambient process, filesystem, or network capability, and it enforces limits on time, memory, source size, result size, call count, and concurrency.
+Crucially, nested invocations within a cell route through the central `ToolRuntime`. Validation, permission evaluation, and T1/T2 transactions apply uniformly. Maka assigns discrete identifiers to nested calls, maintaining parent-child links with the host `exec` event.
 
-More importantly, every nested invocation returns to the same `ToolRuntime`. Argument validation, permissions, execution boundaries, and the T1/T2 durability semantics from the previous section do not disappear merely because code issued the call. Maka assigns each nested invocation its own identity and records its parent relationship to the outer `exec`.
+Nested calls retain durable persistence semantics without inflating the model prompt. They commit to the `RuntimeEvent Log` with `modelVisibility: hidden`, while the model sees only the outer `exec` boundary and its aggregated result. Maka preserves complete factual history in storage while projecting a clean abstraction for inference.
 
-Those internal calls are durable, but they do not reenter model history as a long sequence of calls and results. Runtime events mark them as originating from Code Mode and hidden from provider replay. The model sees the outer `exec` and its final result. Again, Maka follows the same architecture: the log preserves complete facts, while provider context is a projection of those facts.
+Crash recovery also accounts for programmatic execution. A script may execute three nested operations before crashing on the fourth. Re-running the entire script upon recovery would duplicate completed side effects. Maka prohibits automatic retries of unfinalized `exec` cells. Settled nested operations remain in the log, while the outer cell marks an interrupted state, leaving resumption strategy to subsequent model evaluation.
 
-Code Mode also sharpens the recovery problem. A program may finish three tools and crash while awaiting the fourth. Rerunning the entire program after restart would repeat real actions that already completed. Maka therefore never automatically retries an interrupted `exec`. Existing nested outcomes remain in the log, while the outer cell receives an explicit interrupted result. A new model inference then decides how to continue.
+Script environments are ephemeral, yet every nested tool invocation crossing the system boundary remains durably logged and auditable.
 
-The program is not a shortcut around reliability. It compresses reasoning round trips between model and runtime, but cannot compress facts that already happened in the world. The program and its call stack may be ephemeral. Every tool call that crosses a real execution boundary must still leave an auditable, recoverable record.
+## Parallel Tool Execution: Decoupling Task Concurrency from Resource Authority
 
-Tool calling moves the model from language into action. Code Mode takes another step: the model produces not just an action, but the structure among actions.
+Agents can emit concurrent tool calls within Code Mode programs or output parallel invocations in a single standard completion step.
 
-## Parallel Tool Calls: Async I/O for Agent Runtimes
+Parallel tool calling requires clear architectural definition. When a model outputs a batch of calls in one step, it does so without observing any interim results. Therefore, invocations within that batch cannot possess causal data dependencies on each other.
 
-Code Mode can call several tools concurrently from a program. Even without Code Mode, modern models can emit multiple tool calls in one assistant step.
-
-This is commonly called Parallel Tool Calling, but "parallel" needs a precise meaning. The model does not observe the first result while deciding the second call. It commits the entire batch in one generation, so calls in that batch cannot have data dependencies based on tool results.
-
-If the second action must consume the first result, it belongs in the next model step rather than the same batch.
+If an operation depends on data produced by another call, it must be scheduled in a subsequent reasoning step.
 
 ```text
-One Assistant Step
+Single Assistant Step
 
         ┌── Tool Call A ──→ Result A ──┐
 Model ──┼── Tool Call B ──→ Result B ──┼──→ Next Model Step
@@ -297,105 +287,104 @@ Model ──┼── Tool Call B ──→ Result B ──┼──→ Next Mod
                     Fan-out / Fan-in
 ```
 
-From the runtime's perspective, this resembles classic asynchronous I/O. Each tool call becomes an independently awaitable task. Once a task starts, the runtime does not need to hold a synchronous call stack for it. It can start other ready work, then wake the corresponding continuation when the filesystem, process, network, or remote service produces a result. Only after every task reaches a terminal state does the runtime hand the batch of results to the next model step.
+From an architectural standpoint, batch calls mirror asynchronous I/O primitives. Each tool call is handled as an independently awaitable task. The runtime avoids thread blocking, advancing concurrent tasks until external filesystems, processes, or networks respond. Once the entire batch settles, the runtime aggregates results for the next inference step.
 
-The benefit is not merely that execution is "faster." Waiting overlaps. While one web search is waiting on the network, another search, file read, or child agent need not wait alongside it. End-to-end latency moves from the sum of independent I/O delays toward the longest delay on the critical path.
+This structure allows independent wait states to overlap. A slow web query does not delay local file inspection or subagent execution. Overall latency converges toward the critical path rather than the sum of independent operations.
 
-But an absence of result dependencies does not imply an absence of resource conflicts.
+However, an absence of data dependencies does not guarantee an absence of resource conflicts.
 
-A model can emit `Read(a)` and `Edit(a)` together. It can ask two tools to replace the same session state. Neither call consumes the other's result, but both contend for one real resource. If the runtime simply hands the batch to `Promise.allSettled()`, observation order, write order, and overwrite behavior depend on unpredictable execution timing.
+A model may emit `Read(a)` and `Edit(a)` within the same batch, or instruct multiple tools to update shared session state simultaneously. While neither call consumes the other's return value, both contend for identical physical resources. Handing such batches directly to uncoordinated primitives like `Promise.allSettled()` introduces race conditions governed by nondeterministic execution timing.
 
-Maka [PR #4542](https://github.com/apache/maka/pull/4542) discusses this exact problem: how to preserve concurrency among independent I/O while giving conflicting operations a deterministic order.
+Maka addresses this challenge in [PR #4542](https://github.com/apache/maka/pull/4542): the runtime must maximize independent I/O parallelism while guaranteeing deterministic ordering for conflicting operations.
 
-It is tempting to place all responsibility in a central tool scheduler. Such a scheduler can predict which resources each call reads or writes, start non-conflicting work immediately, and queue conflicts in model-generated order. This provides a clear batch orchestration policy, but should not become the only source of resource correctness.
+Centralizing all concurrency constraints inside a single Tool Scheduler introduces architectural bottlenecks. Expecting a scheduler to statically deduce read/write sets from tool arguments creates brittle abstractions that fail across dynamic host environments.
 
-Classic async I/O offers a useful separation of concerns: executors schedule tasks; resource authorities manage resources.
+Asynchronous system design provides a clear separation of concerns: executors schedule task lifecycles, while resource authorities govern access constraints.
 
-A Tokio executor does not inspect futures to discover whether they touch the same Redis key or file. It runs futures that are ready. Mutual exclusion, reader/writer fairness, capacity, and wakeups live closer to the resource in an async mutex, an RwLock, a semaphore, or an actor that exclusively owns the state.
+An executor drives ready tasks forward. Mutual exclusion, reader-writer fairness, capacity limits, and wakeup signals belong to authorities positioned beside the underlying resources: asynchronous mutexes, reader-writer locks, semaphores, or state-owning actors.
 
-The same boundary applies to an agent runtime:
+Agent runtimes follow this division:
 
 ```text
 Tool Batch
-    │  Create tasks, retain result slots, propagate cancellation
+    │  Create tasks, allocate result slots, broadcast cancellation
     ▼
 Resource Authority
-    │  Resolve identity, queue, exclude, check versions, wake waiters
+    │  Resolve identity, order, enforce exclusivity, check versions, wake
     ▼
 Filesystem / Terminal / Browser / Session / Remote Service
 ```
 
-Why must the authority resolve resource identity? Because the real resource is often not the string in a tool argument. `link/a` and `real/a` may refer to the same file through a symbolic link. Different UI tools may target the same browser tab. Different MCP tools may share one remote session. Only the layer that owns or executes against the resource can know whether two names identify the same thing and where the operation actually linearizes.
+Resource authorities must resolve true resource identity. Raw path arguments cannot reveal physical aliases: distinct paths may point to the same file via symlinks, multiple tools may manipulate the same browser tab, and separate MCP calls may target the same remote session. Only the authority directly managing the resource can arbitrate true contention and commit order.
 
-A lock that exists only inside the current tool-batch scheduler cannot protect against another turn, another agent, another process, or another code path reaching the same resource. Correctness must still hold at the point closest to the side effect. A batch scheduler remains valuable for reducing contention and creating deterministic orchestration, but it should not be the only lock.
+Batch schedulers reduce unnecessary contention, but cannot serve as the sole source of safety. Schedulers cannot enforce exclusivity across independent turns, concurrent subagents, or external system processes. Safety must close at the resource authority layer.
 
-Different resources need not pretend to share one conflict model. Files fit canonical-path, writer-fair read/write leases. Terminals and browsers resemble actors with exclusive state ownership. Concurrency limits for remote providers, MCP servers, and child agents are capacity concerns and fit semaphores. Revisioned session state may use compare-and-swap. These systems share an asynchronous lifecycle, not one universal lock.
+Different resource types require tailored synchronization models:
 
-This is also why resource conflict and capacity must remain separate:
+- **Filesystems:** Canonical path leases with writer-priority or read-write fairness.
+- **Terminals and Browsers:** Single-state actors enforcing strict sequential operations.
+- **External APIs and MCP Servers:** Counting semaphores regulating concurrency and request quotas.
+- **Versioned Session State:** Optimistic concurrency control via Compare-And-Swap (CAS) on revisions.
 
-- Resource conflict asks whether two actions can happen concurrently without violating correctness.
-- Capacity asks how much work the system is willing to run concurrently.
+These patterns share an asynchronous lifecycle without forcing heterogeneous resources into a single locking model.
 
-Representing an API rate limit as a global resource conflict can reduce concurrency, but introduces unrelated head-of-line blocking: a slow request stalls a file read that shares no resource with it. Async I/O instead blocks only work that is genuinely not ready and lets independent work proceed.
+This separation clarifies the distinction between resource contention and capacity limits:
 
-For actual conflicts, provider array order can serve as a stable tie-breaker. It must not be misread as a data dependency. The model did not see any intermediate result while generating the batch. Order can say who acquires a contended resource first; it cannot mean that a later call consumed an earlier result.
+- Resource contention determines whether operations can safely execute concurrently without corrupting state.
+- Capacity limits determine how many concurrent operations the infrastructure can support.
 
-Parallel tool calling therefore contains at least four distinct orders:
+Treating upstream API rate limits as a global mutex introduces head-of-line blocking, allowing slow network calls to stall unrelated disk reads. Asynchronous runtimes should restrict blocking strictly to genuine physical conflicts, keeping independent work unhindered.
+
+When batch invocations contend for identical resources, the model's generated array order acts as a deterministic tie-breaker. This sequence establishes prioritization during contention, but does not represent causal data flow.
+
+Parallel execution involves four distinct temporal sequences:
 
 ```text
-Model generation order
-    ≠ Task start order
-    ≠ Task completion order
-    ≠ Runtime event arrival order
+Model Generation Order
+    ≠ Task Start Order
+    ≠ Task Completion Order
+    ≠ Runtime Event Arrival Order
 ```
 
-An independent later task may start or finish first. Live events should enter the log in the order facts actually occur, carrying tool call IDs for causal association. Results sent to the provider can still be reassembled in original call order. Factual order and provider-protocol order are different projections of the same execution.
+Independent tasks start and complete out of order. Raw execution events commit to the log as they occur, linked through Tool Call IDs, while payloads returned to the provider reassemble to match original prompt ordering. Historical logs preserve physical facts, while context projection satisfies model protocol requirements.
 
-Cancellation and failure must also obey the async lifecycle. A queued task that is cancelled must never start later. A task that already crossed T1 cannot be treated as nonexistent; the runtime must let it settle and record its outcome. An ordinary tool failure can return as one result alongside its siblings. A T1 or T2 persistence failure, however, should prevent queued work from acquiring dispatch permission. Active work must wind down safely while not-yet-started work freezes.
+Aborts and timeouts adhere strictly to structured concurrency rules. Queued tasks that are canceled must not begin execution; tasks that have crossed T1 dispatch cannot simply be abandoned. The runtime must await their convergence and record final dispositions. The batch manager maintains ownership across child tasks, ensuring every operation completes, aborts, or reaches a verifiable state before the next inference step begins.
 
-This has the flavor of structured concurrency. A parent batch does not launch a collection of promises and walk away. It owns their lifetimes. Before the next model inference begins, every child task must have completed, been cancelled, or reached an explicit recoverable state.
+## Sandboxes, Serverless, and Disaggregated State
 
-Parallel Tool Calling is therefore not fully described by saying "tools run at the same time." The hard part is drawing boundaries among three goals: overlap independent I/O, preserve correctness for shared resources, and give the batch a coherent lifecycle under cancellation, failure, and recovery.
+Tool invocations must ultimately execute on concrete computing infrastructure.
 
-The model expresses concurrent intent. The batch runtime joins it structurally. Resource authorities decide which concurrency reality permits.
-
-## Sandboxes and Serverless: Giving an Agent a Disposable Computer
-
-A tool call ultimately has to run somewhere.
-
-The model can emit an invocation and write an orchestration program, but it cannot conjure CPU, memory, filesystems, or network connections. JavaScript execution, Python processes, dependency installation, test runs, and browser automation all consume real computing resources.
-
-The lightest environment may be a JavaScript V8 isolate. It starts quickly and provides a narrow boundary suitable for short Code Mode control flow. Data analysis and large library ecosystems may call for a Python runtime. Tools that need a complete filesystem, system commands, compilers, and background processes naturally lead to containers or even microVMs.
+Models generate action plans and programs coordinate control flow, but operating system processes, memory spaces, and network interfaces require physical or virtual resources. Execution targets span a broad spectrum: lightweight JavaScript V8 isolates, Python container environments with data science toolchains, and full MicroVMs with dedicated kernels and hardware virtualization.
 
 ```text
-LLM emits intent
+LLM Generates Intent
       │
       ▼
 Agent Runtime
-      │  Select environment and capabilities
+      │  Select execution environment and capabilities
       ▼
 ┌──────────┬──────────────┬─────────────┐
 │ V8       │ Python       │ MicroVM     │
-│ Orchestr.│ Data/scripts │ Full OS tools│
+│ Program  │ Data/Scripts │ Full OS Tool│
 └──────────┴──────────────┴─────────────┘
       │
       ▼
 Filesystem / Process / Network / Browser
 ```
 
-Heavier is not always better. Starting a VM for every small tool call is wasteful; running untrusted system commands inside the runtime process is unsafe. The runtime should select an execution substrate that is light enough for the task and strong enough for the isolation it requires.
+Heavier execution environments carry distinct trade-offs. Booting a full virtual machine for basic string manipulation introduces unnecessary latency, while running untrusted shell scripts directly within the host process creates severe security risks. Runtimes must dynamically match tool requirements against lightweight, securely isolated substrates.
 
-A sandbox is therefore more than a wall around dangerous model-generated code. It is the resource boundary, fault boundary, and lifecycle boundary of one agent execution.
+Sandboxes define more than security perimeters; they establish resource, failure, and lifecycle boundaries for agent execution.
 
-The runtime can limit CPU, memory, disk, concurrency, and elapsed time. It can decide whether the sandbox has network access, which paths it can see, and which external services it can invoke. If code loops forever, exhausts memory, or crashes a process, the environment can be terminated without spreading the failure across the agent system.
+Runtimes enforce strict quotas at the sandbox layer: limiting CPU, memory, storage, concurrency, and execution time; restricting network domains; and terminating environments upon memory exhaustion or process failures to prevent systemic instability.
 
-More importantly, the sandbox separates an agent from the machine currently running it.
+Sandboxing also enables decoupling agent state from host infrastructure.
 
-Traditional desktop software often assumes that a process and its local state persist. Agent execution environments should be assumed to disappear at any moment. A V8 cell ends when its code finishes. An idle container can be reclaimed. A microVM can vanish because of timeout, migration, preemption, or host failure. Recovery becomes nearly impossible if the agent's authoritative state lives inside those temporary environments.
+Conventional applications assume long-running local processes. In contrast, modern agent environments treat compute substrates as disposable: V8 cells terminate upon completion, containers recycle after idle timeouts, and MicroVMs drain during host migrations. Binding persistent agent state to ephemeral compute nodes undermines system reliability.
 
-This is where the append-only log returns.
+Append-only logging provides the foundation for this separation.
 
-Conversations, tool calls, results, permission decisions, and recovery facts live in a durable log. Files, media, and oversized results live in external artifact storage. Workspaces can be reconstructed from persistent volumes, snapshots, or objects. The sandbox carries only the computation currently in progress. It can be destroyed and recreated on another machine.
+Conversation traces, tool calls, results, permission records, and recovery events reside in durable logs. Large artifacts and binary outputs persist in object storage, while workspaces mount via copy-on-write snapshots or persistent volumes. Sandboxes act as stateless execution engines, disposable and recreatable across nodes.
 
 ```text
 Durable State                         Ephemeral Compute
@@ -404,115 +393,75 @@ RuntimeEvent Log ─┐                 ┌─ V8 Isolate
 Artifact Storage ─┼─→ Rehydrate ────┼─ Container
 Workspace Snapshot┘                 └─ MicroVM
 
-        Preserves what happened        Executes what happens next
+       Preserves "What happened"           Executes "Next action"
 ```
 
-Serverless and agents fit naturally because agent workloads are bursty. While the model reasons, the sandbox may have nothing to do. When a call arrives, it may suddenly need computation. Some tasks last milliseconds; others compile a large project or wait on long-running I/O. An ideal compute layer appears on demand, scales to zero while idle, and assigns different resource shapes according to tool requirements.
+Agent workloads are bursty: sandboxes sit idle during model reasoning, followed by intense spikes during compilation or batch processing. Certain tools run in milliseconds, while others block for hours on external feedback. Modern infrastructure must support rapid scaling to zero during idle periods, provisioning specialized capacity only when invoked.
 
-Agent serverless cannot, however, be a simple copy of traditional Function as a Service. A conventional function receives input, computes, and returns. An agent also maintains a workspace, starts background processes, waits for approvals, calls external tools, and resumes hours later. It does not need an immortal process. It needs a protocol that reconnects durable state to ephemeral compute.
+This differs from traditional Function-as-a-Service (FaaS) abstractions. Standard serverless functions assume brief, stateless execution; agents maintain stateful workspaces, spawn long-running background tasks, pause for human review, and resume hours later.
 
-When a sandbox disappears, the runtime should not try to restore its heap, promises, or stack frames. It should use the log to determine which tools ran and which outcomes committed, mount the necessary workspace and artifacts into a fresh environment, and start the next execution from a trustworthy historical prefix.
+Agent Serverless decouples session state entirely from compute lifecycle.
 
-Serverless does not mean the agent has no state. It means the state belongs to no individual computer.
+When a sandbox terminates, the runtime does not attempt to reconstruct volatile process heaps or unresolved sockets. Instead, it inspects durable logs, rehydrates workspace snapshots into a newly provisioned sandbox, and resumes execution from a verified factual history.
 
-This architecture also changes permissions. A sandbox need not hold permanent credentials for every cloud service or receive ambient network access. It gets only the capabilities needed by the current task. Secrets, approvals, and resource authorities remain outside. Code may request an action, but the external runtime still decides whether that action may cross the boundary.
+Security architectures also benefit from this model. Disposable sandboxes do not hold static administrative credentials or broad network access. They receive short-lived, minimum-privilege capabilities per task. Credential storage and policy authorization remain within the trusted runtime outside the container. If a sandbox environment is compromised, its authorization scope expires immediately upon termination.
 
-Once execution is cheap enough, agents can scale in a new way. A short orchestration rents V8, data processing rents a Python container, and a complete software build rents a microVM. Child agents can run concurrently in isolated workspaces, then release every resource when they finish.
+Affordable compute substrates enable fleet-scale agent deployments. A single session can provision lightweight V8 isolates for script orchestration, Python containers for data analysis, and MicroVMs for software compilation, terminating resources as each task completes.
 
-Take this one step further: put every session in cheap S3-compatible object storage, and make the compute layer entirely out of inexpensive, short-lived, replaceable execution resources.
+The natural extension of this architecture is complete state disaggregation: persisting session state in cost-effective object storage (such as S3-compatible systems) while compute executes across on-demand, stateless workers.
 
-This is complete disaggregation of storage and compute.
-
-A session no longer corresponds to an object in one process or a directory on one machine. It becomes a set of durable objects: append-only event segments, artifacts, workspace snapshots, compaction projections, and a manifest pointing to the current trustworthy prefix. After a conversation turn, no runtime needs to remain resident in memory. The session can rest in object storage while consuming almost no compute.
+Sessions cease to correlate with static processes or host directories. They exist as collections of durable objects: append-only event segments, binary artifacts, workspace snapshots, compaction projections, and manifest metadata pointing to current commit boundaries. Between interactions, sessions persist passively in object storage at minimal cost.
 
 ```text
-                    Cheap Durable Storage
+                    Cost-Effective Object Storage (S3)
 
 Session A ── Events / Artifacts / Workspace Snapshots ─┐
 Session B ── Events / Artifacts / Workspace Snapshots ─┼── S3
 Session C ── Events / Artifacts / Workspace Snapshots ─┘
                                                        │
-                         Event / User / Schedule        │
+                         External Event / User / Schedule
                                    │                   │
                                    ▼                   │
-                         Rehydrate a Session ◀─────────┘
+                         Rehydrate Session Context ◀───┘
                                    │
                        ┌───────────┼───────────┐
                        ▼           ▼           ▼
                       V8        Python      MicroVM
                        │           │           │
-                       └───────────┴───────────┘
+                       └───────────┼───────────┘
                                    │
                               Append Facts
                                    │
                                    └──────────────→ S3
 ```
 
-A "long-running agent" no longer requires a long-running machine.
+Long-running agents no longer require persistent, dedicated servers.
 
-It can remain dormant most of the time. When a user message, timer, webhook, or background completion arrives, the scheduler reads the session manifest, loads the required log prefix and workspace snapshot, and assigns a new sandbox. When the task finishes, new facts and artifacts return to object storage and the compute environment is released.
+They remain dormant most of the time. When messages arrive, webhooks trigger, or schedules elapse, the control plane reads the session manifest, mounts the required log prefix and workspace snapshot, and provisions an appropriate sandbox. Once execution settles, new facts sync back to storage, and compute resources release immediately.
 
-The agent is not continuously alive. It is continuously awakenable.
+The architecture organizes into two coordinated tiers:
 
-S3 is no longer merely backup media in this design. It can hold the factual state of the agent. Memory, SQLite, local SSD, vector indexes, and provider context on hot machines become caches or projections. They can accelerate reads, but they should not determine whether the session still exists. Lose the machine and rebuild the cache. Preserve the trustworthy history in object storage and the agent survives.
+- **Data Plane:** Object storage managing immutable, high-volume event logs and filesystem snapshots.
+- **Control Plane:** Low-latency storage tracking authoritative head pointers, resource leases, quotas, and pending operations.
 
-Putting a session in S3 does not mean repeatedly appending in place to one giant object. A natural design writes immutable event segments and artifacts, then advances a small manifest or head pointer to the latest committed prefix. Leases, compare-and-swap, idempotency keys, and in-flight operation state still require a strongly consistent control plane. The large bodies of history, tool output, filesystem snapshots, and media can live in cheap object storage.
-
-The system separates naturally into two layers:
-
-- The data plane stores immutable, voluminous, rarely modified session state.
-- The control plane stores small, strongly consistent heads, leases, admissions, and operation state.
-
-This resembles storage-compute disaggregation in modern databases. Object storage provides vast, inexpensive, durable capacity. Compute nodes appear only when a query or mutation needs them. Here the object being queried and continued is not a table. It is an agent's history.
-
-From this perspective, model context is itself a query. The runtime reads durable session state from S3 and applies compaction, tool-result pruning, visibility, and provider-compatibility projections to construct what the model should see now. The model's next output does not rewrite the past; it appends new facts.
+This mirrors disaggregated database architectures. Object storage provides durable, cost-effective persistence, while compute resources provision strictly on demand. Context assembly operates like a materialized view query: the runtime reads durable state, applies compaction and result pruning, and projects bounded context for model inference.
 
 ```text
 Session on S3
       │
       ├── Projection ──→ Model Context ──→ LLM
       │                                      │
-      ├── Rehydrate ───→ Sandbox ───────→ Tool Call
+      ├── Rehydrate ───→ Sandbox ──────────→ Tool Call
       │                                      │
       └──────────────── Append New Facts ◀───┘
 ```
 
-Both the LLM and the sandbox now become compute resources.
+Both models and sandboxes function as interchangeable compute utilities.
 
-Model capacity can be rented according to task difficulty: an inexpensive model for routine work, a stronger model for difficult judgment. Execution capacity can likewise match capabilities: an isolate for orchestration, a container for scripts, a microVM for operating-system tools. A session belongs to no particular model and no particular sandbox.
+Model selection scales with reasoning complexity, and sandbox sizing matches workload requirements. A session is never coupled to a single model provider or execution substrate.
 
-This creates a different agent economy. Cost no longer depends primarily on how many sessions exist, but on how many are thinking and acting now. Ten million dormant sessions can be ten million object prefixes. Only the small active fraction consumes model tokens, CPU, and memory.
+Cost efficiency stems from ensuring dormant sessions consume zero active compute.
 
-The cheapest agent is not an agent running on a smaller server. It is an agent with no server at all while asleep.
+Disaggregated storage also facilitates spot-instance execution and instantaneous branching. Using append-only logs and copy-on-write snapshots, subagents fork from parent histories without copying storage, writing only delta records going forward.
 
-Disaggregation also makes preemptible compute practical. Workers can come from inexpensive instances, shared pools, or capacity that may disappear at any time. Previously, killing a machine running an agent meant losing the conversation. Once state is externalized, losing a worker means losing only a temporary execution. The runtime classifies real-world effects through T1 and T2, then continues the session on another compute resource.
-
-Branching and forking also become cheap. Append-only history and copy-on-write workspace snapshots let several agents share one historical prefix and grow independent suffixes. Spawning a child agent need not copy the entire session. It records the prefix and snapshot from which it starts. Unchanged artifacts remain shared; only new facts consume new storage.
-
-Even model upgrades need not migrate sessions. History retains provider-neutral runtime facts, and a new model receives a projection suited to its protocol. One durable session can run on one model today and resume on another months later. The identity of an agent comes from the history it has lived through, not from the model weights currently loading it.
-
-The security boundary becomes cleaner as well. S3 holds encrypted, auditable long-term state. A sandbox receives minimal capabilities only for its short lifetime. Secrets need not enter workspace snapshots, and permanent cloud credentials need not enter microVMs. When code needs an external resource, it asks an outside authority for one constrained operation. If the compute environment is compromised, its authority expires with the environment.
-
-Cheap compute does not automatically create correctness. An inexpensive microVM cannot make a duplicate payment safe. A restartable container cannot determine whether an email was sent before a crash. The more disposable workers become, the more the system depends on reliable tool calls, idempotent operations, resource authorities, and append-only logs to prove what happened in the real world.
-
-This is more than "run agents on serverless." We are assembling a new kind of computer for agents:
-
-```text
-S3                 is its inexpensive durable disk
-Append-Only Log     is its recoverable state
-LLM                 is its rented reasoning unit
-Sandbox / MicroVM   is its rented body
-Agent Runtime       is the operating system connecting them
-```
-
-Discussion of agents today often centers on models. But models produce judgment and intent. Applying that intent to reality safely, reliably, and economically requires vast amounts of on-demand execution, together with session state that outlives every execution environment.
-
-The core infrastructure of future agents will include extremely cheap storage and extremely cheap compute. Storage lets hundreds of millions of sessions persist. Compute lets any one of them wake immediately when needed. The bridge is not the memory of one machine, but a history that can be replayed, verified, and extended.
-
-Look back across the tool stack. Deferred tools decide which capabilities deserve the model's attention. Tool calls turn language into action. Reliable execution makes action a trustworthy fact. Code Mode expresses structure among actions. The async runtime overlaps waiting. Sandboxes and serverless provide the CPU, memory, and isolation that all of those layers consume.
-
-Ultimately, an agent is not a long-lived process that happens to save some state.
-
-**An agent is durable state that temporarily rents a model and a computer whenever it needs to think and act.**
-
-It sleeps in cheap S3. When an event arrives, the log tells it who it used to be, the sandbox defines what it may do now, and inexpensive compute lets it move forward.
+The future of agent runtime engineering is clear: establishing immutable logs as the authoritative source of truth, relying on disposable sandboxes for safe execution, decoupling resource governance from task scheduling, and dynamically managing schema projections to preserve model focus. Extending language models into external systems requires robust runtime engineering to ensure safety and reliability.
