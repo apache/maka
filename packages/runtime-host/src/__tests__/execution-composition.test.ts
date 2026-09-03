@@ -1415,7 +1415,7 @@ test('production composition validates graph stop before aborting a claimed chil
         stores,
         abortedClaim,
         abortedAdmission.userMessageId,
-        'run_cancelled',
+        'cancelled',
       );
       const completedRun = (
         await stores.runtimeEventStore.listSessionInvocations(completedClaim.targetSessionId)
@@ -1694,7 +1694,7 @@ async function assertUniqueGraphExecutionFacts(
   stores: Awaited<ReturnType<typeof openInteractiveExecutionStoresForWrite>>,
   claim: AgentGraphIntentClaim,
   userMessageId: string,
-  expectedTerminal: 'run_completed' | 'run_cancelled' = 'run_completed',
+  expectedOutcome: 'completed' | 'cancelled' = 'completed',
 ): Promise<void> {
   const [runs, messages, runtimeEvents] = await Promise.all([
     stores.runtimeEventStore.listSessionInvocations(claim.targetSessionId),
@@ -1717,7 +1717,7 @@ async function assertUniqueGraphExecutionFacts(
   );
   assert.equal(
     runtimeEvents.filter(
-      (event) => event.status === (expectedTerminal === 'run_cancelled' ? 'aborted' : 'completed'),
+      (event) => event.status === (expectedOutcome === 'cancelled' ? 'aborted' : 'completed'),
     ).length,
     1,
   );

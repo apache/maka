@@ -62,7 +62,7 @@ export function classifyAgentRunRecovery(
   const lastEventType = lastEvent?.type;
 
   const reason =
-    lastEventType === 'model_stream_completed' && !hasTerminalRunEvent(events)
+    lastEventType === 'model_stream_completed'
       ? 'model_stream_completed_without_runtime_terminal'
       : lastEventType === 'permission_requested' || lastEventType === 'permission_failed'
         ? 'stale_user_wait'
@@ -133,15 +133,6 @@ function failedDecision(
     diagnostic,
     lineage: openingLineage(invocation),
   };
-}
-
-function hasTerminalRunEvent(events: readonly AgentRunEvent[]): boolean {
-  return events.some(
-    (event) =>
-      event.type === 'run_completed' ||
-      event.type === 'run_failed' ||
-      event.type === 'run_cancelled',
-  );
 }
 
 function lastNonCorruptEvent(events: readonly AgentRunEvent[]): AgentRunEvent | undefined {
