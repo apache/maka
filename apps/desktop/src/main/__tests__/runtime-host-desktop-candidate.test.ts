@@ -564,7 +564,9 @@ test('closes the claimed Host connection when native capability construction fai
           releaseComputerUseSession() {},
         }),
       ),
-    /tool schema must be an object/,
+    // The desktop-local schema check moved into the shared protocol decoder,
+    // which rejects a non-object tool schema root with its own wording.
+    /tool schema root must be an object/,
   );
 
   assert.equal(ipc.size, 0);
