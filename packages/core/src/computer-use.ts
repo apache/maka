@@ -94,13 +94,6 @@ export interface CuPoint {
   y: number;
 }
 
-export interface CuRegion {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-}
-
 export interface ComputerUseRect {
   x: number;
   y: number;
@@ -154,52 +147,17 @@ export interface ComputerUseBoundAction extends ComputerUseFrameIdentity {
   target: ComputerUseWindowIdentity;
   display?: ComputerUseDisplayIdentity;
   elementId?: string;
-  sourceCoordinate?: CuPoint;
-  sourceStartCoordinate?: CuPoint;
-  windowCoordinate?: CuPoint;
-  windowStartCoordinate?: CuPoint;
-  coordinateSpace?: 'window-screenshot-local';
   /**
    * Where on screen this action is aimed, for presentation only.
    *
-   * A coordinate action carries its target as `sourceCoordinate`, in the
-   * observation screenshot's own pixels, and the point on screen is recovered
-   * from it. A semantic action has no such coordinate — it names an element —
-   * so nothing recovered one, and the presentation layer had nowhere to send
-   * the cursor: it stayed where it was and the action was then wiped from the
-   * overlay, which is an arrow that never touches what it clicked.
-   *
    * This is the observed element's own centre, in the same screen coordinates
    * as `target.bounds`, set only when that centre lies inside the target
-   * window — the same condition the executor validates before dispatching. It
-   * is never used to dispatch anything: `boundWindowPoint` refuses any binding
-   * without `coordinateSpace`, and a semantic binding does not set one.
+   * window. It is never used to dispatch anything.
    */
   presentationScreenPoint?: CuPoint;
 }
 
-export const CU_SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
-export type CuScrollDirection = (typeof CU_SCROLL_DIRECTIONS)[number];
-
-export const CU_ACTION_TYPES = [
-  'screenshot',
-  'cursor_position',
-  'mouse_move',
-  'left_click',
-  'right_click',
-  'middle_click',
-  'double_click',
-  'triple_click',
-  'left_mouse_down',
-  'left_mouse_up',
-  'left_click_drag',
-  'type',
-  'key',
-  'hold_key',
-  'scroll',
-  'wait',
-  'zoom',
-] as const;
+export const CU_ACTION_TYPES = ['screenshot', 'type', 'key', 'wait'] as const;
 
 export const COMPUTER_USE_ACTION_TYPES = CU_ACTION_TYPES;
 export type CuActionType = (typeof CU_ACTION_TYPES)[number];
@@ -225,9 +183,7 @@ export const CU_SEMANTIC_ACTION_TYPES = [
 export type CuSemanticActionType = (typeof CU_SEMANTIC_ACTION_TYPES)[number];
 
 /**
- * Every action name the tool schema spells out itself, as it spells them —
- * that is, every name that is not one of the `CU_ACTION_TYPES` coordinate
- * actions folded into `CU_TOOL_ACTION_TYPES` below.
+ * Every semantic action name the tool schema spells out itself.
  *
  * This list used to be hand-written beside a schema that already listed the
  * same names, and it drifted: `window_action` was added to the strict union and
@@ -257,13 +213,8 @@ export const COMPUTER_USE_SEMANTIC_ACTIONS = [
 ] as const;
 
 /**
- * Every action name the `maka_computer` tool accepts, in wire order.
- *
- * One list, so that adding an action cannot leave a consumer silently matching
- * nothing. This has already cost us once: an offline analyser restated the
- * vocabulary as two regexes, neither of which matched a single coordinate
- * action after the surface moved, and it reported clean runs for trajectories
- * made entirely of blind clicks.
+ * Every action name the `maka_computer` tool accepts from a model, in wire
+ * order.
  */
 export const CU_TOOL_ACTION_TYPES = [...COMPUTER_USE_SEMANTIC_ACTIONS, ...CU_ACTION_TYPES] as const;
 export type CuToolActionType = (typeof CU_TOOL_ACTION_TYPES)[number];
@@ -274,13 +225,7 @@ export type CuToolActionType = (typeof CU_TOOL_ACTION_TYPES)[number];
  * mutating — including any action added later, which fails loud in an analyser
  * rather than silently dropping out of the counts.
  */
-export const CU_OBSERVING_ACTION_TYPES = [
-  'list_apps',
-  'observe',
-  'screenshot',
-  'cursor_position',
-  'wait',
-] as const;
+export const CU_OBSERVING_ACTION_TYPES = ['list_apps', 'observe', 'screenshot', 'wait'] as const;
 export type CuObservingActionType = (typeof CU_OBSERVING_ACTION_TYPES)[number];
 
 const OBSERVING_ACTION_SET: ReadonlySet<string> = new Set(CU_OBSERVING_ACTION_TYPES);
@@ -304,28 +249,9 @@ export function isCuMutatingAction(action: string): action is CuToolActionType {
 
 export type CuAction =
   | { type: 'screenshot' }
-  | { type: 'cursor_position' }
-  | { type: 'mouse_move'; coordinate: CuPoint }
-  | { type: 'left_click'; coordinate: CuPoint; text?: string }
-  | { type: 'right_click'; coordinate: CuPoint; text?: string }
-  | { type: 'middle_click'; coordinate: CuPoint; text?: string }
-  | { type: 'double_click'; coordinate: CuPoint; text?: string }
-  | { type: 'triple_click'; coordinate: CuPoint; text?: string }
-  | { type: 'left_mouse_down'; coordinate: CuPoint }
-  | { type: 'left_mouse_up'; coordinate: CuPoint }
-  | { type: 'left_click_drag'; startCoordinate: CuPoint; coordinate: CuPoint; text?: string }
   | { type: 'type'; text: string }
   | { type: 'key'; text: string }
-  | { type: 'hold_key'; text: string; durationMs: number }
-  | {
-      type: 'scroll';
-      coordinate: CuPoint;
-      scrollDirection: CuScrollDirection;
-      scrollAmount: number;
-      text?: string;
-    }
-  | { type: 'wait'; durationMs: number }
-  | { type: 'zoom'; region: CuRegion };
+  | { type: 'wait'; durationMs: number };
 
 export const COMPUTER_USE_FRAME_SOURCE_KINDS = ['live-capture'] as const;
 export type ComputerUseFrameSourceKind = (typeof COMPUTER_USE_FRAME_SOURCE_KINDS)[number];
@@ -412,7 +338,6 @@ export type ComputerUseActionOutcome =
 export const COMPUTER_USE_APPROVAL_CLASSES = [
   'metadata_read',
   'screenshot_read',
-  'pointer_mutation',
   'keyboard_mutation',
   'semantic_mutation',
 ] as const;
@@ -525,14 +450,14 @@ const MODEL_CALL_NAMED_ARGS = new Set([
  * Arguments whose value is the model's own choice from a fixed set, a number,
  * or a word it wrote itself — nothing here comes off the screen.
  *
- * Keyed by action, not by argument name, because `text` is six arguments
- * wearing one name. It carries the key for `press_key`, `key` and `hold_key`,
+ * Keyed by action, not by argument name, because `text` is five arguments
+ * wearing one name. It carries the key for `press_key` and `key`,
  * the element action name for `secondary_action`, the substring to select for
  * `select_text`, and whatever a person asked to be typed for `type`. Two of
- * those come off the screen or out of a person's head; four are a name the
+ * those come off the screen or out of a person's head; three are a name the
  * model picked from a set the executor publishes.
  *
- * Keying on the name meant excluding all six, which is right for `type` and
+ * Keying on the name meant excluding all five, which is right for `type` and
  * wrong for the rest — and the wrong half is the one that motivated this
  * projection: the model read back `press_key ... text: <text>` and could not
  * see which key it had pressed.
@@ -558,11 +483,9 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   // `query` and `menu` name what to look at, not what was found there.
   ['observe', new Set(['include_screenshot', 'query', 'menu'])],
   ['screenshot', new Set(['include_screenshot'])],
-  ['scroll', new Set(['scroll_direction', 'scroll_amount'])],
-  // The semantic twin of `scroll`, added after this map was written.
   ['scroll_element', new Set(['scroll_direction', 'scroll_amount'])],
   // The verb, from the enum the schema publishes. `position` and `size` are
-  // geometry and are handled by MODEL_CALL_GEOMETRY_ARGS below.
+  // semantic window geometry and are handled below.
   ['window_action', new Set(['window_action'])],
   // The text a wait is waiting for is a prediction about the screen, written
   // before the screen shows it.
@@ -570,7 +493,6 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
   // The key name, from the set of key names the executor accepts.
   ['press_key', new Set(['text'])],
   ['key', new Set(['text'])],
-  ['hold_key', new Set(['text', 'duration'])],
   // The element action name, from the closed set the observation lists.
   ['secondary_action', new Set(['text'])],
 ]);
@@ -586,27 +508,16 @@ const MODEL_CALL_PLAIN_VALUES: ReadonlyMap<string, ReadonlySet<string>> = new Ma
 const MODEL_CALL_PLAIN_STEP_MEMBERS = new Set(['do', 'role']);
 
 /**
- * Geometry the model itself chose, projected verbatim.
+ * Semantic window geometry the model itself chose, projected verbatim.
  *
- * Independent of action, because these names mean the same thing wherever they
- * appear and none of them ever holds screen content: a coordinate, the drag
- * origin, the zoom rectangle, and the place and size a window was asked to take
- * are numbers the model wrote into the call. A model that clicked a point and
- * missed has to be able to see which point, or its next call is the same call.
- *
- * `position` and `size` joined late, with `window_action`. Reduced to
- * `"<point>"` they were a string where the schema wants a tuple, so a replayed
- * window move was rejected off the wire.
+ * `position` and `size` belong to `window_action`; they place or resize the
+ * observed window and never address a control by pixel. Reduced to `"<point>"`
+ * they become strings where the schema requires tuples, so replaying the
+ * model's own call would be rejected before execution.
  */
-const MODEL_CALL_GEOMETRY_ARGS = new Set([
-  'coordinate',
-  'start_coordinate',
-  'region',
-  'position',
-  'size',
-]);
+const MODEL_CALL_GEOMETRY_ARGS = new Set(['position', 'size']);
 
-/** Integers only, so a mistyped `coordinate` still degrades to a shape. */
+/** Integers only, so malformed window geometry still degrades to a shape. */
 function integerTuple(value: unknown): readonly number[] | undefined {
   if (!Array.isArray(value) || value.length === 0 || value.length > 4) return undefined;
   return value.every((entry) => typeof entry === 'number' && Number.isInteger(entry))
@@ -756,29 +667,14 @@ export function computerUseModelCallArgs(args: unknown): ComputerUseModelCallArg
   };
 }
 
-const POINTER_ACTIONS = new Set([
-  'mouse_move',
-  'left_click',
-  'right_click',
-  'middle_click',
-  'double_click',
-  'triple_click',
-  'left_mouse_down',
-  'left_mouse_up',
-  'left_click_drag',
-  'scroll',
-  'zoom',
-]);
-
-const KEYBOARD_ACTIONS = new Set(['type', 'key', 'hold_key', 'press_key']);
+const KEYBOARD_ACTIONS = new Set(['type', 'key', 'press_key']);
 const SEMANTIC_ACTIONS = new Set([
   'click_element',
   'set_value',
   'select_text',
   'secondary_action',
-  // Scrolling an element moves what is on screen without changing any value.
-  // It is still a mutation of the target's state, and it is the semantic twin
-  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
+  // Scrolling an element moves what is on screen without changing any value,
+  // but it still mutates the target's UI state.
   'scroll_element',
   // A sequence of element actions is still element actions: same class, same
   // approval, one call.
@@ -804,7 +700,7 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
   // an explicit true requires Screen Recording approval.
   const includeScreenshot = ownDataProperty(record, 'include_screenshot') === true;
   const approvalClass: ComputerUseApprovalClass =
-    action === 'list_apps' || action === 'cursor_position' || action === 'wait'
+    action === 'list_apps' || action === 'wait'
       ? 'metadata_read'
       : action === 'observe'
         ? includeScreenshot
@@ -812,13 +708,11 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
           : 'metadata_read'
         : action === 'screenshot'
           ? 'screenshot_read'
-          : POINTER_ACTIONS.has(action)
-            ? 'pointer_mutation'
-            : KEYBOARD_ACTIONS.has(action)
-              ? 'keyboard_mutation'
-              : SEMANTIC_ACTIONS.has(action)
-                ? 'semantic_mutation'
-                : 'semantic_mutation';
+          : KEYBOARD_ACTIONS.has(action)
+            ? 'keyboard_mutation'
+            : SEMANTIC_ACTIONS.has(action)
+              ? 'semantic_mutation'
+              : 'semantic_mutation';
 
   const rawApp = ownDataProperty(record, 'app');
   const rawWindowId = ownDataProperty(record, 'window_id');
@@ -837,9 +731,7 @@ export function computerUseApprovalSummary(args: unknown): ComputerUseApprovalSu
   const targetBound =
     action === 'list_apps' ||
     ((action === 'observe' || action === 'screenshot') && explicitTarget) ||
-    ((POINTER_ACTIONS.has(action) ||
-      KEYBOARD_ACTIONS.has(action) ||
-      SEMANTIC_ACTIONS.has(action)) &&
+    ((KEYBOARD_ACTIONS.has(action) || SEMANTIC_ACTIONS.has(action)) &&
       exactObservationId !== undefined &&
       explicitTarget);
   const rememberForTurnAllowed = knownAction && targetBound;

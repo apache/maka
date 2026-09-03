@@ -48,7 +48,6 @@ import type {
   ComputerUseDisplayIdentity,
   ComputerUseErrorCode,
   ComputerUseRect,
-  CuAction,
 } from '@maka/core/computer-use';
 import type {
   CuAppSummary,
@@ -94,15 +93,6 @@ import {
   type MakaCuReleaseEvent,
   type MakaCuServiceSnapshot,
 } from './maka-cu-service.js';
-
-/**
- * `CuAction.scrollAmount` has no declared unit at the tool boundary ("Amount for
- * scroll", 0..100) while `maka.cu/2` declares pages. The conversion is fixed
- * here, in one place, so the two ends cannot disagree silently. The number is a
- * convention, not a measurement — replace it with one when a real machine says
- * what a model-issued scroll of `n` should move.
- */
-const SCROLL_UNITS_PER_PAGE = 10;
 
 /**
  * How many forgotten observation ids keep their reason.
@@ -171,12 +161,6 @@ export interface MakaCuBackendOptions {
    * cua-driver backend.
    */
   physicalInputRecentlyActive?: () => boolean | Promise<boolean>;
-  /**
-   * Coordinate and key dispatch post synthetic events, which can interfere with
-   * the user's physical input. Keep it disabled unless a host policy says
-   * otherwise — the model-facing tool contract already states these fail closed.
-   */
-  allowCompatibilityInputDispatch?: boolean;
   /**
    * Diagnostics: geometry, enums and counts, never app text — with the single
    * declared exception of `host_error.detail`, which exists so that raw failure
@@ -598,8 +582,8 @@ function informativeActions(actions: readonly string[], role: string): string[] 
  *
  * Every refusal below names an action, and the name it used to reach for was
  * the one on the wire: a model that called `click_element` was told the
- * executor "does not advertise element action 'click'", a `left_click_drag`
- * was told 'drag', a `window_action` with minimize was told 'minimize_window'.
+ * executor "does not advertise element action 'click'", and a `window_action`
+ * with minimize was told 'minimize_window'.
  * Those are this file's own translations of the tool surface, and handing one
  * back is handing the model a word its own schema will reject.
  */
@@ -722,17 +706,8 @@ function nextMoveFor(
   refusal?: MakaCuDispatchResult,
   attempt?: DispatchAttempt,
 ): string {
-  // A coordinate action needs the pixel it aims at to be the target's. Computer
-  // Use drives what the user is not looking at, so the target is usually behind
-  // something — a window launched in the background sits at the bottom of the
-  // z-order by construction. The two are in tension by design, and the refusal
-  // said only that something covered the window.
-  //
-  // Measured: a model asked to move a window reached for `left_click_drag` on
-  // the title bar, which is the only way to move one, and was refused this way
-  // every time. It could not have succeeded, and nothing said so.
   if (mapped === 'target_occluded') {
-    return `${DOMAIN_REFUSAL_SENTENCE.target_occluded} Computer Use drives windows that are not in front, so a coordinate action on one is often refused this way. An element action names its control instead of a pixel and is not blocked by what is on top.`;
+    return `${DOMAIN_REFUSAL_SENTENCE.target_occluded} An element action names its control instead of a pixel and is not blocked by what is on top.`;
   }
   if (mapped !== 'dispatch_refused') return DOMAIN_REFUSAL_SENTENCE[mapped];
   // Two refusals arrive as `path: "none"` and they need opposite next moves.
@@ -1084,27 +1059,6 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     return failure(
       'user_intervened',
       'physical user input is active; wait for input to settle and observe again',
-    );
-  }
-
-  /**
-   * The standard answer, not an edge case.
-   *
-   * `allowCompatibilityInputDispatch` is off in every shipping configuration,
-   * so every `type`, every `key`, every `press_key` and every coordinate action
-   * ends here. It used to end here with one clause about synthetic events and
-   * no mention of the actions that do work — which is how a model learns that
-   * Computer Use cannot type, rather than that it types by naming the field.
-   */
-  function compatibilityInputBlocked(toolAction: string): CaptureFailure {
-    return failure(
-      'unsupported_action',
-      `'${toolAction}' would synthesize a keystroke or a pointer event, which this build ` +
-        "does not do — it would land wherever the user's own hands have just put the focus " +
-        '— so nothing was sent. The actions that do work name a control instead of a pixel: ' +
-        'click_element presses it, set_value writes a whole value into a field, select_text ' +
-        "selects inside it, and secondary_action performs one of the names on that element's " +
-        "'+' list. element_sequence runs several of them against one observation.",
     );
   }
 
@@ -1946,7 +1900,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
       default:
         // Reached only by an action Maka can express and this backend cannot
         // map onto an element. Not every semantic action is one: `press_key`
-        // goes to `dispatch.key` and the coordinate actions to `dispatch.point`.
+        // goes to `dispatch.key`.
         return {
           refusal: failure('unsupported_action', `'${action.type}' is not an element action`),
         };
@@ -2020,7 +1974,7 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     // another window. Background operation is the product; a guard that ends it
     // whenever the machine is in use is not protecting anything here.
     //
-    // `dispatchKey` and `dispatchPoint` do synthesize input, and keep it.
+    // `dispatchKey` does synthesize input, and keeps the guard.
     const envelope = await service.call(
       'dispatch.element',
       {
@@ -2113,9 +2067,6 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
      */
     target?: { token: string; digest: string },
   ): Promise<CuRunResult> {
-    if (opts.allowCompatibilityInputDispatch !== true) {
-      return compatibilityInputBlocked(attempt.name);
-    }
     if (!target && !snapshot.focused) {
       // §6.4: focusToken is required and verified. Without a focused element in
       // the frame we quoted there is nothing to verify against, and typing into
@@ -2153,88 +2104,6 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
     );
     if (!envelope.ok) return refusedDispatch('dispatch.key', envelope, snapshot, context, attempt);
     return completeDispatch('dispatch.key', envelope, snapshot, context);
-  }
-
-  async function dispatchPoint(
-    wire: Record<string, unknown>,
-    point: { x: number; y: number },
-    startPoint: { x: number; y: number } | undefined,
-    snapshot: StoredSnapshot,
-    signal: AbortSignal,
-    context: CuRunContext,
-    /** The tool action the model sent: `left_click`, `left_click_drag`, … */
-    attempt: DispatchAttempt,
-  ): Promise<CuRunResult> {
-    if (opts.allowCompatibilityInputDispatch !== true) {
-      return compatibilityInputBlocked(attempt.name);
-    }
-    const capability = service.negotiated()?.capabilities.pointActions ?? [];
-    if (!capability.includes(String(wire.kind))) return unavailableAction(attempt);
-    const intervention = await physicalInputFailure();
-    if (intervention) return intervention;
-    const envelope = await service.call(
-      'dispatch.point',
-      {
-        session: context.sessionId,
-        snapshotId: snapshot.snapshotId,
-        toolCallId: context.toolCallId,
-        // §6.3: a point has no element to anchor to, so the window is the anchor.
-        expectWindowDigest: snapshot.windowDigest,
-        point,
-        ...(startPoint ? { startPoint } : {}),
-        space: 'image_px',
-        // §6.3: a pixel is a pixel — anything on top of it owns it.
-        occlusionPolicy: 'any',
-        action: wire,
-        observeAfter: { includeImage: false, settle: 'quiesce' },
-      },
-      signal,
-    );
-    if (!envelope.ok) {
-      return refusedDispatch('dispatch.point', envelope, snapshot, context, attempt);
-    }
-    return completeDispatch('dispatch.point', envelope, snapshot, context);
-  }
-
-  /** The model's coordinate, in the image pixels the protocol asks for (§6.3). */
-  function boundImagePoint(
-    context: CuRunContext,
-    which: 'end' | 'start',
-  ): { x: number; y: number } | undefined {
-    const bound = context.boundAction;
-    if (!bound || bound.coordinateSpace !== 'window-screenshot-local') return undefined;
-    return which === 'start' ? bound.windowStartCoordinate : bound.windowCoordinate;
-  }
-
-  function pointActionFor(action: CuAction): { kind: string; [key: string]: unknown } | undefined {
-    switch (action.type) {
-      case 'mouse_move':
-        return { kind: 'move' };
-      case 'left_click':
-        return { kind: 'left_click', count: 1 };
-      case 'right_click':
-        return { kind: 'right_click' };
-      case 'middle_click':
-        return { kind: 'middle_click' };
-      case 'double_click':
-        return { kind: 'double_click' };
-      case 'triple_click':
-        return { kind: 'triple_click' };
-      case 'left_mouse_down':
-        return { kind: 'mouse_down' };
-      case 'left_mouse_up':
-        return { kind: 'mouse_up' };
-      case 'left_click_drag':
-        return { kind: 'drag' };
-      case 'scroll':
-        return {
-          kind: 'scroll',
-          direction: action.scrollDirection,
-          pages: action.scrollAmount / SCROLL_UNITS_PER_PAGE,
-        };
-      default:
-        return undefined;
-    }
   }
 
   /**
@@ -2450,42 +2319,14 @@ export function createMakaCuBackend(opts: MakaCuBackendOptions): MakaCuBackend {
               if ('outcome' in snapshot) return snapshot;
               return dispatchKey(wire.wire, snapshot, signal, context, { name: action.type });
             }
-            const wire = pointActionFor(action);
-            if (!wire) {
-              // `cursor_position`, `hold_key` and `zoom` have no maka.cu/2
-              // method. Reading the cursor is meaningless for an executor that
-              // never moves it, and the other two are not in the protocol's
-              // action sets — feature detection, not silent degradation.
-              //
-              // The protocol's name for itself is not a fact a model can use:
-              // it cannot choose a protocol version, and "not part of
-              // maka.cu/2" reads as a version problem it might route around.
-              return failure(
-                'unsupported_action',
-                `'${action.type}' is not one of the actions Computer Use can perform, and nothing was attempted. There is no other spelling of it — the observation lists every element with its position and the actions it accepts, and those are what this window can be driven with.`,
-              );
-            }
-            await ensureSession(context.sessionId, signal);
-            const snapshot = boundSnapshot(context);
-            if ('outcome' in snapshot) return snapshot;
-            const point = boundImagePoint(context, 'end');
-            if (!point) {
-              return failure(
-                'invalid_coordinate',
-                'this action has no point inside the observed window to aim at. Observe the window with a screenshot and give a coordinate inside that screenshot — or name the control instead, with click_element, which needs no coordinate.',
-              );
-            }
-            const startPoint =
-              action.type === 'left_click_drag' ? boundImagePoint(context, 'start') : undefined;
-            if (action.type === 'left_click_drag' && !startPoint) {
-              return failure(
-                'invalid_coordinate',
-                'a drag needs both the point it starts from and the point it ends at, in the screenshot of the window that was observed.',
-              );
-            }
-            return dispatchPoint(wire, point, startPoint, snapshot, signal, context, {
-              name: action.type,
-            });
+            const unsupportedType =
+              typeof (action as { type?: unknown }).type === 'string'
+                ? (action as { type: string }).type
+                : 'unknown';
+            return failure(
+              'unsupported_action',
+              `'${unsupportedType}' is not available in this build of Computer Use, so nothing was attempted.`,
+            );
           },
           context.sessionId,
         );
