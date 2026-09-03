@@ -1996,6 +1996,7 @@ function QuoteCompanionProbe(props: {
   const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'retry-panel',
+    sourceSessionId: sourceSession.id,
     pendingQuotes: [],
     sourceSession,
     modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],
@@ -2024,6 +2025,7 @@ function QuoteCompanionOwnershipProbe(props: {
   const sourceSession = props.sourceSession ?? SOURCE_SESSION;
   const companion = useQuoteCompanion({
     panelId: 'ownership-panel',
+    sourceSessionId: sourceSession.id,
     pendingQuotes: props.pendingQuotes ?? [],
     sourceSession,
     modelChoices: props.modelChoices ?? [choiceFor(sourceSession)],

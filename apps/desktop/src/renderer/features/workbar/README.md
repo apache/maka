@@ -71,8 +71,8 @@ remounted when the active session changes.
 - Terminal ownership is registered as soon as `start` returns, before the tab
   state commits. Host projection excludes resources owned by another Session,
   so a Session switch cannot briefly reattach an old Terminal.
-- Side Chat survives panel collapse and is cleaned only when its tab closes or
-  when navigation leaves its source session.
+- Side Chat survives panel collapse and navigation within its linked Session
+  family; it is cleaned when its tab closes or navigation leaves that family.
 - Disposed Side Chat operations are fenced at every fork/send boundary; a late
   fork is cleaned and a late send cannot write back into an abandoned panel.
 - Inactive tabs stay mounted; their hooks receive the existing active/hidden
