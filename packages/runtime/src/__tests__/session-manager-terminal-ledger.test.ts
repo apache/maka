@@ -316,10 +316,9 @@ describe('SessionManager terminal ledger invariants', () => {
     });
 
     const expected = workHubDirectStopAbortSource('workhub-stop-action');
-    const [run] = await runStore.listSessionRuns(session.id);
+    const [run] = await runStore.listSessionInvocations(session.id);
     if (!run) throw new Error('run was not recorded');
-    assert.strictEqual(run.status, 'cancelled');
-    assert.strictEqual(run.abortSource, expected);
+    assert.strictEqual(runtimeInvocationOutcome(run), 'cancelled');
     const [terminal] = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
       isTerminalRuntimeEvent,
     );
