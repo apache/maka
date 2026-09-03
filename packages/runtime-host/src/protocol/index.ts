@@ -100,7 +100,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 104 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 105 as const;
+// 105: Usage summaries may carry the recorded call-time total and per-Session
+// tool-invocation totals. Older Clients reject the unknown fields, so a newer
+// Host's usage summary is unreadable to them.
 // 104: WorkHub Coordination actions add closed direct-stop proposals,
 // confirmations, expected-state preconditions, and outcomes. Older peers
 // reject these strict shapes.

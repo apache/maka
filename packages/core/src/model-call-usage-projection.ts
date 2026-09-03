@@ -48,6 +48,8 @@ import type {
  * its coverage repeats that claim.
  */
 export interface ModelCallUsageSummary extends UsageSummaryV2 {
+  /** Always present: the projection measures every attempt it counts. */
+  totalDurationMs: number;
   coverage: ModelCallCoverage;
 }
 
@@ -167,6 +169,7 @@ export function projectModelCallUsageSummary(
     total: 0,
   };
   let totalCostUsd = 0;
+  let totalDurationMs = 0;
   let cacheHitRequests = 0;
   let cacheCreateRequests = 0;
   let errorRequests = 0;
@@ -180,6 +183,7 @@ export function projectModelCallUsageSummary(
     totals.reasoning += t.reasoning;
     totals.total += t.total;
     totalCostUsd += pricedCost(attempt);
+    totalDurationMs += attempt.latencyMs;
     if (t.cacheRead > 0) cacheHitRequests += 1;
     if (t.cacheWrite > 0) cacheCreateRequests += 1;
     if (usageStatusForAttempt(attempt.status) === 'error') errorRequests += 1;
@@ -188,6 +192,7 @@ export function projectModelCallUsageSummary(
     range,
     totalRequests: rows.length,
     totalCostUsd,
+    totalDurationMs,
     totalTokens: totals,
     cacheHitRequests,
     cacheCreateRequests,

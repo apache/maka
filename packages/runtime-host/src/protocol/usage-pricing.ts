@@ -816,15 +816,22 @@ function decodeUsagePagePosition(
 }
 
 function decodeUsageSummary(value: unknown): UsageSummaryV2 {
-  const summary = requireExactRecord(value, 'usage summary', [
-    'range',
-    'totalRequests',
-    'totalCostUsd',
-    'totalTokens',
-    'cacheHitRequests',
-    'cacheCreateRequests',
-    'errorRequests',
-  ]);
+  const summary = requireRecord(value, 'usage summary');
+  assertOptionalExactKeys(
+    summary,
+    'usage summary',
+    [
+      'range',
+      'totalRequests',
+      'totalCostUsd',
+      'totalTokens',
+      'cacheHitRequests',
+      'cacheCreateRequests',
+      'errorRequests',
+      'totalDurationMs',
+    ],
+    ['toolUsage'],
+  );
   const range = requireExactRecord(summary.range, 'usage summary range', ['from', 'to']);
   const tokens = requireExactRecord(summary.totalTokens, 'usage summary tokens', [
     'input',
@@ -854,6 +861,19 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
     cacheHitRequests: requireCount(summary.cacheHitRequests, 'usage cache hit requests'),
     cacheCreateRequests: requireCount(summary.cacheCreateRequests, 'usage cache create requests'),
     errorRequests: requireCount(summary.errorRequests, 'usage error requests'),
+    totalDurationMs: requireCount(summary.totalDurationMs, 'usage total duration'),
+    // Optional for a data reason, not a version one: tool rows that predate
+    // connection attribution cannot answer a `connectionSlug` filter, so the
+    // Host omits the split for that query rather than send an unscoped total.
+    ...(summary.toolUsage !== undefined ? { toolUsage: decodeToolUsage(summary.toolUsage) } : {}),
+  };
+}
+
+function decodeToolUsage(value: unknown): NonNullable<UsageSummaryV2['toolUsage']> {
+  const toolUsage = requireExactRecord(value, 'usage tool usage', ['requests', 'durationMs']);
+  return {
+    requests: requireCount(toolUsage.requests, 'usage tool requests'),
+    durationMs: requireCount(toolUsage.durationMs, 'usage tool duration'),
   };
 }
 

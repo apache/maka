@@ -63,6 +63,23 @@ export interface UsageSummaryV2 {
   cacheHitRequests: number;
   cacheCreateRequests: number;
   errorRequests: number;
+  /**
+   * Recorded model-call time, summed over the same rows as `totalTokens`.
+   *
+   * Every summary writes it, and the protocol epoch refuses peers that predate
+   * it at the handshake, so a total without a time basis cannot cross the wire.
+   */
+  totalDurationMs: number;
+  /**
+   * Recorded tool executions behind the same query, from the tool-invocation
+   * ledger — the model-call ledger does not describe them, so there is no
+   * canonical source to merge and this comes from the store alone.
+   *
+   * Optional because tool rows that predate connection attribution cannot
+   * answer a `connectionSlug` filter honestly: the Host omits the split for
+   * that query rather than drawing a ring from rows it cannot scope.
+   */
+  toolUsage?: { requests: number; durationMs: number };
 }
 
 export interface UsageBucket {

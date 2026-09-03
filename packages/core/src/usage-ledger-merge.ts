@@ -158,6 +158,9 @@ export function mergeUsageSummary(
     range: projected.range,
     totalRequests: legacy.totalRequests + projected.totalRequests,
     totalCostUsd: legacy.totalCostUsd + projected.totalCostUsd,
+    // The projection always measures the attempts it counted, and every legacy
+    // summary carries the same field.
+    totalDurationMs: legacy.totalDurationMs + projected.totalDurationMs,
     totalTokens: {
       input: legacy.totalTokens.input + projected.totalTokens.input,
       output: legacy.totalTokens.output + projected.totalTokens.output,

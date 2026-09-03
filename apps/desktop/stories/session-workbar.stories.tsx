@@ -705,6 +705,7 @@ const emptyUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
+  totalDurationMs: 0,
   totalTokens: {
     input: 0,
     output: 0,
@@ -736,6 +737,7 @@ const populatedUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,
+  totalDurationMs: 38_400,
   totalTokens: {
     input: 81_300,
     output: 740,
