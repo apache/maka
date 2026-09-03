@@ -18,6 +18,7 @@
  */
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';
@@ -135,7 +136,10 @@ export class RuntimeReadModel {
       // holding it. Either way the ledger is the whole truth about it, so the
       // in-flight projection cache supplies the rows a live turn has not
       // committed instead of a status field claiming otherwise.
-      if (!invocation.terminalEvent) {
+      // An invocation the inventory leaves open because its ledger states two
+      // endings is not an active run: it ended, twice, and that is a fact to
+      // reject rather than a turn to project from cache.
+      if (!invocation.terminalEvent && !runEvents.some(isTerminalRuntimeEvent)) {
         diagnostics.push(
           readModelDiagnostic(
             'incomplete_event',
