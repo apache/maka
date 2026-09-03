@@ -738,8 +738,10 @@ h2 {
 .rc .cover {
   background: var(--tint);
   height: 200px;
-  display: grid;
-  place-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
   font-family: var(--font-family-code);
   color: var(--accent-solid);
   font-size: 26px;
