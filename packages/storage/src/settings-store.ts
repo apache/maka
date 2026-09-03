@@ -17,12 +17,13 @@
  * under the License.
  */
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AppSettings, UpdateAppSettingsInput } from '@maka/core/settings';
 import type { OnboardingMilestone, OnboardingMilestoneId } from '@maka/core/onboarding';
 import { createDefaultSettings, mergeSettings, normalizeSettings } from '@maka/core/settings';
 import { sanitizeOnboardingMilestones } from '@maka/core/onboarding';
+import { writeAtomicFile } from './atomic-file-write.js';
 
 /**
  * A conditional write's patch, either fixed or derived from the state the
@@ -189,10 +190,13 @@ class FileSettingsStore implements SettingsStore {
   }
 
   private async write(settings: AppSettings): Promise<void> {
+    // workspaceRoot is a user-owned directory; keep the plain mkdir and do
+    // not impose 0700 on it. The file itself is 0600 because settings.json
+    // carries plaintext credentials (bot secrets, proxy password).
     await mkdir(dirname(this.settingsPath), { recursive: true });
-    const tempPath = `${this.settingsPath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    await rename(tempPath, this.settingsPath);
+    await writeAtomicFile(this.settingsPath, JSON.stringify(settings, null, 2) + '\n', {
+      fileMode: 0o600,
+    });
   }
 
   private withQueue(operation: () => Promise<void>): Promise<void> {

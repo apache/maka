@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, rm } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { hardenDirectory, writeAtomicFile } from './atomic-file-write.js';
 import { withFileUpdateLock } from './file-update-lock.js';
 
 /**
@@ -242,67 +242,15 @@ class FileCredentialStore implements CredentialStore {
 }
 
 /**
- * Create (or harden) the directory that holds a secret file: 0700, and
- * re-chmod a pre-existing looser dir so neither the secret nor the lock can sit
- * world-readable. mkdir's mode only applies on creation, so the chmod is what
- * fixes an existing dir. On POSIX a chmod failure fails closed (we must not
- * write plaintext credentials into a dir we couldn't lock down); no-op on
- * Windows. Shared by the writer and the lock so their dir hardening can't drift.
- */
-async function ensureSecretDir(dir: string): Promise<void> {
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  await chmodStrict(dir, 0o700);
-}
-
-/**
- * Owner-only atomic write for a credentials file: a 0700 dir, an exclusive
- * 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink at a
- * predictable path), a durability fence before and after the atomic rename,
- * and temp cleanup on failure.
+ * Owner-only atomic write for a credentials file: a hardened 0700 directory,
+ * an exclusive 0600 temp ('wx'/O_EXCL so we never follow a pre-planted symlink
+ * at a predictable path), a durability fence before and after the atomic
+ * rename, and temp cleanup on failure. Implemented by the package-wide
+ * `writeAtomicFile` authority so its guarantees cannot drift from the other
+ * JSON stores.
  */
 async function writeSecretFileAtomic(path: string, contents: string): Promise<void> {
-  await ensureSecretDir(dirname(path));
-  const tempPath = `${path}.${randomUUID()}.tmp`;
-  try {
-    const handle = await open(tempPath, 'wx', 0o600);
-    try {
-      await handle.writeFile(contents, 'utf8');
-      await handle.sync();
-    } finally {
-      await handle.close();
-    }
-    await chmodStrict(tempPath, 0o600);
-    await rename(tempPath, path);
-    await syncDirectory(dirname(path));
-  } catch (error) {
-    await rm(tempPath, { force: true });
-    throw error;
-  }
-}
-
-async function syncDirectory(path: string): Promise<void> {
-  if (process.platform === 'win32') return;
-  const handle = await open(path, 'r');
-  try {
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-}
-
-/**
- * chmod that fails loud on POSIX and is best-effort on Windows. A secret file
- * or its directory left looser than intended breaks the 0600/0700 boundary, so
- * on POSIX we surface the failure rather than write plaintext into it; Windows
- * has no POSIX mode, so a failure there is a no-op. One policy for both the
- * secret file (0600) and its directory (0700) so they can't drift apart.
- */
-async function chmodStrict(path: string, mode: number): Promise<void> {
-  if (process.platform === 'win32') {
-    await chmod(path, mode).catch(() => {});
-    return;
-  }
-  await chmod(path, mode);
+  await writeAtomicFile(path, contents, { fileMode: 0o600, dir: 'harden' });
 }
 
 const LOCK_TIMEOUT_MS = 10_000;
@@ -338,7 +286,9 @@ export async function withCredentialFileLock<T>(
   fn: () => Promise<T>,
   timeoutMs: number = LOCK_TIMEOUT_MS,
 ): Promise<T> {
-  await ensureSecretDir(dirname(targetPath));
+  // Same owner-only hardening the writer applies, so the lock directory can
+  // never sit looser than the secret it guards.
+  await hardenDirectory(dirname(targetPath));
   return withFileUpdateLock(targetPath, fn, timeoutMs);
 }
 

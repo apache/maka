@@ -30,7 +30,7 @@
 
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createSettingsStore } from '../settings-store.js';
@@ -355,6 +355,26 @@ describe('SettingsStore.get file recovery', () => {
 
       await assert.rejects(() => store.get(), SyntaxError);
       assert.equal(await readFile(settingsPath, 'utf8'), corrupt);
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('writes settings.json owner-only (0600) and leaves no temp file behind', {
+    skip: process.platform === 'win32',
+  }, async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), 'maka-settings-mode-'));
+    try {
+      const store = createSettingsStore(workspaceRoot);
+
+      await store.get(); // first run writes the defaults
+
+      assert.deepEqual(await readdir(workspaceRoot), ['settings.json']);
+      assert.equal(
+        (await stat(join(workspaceRoot, 'settings.json'))).mode & 0o777,
+        0o600,
+        'settings.json carries plaintext credentials (bot secrets, proxy password)',
+      );
     } finally {
       await rm(workspaceRoot, { recursive: true, force: true });
     }
