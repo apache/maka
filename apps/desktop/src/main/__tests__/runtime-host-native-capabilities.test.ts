@@ -302,6 +302,120 @@ test('drops one unrepresentable tool instead of failing every Desktop capability
   );
 });
 
+test('does not dispatch a tool that was dropped from its offer', async () => {
+  const mcpProvider: McpToolProvider = {
+    toolSnapshot: () => ({
+      revision: 1,
+      tools: [
+        {
+          descriptor: {
+            serverId: 'filesystem',
+            name: 'read_file',
+            description: 'Read a file',
+            inputSchema: { type: 'object', properties: { value: { type: 'string' } } },
+          },
+          binding: 'binding-ok' as McpToolBinding,
+        },
+        {
+          descriptor: {
+            serverId: 'filesystem',
+            name: 'read_tuple',
+            description: 'Uses a JSON Schema keyword the protocol rejects',
+            inputSchema: {
+              type: 'object',
+              properties: { pair: { type: 'array', prefixItems: [{ type: 'string' }] } },
+            },
+          },
+          binding: 'binding-bad' as McpToolBinding,
+        },
+      ],
+    }),
+    callTool: async () => ({ content: [{ type: 'text', text: 'should not run' }] }),
+  };
+  const mcpTools = buildMcpTools(mcpProvider);
+  const droppedName = mcpTools[1]?.name;
+  assert.ok(droppedName);
+
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  let provider: ReturnType<typeof createDesktopNativeCapabilityProvider>;
+  try {
+    provider = createDesktopNativeCapabilityProvider({
+      browserTools: [],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        { offerId: 'desktop_mcp', label: 'MCP', description: 'MCP tools', tools: mcpTools },
+      ],
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  const mcpOffer = provider.offers().find((offer) => offer.offerId === 'desktop_mcp');
+  assert.equal(mcpOffer?.tools.some((descriptor) => descriptor.name === droppedName), false);
+  // A tool that was never advertised must not be dispatchable, even though the
+  // MakaTool still exists in the source group — bindings track the advertised
+  // snapshot, not the raw group.
+  await assert.rejects(
+    () =>
+      call(
+        provider,
+        capabilityFrame({
+          offerId: 'desktop_mcp',
+          serverId: 'desktop_mcp',
+          toolName: droppedName,
+          arguments: { pair: ['x'] },
+        }),
+      ),
+    /not offered/u,
+  );
+});
+
+test('skips a capability with invalid metadata without blaming its tool schemas', () => {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(String(args[0]));
+  };
+  let provider: ReturnType<typeof createDesktopNativeCapabilityProvider>;
+  try {
+    provider = createDesktopNativeCapabilityProvider({
+      browserTools: [tool('browser_snapshot', z.object({}), async () => 'ok')],
+      resolveBrowserUrl: () => 'https://example.com/',
+      releaseBrowserSession() {},
+      computerUseTools: computerTools(),
+      releaseComputerUseSession() {},
+      additionalGroups: () => [
+        // Invalid offerId — a caller misconfiguration, not a tool-schema
+        // problem. Its one tool has a perfectly valid schema.
+        {
+          offerId: 'bad offer id!',
+          label: 'Bad',
+          description: 'bad',
+          tools: [tool('fine_tool', z.object({}), async () => 'ok')],
+        },
+      ],
+    });
+  } finally {
+    console.warn = originalWarn;
+  }
+
+  // The misconfigured capability is dropped; Browser still registers.
+  assert.deepEqual(
+    provider.offers().map((offer) => offer.offerId),
+    ['desktop_browser'],
+  );
+  // The diagnostic blames the capability's metadata, not the tool's schema.
+  assert.equal(
+    warnings.some((line) => line.includes('bad offer id!') && line.includes('offer metadata')),
+    true,
+  );
+  assert.equal(warnings.some((line) => line.includes('fine_tool')), false);
+});
+
 test('publishes every production Desktop-owned tool schema through the protocol', () => {
   const settingsTools = buildClientSettingsTools({
     async read() {

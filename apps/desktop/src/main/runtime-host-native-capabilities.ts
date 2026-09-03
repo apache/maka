@@ -43,9 +43,11 @@ import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
 const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
-// Registration id used only to validate a single tool's descriptor against the
-// protocol before advertising it; never sent to a Runtime Host.
+// Identifiers used only to validate a capability's metadata or a single tool's
+// descriptor against the protocol before advertising it; never sent to a Host.
 const CAPABILITY_PROBE_REGISTRATION_ID = "desktop-capability-offer-probe";
+const CAPABILITY_PROBE_OFFER_ID = "desktop-capability-tool-probe";
+const CAPABILITY_PROBE_LABEL = "probe";
 
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
@@ -56,6 +58,26 @@ export interface DesktopCapabilityGroup {
 
 interface NativeToolBinding {
   readonly tool: MakaTool;
+}
+
+/** Offer-level metadata shared by a capability's tools (no tool descriptors). */
+interface OfferMetadata {
+  readonly offerId: string;
+  readonly version: string;
+  readonly affinity: "session";
+  readonly hostPathAccess: ClientCapabilityHostPathAccess;
+  readonly label: string;
+  readonly description: string;
+}
+
+/**
+ * An advertised offer paired with the Maka tools that survived validation, in
+ * the same order as `offer.tools`. Bindings are built from this so the provider
+ * only ever dispatches a tool it actually advertised.
+ */
+interface ResolvedCapability {
+  readonly offer: ClientCapabilityOffer;
+  readonly tools: readonly MakaTool[];
 }
 
 type DesktopToolModelOutput = Awaited<
@@ -119,14 +141,11 @@ export function createDesktopNativeCapabilityProvider(
 ): DesktopNativeCapabilityProvider {
   const groups = capabilityGroups(input);
   const hostPathAccess = providerOptions.hostPathAccess ?? "cwd";
-  const offers = Object.freeze(
-    groups
-      .map((group) => capabilityOffer(group, hostPathAccess))
-      .filter(
-        (offer): offer is ClientCapabilityOffer => offer !== undefined,
-      ),
-  );
-  const bindings = indexBindings(groups);
+  const resolved = groups
+    .map((group) => capabilityOffer(group, hostPathAccess))
+    .filter((entry): entry is ResolvedCapability => entry !== undefined);
+  const offers = Object.freeze(resolved.map((entry) => entry.offer));
+  const bindings = indexBindings(resolved);
   const oauthPresentation = input.oauthPresentation
     ? createOAuthPresentationClientProvider(input.oauthPresentation)
     : undefined;
@@ -430,27 +449,75 @@ function abortInvocations(
 function capabilityOffer(
   group: DesktopCapabilityGroup,
   hostPathAccess: ClientCapabilityHostPathAccess,
-): ClientCapabilityOffer | undefined {
-  const base = {
+): ResolvedCapability | undefined {
+  const base: OfferMetadata = {
     offerId: group.offerId,
     version: CAPABILITY_VERSION,
-    affinity: "session" as const,
+    affinity: "session",
     hostPathAccess,
     label: group.label,
     description: group.description,
   };
-  const tools = group.tools
-    .map((tool) => offerableToolDescriptor(group, tool, base))
-    .filter(
-      (tool): tool is ClientCapabilityToolDescriptor => tool !== undefined,
-    );
-  if (tools.length === 0) {
+  // Validate the offer-level metadata once, apart from any tool, so a
+  // misconfigured group (a caller bug — bad offerId, over-long label, …) is
+  // reported as such instead of blaming every tool's schema.
+  if (!capabilityMetadataValid(group, base)) return undefined;
+
+  const surviving: {
+    readonly descriptor: ClientCapabilityToolDescriptor;
+    readonly tool: MakaTool;
+  }[] = [];
+  for (const tool of group.tools) {
+    const descriptor = offerableToolDescriptor(group, tool);
+    if (descriptor) surviving.push({ descriptor, tool });
+  }
+  if (surviving.length === 0) {
     console.warn(
       `[capabilities] Desktop capability ${group.offerId} has no representable tools; not advertising it`,
     );
     return undefined;
   }
-  return Object.freeze({ ...base, tools: Object.freeze(tools) });
+  const offer = Object.freeze({
+    ...base,
+    tools: Object.freeze(surviving.map((entry) => entry.descriptor)),
+  });
+  return { offer, tools: surviving.map((entry) => entry.tool) };
+}
+
+/**
+ * Validate a capability's offer-level metadata (offerId, label, version, Host
+ * path access) in isolation, using one synthetic always-valid tool. Keeps a
+ * misconfigured group from being misreported as an unrepresentable tool schema
+ * on every tool it holds.
+ */
+function capabilityMetadataValid(
+  group: DesktopCapabilityGroup,
+  base: OfferMetadata,
+): boolean {
+  try {
+    decodeClientCapabilityReplaceInput({
+      registrationId: CAPABILITY_PROBE_REGISTRATION_ID,
+      offers: [
+        {
+          ...base,
+          tools: [
+            {
+              serverId: group.offerId,
+              name: "probe",
+              inputSchema: { type: "object" },
+            },
+          ],
+        },
+      ],
+    });
+    return true;
+  } catch (error) {
+    console.warn(
+      `[capabilities] Skipping Desktop capability ${group.offerId}: its offer metadata is not representable over the Client Capability protocol`,
+      error,
+    );
+    return false;
+  }
 }
 
 /**
@@ -460,20 +527,13 @@ function capabilityOffer(
  * Schema keyword outside the protocol's allowlist — must not throw from here:
  * that would drop every Desktop capability at once (Browser, Computer Use,
  * Client settings, Rive and MCP), which is exactly the #4591 outage. Each tool
- * is validated on its own through the same decoder the Runtime Host runs, so an
- * unrepresentable tool costs only itself and is logged rather than fatal.
+ * is validated on its own against constant, known-valid offer metadata (group
+ * metadata is checked separately) so an unrepresentable tool costs only itself
+ * and is logged rather than fatal.
  */
 function offerableToolDescriptor(
   group: DesktopCapabilityGroup,
   tool: MakaTool,
-  base: {
-    readonly offerId: string;
-    readonly version: string;
-    readonly affinity: "session";
-    readonly hostPathAccess: ClientCapabilityHostPathAccess;
-    readonly label: string;
-    readonly description: string;
-  },
 ): ClientCapabilityToolDescriptor | undefined {
   try {
     const descriptor: ClientCapabilityToolDescriptor = Object.freeze({
@@ -486,11 +546,18 @@ function offerableToolDescriptor(
         ? { annotations: Object.freeze({ title: tool.displayName }) }
         : {}),
     });
-    // Validate this single tool exactly as the receiving side will, so an
-    // unrepresentable descriptor is dropped now instead of rejecting the frame.
     decodeClientCapabilityReplaceInput({
       registrationId: CAPABILITY_PROBE_REGISTRATION_ID,
-      offers: [{ ...base, tools: [descriptor] }],
+      offers: [
+        {
+          offerId: CAPABILITY_PROBE_OFFER_ID,
+          version: CAPABILITY_VERSION,
+          affinity: "session",
+          hostPathAccess: "cwd",
+          label: CAPABILITY_PROBE_LABEL,
+          tools: [descriptor],
+        },
+      ],
     });
     return descriptor;
   } catch (error) {
@@ -577,19 +644,19 @@ async function parseToolArguments(
 }
 
 function indexBindings(
-  groups: readonly DesktopCapabilityGroup[],
+  resolved: readonly ResolvedCapability[],
 ): Map<string, NativeToolBinding> {
   const bindings = new Map<string, NativeToolBinding>();
-  for (const group of groups) {
-    for (const tool of group.tools) {
+  for (const { offer, tools } of resolved) {
+    for (const tool of tools) {
       const key = bindingKey({
-        offerId: group.offerId,
-        serverId: group.offerId,
+        offerId: offer.offerId,
+        serverId: offer.offerId,
         toolName: tool.name,
       });
       if (bindings.has(key)) {
         throw new Error(
-          `Duplicate Desktop native capability tool: ${group.offerId}/${tool.name}`,
+          `Duplicate Desktop native capability tool: ${offer.offerId}/${tool.name}`,
         );
       }
       bindings.set(key, { tool });
