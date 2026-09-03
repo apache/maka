@@ -80,9 +80,9 @@ export const zhCN: Copy = {
     statSmall: 'pp · 68.5% 对 55.1%',
   },
   host: {
-    h3: '只有一个 Runtime Host',
-    p: 'Desktop、TUI、CLI 和 Eval 都是瘦客户端，执行统一交给同一个 Runtime Host。',
-    more: '了解 Host 如何工作',
+    h3: '只有一个运行时宿主',
+    p: 'Desktop、TUI、CLI 和 Eval 都是瘦客户端，执行统一交给同一个运行时宿主（Runtime Host）。',
+    more: '了解运行时宿主如何工作',
     clients: ['Desktop', 'TUI / CLI', 'Eval'],
     core: 'Runtime Host',
     coreSmall: '掌控执行',
@@ -102,7 +102,7 @@ export const zhCN: Copy = {
     },
     source: {
       title: '从源码构建',
-      body: '克隆 apache/maka，然后 npm ci 和 npm run build。Desktop、TUI 和 CLI 共用同一个 Runtime Host。',
+      body: '克隆 apache/maka，然后 npm ci 和 npm run build。Desktop、TUI 和 CLI 共用同一个运行时宿主。',
       note: 'APACHE-2.0',
     },
     releases: {
