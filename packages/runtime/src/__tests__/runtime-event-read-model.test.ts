@@ -2041,7 +2041,7 @@ describe('compareRuntimeReadModelMessages', () => {
   });
 
   test('carries the cross-turn request anchor both ways and compares on it', () => {
-    const lastRequestAnchor = { inputTokens: 120, payloadChars: 48_000 };
+    const lastRequestAnchor = { inputTokens: 120, outputTokens: 30 };
     const anchored = ev({
       id: 'evt-token-anchor',
       role: 'system',

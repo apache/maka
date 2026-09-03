@@ -138,6 +138,11 @@ import { McpManagementOverlay } from './pi-tui-mcp-status.js';
 import type { TuiMcpManagement } from './tui-mcp-control.js';
 import { createShellRunElapsedTicker } from './shell-run-elapsed-ticker.js';
 import { createShellRunHydrationController } from './shell-run-hydration.js';
+import {
+  CTX_REFRESH_DEBOUNCE_MS,
+  createCtxRefresher,
+  scheduleCtxRefreshTimeout,
+} from './tui-context-refresh.js';
 import { sessionStatusBadge } from './tui-session-status.js';
 import {
   AttentionController,
@@ -229,6 +234,15 @@ export interface MakaPiTuiInput {
   shellRunTicker?: {
     now?: () => number;
     schedule?: (callback: () => void, intervalMs: number) => () => void;
+  };
+  /**
+   * Debounce scheduling for the live ctx refresh (#4545). Injectable so tests
+   * drive the timer deterministically; defaults to CTX_REFRESH_DEBOUNCE_MS +
+   * an unref'd setTimeout.
+   */
+  ctxRefreshTicker?: {
+    delayMs?: number;
+    schedule?: (callback: () => void, delayMs: number) => () => void;
   };
   subscribeSessionTitleChanges?: (listener: (sessionId: string) => void) => () => void;
   subscribeShellRunUpdates?: (listener: (update: ShellRunUpdate) => void) => () => void;
@@ -750,6 +764,39 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     schedule: input.shellRunTicker?.schedule,
   });
 
+  // Live ctx refresh (#4545): the end-of-turn token_usage event moves the
+  // statusline once per turn, but the Host's latest-context snapshot moves at
+  // every settled provider request. Pull it on the desktop inspector's signal
+  // (tui-context-refresh.ts) so a long turn shows the context filling as it
+  // fills. The query is a plain read on the driver — deliberately not routed
+  // through runControl, whose serial lock exists for mutations.
+  const getContextDiagnostics = input.driver.getContextDiagnostics?.bind(input.driver);
+  const ctxRefresher = getContextDiagnostics
+    ? createCtxRefresher({
+        query: async () => {
+          const sessionId = input.driver.getSessionId();
+          const diagnostics = await getContextDiagnostics();
+          return { sessionId, diagnostics };
+        },
+        apply: ({ sessionId, diagnostics }) => {
+          // The session moved under the query (switch, /new): its usage was
+          // rebuilt from stored messages, and a pre-switch snapshot must not
+          // overwrite it.
+          if (closed || input.driver.getSessionId() !== sessionId) return;
+          if (diagnostics.status !== 'available') return;
+          const { inputTokens, contextWindow } = diagnostics;
+          if (inputTokens === undefined || contextWindow === undefined || contextWindow <= 0)
+            return;
+          // Same formula the token_usage path uses (#1067), from the same
+          // settled request — the two cannot disagree.
+          state.usage.contextRemaining = Math.max(0, contextWindow - inputTokens);
+          requestRender();
+        },
+        delayMs: input.ctxRefreshTicker?.delayMs ?? CTX_REFRESH_DEBOUNCE_MS,
+        schedule: input.ctxRefreshTicker?.schedule ?? scheduleCtxRefreshTimeout,
+      })
+    : undefined;
+
   // ── Explicit skill invocation (#1148) ────────────────────────────────────
   // One cached list feeds autocomplete, the `/skill` picker, and the editor's
   // sync highlight validator. The cache is keyed by cwd (project-level skill
@@ -939,6 +986,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     unsubscribeTranscriptReplacements();
     shellRunHydration.dispose();
     shellRunElapsedTicker.dispose();
+    ctxRefresher?.cancel();
     stopTurnElapsedTicker();
     setTaskbarProgress(false);
     // Drop the busy / attention title marker so the tab is not handed back to
@@ -1471,6 +1519,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
           return;
         }
         applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
         if (event.type === 'error') attention.attentionNeeded();
         if (
           permissionResponseInFlightRequestId !== null &&
@@ -2512,6 +2561,7 @@ export async function runMakaPiTui(input: MakaPiTuiInput): Promise<void> {
     try {
       for await (const event of input.driver.resumeLatest()) {
         applyMakaSessionEventToTranscript(state, event);
+        ctxRefresher?.observe(event);
         shellRunElapsedTicker.sync();
         syncUserQuestionOverlay();
         requestRender();

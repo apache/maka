@@ -4873,6 +4873,92 @@ describe('Maka Pi TUI runner', () => {
     ]);
   });
 
+  test('ctx segment refreshes mid-turn from the live context snapshot (#4545)', async () => {
+    // 120 cols: the status line fits every segment, so ctx is not
+    // priority-dropped (#3421).
+    const terminal = new FakeTerminal(120);
+    const driver = new LiveCtxDriver();
+    driver.diagnostics = {
+      status: 'available',
+      providerId: 'anthropic',
+      modelId: 'claude-sonnet-4-5',
+      completedAt: 10,
+      inputTokens: 100_000,
+      contextWindow: 500_000,
+    };
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      modelContextWindow: 500_000,
+      ctxRefreshTicker: { delayMs: 0 },
+      terminal,
+    });
+
+    // A fresh session with no usage yet degrades explicitly (#3371).
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('ctx ?/500k'));
+
+    terminal.input('start the work');
+    terminal.input('\r');
+    // The turn parks after tool_start — no token_usage has arrived, which is
+    // exactly the gap #4545 closes: before this, ctx stayed stale until the
+    // turn fully ended.
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('npm test'));
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('ctx 100k/500k 20%'));
+    assert.ok(driver.diagnosticsCalls >= 1);
+
+    driver.endTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
+  test('ctx refresh leaves the last value standing when the snapshot read fails (#4545)', async () => {
+    const terminal = new FakeTerminal(120);
+    const driver = new LiveCtxDriver();
+    driver.diagnosticsError = new Error('host not ready');
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      modelContextWindow: 500_000,
+      ctxRefreshTicker: { delayMs: 0 },
+      terminal,
+    });
+
+    await waitFor(() => plainTerminalOutput(terminal.output()).includes('ctx ?/500k'));
+    terminal.input('start the work');
+    terminal.input('\r');
+    await waitFor(() => terminal.progressStates.at(-1) === true);
+    await waitFor(() => driver.diagnosticsCalls >= 1);
+    // The failed pull must not blank the segment or surface an error — a read
+    // that could not reach the snapshot costs nothing.
+    assert.equal(plainTerminalOutput(terminal.output()).includes('host not ready'), false);
+    assert.ok(plainTerminalOutput(terminal.output()).includes('ctx ?/500k'));
+
+    driver.endTurn();
+    await waitFor(() => terminal.progressStates.at(-1) === false);
+    exitMaka(terminal);
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close during test cleanup');
+      }),
+    ]);
+  });
+
   test('hydrates a resumed background Bash card from durable shell-run state', async () => {
     const terminal = new FakeTerminal();
     const ref = 'maka://runtime/background-tasks/bg-1';
@@ -9158,6 +9244,52 @@ class SlowStopDriver extends FakeSessionDriver {
   endTurn(): void {
     this.releaseTurn?.();
     this.releaseTurn = null;
+  }
+}
+
+// #4545: a turn parked after tool_start, with a Host-backed context snapshot
+// query, so tests can watch the statusline ctx segment move mid-turn.
+class LiveCtxDriver extends FakeSessionDriver {
+  diagnostics: ContextDiagnostics = { status: 'unavailable', reason: 'no_completed_request' };
+  diagnosticsError: Error | undefined;
+  diagnosticsCalls = 0;
+  private releaseTurn: (() => void) | null = null;
+
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    return prepareTestPrompt(this, prompt);
+  }
+
+  async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    yield {
+      type: 'tool_start',
+      id: 'event-tool-start',
+      turnId: 'turn-1',
+      ts: 1,
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      args: { command: 'npm test' },
+    };
+    await new Promise<void>((resolve) => {
+      this.releaseTurn = resolve;
+    });
+    yield {
+      type: 'complete',
+      id: 'event-complete',
+      turnId: 'turn-1',
+      ts: 2,
+      stopReason: 'end_turn',
+    };
+  }
+
+  endTurn(): void {
+    this.releaseTurn?.();
+    this.releaseTurn = null;
+  }
+
+  async getContextDiagnostics(): Promise<ContextDiagnostics> {
+    this.diagnosticsCalls += 1;
+    if (this.diagnosticsError) throw this.diagnosticsError;
+    return this.diagnostics;
   }
 }
 

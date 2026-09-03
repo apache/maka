@@ -22,6 +22,7 @@ import { describe, test } from 'node:test';
 import type { LlmConnection } from '@maka/core/llm-connections';
 import {
   buildDefaultContextBudgetPolicy,
+  resolveDeclaredContextWindow,
   resolveSelectedModelContextWindow,
 } from '../context-budget-policy.js';
 
@@ -46,9 +47,9 @@ test('context policy is independent of process environment overrides', () => {
   );
   try {
     for (const name of Object.keys(overrides)) delete process.env[name];
-    const baseline = buildDefaultContextBudgetPolicy(connection());
+    const baseline = buildDefaultContextBudgetPolicy();
     Object.assign(process.env, overrides);
-    assert.deepEqual(buildDefaultContextBudgetPolicy(connection()), baseline);
+    assert.deepEqual(buildDefaultContextBudgetPolicy(), baseline);
   } finally {
     for (const [name, value] of Object.entries(previous)) {
       if (value === undefined) delete process.env[name];
@@ -59,62 +60,15 @@ test('context policy is independent of process environment overrides', () => {
 
 describe('mid-turn history compact policy', () => {
   test('is owned by the runtime default', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection());
+    const policy = buildDefaultContextBudgetPolicy();
     assert.equal(policy?.historyCompact?.enabled, true);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-  });
-});
-
-describe('window-bounded reserve derivation (issue #882 PR 3 review P2)', () => {
-  test('caps the derived reserve on a small-window model instead of degrading to a 1-token budget', () => {
-    // gpt-4 has an 8192-token window. A flat 16384 reserve used to derive
-    // maxHistoryEstimatedTokens = max(1, 8192 - 16384) = 1, and a mid_turn
-    // high water clamped to 1 token — every multi-step turn ran the
-    // summarizer for a checkpoint that could never pass the replay gate.
-    // The default reserve must be bounded by the KNOWN window: a quarter of
-    // the window, capped at the classic 16384.
-    const policy = buildDefaultContextBudgetPolicy(gpt4Connection(), { modelId: 'gpt-4' });
-    assert.equal(policy?.maxHistoryEstimatedTokens, 8192 - 2048);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 2048 });
-  });
-
-  test('uses the official Agent Plan default-model window instead of the unknown-model fallback', () => {
-    const policy = buildDefaultContextBudgetPolicy(agentPlanConnection());
-    assert.equal(policy?.maxHistoryEstimatedTokens, 256_000 - 16_384);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-  });
-
-  test('keeps the classic 16384 reserve when the window is unknown (metadata-less model)', () => {
-    const policy = buildDefaultContextBudgetPolicy(
-      {
-        ...gpt4Connection(),
-        defaultModel: 'custom-model',
-        models: [{ id: 'custom-model' }],
-      } as LlmConnection,
-      { modelId: 'custom-model' },
-    );
-    // No window: the flat 32_000 fallback budget and the classic reserve.
-    assert.equal(policy?.maxHistoryEstimatedTokens, 32_000);
-    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true, reserveTokens: 16_384 });
-    // Both are policy choices about how much history to keep. Neither is a
-    // fact about the model, so nothing derives a context window from them.
-    assert.equal(
-      resolveSelectedModelContextWindow(
-        {
-          ...gpt4Connection(),
-          defaultModel: 'custom-model',
-          models: [{ id: 'custom-model' }],
-        } as LlmConnection,
-        'custom-model',
-      ),
-      undefined,
-    );
+    assert.deepEqual(policy?.historyCompact?.midTurn, { enabled: true });
   });
 });
 
 describe('tool-result prune policy', () => {
   test('uses bounded runtime defaults', () => {
-    const policy = buildDefaultContextBudgetPolicy(connection());
+    const policy = buildDefaultContextBudgetPolicy();
     assert.deepEqual(policy?.activeToolResultPrune, {
       enabled: true,
       maxCurrentResultEstimatedTokens: 2_048,
@@ -168,17 +122,12 @@ describe('declared relay context window', () => {
       models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
       relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
     };
-    const policy = buildDefaultContextBudgetPolicy(relay, { modelId: 'reasoner-32k' });
-    // Declared 131_072 wins: reserve 131_072/4 caps at 16_384. The fetched
-    // 8_192 row would have yielded 8_192 − 2_048, and no declaration at all
-    // would have fallen to the 32_000 unknown-model default.
-    assert.equal(policy?.maxHistoryEstimatedTokens, 131_072 - 16_384);
-    // Clearing the declaration falls back to the fetched row's window.
+    assert.equal(resolveDeclaredContextWindow(relay, 'reasoner-32k'), 131_072);
+    assert.deepEqual(buildDefaultContextBudgetPolicy().historyCompact?.midTurn, { enabled: true });
+    // Clearing the declaration does not turn the fetched row into a Maka
+    // window; it is provider metadata and remains display-only.
     const undeclared: LlmConnection = { ...relay, relayModelProfiles: undefined };
-    const fallback = buildDefaultContextBudgetPolicy(undeclared, {
-      modelId: 'reasoner-32k',
-    });
-    assert.equal(fallback?.maxHistoryEstimatedTokens, 8_192 - 2_048);
+    assert.equal(resolveDeclaredContextWindow(undeclared, 'reasoner-32k'), undefined);
   });
 
   test('a declared context window holds on any provider', () => {
@@ -199,26 +148,9 @@ describe('declared relay context window', () => {
       models: [{ id: 'reasoner-32k', contextWindow: 8_192 }],
       relayModelProfiles: { 'reasoner-32k': { contextWindow: 131_072 } },
     };
-    const policy = buildDefaultContextBudgetPolicy(other, { modelId: 'reasoner-32k' });
-    assert.equal(policy?.maxHistoryEstimatedTokens, 131_072 - 16_384);
-    // Absent stays absent: an undeclared model still reads the stored row.
+    assert.equal(resolveDeclaredContextWindow(other, 'reasoner-32k'), 131_072);
+    // Absent stays absent: an undeclared model still has no Maka threshold.
     const undeclared: LlmConnection = { ...other, relayModelProfiles: undefined };
-    assert.equal(
-      buildDefaultContextBudgetPolicy(undeclared, { modelId: 'reasoner-32k' })
-        ?.maxHistoryEstimatedTokens,
-      8_192 - 2_048,
-    );
+    assert.equal(resolveDeclaredContextWindow(undeclared, 'reasoner-32k'), undefined);
   });
 });
-
-function agentPlanConnection(): LlmConnection {
-  return {
-    slug: 'volcengine-agent-plan',
-    name: 'Volcengine Agent Plan',
-    providerType: 'volcengine-agent-plan',
-    defaultModel: 'ark-code-latest',
-    enabled: true,
-    createdAt: 1,
-    updatedAt: 1,
-  };
-}

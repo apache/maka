@@ -1779,6 +1779,16 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     });
     assert.equal(configured.kind, 'committed');
     await publishConnectionModel(policy, connection.connectionId, MODEL_ID);
+    // The fetched /models value is metadata only. This explicit model-facts
+    // declaration is the Maka compaction target used by the long-session flow.
+    await writeFile(
+      join(root, 'model-facts.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        overrides: { [`moonshot:${MODEL_ID}`]: { contextWindow: 3_072 } },
+      }),
+      'utf8',
+    );
     let policySnapshot = await policy.runtimePolicy.getSnapshot();
     const personalized = await policy.runtimePolicy.mutate({
       expectedRevision: policySnapshot.revision,
@@ -1860,8 +1870,8 @@ test('production Host executes a canonical ai-sdk Session against a real provide
     assert.equal(remembered.result.kind, 'committed');
 
     const turnIds: string[] = [];
-    // Cross the history high-water without making the text-only compact input
-    // exceed this fixture's 2,304-token summarizer budget.
+    // Cross the explicitly declared Maka window without making the text-only
+    // compact input exceed this fixture's 2,304-token summarizer budget.
     for (let index = 0; index < 5; index += 1) {
       const turnId = randomUUID();
       turnIds.push(turnId);

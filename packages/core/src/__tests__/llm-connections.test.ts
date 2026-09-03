@@ -288,6 +288,39 @@ test('chat model choices project exact vision support for attachment composition
   );
 });
 
+test('chat model choices keep provider metadata separate from user context declarations', () => {
+  const choices = chatModelChoicesFor([
+    {
+      connectionId: 'connection-context',
+      slug: 'openai-compatible',
+      name: 'OpenAI compatible',
+      providerType: 'openai-compatible',
+      enabled: true,
+      defaultModel: 'declared-model',
+      enabledModelIds: ['declared-model', 'reported-model'],
+      models: [
+        { id: 'declared-model', contextWindow: 64_000, inputLimit: 48_000 },
+        { id: 'reported-model', contextWindow: 128_000 },
+      ],
+      relayModelProfiles: { 'declared-model': { contextWindow: 32_000 } },
+      createdAt: 1,
+      updatedAt: 1,
+    },
+  ]);
+
+  assert.deepEqual(
+    choices.map(({ model, contextWindow, declaredContextWindow }) => ({
+      model,
+      contextWindow,
+      declaredContextWindow,
+    })),
+    [
+      { model: 'declared-model', contextWindow: 64_000, declaredContextWindow: 32_000 },
+      { model: 'reported-model', contextWindow: 128_000, declaredContextWindow: undefined },
+    ],
+  );
+});
+
 test('provider recognition does not resolve inherited object members', () => {
   // `PROVIDER_REGISTRY` is an object literal, so plain indexing answers truthy
   // for `__proto__` / `toString` / `constructor` and they would read as

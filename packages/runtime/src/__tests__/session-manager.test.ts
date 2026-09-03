@@ -3493,7 +3493,6 @@ describe('SessionManager manual compaction and quiescent session changes', () =>
         now: nextNow(1),
         contextBudget: {
           name: 'manual-compact-accounting',
-          maxHistoryEstimatedTokens: 10_000,
           charsPerToken: 1,
         },
         summarizeHistoryCompact: buildLlmHistorySummarizer({

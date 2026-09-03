@@ -1345,6 +1345,47 @@ function systemNoteText(message: SystemNoteMessage): string | undefined {
       return 'Context compacted to keep this task within the model window.';
     case 'context_compaction_failed_open':
       return 'Context summary failed; the session continued without a new summary.';
+    case 'context_provider_dropping':
+      return 'The provider is dropping or rewriting context: content was appended but its reported usage did not grow. Declare a context window for this model so Maka compacts first.';
+    case 'context_overflow_after_compaction':
+      return 'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.';
+    case 'context_reported_window_exceeded': {
+      const data = message.data as
+        | { usedTokens?: unknown; reportedContextWindow?: unknown }
+        | undefined;
+      const used = typeof data?.usedTokens === 'number' ? data.usedTokens : undefined;
+      const reported =
+        typeof data?.reportedContextWindow === 'number' ? data.reportedContextWindow : undefined;
+      if (used === undefined || reported === undefined) {
+        return 'This exchange ran past the context window this model reports, and the provider accepted it anyway.';
+      }
+      return `This exchange used about ${used} tokens, past the ${reported} this model reports, and the provider accepted it without complaint. Nothing is declared, so Maka does not compact on its own; declare a context window to have it compact first.`;
+    }
+    case 'context_window_overrun': {
+      const data = message.data as
+        | { usedTokens?: unknown; declaredContextWindow?: unknown }
+        | undefined;
+      const used = typeof data?.usedTokens === 'number' ? data.usedTokens : undefined;
+      const declared =
+        typeof data?.declaredContextWindow === 'number' ? data.declaredContextWindow : undefined;
+      if (used === undefined || declared === undefined) {
+        return 'This exchange ran past the context window declared for this model.';
+      }
+      return `This exchange used about ${used} tokens against the declared window of ${declared}: the reply needed more room than was left. Maka compacts before the next request; raise the window if the replies should stay whole.`;
+    }
+    case 'context_window_suggestion': {
+      const data = message.data as
+        | { suggestedContextWindow?: unknown; declaredContextWindow?: unknown }
+        | undefined;
+      const tokens =
+        typeof data?.suggestedContextWindow === 'number' ? data.suggestedContextWindow : undefined;
+      const declared =
+        typeof data?.declaredContextWindow === 'number' ? data.declaredContextWindow : undefined;
+      if (tokens === undefined) return 'The provider rejected this request as too large.';
+      return declared === undefined
+        ? `The provider rejected this request. No context window is declared for this model; the last accepted request was about ${tokens} tokens — declare that as the window so Maka compacts first.`
+        : `The provider rejected this request at about ${tokens} tokens, below the declared window of ${declared}. The declaration is likely larger than the provider's window; consider lowering it to ${tokens}.`;
+    }
     case 'step_limit':
       return STEP_LIMIT_NOTICE_TEXT;
     case 'error':

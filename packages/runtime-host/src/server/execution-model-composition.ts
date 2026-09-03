@@ -392,7 +392,7 @@ async function buildHostAiSdkBackend(
           : {}),
         ...(!input.context.tools && input.childAgents ? input.childAgents : {}),
         providerOptions,
-        contextBudget: buildDefaultContextBudgetPolicy(target.connection, {
+        contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
         }),

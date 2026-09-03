@@ -901,15 +901,14 @@ function cloneAgentRunEvent(
     if (match.reason) return null;
     // Copy is an admission seam for the sectioned summary contract: a marked
     // checkpoint whose summary no longer satisfies the COMPLETE predicate —
-    // including the size floor, re-runnable here because the matched covered
-    // span is in hand — must not propagate into a fresh session. Unmarked
-    // legacy summaries stay copyable under the truncation-only load policy
-    // and keep their unmarked identity in the target.
+    // re-runnable here on structure and truncation (the size floor needs the
+    // summarizer call's usage, which a copy does not have) — must not
+    // propagate into a fresh session. Unmarked legacy summaries stay copyable
+    // under the truncation-only load policy and keep their unmarked identity
+    // in the target.
     if (
       sourceCheckpoint.summaryFormat !== undefined &&
-      findCheckpointSummaryDefect(sourceCheckpoint.summary, {
-        coveredRuntimeEvents: match.coveredRuntimeEvents,
-      }) !== undefined
+      findCheckpointSummaryDefect(sourceCheckpoint.summary) !== undefined
     ) {
       throw new Error(`Cannot copy invalid history compact checkpoint ${event.id}`);
     }

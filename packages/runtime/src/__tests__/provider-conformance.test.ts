@@ -25,6 +25,7 @@ import { anthropic } from '@ai-sdk/anthropic';
 import { generateText, isStepCount, streamText, tool, type ModelMessage } from 'ai';
 import { z } from 'zod';
 import { fetchProviderModels } from '../model-fetcher.js';
+import { resetStreamUsageFallbackMemory } from '../stream-usage-fallback-fetch.js';
 import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { resolveOAuthSubscriptionAccessToken } from '../subscription-credentials.js';
 import { testConnection } from '../test-connection.js';
@@ -1071,6 +1072,56 @@ describe('models.dev provider conformance', () => {
     assert.equal(probedPath, '/v1/responses');
   });
 
+  for (const [label, providerType] of [
+    ['a plain OpenAI-compatible relay', 'openai-compatible'],
+    ['local Ollama', 'ollama'],
+  ] as const) {
+    test(`${label} requests usage in streamed chat completions by default`, async () => {
+      // Usage is the only signal the runtime's context handling reads (#4559).
+      // A Chat Completions server returns none unless asked, so every
+      // OpenAI-compatible adapter asks unless the registry opts it out.
+      let requestBody: Record<string, unknown> | undefined;
+      const server = await startJsonServer(async (request, response) => {
+        assert.equal(request.method, 'POST');
+        assert.equal(request.url, '/v1/chat/completions');
+        requestBody = JSON.parse(await readBody(request)) as Record<string, unknown>;
+        respondOpenAIStream(response, [
+          {
+            id: 'chatcmpl-compatible-stream',
+            object: 'chat.completion.chunk',
+            created: 1,
+            model: 'relay-model',
+            choices: [
+              { index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+            ],
+            usage: { prompt_tokens: 21, completion_tokens: 1, total_tokens: 22 },
+          },
+        ]);
+      });
+      const connection: LlmConnection = {
+        slug: providerType,
+        name: label,
+        providerType,
+        baseUrl: `${server.url}/v1`,
+        defaultModel: 'relay-model',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      };
+
+      const result = streamText({
+        model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+        prompt: 'Reply ok.',
+      });
+
+      assert.equal(await result.text, 'ok');
+      assert.deepEqual(requestBody?.stream_options, { include_usage: true });
+      const usage = await result.usage;
+      assert.equal(usage.inputTokens, 21);
+      assert.equal(usage.outputTokens, 1);
+    });
+  }
+
   test('Ollama Cloud requests usage in streamed chat completions', async () => {
     let requestBody: Record<string, unknown> | undefined;
     const server = await startJsonServer(async (request, response) => {
@@ -1112,6 +1163,72 @@ describe('models.dev provider conformance', () => {
     assert.equal(usage.inputTokens, 8);
     assert.equal(usage.outputTokens, 1);
     assert.equal(usage.totalTokens, 9);
+  });
+
+  test('a relay that rejects stream_options is answered once without the field', async () => {
+    // Asking for usage is the default, but a strict relay that rejects unknown
+    // fields would otherwise 400 every streaming request with no user-facing
+    // way to switch the ask off. One retreat, remembered for the endpoint: the
+    // request goes out again without `stream_options`, and the connection then
+    // simply reports no usage (#4559).
+    resetStreamUsageFallbackMemory();
+    const bodies: Record<string, unknown>[] = [];
+    const server = await startJsonServer(async (request, response) => {
+      const body = JSON.parse(await readBody(request)) as Record<string, unknown>;
+      bodies.push(body);
+      if ('stream_options' in body) {
+        respondJson(response, 400, {
+          error: {
+            message: 'Unrecognized request argument supplied: stream_options',
+            type: 'invalid_request_error',
+            param: 'stream_options',
+            code: null,
+          },
+        });
+        return;
+      }
+      respondOpenAIStream(response, [
+        {
+          id: 'chatcmpl-strict-relay',
+          object: 'chat.completion.chunk',
+          created: 1,
+          model: 'relay-model',
+          choices: [
+            { index: 0, delta: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+          ],
+        },
+      ]);
+    });
+    const connection: LlmConnection = {
+      slug: 'strict-relay',
+      name: 'Strict relay',
+      providerType: 'openai-compatible',
+      baseUrl: `${server.url}/v1`,
+      defaultModel: 'relay-model',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+
+    const result = streamText({
+      model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+      prompt: 'Reply ok.',
+    });
+
+    assert.equal(await result.text, 'ok');
+    assert.equal(bodies.length, 2);
+    assert.deepEqual(bodies[0]?.stream_options, { include_usage: true });
+    assert.equal('stream_options' in (bodies[1] ?? {}), false);
+
+    // The endpoint is remembered: the next request never asks again.
+    const second = streamText({
+      model: getAIModel({ connection, apiKey: 'test-key', modelId: 'relay-model' }),
+      prompt: 'Reply ok again.',
+    });
+    assert.equal(await second.text, 'ok');
+    assert.equal(bodies.length, 3);
+    assert.equal('stream_options' in (bodies[2] ?? {}), false);
+    resetStreamUsageFallbackMemory();
   });
 
   test('Hugging Face discovers tool-capable routed models and preserves its two-stage OpenAI wire', async () => {

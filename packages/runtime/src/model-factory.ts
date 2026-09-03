@@ -61,6 +61,7 @@ import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.
 import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
+import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
@@ -236,8 +237,14 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
         name: runtimeProviderName(adapter, connection),
         apiKey,
         baseURL,
-        includeUsage: adapter.includeUsage,
-        fetch: reasoningTransport.fetch,
+        // Ask every Chat Completions server for stream usage unless the
+        // registry opts a provider out. Usage is the only signal the runtime's
+        // context handling reads (#4559): without `stream_options.include_usage`
+        // an OpenAI-compatible relay or a local Ollama returns none, and the
+        // proactive compaction baseline, the eviction check, and the usage
+        // indicator all go dark for exactly the connections that need them.
+        includeUsage: adapter.includeUsage ?? true,
+        fetch: createStreamUsageFallbackFetch(reasoningTransport.fetch, baseURL),
         transformRequestBody,
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }

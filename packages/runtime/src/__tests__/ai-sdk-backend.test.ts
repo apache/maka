@@ -623,97 +623,6 @@ function memoryFinishTextChunks(delta: string): LanguageModelV4StreamPart[] {
 }
 
 describe('AiSdkBackend Memory Extraction triggers', () => {
-  test('dispatches a pre-turn Compaction recipe without projecting history or awaiting it', async () => {
-    const model = completionModel();
-    const recorded: HistoryCompactCheckpoint[] = [];
-    let snapshot: MemoryExtractionSourceSnapshot | undefined;
-    let systemPromptResolutions = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => model,
-      systemPrompt: async () => {
-        systemPromptResolutions += 1;
-        return 'CURRENT_MEMORY_SYSTEM_PROMPT';
-      },
-      tools: [],
-      contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
-        charsPerToken: 1,
-        historyCompact: {
-          enabled: true,
-        },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('AUTOMATIC_MEMORY_SUMMARY'),
-      recordHistoryCompactCheckpoint: (checkpoint) => {
-        recorded.push(checkpoint);
-      },
-      memoryExtraction: {
-        gate: () => new Promise(() => {}),
-        automaticGate: () => ({ allowed: true }),
-        remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-        extract: (value) => {
-          snapshot = value;
-          return new Promise<void>(() => {});
-        },
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-    const runtimeContext = [
-      runtimeTextEvent({
-        id: 'memory-compact-old-user',
-        turnId: 'memory-compact-turn-1',
-        role: 'user',
-        author: 'user',
-        text: 'The project uses SQLite. '.repeat(40),
-      }),
-      runtimeTextEvent({
-        id: 'memory-compact-old-model',
-        turnId: 'memory-compact-turn-2',
-        role: 'model',
-        author: 'agent',
-        text: 'Acknowledged. '.repeat(70),
-      }),
-      runtimeTextEvent({
-        id: 'memory-compact-boundary',
-        turnId: 'memory-compact-turn-3',
-        role: 'user',
-        author: 'user',
-        text: 'Keep this retained context.',
-      }),
-    ];
-
-    await drain(
-      backend.send({
-        turnId: 'memory-compact-current',
-        runId: 'memory-compact-current-run',
-        text: 'continue',
-        context: [],
-        runtimeContext,
-      }),
-    );
-
-    assert.equal(recorded.length, 1);
-    assert.equal(recorded[0]?.memoryExtractionBoundary?.runtimeEventId, 'memory-compact-boundary');
-    assert.equal(snapshot?.trigger, 'compaction');
-    assert.equal(snapshot?.compactionCheckpointId, recorded[0]?.checkpointId);
-    assert.equal(snapshot?.compactionBoundaryEventId, 'memory-compact-boundary');
-    assert.equal(snapshot?.sourceSystemPrompt, undefined);
-    assert.deepEqual(snapshot?.sourceMessages, []);
-    assert.deepEqual(snapshot?.sourceTools, {});
-    assert.deepEqual(snapshot?.sourceActiveTools, []);
-    assert.equal(snapshot?.sourceProviderOptions, undefined);
-    assert.equal(snapshot?.rebuildSourceContextFromCompactionCheckpoint, true);
-    assert.equal(systemPromptResolutions, 1);
-    assert.match(JSON.stringify(model.doStreamCalls[0]), /CURRENT_MEMORY_SYSTEM_PROMPT/);
-    assert.equal(model.doStreamCalls.length, 1, 'the unresolved extraction must not block Agent');
-  });
-
   test('terminates cleanly when the dynamic system prompt rejects before Compaction', async () => {
     const model = completionModel();
     const recorded: HistoryCompactCheckpoint[] = [];
@@ -731,7 +640,6 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       },
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -773,154 +681,6 @@ describe('AiSdkBackend Memory Extraction triggers', () => {
       events.some((event) => event.type === 'complete' && event.stopReason === 'error'),
       true,
     );
-  });
-
-  for (const gate of [
-    { allowed: false as const, reason: 'disabled' as const },
-    { allowed: false as const, reason: 'incognito' as const },
-  ]) {
-    test(`persists a denied marker and does not dispatch when automatic Compaction is ${gate.reason}`, async () => {
-      const recorded: HistoryCompactCheckpoint[] = [];
-      let dispatches = 0;
-      const backend = createTestAiSdkBackend({
-        sessionId: 'session-1',
-        header: header(),
-        appendMessage: async () => {},
-        connection: connection(),
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => completionModel(),
-        tools: [],
-        contextBudget: {
-          maxHistoryEstimatedTokens: 1_500,
-          charsPerToken: 1,
-          historyCompact: {
-            enabled: true,
-          },
-        },
-        summarizeHistoryCompact: async () => structuredSummary('DENIED_MEMORY_SUMMARY'),
-        recordHistoryCompactCheckpoint: (checkpoint) => {
-          recorded.push(checkpoint);
-        },
-        memoryExtraction: {
-          gate: async () => gate,
-          automaticGate: () => gate,
-          remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-          extract: () => {
-            dispatches += 1;
-          },
-        },
-        newId: idGenerator(),
-        now: monotonicClock(),
-      });
-
-      await drain(
-        backend.send({
-          turnId: `denied-${gate.reason}-current`,
-          runId: `denied-${gate.reason}-run`,
-          text: 'continue',
-          context: [],
-          runtimeContext: [
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-old-user`,
-              turnId: 'denied-old-1',
-              role: 'user',
-              author: 'user',
-              text: 'Private disabled-period context. '.repeat(50),
-            }),
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-old-model`,
-              turnId: 'denied-old-2',
-              role: 'model',
-              author: 'agent',
-              text: 'Acknowledged. '.repeat(70),
-            }),
-            runtimeTextEvent({
-              id: `denied-${gate.reason}-boundary`,
-              turnId: 'denied-old-3',
-              role: 'user',
-              author: 'user',
-              text: 'Retained tail.',
-            }),
-          ],
-        }),
-      );
-
-      assert.equal(recorded.length, 1);
-      assert.equal(recorded[0]?.memoryExtractionBoundary?.disposition, 'policy_denied');
-      assert.equal(dispatches, 0);
-    });
-  }
-
-  test('keeps a transiently unavailable automatic Compaction checkpoint recoverable', async () => {
-    const recorded: HistoryCompactCheckpoint[] = [];
-    let dispatches = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
-        charsPerToken: 1,
-        historyCompact: {
-          enabled: true,
-        },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('UNAVAILABLE_MEMORY_SUMMARY'),
-      recordHistoryCompactCheckpoint: (checkpoint) => {
-        recorded.push(checkpoint);
-      },
-      memoryExtraction: {
-        gate: async () => ({ allowed: false, reason: 'unavailable' }),
-        automaticGate: () => ({ allowed: false, reason: 'unavailable' }),
-        remember: async () => ({ status: 'unavailable', requestedItems: [] }),
-        extract: () => {
-          dispatches += 1;
-        },
-      },
-      newId: idGenerator(),
-      now: monotonicClock(),
-    });
-
-    await drain(
-      backend.send({
-        turnId: 'unavailable-current',
-        runId: 'unavailable-run',
-        text: 'continue',
-        context: [],
-        runtimeContext: [
-          runtimeTextEvent({
-            id: 'unavailable-old-user',
-            turnId: 'unavailable-old-1',
-            role: 'user',
-            author: 'user',
-            text: 'Recoverable context. '.repeat(50),
-          }),
-          runtimeTextEvent({
-            id: 'unavailable-old-model',
-            turnId: 'unavailable-old-2',
-            role: 'model',
-            author: 'agent',
-            text: 'Acknowledged. '.repeat(70),
-          }),
-          runtimeTextEvent({
-            id: 'unavailable-boundary',
-            turnId: 'unavailable-old-3',
-            role: 'user',
-            author: 'user',
-            text: 'Retained tail.',
-          }),
-        ],
-      }),
-    );
-
-    assert.equal(recorded[0]?.memoryExtractionBoundary?.disposition, 'eligible');
-    assert.equal(dispatches, 0);
   });
 
   test('exposes explicitly unsupported Memory triggers on the native OpenAI Responses lane', async () => {
@@ -4634,7 +4394,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('MANUAL_V2_HISTORY_COMPACT_SENTINEL'),
@@ -4705,7 +4464,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-single-turn-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('MANUAL_SINGLE_TURN_SENTINEL'),
@@ -4787,7 +4545,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-roll-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       loadHistoryCompactCheckpoint: () => previous,
@@ -4875,7 +4632,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-reuse-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       loadHistoryCompactCheckpoint: () => previous,
@@ -4902,203 +4658,6 @@ describe('AiSdkBackend model history', () => {
     assert.equal(result.contextBudget?.compactionDecisions?.[0]?.reason, 'already_compacted');
   });
 
-  test('manual compactHistory rewrites a fully covered checkpoint that exceeds current limits', async () => {
-    const oldEvents = [
-      runtimeTextEvent({
-        id: 'manual-v2-refit-old-1',
-        turnId: 'manual-v2-refit-turn-1',
-        role: 'user',
-        author: 'user',
-        text: 'manual v2 refit old alpha '.repeat(12),
-      }),
-      runtimeTextEvent({
-        id: 'manual-v2-refit-old-2',
-        turnId: 'manual-v2-refit-turn-2',
-        role: 'model',
-        author: 'agent',
-        text: 'manual v2 refit old beta '.repeat(12),
-      }),
-    ];
-    const previous = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: oldEvents,
-      summary: 'OVERSIZED_PREVIOUS_SUMMARY '.repeat(100),
-      summaryFormat: 'legacy_freeform',
-      charsPerToken: 1,
-    });
-
-    for (const limits of [
-      { maxHistoryEstimatedTokens: 10_000 },
-      { maxHistoryEstimatedTokens: 1_400 },
-    ]) {
-      let summarizeCalls = 0;
-      const recorded: HistoryCompactCheckpoint[] = [];
-      const backend = createTestAiSdkBackend({
-        sessionId: 'session-1',
-        header: header(),
-        appendMessage: async () => {},
-        connection: connection(),
-        apiKey: 'sk-test',
-        modelId: 'mock-model-id',
-        modelFactory: () => completionModel(),
-        tools: [],
-        newId: idGenerator(),
-        now: monotonicClock(),
-        contextBudget: {
-          name: 'manual-v2-refit-test',
-          maxHistoryEstimatedTokens: limits.maxHistoryEstimatedTokens,
-          charsPerToken: 1,
-          historyCompact: { enabled: true },
-        },
-        loadHistoryCompactCheckpoint: () => previous,
-        summarizeHistoryCompact: async () => {
-          summarizeCalls += 1;
-          return structuredSummary('REFITTED_SUMMARY');
-        },
-        recordHistoryCompactCheckpoint: (checkpoint) => {
-          recorded.push(checkpoint);
-        },
-      });
-
-      const result = await backend.compactHistory({
-        turnId: 'turn-compact',
-        runId: 'run-1',
-        runtimeContext: [
-          ...oldEvents,
-          runtimeTextEvent({
-            id: 'manual-v2-refit-recent',
-            turnId: 'manual-v2-refit-recent-turn',
-            role: 'user',
-            author: 'user',
-            text: 'manual v2 refit retained context',
-          }),
-        ],
-      });
-
-      assert.equal(summarizeCalls, 1);
-      assert.equal(recorded.length, 1);
-      assert.equal(result.contextBudget?.compactionDecisions?.[0]?.decision, 'replaced');
-    }
-  });
-
-  test('manual compactHistory does not record a rebuilt checkpoint whose envelope exceeds current limits', async () => {
-    let recordCalls = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      contextBudget: {
-        name: 'manual-v2-envelope-budget-test',
-        maxHistoryEstimatedTokens: 100,
-        charsPerToken: 1,
-        historyCompact: { enabled: true },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('TINY_SUMMARY'),
-      recordHistoryCompactCheckpoint: () => {
-        recordCalls += 1;
-      },
-    });
-
-    const result = await backend.compactHistory({
-      turnId: 'turn-compact',
-      runId: 'run-1',
-      runtimeContext: [
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-old-1',
-          turnId: 'manual-v2-envelope-turn-1',
-          role: 'user',
-          author: 'user',
-          text: 'old alpha '.repeat(20),
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-old-2',
-          turnId: 'manual-v2-envelope-turn-2',
-          role: 'model',
-          author: 'agent',
-          text: 'old beta '.repeat(20),
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-envelope-recent',
-          turnId: 'manual-v2-envelope-recent-turn',
-          role: 'user',
-          author: 'user',
-          text: 'recent tail',
-        }),
-      ],
-    });
-
-    assert.equal(recordCalls, 0);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'prefix_over_budget' });
-  });
-
-  test('manual compactHistory rejects a complete summary that makes the full replay larger', async () => {
-    let recordCalls = 0;
-    const backend = createTestAiSdkBackend({
-      sessionId: 'session-1',
-      header: header(),
-      appendMessage: async () => {},
-      connection: connection(),
-      apiKey: 'sk-test',
-      modelId: 'mock-model-id',
-      modelFactory: () => completionModel(),
-      tools: [],
-      newId: idGenerator(),
-      now: monotonicClock(),
-      contextBudget: {
-        name: 'manual-v2-larger-replacement-test',
-        maxHistoryEstimatedTokens: 10_000,
-        charsPerToken: 1,
-        historyCompact: { enabled: true },
-      },
-      summarizeHistoryCompact: async () => structuredSummary('LARGER_SUMMARY '.repeat(100)),
-      recordHistoryCompactCheckpoint: () => {
-        recordCalls += 1;
-      },
-    });
-
-    const result = await backend.compactHistory({
-      turnId: 'turn-compact',
-      runId: 'run-1',
-      runtimeContext: [
-        runtimeTextEvent({
-          id: 'manual-v2-larger-old-1',
-          turnId: 'manual-v2-larger-turn-1',
-          role: 'user',
-          author: 'user',
-          text: 'old alpha',
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-larger-old-2',
-          turnId: 'manual-v2-larger-turn-2',
-          role: 'model',
-          author: 'agent',
-          text: 'old beta',
-        }),
-        runtimeTextEvent({
-          id: 'manual-v2-larger-recent',
-          turnId: 'manual-v2-larger-recent-turn',
-          role: 'user',
-          author: 'user',
-          text: 'recent tail',
-        }),
-      ],
-    });
-
-    assert.equal(recordCalls, 0);
-    assert.deepEqual(result.outcome, { kind: 'failed', reason: 'replacement_not_smaller' });
-    assert.equal(
-      result.contextBudget?.compactionDecisions?.[0]?.failOpenReason,
-      'replacement_not_smaller',
-    );
-  });
-
   test('manual compactHistory reports output-length exhaustion instead of empty_summary', async () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
@@ -5113,7 +4672,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-output-length-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5167,7 +4725,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-v2-write-gate-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5225,7 +4782,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5329,7 +4885,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-repair-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5415,7 +4970,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'malformed-summary-cancel-circuit-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
         historyCompact: { enabled: true },
       },
@@ -5499,7 +5053,7 @@ describe('AiSdkBackend model history', () => {
         change: (input) => {
           input.contextBudget = {
             ...input.contextBudget,
-            maxHistoryEstimatedTokens: 12_000,
+            name: 'malformed-summary-config-circuit-changed',
           };
         },
       },
@@ -5529,7 +5083,6 @@ describe('AiSdkBackend model history', () => {
           readExecutionBoundary: readExternalExecutionBoundary,
           contextBudget: {
             name: 'malformed-summary-config-circuit-test',
-            maxHistoryEstimatedTokens: 10_000,
             charsPerToken: 1,
             historyCompact: { enabled: true },
           },
@@ -5632,7 +5185,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
     });
@@ -5698,7 +5250,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: async () => structuredSummary('WRITE_FAILURE_SUMMARY'),
@@ -5740,7 +5291,6 @@ describe('AiSdkBackend model history', () => {
       now: monotonicClock(),
       contextBudget: {
         name: 'manual-compact-abort-test',
-        maxHistoryEstimatedTokens: 10_000,
         charsPerToken: 1,
       },
       summarizeHistoryCompact: ({ abortSignal }) =>
@@ -6025,7 +5575,6 @@ describe('AiSdkBackend model history', () => {
       newId: idGenerator(),
       now: monotonicClock(),
       contextBudget: {
-        maxHistoryEstimatedTokens: 1_500,
         charsPerToken: 1,
         historyCompact: {
           enabled: true,
@@ -6121,7 +5670,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6190,7 +5738,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6283,7 +5830,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -6377,7 +5923,6 @@ describe('AiSdkBackend model history', () => {
       modelFactory: () => model,
       tools: [],
       contextBudget: {
-        maxHistoryEstimatedTokens: 100_000,
         historyCompact: { enabled: true },
       },
       loadHistoryCompactCheckpoint: () => checkpoint,
@@ -9283,8 +8828,8 @@ describe('AiSdkBackend context budget and prompt attribution', () => {
       systemPrompt: 'durable system',
       contextBudget: {
         name: 'test-budget',
-        maxHistoryEstimatedTokens: 1_000,
         charsPerToken: 1,
+        historyCompact: { enabled: true },
       },
     });
 

@@ -89,7 +89,7 @@ Next model context = Materialize(
   compact checkpoint,
   RuntimeEvents[k+1..n],
   provider capabilities,
-  current context budget
+  用户声明的 capacity 与 provider 结果
 )
 ```
 
@@ -126,7 +126,7 @@ flowchart LR
 - 这些源事件的 digest 是什么？
 - 它由哪一个 high-water decision 产生？
 - 它是否是上一 checkpoint 的合法 successor？
-- 它在当前 token policy 下仍然能否进入 prompt？
+- 它的 source 与 provider-state identity 在 replay 时是否仍然有效？
 
 所以，Maka 持久化的不是一个裸字符串，而是 `HistoryCompactCheckpoint`：
 
@@ -153,7 +153,7 @@ HistoryCompactCheckpoint
     previousCheckpointId?
 ```
 
-V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque compact item，不会看到 checkpoint 的诊断文本。两者都由 `coverage` 决定有没有资格替代历史。没有 coverage 的 projection 只是笔记；没有 source digest 就无法证明它仍对应当前日志；没有 replay budget 校验，它可能比被替代的工作集更不适合当前请求。
+V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque compact item，不会看到 checkpoint 的诊断文本。两者都由 `coverage` 决定有没有资格替代历史。没有 coverage 的 projection 只是笔记；没有 source digest 就无法证明它仍对应当前日志；因此 replay 前必须通过 source identity 与结构校验。
 
 ## Current：完整请求仍从 RuntimeEvents 开始
 
@@ -164,7 +164,7 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 3. 加载最新且兼容的 ledger-backed checkpoint；
 4. 在 immutable RuntimeEvent 序列上校验并 replay 已有 checkpoint；
 5. 只对未覆盖的 projected remainder 执行 stale oversized Tool Result prune；
-6. 如果 projected history 仍超出预算，选择 safe prefix 与 retained tail；
+6. 如果 active request 有用户声明的 Maka 窗口，且上一次成功请求的真实 usage 加上回复预留 `min(上次回复 × 2, 8000)` 达到它，选择 safe prefix 与 retained tail；
 7. 如果旧 checkpoint 不足以覆盖新的 fold，调用 compactor 滚动生成 successor；
 8. successor 通过校验并 durable record 后才能使用；
 9. V2 checkpoint 投影为 synthetic text RuntimeEvent；V3 checkpoint 则作为显式 projection metadata 传递，然后拼接未覆盖 raw tail；
@@ -180,11 +180,11 @@ V2 中模型主要看到 `summary`；V3 中 provider 看到自己的 opaque comp
 
 ## Trigger 在 compaction 开始前结束
 
-Capacity 要么是所选模型声明的 context window，要么根本不存在，Runtime 不会自己造一个。有声明的 window 时，reserve 取 window 的四分之一且上限为 16,384 tokens，其余部分用来塑形历史；没有声明 window 时就没有可用来衡量请求的 capacity，pre-turn gate 退回到 policy 自己的 history-shaping budget——多数 provider 是 32,000 tokens，两者都不公布的 provider 则没有预算。无论哪种情况，估算都只用来请求 compaction，不会结束请求。
+Capacity 是用户为所选模型声明的 context window，否则就不存在；Runtime 不会自己造一个。provider 的 `/models` 报告和生成 metadata 只在设置项旁作为提示，不是阈值。有声明时，active-turn compaction 只在上一次成功请求的真实 `inputTokens + outputTokens` 加上回复预留 `min(上次回复 × 2, 8000)` 达到它时触发。预留量的是模型实际写出的回复，不是它可能写出的最大值：某些模型声明的输出上限占窗口很大一部分，照它预留会在窗口的一小部分处就折叠。没有声明或没有可用 baseline 时，不主动按 capacity 折叠。真实的 context-length rejection 是 provider 证据；`finishReason: length` 不是，因为「provider 窗口没空间」与「provider 自身更低的输出上限」从外部无法区分。请求是否放得下始终由 provider 决定：本地数字只能触发可逆的折叠，永远不能终止一个 turn。
 
 Trigger owner 使用这个 capacity，但不参与 compaction：
 
-- pre-turn 与 active-turn evaluator 在 projected request 越过推导出的 capacity 时发出 Compact command；
+- active-turn evaluator 在上一次成功请求的真实 usage 加上回复预留达到用户声明的 capacity 时发出 Compact command；
 - provider-overflow recovery 在真实 overflow 后发出同一 command；
 - 手动 `context.compact` 直接发出 command，不伪造 high-water crossing。
 
@@ -197,7 +197,7 @@ trigger owner emits Compact command
   → append one checkpoint or leave durable state unchanged
 ```
 
-Safe-prefix selection 不会跨越 partial event、pinned live event 或 Tool Call/Result pair。Trigger-specific caller 可以保留一小段 verbatim successor tail，但一个 completed Turn 无论包含多少 Agent Loop steps 都可以 compact。Context management 不再提供环境变量 policy surface；模型事实与这些 Runtime invariant 是唯一输入。
+Safe-prefix selection 不会跨越 partial event、pinned live event 或 Tool Call/Result pair。Trigger-specific caller 可以保留一小段 verbatim successor tail，但一个 completed Turn 无论包含多少 Agent Loop steps 都可以 compact。Context management 不再提供环境变量 policy surface；用户声明、provider usage、provider outcome 与这些 Runtime invariant 是唯一输入。
 
 ## LLM 在这里做什么，也不做什么
 
@@ -209,9 +209,9 @@ LLM compaction 的任务是生成一份“让另一个 LLM 继续工作”的结
 - Next Steps；
 - Critical Context，包括精确路径、函数名、命令、结果和错误。
 
-Summarizer 会看到被新折叠的用户/模型文本与 tool call/result。Thinking 被有意排除。Runtime Host 复用当前 Session 选中的 connection、model 与 provider options，不额外设置 compaction-only output-token cap。如果 provider 以 output-length 结束，这份不完整 summary 会被拒绝。Checkpoint builder 保留完整的已接受 summary；replay gate 按完整 model-visible size 判断，而不是在生成后截断。
+Summarizer 会看到被新折叠的用户/模型文本与 tool call/result。Thinking 被有意排除。Runtime Host 复用当前 Session 选中的 connection、model 与 provider options，并把 compaction output 限制为 8,000 tokens。若 provider 以 output-length 结束，先用更短 prompt 重试一次，仍然不完整的 summary 会被拒绝。Checkpoint builder 保留完整的已接受 summary；replay 校验 source 与 provider-state identity，不再应用本地 request-size verdict。
 
-文本 prompt 与 validator 共用一份 section template。新的 V2 summary 必须依次包含有实质内容的 `Goal`、`Progress`、`Next Steps` 与 `Critical Context`，不能结束在未闭合 fence 或其他 truncation marker 上，也不能相对 fold 过小：fold 超过 10,000 estimated tokens 时，summary 至少需要 200 estimated tokens。第一份 malformed completion 只有一次更严格的 repair request，checkpoint write gate 随后还会再次校验结果。
+文本 prompt 与 validator 共用一份 section template。新的 V2 summary 必须依次包含有实质内容的 `Goal`、`Progress`、`Next Steps` 与 `Critical Context`，不能结束在未闭合 fence 或其他 truncation marker 上，也不能相对 fold 过小：provider 报告 fold input 超过 10,000 tokens 时，summary 至少需要 200 个 provider output tokens。第一份 malformed completion 只有一次更严格的 repair request，checkpoint write gate 随后还会再次校验结果。
 
 Repair 之外的 malformed retry 也有上限。Runtime 为每个 Session backend 最多记住 16 个精确 malformed-input fingerprint，其中覆盖 connection、model、route、policy 与 input budget、request shape、previous checkpoint 和 folded source events。输入不变时直接 fail open，不再 dispatch provider；source 或配置变化后可以重试。Cancellation 不会触发这个 circuit。细分的 `malformed_summary_*` reason 会一直保留到 compaction diagnostics 与 terminal context-budget detail。
 
@@ -232,11 +232,11 @@ Repair 之外的 malformed retry 也有上限。Runtime 为每个 Session backen
 
 当所选 connection 的 `providerType` 为 `openai-codex` 时，Maka 默认使用 Codex 服务端 compactor，不再让模型生成文本摘要。provider request 仍由已校验的 RuntimeEvent prefix 构建。专用 compactor 会设置 `providerOptions.openai.compactionTrigger: true`，从而追加唯一一个位于 input 末尾的 `{ "type": "compaction_trigger" }` item。compactor 使用流式 Responses 路径并消费完整 stream，因为只有 compaction output 的响应不存在普通 generated-text result；普通 Codex 请求不会设置这个选项，因此行为不变。
 
-可移植的文本 summarizer 仍作为有界的 liveness fallback。当 native request 收到不可重试的协议级 `RequestRejected`、没有返回唯一合法的 compact state，或无法容纳 native history projection 时，Maka 会通过文本 summarizer 重试一次。Cancellation、鉴权、计费、限流和 provider 不可用仍保留原始结果，不会向同一个异常连接发送双倍流量。两次物理请求属于同一个逻辑 compaction call，但 telemetry 会分别记录 `provider_native` 与 `text_summary`。
+可移植的文本 summarizer 仍作为有界的 liveness fallback。当 native request 收到不可重试的协议级 `RequestRejected` 或没有返回唯一合法的 compact state 时，Maka 会通过文本 summarizer 重试一次。Cancellation、鉴权、计费、限流和 provider 不可用仍保留原始结果，不会向同一个异常连接发送双倍流量。两次物理请求属于同一个逻辑 compaction call，但 telemetry 会分别记录 `provider_native` 与 `text_summary`。
 
 Compaction input 会保留 assistant step 的时序。由于 Responses converter 在 `store:false` 下无法重新发送 provider-executed tool result，已经完整结算的 hosted call/result 只在这次 compaction request 中降级为成对的普通 function call 与 output，之后再放 grounded assistant text。这样既保留了现有 tool evidence，也不会生成悬空 output。
 
-Compaction call 会收到当前 history input budget。若 RuntimeEvent projection 超出该估算值，Maka 会把较旧的 Tool Result payload 替换为固定 omission marker，同时保留每一组 call/result 配对和之后的 grounded text。若剩余的非工具历史仍无法容纳，Runtime 不会发送一条已经超出容量的 native request，而是先给文本 summarizer 一次 fallback 机会，再进入正常 fail-open 路径。
+Compaction call 的 output 上限是 8,000 tokens，是否能放下由 provider 的正常请求路径决定。Tool Result archive policy 仍可以把过大的单条结果替换为可持久化 placeholder，但 history compaction 不再量最终 request，也不会因为本地估算认为过大而拒绝候选。
 
 这是有意设计成 history-only 的契约。与 Codex CLI 的 whole-request assembly 不同，Maka 不会把当前 system prompt 或 tool catalog 发给 remote compactor；它们既不属于 checkpoint source coverage，也不会被冻结进 checkpoint，后续模型请求始终使用当时最新的 system prompt 和 tools。这样 provider-native 与 text-summary compactor 可以共享同一份小契约，代价是 compactor 无法利用这部分额外的 request-shape context。
 
@@ -246,7 +246,7 @@ V3 schema 也是兼容边界：只理解 schema V2 的旧 binary 会拒绝它并
 
 ## Rolling checkpoint：不要反复总结整个世界
 
-长期 Session 会多次越过 high water。如果每次都把所有旧事件重新发送给 summarizer，compaction 自身会变成越来越昂贵的请求，也会让旧事实被反复改写。
+长期 Session 会创建多个 rolling checkpoint。如果每次都把所有旧事件重新发送给 summarizer，compaction 自身会变成越来越昂贵的请求，也会让旧事实被反复改写。
 
 Schema V2 文本 checkpoint 使用 rolling checkpoint：
 
@@ -357,16 +357,16 @@ flowchart TD
 
 这张图解释 checkpoint lookup 的恢复关系，不代表 RuntimeEvent ledger 本身需要修复。Projection repair 失败不会让已经选出的 checkpoint 失去来源；但如果 canonical ledger 也无法读取，系统不会凭损坏缓存继续猜测。
 
-## Replay：Checkpoint 必须再次接受当前 policy 审判
+## Replay：Checkpoint 必须再次接受 source 与 identity 校验
 
-一个曾经合法的 checkpoint 不保证永远适合所有请求。所选模型可能切换，context window 可能变小，Runtime 也可能根据当前 model facts 推导出更小的 `maxHistoryEstimatedTokens`。
+一个曾经合法的 checkpoint 不会自动适用于所有后续请求。所选 model 或 connection 可能切换，source coverage 可能不再匹配日志，provider-native state 也可能不再可 replay。
 
-`evaluateHistoryCompactCheckpointReplay()` 是 source-matched checkpoint 进入模型历史的统一 current-policy fit gate。它重新计算 V2 model-visible checkpoint estimate（V3 使用已记录的 estimate），并检查：
+Checkpoint replay 是 source 与 identity gate。只有匹配的 checkpoint 才能进入模型历史，并检查：
 
-- checkpoint 与 replay tail 合计不超过当前 history budget；
-- 如果有 source projection 可供比较，replacement 必须严格小于该 source。
+- checkpoint 结构有效，并且匹配不可变的 RuntimeEvent prefix；
+- provider-native state 属于兼容的同一 connection 与 model。
 
-只有 source match 与 current-policy fit 同时成立，projection 才能 replay。
+只有 source match 与 replay identity validation 同时成立，projection 才能 replay。本地 payload-size verdict 不会挡在有效 projection 与 provider dispatch 之间。
 
 Replay 时，covered raw prefix 不进入 provider request；未覆盖的 folded suffix 与 retained recent events 继续以 raw RuntimeEvents 存在。V2 文本 checkpoint 会让模型看到：
 
@@ -384,7 +384,7 @@ Replay 时，covered raw prefix 不进入 provider request；未覆盖的 folded
 
 Checkpoint 的 `limitations` 会明确提醒：它只是 covered RuntimeEvent prefix 的 replay-time summary；精确措辞仍应回到 RuntimeEvent ledger。
 
-兼容的 V3 checkpoint 则产生 assistant `openai.compaction` custom part，后面拼接同一份 raw tail 与 current Turn；opaque 字段绝不会被渲染为 user/system 文本。identity、source coverage、shape 或 current-policy fit 任一失败时，Runtime 会保留或重新压缩 source-derived raw projection。
+兼容的 V3 checkpoint 则产生 assistant `openai.compaction` custom part，后面拼接同一份 raw tail 与 current Turn；opaque 字段绝不会被渲染为 user/system 文本。identity、source coverage 或 shape 任一失败时，Runtime 会保留或重新压缩 source-derived raw projection。
 
 ## Failure semantics：宁可少看，也不要看一份假历史
 
@@ -392,19 +392,19 @@ Compaction 跨越 token estimation、LLM call、schema construction、durable ap
 
 | 失败位置 | 当前行为 | 不允许发生的事 |
 |---|---|---|
-| 未超过 high water | 保持原投影或普通预算裁剪 | 为了“提前优化”制造无来源摘要 |
+| 没有用户声明的 Maka window 或没有可用 usage baseline | 保留 source-derived projection，由 provider 裁决 | Runtime 自造 capacity 或估算第一次请求 |
 | LLM 返回空 summary | 不记录新 checkpoint。自动 pre-turn compaction 保留原有的 source-derived projection 并照常发出，不写入失败 note，放不放得下由 provider 回答；手动 compaction 则记录一次可见的 `context_compaction_failed_open` note | 把空 projection 当作 covered history |
 | Text summary 格式不合法 | 只进行一次更严格的 repair，之后以细分 reason fail open；同一失败 fingerprint 不再 dispatch | 持久化不完整结构，或在相同 doomed input 上循环 |
 | Codex 没有返回唯一且合法的 compact item | 尝试一次可移植文本摘要 checkpoint；若仍失败再 fail open | 持久化残缺或有歧义的 provider state |
-| Native compaction input 在有界省略 Tool Result 后仍无法容纳 | 不发送 native request，尝试一次有界文本摘要 checkpoint | 要求 provider 压缩一条已经超出容量的请求 |
-| Rolling summarizer 失败 | 若旧 checkpoint 仍匹配且符合当前限制，则复用它并拼接能容纳的最新完整 raw Turns | 假装旧 checkpoint 已覆盖 newly evicted events |
+| Provider 拒绝 compaction request | 遵循 provider error path，不编造本地 fit verdict | 把本地大小估算当作 provider rejection |
+| Rolling summarizer 失败 | 保持 durable coverage 不变并 fail open | 假装旧 checkpoint 已覆盖新折叠的 events |
 | Durable checkpoint append 失败 | 不使用 candidate；回退旧 checkpoint 或安全 tail | 让未提交 projection 进入模型后再声称可恢复 |
 | Prefix 或 digest 不匹配 | 拒绝 checkpoint | 用近似匹配替代 canonical events |
-| Checkpoint 超出当前 budget | 不 replay 它 | 因为过去接受过就绕过当前 policy |
+| Checkpoint identity 或 source coverage 失败 | 不 replay 它 | 因为过去接受过就绕过 source validation |
 | Bounded projection 损坏 | 从 canonical AgentRun ledger 恢复并修复 projection | 把缓存当成唯一事实源 |
 | 用户停止 manual compaction | 中止 summarizer/write 链路，不污染下一 Turn | 让迟到结果写入或复用 abort state |
 
-这里的 fail-open 不是“无论如何发送完整历史”。当历史已经超过模型预算时，完整 raw prefix 本身可能不可发送。自动 pre-turn 的 V2 初次 summary 失败会原样保留 source-derived projection；该 projection 放不放得下由 provider 决定：请求被拒后压缩并重试一次，再次被拒则以 `context_overflow` 报 provider 错误。手动 compaction 对同一失败结果写入一次可见的 `context_compaction_failed_open` note。Rolling failure 可以复用旧 checkpoint，但绝不会扩大它的 coverage claim。
+这里的 fail-open 意味着“保留有效的 source-derived projection，由 provider 裁决”。automatic 或 active-turn summary 失败时保留 raw projection；provider rejection 会触发一次折叠重试，第二次 rejection 则作为 `context_overflow` provider error 暴露。manual compaction 对同样的失败结果记录一条可见的 `context_compaction_failed_open` note。rolling failure 可以保留旧 checkpoint，但不会扩大其 coverage claim。
 
 正确理解是：
 
@@ -485,7 +485,7 @@ LLM 在 summary 中写“测试已通过”仍然只是对 source events 的概�
 2. **Projection coverage**：每个 checkpoint 都绑定一个有序 source prefix、through boundary 和 digest。
 3. **No durability, no replacement**：新 checkpoint 未 durable append 时，不得作为 accepted replacement replay。
 4. **Monotonic high water**：新 checkpoint 通常必须覆盖更多 events；同 coverage rewrite 必须是显式 successor。
-5. **Current-policy validation**：历史上合法不代表当前 request 可以使用。
+5. **Current identity validation**：历史上合法不代表绕过当前 source 与 provider-state 兼容性检查。
 6. **Raw recent tail**：模型始终获得当前预算允许的最新 source-derived raw context。
 7. **No false coverage**：rolling failure 不得让旧 summary 声称覆盖新 events。
 8. **Projection is rebuildable**：bounded cache/projection 损坏时，可以从 canonical ledger 恢复。
@@ -502,20 +502,20 @@ LLM 在 summary 中写“测试已通过”仍然只是对 source events 的概�
 
 第二，系统需要维护 coverage、digest、lineage、policy gate、recovery projection 与 diagnostics。一个裸 summary 实现更短，但无法提供相同的可审计性。
 
-第三，当前 V2 checkpoint 只验证 source identity、shape 与预算，不验证 summary 的语义完备性。非空、bounded、结构清晰不等于内容正确。未来如果引入 summary quality gate，应当使用 source-bearing checks，并把 validator 结果作为 projection metadata，而不是把 validator 变成新的事实源。
+第三，当前 V2 checkpoint 只验证 source identity 与 shape，不验证 summary 的语义完备性。非空、bounded、结构清晰不等于内容正确。未来如果引入 summary quality gate，应当使用 source-bearing checks，并把 validator 结果作为 projection metadata，而不是把 validator 变成新的事实源。
 
 第四，V2 checkpoint 当前没有完整记录 summarizer model identity、prompt version 或 request-shape hash。它足以安全 replay 已接受 projection，却不足以承诺确定性再生成。若未来需要比较 compactor 版本、做离线回归或解释摘要漂移，这些字段值得进入明确版本化的 projection manifest。
 
-第五，rolling summary 会积累有损误差。原始日志仍然允许重新从更早 high water 生成新 projection，但当前主路径优先增量更新以控制成本。什么时候触发 full re-compaction，应由质量信号而不是任意时间间隔决定。
+第五，rolling summary 会积累有损误差。原始日志仍然允许重新从更早 coverage boundary 生成新 projection，但当前主路径优先增量更新以控制成本。什么时候触发 full re-compaction，应由质量信号而不是任意时间间隔决定。
 
 ## 代码地图与验证入口
 
 当前实现可以从以下位置阅读：
 
-1. `packages/runtime/src/context-budget.ts`：checkpoint-before-prune orchestration 与 context diagnostics；
-2. `packages/runtime/src/history-compaction.ts`：high-water estimation、safe prefix/tail selection、planning 与 replay policy；
+1. `packages/runtime/src/context-budget.ts`：durable projection orchestration 与 context diagnostics；
+2. `packages/runtime/src/history-compaction.ts`：safe prefix/tail selection、planning 与 replay policy；
 3. `packages/runtime/src/history-compact-checkpoint.ts`：V2/V3 schema、provider identity、digest、prefix match、lineage 与 replay materialization；
-4. `packages/runtime/src/history-compact-summary-validation.ts`：共用的 section、truncation 与 large-fold size gate；
+4. `packages/runtime/src/history-compact-summary-validation.ts`：共用的 section、truncation 与 provider-usage quality gate；
 5. `packages/runtime/src/history-compact-summarizer.ts`：LLM continuation-summary prompt、bounded repair 与 rolling input；
 6. `packages/runtime/src/ai-sdk-compaction.ts`：compaction orchestration、malformed-input circuit、write 与 fallback 语义；
 7. `packages/runtime/src/ai-sdk-backend.ts`：prior-history request projection 与 provider materialization；
@@ -523,15 +523,15 @@ LLM 在 summary 中写“测试已通过”仍然只是对 source events 的概�
 9. `packages/runtime/src/history-compact-ledger.ts`：bounded projection lookup、ledger recovery 与 checkpoint selection；
 10. `packages/runtime/src/runtime-kernel.ts`：checkpoint write serialization 与 manual compaction lifecycle；
 11. `packages/storage/src/agent-run-store.ts`：canonical event 与 bounded projection 的 atomic persistence；
-12. `packages/runtime/src/context-budget-policy.ts`：model-capacity derivation 与固定 Runtime policy；
+12. `packages/runtime/src/context-budget-policy.ts`：user-declared capacity resolution 与固定 Runtime policy；
 13. `packages/runtime/src/openai-codex-history-compactor.ts`：Codex compact output 校验与 rolling provider-state input；
 14. `packages/runtime-host/src/server/execution-model-composition.ts`：默认 provider-specific compactor 选择。
 
 重点测试包括：
 
 - `history-compact-checkpoint.test.ts`：coverage metadata、prefix digest、summary admission、ledger recovery、projection repair 与 policy replay；
-- `history-compaction.test.ts`：high-water estimation、safe prefix/tail selection、Tool pair preservation、rolling update 与 write gate；
-- `history-compact-summarizer.test.ts`：provider options、input fitting、structured-summary validation/repair 与 rolling input；
+- `history-compaction.test.ts`：safe prefix/tail selection、Tool pair preservation、rolling update 与 write gate；
+- `history-compact-summarizer.test.ts`：provider options、output limits、structured-summary validation/repair 与 rolling input；
 - `context-budget.test.ts`：canonical-ledger retention，以及 checkpoint 在 stale Tool Result prune 前 replay；
 - `context-budget-mid-turn-policy.test.ts`：model-capacity derivation 与固定 Runtime defaults；
 - `mid-turn-capacity-backend.test.ts`：persist-before-apply、fail-open/exhaustion detail 与 active-turn retry bound；
@@ -546,16 +546,16 @@ Maka 的 LLM compaction 不是一次对 conversation table 的 destructive rewri
 
 ```text
 RuntimeEvent prefix
-  → deterministic coverage and high-water selection
+  → deterministic coverage selection
   → LLM continuation summary
   → durable HistoryCompactCheckpoint event
-  → source/digest/current-policy validation
+  → source/digest/provider-state identity validation
   → synthetic checkpoint RuntimeEvent + raw recent tail
   → provider-specific ModelMessage projection
 ```
 
 这条链的精妙之处不在于 LLM 能写出多漂亮的摘要，而在于系统从未把摘要误认为历史本身。
 
-日志回答“发生过什么”；checkpoint 回答“在这个 high water 上，下一次推理可以怎样继续”；provider request 回答“这个模型在这一次调用里实际需要看到什么”。三者各自有不同生命周期，也各自有明确的 authority。
+日志回答“发生过什么”；checkpoint 回答“在这个 coverage boundary 上，下一次推理可以怎样继续”；provider request 回答“这个模型在这一次调用里实际需要看到什么”。三者各自有不同生命周期，也各自有明确的 authority。
 
-所以，**compaction is the Events Log's projection** 不只是一句设计口号。它具体意味着：source 不可被摘要覆盖，projection 必须带 coverage，accepted replacement 必须 durable，replay 必须重新通过当前 policy，而任何 projection 都应该能够被丢弃、校验或从日志重建。
+所以，**compaction is the Events Log's projection** 不只是一句设计口号。它具体意味着：source 不可被摘要覆盖，projection 必须带 coverage，accepted replacement 必须 durable，replay 必须重新通过 source 与 provider-state identity 校验，而任何 projection 都应该能够被丢弃、校验或从日志重建。

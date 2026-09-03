@@ -599,25 +599,6 @@ describe('history compact checkpoint', () => {
     );
   });
 
-  test('the builder re-runs the size floor over the covered span it is handed', () => {
-    // Every construction seam has the covered events in hand — including
-    // copy — so a structurally valid but undersized summary cannot be
-    // rebuilt over a large span and keep the marker.
-    const bigEvent: RuntimeEvent = {
-      ...textEvent(0),
-      content: { kind: 'text', text: `big ${'x'.repeat(60_000)}` },
-    };
-    assert.throws(
-      () =>
-        buildHistoryCompactCheckpoint({
-          sessionId: 'session-1',
-          coveredRuntimeEvents: [bigEvent],
-          summary: STRUCTURED_SUMMARY,
-        }),
-      /summary failed validation: malformed_summary_too_small_for_fold/,
-    );
-  });
-
   test('shape validation fails closed on an unknown summary format marker', () => {
     const stamped = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
@@ -945,15 +926,10 @@ describe('history compact checkpoint', () => {
       summaryFormat: 'legacy_freeform',
     });
 
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      {
-        enabled: true,
-        checkpoint,
-      },
-      1,
-      1_000,
-    );
+    const replay = applyRuntimeEventHistoryCompact(events, {
+      enabled: true,
+      checkpoint,
+    });
 
     assert.equal(replay.events[0]?.id, `history-compact:${checkpoint.checkpointId}`);
     assert.match(
@@ -967,7 +943,7 @@ describe('history compact checkpoint', () => {
     assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
   });
 
-  test('replays a durable pre_turn checkpoint below the current high water', () => {
+  test('replays a durable pre_turn checkpoint without a local size gate', () => {
     const events = Array.from({ length: 6 }, (_, index) => ({
       ...textEvent(index),
       content: {
@@ -982,16 +958,11 @@ describe('history compact checkpoint', () => {
       summaryFormat: 'legacy_freeform',
     });
 
-    // The raw history is deliberately far below high water. Once a durable
+    // The raw history is deliberately small. Once a durable
     // checkpoint exists, replaying it is nevertheless mandatory: otherwise a
     // recovery/manual compaction only affects its own turn and the next turn
     // resurrects the covered raw prefix.
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      { enabled: true, checkpoint },
-      4,
-      1_000_000,
-    );
+    const replay = applyRuntimeEventHistoryCompact(events, { enabled: true, checkpoint });
 
     assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(
@@ -999,72 +970,6 @@ describe('history compact checkpoint', () => {
       [`history-compact:${checkpoint.checkpointId}`, 'event-4', 'event-5'],
     );
     assert.equal(replay.diagnosticPatch.compactionDecisions?.[0]?.decision, 'replaced');
-  });
-
-  test('accepts a complete checkpoint above legacy block limits when the full replay fits', () => {
-    const events = Array.from({ length: 8 }, (_, index) => ({
-      ...textEvent(index),
-      content: {
-        kind: 'text' as const,
-        text: `source-payload-${index} `.repeat(index < 4 ? 80 : 1),
-      },
-    }));
-    const checkpoint = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: events.slice(0, 4),
-      summary: 'checkpoint summary '.repeat(20),
-      summaryFormat: 'legacy_freeform',
-      charsPerToken: 1,
-    });
-    assert.ok(checkpoint.estimatedTokens > 100);
-
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      {
-        enabled: true,
-        checkpoint,
-      },
-      1,
-      10_000,
-    );
-
-    assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
-    assert.equal(
-      replay.events.some((event) => event.id === `history-compact:${checkpoint.checkpointId}`),
-      true,
-    );
-  });
-
-  test('applies max-history overrides to checkpoint replay validation', () => {
-    const events = Array.from({ length: 8 }, (_, index) => ({
-      ...textEvent(index),
-      content: { kind: 'text' as const, text: `payload-${index} `.repeat(20) },
-    }));
-    const checkpoint = buildHistoryCompactCheckpoint({
-      sessionId: 'session-1',
-      coveredRuntimeEvents: events.slice(0, 6),
-      summary: 'short checkpoint',
-      summaryFormat: 'legacy_freeform',
-      charsPerToken: 1,
-    });
-    const checkpointTokens = estimateRuntimeEventsTokens(
-      [historyCompactCheckpointToRuntimeEvent(checkpoint)],
-      1,
-    );
-    const overrideMax = checkpointTokens + 1;
-
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      {
-        enabled: true,
-        checkpoint,
-      },
-      1,
-      10_000,
-      { maxHistoryEstimatedTokens: overrideMax },
-    );
-
-    assert.equal(replay.checkpoint, undefined);
   });
 });
 
