@@ -100,7 +100,9 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 110 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 111 as const;
+// 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
+// Older Hosts reject the keyword, so peers must agree before capabilities are admitted.
 // 110: Runtime Host is the sole schema-migration authority for its State Root.
 // Epoch 109 Desktop builds could migrate the event-only AgentRun schema while
 // an older service Host still held the root, leaving that Host querying a
