@@ -247,8 +247,9 @@ code {
 }
 
 /* Hero: the Astryx Centered Hero template */
+/* The hero and the scene share one laptop screen (900px tall), so the scene animation plays in view. */
 .hero {
-  padding: 64px 0 24px;
+  padding: 40px 0 24px;
   text-align: center;
 }
 h1.display {
@@ -272,7 +273,7 @@ h1.display b {
   line-height: 1.55;
   color: var(--muted-foreground);
   max-width: 60ch;
-  margin: 0 auto 26px;
+  margin: 0 auto 22px;
   text-wrap: balance;
 }
 .cta {
@@ -297,12 +298,12 @@ h1.display b {
 
 /* Hero scene: one turn of RuntimeEvents on a page-radius tinted ground */
 .scene {
-  margin: 40px auto 0;
+  margin: 28px auto 0;
   border-radius: var(--radius-page);
   background: var(--tint);
   overflow: hidden;
   position: relative;
-  height: 360px;
+  height: 320px;
   display: grid;
   place-items: center;
 }
