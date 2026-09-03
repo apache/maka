@@ -82,7 +82,7 @@ export interface MakaRunOutcome {
   status: 'completed' | 'failed';
   finalOutput?: string;
   failure?: { class: string; message?: string };
-  sandboxBoundary: 'none' | 'unresolved' | 'recovered';
+  sandboxBoundary: 'none' | 'unresolved';
 }
 
 export interface MakaRunContextInput {
@@ -311,10 +311,7 @@ export async function runMakaTextCliCore(
       ...(parsed.options.hostProfileId ? { hostProfileId: parsed.options.hostProfileId } : {}),
       ...(parsed.options.projectId ? { projectId: parsed.options.projectId } : {}),
       runOutcomeObserver: (result) => {
-        if (result.sandboxBoundary === 'recovered') {
-          boundaryFailureInvocationIds.delete(result.outcomeId);
-          unclassifiedBoundaryFailure = false;
-        } else if (result.sandboxBoundary === 'unresolved') {
+        if (result.sandboxBoundary === 'unresolved') {
           boundaryFailureInvocationIds.add(result.outcomeId);
           unclassifiedBoundaryFailure = false;
         }

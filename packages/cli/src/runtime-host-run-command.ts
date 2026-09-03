@@ -596,14 +596,10 @@ class TurnOutcomeClassifier {
   >();
   readonly #unresolvedSandboxFailures = new Map<
     string,
-    {
-      readonly failedStepId: string | undefined;
-      readonly failedToolName: string | undefined;
-    }
+    { readonly failedStepId: string | undefined; readonly failedToolName: string | undefined }
   >();
   #finalOutput: string | undefined;
   #terminal: TerminalOutcomeObservation | undefined;
-  #sandboxBoundaryRecovered = false;
 
   constructor(outcomeId: string) {
     this.#outcomeId = outcomeId;
@@ -628,29 +624,16 @@ class TurnOutcomeClassifier {
         });
         return;
       case 'tool_result': {
-        const call = this.#callByToolUseId.get(observation.toolUseId);
         if (observation.outcome === 'sandbox_failure') {
+          const call = this.#callByToolUseId.get(observation.toolUseId);
           this.#unresolvedSandboxFailures.set(observation.toolUseId, {
             failedStepId: call?.stepId,
             failedToolName: call?.toolName,
           });
-          return;
         }
-        const unresolved = [...this.#unresolvedSandboxFailures.values()];
-        // The wire has no retry identity. A later success can only prove recovery
-        // when there is exactly one unresolved candidate.
-        if (
-          observation.outcome === 'success' &&
-          call?.toolName !== 'request_sandbox_boundary' &&
-          unresolved.length === 1 &&
-          call?.stepId !== undefined &&
-          unresolved[0]?.failedStepId !== undefined &&
-          call.stepId !== unresolved[0].failedStepId &&
-          call.toolName === unresolved[0].failedToolName
-        ) {
-          this.#unresolvedSandboxFailures.clear();
-          this.#sandboxBoundaryRecovered = true;
-        }
+        // No clearing path: `maka run` denies every widening request, so the
+        // boundary cannot move mid-Turn and a later success cannot prove that
+        // a blocked call recovered. The failure stays unresolved to the end.
         return;
       }
     }
@@ -662,12 +645,7 @@ class TurnOutcomeClassifier {
     const terminal = this.#terminal;
     if (!terminal && incomplete === 'pending') return undefined;
     const completed = terminal?.status === 'completed';
-    const sandboxBoundary =
-      this.#unresolvedSandboxFailures.size > 0
-        ? 'unresolved'
-        : this.#sandboxBoundaryRecovered
-          ? 'recovered'
-          : 'none';
+    const sandboxBoundary = this.#unresolvedSandboxFailures.size > 0 ? 'unresolved' : 'none';
     const failure =
       terminal?.status === 'failed'
         ? terminal.failure

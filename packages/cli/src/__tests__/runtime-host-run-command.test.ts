@@ -313,6 +313,82 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('returns exit code 1 when a same-named tool retries a different target (live)', async () => {
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Partial answer',
+        'Read',
+        { path: '/workspace/README.md' },
+        { path: '/outside/secret.txt' },
+      ),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['accept same-name different target']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when a same-named tool retries a different target (durable)', async () => {
+    const fixture = runFixture({
+      graph: true,
+      finalMessages: sandboxBoundaryMessages(
+        'step-1',
+        'step-2',
+        'Read',
+        { path: '/workspace/README.md' },
+        { path: '/outside/secret.txt' },
+      ),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, [
+      'accept durable same-name different target',
+      '--graph',
+    ]);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('keeps a same-target retry unresolved because the boundary cannot move (live)', async () => {
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Recovered answer',
+        'Read',
+        { path: '/workspace/README.md' },
+        { path: '/workspace/README.md' },
+      ),
+    });
+
+    const exitCode = await runFixtureCommand(fixture, ['accept same-target retry']);
+
+    assert.equal(exitCode, 1);
+  });
+
+  test('returns exit code 1 when a denied widening precedes any later tool success', async () => {
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: deniedWideningEvents('turn-1'),
+    });
+
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['accept post-denial success'],
+      () => {},
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
@@ -351,18 +427,26 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(stdout.join(''), 'Final graph answer\n');
   });
 
-  test('returns exit code 0 when a root Graph boundary failure recovers', async () => {
+  test('keeps a root Graph boundary failure unresolved even when a later same-named call succeeds', async () => {
     const stdout: string[] = [];
+    const stderr: string[] = [];
     const fixture = runFixture({
       graph: true,
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
-    const exitCode = await runFixtureCommand(fixture, ['recover once', '--graph'], (text) =>
-      stdout.push(text),
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['recover once', '--graph'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
     );
 
-    assert.equal(exitCode, 0);
-    assert.equal(stdout.join(''), 'Final graph answer\n');
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
   });
 
   test('returns exit code 1 when a same-step Graph sibling succeeds after a sandbox failure', async () => {
@@ -465,7 +549,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(observed.at(-1)?.finalOutput, 'Final graph answer');
   });
 
-  test('reports a recovered sandbox boundary from live and durable Turns', async () => {
+  test('keeps the sandbox boundary unresolved across live and durable Turns', async () => {
     const live = await observeFixtureOutcome({
       turnEvents: sandboxBoundaryEvents('turn-1', 'step-1', 'step-2', 'Recovered answer'),
     });
@@ -474,8 +558,8 @@ describe('Runtime Host maka run adapter', () => {
       finalMessages: sandboxBoundaryMessages('step-1', 'step-2'),
     });
 
-    assert.equal(live.sandboxBoundary, 'recovered');
-    assert.equal(durable.sandboxBoundary, 'recovered');
+    assert.equal(live.sandboxBoundary, 'unresolved');
+    assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
   test('leaves sandbox failures unresolved when their provider steps are unavailable', async () => {
@@ -491,7 +575,7 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.sandboxBoundary, 'unresolved');
   });
 
-  test('returns a recovered boundary to unresolved after a later sandbox failure', async () => {
+  test('keeps the boundary unresolved across interleaved successes and a later sandbox failure', async () => {
     const outcome = await observeFixtureOutcome({
       turnEvents: sandboxFailureAfterRecoveryEvents('turn-1'),
     });
@@ -1413,16 +1497,22 @@ function sandboxBoundaryMessages(
   failureStepId: string | undefined,
   successStepId: string | undefined,
   successToolName = 'Read',
+  successArgs: unknown = {},
+  failureArgs: unknown = {},
 ): StoredMessage[] {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
   return [
     ...graphMessages(false),
-    ...(failureStepId === undefined ? [] : [storedToolCall('turn-2', 'tool-1', failureStepId, 5)]),
-    ...(sameStep ? [storedToolCall('turn-2', 'tool-2', successStepId, 6, successToolName)] : []),
+    ...(failureStepId === undefined
+      ? []
+      : [storedToolCall('turn-2', 'tool-1', failureStepId, 5, 'Read', failureArgs)]),
+    ...(sameStep
+      ? [storedToolCall('turn-2', 'tool-2', successStepId, 6, successToolName, successArgs)]
+      : []),
     sandboxFailureToolResult('turn-2', 7),
     ...(successStepId === undefined || sameStep
       ? []
-      : [storedToolCall('turn-2', 'tool-2', successStepId, 8, successToolName)]),
+      : [storedToolCall('turn-2', 'tool-2', successStepId, 8, successToolName, successArgs)]),
     successfulToolResult('turn-2', 9),
     {
       type: 'turn_state',
@@ -1560,16 +1650,32 @@ async function* sandboxBoundaryEvents(
   successStepId: string | undefined,
   text: string,
   successToolName = 'Read',
+  successArgs: unknown = {},
+  failureArgs: unknown = {},
 ): AsyncIterable<SessionEvent> {
   const sameStep = failureStepId !== undefined && failureStepId === successStepId;
-  if (failureStepId !== undefined) yield toolStart(turnId, 'tool-1', failureStepId, 1);
-  if (sameStep) yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName);
+  if (failureStepId !== undefined) {
+    yield toolStart(turnId, 'tool-1', failureStepId, 1, 'Read', failureArgs);
+  }
+  if (sameStep) {
+    yield toolStart(turnId, 'tool-2', successStepId, 2, successToolName, successArgs);
+  }
   yield sandboxFailureToolResult(turnId, 3);
   if (successStepId !== undefined && !sameStep) {
-    yield toolStart(turnId, 'tool-2', successStepId, 4, successToolName);
+    yield toolStart(turnId, 'tool-2', successStepId, 4, successToolName, successArgs);
   }
   yield successfulToolResult(turnId, 5);
   yield* eventsFor(turnId, text, 6);
+}
+
+async function* deniedWideningEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield toolStart(turnId, 'tool-1', 'step-1', 1, 'Read', { path: '/outside/secret.txt' });
+  yield sandboxFailureToolResult(turnId, 2);
+  yield toolStart(turnId, 'tool-2', 'step-2', 3, 'request_sandbox_boundary');
+  yield successfulToolResult(turnId, 4, 'tool-2');
+  yield toolStart(turnId, 'tool-3', 'step-3', 5, 'Read', { path: '/workspace/README.md' });
+  yield successfulToolResult(turnId, 6, 'tool-3');
+  yield* eventsFor(turnId, 'Recovered answer', 7);
 }
 
 async function* projectedSameStepSandboxFailureEvents(turnId: string): AsyncIterable<SessionEvent> {
@@ -1715,6 +1821,7 @@ function toolStart(
   stepId: string,
   ts: number,
   toolName = 'Read',
+  args: unknown = {},
 ): Extract<SessionEvent, { type: 'tool_start' }> {
   return {
     type: 'tool_start',
@@ -1723,7 +1830,7 @@ function toolStart(
     ts,
     toolUseId,
     toolName,
-    args: {},
+    args,
     stepId,
   };
 }
@@ -1734,6 +1841,7 @@ function storedToolCall(
   stepId: string,
   ts: number,
   toolName = 'Read',
+  args: unknown = {},
 ): Extract<StoredMessage, { type: 'tool_call' }> {
   return {
     type: 'tool_call',
@@ -1741,7 +1849,7 @@ function storedToolCall(
     turnId,
     ts,
     toolName,
-    args: {},
+    args,
     stepId,
   };
 }
