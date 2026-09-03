@@ -57,6 +57,7 @@ export function SessionReviewPanel(props: {
   const locale = useUiLocale();
   const copy = getDesktopConversationCopy(locale).reviewPanel;
   const [gitResult, setGitResult] = useState<GitReviewReadResult | null>(null);
+  const [gitResultSessionId, setGitResultSessionId] = useState<string | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [visibleFileCount, setVisibleFileCount] = useState(REVIEW_FILE_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +74,7 @@ export function SessionReviewPanel(props: {
       });
       if (revision !== revisionRef.current) return;
       setGitResult(nextGit);
+      setGitResultSessionId(props.sessionId);
     } catch (nextError) {
       if (revision === revisionRef.current) {
         setError(
@@ -111,7 +113,8 @@ export function SessionReviewPanel(props: {
     };
   }, [load, props.active, props.sessionId, review]);
 
-  const gitSnapshot = gitResult?.ok ? gitResult.snapshot : null;
+  const currentGitResult = gitResultSessionId === props.sessionId ? gitResult : null;
+  const gitSnapshot = currentGitResult?.ok ? currentGitResult.snapshot : null;
   const gitFiles = gitSnapshot?.files ?? [];
   const visibleGitFiles = gitFiles.slice(0, visibleFileCount);
   const remainingGitFiles = Math.max(0, gitFiles.length - visibleGitFiles.length);
@@ -121,21 +124,21 @@ export function SessionReviewPanel(props: {
     deletions: gitSnapshot?.deletions ?? 0,
   };
   const sourceError =
-    gitResult?.ok !== false
+    currentGitResult?.ok !== false
       ? null
-      : gitResult.reason === 'not_git_repository'
+      : currentGitResult.reason === 'not_git_repository'
         ? copy.notGitRepository
-        : gitResult.reason === 'workspace_unavailable'
+        : currentGitResult.reason === 'workspace_unavailable'
           ? copy.workspaceUnavailable
-          : gitResult.reason === 'unborn_repository'
+          : currentGitResult.reason === 'unborn_repository'
             ? copy.unbornRepository
-            : gitResult.reason === 'invalid_base_branch'
+            : currentGitResult.reason === 'invalid_base_branch'
               ? copy.invalidBaseBranch
               : copy.gitFailed;
   const empty = !loading && !error && !sourceError && gitFiles.length === 0;
   useEffect(() => {
     setVisibleFileCount(REVIEW_FILE_PAGE_SIZE);
-  }, [gitSnapshot?.revision]);
+  }, [props.sessionId, gitSnapshot?.revision]);
 
   return (
     <Section
