@@ -1086,13 +1086,16 @@ h2 {
     transform: none;
   }
 }
-@media (max-width: 900px) {
+/* The English link row needs about 1000px with the page padding; below that the menu takes over. */
+@media (max-width: 1024px) {
   .nav .links {
     display: none;
   }
   .nav .more {
     display: block;
   }
+}
+@media (max-width: 900px) {
   .sec-h {
     grid-template-columns: 1fr;
     gap: 12px;
