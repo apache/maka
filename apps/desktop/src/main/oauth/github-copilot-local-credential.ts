@@ -20,44 +20,30 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import type { ModelInfo } from '@maka/core/llm-connections';
 import type { SubscriptionActionResult } from '@maka/core/oauth-subscription';
 import {
   createGitHubCopilotAccountTokens,
   isSupportedGitHubCopilotAccountToken,
   serializeOAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
-import {
-  GitHubCopilotEntitlementError,
-  GitHubCopilotEntitlementUnavailableError,
-  verifyGitHubCopilotModelEntitlement,
-} from '@maka/runtime/github-copilot-oauth-enrollment';
 
 const execFileAsync = promisify(execFile);
 
 export interface ImportedGitHubCopilotCredential {
-  readonly result:
-    | { readonly ok: true; readonly models: ModelInfo[] }
-    | Exclude<SubscriptionActionResult, { ok: true }>;
-  /** Present only on success; the caller commits it to the Host vault. */
+  readonly result: SubscriptionActionResult;
+  /** Present only on success; the selected Host validates and commits it. */
   readonly secret?: string;
 }
 
 export interface ImportGitHubCopilotLocalCredentialDeps {
   readonly resolveGitHubToken?: () => Promise<string>;
-  readonly fetchFn?: typeof fetch;
 }
 
 /**
- * Reads a GitHub credential this machine already holds (`gh auth token`, or one
- * of the `*_TOKEN` environment variables) and validates that it reaches a
- * Copilot model.
- *
- * This is the one Copilot responsibility that genuinely depends on the local
- * machine, so it is the only one Desktop keeps: interactive enrollment, account
- * state, refresh, and sign-out all belong to the Host's OAuth coordinator. It
- * holds no state between calls — the credential is returned to the caller and
- * never written to disk here.
+ * Discovers a GitHub credential already held by this machine (`gh auth token`
+ * or a compatible environment variable) and performs only local shape checks.
+ * Provider entitlement, network transport, ordering, and persistence all belong
+ * to the selected Host's adoption operation.
  */
 export async function importGitHubCopilotLocalCredential(
   deps: ImportGitHubCopilotLocalCredentialDeps = {},
@@ -84,43 +70,16 @@ export async function importGitHubCopilotLocalCredential(
         },
       };
     }
-    const tokens = createGitHubCopilotAccountTokens(githubToken);
-    let models: ModelInfo[];
-    try {
-      models = await verifyGitHubCopilotModelEntitlement({
-        tokens,
-        fetchFn: deps.fetchFn ?? fetch,
-      });
-    } catch (error) {
-      if (error instanceof GitHubCopilotEntitlementError) {
-        return {
-          result: {
-            ok: false,
-            reason: 'token_exchange_failed',
-            message:
-              '当前 GitHub 账号没有可用的 Copilot 订阅权限；请确认账号具有 Copilot Requests 权限。',
-          },
-        };
-      }
-      if (error instanceof GitHubCopilotEntitlementUnavailableError) {
-        return {
-          result: {
-            ok: false,
-            reason: 'token_exchange_failed',
-            message: '暂时无法验证 GitHub Copilot 订阅状态，请稍后重试。',
-          },
-        };
-      }
-      throw error;
-    }
-    return { result: { ok: true, models }, secret: serializeOAuthSubscriptionTokens(tokens) };
+    return {
+      result: { ok: true },
+      secret: serializeOAuthSubscriptionTokens(createGitHubCopilotAccountTokens(githubToken)),
+    };
   } catch {
     return {
       result: {
         ok: false,
         reason: 'token_exchange_failed',
-        message:
-          '无法连接 GitHub Copilot。请确认账号具有订阅访问权限，且凭据具有 Copilot Requests 权限；普通 gh auth login 可能不包含该权限。',
+        message: '未找到可导入的 GitHub 凭据；请先使用 gh 登录或配置兼容凭据。',
       },
     };
   }

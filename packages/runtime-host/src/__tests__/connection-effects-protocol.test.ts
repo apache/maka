@@ -86,12 +86,13 @@ describe('Runtime Host connection effects protocol', () => {
       ),
       response('connection.onboarding.save', { kind: 'rejected', reason: 'superseded' }),
     );
-    assertInvalidRequest('connection.onboarding.save', {
+    const adoptAllDiscovered = request('connection.onboarding.save', {
       target: { kind: 'create', providerType: 'openrouter' },
-      apiKey: null,
+      apiKey: 'transient-secret',
       baseUrl: null,
       enabledModelIds: [],
     });
+    assert.deepEqual(decodeClientFrame(adoptAllDiscovered), adoptAllDiscovered);
     // Provider-specific URL semantics are resolved after an existing target's
     // canonical provider is loaded; the wire still bounds the raw value.
     assertInvalidRequest('connection.onboarding.verify', {

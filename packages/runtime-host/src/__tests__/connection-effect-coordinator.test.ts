@@ -84,6 +84,141 @@ test('verifies a first-run API key without persisting a connection or credential
   });
 });
 
+test('adopts serialized OAuth material with every model the Host verifies', async () => {
+  await withFixture(async ({ stores }) => {
+    const importedSecret = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_import_a',
+      refresh_token: 'gho_import_a',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    let discoverySecret = '';
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (_connection, secret) => {
+        discoverySecret = secret;
+        return { ok: true, models: [{ id: 'copilot-a' }, { id: 'copilot-b' }] };
+      },
+    });
+
+    const adopted = await coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'create', providerType: 'github-copilot' },
+        apiKey: importedSecret,
+        baseUrl: null,
+        enabledModelIds: [],
+      },
+      context,
+    );
+
+    assertSaved(adopted);
+    assert.equal(discoverySecret, 'gho_import_a');
+    const updated = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ providerType }) => providerType === 'github-copilot',
+    );
+    assert.ok(updated);
+    assert.deepEqual(updated.enabledModelIds, ['copilot-a', 'copilot-b']);
+    assert.equal(
+      (
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: updated.connectionId,
+          kind: 'oauth_token',
+        })
+      )?.secret,
+      importedSecret,
+    );
+  });
+});
+
+test('a blocked local adoption cannot overwrite a newer interactive OAuth login', async () => {
+  await withFixture(async ({ stores }) => {
+    const connection = await createConnection(
+      stores,
+      0,
+      connectionDraft('copilot-race', 'github-copilot'),
+    );
+    const importA = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_import_a',
+      refresh_token: 'gho_import_a',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    const loginB = serializeOAuthSubscriptionTokens({
+      access_token: 'gho_login_b',
+      refresh_token: 'gho_login_b',
+      expires_at: Number.MAX_SAFE_INTEGER,
+      token_type: 'Bearer',
+      base_url: 'https://api.githubcopilot.com',
+    });
+    const discoveryStarted = deferred<void>();
+    const releaseDiscovery = deferred<void>();
+    const coordinator = new HostConnectionEffectCoordinator({
+      stores,
+      activation: new RuntimePolicyActivationGate(),
+      oauthCredentials: new HostOAuthExecutionAuthority(stores),
+      createTransport: () => recordingTransport(() => undefined),
+      runModelDiscovery: async (_connection, secret) => {
+        assert.equal(secret, 'gho_import_a');
+        discoveryStarted.resolve();
+        await releaseDiscovery.promise;
+        return { ok: true, models: [{ id: 'copilot-import-model' }] };
+      },
+    });
+
+    const adoption = coordinator.handlers['connection.onboarding.save'](
+      {
+        target: { kind: 'existing', connectionId: connection.connectionId },
+        apiKey: importA,
+        baseUrl: null,
+        enabledModelIds: [],
+      },
+      context,
+    );
+    await discoveryStarted.promise;
+
+    const interactive = await stores.operations.beginInteractiveOAuthLogin({
+      attemptId: 'interactive-login-b',
+      target: { kind: 'existing', connectionId: connection.connectionId },
+    });
+    assert.equal(interactive.kind, 'ready');
+    if (interactive.kind !== 'ready') throw new Error('Interactive login did not start');
+    const committed = await stores.operations.completeInteractiveOAuthLogin(
+      interactive.ticket,
+      loginB,
+    );
+    assert.equal(committed.kind, 'committed');
+
+    releaseDiscovery.resolve();
+    assert.deepEqual(await adoption, {
+      ok: true,
+      result: { kind: 'rejected', reason: 'superseded' },
+    });
+    assert.equal(
+      (
+        await stores.operations.exportCredentialMaterial({
+          scope: 'connection',
+          connectionId: connection.connectionId,
+          kind: 'oauth_token',
+        })
+      )?.secret,
+      loginB,
+    );
+    const after = (await stores.connectionCatalog.getSnapshot()).connections.find(
+      ({ connectionId }) => connectionId === connection.connectionId,
+    );
+    assert.equal(
+      after?.models.some(({ id }) => id === 'copilot-import-model'),
+      false,
+    );
+  });
+});
+
 test('rejects a semantically invalid onboarding endpoint in Storage before discovery', async () => {
   await withFixture(async ({ stores }) => {
     let discoveryRuns = 0;

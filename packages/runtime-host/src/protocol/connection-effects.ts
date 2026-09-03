@@ -87,6 +87,11 @@ export interface ConnectionTestRunInput {
 
 export interface ConnectionOnboardingVerifyInput {
   readonly target: ConnectionOnboardingTarget;
+  /**
+   * Transient connection credential. API-key providers carry the raw key;
+   * OAuth adoption carries canonical serialized OAuth subscription material.
+   * The value is used by the Host and never projected back to the Client.
+   */
   readonly apiKey: string | null;
   /**
    * Endpoint override for providers whose registry entry carries none (the
@@ -97,6 +102,7 @@ export interface ConnectionOnboardingVerifyInput {
 }
 
 export interface ConnectionOnboardingSaveInput extends ConnectionOnboardingVerifyInput {
+  /** Empty enables the complete non-empty model set discovered by this Host operation. */
   readonly enabledModelIds: readonly string[];
 }
 
@@ -253,10 +259,9 @@ export function decodeConnectionOnboardingSaveInput(value: unknown): ConnectionO
   });
   if (
     !Array.isArray(input.enabledModelIds) ||
-    input.enabledModelIds.length === 0 ||
     input.enabledModelIds.length > CONNECTION_CATALOG_MAX_MODELS_PER_CONNECTION
   ) {
-    throw invalidProtocolFrame('Connection onboarding requires at least one enabled model');
+    throw invalidProtocolFrame('Connection onboarding enabled models exceed the limit');
   }
   const enabledModelIds = input.enabledModelIds.map((modelId) =>
     decodeDomain(() => decodeConnectionModelId(modelId)),

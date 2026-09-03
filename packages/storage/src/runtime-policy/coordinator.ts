@@ -1249,10 +1249,13 @@ export class RuntimePolicyCoordinator {
         throw codecError('invalid_connection_input', 'Unknown connection onboarding target');
       }
       const providerType = target.candidate.providerType;
-      // Onboarding guards the api_key credential slot; a provider whose auth
-      // never uses one has no business here (the Host gates on the same
-      // predicate, this keeps the storage API honest on its own).
-      if (!providerAuthSupportsApiKey(providerType)) {
+      // Onboarding may adopt either an API key or canonical serialized OAuth
+      // material. Providers without a connection credential slot have no
+      // business here (the Host applies the same gate before discovery).
+      if (
+        !providerAuthSupportsApiKey(providerType) &&
+        PROVIDER_REGISTRY[providerType].authKind !== 'oauth_token'
+      ) {
         return deepFreeze({ kind: 'provider_unsupported' as const });
       }
       if (
@@ -1457,11 +1460,13 @@ export class RuntimePolicyCoordinator {
     const connectionId = candidate.connectionId;
     let invalidateLastTest = false;
     if (input.suppliedSecret !== null) {
-      const locator = {
-        scope: 'connection',
+      const locator = connectionCredentialLocator(
         connectionId,
-        kind: 'api_key',
-      } as const;
+        PROVIDER_REGISTRY[candidate.providerType].authKind,
+      );
+      if (!locator) {
+        throw codecError('invalid_document', 'Onboarding provider has no credential locator');
+      }
       const vault = await this.vault.read(root);
       const credential = findCredential(vault, locator);
       if (credential?.secret !== input.suppliedSecret) {
@@ -2121,11 +2126,13 @@ export class RuntimePolicyCoordinator {
       throw codecError('invalid_document', 'Onboarding intent exceeds the connection catalog');
     }
     if (intent.suppliedSecret !== null) {
-      const locator = {
-        scope: 'connection',
-        connectionId: intent.connectionId,
-        kind: 'api_key',
-      } as const;
+      const locator = connectionCredentialLocator(
+        intent.connectionId,
+        PROVIDER_REGISTRY[intent.providerType].authKind,
+      );
+      if (!locator) {
+        throw codecError('invalid_document', 'Onboarding provider has no credential locator');
+      }
       const vault = await this.vault.read(root);
       const existing = findCredential(vault, locator);
       if (existing?.secret !== intent.suppliedSecret) {

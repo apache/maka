@@ -26,54 +26,34 @@ describe('importGitHubCopilotLocalCredential', () => {
   test('prefers an explicit Copilot Requests credential over the generic GitHub CLI login', async () => {
     const previous = process.env.COPILOT_GITHUB_TOKEN;
     process.env.COPILOT_GITHUB_TOKEN = 'github_pat_copilot_requests';
-    let authorization = '';
     try {
-      const imported = await importGitHubCopilotLocalCredential({
-        fetchFn: async (url, init) => {
-          assert.equal(String(url), 'https://api.githubcopilot.com/models');
-          authorization = new Headers(init?.headers).get('authorization') ?? '';
-          return copilotModelsResponse();
-        },
-      });
+      const imported = await importGitHubCopilotLocalCredential();
 
-      assert.equal(imported.result.ok, true);
-      if (imported.result.ok) {
-        assert.deepEqual(
-          imported.result.models.map(({ id }) => id),
-          ['gpt-5.4'],
-        );
-      }
-      assert.equal(authorization, 'Bearer github_pat_copilot_requests');
+      assert.deepEqual(JSON.parse(imported.secret ?? ''), {
+        access_token: 'github_pat_copilot_requests',
+        refresh_token: 'github_pat_copilot_requests',
+        expires_at: Number.MAX_SAFE_INTEGER,
+        token_type: 'Bearer',
+        base_url: 'https://api.githubcopilot.com',
+      });
+      assert.deepEqual(imported.result, { ok: true });
     } finally {
       if (previous === undefined) delete process.env.COPILOT_GITHUB_TOKEN;
       else process.env.COPILOT_GITHUB_TOKEN = previous;
     }
   });
 
-  test('returns the credential and verified models from one provider request', async () => {
-    let requestAuthorization = '';
-    let requests = 0;
+  test('returns credential material without asking GitHub about entitlement', async () => {
+    let resolutions = 0;
     const imported = await importGitHubCopilotLocalCredential({
-      resolveGitHubToken: async () => 'gho_existing_login\n',
-      fetchFn: async (url, init) => {
-        requests += 1;
-        assert.equal(String(url), 'https://api.githubcopilot.com/models');
-        requestAuthorization = new Headers(init?.headers).get('authorization') ?? '';
-        return copilotModelsResponse();
+      resolveGitHubToken: async () => {
+        resolutions += 1;
+        return 'gho_existing_login\n';
       },
     });
 
-    assert.equal(imported.result.ok, true);
-    if (imported.result.ok) {
-      assert.deepEqual(
-        imported.result.models.map(({ id }) => id),
-        ['gpt-5.4'],
-      );
-    }
-    assert.equal(requestAuthorization, 'Bearer gho_existing_login');
-    assert.equal(requests, 1);
-    // The Host vault is the only place this credential is written; the shape is
-    // the one `setRuntimeHostAccountCredential` commits verbatim.
+    assert.equal(resolutions, 1);
+    assert.deepEqual(imported.result, { ok: true });
     assert.deepEqual(JSON.parse(imported.secret ?? ''), {
       access_token: 'gho_existing_login',
       refresh_token: 'gho_existing_login',
@@ -83,14 +63,9 @@ describe('importGitHubCopilotLocalCredential', () => {
     });
   });
 
-  test('rejects classic PATs before any Copilot request', async () => {
-    let requested = false;
+  test('rejects classic PATs locally', async () => {
     const imported = await importGitHubCopilotLocalCredential({
       resolveGitHubToken: async () => 'ghp_classic_pat',
-      fetchFn: async () => {
-        requested = true;
-        return Response.json({});
-      },
     });
 
     assert.equal(imported.result.ok, false);
@@ -100,62 +75,27 @@ describe('importGitHubCopilotLocalCredential', () => {
       assert.equal(imported.result.message.includes('ghp_classic_pat'), false);
     }
     assert.equal(imported.secret, undefined);
-    assert.equal(requested, false);
   });
 
-  test('explains subscription or Copilot Requests policy rejection without exposing provider details', async () => {
+  test('rejects an unsupported local credential shape', async () => {
     const imported = await importGitHubCopilotLocalCredential({
-      resolveGitHubToken: async () => 'gho_without_copilot_permission',
-      fetchFn: async () => new Response(null, { status: 403 }),
+      resolveGitHubToken: async () => 'unsupported-token',
     });
 
     assert.equal(imported.result.ok, false);
-    if (!imported.result.ok) {
-      assert.match(imported.result.message, /Copilot Requests/);
-      assert.doesNotMatch(imported.result.message, /403|gho_without/);
-    }
+    if (!imported.result.ok) assert.match(imported.result.message, /凭据类型不受支持/);
     assert.equal(imported.secret, undefined);
   });
 
-  test('refuses an account that reaches no Copilot model', async () => {
+  test('reports when no local GitHub credential can be discovered', async () => {
     const imported = await importGitHubCopilotLocalCredential({
-      resolveGitHubToken: async () => 'gho_no_entitlement',
-      fetchFn: async () => Response.json({ data: [] }),
+      resolveGitHubToken: async () => {
+        throw new Error('gh is not installed');
+      },
     });
 
     assert.equal(imported.result.ok, false);
-    assert.equal(imported.secret, undefined);
-  });
-
-  test('distinguishes a transient entitlement failure from account ineligibility', async () => {
-    const imported = await importGitHubCopilotLocalCredential({
-      resolveGitHubToken: async () => 'gho_temporarily_unavailable',
-      fetchFn: async () => new Response(null, { status: 429 }),
-    });
-
-    assert.equal(imported.result.ok, false);
-    if (!imported.result.ok) {
-      assert.equal(imported.result.reason, 'token_exchange_failed');
-      assert.match(imported.result.message, /暂时无法验证/);
-      assert.doesNotMatch(imported.result.message, /没有可用/);
-    }
+    if (!imported.result.ok) assert.match(imported.result.message, /未找到可导入/);
     assert.equal(imported.secret, undefined);
   });
 });
-
-function copilotModelsResponse(): Response {
-  return Response.json({
-    data: [
-      {
-        id: 'gpt-5.4',
-        model_picker_enabled: true,
-        supported_endpoints: ['/responses'],
-        policy: { state: 'enabled' },
-        capabilities: {
-          limits: { max_prompt_tokens: 128_000, max_output_tokens: 16_000 },
-          supports: { tool_calls: true },
-        },
-      },
-    ],
-  });
-}
