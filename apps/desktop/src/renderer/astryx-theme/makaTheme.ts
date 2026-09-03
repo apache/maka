@@ -222,14 +222,14 @@ export const makaTheme = defineTheme({
     '--radius-page': '28px',
   },
   // Solid inverted surfaces carry ONE ink tier — DESIGN.md §3, the Tinted
-  // Surface Rule, which already says the same thing about the 0.24 tints and
-  // is already spelled this way on `.astryx-banner.info`. A toast body or an
-  // overlay scrim is the same situation with the tint turned all the way up:
-  // the surface is not `--background`, so the AA numbers the two prose tiers
-  // hold do not apply to it, and the muted rung has nowhere to be muted
-  // against. On the error toast's #AA071E it measures 2.99:1 — the number
-  // Astryx's own secondary reaches there too, so this is a deliberate
-  // deviation, not a repair.
+  // Surface Rule. Not by analogy with the 0.24 tints: the reason here is that
+  // --color-on-dark and --color-on-light are one flat value each, shared by
+  // every inverted surface, so a rung muted against THIS plate cannot be
+  // written at all. The choice is one tier or an unmuted grey that ignores the
+  // surface under it. The measurement agrees rather than decides — on the error
+  // toast's #AA071E the muted rung reaches 2.99:1, the number Astryx's own
+  // secondary reaches there too — so this is a deliberate deviation, not a
+  // repair.
   //
   // Astryx's defaults already point text/icon PRIMARY at the on-colors here;
   // naming secondary the same value is what collapses the tier. Everything

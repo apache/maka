@@ -192,8 +192,10 @@ export function setTitlebarModalDimmed(dimmed: boolean): void {
  * live in `maka-tokens.css`. `default` removes the attribute so the
  * original Maka palette renders.
  *
- * Light/dark variants of each palette switch automatically with the
- * existing `.dark` class — no separate IPC needed.
+ * A palette carries both of its modes inside each value, so the light/dark
+ * variants follow `color-scheme` (set on <html> beside the class by
+ * setDarkClass) with no separate IPC and no second block per palette. Flipping
+ * the class alone no longer switches anything.
  */
 export function applyThemePalette(palette: ThemePalette): void {
   const root = document.documentElement;
