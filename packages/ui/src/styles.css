@@ -412,8 +412,9 @@
 /* Prose reads differently from chrome. Han glyphs fill the whole em box, so
    the 20px body leading that suits a control row leaves CJK paragraphs with
    no air between lines; 1.6 is the common CJK reading ratio. Inherited from
-   the document root, so headings and code keep the leading their own role
-   tokens declare. `text-autospace` puts the conventional hair space between
+   the document root: headings and fenced code declare their own leading and
+   keep it, inline code follows the line it sits in, which is what keeps that
+   line's box even. `text-autospace` puts the conventional hair space between
    Han and Latin or digit runs when the model did not type one. */
 [data-maka-contract="markdown"] .astryx-markdown {
   line-height: 1.6;
@@ -421,9 +422,11 @@
 }
 /* Han faces have no italic, so `*emphasis*` in Chinese renders as a synthetic
    shear of PingFang. Chinese typography marks emphasis with a dot under each
-   character instead. Keyed on the document language, which LocaleProvider
-   keeps in step with the UI locale, so Latin prose keeps its italic. */
-[data-maka-contract="markdown"] .astryx-markdown em:lang(zh) {
+   character instead. Keyed on the script of the turn's own prose (MarkdownBody
+   sets `data-maka-script`), not on the document `lang`: that is the UI locale,
+   and a model answers in whatever language it was asked in. Latin prose keeps
+   its italic. */
+[data-maka-contract="markdown"][data-maka-script="han"] .astryx-markdown em {
   font-style: normal;
   text-emphasis: filled dot;
   text-emphasis-position: under right;
