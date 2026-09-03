@@ -34,7 +34,7 @@ import {
   useUiLocale,
 } from '@maka/ui';
 import { type ComponentProps, type ReactNode, useState } from 'react';
-import { WorkbarTitlebarActions } from '../src/renderer/features/workbar';
+import { WorkbarTitlebarActionsView } from '../src/renderer/features/workbar/stories';
 import {
   createModuleHubCommandPort,
   ModuleHubHost,
@@ -671,7 +671,7 @@ function ModuleSurface(props: {
       }}
     >
       <AppShellDetailPanel agentsView={props.agentsView}>
-        <WorkbarTitlebarActions
+        <WorkbarTitlebarActionsView
           available={false}
           collapsed
           onToggle={noop}

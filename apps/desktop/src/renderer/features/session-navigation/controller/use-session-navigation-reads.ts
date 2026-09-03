@@ -18,7 +18,10 @@
  */
 
 import { useMemo } from 'react';
-import { useExternalStoreSelector } from '../../../use-external-store-selector.js';
+import {
+  useExternalStoreSelector,
+  type ExternalStore,
+} from '../../../use-external-store-selector.js';
 import { deriveBranchBanner, type BranchBanner } from '../model/branch-banner.js';
 import { sessionMatchesRail } from '../model/session-nav-filter.js';
 import { deriveSessionRail, type SessionRailProjection } from '../model/session-rail.js';
@@ -32,6 +35,21 @@ import {
   type SessionRevisionNavigation,
 } from '../model/session-revisions.js';
 import type { SessionNavigationSession } from '../ports.js';
+
+const selectHiddenSessionIds = (
+  state: ReadonlySet<string>,
+): ReadonlySet<string> => state;
+
+function readonlyStringSetEqual(
+  left: ReadonlySet<string>,
+  right: ReadonlySet<string>,
+): boolean {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
 
 export interface SessionNavigationReads {
   /** The rail's membership, derived once and shared with the command palette. */
@@ -56,9 +74,15 @@ export function useSessionNavigationReads(input: {
   sessions: readonly SessionNavigationSession[];
   activeSessionId: string | undefined;
   activeSession: SessionNavigationSession | undefined;
-  hiddenSessionIds: ReadonlySet<string>;
+  hiddenSessionIdsStore: ExternalStore<ReadonlySet<string>>;
 }): SessionNavigationReads {
-  const { activeSession, activeSessionId, hiddenSessionIds, sessions } = input;
+  const { activeSession, activeSessionId, sessions } = input;
+  const hiddenSessionIds = useExternalStoreSelector(
+    input.hiddenSessionIdsStore,
+    selectHiddenSessionIds,
+    undefined,
+    readonlyStringSetEqual,
+  );
   const rail = useMemo(
     () =>
       deriveSessionRail(sessions, activeSessionId, (session) =>
