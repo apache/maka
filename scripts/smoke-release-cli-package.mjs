@@ -264,7 +264,6 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
     const addon = require(nativePath);
     await smokeWindowsTaskScheduler(
       windowsLifecycle.createWindowsRuntimeHostLifecycleProvider,
-      peerArtifact.resolveRuntimeHostNativePath,
       cliEntrypoint,
       join(root, 'windows task & % 生命周期'),
     );
@@ -414,7 +413,7 @@ async function smokeRuntimeHostPeerProtocol({ packageRoot, cliEntrypoint, root }
   }
 }
 
-async function smokeWindowsTaskScheduler(createProvider, resolveNativePath, cliEntrypoint, root) {
+async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, root) {
   if (process.platform !== 'win32') return;
   mkdirSync(root, { recursive: true });
   const rootId = createHash('sha256').update(root).digest('hex');
@@ -427,10 +426,9 @@ async function smokeWindowsTaskScheduler(createProvider, resolveNativePath, cliE
     recursive: true,
   });
   const managedCliEntrypoint = join(managedPackageRoot, 'dist', basename(cliEntrypoint));
-  const managedNativePath = await resolveNativePath(managedCliEntrypoint);
   const scriptPath = join(
     dirname(managedCliEntrypoint),
-    'runtime-host-windows-supervisor-smoke.cjs',
+    'runtime-host-windows-supervisor-smoke.mjs',
   );
   const controllerRunnerPath = join(dirname(cliEntrypoint), 'runtime-host-windows-task-runner.js');
   const disabledControllerRunnerPath = `${controllerRunnerPath}.disabled`;
@@ -440,11 +438,13 @@ async function smokeWindowsTaskScheduler(createProvider, resolveNativePath, cliE
   writeFileSync(
     scriptPath,
     [
-      "const { spawn } = require('node:child_process');",
-      "const { writeFileSync } = require('node:fs');",
-      'const [runtimeHost, serve, nativePath, expected, readyPath] = process.argv.slice(2);',
+      "import { spawn } from 'node:child_process';",
+      "import { writeFileSync } from 'node:fs';",
+      "import { fileURLToPath } from 'node:url';",
+      'const [runtimeHost, serve, expected, readyPath] = process.argv.slice(2);',
       'try {',
-      '  require(nativePath).ownCurrentProcessTree();',
+      "  const { ownWindowsRuntimeHostProcessTree } = await import('./runtime-host-windows-service.js');",
+      '  await ownWindowsRuntimeHostProcessTree(fileURLToPath(import.meta.url));',
       "  if (runtimeHost !== 'runtime-host' || serve !== 'serve') process.exit(90);",
       `  if (expected !== ${JSON.stringify(hostileArgument)}) process.exit(91);`,
       "  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });",
@@ -465,7 +465,6 @@ async function smokeWindowsTaskScheduler(createProvider, resolveNativePath, cliE
     scriptPath,
     'runtime-host',
     'serve',
-    managedNativePath,
     hostileArgument,
     readyPath,
   ];
