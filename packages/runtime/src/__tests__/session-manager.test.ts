@@ -4490,7 +4490,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual(store.disposeCount, 3);
   });
 
-  test('keeps mode changes blocked until all overlapping turns finish', async () => {
+  test('keeps narrowing blocked until all overlapping turns finish', async () => {
     const store = new MemorySessionStore();
     const runStore = new MemoryAgentRunStore();
     const backends = new BackendRegistry();
@@ -4530,7 +4530,14 @@ describe('SessionManager permission mode updates', () => {
       ],
     );
 
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    // Widening is a grant, so it commits against the live Turn instead of
+    // making the user wait for it out (#3349).
+    const widened = await manager.setPermissionMode(session.id, 'bypass');
+    assert.strictEqual(widened.permissionMode, 'bypass');
+    assert.strictEqual((await manager.readExecutionBoundary(session.id)).kind, 'bypass');
+    // Narrowing still requires quiescence: that is what lets it terminate the
+    // lineage's shells safely.
+    await expectRejects(manager.setPermissionMode(session.id, 'explore'), /当前任务正在运行/);
 
     secondGate.release();
     await second.next();
@@ -10260,7 +10267,7 @@ describe('SessionManager permission mode updates', () => {
     assert.strictEqual((await store.readHeader(session.id)).status, 'waiting_for_user');
     const [run] = await runStore.listSessionInvocations(session.id);
     assert.strictEqual(run?.terminalEvent, undefined);
-    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /当前任务正在运行/);
+    await expectRejects(manager.setPermissionMode(session.id, 'bypass'), /等待确认/);
     assert.strictEqual((await store.readHeader(session.id)).permissionMode, 'ask');
 
     await manager.respondToSandboxBoundary(session.id, {

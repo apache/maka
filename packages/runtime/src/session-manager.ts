@@ -1620,7 +1620,7 @@ export class SessionManager {
       return headerToSummary(previous);
     }
 
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+    if (narrowsExecutionAuthority(boundary, mode) && this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前任务正在运行，等结束后再切换权限模式。');
     }
     if (previous.status === 'waiting_for_user') {
@@ -1653,14 +1653,15 @@ export class SessionManager {
     sessionId: string,
     kind: 'managed' | 'bypass',
   ): Promise<ExecutionBoundary> {
-    if (this.runtimeKernel.hasActiveRuns(sessionId)) {
+    const current = await this.deps.store.readExecutionBoundary(sessionId);
+    const narrows = narrowsExecutionAuthority(current, kind === 'bypass' ? 'bypass' : 'ask');
+    if (narrows && this.runtimeKernel.hasActiveRuns(sessionId)) {
       throw new Error('当前任务正在运行，等结束后再切换沙箱边界。');
     }
     const header = await this.deps.store.readHeader(sessionId);
     if (header.status === 'waiting_for_user') {
       throw new Error('当前有沙箱边界请求正在等待确认，处理后再切换。');
     }
-    const current = await this.deps.store.readExecutionBoundary(sessionId);
     const boundary = await this.commitExecutionBoundaryTransition(sessionId, current, kind);
     return boundary;
   }
@@ -1675,7 +1676,7 @@ export class SessionManager {
     },
   ): Promise<ExecutionBoundary> {
     const nextPermissionMode = projection?.permissionMode ?? (kind === 'bypass' ? 'bypass' : 'ask');
-    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, async () => {
+    const prepareCommit = async (): Promise<() => Promise<ExecutionBoundary>> => {
       const latest = await this.deps.store.readExecutionBoundary(sessionId);
       if (latest.revision !== current.revision) {
         throw new SessionConfigurationTransitionError(
@@ -1684,7 +1685,22 @@ export class SessionManager {
         );
       }
       return () => this.deps.store.setExecutionBoundaryKind(sessionId, kind, projection);
-    });
+    };
+    if (!narrowsExecutionAuthority(current, nextPermissionMode)) {
+      // Widening needs no quiescence. Every consumer that froze the old, tighter
+      // boundary fails closed against a wider one, and a descendant's admission
+      // check only gets easier — so the grant is just written. Waiting for the
+      // Session to go idle is what let a running Turn, or a Goal's continuation
+      // holding a claim near-continuously, keep the user's own grant out.
+      const commit = await prepareCommit();
+      const boundary = await commit();
+      // Not `disposeBackend`: disposing a live Turn's backend stops that Turn.
+      // Invalidation refreshes it now when the Session is idle, and otherwise
+      // defers to the next activation, which disposes before it starts.
+      await this.runtimeKernel.invalidateBackend(sessionId);
+      return boundary;
+    }
+    return this.commitExecutionResourceTransition(sessionId, nextPermissionMode, prepareCommit);
   }
 
   private async commitExecutionResourceTransition<T>(
