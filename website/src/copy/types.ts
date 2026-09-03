@@ -47,7 +47,10 @@ export interface Copy {
   scene: {
     events: Array<{
       tone: '' | 'mut' | 'warn' | 'ok' | 'dim' | 'dim ok';
+      // The RuntimeEvent type, shown where the log tile explains the term.
       name: string;
+      // What the hero card says instead of the type name.
+      label: string;
       detail: string;
     }>;
     highWater: string;
