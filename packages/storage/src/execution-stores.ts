@@ -26,7 +26,10 @@ import type {
 import type { RuntimeEvent, ToolBoundaryProtocol } from '@maka/core/runtime-event';
 import type {
   RuntimeContinuationAuthorityStore,
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
   RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
 } from '@maka/core/runtime-event-store';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import type { SessionListFilter } from '@maka/core/runtime-inputs';
@@ -218,6 +221,15 @@ export interface ExecutionRuntimeEventReader {
    * time; nothing writes or repairs it.
    */
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -566,6 +578,12 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => runtimeEventStore.readImmutableRuntimePrefix(input)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
       readSessionRuntimeEventEntries: (sessionId) =>
@@ -679,6 +697,12 @@ async function openExecutionStoresForRead<K extends StorageRootKind, E extends o
         run(() => runtimeEventStore.readImmutableRuntimeEvents(sessionId, runId)),
       listSessionInvocations: (sessionId) =>
         run(() => runtimeEventStore.listSessionInvocations(sessionId)),
+      listSessionInvocationsBounded: (sessionId, limit) =>
+        run(() => runtimeEventStore.listSessionInvocationsBounded(sessionId, limit)),
+      listSessionInvocationsPage: (sessionId, input) =>
+        run(() => runtimeEventStore.listSessionInvocationsPage(sessionId, input)),
+      readInvocation: (sessionId, invocationId) =>
+        run(() => runtimeEventStore.readInvocation(sessionId, invocationId)),
       readSessionRuntimeEvents: (sessionId) =>
         run(() => runtimeEventStore.readSessionRuntimeEvents(sessionId)),
     },

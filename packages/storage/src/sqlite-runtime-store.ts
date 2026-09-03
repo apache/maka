@@ -59,7 +59,11 @@ import {
   type ContinuationClaimResult,
   type ContinuationClaimStateV1,
   type RuntimeContinuationAuthorityStore,
+  type RuntimeInvocationPageCursor,
+  type RuntimeInvocationPageInput,
+  type RuntimeInvocationPageResult,
   type RuntimeInvocationRecord,
+  type RuntimeInvocationSearchResult,
   type RuntimeRecoveryBundleCommit,
   type RuntimeRecoveryBundleStore,
   type RuntimeWorkspaceVersionAuthorityStore,
@@ -547,59 +551,192 @@ export class SqliteRuntimeStore
    */
   async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
     assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    return this.readTransaction(() =>
+      this.readInvocationOpeningsSync(sessionId, { direction: 'asc' }).map((row) =>
+        this.completeInvocationRecordSync(row),
+      ),
+    );
+  }
+
+  /**
+   * The first page of a Session's invocations, plus whether more exist.
+   *
+   * The extra row this reads past the limit is the whole truncation signal, so a
+   * caller never has to count a Session it declined to load.
+   */
+  async listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(limit);
     return this.readTransaction(() => {
-      const openings = this.db
-        .prepare(`
-          SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
-          FROM runtime_events
-          WHERE session_id = ? AND event_kind = 'invocation_opened'
-        `)
-        .all(sessionId) as unknown as RuntimeEventStorageRow[];
-      const records = openings.map((row) => {
-        const event = decodeRuntimeEventStorageRow(row);
-        const opening = runtimeEventInvocationOpening(event);
-        if (!opening) {
-          throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
-        }
-        return this.completeInvocationRecordSync({
-          sessionId: event.sessionId,
-          invocationId: event.invocationId,
-          runId: event.runId,
-          turnId: event.turnId,
-          openedAt: event.ts,
-          opening,
-        });
+      const rows = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        limit: limit + 1,
       });
-      const opened = new Set(records.map((record) => record.invocationId));
-      const legacy = this.db
-        .prepare(`
-          SELECT invocation_id, run_id, turn_id, opened_at, opening_json
-          FROM runtime_legacy_invocation_openings
-          WHERE session_id = ?
-        `)
-        .all(sessionId) as unknown as Array<{
-        invocation_id: string;
-        run_id: string;
-        turn_id: string;
-        opened_at: number;
-        opening_json: string;
-      }>;
-      for (const row of legacy) {
-        if (opened.has(row.invocation_id)) continue;
-        records.push(
-          this.completeInvocationRecordSync({
-            sessionId,
-            invocationId: row.invocation_id,
-            runId: row.run_id,
-            turnId: row.turn_id,
-            openedAt: row.opened_at,
-            opening: decodeRuntimeInvocationOpened(JSON.parse(row.opening_json)),
-          }),
-        );
+      return {
+        invocations: rows.slice(0, limit).map((row) => this.completeInvocationRecordSync(row)),
+        truncated: rows.length > limit,
+      };
+    });
+  }
+
+  /** One newest-first page of a Session's invocations. */
+  async listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertInvocationSearchLimit(input.limit);
+    if (input.before) {
+      assertRuntimeStorageSafeId(input.before.invocationId, 'Invalid invocation page cursor');
+      if (!Number.isFinite(input.before.openedAt)) {
+        throw new Error('Invalid invocation page cursor');
       }
-      return records.sort(
-        (a, b) => a.openedAt - b.openedAt || a.invocationId.localeCompare(b.invocationId),
-      );
+    }
+    return this.readTransaction(() => {
+      const rows = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'desc',
+        limit: input.limit + 1,
+        ...(input.before ? { before: input.before } : {}),
+      });
+      const page = rows.slice(0, input.limit);
+      const last = page.at(-1);
+      return {
+        invocations: page.map((row) => this.completeInvocationRecordSync(row)),
+        nextCursor:
+          rows.length > input.limit && last
+            ? { openedAt: last.openedAt, invocationId: last.invocationId }
+            : null,
+      };
+    });
+  }
+
+  /**
+   * One invocation named by its own identity.
+   *
+   * Absence throws rather than returning `undefined`: every caller here holds an
+   * invocation id that some durable fact already handed it, so a missing opening
+   * is corruption and not a branch a reader should be asked to handle.
+   */
+  async readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord> {
+    assertRuntimeStorageSafeId(sessionId, 'Invalid session id');
+    assertRuntimeStorageSafeId(invocationId, 'Invalid invocation id');
+    return this.readTransaction(() => {
+      const row = this.readInvocationOpeningsSync(sessionId, {
+        direction: 'asc',
+        invocationId,
+      }).at(0);
+      if (!row) throw new Error(`Runtime invocation not found: ${invocationId}`);
+      return this.completeInvocationRecordSync(row);
+    });
+  }
+
+  /**
+   * Read invocation openings off both shelves as one ordered sequence.
+   *
+   * Every writer of an opening event stamps `committed_at` with the event's own
+   * timestamp, so that column orders the event shelf by the same value the
+   * record reports as `openedAt` and the legacy shelf keeps under `opened_at`.
+   * Ordering and paging therefore happen in SQL, and a bounded caller decodes
+   * only the openings it asked for.
+   */
+  private readInvocationOpeningsSync(
+    sessionId: string,
+    options: {
+      direction: 'asc' | 'desc';
+      limit?: number;
+      before?: RuntimeInvocationPageCursor;
+      invocationId?: string;
+    },
+  ): Omit<RuntimeInvocationRecord, 'terminalEvent'>[] {
+    const order = options.direction === 'desc' ? 'DESC' : 'ASC';
+    const rows = this.db
+      .prepare(`
+        SELECT * FROM (
+          SELECT
+            event_id AS event_id,
+            invocation_id AS invocation_id,
+            run_id AS run_id,
+            turn_id AS turn_id,
+            committed_at AS opened_at,
+            payload_json AS opening_json,
+            1 AS from_events
+          FROM runtime_events
+          WHERE session_id = :sessionId AND event_kind = 'invocation_opened'
+          UNION ALL
+          SELECT
+            NULL,
+            legacy.invocation_id,
+            legacy.run_id,
+            legacy.turn_id,
+            legacy.opened_at,
+            legacy.opening_json,
+            0
+          FROM runtime_legacy_invocation_openings AS legacy
+          WHERE legacy.session_id = :sessionId
+            AND NOT EXISTS (
+              SELECT 1 FROM runtime_events
+              WHERE runtime_events.invocation_id = legacy.invocation_id
+                AND runtime_events.event_kind = 'invocation_opened'
+            )
+        )
+        WHERE (:invocationId IS NULL OR invocation_id = :invocationId)
+          AND (
+            :beforeOpenedAt IS NULL
+            OR opened_at < :beforeOpenedAt
+            OR (opened_at = :beforeOpenedAt AND invocation_id < :beforeInvocationId)
+          )
+        ORDER BY opened_at ${order}, invocation_id ${order}
+        LIMIT :limit
+      `)
+      .all({
+        sessionId,
+        invocationId: options.invocationId ?? null,
+        beforeOpenedAt: options.before?.openedAt ?? null,
+        beforeInvocationId: options.before?.invocationId ?? null,
+        limit: options.limit ?? -1,
+      }) as unknown as Array<{
+      event_id: string | null;
+      invocation_id: string;
+      run_id: string;
+      turn_id: string;
+      opened_at: number;
+      opening_json: string;
+      from_events: number;
+    }>;
+    return rows.map((row) => {
+      if (row.from_events !== 1) {
+        return {
+          sessionId,
+          invocationId: row.invocation_id,
+          runId: row.run_id,
+          turnId: row.turn_id,
+          openedAt: row.opened_at,
+          opening: decodeRuntimeInvocationOpened(JSON.parse(row.opening_json)),
+        };
+      }
+      const event = decodeRuntimeEventStorageRow({
+        event_id: row.event_id ?? '',
+        session_id: sessionId,
+        invocation_id: row.invocation_id,
+        run_id: row.run_id,
+        turn_id: row.turn_id,
+        payload_json: row.opening_json,
+      });
+      const opening = runtimeEventInvocationOpening(event);
+      if (!opening) {
+        throw new Error(`RuntimeEvent ${event.id} is indexed as an opening fact but is not one`);
+      }
+      return {
+        sessionId: event.sessionId,
+        invocationId: event.invocationId,
+        runId: event.runId,
+        turnId: event.turnId,
+        openedAt: event.ts,
+        opening,
+      };
     });
   }
 
@@ -4115,6 +4252,12 @@ function assertContinuationAuthorityCapability(db: DatabaseSync): void {
 
 function assertRuntimeStorageSafeId(value: string, message: string): void {
   if (!isRuntimeStorageSafeId(value)) throw new Error(message);
+}
+
+function assertInvocationSearchLimit(limit: number): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 256) {
+    throw new RangeError('Runtime invocation search limit must be an integer between 1 and 256');
+  }
 }
 
 interface RuntimeEventStorageRow {

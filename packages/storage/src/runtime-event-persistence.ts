@@ -19,7 +19,12 @@
 
 import { join } from 'node:path';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import type { RuntimeInvocationRecord } from '@maka/core/runtime-event-store';
+import type {
+  RuntimeInvocationPageInput,
+  RuntimeInvocationPageResult,
+  RuntimeInvocationRecord,
+  RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-event-store';
 import type { BoundedEvidenceReadResult, EvidenceReadBudget } from './agent-run-store.js';
 import { createSqliteRuntimeStore, type SqliteRuntimeStore } from './sqlite-runtime-store.js';
 import {
@@ -42,6 +47,15 @@ export type RuntimeEventReadPersistence = {
 
 export interface RuntimeEventReadStore {
   listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]>;
   readRuntimeEventsBounded(
     sessionId: string,
@@ -82,6 +96,12 @@ export async function openRuntimeEventReadPersistence(input: {
     kind: 'sqlite',
     runtimeEventStore: Object.freeze({
       listSessionInvocations: (sessionId: string) => store.listSessionInvocations(sessionId),
+      listSessionInvocationsBounded: (sessionId: string, limit: number) =>
+        store.listSessionInvocationsBounded(sessionId, limit),
+      listSessionInvocationsPage: (sessionId: string, input: RuntimeInvocationPageInput) =>
+        store.listSessionInvocationsPage(sessionId, input),
+      readInvocation: (sessionId: string, invocationId: string) =>
+        store.readInvocation(sessionId, invocationId),
       readRuntimeEvents: (sessionId: string, runId: string) =>
         store.readRuntimeEvents(sessionId, runId),
       readRuntimeEventsBounded: (sessionId: string, runId: string, budget: EvidenceReadBudget) =>

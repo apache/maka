@@ -205,6 +205,56 @@ describe('invocation opening fact backfill', () => {
       }
     });
   });
+
+  test('bounds, pages and addresses the same inventory', async () => {
+    await withHeaderOnlyRuns(async (databasePath) => {
+      const db = new DatabaseSync(databasePath);
+      try {
+        rewindRuntimeSchemaToPreviousVersion(db);
+        migrateSqliteRuntimeDatabase(db);
+      } finally {
+        db.close();
+      }
+
+      const store = createSqliteRuntimeStore(databasePath);
+      try {
+        const bounded = await store.listSessionInvocationsBounded('session-1', 2);
+        assert.deepEqual(
+          bounded.invocations.map((invocation) => invocation.invocationId),
+          ['run-legacy-route', 'run-scheduled'],
+        );
+        assert.equal(bounded.truncated, true, 'the extra row read past the limit reports the rest');
+
+        const first = await store.listSessionInvocationsPage('session-1', { limit: 2 });
+        assert.deepEqual(
+          first.invocations.map((invocation) => invocation.invocationId),
+          ['run-with-events', 'run-scheduled'],
+          'a page runs newest first',
+        );
+        const second = await store.listSessionInvocationsPage('session-1', {
+          limit: 2,
+          ...(first.nextCursor ? { before: first.nextCursor } : {}),
+        });
+        assert.deepEqual(
+          second.invocations.map((invocation) => invocation.invocationId),
+          ['run-legacy-route'],
+          'the cursor resumes without repeating or skipping a tied opening time',
+        );
+        assert.equal(second.nextCursor, null);
+
+        const one = await store.readInvocation('session-1', 'run-scheduled');
+        assert.equal(one.turnId, 'turn-scheduled');
+        assert.deepEqual(one.opening.root, { kind: 'scheduled_task', scheduledTaskId: 'task-9' });
+        await assert.rejects(
+          () => store.readInvocation('session-1', 'run-corrupt-root'),
+          /Runtime invocation not found/,
+          'a header the backfill refused to project has no invocation to read',
+        );
+      } finally {
+        store.close();
+      }
+    });
+  });
 });
 
 /** Undo the v16 step so the migration under test runs against real header rows. */

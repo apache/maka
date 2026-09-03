@@ -48,7 +48,14 @@ import {
   decodeSkillInvocationResult,
   type SkillInvocationResult,
 } from '@maka/core/skill-invocation';
-import { DurableStoreWriteError, type RuntimeEventStore } from '@maka/core/runtime-event-store';
+import {
+  DurableStoreWriteError,
+  type RuntimeEventStore,
+  type RuntimeInvocationPageInput,
+  type RuntimeInvocationPageResult,
+  type RuntimeInvocationRecord,
+  type RuntimeInvocationSearchResult,
+} from '@maka/core/runtime-event-store';
 import {
   aggregateMessageContents,
   decodeMessageContent,
@@ -287,6 +294,16 @@ export interface RuntimeEventScanBudget {
 export type RuntimeEventScanResult = { readonly status: 'complete' | 'limit_exceeded' };
 
 export interface DurableRuntimeEventStore extends RuntimeEventStore {
+  listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]>;
+  listSessionInvocationsBounded(
+    sessionId: string,
+    limit: number,
+  ): Promise<RuntimeInvocationSearchResult>;
+  listSessionInvocationsPage(
+    sessionId: string,
+    input: RuntimeInvocationPageInput,
+  ): Promise<RuntimeInvocationPageResult>;
+  readInvocation(sessionId: string, invocationId: string): Promise<RuntimeInvocationRecord>;
   /** Visit one ordered, bounded SQLite snapshot without retaining the immutable ledger. */
   scanRuntimeEvents(
     sessionId: string,

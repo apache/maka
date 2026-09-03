@@ -89,6 +89,27 @@ export interface RuntimeInvocationRecord {
   terminalEvent?: RuntimeEvent;
 }
 
+/** One invocation's position in a Session's opening order. */
+export interface RuntimeInvocationPageCursor {
+  readonly openedAt: number;
+  readonly invocationId: string;
+}
+
+export interface RuntimeInvocationPageInput {
+  readonly before?: RuntimeInvocationPageCursor;
+  readonly limit: number;
+}
+
+export interface RuntimeInvocationPageResult {
+  readonly invocations: readonly RuntimeInvocationRecord[];
+  readonly nextCursor: RuntimeInvocationPageCursor | null;
+}
+
+export interface RuntimeInvocationSearchResult {
+  readonly invocations: readonly RuntimeInvocationRecord[];
+  readonly truncated: boolean;
+}
+
 export interface RuntimeEventStore {
   /** Canonical stores fail the active run closed on every durable write error. */
   readonly durability?: 'best_effort' | 'canonical';
