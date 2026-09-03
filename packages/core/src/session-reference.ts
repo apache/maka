@@ -18,6 +18,7 @@
  */
 
 import type { QuoteRef } from './events.js';
+import { redactSecrets } from './redaction.js';
 import type { StoredMessage } from './session.js';
 import { userFacingText } from './session.js';
 
@@ -81,7 +82,7 @@ export function createSessionSnapshot(
   const candidates: SessionSnapshotItem[] = messages.flatMap((message) => {
     if (message.type !== 'user' && message.type !== 'assistant') return [];
     const text = message.type === 'user' ? userFacingText(message) : message.text;
-    const normalized = text.trim();
+    const normalized = redactSecrets(text).trim();
     if (!normalized) return [];
     return [
       {

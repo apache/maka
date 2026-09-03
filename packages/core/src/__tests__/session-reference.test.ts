@@ -74,6 +74,24 @@ test('creates a recent, redacted snapshot and excludes non-conversation messages
   assert.equal(snapshot.reference.capturedAt, 123);
 });
 
+test('redacts secrets from retained user and assistant messages before quoting them', () => {
+  const snapshot = createSessionSnapshot(
+    [
+      user('user-secret', 'Use Authorization: Bearer sk-live-secret-token-value'),
+      assistant('assistant-secret', 'The key is sk-ant-api03-live-secret-token-value'),
+    ],
+    {
+      sessionId: 'session-source',
+      sessionName: 'Sensitive session',
+    },
+  );
+
+  assert.doesNotMatch(snapshot.text, /sk-live-secret-token-value/);
+  assert.doesNotMatch(snapshot.text, /sk-ant-api03-live-secret-token-value/);
+  assert.match(snapshot.text, /\[redacted\]/);
+  assert.doesNotMatch(sessionSnapshotToQuote(snapshot).text, /sk-live-secret-token-value/);
+});
+
 test('bounds a snapshot from the newest content and preserves truncation provenance', () => {
   const snapshot = createSessionSnapshot(
     [
