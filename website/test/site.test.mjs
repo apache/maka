@@ -64,6 +64,15 @@ test('every page identifies the podling and carries the Incubator disclaimer', (
   }
 });
 
+test('the brand links to the homepage of the current language on every page', () => {
+  for (const locale of locales) {
+    for (const path of pages) {
+      const [, home] = page(`${locale}/${path}`).match(/<a class="brand" href="([^"]+)"/u);
+      assert.equal(home, `/${locale}/`, `${locale}/${path}`);
+    }
+  }
+});
+
 test('the English homepage uses the positioning sentence unchanged', () => {
   assert.ok(page('en/index.html').includes(positioning));
 });

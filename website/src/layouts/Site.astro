@@ -37,7 +37,7 @@ const locales: Locale[] = ['en', 'zh-CN'];
 const path = page === 'home' ? '' : `${page}/`;
 const href = (locale: Locale) => `/${locale}/${path}`;
 const canonical = new URL(href(copy.locale), Astro.site);
-const home = href(copy.locale);
+const home = `/${copy.locale}/`;
 const downloads = `/${copy.locale}/downloads/`;
 ---
 
@@ -101,25 +101,14 @@ const downloads = `/${copy.locale}/downloads/`;
       <slot />
 
       <footer class="foot">
-        <div class="top">
-          <div class="links">
-            <a href={links.asf}>{copy.footer.foundation}</a>
-            <a href={links.license}>{copy.footer.license}</a>
-            <a href={links.events}>{copy.footer.events}</a>
-            <a href={links.privacy}>{copy.footer.privacy}</a>
-            <a href={links.asfSecurity}>{copy.footer.security}</a>
-            <a href={links.sponsorship}>{copy.footer.sponsorship}</a>
-            <a href={links.thanks}>{copy.footer.thanks}</a>
-          </div>
-          <div class="lang">
-            {locales.map((locale) =>
-              locale === copy.locale ? (
-                <span class="on">{locale === 'en' ? 'EN' : '中文'}</span>
-              ) : (
-                <a href={href(locale)} hreflang={locale}>{locale === 'en' ? 'EN' : '中文'}</a>
-              ),
-            )}
-          </div>
+        <div class="links">
+          <a href={links.asf}>{copy.footer.foundation}</a>
+          <a href={links.license}>{copy.footer.license}</a>
+          <a href={links.events}>{copy.footer.events}</a>
+          <a href={links.privacy}>{copy.footer.privacy}</a>
+          <a href={links.asfSecurity}>{copy.footer.security}</a>
+          <a href={links.sponsorship}>{copy.footer.sponsorship}</a>
+          <a href={links.thanks}>{copy.footer.thanks}</a>
         </div>
         <p class="disc">{copy.footer.disclaimer}</p>
         <p class="tm">{copy.footer.trademark}</p>
