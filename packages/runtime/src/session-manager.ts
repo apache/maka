@@ -4678,7 +4678,7 @@ export class SessionManager {
       return false;
     }
 
-    await recoverOr(
+    const appendedTurnState = await recoverOr(
       policy,
       () =>
         this.appendTerminalTurnStateIfNeeded(
@@ -4693,9 +4693,12 @@ export class SessionManager {
           },
           policy,
         ),
-      undefined,
+      false,
     );
-    return true;
+    // A run that already carried a complete terminal fact and a terminal Turn
+    // state had nothing to recover. Saying otherwise makes recovery rewrite the
+    // Session status of every healthy run it walks past.
+    return inspected.terminalRuntimeFact === undefined || appendedTurnState;
   }
 
   private async appendTerminalTurnStateIfNeeded(
@@ -4705,16 +4708,17 @@ export class SessionManager {
     status: TurnRecord['status'],
     options: { ts: number; errorClass?: string; abortSource?: string },
     policy: RecoveryPolicy = { kind: 'best_effort' },
-  ): Promise<void> {
-    if (!isSessionInlineInvocation(run.opening)) return;
+  ): Promise<boolean> {
+    if (!isSessionInlineInvocation(run.opening)) return false;
     const messages = await recoverOr(
       policy,
       () => this.deps.store.readMessages(sessionId),
       [] as StoredMessage[],
     );
     const latest = latestTurnState(messages, decision.turnId);
-    if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return;
+    if (latest && isTerminalTurnStatus(latest.status) && latest.status === status) return false;
     await this.appendTurnState(sessionId, decision.turnId, status, decision.lineage, options);
+    return true;
   }
 }
 
