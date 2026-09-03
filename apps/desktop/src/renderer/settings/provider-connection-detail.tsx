@@ -712,16 +712,24 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
           {showsModelFilter && (
             <SettingsRow
               label={(
-                <TextInput
-                  value={modelFilter}
-                  onChange={setModelFilter}
-                  placeholder={copy.filterModels}
-                  label={copy.filterModels}
-                  isLabelHidden
-                  hasClear
-                  size="sm"
-                  width="100%"
-                />
+                <>
+                  <TextInput
+                    value={modelFilter}
+                    onChange={setModelFilter}
+                    placeholder={copy.filterModels}
+                    label={copy.filterModels}
+                    isLabelHidden
+                    hasClear
+                    size="sm"
+                    width="100%"
+                  />
+                  {/* The filter rewrites the rows below without moving focus,
+                      so the new count is spoken. Always mounted: a live region
+                      added at the same time as its text is not announced. */}
+                  <span className="maka-visually-hidden" role="status" aria-live="polite">
+                    {modelFilter.trim() ? providerCopy.shared.filterMatches(visibleModelRows.length) : ''}
+                  </span>
+                </>
               )}
             />
           )}

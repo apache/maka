@@ -962,6 +962,13 @@ export const ApiKeyOnboardingModels: Story = {
     await userEvent.click(await canvas.findByRole('button', { name: '验证并选择模型' }));
     await expect(canvas.findByText('选择此连接使用的模型')).resolves.toBeTruthy();
     await expect(canvas.findByRole('button', { name: '添加连接' })).resolves.toBeTruthy();
+    // The step that replaced the key form has to take the focus the pressed
+    // button left behind, or a keyboard user restarts from the top of Settings.
+    await waitFor(() => {
+      expect(document.activeElement?.getAttribute('data-maka-contract')).toBe(
+        'api-key-onboarding-models',
+      );
+    });
   },
 };
 

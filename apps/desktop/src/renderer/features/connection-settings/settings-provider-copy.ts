@@ -162,6 +162,9 @@ const zhCopy = {
     actionFallback: '模型连接服务暂时不可用，请稍后重试。', rateLimit: '当前账号或模型服务触发速率限制，请稍后重试。',
     timeout: '请求超时，请检查网络或代理后重试。', unavailable: '模型服务暂时不可用，请稍后重试。',
     network: '网络错误，请检查服务地址或代理设置后重试。', statusUnavailable: '连接测试状态暂时无法显示，请重新测试。',
+    // Every list that a search box narrows says how many rows are left, so the
+    // change is spoken rather than only shown.
+    filterMatches: (count: number) => (count === 0 ? '没有匹配的结果' : `${count} 个匹配结果`),
     connectionStatuses: { retired: '已停用 · 请删除', reauth: '需要重新登录', disabledFailed: '暂不可用 · 上次连接失败', disabled: '暂不可用', failed: '上次连接失败' },
     lastTest: {
       '连接已验证': '连接已验证', '鉴权失败': '鉴权失败', '请求超时': '请求超时', '网络错误': '网络错误', '模型服务返回错误': '模型服务返回错误', '连接测试失败': '连接测试失败',
@@ -331,6 +334,7 @@ const enCopy: ProviderSettingsCopy = {
     actionFallback: 'The model connection service is temporarily unavailable. Try again later.', rateLimit: 'This account or model service is rate-limited. Try again later.',
     timeout: 'The request timed out. Check the network or proxy and try again.', unavailable: 'The model service is temporarily unavailable. Try again later.',
     network: 'Network error. Check the service URL or proxy settings and try again.', statusUnavailable: 'The connection test status is temporarily unavailable. Test again.',
+    filterMatches: (count: number) => (count === 0 ? 'No matches' : count === 1 ? '1 match' : `${count} matches`),
     connectionStatuses: { retired: 'Retired · delete it', reauth: 'Sign-in required', disabledFailed: 'Unavailable · last connection failed', disabled: 'Unavailable', failed: 'Last connection failed' },
     lastTest: {
       '连接已验证': 'Connection verified', '鉴权失败': 'Authentication failed', '请求超时': 'Request timed out', '网络错误': 'Network error', '模型服务返回错误': 'Model service returned an error', '连接测试失败': 'Connection test failed',

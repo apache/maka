@@ -50,6 +50,7 @@ import { PasswordInput } from './password-input';
 import { providerDisplay } from './provider-display';
 import { useActionGuard } from './use-action-guard';
 import {
+  OnboardingStepForm,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type ApiKeyOnboardingBridge,
@@ -111,6 +112,7 @@ export function AddProviderForm(props: {
 }) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).add;
+  const sharedCopy = getProviderSettingsCopy(locale).shared;
   const defaults = PROVIDER_REGISTRY[props.providerType];
   const display = providerDisplay(props.providerType, locale);
   const recommendedDefaultModel = buildCatalogRecommendedDefaultModel(props.providerType);
@@ -512,7 +514,11 @@ export function AddProviderForm(props: {
       .filter((model) => managedPhase.selectedIds.includes(model.id))
       .map((model) => ({ value: model.id, label: modelLabel(model) }));
     return (
-      <VStack as="form" gap={4} onSubmit={submitApiKey} data-maka-contract="api-key-onboarding-models">
+      <OnboardingStepForm
+        onSubmit={submitApiKey}
+        contract="api-key-onboarding-models"
+        label={copy.onboardingChooseModels}
+      >
         {managedStepper}
         <VStack gap={1}>
           <Text weight="semibold">{copy.onboardingChooseModels}</Text>
@@ -550,6 +556,12 @@ export function AddProviderForm(props: {
             isDisabled={busy}
           />
         )}
+        {/* The filter changes the list without moving focus, so the new count
+            is spoken. Always mounted: a live region added at the same time as
+            its text is not announced. */}
+        <span className="maka-visually-hidden" role="status" aria-live="polite">
+          {normalizedFilter ? sharedCopy.filterMatches(visibleModels.length) : ''}
+        </span>
         {visibleModels.length === 0 ? (
           <EmptyState
             isCompact
@@ -607,7 +619,7 @@ export function AddProviderForm(props: {
             label={busy ? copy.saving : copy.onboardingAddConnection}
           />
         </HStack>
-      </VStack>
+      </OnboardingStepForm>
     );
   }
 

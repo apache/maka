@@ -123,16 +123,24 @@ export function ProviderCatalogPage(props: {
     );
   }
 
-  const searchField = (
-    <TextInput
-      value={query}
-      onChange={(value) => props.onFilterChange({ query: value })}
-      placeholder={copy.searchPlaceholder}
-      label={copy.searchAria}
-      isLabelHidden
-      startIcon={Search}
-      hasClear
-    />
+  // Typing collapses the groups into one flat list without moving focus, so
+  // the new count is spoken. The region is mounted on both branches: one added
+  // at the same time as its text is not announced.
+  const searchField = (matches: number | null) => (
+    <>
+      <TextInput
+        value={query}
+        onChange={(value) => props.onFilterChange({ query: value })}
+        placeholder={copy.searchPlaceholder}
+        label={copy.searchAria}
+        isLabelHidden
+        startIcon={Search}
+        hasClear
+      />
+      <span className="maka-visually-hidden" role="status" aria-live="polite">
+        {matches === null ? '' : getProviderSettingsCopy(locale).shared.filterMatches(matches)}
+      </span>
+    </>
   );
 
   if (normalizedQuery) {
@@ -140,7 +148,7 @@ export function ProviderCatalogPage(props: {
     const isEmpty = providers.length === 0 && oauth.cards.length === 0;
     return (
       <VStack gap={4} data-maka-contract="provider-catalog">
-        {searchField}
+        {searchField(providers.length + oauth.cards.length)}
         {staleBanner}
         {isEmpty ? (
           // Filter empty (DESIGN.md §10 tier 1): a filter no-match always carries
@@ -166,7 +174,7 @@ export function ProviderCatalogPage(props: {
 
   return (
     <VStack gap={8} data-maka-contract="provider-catalog">
-      {searchField}
+      {searchField(null)}
       {staleBanner}
       {CATALOG_GROUPS.map((group) => {
         const providers = group === 'recommended'
