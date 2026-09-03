@@ -33,7 +33,9 @@ const [helperExe, fixtureExe, ...rest] = process.argv.slice(2);
 const outIndex = rest.indexOf('--out');
 const outputPath = outIndex >= 0 ? rest[outIndex + 1] : null;
 if (!helperExe || !fixtureExe || (outIndex >= 0 && !outputPath)) {
-  console.error('usage: node maka-cu2-performance-driver.mjs <helper.exe> <fixture.exe> [--out results.json]');
+  console.error(
+    'usage: node maka-cu2-performance-driver.mjs <helper.exe> <fixture.exe> [--out results.json]',
+  );
   process.exit(2);
 }
 
@@ -45,9 +47,14 @@ function workingSetBytes(pid) {
     windowsHide: true,
   });
   if (result.status !== 0) return null;
-  const line = result.stdout.trim().split(/\r?\n/).find((value) => value.includes(`"${pid}"`));
+  const line = result.stdout
+    .trim()
+    .split(/\r?\n/)
+    .find((value) => value.includes(`"${pid}"`));
   if (!line) return null;
-  const fields = line.match(/"(?:[^"]|"")*"/g)?.map((field) => field.slice(1, -1).replace(/""/g, '"'));
+  const fields = line
+    .match(/"(?:[^"]|"")*"/g)
+    ?.map((field) => field.slice(1, -1).replace(/""/g, '"'));
   const memory = fields?.at(-1)?.replace(/[^0-9]/g, '');
   return memory ? Number(memory) * 1024 : null;
 }
@@ -121,10 +128,7 @@ function fixture(exe) {
 async function close(child) {
   if (!child || child.exitCode !== null) return;
   child.stdin?.end();
-  await Promise.race([
-    new Promise((resolve) => child.once('exit', resolve)),
-    wait(2_000),
-  ]);
+  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), wait(2_000)]);
   if (child.exitCode === null) child.kill();
 }
 
@@ -134,7 +138,9 @@ function requestShutdown(client) {
     // shutdown response. This measurement does not need that response; wait
     // for the process exit so an stdout flush race cannot become a benchmark
     // failure. A non-zero exit is still observed by close()/the caller.
-    client.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 999999, method: 'shutdown', params: {} })}\n`);
+    client.child.stdin.write(
+      `${JSON.stringify({ jsonrpc: '2.0', id: 999999, method: 'shutdown', params: {} })}\n`,
+    );
   }
 }
 
@@ -181,12 +187,15 @@ async function firstFrame(imageDir) {
       imageDir,
       allowGlobalPointer: false,
     });
-    if (hello.result?.protocol !== 'maka.cu/2') throw new Error('host.hello did not negotiate maka.cu/2');
+    if (hello.result?.protocol !== 'maka.cu/2')
+      throw new Error('host.hello did not negotiate maka.cu/2');
     const session = `perf-${process.pid}-${Date.now()}`;
     await client.call('session.begin', { session, captureScope: 'window' });
     const windows = await client.call('window.list', { session });
     const listed = windows.result?.windows ?? [];
-    const listedTarget = listed.find((item) => item.pid === target.pid && item.windowId === target.hwnd);
+    const listedTarget = listed.find(
+      (item) => item.pid === target.pid && item.windowId === target.hwnd,
+    );
     if (!listedTarget) throw new Error('fixture target was not re-enumerated');
     const started = performance.now();
     const observed = await client.call('observe', {
@@ -199,9 +208,12 @@ async function firstFrame(imageDir) {
     const bytes = image?.path ? await readFile(image.path) : null;
     const elapsedMs = Number((performance.now() - started).toFixed(3));
     const imageOk = Boolean(
-      bytes && image && bytes.length === image.byteLength &&
-      `sha256:${createHash('sha256').update(bytes).digest('hex')}` === image.sha256 &&
-      image.widthPx > 0 && image.heightPx > 0,
+      bytes &&
+        image &&
+        bytes.length === image.byteLength &&
+        `sha256:${createHash('sha256').update(bytes).digest('hex')}` === image.sha256 &&
+        image.widthPx > 0 &&
+        image.heightPx > 0,
     );
     const workingSet = workingSetBytes(client.child.pid);
     await client.call('session.end', { session });
@@ -242,7 +254,11 @@ try {
     fixture: fixtureExe,
     measurements: {
       coldStartHandshakeMs: handshakeValues,
-      coldStartHandshakeAverageMs: Number((handshakeValues.reduce((sum, value) => sum + value, 0) / handshakeValues.length).toFixed(3)),
+      coldStartHandshakeAverageMs: Number(
+        (handshakeValues.reduce((sum, value) => sum + value, 0) / handshakeValues.length).toFixed(
+          3,
+        ),
+      ),
       helperWorkingSetBytes: handshakes.map((item) => item.workingSetBytes),
       firstFrameMs: frame.firstFrameMs,
       firstFrameWorkingSetBytes: frame.workingSetBytes,

@@ -123,10 +123,7 @@ function fixtureProcess(exe) {
 async function closeChild(child) {
   if (!child || child.exitCode !== null) return;
   child.stdin?.end();
-  await Promise.race([
-    new Promise((resolve) => child.once('exit', resolve)),
-    wait(2_500),
-  ]);
+  await Promise.race([new Promise((resolve) => child.once('exit', resolve)), wait(2_500)]);
   if (child.exitCode === null) child.kill();
 }
 
@@ -147,11 +144,19 @@ try {
     allowGlobalPointer: false,
   });
   check('host.hello protocol', hello.result?.protocol === 'maka.cu/2');
-  check('host.hello fails closed for global pointer', hello.result?.capabilities?.pointActions?.length === 0);
-  check('host.hello advertises semantic element actions',
-    hello.result?.capabilities?.elementActions?.includes('set_value') === true);
-  check('host.hello declares a native release identity',
-    hello.result?.executor?.name === 'maka-cu-windows-rust' && typeof hello.result?.pid === 'number');
+  check(
+    'host.hello fails closed for global pointer',
+    hello.result?.capabilities?.pointActions?.length === 0,
+  );
+  check(
+    'host.hello advertises semantic element actions',
+    hello.result?.capabilities?.elementActions?.includes('set_value') === true,
+  );
+  check(
+    'host.hello declares a native release identity',
+    hello.result?.executor?.name === 'maka-cu-windows-rust' &&
+      typeof hello.result?.pid === 'number',
+  );
 
   const begin = await helper.call('session.begin', { session, captureScope: 'window' });
   check('session.begin', begin.result?.ok === true && begin.result.session === session);
@@ -162,15 +167,28 @@ try {
   const listed = windows.result?.windows ?? [];
   oldTarget = listed.find((item) => item.pid === identity.pid && item.windowId === identity.hwnd);
   check('window.list re-enumerates exact fixture PID/HWND', Boolean(oldTarget));
-  check('window.list preserves the fresh window title', typeof oldTarget?.title === 'string' && oldTarget.title.length > 0);
-  check('window.list carries app identity and bounds',
-    typeof oldTarget?.appId === 'string' && oldTarget?.bounds?.width > 0 && oldTarget?.bounds?.height > 0);
-  check('window.list is front-to-back without zIndex ties',
-    listed.every((item, index) => index === 0 || item.zIndex < listed[index - 1].zIndex));
+  check(
+    'window.list preserves the fresh window title',
+    typeof oldTarget?.title === 'string' && oldTarget.title.length > 0,
+  );
+  check(
+    'window.list carries app identity and bounds',
+    typeof oldTarget?.appId === 'string' &&
+      oldTarget?.bounds?.width > 0 &&
+      oldTarget?.bounds?.height > 0,
+  );
+  check(
+    'window.list is front-to-back without zIndex ties',
+    listed.every((item, index) => index === 0 || item.zIndex < listed[index - 1].zIndex),
+  );
 
   const apps = await helper.call('apps.list', { session });
-  check('apps.list joins the fixture PID to the same appId',
-    (apps.result?.apps ?? []).some((item) => item.pid === identity.pid && item.appId === oldTarget?.appId));
+  check(
+    'apps.list joins the fixture PID to the same appId',
+    (apps.result?.apps ?? []).some(
+      (item) => item.pid === identity.pid && item.appId === oldTarget?.appId,
+    ),
+  );
 
   const observed = await helper.call('observe', {
     session,
@@ -179,26 +197,41 @@ try {
   });
   const snapshot = observed.result?.snapshot;
   oldSnapshot = snapshot;
-  check('observe returns a bound snapshot',
-    observed.result?.ok === true && snapshot?.target?.pid === identity.pid && snapshot?.target?.windowId === identity.hwnd);
-  check('observe carries process start time and window generation',
+  check(
+    'observe returns a bound snapshot',
+    observed.result?.ok === true &&
+      snapshot?.target?.pid === identity.pid &&
+      snapshot?.target?.windowId === identity.hwnd,
+  );
+  check(
+    'observe carries process start time and window generation',
     snapshot?.target?.title === oldTarget?.title &&
       typeof snapshot?.target?.processStartTimeUtc === 'string' &&
       snapshot.target.processStartTimeUtc.startsWith('filetime:') &&
       typeof snapshot?.target?.windowGeneration === 'string' &&
-      snapshot.target.windowGeneration.length > 0);
+      snapshot.target.windowGeneration.length > 0,
+  );
   check('observe carries a bound target digest', snapshot?.windowDigest?.startsWith('sha256:'));
-  check('observe uses normalized semantic action names',
+  check(
+    'observe uses normalized semantic action names',
     (snapshot?.elements ?? []).every((element) =>
       (element.actions ?? []).every((action) =>
-        ['press', 'set_value', 'select_text', 'confirm', 'pick', 'scroll_down'].includes(action))));
+        ['press', 'set_value', 'select_text', 'confirm', 'pick', 'scroll_down'].includes(action),
+      ),
+    ),
+  );
   const image = snapshot?.image;
   let imageBytes;
   if (image?.path) {
     imageBytes = await readFile(image.path);
     const actual = `sha256:${createHash('sha256').update(imageBytes).digest('hex')}`;
-    check('observe image is host-owned and hashable',
-      imageBytes.length === image.byteLength && actual === image.sha256 && image.widthPx > 0 && image.heightPx > 0);
+    check(
+      'observe image is host-owned and hashable',
+      imageBytes.length === image.byteLength &&
+        actual === image.sha256 &&
+        image.widthPx > 0 &&
+        image.heightPx > 0,
+    );
   } else {
     check('observe image is host-owned and hashable', false, 'no image returned');
   }
@@ -207,18 +240,26 @@ try {
   if (screenCapture.result?.ok === true && screenCapture.result.image?.path) {
     const screenImage = screenCapture.result.image;
     const screenBytes = await readFile(screenImage.path);
-    check('screen.capture uses a selected display and host-owned image',
+    check(
+      'screen.capture uses a selected display and host-owned image',
       typeof screenCapture.result.displayId === 'string' &&
         screenBytes.length === screenImage.byteLength &&
         `sha256:${createHash('sha256').update(screenBytes).digest('hex')}` === screenImage.sha256 &&
-        screenImage.widthPx > 0 && screenImage.heightPx > 0);
+        screenImage.widthPx > 0 &&
+        screenImage.heightPx > 0,
+    );
   } else {
-    check('screen.capture uses a selected display and host-owned image', false,
-      screenCapture.result?.error?.code ?? 'capture_failed');
+    check(
+      'screen.capture uses a selected display and host-owned image',
+      false,
+      screenCapture.result?.error?.code ?? 'capture_failed',
+    );
   }
 
-  const input = (snapshot?.elements ?? []).find((element) =>
-    element.value !== null && element.value !== undefined && element.role.includes('Edit'));
+  const input = (snapshot?.elements ?? []).find(
+    (element) =>
+      element.value !== null && element.value !== undefined && element.role.includes('Edit'),
+  );
   const button = (snapshot?.elements ?? []).find((element) => element.actions?.includes('press'));
   check('observe exposes a ValuePattern input or Invoke button', Boolean(input || button));
   const targetElement = input ?? button;
@@ -237,9 +278,13 @@ try {
       action,
       observeAfter: { includeImage: false, settle: 'quiesce' },
     });
-    check('dispatch.element returns a complete outcome envelope',
-      dispatched.result?.ok === true && dispatched.result.outcome === 'ok' &&
-        dispatched.result.effect === 'confirmed' && dispatched.result.verification?.method);
+    check(
+      'dispatch.element returns a complete outcome envelope',
+      dispatched.result?.ok === true &&
+        dispatched.result.outcome === 'ok' &&
+        dispatched.result.effect === 'confirmed' &&
+        dispatched.result.verification?.method,
+    );
     const duplicate = await helper.call('dispatch.element', {
       session,
       snapshotId: snapshot.snapshotId,
@@ -248,8 +293,10 @@ try {
       expectElementDigest: targetElement.digest,
       action,
     });
-    check('dispatch.element snapshot authority is one-use',
-      duplicate.result?.ok === false && duplicate.result.error?.code === 'snapshot_unknown');
+    check(
+      'dispatch.element snapshot authority is one-use',
+      duplicate.result?.ok === false && duplicate.result.error?.code === 'snapshot_unknown',
+    );
   }
 
   const pointSnapshotResponse = await helper.call('observe', {
@@ -265,8 +312,12 @@ try {
     target: { pid: identity.pid, windowId: identity.hwnd },
     point: { x: 1, y: 1 },
   });
-  check('dispatch.point is fail-closed and does not mutate',
-    point.result?.ok === false && point.result.outcome === 'refused' && point.result.error?.code === 'unsupported_action');
+  check(
+    'dispatch.point is fail-closed and does not mutate',
+    point.result?.ok === false &&
+      point.result.outcome === 'refused' &&
+      point.result.error?.code === 'unsupported_action',
+  );
 
   const beforeRecreate = await helper.call('observe', {
     session,
@@ -276,22 +327,36 @@ try {
   await fixture.command('recreate');
   await wait(250);
   const afterWindows = await helper.call('window.list', { session });
-  check('fixture recreation changes the HWND inventory',
-    !(afterWindows.result?.windows ?? []).some((item) => item.pid === identity.pid && item.windowId === identity.hwnd));
+  check(
+    'fixture recreation changes the HWND inventory',
+    !(afterWindows.result?.windows ?? []).some(
+      (item) => item.pid === identity.pid && item.windowId === identity.hwnd,
+    ),
+  );
   const stale = await helper.call('observe', {
     session,
     target: { kind: 'window', pid: identity.pid, windowId: identity.hwnd },
     includeImage: false,
   });
-  check('old HWND is refused after fixture recreation',
-    stale.result?.ok === false && stale.result.error?.code === 'window_gone');
-  check('fresh HWND is re-enumerated after recreation',
-    (afterWindows.result?.windows ?? []).some((item) => item.pid === identity.pid && item.windowId !== identity.hwnd));
+  check(
+    'old HWND is refused after fixture recreation',
+    stale.result?.ok === false && stale.result.error?.code === 'window_gone',
+  );
+  check(
+    'fresh HWND is re-enumerated after recreation',
+    (afterWindows.result?.windows ?? []).some(
+      (item) => item.pid === identity.pid && item.windowId !== identity.hwnd,
+    ),
+  );
   void beforeRecreate;
 
   const ended = await helper.call('session.end', { session });
-  check('session.end reports scoped release counts',
-    ended.result?.ok === true && ended.result?.released?.snapshots >= 0 && ended.result?.released?.streams === 0);
+  check(
+    'session.end reports scoped release counts',
+    ended.result?.ok === true &&
+      ended.result?.released?.snapshots >= 0 &&
+      ended.result?.released?.streams === 0,
+  );
   const endedAgain = await helper.call('session.end', { session });
   check('session.end is idempotent for an unknown session', endedAgain.result?.ok === true);
 
@@ -310,8 +375,11 @@ try {
     });
     check('host.hello accepts the declared supervisor PID', parentHello.result?.ok === true);
     await wait(3_500);
-    check('helper exits after the declared supervisor dies', parentBoundHelper.child.exitCode !== null,
-      `exitCode=${parentBoundHelper.child.exitCode}`);
+    check(
+      'helper exits after the declared supervisor dies',
+      parentBoundHelper.child.exitCode !== null,
+      `exitCode=${parentBoundHelper.child.exitCode}`,
+    );
   } finally {
     await closeChild(parentBoundHelper.child);
     await closeChild(declaredParent);
@@ -319,9 +387,16 @@ try {
   }
 
   const shutdown = await helper.call('shutdown');
-  check('shutdown returns bounded grace', shutdown.result?.ok === true && shutdown.result.graceMs > 0);
+  check(
+    'shutdown returns bounded grace',
+    shutdown.result?.ok === true && shutdown.result.graceMs > 0,
+  );
 } catch (error) {
-  check('driver completed without an unexpected exception', false, error instanceof Error ? error.message : String(error));
+  check(
+    'driver completed without an unexpected exception',
+    false,
+    error instanceof Error ? error.message : String(error),
+  );
 } finally {
   try {
     await fixture.command('shutdown');

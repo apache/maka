@@ -454,8 +454,10 @@ function buildProgrammaticResults(args, diagnostics) {
   // with the measured two-pixel frame adjustment as the only Windows variant.
   const bounds = diagnostic?.bounds;
   const exactSize = bounds?.width === expectedWidth && bounds?.height === expectedHeight;
-  const windowsFrameAdjustedSize = process.platform === 'win32' &&
-    bounds?.width === expectedWidth + 2 && bounds?.height === expectedHeight + 2;
+  const windowsFrameAdjustedSize =
+    process.platform === 'win32' &&
+    bounds?.width === expectedWidth + 2 &&
+    bounds?.height === expectedHeight + 2;
   const checks = [
     {
       check: PROGRAMMATIC_SMOKE_CHECKS[0],

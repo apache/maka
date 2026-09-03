@@ -38,8 +38,7 @@ const output = resolve(outputDirectory, 'maka-cu-windows.exe');
 // companion closure. The old C# experiment used the list below; keeping that
 // list here would make a valid native artifact fail packaging and would leave
 // the manifest claiming that the production executor depends on WPF.
-export const REQUIRED_NATIVE_FILES = [
-];
+export const REQUIRED_NATIVE_FILES = [];
 
 const PUBLISH_CONTRACT = {
   executor: 'rust-native-windows',
@@ -105,12 +104,7 @@ async function publishFromSource(sourceRoot) {
   await mkdir(artifact, { recursive: true });
   await exec(
     process.platform === 'win32' ? 'cargo.exe' : 'cargo',
-    [
-      'build',
-      '--release',
-      '--manifest-path',
-      manifest,
-    ],
+    ['build', '--release', '--manifest-path', manifest],
     { cwd: sourceRoot },
   );
   const built = resolve(dirname(manifest), 'target/release/maka-cu-windows-rust.exe');
