@@ -90,6 +90,30 @@ test('the composer keeps Host bindings stable while resampling scoped Tool addit
   );
 });
 
+test('scoped Tool resolution receives the complete stable Host binding', () => {
+  let observedHostTools: readonly MakaTool[] = [];
+  const composer = createFixtureComposer({
+    hostTools: [tool('host_extension')],
+    resolveAdditionalTools: (hostTools) => {
+      observedHostTools = hostTools;
+      return [tool('plugin_extension')];
+    },
+  });
+
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'Read'),
+    true,
+  );
+  assert.equal(
+    observedHostTools.some(({ name }) => name === 'host_extension'),
+    true,
+  );
+  assert.equal(
+    composer.tools.some(({ name }) => name === 'plugin_extension'),
+    true,
+  );
+});
+
 test('an explicit tool profile remains an exact ceiling over scoped Tool additions', () => {
   const composer = createFixtureComposer({
     toolProfile: 'headless-coding-v1',

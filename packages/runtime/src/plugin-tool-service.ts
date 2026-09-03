@@ -28,6 +28,7 @@ import {
 } from './plugin-runtime.js';
 import type { MakaTool } from './tool-runtime.js';
 import { bindToolActivationIdentity } from './tool-activation-identity.js';
+import { TOOL_SEARCH_NAME, TOOL_SEARCH_PROVIDER_NAME } from './tool-availability.js';
 
 declare module './plugin-kernel.js' {
   interface Context {
@@ -92,6 +93,14 @@ export class PluginToolService extends Service {
   }
 
   resolve(sessionId: string, coreTools: readonly MakaTool[]): ResolvedPluginTools {
+    const contributions = this.resolveContributions(sessionId, coreTools);
+    return Object.freeze({
+      tools: Object.freeze([...coreTools, ...contributions.tools]),
+    });
+  }
+
+  /** Resolve only Plugin-owned additions after validating them against the Host binding. */
+  resolveContributions(sessionId: string, coreTools: readonly MakaTool[]): ResolvedPluginTools {
     if (!sessionId || /[\r\n\0]/u.test(sessionId)) throw new Error('Invalid Tool Session scope');
     const visible = new Map<string, RegisteredPluginTool>();
     for (const entry of this.layers.get('profile')?.values() ?? []) {
@@ -113,7 +122,7 @@ export class PluginToolService extends Service {
     }
     const entries = [...visible.values()].sort(compareRegistration);
     return Object.freeze({
-      tools: Object.freeze([...coreTools, ...entries.map(({ exposed }) => exposed)]),
+      tools: Object.freeze(entries.map(({ exposed }) => exposed)),
     });
   }
 
@@ -249,6 +258,9 @@ function validateTool(tool: MakaTool): void {
     throw new TypeError(
       `Plugin Tool ${JSON.stringify(tool.name)} cannot claim a provider protocol`,
     );
+  }
+  if (tool.name === TOOL_SEARCH_NAME || tool.name === TOOL_SEARCH_PROVIDER_NAME) {
+    throw new TypeError(`Plugin Tool name ${JSON.stringify(tool.name)} is reserved by Runtime`);
   }
 }
 

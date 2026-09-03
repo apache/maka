@@ -178,6 +178,20 @@ test('desktop-ui and Host-owned Tool conflicts fail closed', async () => {
   await loader.close();
 });
 
+test('Runtime-owned deferred search names are rejected atomically', async () => {
+  const root = new Context();
+  const tools = new PluginToolService(root);
+  const loader = new MakaCompositionLoader({ root });
+  await loader.install(toolPackage('reserved-package', tool('tool_search', 'plugin')));
+
+  await assert.rejects(
+    () => loader.create('profile', { id: 'reserved-entry', packageId: 'reserved-package' }),
+    /reserved by Runtime/u,
+  );
+  assert.deepEqual(tools.inspect(), []);
+  await loader.close();
+});
+
 test('Plugin Tool descriptions satisfy the Request Composition bound', async () => {
   const root = new Context();
   const tools = new PluginToolService(root);

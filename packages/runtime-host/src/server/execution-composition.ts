@@ -742,7 +742,8 @@ export async function createExecutionRuntimeHostComposition(
         hostTools,
         resolveRootTools: (sessionId) =>
           requireGraphCoordinator(graphCoordinator).toolsForSession(sessionId),
-        resolvePluginTools: (sessionId) => pluginTools.resolve(sessionId, []),
+        resolvePluginTools: (sessionId, coreTools) =>
+          pluginTools.resolveContributions(sessionId, coreTools),
         parentAgentTools: childAgentTools.parentTools,
         childTools: childAgentTools.childTools,
         worktreePatchWriteBackAvailable: true,

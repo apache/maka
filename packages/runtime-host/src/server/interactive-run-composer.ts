@@ -109,7 +109,7 @@ export interface InteractiveRunComposerInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
-  readonly resolveAdditionalTools?: () => readonly MakaTool[];
+  readonly resolveAdditionalTools?: (hostTools: readonly MakaTool[]) => readonly MakaTool[];
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -152,8 +152,11 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
       );
   const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
   const resolveTools = (): readonly MakaTool[] => {
-    const additionalTools = hasToolCeiling ? [] : (input.resolveAdditionalTools?.() ?? []);
-    const unscopedCandidateTools = [...defaultTools, ...additionalTools, ...clientCapabilityTools];
+    const stableHostTools = [...defaultTools, ...clientCapabilityTools];
+    const additionalTools = hasToolCeiling
+      ? []
+      : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
+    const unscopedCandidateTools = [...stableHostTools, ...additionalTools];
     const routedCandidateTools = input.deepResearch
       ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
       : unscopedCandidateTools;
@@ -279,7 +282,10 @@ export interface InteractiveRunComposerFactoryInput
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
-  readonly resolvePluginTools?: (sessionId: string) => {
+  readonly resolvePluginTools?: (
+    sessionId: string,
+    hostTools: readonly MakaTool[],
+  ) => {
     readonly tools: readonly MakaTool[];
   };
   readonly childTools?: readonly MakaTool[];
@@ -408,15 +414,16 @@ export function createInteractiveRunComposerFactory(
         ...(hostTools.length > 0 ? { hostTools } : {}),
         ...(input.resolvePluginTools && !backendContext.tools
           ? {
-              resolveAdditionalTools: () =>
-                routeInteractiveRunToolSurface({
+              resolveAdditionalTools: (hostTools) => {
+                return routeInteractiveRunToolSurface({
                   runtimePolicy,
                   connection,
                   modelId,
-                  hostTools: input.resolvePluginTools!(backendContext.sessionId).tools,
+                  hostTools: input.resolvePluginTools!(backendContext.sessionId, hostTools).tools,
                   worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
                   tavilyReady,
-                }).hostTools,
+                }).hostTools;
+              },
             }
           : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),

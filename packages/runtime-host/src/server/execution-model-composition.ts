@@ -330,6 +330,10 @@ async function buildHostAiSdkBackend(
   const recordRequestComposition = input.context.recordRequestComposition;
   const resolveModelTools = (): readonly MakaTool[] =>
     modelComposition.resolveTools?.() ?? modelComposition.tools;
+  // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
+  // belong exclusively to RequestComposition epochs, so never re-sample them
+  // while committing the baseline immediately before provider dispatch.
+  const initialModelTools = Object.freeze([...modelComposition.tools]);
   const runCompositionCommits = new Map<string, Promise<void>>();
   const commitRunComposition = recordRunComposition
     ? async (context: { readonly turnId: string; readonly runId: string }): Promise<void> => {
@@ -337,7 +341,6 @@ async function buildHostAiSdkBackend(
         if (!commit) {
           commit = (async (): Promise<void> => {
             const resolved = await resolveRunPrompt(context);
-            const tools = resolveModelTools();
             await recordRunComposition(
               context.runId,
               createRunCompositionSnapshot({
@@ -345,17 +348,24 @@ async function buildHostAiSdkBackend(
                 composerRevision: modelComposition.composerRevision,
                 sourceRevisions: resolved.sourceRevisions,
                 baseSystemPromptHash: stableHash(resolved.text ?? ''),
-                toolCatalogHash: toolCatalogHash(tools),
+                toolCatalogHash: toolCatalogHash(initialModelTools),
                 toolAvailabilityHash: toolAvailabilityHash(modelComposition.toolAvailability),
                 baseProviderOptionsHash: stableHash(providerOptions),
-                toolNames: tools.map(({ name }) => name),
+                toolNames: initialModelTools.map(({ name }) => name),
                 contextWindow: contextWindow ?? null,
               }),
             );
           })();
           runCompositionCommits.set(context.runId, commit);
         }
-        await commit;
+        try {
+          await commit;
+        } catch (error) {
+          if (runCompositionCommits.get(context.runId) === commit) {
+            runCompositionCommits.delete(context.runId);
+          }
+          throw error;
+        }
       }
     : undefined;
   const planProjectionImage = createReadImageSnapshotPlanner(
