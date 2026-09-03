@@ -1,5 +1,5 @@
 {
-  "epoch": 104,
+  "epoch": 105,
   "files": ["packages/runtime-host/src/protocol/client-capability.ts"],
   "reason": "Pure refactor: extracts decodeClientCapabilityToolInputSchema and exports decodeClientCapabilityToolDescriptor so the desktop native capability path can share the same decoder (#4490). Wire shape, validation limits, and error behavior are unchanged; older and newer peers decode identical frames."
 }
