@@ -374,12 +374,9 @@ test('does not dispatch a tool that was dropped from its offer', async () => {
   );
 });
 
-test('skips a capability with invalid metadata without blaming its tool schemas', () => {
-  const warnings: string[] = [];
+test('sheds a capability whose offer metadata is invalid without failing the rest', () => {
   const originalWarn = console.warn;
-  console.warn = (...args: unknown[]) => {
-    warnings.push(String(args[0]));
-  };
+  console.warn = () => {};
   let provider: ReturnType<typeof createDesktopNativeCapabilityProvider>;
   try {
     provider = createDesktopNativeCapabilityProvider({
@@ -389,8 +386,9 @@ test('skips a capability with invalid metadata without blaming its tool schemas'
       computerUseTools: computerTools(),
       releaseComputerUseSession() {},
       additionalGroups: () => [
-        // Invalid offerId — a caller misconfiguration, not a tool-schema
-        // problem. Its one tool has a perfectly valid schema.
+        // Invalid offerId — a caller misconfiguration. Its one tool has a
+        // perfectly valid schema, yet the group cannot be advertised, so the
+        // whole group is dropped while every other capability still registers.
         {
           offerId: 'bad offer id!',
           label: 'Bad',
@@ -403,17 +401,18 @@ test('skips a capability with invalid metadata without blaming its tool schemas'
     console.warn = originalWarn;
   }
 
-  // The misconfigured capability is dropped; Browser still registers.
+  // The misconfigured capability is dropped; Browser still registers, and the
+  // surviving frame encodes cleanly over the protocol.
   assert.deepEqual(
     provider.offers().map((offer) => offer.offerId),
     ['desktop_browser'],
   );
-  // The diagnostic blames the capability's metadata, not the tool's schema.
-  assert.equal(
-    warnings.some((line) => line.includes('bad offer id!') && line.includes('offer metadata')),
-    true,
+  assert.doesNotThrow(() =>
+    decodeClientCapabilityReplaceInput({
+      registrationId: 'registration-1',
+      offers: provider.offers(),
+    }),
   );
-  assert.equal(warnings.some((line) => line.includes('fine_tool')), false);
 });
 
 test('publishes every production Desktop-owned tool schema through the protocol', () => {
@@ -428,6 +427,7 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       return false;
     },
   });
+  const riveTools = [buildRiveWorkflowTool()];
   const provider = createDesktopNativeCapabilityProvider({
     browserTools: [],
     resolveBrowserUrl: () => 'https://example.com/',
@@ -445,7 +445,7 @@ test('publishes every production Desktop-owned tool schema through the protocol'
         offerId: 'desktop_rive',
         label: 'Rive',
         description: 'Rive workflows',
-        tools: [buildRiveWorkflowTool()],
+        tools: riveTools,
       },
     ],
   });
@@ -455,6 +455,19 @@ test('publishes every production Desktop-owned tool schema through the protocol'
       registrationId: 'registration-1',
       offers: provider.offers(),
     }),
+  );
+  // Assert the tools by name, not just `doesNotThrow`: a tool dropped for an
+  // unrepresentable schema now vanishes silently rather than throwing, so this
+  // is what makes such a regression fail CI instead of passing green.
+  assert.deepEqual(
+    provider.offers().map((offer) => ({
+      offerId: offer.offerId,
+      toolNames: offer.tools.map((descriptor) => descriptor.name),
+    })),
+    [
+      { offerId: 'desktop_settings', toolNames: settingsTools.map((entry) => entry.name) },
+      { offerId: 'desktop_rive', toolNames: riveTools.map((entry) => entry.name) },
+    ],
   );
 });
 

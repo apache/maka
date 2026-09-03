@@ -43,11 +43,9 @@ import type { DesktopTargetScope } from '../shared/runtime-host-identity.js';
 const CAPABILITY_VERSION = "0";
 const BROWSER_OFFER_ID = "desktop_browser";
 const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
-// Identifiers used only to validate a capability's metadata or a single tool's
-// descriptor against the protocol before advertising it; never sent to a Host.
-const CAPABILITY_PROBE_REGISTRATION_ID = "desktop-capability-offer-probe";
-const CAPABILITY_PROBE_OFFER_ID = "desktop-capability-tool-probe";
-const CAPABILITY_PROBE_LABEL = "probe";
+// A registration id used only to validate a single tool's descriptor against
+// the protocol before advertising it; never sent to a Host.
+const CAPABILITY_PROBE_REGISTRATION_ID = "desktop-capability-tool-probe";
 
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
@@ -58,16 +56,6 @@ export interface DesktopCapabilityGroup {
 
 interface NativeToolBinding {
   readonly tool: MakaTool;
-}
-
-/** Offer-level metadata shared by a capability's tools (no tool descriptors). */
-interface OfferMetadata {
-  readonly offerId: string;
-  readonly version: string;
-  readonly affinity: "session";
-  readonly hostPathAccess: ClientCapabilityHostPathAccess;
-  readonly label: string;
-  readonly description: string;
 }
 
 /**
@@ -450,25 +438,12 @@ function capabilityOffer(
   group: DesktopCapabilityGroup,
   hostPathAccess: ClientCapabilityHostPathAccess,
 ): ResolvedCapability | undefined {
-  const base: OfferMetadata = {
-    offerId: group.offerId,
-    version: CAPABILITY_VERSION,
-    affinity: "session",
-    hostPathAccess,
-    label: group.label,
-    description: group.description,
-  };
-  // Validate the offer-level metadata once, apart from any tool, so a
-  // misconfigured group (a caller bug — bad offerId, over-long label, …) is
-  // reported as such instead of blaming every tool's schema.
-  if (!capabilityMetadataValid(group, base)) return undefined;
-
   const surviving: {
     readonly descriptor: ClientCapabilityToolDescriptor;
     readonly tool: MakaTool;
   }[] = [];
   for (const tool of group.tools) {
-    const descriptor = offerableToolDescriptor(group, tool);
+    const descriptor = offerableToolDescriptor(group, tool, hostPathAccess);
     if (descriptor) surviving.push({ descriptor, tool });
   }
   if (surviving.length === 0) {
@@ -477,47 +452,16 @@ function capabilityOffer(
     );
     return undefined;
   }
-  const offer = Object.freeze({
-    ...base,
+  const offer: ClientCapabilityOffer = Object.freeze({
+    offerId: group.offerId,
+    version: CAPABILITY_VERSION,
+    affinity: "session" as const,
+    hostPathAccess,
+    label: group.label,
+    description: group.description,
     tools: Object.freeze(surviving.map((entry) => entry.descriptor)),
   });
   return { offer, tools: surviving.map((entry) => entry.tool) };
-}
-
-/**
- * Validate a capability's offer-level metadata (offerId, label, version, Host
- * path access) in isolation, using one synthetic always-valid tool. Keeps a
- * misconfigured group from being misreported as an unrepresentable tool schema
- * on every tool it holds.
- */
-function capabilityMetadataValid(
-  group: DesktopCapabilityGroup,
-  base: OfferMetadata,
-): boolean {
-  try {
-    decodeClientCapabilityReplaceInput({
-      registrationId: CAPABILITY_PROBE_REGISTRATION_ID,
-      offers: [
-        {
-          ...base,
-          tools: [
-            {
-              serverId: group.offerId,
-              name: "probe",
-              inputSchema: { type: "object" },
-            },
-          ],
-        },
-      ],
-    });
-    return true;
-  } catch (error) {
-    console.warn(
-      `[capabilities] Skipping Desktop capability ${group.offerId}: its offer metadata is not representable over the Client Capability protocol`,
-      error,
-    );
-    return false;
-  }
 }
 
 /**
@@ -527,13 +471,16 @@ function capabilityMetadataValid(
  * Schema keyword outside the protocol's allowlist — must not throw from here:
  * that would drop every Desktop capability at once (Browser, Computer Use,
  * Client settings, Rive and MCP), which is exactly the #4591 outage. Each tool
- * is validated on its own against constant, known-valid offer metadata (group
- * metadata is checked separately) so an unrepresentable tool costs only itself
- * and is logged rather than fatal.
+ * is validated on its own, inside its group's real offer metadata, so an
+ * unrepresentable tool costs only itself and is logged rather than fatal. A
+ * group whose metadata is itself invalid (a caller bug: every production
+ * offerId is a literal) drops all of its tools the same way, so the group is
+ * still shed rather than advertised.
  */
 function offerableToolDescriptor(
   group: DesktopCapabilityGroup,
   tool: MakaTool,
+  hostPathAccess: ClientCapabilityHostPathAccess,
 ): ClientCapabilityToolDescriptor | undefined {
   try {
     const descriptor: ClientCapabilityToolDescriptor = Object.freeze({
@@ -550,11 +497,12 @@ function offerableToolDescriptor(
       registrationId: CAPABILITY_PROBE_REGISTRATION_ID,
       offers: [
         {
-          offerId: CAPABILITY_PROBE_OFFER_ID,
+          offerId: group.offerId,
           version: CAPABILITY_VERSION,
           affinity: "session",
-          hostPathAccess: "cwd",
-          label: CAPABILITY_PROBE_LABEL,
+          hostPathAccess,
+          label: group.label,
+          description: group.description,
           tools: [descriptor],
         },
       ],
@@ -562,7 +510,7 @@ function offerableToolDescriptor(
     return descriptor;
   } catch (error) {
     console.warn(
-      `[capabilities] Skipping Desktop tool ${group.offerId}/${tool.name}: its schema is not representable over the Client Capability protocol`,
+      `[capabilities] Skipping Desktop tool ${group.offerId}/${tool.name}: it cannot be offered over the Client Capability protocol`,
       error,
     );
     return undefined;
@@ -626,8 +574,10 @@ function aiSchemaJson(
  * Coerce/validate incoming call arguments against a tool's declared parameters,
  * mirroring the runtime's `validateDeclaredToolArgs` precedence. Zod schemas
  * parse (applying defaults/transforms); JSON-schema-only tools (MCP) carry no
- * client-side validator, so their arguments pass through unchanged and are
- * validated by the receiving Runtime Host against the same schema.
+ * client-side validator, so their arguments pass through unchanged — the
+ * receiving Runtime Host rebuilds these tools with `buildMcpTools` and likewise
+ * does not validate them, so the owning MCP server is the validator, as it is
+ * for the TUI.
  */
 async function parseToolArguments(
   tool: MakaTool,
