@@ -24,6 +24,7 @@ import { z } from 'zod';
 
 import { estimateTokens } from './context-budget-helpers.js';
 import { canonicalizeToolSet, stableHash, toolSchemaCharsForDiagnostics } from './request-shape.js';
+import { toolActivationKey } from './tool-activation-identity.js';
 import type { MakaTool, ToolGating } from './tool-runtime.js';
 
 /** Canonical name of Maka's provider-independent deferred-tool search connector. */
@@ -170,6 +171,7 @@ interface SearchDocument {
 export class ToolAvailabilityRuntime {
   private readonly tools: readonly MakaTool[];
   private readonly toolsByName: ReadonlyMap<string, MakaTool>;
+  private readonly activationKeysByName: ReadonlyMap<string, `sha256:${string}`>;
   private readonly groups: readonly SearchGroup[];
   private readonly searchableNames: ReadonlySet<string>;
   private readonly directNames: ReadonlySet<string>;
@@ -188,6 +190,7 @@ export class ToolAvailabilityRuntime {
     }
     this.tools = [...tools];
     this.toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+    this.activationKeysByName = new Map(tools.map((tool) => [tool.name, toolActivationKey(tool)]));
 
     const known = new Set(this.toolsByName.keys());
     const searchable =
@@ -303,7 +306,7 @@ export class ToolAvailabilityRuntime {
   }
 
   prepare(
-    activeTools: Map<string, MakaTool>,
+    activeTools: Map<string, string>,
     requiredToolNames: ReadonlySet<string> = new Set(),
   ): ToolAvailabilityPlan {
     if (!this.searchIndex) {
@@ -320,6 +323,12 @@ export class ToolAvailabilityRuntime {
     const allTools = [...this.tools, connector];
     const canonical = canonicalizeToolSet(allTools, this.invalidTool);
     const knownNames = new Set(canonical.providerTools.map((tool) => tool.name));
+    // Activation belongs to a stable logical contribution, not a temporary
+    // wrapper object or merely its name. Equivalent Host wrappers survive
+    // per-step rebuilding; a replaced Plugin generation does not.
+    for (const [name, activatedKey] of activeTools) {
+      if (this.activationKeysByName.get(name) !== activatedKey) activeTools.delete(name);
+    }
     const requiredNames = [...requiredToolNames].filter((name) => knownNames.has(name));
     const step = { active: new Set<string>() };
     const computeActive = (): string[] => {
@@ -345,7 +354,7 @@ export class ToolAvailabilityRuntime {
   }
 
   private buildSearchConnector(
-    activeTools: Map<string, MakaTool>,
+    activeTools: Map<string, string>,
   ): MakaTool<{ query: string; limit?: number }, ToolSearchResult> {
     return {
       name: TOOL_SEARCH_NAME,
@@ -387,7 +396,7 @@ export class ToolAvailabilityRuntime {
           activated.push(name);
           schemaChars += chars;
         }
-        for (const name of activated) activeTools.set(name, this.toolsByName.get(name)!);
+        for (const name of activated) activeTools.set(name, this.activationKeysByName.get(name)!);
         const result: ToolSearchResult = {
           activated,
           ...(blocked ? { blocked } : {}),

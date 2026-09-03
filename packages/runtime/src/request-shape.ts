@@ -30,6 +30,7 @@ import {
 import { toJSONSchema } from 'zod';
 
 import type { MakaTool } from './tool-runtime.js';
+import type { RequestCompositionToolSchema } from '@maka/core/run-composition';
 
 export interface CanonicalToolSet {
   providerTools: MakaTool[];
@@ -262,6 +263,38 @@ export function toolCatalogHash(tools: readonly MakaTool[]): `sha256:${string}` 
       .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
       .map(toolShapeForDiagnostics),
   );
+}
+
+/** Canonical, JSON-safe schemas for the exact provider-visible tool subset. */
+export function requestCompositionToolSchemas(
+  tools: readonly MakaTool[],
+  activeToolNames: readonly string[],
+): readonly RequestCompositionToolSchema[] {
+  const active = new Set(activeToolNames);
+  return tools
+    .filter((tool) => active.has(tool.name))
+    .map((tool) => {
+      const inputSchema = JSON.parse(
+        stableStringify(schemaShapeForHash(tool.parameters)),
+      ) as unknown;
+      if (!isPlainObject(inputSchema)) {
+        throw new Error(`Tool ${JSON.stringify(tool.name)} produced a non-object input schema`);
+      }
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema,
+        ...(tool.providerTool
+          ? {
+              providerTool: JSON.parse(stableStringify(tool.providerTool)) as Record<
+                string,
+                unknown
+              >,
+            }
+          : {}),
+      };
+    })
+    .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
 }
 
 export function stableStringify(value: unknown): string {

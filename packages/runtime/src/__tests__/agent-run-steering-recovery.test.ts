@@ -26,6 +26,7 @@ import { test } from 'node:test';
 import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { SessionEvent } from '@maka/core/events';
+import { decodeRequestCompositionSnapshot } from '@maka/core/run-composition';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -71,6 +72,145 @@ test('rejects an invalid tool mode before a durable AgentRun can be created', as
       /invalid tool mode/i,
     );
     assert.deepEqual(await runStore.listSessionRuns(session.id), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('records changed request surfaces append-only and reuses unchanged epochs', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-agent-run-request-composition-'));
+  try {
+    const store = createSessionStore(root);
+    const session = await store.create({
+      cwd: '/tmp/cwd',
+      llmConnectionSlug: 'fake',
+      model: 'fake-model',
+      permissionMode: 'ask',
+    });
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    const runId = 'run-request-composition';
+    const turnId = 'turn-request-composition';
+    await runStore.createRun(makeRunHeader(session.id, runId, turnId));
+    let id = 0;
+    const run = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'exercise request composition' },
+      runId,
+      runStore,
+      runtimeEventStore,
+      store,
+      newId: () => `generated-${++id}`,
+      now: () => 10 + id,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const base = {
+      sourceRevisions: [{ id: 'plugin-tools', revision: '1' }],
+      systemPromptHash: digest('1'),
+      toolCatalogHash: digest('2'),
+      toolAvailabilityHash: digest('3'),
+      providerOptionsHash: digest('4'),
+      toolNames: ['enable_inventory'],
+      toolSchemas: [
+        {
+          name: 'enable_inventory',
+          description: 'enable inventory',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    } as const;
+
+    const firstId = await run.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-1',
+      step: 0,
+    });
+    const reusedId = await run.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-2',
+      step: 1,
+    });
+    const changedId = await run.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-3',
+      step: 2,
+      toolCatalogHash: digest('5'),
+      toolNames: ['enable_inventory', 'inventory_quote'],
+      toolSchemas: [
+        ...base.toolSchemas,
+        {
+          name: 'inventory_quote',
+          description: 'quote inventory',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    });
+    const returnedId = await run.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-4',
+      step: 3,
+    });
+
+    assert.equal(firstId, 'composition-1');
+    assert.equal(reusedId, 'composition-1');
+    assert.equal(changedId, 'composition-3');
+    assert.equal(returnedId, 'composition-1');
+
+    const resumed = new AgentRun({
+      sessionId: session.id,
+      header: session,
+      userInput: { turnId, text: 'resume request composition' },
+      runId,
+      runStore,
+      runtimeEventStore,
+      store,
+      newId: () => `resumed-${++id}`,
+      now: () => 20 + id,
+      hooks: {
+        reserveRun: async () => {
+          throw new Error('reserveRun should not be called');
+        },
+        unregisterRun: () => {},
+        updateHeader: (sessionId, patch) => store.updateHeader(sessionId, patch),
+        updateStatus: async () => {},
+        appendTurnState: async () => {},
+      },
+    });
+    const resumedId = await resumed.recordRequestComposition({
+      ...base,
+      compositionId: 'composition-5',
+      step: 4,
+      toolCatalogHash: digest('5'),
+      toolNames: ['enable_inventory', 'inventory_quote'],
+      toolSchemas: [
+        ...base.toolSchemas,
+        {
+          name: 'inventory_quote',
+          description: 'quote inventory',
+          inputSchema: { type: 'object' },
+        },
+      ],
+    });
+    assert.equal(resumedId, 'composition-3');
+    const snapshots = (await runStore.readEvents(session.id, runId))
+      .filter((event) => event.type === 'request_composition_resolved')
+      .map((event) => decodeRequestCompositionSnapshot(event.data?.snapshot));
+    assert.deepEqual(
+      snapshots.map((snapshot) => ({ reason: snapshot.reason, step: snapshot.step })),
+      [
+        { reason: 'initial', step: 0 },
+        { reason: 'change', step: 2 },
+      ],
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -745,6 +885,11 @@ function makeRunHeader(sessionId: string, runId: string, turnId: string): AgentR
     updatedAt: 1,
   };
 }
+
+function digest(seed: string): `sha256:${string}` {
+  return `sha256:${seed.repeat(64)}`;
+}
+
 async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
   await pollFor(predicate, {
     attempts: 100,

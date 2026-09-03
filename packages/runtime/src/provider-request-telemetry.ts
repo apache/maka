@@ -83,6 +83,7 @@ interface SettledProviderAttempt extends ProviderRequestUsage {
   attemptId: string;
   turnId: string;
   step: number;
+  requestCompositionId?: string;
   attempt: number;
   captureArtifactId?: string;
   providerId: string;
@@ -334,6 +335,7 @@ export class ProviderRequestTracker {
    * that call, not new calls, so they share this id.
    */
   private readonly logicalCallIdByStep = new Map<number, string>();
+  private readonly requestCompositionIdByStep = new Map<number, string>();
 
   constructor(private readonly input: ProviderRequestTrackerInput) {}
 
@@ -341,8 +343,11 @@ export class ProviderRequestTracker {
     return this.input.traceId;
   }
 
-  setStep(step: number): void {
+  setStep(step: number, requestCompositionId?: string): void {
     this.step = step;
+    if (requestCompositionId !== undefined) {
+      this.requestCompositionIdByStep.set(step, requestCompositionId);
+    }
   }
 
   async trackStream(input: TrackProviderStreamInput): Promise<ProviderStreamResult> {
@@ -492,6 +497,9 @@ export class ProviderRequestTracker {
         attemptId,
         turnId: this.input.turnId,
         step,
+        ...(this.requestCompositionIdByStep.get(step)
+          ? { requestCompositionId: this.requestCompositionIdByStep.get(step) }
+          : {}),
         attempt,
         ...(capture.artifactId ? { captureArtifactId: capture.artifactId } : {}),
         providerId: input.providerId,
@@ -584,6 +592,9 @@ export class ProviderRequestTracker {
       // The physical ordinals are one-based on the diagnostic record; the
       // canonical record counts retries from zero.
       step: Math.max(0, record.step),
+      ...(record.requestCompositionId !== undefined
+        ? { requestCompositionId: record.requestCompositionId }
+        : {}),
       attempt: Math.max(0, record.attempt - 1),
       callKind: accounting.callKind,
       ...(context.historyCompactRoute !== undefined

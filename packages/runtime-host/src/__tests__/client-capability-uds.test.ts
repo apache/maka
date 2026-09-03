@@ -205,7 +205,7 @@ test('unknown Client Capability loads, invokes, and rebinds after UDS reconnect'
       abortSignal: new AbortController().signal,
       emitOutput: () => undefined,
     };
-    const activeTools = new Map<string, MakaTool>();
+    const activeTools = new Map<string, string>();
     const availability = new ToolAvailabilityRuntime(
       snapshot.tools,
       { groups: snapshot.groups },

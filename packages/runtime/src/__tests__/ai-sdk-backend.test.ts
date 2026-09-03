@@ -37,6 +37,7 @@ import type { StorageRef } from '@maka/core/events';
 import { encodeCanonicalRuntimeEvent } from '@maka/core/canonical-runtime-event';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { RequestCompositionSnapshotInput } from '@maka/core/run-composition';
 import {
   createSessionEventMapMemory,
   mapSessionEventToRuntimeEvent,
@@ -94,6 +95,9 @@ import type { OpenAiResponsesSemanticBaseline } from '../openai-responses-contin
 import type { OpenAiResponsesTransportState } from '../openai-responses-websocket.js';
 import { getAIModel } from '../model-factory.js';
 import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
+import { Context } from '../plugin-kernel.js';
+import { MakaCompositionLoader } from '../plugin-composition-loader.js';
+import { PluginToolService } from '../plugin-tool-service.js';
 
 describe('AiSdkBackend ApplyPatch routing', () => {
   test('advertises apply_patch only to supported native OpenAI models', async () => {
@@ -3950,6 +3954,300 @@ describe('AiSdkBackend model history', () => {
       result.value.some((part: any) => part.type === 'file' && part.mediaType === 'image/png'),
     );
     assert.equal(artifactReads, 1);
+  });
+
+  test('a live Plugin can enable, execute, and disable a Tool within one Turn', async () => {
+    const durable = durableTurnHarness('turn-dynamic-tools', 'check inventory then disable access');
+    const root = new Context();
+    const pluginTools = new PluginToolService(root);
+    const loader = new MakaCompositionLoader({ root });
+    let disposeInventory: (() => Promise<void>) | undefined;
+    const inventoryTool: MakaTool = {
+      name: 'lookup_inventory',
+      description: 'look up current inventory',
+      parameters: z.object({ sku: z.string() }),
+      impl: async ({ sku }) => ({ sku, available: 7 }),
+    };
+    await loader.install({
+      packageId: 'inventory-plugin',
+      host: (ctx) => {
+        ctx.tools.register({
+          name: 'enable_inventory',
+          description: 'enable inventory access',
+          parameters: z.object({}),
+          impl: async () => {
+            disposeInventory ??= ctx.tools.register(inventoryTool);
+            return { enabled: inventoryTool.name };
+          },
+        });
+        ctx.tools.register({
+          name: 'disable_inventory',
+          description: 'disable inventory access',
+          parameters: z.object({}),
+          impl: async () => {
+            await disposeInventory?.();
+            disposeInventory = undefined;
+            return { disabled: inventoryTool.name };
+          },
+        });
+      },
+    });
+    await loader.create('profile', {
+      id: 'inventory-entry',
+      packageId: 'inventory-plugin',
+    });
+    let calls = 0;
+    const requestCompositions: RequestCompositionSnapshotInput[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        calls += 1;
+        const toolCall =
+          calls === 1
+            ? {
+                id: 'search-enable-call',
+                name: TOOL_SEARCH_NAME,
+                input: JSON.stringify({ query: 'enable inventory', limit: 1 }),
+              }
+            : calls === 2
+              ? { id: 'enable-call', name: 'enable_inventory', input: '{}' }
+              : calls === 3
+                ? {
+                    id: 'search-inventory-call',
+                    name: TOOL_SEARCH_NAME,
+                    input: JSON.stringify({ query: 'look up current inventory', limit: 1 }),
+                  }
+                : calls === 4
+                  ? {
+                      id: 'inventory-call',
+                      name: inventoryTool.name,
+                      input: JSON.stringify({ sku: 'SKU-42' }),
+                    }
+                  : calls === 5
+                    ? {
+                        id: 'search-disable-call',
+                        name: TOOL_SEARCH_NAME,
+                        input: JSON.stringify({ query: 'disable inventory', limit: 1 }),
+                      }
+                    : calls === 6
+                      ? { id: 'disable-call', name: 'disable_inventory', input: '{}' }
+                      : undefined;
+        return {
+          stream: simulateReadableStream({
+            chunks: (toolCall
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'tool-call',
+                    toolCallId: toolCall.id,
+                    toolName: toolCall.name,
+                    input: toolCall.input,
+                  },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: emptyUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ]) as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [...pluginTools.resolve('session-1', []).tools],
+      resolveTools: () => pluginTools.resolve('session-1', []).tools,
+      toolAvailability: {
+        groups: [
+          {
+            id: 'plugins',
+            toolNames: ['enable_inventory', 'lookup_inventory', 'disable_inventory'],
+          },
+        ],
+      },
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      recordRequestComposition: async (_runId, snapshot) => {
+        requestCompositions.push(snapshot);
+        return snapshot.compositionId;
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    await drainDurably(
+      backend.send(durable.input({ runId: 'run-1', invocationId: 'invocation-1' })),
+      durable,
+    );
+
+    const namesForRequest = (index: number): string[] => {
+      const tools = model.doStreamCalls[index]?.tools ?? [];
+      return Array.isArray(tools)
+        ? tools.flatMap((tool) =>
+            tool && typeof tool === 'object' && 'name' in tool ? [String(tool.name)] : [],
+          )
+        : Object.keys(tools);
+    };
+    assert.equal(namesForRequest(0).includes('enable_inventory'), false);
+    assert.equal(namesForRequest(1).includes('enable_inventory'), true);
+    assert.equal(namesForRequest(2).includes(inventoryTool.name), false);
+    assert.equal(namesForRequest(3).includes(inventoryTool.name), true);
+    assert.equal(namesForRequest(4).includes('disable_inventory'), false);
+    assert.equal(namesForRequest(5).includes('disable_inventory'), true);
+    assert.equal(namesForRequest(6).includes(inventoryTool.name), false);
+    assert.equal(requestCompositions.length, 7);
+    assert.equal(requestCompositions[2]?.toolNames.includes(inventoryTool.name), false);
+    assert.equal(requestCompositions[3]?.toolNames.includes(inventoryTool.name), true);
+    assert.equal(requestCompositions[6]?.toolNames.includes(inventoryTool.name), false);
+    const finalPrompt = model.doStreamCalls[6]?.prompt as Array<{
+      role: string;
+      content: Array<{ output?: { value?: unknown } }>;
+    }>;
+    assert.equal(
+      JSON.stringify(finalPrompt).includes('SKU-42') &&
+        JSON.stringify(finalPrompt).includes('available'),
+      true,
+    );
+    await loader.close();
+  });
+
+  test('installs, invokes, and removes a live weather plugin within one model turn', async () => {
+    const root = new Context();
+    const pluginTools = new PluginToolService(root);
+    const loader = new MakaCompositionLoader({ root });
+    const invocations: Array<{ city: string }> = [];
+    await loader.install({
+      packageId: 'weather-package',
+      host: (ctx) => {
+        ctx.tools.register({
+          name: 'weather_forecast',
+          description: 'Get the current weather forecast for a city',
+          parameters: z.object({ city: z.string() }),
+          impl: async (input) => {
+            const { city } = input as { city: string };
+            invocations.push({ city });
+            return { city, condition: 'sunny', temperatureCelsius: 28 };
+          },
+        });
+      },
+    });
+
+    const installPlugin: MakaTool = {
+      name: 'install_weather_plugin',
+      description: 'Install the weather plugin for the current profile',
+      parameters: z.object({}),
+      impl: async () => {
+        await loader.create('profile', {
+          id: 'weather-entry',
+          packageId: 'weather-package',
+        });
+        return { installed: true };
+      },
+    };
+    const removePlugin: MakaTool = {
+      name: 'remove_weather_plugin',
+      description: 'Remove the installed weather plugin',
+      parameters: z.object({}),
+      impl: async () => {
+        await loader.remove('weather-entry');
+        return { removed: true };
+      },
+    };
+    const resolveTools = (): readonly MakaTool[] =>
+      pluginTools.resolve('session-1', [installPlugin, removePlugin]).tools;
+    const durable = durableTurnHarness(
+      'turn-live-weather-plugin',
+      'Install a weather plugin, check Shanghai, then remove the plugin.',
+    );
+    const scriptedCalls = [
+      { toolCallId: 'install-call', toolName: installPlugin.name, input: '{}' },
+      {
+        toolCallId: 'forecast-call',
+        toolName: 'weather_forecast',
+        input: JSON.stringify({ city: 'Shanghai' }),
+      },
+      { toolCallId: 'remove-call', toolName: removePlugin.name, input: '{}' },
+    ] as const;
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        const call = scriptedCalls[step++];
+        return {
+          stream: simulateReadableStream({
+            chunks: (call
+              ? [
+                  { type: 'stream-start', warnings: [] },
+                  { type: 'tool-call', ...call },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+                    usage: emptyUsage(),
+                  },
+                ]
+              : [
+                  { type: 'stream-start', warnings: [] },
+                  {
+                    type: 'finish',
+                    finishReason: { unified: 'stop', raw: 'stop' },
+                    usage: emptyUsage(),
+                  },
+                ]) as LanguageModelV4StreamPart[],
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const backend = createTestAiSdkBackend({
+      sessionId: 'session-1',
+      header: header(),
+      appendMessage: async () => {},
+      connection: connection(),
+      apiKey: 'sk-test',
+      modelId: 'mock-model-id',
+      modelFactory: () => model,
+      tools: [...resolveTools()],
+      resolveTools,
+      loadTurnRuntimeEvents: durable.loadTurnRuntimeEvents,
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    try {
+      const events = await drainDurably(backend.send(durable.input()), durable);
+      const namesForStep = (index: number): string[] => {
+        const tools = model.doStreamCalls[index]?.tools ?? [];
+        return Array.isArray(tools)
+          ? tools.flatMap((tool) =>
+              tool && typeof tool === 'object' && 'name' in tool ? [String(tool.name)] : [],
+            )
+          : Object.keys(tools);
+      };
+
+      assert.equal(namesForStep(0).includes('weather_forecast'), false);
+      assert.equal(namesForStep(1).includes('weather_forecast'), true);
+      assert.equal(namesForStep(2).includes('weather_forecast'), true);
+      assert.equal(namesForStep(3).includes('weather_forecast'), false);
+      assert.deepEqual(invocations, [{ city: 'Shanghai' }]);
+      assert.equal(events.filter((event) => event.type === 'tool_result').length, 3);
+      assert.deepEqual(pluginTools.inspect(), []);
+    } finally {
+      await loader.close();
+    }
   });
 
   test('reloads durable multi-tool settlement before terminal continuation', async () => {
@@ -9698,11 +9996,16 @@ describe('AiSdkBackend RunTrace', () => {
   test('disables hidden AI SDK retries and traces the one explicit Runtime retry', async () => {
     const captures: PreparedRequestArtifactInput[] = [];
     const attempts: ModelCallAttempt[] = [];
+    const stableTool = testTool('stable_tool', z.object({}));
+    const retryOnlyTool = testTool('retry_only_tool', z.object({}));
+    let surface: readonly MakaTool[] = [stableTool];
     let calls = 0;
+    const requestCompositions: RequestCompositionSnapshotInput[] = [];
     const model = new MockLanguageModelV4({
       doStream: async () => {
         calls += 1;
         if (calls === 1) {
+          surface = [stableTool, retryOnlyTool];
           throw new APICallError({
             message: 'retry me',
             url: 'https://provider.invalid/v1/messages',
@@ -9738,7 +10041,8 @@ describe('AiSdkBackend RunTrace', () => {
       apiKey: 'sk-test',
       modelId: 'mock-model-id',
       modelFactory: () => model,
-      tools: [],
+      tools: [...surface],
+      resolveTools: () => surface,
       newId: idGenerator(),
       now: monotonicClock(),
       persistPreparedRequestArtifact: async (capture) => {
@@ -9748,13 +10052,33 @@ describe('AiSdkBackend RunTrace', () => {
       recordModelCallAttempt: ({ attempt }) => {
         attempts.push(attempt);
       },
+      recordRequestComposition: async (_runId, snapshot) => {
+        requestCompositions.push(snapshot);
+        return snapshot.compositionId;
+      },
       providerRetrySleep: async () => {},
     });
 
     await drain(backend.send({ turnId: 'turn-1', runId: 'run-1', text: 'hi', context: [] }));
 
     assert.equal(calls, 2);
+    assert.equal(
+      model.doStreamCalls.every((call) =>
+        Array.isArray(call.tools)
+          ? call.tools.every(
+              (tool) => !('name' in tool) || String(tool.name) !== retryOnlyTool.name,
+            )
+          : !(retryOnlyTool.name in (call.tools ?? {})),
+      ),
+      true,
+    );
     assert.equal(captures.length, 1);
+    assert.equal(requestCompositions.length, 1);
+    assert.ok(
+      attempts.every(
+        (attempt) => attempt.requestCompositionId === requestCompositions[0]?.compositionId,
+      ),
+    );
     assert.deepEqual(
       attempts.map(({ attempt, status }) => ({ attempt, status })),
       [

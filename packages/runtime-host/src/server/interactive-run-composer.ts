@@ -109,6 +109,7 @@ export interface InteractiveRunComposerInput {
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
+  readonly resolveAdditionalTools?: (hostTools: readonly MakaTool[]) => readonly MakaTool[];
   readonly scheduledTaskTool?: MakaTool;
   readonly goalTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
@@ -132,41 +133,51 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const inventorySnapshotFor = createTurnSkillInventorySnapshotResolver(input.skills);
   const inventoryFor: SkillInventoryResolver = async (context) =>
     (await inventorySnapshotFor(context)).inventory;
+  const hasToolCeiling = input.boundTools !== undefined || input.toolProfile !== undefined;
+  const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
+  // The base Host binding is immutable for this backend. Only scoped plugin
+  // contributions are sampled at logical step boundaries.
   const defaultTools = input.boundTools
     ? input.boundTools
     : buildDefaultHostTools(
         input.sessionTodo,
         inventoryFor,
         builtinTools,
-        input.hostTools,
+        input.hostTools ?? [],
         input.scheduledTaskTool,
         input.goalTools,
         input.parentAgentTools,
         input.plan,
         input.deepResearch?.tools,
       );
-  const hasToolCeiling = input.boundTools !== undefined || input.toolProfile !== undefined;
   const clientCapabilityTools = hasToolCeiling ? [] : (input.clientCapabilities?.tools ?? []);
-  const unscopedCandidateTools = [...defaultTools, ...clientCapabilityTools];
-  const routedCandidateTools = input.deepResearch
-    ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
-    : unscopedCandidateTools;
-  const candidateTools = projectHostedExecutionTools(routedCandidateTools, input.toolProfile);
-  const activeExecution = input.plan ? activePlanExecution(input.plan.state) : undefined;
-  const selectedTools = input.plan
-    ? selectCollaborationTools({
-        mode: input.plan.mode,
-        tools: candidateTools,
-        hasActiveExecution: activeExecution !== undefined,
-        fullAccess: input.plan.permissionMode === 'bypass',
-      })
-    : candidateTools;
-  // A bound tool list is an exact child/local activation ceiling. Dynamic
-  // capabilities must be included by the authority that constructs that
-  // list. The ceiling is also an exact wire contract: no deferred search
-  // groups inside it, so the bound tools stay fully visible.
-  const tools = [...selectedTools];
-  assertUniqueToolNames(tools);
+  const resolveTools = (): readonly MakaTool[] => {
+    const stableHostTools = [...defaultTools, ...clientCapabilityTools];
+    const additionalTools = hasToolCeiling
+      ? []
+      : (input.resolveAdditionalTools?.(stableHostTools) ?? []);
+    const unscopedCandidateTools = [...stableHostTools, ...additionalTools];
+    const routedCandidateTools = input.deepResearch
+      ? unscopedCandidateTools.filter(isDeepResearchToolAllowed)
+      : unscopedCandidateTools;
+    const candidateTools = projectHostedExecutionTools(routedCandidateTools, input.toolProfile);
+    const selectedTools = input.plan
+      ? selectCollaborationTools({
+          mode: input.plan.mode,
+          tools: candidateTools,
+          hasActiveExecution: activeExecution !== undefined,
+          fullAccess: input.plan.permissionMode === 'bypass',
+        })
+      : candidateTools;
+    // A bound tool list is an exact child/local activation ceiling. Dynamic
+    // capabilities must be included by the authority that constructs that
+    // list. The ceiling is also an exact wire contract: no deferred search
+    // groups inside it, so the bound tools stay fully visible.
+    const resolved = [...selectedTools];
+    assertUniqueToolNames(resolved);
+    return Object.freeze(resolved);
+  };
+  const tools = resolveTools();
   const hostCapabilities = buildHostCapabilitiesFromBinding(tools.map(({ name }) => name));
   const toolAvailability = hasToolCeiling
     ? undefined
@@ -257,6 +268,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     composerId: INTERACTIVE_RUN_COMPOSER_ID,
     composerRevision: INTERACTIVE_RUN_COMPOSER_REVISION,
     tools,
+    resolveTools,
     toolAvailability,
     resolveSystemPrompt,
   });
@@ -270,6 +282,12 @@ export interface InteractiveRunComposerFactoryInput
   readonly clientCapabilities: HostClientCapabilityCoordinator;
   readonly resolveTavilyWebSearchReadiness: () => Promise<boolean>;
   readonly resolveRootTools?: (sessionId: string) => Promise<readonly MakaTool[]>;
+  readonly resolvePluginTools?: (
+    sessionId: string,
+    hostTools: readonly MakaTool[],
+  ) => {
+    readonly tools: readonly MakaTool[];
+  };
   readonly childTools?: readonly MakaTool[];
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly planStore?: PlanStore;
@@ -394,6 +412,20 @@ export function createInteractiveRunComposerFactory(
         ...(clientCapabilities ? { clientCapabilities } : {}),
         ...(input.builtinTools ? { builtinTools: input.builtinTools } : {}),
         ...(hostTools.length > 0 ? { hostTools } : {}),
+        ...(input.resolvePluginTools && !backendContext.tools
+          ? {
+              resolveAdditionalTools: (hostTools) => {
+                return routeInteractiveRunToolSurface({
+                  runtimePolicy,
+                  connection,
+                  modelId,
+                  hostTools: input.resolvePluginTools!(backendContext.sessionId, hostTools).tools,
+                  worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
+                  tavilyReady,
+                }).hostTools;
+              },
+            }
+          : {}),
         ...(input.scheduledTaskTool ? { scheduledTaskTool: input.scheduledTaskTool } : {}),
         ...(input.goalTools ? { goalTools: input.goalTools } : {}),
         ...(parentAgentTools ? { parentAgentTools } : {}),

@@ -80,6 +80,7 @@ function backend(input: {
   traces?: RunTraceEvent[];
   toolAvailability?: ToolAvailabilityConfig;
   fullSurface?: boolean;
+  resolveTools?: () => readonly MakaTool[];
 }): AiSdkBackend {
   let id = 0;
   return createTestAiSdkBackend({
@@ -91,6 +92,7 @@ function backend(input: {
     modelId: 'mock-model-id',
     modelFactory: () => input.model,
     tools: boundTools(input.calls),
+    ...(input.resolveTools ? { resolveTools: input.resolveTools } : {}),
     ...(input.fullSurface ? {} : { toolAvailability: input.toolAvailability ?? availability }),
     ...(input.durable ? { loadTurnRuntimeEvents: input.durable.loadTurnRuntimeEvents } : {}),
     ...(input.traces ? { recordRunTrace: (event) => input.traces!.push(event) } : {}),
@@ -136,6 +138,30 @@ describe('AiSdkBackend tool_search activation', () => {
     const searched = traces.find((event) => event.type === 'tool_searched');
     assert.equal(searched?.data?.query, 'browser click');
     assert.deepEqual(searched?.data?.activated, ['browser_click']);
+  });
+
+  test('equivalent Tool wrappers rebuilt between steps retain search activation', async () => {
+    const durable = createDurableTurnHarness({ turnId: 'turn-1', text: 'click it' });
+    const captured: string[][] = [];
+    const calls: string[] = [];
+    let resolutions = 0;
+    await drainWithDurableTurn(
+      backend({
+        model: searchThenUseModel(captured),
+        calls,
+        durable,
+        resolveTools: () => {
+          resolutions += 1;
+          return boundTools(calls);
+        },
+      }).send(durable.sendInput()),
+      durable,
+    );
+
+    assert.ok(resolutions >= 2);
+    assert.ok(!captured[0]?.includes('browser_click'));
+    assert.ok(captured[1]?.includes('browser_click'));
+    assert.deepEqual(calls, ['browser_click']);
   });
 
   test('parallel search and hidden-tool use still rejects the same-step call', async () => {

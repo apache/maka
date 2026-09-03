@@ -27,6 +27,7 @@ import type {
   McpToolBinding,
   McpToolDescriptor,
 } from '@maka/core/mcp';
+import { REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH } from '@maka/core/run-composition';
 import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
 import { selectCollaborationTools } from '../plan-mode.js';
 
@@ -268,6 +269,21 @@ test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () =>
   assert.notEqual(
     first,
     mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20) + 'different'),
+  );
+});
+
+test('MCP descriptions are normalized to the Request Composition bound', () => {
+  const oversized = 'x'.repeat(REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH + 1);
+  const [tool] = buildMcpTools(
+    fakeProvider(
+      [boundTool({ ...descriptor('server', 'large'), description: oversized }, binding('large'))],
+      async () => ({ content: [{ type: 'text', text: 'unused' }] }),
+    ),
+  );
+
+  assert.equal(
+    tool?.description,
+    oversized.slice(0, REQUEST_COMPOSITION_MAX_TOOL_DESCRIPTION_LENGTH),
   );
 });
 
