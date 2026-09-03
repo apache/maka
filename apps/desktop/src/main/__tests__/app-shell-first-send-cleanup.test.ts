@@ -423,6 +423,41 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
+  it('does not report a resolved Session from an existing-Session send', async () => {
+    // `onSessionResolved` is the contract for a Session this send created and
+    // whose first message projected (the new-Session branch). An existing-
+    // Session send must never fire it, or a consumer binding follow-up state
+    // to a newly resolved Session (e.g. a Work Board start claim) would bind
+    // it to an unrelated pre-existing conversation.
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'existing-session' },
+      });
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
   it('returns a sparse existing session to latest before sending', async () => {
     const latest = deferred<void>();
     const order: string[] = [];

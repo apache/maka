@@ -612,7 +612,11 @@ export function createAppShellChatActions(deps: {
       });
       if (submitted.kind === 'refused') return false;
       if (submitted.kind === 'unreconciled') return true;
-      options.onSessionResolved?.(sessionId);
+      // `onSessionResolved` is the contract for a Session this send CREATED
+      // and whose first message projected (the new-Session branch above). An
+      // existing-Session send must never report it, or a consumer that binds
+      // follow-up state to a newly resolved Session would bind it to an
+      // unrelated pre-existing conversation.
       return true;
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
