@@ -481,7 +481,10 @@ async function smokeWindowsTaskScheduler(createProvider, cliEntrypoint, nativePa
     await provider.supervisor.activate();
     let deadline = Date.now() + 15_000;
     while (!existsSync(readyPath) && Date.now() < deadline) await delay(100);
-    if (!existsSync(readyPath)) throw new Error('Windows scheduled task did not start');
+    if (!existsSync(readyPath)) {
+      const status = await provider.supervisor.status();
+      throw new Error(`Windows scheduled task did not start: ${JSON.stringify(status)}`);
+    }
     const first = JSON.parse(readFileSync(readyPath, 'utf8'));
     const firstStatus = await provider.supervisor.status();
     if (
