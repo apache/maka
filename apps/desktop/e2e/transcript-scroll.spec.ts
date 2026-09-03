@@ -640,6 +640,7 @@ test('history asked for at the very top of the scroller still lands above the re
     const root = document.querySelector(selector);
     if (!root) throw new Error('the chat scroll container is missing');
     root.scrollTop = 0;
+    root.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
   }, SCROLLER);
 
   await expect.poll(firstLoadedTurn, { timeout: 20_000 }).not.toBe(firstBefore);
