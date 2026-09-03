@@ -366,7 +366,6 @@ test('first send after a completed turn forks through the settled turn', async (
   assert.equal(probe.getAttribute('data-error'), '');
 });
 
-test('does not fork on mount or when the source Session object refreshes', async () => {
 test('dispatches /compact to the committed companion fork without sending model input', async () => {
   const compactCalls: string[] = [];
   let sendCalls = 0;
@@ -674,6 +673,7 @@ test('rejects /compact for an archived companion fork without invoking Runtime H
   assert.equal(compactCalls, 0);
 });
 
+test('does not fork on mount or when the source Session object refreshes', async () => {
   let branchCount = 0;
   const { container, root, services } = await renderProbe(
     {
