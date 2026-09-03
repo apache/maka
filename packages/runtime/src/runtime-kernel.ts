@@ -846,7 +846,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       now: this.deps.now,
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
-      // Round-tripped through the claim on purpose: createRunRecord compares it
+      // Round-tripped through the claim on purpose: openInvocation compares it
       // against the opening it computes, so every continuation proves the claim
       // still authorises the run about to execute.
       claimedOpening: claim.targetOpening,

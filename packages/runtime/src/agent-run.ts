@@ -659,7 +659,7 @@ export class AgentRun {
   }
 
   async begin(): Promise<AgentRunBeginResult> {
-    await this.createRunRecord();
+    await this.openInvocation();
 
     let initialRuntimeEventId: string;
 
@@ -743,7 +743,7 @@ export class AgentRun {
   }
 
   async beginOperation(): Promise<AgentRunOperationBeginResult> {
-    await this.createRunRecord();
+    await this.openInvocation();
 
     const startedAt = this.input.now();
     this.lastTs = startedAt;
@@ -777,7 +777,7 @@ export class AgentRun {
     }
 
     this.continuationActive = true;
-    await this.createRunRecord(continuation);
+    await this.openInvocation(continuation);
     await this.input.continuationFailpoint?.('after_run_created');
     const startedAt = this.input.now();
     this.lastTs = startedAt;
@@ -1065,6 +1065,10 @@ export class AgentRun {
   async finalize(): Promise<void> {
     if (this.finalized) return;
     this.finalized = true;
+    // A run cannot end without having begun. Finalizing one that never reached
+    // its start would otherwise leave a terminal event on an invocation the
+    // inventory cannot see, because nothing opened it.
+    await this.openInvocation().catch(() => {});
     await this.flushRuntimePartialBuffer(true);
     const lastTs = this.lastTs || this.input.now();
     if (this.stopped) this.finalStatus = { status: 'aborted' };
@@ -1103,11 +1107,14 @@ export class AgentRun {
     await this.finishRun(this.finalStatus, lastTs);
   }
 
-  private async createRunRecord(continuation?: RuntimeContinuation): Promise<void> {
-    if (!this.input.runStore) {
-      if (continuation) throw new Error('Runtime continuation requires a durable run store');
-      return;
+  private async openInvocation(continuation?: RuntimeContinuation): Promise<void> {
+    if (!this.input.runStore && continuation) {
+      throw new Error('Runtime continuation requires a durable run store');
     }
+    // The opening fact is a RuntimeEvent, so it opens whenever this run has a
+    // spine to open on. The operational ledger is a separate store with its own
+    // availability, and a run without one still exists.
+    if (!this.input.runtimeEventStore) return;
     const createdAt =
       continuation && this.input.claimedOpenedAt !== undefined
         ? this.input.claimedOpenedAt
