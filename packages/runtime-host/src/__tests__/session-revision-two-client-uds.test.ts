@@ -1770,8 +1770,10 @@ async function verifyDurableBranch(
     assert.ok(copiedProjectionArtifact);
     assert.equal(copiedProjectionPart.ref.relativePath, copiedProjectionArtifact.id);
     const durableCopiedRuns =
-      await execution.agentRunStore.listSessionRuns(admittedRevisionTargetId);
-    const durableCopiedParent = durableCopiedRuns.find((run) => run.turnId === 'turn-1');
+      await execution.runtimeEventStore.listSessionInvocations(admittedRevisionTargetId);
+    const durableCopiedParent = durableCopiedRuns.find(
+      (invocation) => invocation.turnId === 'turn-1',
+    );
     assert.ok(durableCopiedParent);
     const copiedParentEvents = (
       await execution.runtimeEventStore.readSessionRuntimeEventEntries(admittedRevisionTargetId)

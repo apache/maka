@@ -1849,7 +1849,6 @@ describe('SessionManager terminal ledger invariants', () => {
     }
 
     const view = await new RuntimeReadModel({
-      runStore,
       runtimeEventStore: runStore,
     }).getSessionView(run.sessionId);
 
@@ -1913,10 +1912,7 @@ describe('SessionManager terminal ledger invariants', () => {
       readRuntimeEvents: async () => [opened!, prompt, partial, terminal],
     });
 
-    const view = await new RuntimeReadModel({
-      runStore,
-      runtimeEventStore,
-    }).getSessionView(run.sessionId);
+    const view = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(run.sessionId);
 
     assert.deepStrictEqual(
       view.events.map((event) => event.id),
@@ -1941,7 +1937,7 @@ describe('SessionManager terminal ledger invariants', () => {
     });
 
     await assert.rejects(
-      new RuntimeReadModel({ runStore, runtimeEventStore }).getSessionView(run.sessionId),
+      new RuntimeReadModel({ runtimeEventStore }).getSessionView(run.sessionId),
       /RuntimeEvent session order read failed/,
     );
   });
@@ -2337,6 +2333,7 @@ class TinySessionStore implements SessionStore {
 class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   private events = new Map<string, AgentRunEvent[]>();
   private runtimeEvents = new Map<string, RuntimeEvent[]>();
+  private runtimeEventEntries: RuntimeEvent[] = [];
   /** One-shot append rejections, for latching the store availability. */
   failNextRuntimeEventAppends = 0;
   /** While true every runtime-event read rejects, a store that is down. */
@@ -2402,6 +2399,7 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
     if (isTerminalRuntimeEvent(event)) await this.options.beforeTerminalRuntimeEventAppend?.();
     const eventKey = key(sessionId, runId);
     this.runtimeEvents.set(eventKey, [...(this.runtimeEvents.get(eventKey) ?? []), clone(event)]);
+    if (event.partial !== true) this.runtimeEventEntries.push(clone(event));
   }
 
   async ensureTerminalRuntimeEventDurable(
@@ -2428,6 +2426,12 @@ class TinyAgentRunStore implements AgentRunStore, RuntimeEventStore {
   async readRuntimeEvents(sessionId: string, runId: string): Promise<RuntimeEvent[]> {
     if (this.failRuntimeEventReads) throw new Error('runtime event read rejected');
     return clone(this.runtimeEvents.get(key(sessionId, runId)) ?? []);
+  }
+
+  async readSessionRuntimeEventEntries(sessionId: string) {
+    return this.runtimeEventEntries
+      .filter((event) => event.sessionId === sessionId)
+      .map((event, index) => ({ ordinal: index + 1, event: clone(event) }));
   }
 
   async readSessionRuntimeEvents(sessionId: string): Promise<RuntimeEvent[]> {
@@ -2495,6 +2499,12 @@ class BatchingRuntimeEventStore implements RuntimeEventStore {
 
   async readSessionRuntimeEvents(): Promise<RuntimeEvent[]> {
     return clone(this.events);
+  }
+
+  async readSessionRuntimeEventEntries() {
+    return this.events
+      .filter((event) => event.partial !== true)
+      .map((event, index) => ({ ordinal: index + 1, event: clone(event) }));
   }
 
   async listSessionInvocations(sessionId: string): Promise<RuntimeInvocationRecord[]> {
