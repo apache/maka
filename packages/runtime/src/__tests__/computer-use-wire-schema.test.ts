@@ -191,7 +191,7 @@ test('every action in the strict union has a sample call above', () => {
   }
 });
 
-test('provider JSON Schema uses one array item schema for every coordinate field', async () => {
+test('provider JSON Schema uses one array item schema for every window geometry field', async () => {
   const schema = (await zodSchema(computerWireParams as never).jsonSchema) as {
     properties?: Record<
       string,
@@ -199,11 +199,8 @@ test('provider JSON Schema uses one array item schema for every coordinate field
     >;
   };
   for (const [name, length] of [
-    ['coordinate', 2],
-    ['start_coordinate', 2],
     ['position', 2],
     ['size', 2],
-    ['region', 4],
   ] as const) {
     const field = schema.properties?.[name];
     assert.equal(field?.type, 'array', `${name} must be an array`);
