@@ -232,12 +232,14 @@ function rendererEntryContractFiles(overrides = {}) {
       import { rendererEntryContractPlugin } from './scripts/vite-renderer-entry-contract.js';
       import { bundledNpmPackagesPlugin } from './vite-bundled-packages.js';
       import { dependencyPatchesCachePlugin } from './vite-dependency-patches.js';
+      import { workspacePackagesPlugin } from './vite-workspace-packages.js';
       const REPO_ROOT = '/fixture';
       export default defineConfig({
         root: 'src/renderer',
         plugins: [
           react(),
           dependencyPatchesCachePlugin(REPO_ROOT),
+          workspacePackagesPlugin(REPO_ROOT),
           bundledNpmPackagesPlugin(),
           rendererEntryContractPlugin(resolve(import.meta.dirname, 'src/renderer')),
         ],
