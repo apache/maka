@@ -62,6 +62,7 @@ import {
   acknowledgeCollaborationTurnRequest,
   createCollaborationTurnRequest,
   decideCollaborationTurnRequest,
+  withdrawCollaborationTurnRequest,
   finalizeAccessCredential,
   prepareCollaborationInvitation,
   queryCollaborationTurnRequests,
@@ -794,6 +795,14 @@ export class RuntimeHostKernel {
         'collaboration.turn-request.acknowledge': async (input, context) =>
           this.#settleAccessCredentialMutation(
             acknowledgeCollaborationTurnRequest(
+              this.#options.accessAuthority,
+              context.principal,
+              input,
+            ),
+          ),
+        'collaboration.turn-request.withdraw': async (input, context) =>
+          this.#settleAccessCredentialMutation(
+            withdrawCollaborationTurnRequest(
               this.#options.accessAuthority,
               context.principal,
               input,

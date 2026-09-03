@@ -473,6 +473,7 @@ describe('Runtime Host operator commands', () => {
         'access.principal.revoke',
         'collaboration.turn-request.acknowledge',
         'collaboration.turn-request.create',
+        'collaboration.turn-request.withdraw',
         'host.upgrade.prepare',
         'hosted.execution.cancel',
         'hosted.execution.start',

@@ -68,6 +68,12 @@ test('keeps loading progress visible while an irreversible import settles', asyn
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
     removeMount: async () => undefined,
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
     getPendingTurnRequests: async () => [],
     decideTurnRequest: async () => {
       throw new Error('unused');
@@ -119,6 +125,12 @@ test('closes as a retained background recovery instead of reporting a failed joi
     readInvitationClipboard: async () => '',
     listMounts: async () => [],
     removeMount: async () => undefined,
+    requestTurn: async () => {
+      throw new Error('unused');
+    },
+    getTurnRequests: async () => ({ canRequestTurns: false, requests: [] }),
+    acknowledgeTurnRequest: async () => ({ acknowledged: false }),
+    withdrawTurnRequest: async () => ({ withdrawn: false }),
     getPendingTurnRequests: async () => [],
     decideTurnRequest: async () => {
       throw new Error('unused');

@@ -30,8 +30,10 @@ apps/desktop/src/renderer/features/runtime-host-management/ui/runtime-host-profi
 apps/desktop/src/renderer/features/session-collaboration/services-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/turn-request-inbox-context.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-collaboration-join-dialog.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-guest-turn-actions.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-approval.tsx
 apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-badge.tsx
+apps/desktop/src/renderer/features/session-collaboration/ui/session-turn-request-composer.tsx
 apps/desktop/src/renderer/features/session-navigation/services-context.tsx
 apps/desktop/src/renderer/features/session-navigation/ui/session-navigation-provider.tsx
 apps/desktop/src/renderer/features/session-settings/services-context.tsx
@@ -64,7 +66,6 @@ apps/desktop/src/renderer/plan-mode-panel.tsx
 apps/desktop/src/renderer/reference-shell.css
 apps/desktop/src/renderer/remote-project-directory-dialog.tsx
 apps/desktop/src/renderer/session-collaboration-dialog.tsx
-apps/desktop/src/renderer/session-turn-request-composer.tsx
 apps/desktop/src/renderer/settings/about-settings-page.tsx
 apps/desktop/src/renderer/settings/appearance-settings-page.tsx
 apps/desktop/src/renderer/settings/bot-chat-detail.tsx
