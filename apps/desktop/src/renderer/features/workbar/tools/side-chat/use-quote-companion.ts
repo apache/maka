@@ -78,6 +78,14 @@ type PendingAdmission = {
   stopPromise?: Promise<'confirmed' | 'unknown'>;
 };
 
+type PendingCompactionTerminal =
+  | { kind: 'outcome'; turnId: string; outcome: ContextCompactionOutcome }
+  | { kind: 'error'; turnId: string; error: unknown };
+
+function readMutableRef<T>(ref: { current: T }): T {
+  return ref.current;
+}
+
 type AdmissionOutcome =
   | { kind: 'admitted'; turnId: string }
   | { kind: 'retracted' };
@@ -255,7 +263,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
   const ownTurnIdsRef = useRef<Set<string>>(new Set());
   const compactionRequestInFlightRef = useRef(false);
   const compactionTurnIdRef = useRef<string | null>(null);
-  const completedCompactionTurnIdRef = useRef<string | null>(null);
+  const pendingCompactionTerminalRef = useRef<PendingCompactionTerminal | null>(null);
   const [allMessages, setAllMessages] = useState<StoredMessage[]>([]);
   const [liveTurn, setLiveTurn] = useState<LiveTurnProjection | undefined>(undefined);
   const liveTurnRef = useRef(liveTurn);
@@ -338,28 +346,26 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
 
   const applyOwnedEvent = useCallback(
     (forkId: string, event: SessionEvent) => {
-      if (
-        compactionTurnIdRef.current === event.turnId &&
-        (event.type === 'abort' || (event.type === 'error' && !event.recoverable))
-      ) {
-        compactionTurnIdRef.current = null;
-        compactionRequestInFlightRef.current = false;
-        onContextCompactionErrorRef.current?.(forkId, event);
-      }
-      if (event.type === 'complete' && event.contextCompactionOutcome) {
-        const ownsCompaction =
-          compactionRequestInFlightRef.current || compactionTurnIdRef.current === event.turnId;
-        completedCompactionTurnIdRef.current = event.turnId;
-        if (compactionTurnIdRef.current === event.turnId) {
+      const terminal: PendingCompactionTerminal | undefined =
+        event.type === 'complete' && event.contextCompactionOutcome
+          ? { kind: 'outcome', turnId: event.turnId, outcome: event.contextCompactionOutcome }
+          : event.type === 'abort' || (event.type === 'error' && !event.recoverable)
+            ? { kind: 'error', turnId: event.turnId, error: event }
+            : undefined;
+      if (terminal) {
+        if (compactionTurnIdRef.current === terminal.turnId) {
           compactionTurnIdRef.current = null;
-        }
-        if (ownsCompaction) {
           compactionRequestInFlightRef.current = false;
-          onContextCompactionOutcomeRef.current?.(
-            forkId,
-            event.turnId,
-            event.contextCompactionOutcome,
-          );
+          if (terminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(forkId, terminal.turnId, terminal.outcome);
+          } else {
+            onContextCompactionErrorRef.current?.(forkId, terminal.error);
+          }
+        } else if (compactionRequestInFlightRef.current) {
+          // The Host can publish the terminal event before the compact RPC
+          // returns its turn identity. Keep it fenced until the response
+          // proves that this event belongs to the pending compaction.
+          pendingCompactionTerminalRef.current = terminal;
         }
       }
       const effect = companionRunEventEffect(
@@ -768,7 +774,7 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       return false;
     }
     compactionRequestInFlightRef.current = true;
-    completedCompactionTurnIdRef.current = null;
+    pendingCompactionTerminalRef.current = null;
     let awaitingTerminal = false;
     try {
       const result = await sideChat.compact(fork.id);
@@ -776,10 +782,24 @@ export function useQuoteCompanion(input: UseQuoteCompanionInput): UseQuoteCompan
       awaitingTerminal = result.kind === 'started';
       compactionTurnIdRef.current = result.turn.turnId;
       onContextCompactionResultRef.current?.(fork.id, result);
-      if (
-        result.kind === 'finished' ||
-        completedCompactionTurnIdRef.current === result.turn.turnId
-      ) {
+      const pendingTerminal = readMutableRef(pendingCompactionTerminalRef);
+      if (pendingTerminal?.turnId === result.turn.turnId) {
+        pendingCompactionTerminalRef.current = null;
+        compactionRequestInFlightRef.current = false;
+        compactionTurnIdRef.current = null;
+        if (result.kind === 'started') {
+          if (pendingTerminal.kind === 'outcome') {
+            onContextCompactionOutcomeRef.current?.(
+              fork.id,
+              pendingTerminal.turnId,
+              pendingTerminal.outcome,
+            );
+          } else {
+            onContextCompactionErrorRef.current?.(fork.id, pendingTerminal.error);
+          }
+        }
+      } else if (result.kind === 'finished') {
+        pendingCompactionTerminalRef.current = null;
         compactionRequestInFlightRef.current = false;
         compactionTurnIdRef.current = null;
       }

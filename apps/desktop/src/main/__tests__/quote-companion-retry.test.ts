@@ -31,6 +31,7 @@ import type {
   SessionSummary,
   TurnRecord,
 } from '@maka/core/session';
+import type { ContextCompactResult } from '@maka/runtime-host/protocol';
 import {
   createFakeWorkbarServices,
   dispatchQuoteCompanionInput,
@@ -497,6 +498,73 @@ test('releases an async companion compaction after a Host interruption', async (
   assert.equal(compactionErrors.length, 1);
   assert.equal(compactionErrors[0]?.sessionId, 'side-conversation');
   assert.equal((compactionErrors[0]?.error as SessionEvent | undefined)?.type, 'abort');
+});
+
+test('does not settle a pending companion compaction from another turn outcome', async () => {
+  const pendingCompact = deferred<ContextCompactResult>();
+  let compactCalls = 0;
+  const rendered = await renderOwnershipProbe({
+    compact: async (sessionId) => {
+      compactCalls += 1;
+      if (compactCalls === 1) return pendingCompact.promise;
+      return {
+        kind: 'finished' as const,
+        turn: {
+          sessionId,
+          turnId: 'compact-turn-after-guard',
+          runId: 'compact-run-after-guard',
+          status: 'completed' as const,
+          terminalEventId: 'compact-complete-after-guard',
+          contextCompactionOutcome: { kind: 'unchanged' as const, reason: 'already_current' },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      };
+    },
+  });
+
+  let compactResult!: Promise<boolean>;
+  await act(async () => {
+    compactResult = rendered.send('/compact');
+    await Promise.resolve();
+  });
+  await act(async () => {
+    rendered.emit({
+      type: 'complete',
+      id: 'unrelated-complete',
+      turnId: 'unrelated-turn',
+      ts: 1,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    });
+    await Promise.resolve();
+  });
+
+  assert.equal(await rendered.send('/compact'), false);
+  pendingCompact.resolve({
+    kind: 'started',
+    turn: {
+      sessionId: 'side-conversation',
+      turnId: 'compact-turn-unrelated-guard',
+      runId: 'compact-run-unrelated-guard',
+      status: 'running',
+    },
+  });
+  assert.equal(await compactResult, true);
+  assert.equal(compactCalls, 1);
+
+  await act(async () => {
+    rendered.emit({
+      type: 'complete',
+      id: 'compact-complete',
+      turnId: 'compact-turn-unrelated-guard',
+      ts: 2,
+      stopReason: 'end_turn',
+      contextCompactionOutcome: { kind: 'unchanged', reason: 'already_current' },
+    });
+    await Promise.resolve();
+  });
+  assert.equal(await rendered.send('/compact'), true);
+  assert.equal(compactCalls, 2);
 });
 
 test('clears a failed companion compaction request so it can be retried', async () => {
