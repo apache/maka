@@ -226,7 +226,6 @@ test('projects only present Usage Session ids into the Desktop host namespace', 
     byProvider: [],
     byModel: [],
     byTool: [],
-    pricing: [],
     provenance: EMPTY_USAGE_PROVENANCE,
   };
 

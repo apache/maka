@@ -1128,7 +1128,7 @@ function SettingsPageBody(props: {
     case 'usage':
       // State lives in the persistent `UsageScopeMount` above the loading gate;
       // this view is disposable and reads it from context.
-      return <UsageSettingsPage settings={props.settings.usage} onOpenSession={props.onOpenSession} />;
+      return <UsageSettingsPage settings={props.settings.usage} runtimeHost={props.runtimeHost} onOpenSession={props.onOpenSession} />;
     case 'bot-chat':
       return (
         <BotChatSettingsPage
