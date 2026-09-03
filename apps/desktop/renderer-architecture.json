@@ -788,7 +788,7 @@
         "nonTriviaTokens": 1410
       },
       "src/renderer/app-shell.tsx": {
-        "importDeclarations": 103,
+        "importDeclarations": 102,
         "bridgePaths": {
           "window.maka.app.installUpdate": 1,
           "window.maka.app.retryUpdateDownload": 1,
@@ -970,7 +970,7 @@
           "@maka/core/onboarding-milestone": 1,
           "@maka/core/orchestration": 1,
           "@maka/core/project": 1,
-          "@maka/core/session": 2,
+          "@maka/core/session": 1,
           "@maka/core/session-revisions": 1,
           "@maka/core/settings": 1,
           "@maka/core/slash-command-catalog": 2,
@@ -980,7 +980,7 @@
           "react": 1
         },
         "importSpecifiers": 184,
-        "nonTriviaTokens": 15692
+        "nonTriviaTokens": 15687
       },
       "src/renderer/use-app-shell-composer-quotes.ts": {
         "importDeclarations": 3,

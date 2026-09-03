@@ -325,6 +325,9 @@ export interface ConversationCopy {
       contextWindowOverrun: (used: number, declared: number) => string;
       contextReportedWindowExceeded: (used: number, reported: number) => string;
       contextOverflowAfterCompaction: string;
+      contextUsageShare: (used: number, window: number) => string;
+      contextUsageNoWindow: string;
+      contextUsageUnavailable: string;
       stepLimit: string;
     };
   };
@@ -549,6 +552,10 @@ const CONVERSATION_COPY = {
           `本次交换用了约 ${used} tokens，已超过该模型上报的窗口（${reported}），但供应商没有拒绝。你未声明窗口，Maka 因此不会主动压缩。在连接设置里声明一个窗口即可让它先行压缩。`,
         contextOverflowAfterCompaction:
           '已经压缩过历史，供应商仍然说这次请求太大。剩下的部分还包含系统提示、工具定义、摘要和最近的原文，缩短这条消息是你能控制的那一半。',
+        contextUsageShare: (used, window) =>
+          `${used.toLocaleString('zh-CN')} / ${window.toLocaleString('zh-CN')} tokens`,
+        contextUsageNoWindow: '该模型没有窗口大小可用：未声明，模型也未上报',
+        contextUsageUnavailable: '供应商未报告用量',
         stepLimit: '已达到本轮工具步骤上限，任务可能尚未完成。发送“继续”即可接着处理。',
       },
     },
@@ -718,6 +725,10 @@ const CONVERSATION_COPY = {
           `This exchange used about ${used} tokens, past the ${reported} this model reports, and the provider accepted it without complaint. Nothing is declared, so Maka does not compact on its own. Declare a context window in the connection settings to have it compact first.`,
         contextOverflowAfterCompaction:
           'History was compacted and the provider still called this request too large. What remains also carries the system prompt, the tool schemas, the summary and the recent tail; shortening this message is the part you control.',
+        contextUsageShare: (used, window) =>
+          `${used.toLocaleString('en-US')} / ${window.toLocaleString('en-US')} tokens`,
+        contextUsageNoWindow: 'No context window size is available: none declared, none reported',
+        contextUsageUnavailable: 'The provider did not report usage',
         stepLimit: 'Reached the configured step limit. The task may be incomplete. Send “continue” to resume.',
       },
     },

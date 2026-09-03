@@ -863,18 +863,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       />
                     </CapabilityRow>
                     <CapabilityRow label={copy.contextWindow} description={copy.contextWindowHelp}>
-                      <DeclaredContextWindowField
-                        declared={declared?.contextWindow}
-                        disabled={allActionsBusy}
-                        /* Named per model, like the three controls around it:
-                           the visible label is the row's, but the field's own
-                           name is all a screen reader gets, and every row in
-                           the section carries the same one. */
-                        label={`${copy.contextWindow} — ${modelId}`}
-                        onCommit={(value) =>
-                          setDraftContextWindow(modelId, value ?? undefined)
-                        }
-                      />
+                      <VStack gap={1} hAlign="start">
+                        <DeclaredContextWindowField
+                          declared={declared?.contextWindow}
+                          disabled={allActionsBusy}
+                          /* Named per model, like the three controls around it:
+                             the visible label is the row's, but the field's own
+                             name is all a screen reader gets, and every row in
+                             the section carries the same one. */
+                          label={`${copy.contextWindow} — ${modelId}`}
+                          onCommit={(value) =>
+                            setDraftContextWindow(modelId, value ?? undefined)
+                          }
+                        />
+                        {declared?.contextWindow === undefined &&
+                          connection.models?.find((model) => model.id === modelId)?.contextWindow !== undefined && (
+                            <HStack gap={1} vAlign="center">
+                              <Text size="sm" type="supporting" color="secondary">
+                                {copy.contextWindowHint(
+                                  connection.models.find((model) => model.id === modelId)!.contextWindow!,
+                                )}
+                              </Text>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                label={copy.contextWindowApplyHint}
+                                isDisabled={allActionsBusy}
+                                onClick={() =>
+                                  setDraftContextWindow(
+                                    modelId,
+                                    connection.models?.find((model) => model.id === modelId)?.contextWindow,
+                                  )}
+                              />
+                            </HStack>
+                          )}
+                      </VStack>
                     </CapabilityRow>
                     {showsFastMode && (
                       <CapabilityRow label={copy.fastMode} description={copy.fastModeHelp}>

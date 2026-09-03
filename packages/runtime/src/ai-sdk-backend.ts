@@ -2975,6 +2975,10 @@ export class AiSdkBackend implements AgentBackend {
                       ...(anchorOutputTokens !== undefined
                         ? { outputTokens: anchorOutputTokens }
                         : {}),
+                      modelId: this.input.modelId,
+                      ...(this.input.header.llmConnectionId !== undefined
+                        ? { connectionId: this.input.header.llmConnectionId }
+                        : {}),
                     },
                   }
                 : {}),

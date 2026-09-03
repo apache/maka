@@ -307,11 +307,22 @@ export interface TokenUsageFields {
 export interface LastRequestAnchor {
   inputTokens: number;
   outputTokens?: number;
+  /**
+   * The route that produced these counts.
+   *
+   * A token count is a number in one model's tokenizer against one connection.
+   * The runtime already refuses an anchor across a route change, validating it
+   * against the run header; carrying the route on the record lets every other
+   * reader apply the same rule without reconstructing run headers, and without
+   * pairing counts from one model with another model's window.
+   */
+  modelId?: string;
+  connectionId?: string;
 }
 
 const LAST_REQUEST_ANCHOR_SHAPE = defineObjectShape<LastRequestAnchor>()(
   ['inputTokens'],
-  ['outputTokens'],
+  ['outputTokens', 'modelId', 'connectionId'],
 );
 const RETIRED_LAST_REQUEST_ANCHOR_KEYS = ['payloadChars'] as const;
 const LAST_REQUEST_ANCHOR_DECODE_SHAPE = {
