@@ -471,10 +471,10 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
-    const pinnedSessions = groupSessionsForHistory(
-      activeGroups.flatMap((group) => group.sessions.filter((session) => session.isFlagged)),
+    const pinnedGroup = groupSessionsForHistory(
+      activeGroups.flatMap((group) => group.sessions),
       locale,
-    ).find((group) => group.id === 'pinned')?.sessions ?? [];
+    ).find((group) => group.id === 'pinned');
 
     function renderProjectGroup(
       group: (typeof props.groups)[number],
@@ -511,9 +511,9 @@ function SessionListGroups(props: {
     return (
       <>
         {renameDialog}
-        {pinnedSessions.length > 0 && (
-          <SideNavSection title={copy.pinned} className="maka-session-group">
-            {pinnedSessions.map((session) => renderSessionRow(session))}
+        {pinnedGroup && (
+          <SideNavSection title={pinnedGroup.label} className="maka-session-group">
+            {pinnedGroup.sessions.map((session) => renderSessionRow(session))}
           </SideNavSection>
         )}
         {(activeGroups.length > 0 || archivedGroups.length > 0) && (
