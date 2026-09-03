@@ -2334,24 +2334,11 @@ export class AiSdkBackend implements AgentBackend {
                 }
               }
               if (event.kind === 'text-start') {
-                const nextProviderOptions =
-                  event.providerOptions === undefined
-                    ? undefined
-                    : (stripUndefinedDeep(event.providerOptions) as NonNullable<
-                        ModelMessage['providerOptions']
-                      >);
                 if (stepText.length > 0 && event.providerItemBoundary === true) {
                   await flushStep();
                   currentStepMessageId = this.newId();
                 }
                 stepTextPartStartOffset = stepText.length;
-                if (nextProviderOptions !== undefined) {
-                  stepTextProviderOptions = mergeTextProviderOptions(
-                    stepTextProviderOptions,
-                    nextProviderOptions,
-                    stepTextPartStartOffset,
-                  );
-                }
               } else if (event.kind === 'text') {
                 if (event.text.length > 0) recordStepContent('text');
                 stepText += event.text;

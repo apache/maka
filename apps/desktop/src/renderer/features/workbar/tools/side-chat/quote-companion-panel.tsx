@@ -24,6 +24,7 @@ import {
   ChatSurfaceLayout,
   Composer,
   ClientCapabilityPrompt,
+  finalAssistantReplyText,
   SandboxBoundaryPrompt,
   UserQuestionPrompt,
   useToast,
@@ -247,7 +248,7 @@ export function QuoteCompanionPanel(props: {
           deriveTurnFooterActions({
             status: turn.status,
             locale,
-            hasContent: Boolean(turn.assistant?.text?.trim()),
+            hasContent: finalAssistantReplyText(turn).trim().length > 0,
             ...(companion.regeneratePendingTurnId === turn.turnId
               ? { pendingActions: new Set(['regenerate'] as const) }
               : {}),

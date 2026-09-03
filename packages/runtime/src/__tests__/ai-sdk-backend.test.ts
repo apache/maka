@@ -9984,6 +9984,7 @@ describe('AiSdkBackend RunTrace', () => {
   test('retries an idle watchdog timeout after an unstarted Responses text item', async () => {
     const timers = manualWatchdogTimer();
     let calls = 0;
+    const appended: StoredMessage[] = [];
     const model = new MockLanguageModelV4({
       doStream: async (options) => {
         calls += 1;
@@ -10026,7 +10027,9 @@ describe('AiSdkBackend RunTrace', () => {
     const backend = createTestAiSdkBackend({
       sessionId: 'session-1',
       header: header(),
-      appendMessage: async () => {},
+      appendMessage: async (message) => {
+        appended.push(message);
+      },
       connection: {
         ...connection(),
         slug: 'openai',
@@ -10062,6 +10065,11 @@ describe('AiSdkBackend RunTrace', () => {
       false,
     );
     assert.equal(events.find((event) => event.type === 'complete')?.stopReason, 'end_turn');
+    const recovered = appended.find(
+      (message): message is AssistantMessage => message.type === 'assistant',
+    );
+    assert.equal(recovered?.text, 'recovered');
+    assert.equal(recovered?.providerOptions, undefined);
   });
 
   test('does not retry an idle watchdog timeout after provider continuation metadata', async () => {

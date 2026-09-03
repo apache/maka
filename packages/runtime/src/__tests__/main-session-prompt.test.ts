@@ -37,7 +37,6 @@ test('main-session prompt distinguishes progress updates from runtime activity a
     /Do not expose hidden reasoning or repeat commands, tool names, counts, durations/,
   );
   assert.match(prompt, /exactly one obvious, quick tool call/);
-  assert.match(prompt, /several requested facts is a multi-step task/);
   assert.match(prompt, /distinct final answer/);
   assert.match(prompt, /Project instructions$/);
 });

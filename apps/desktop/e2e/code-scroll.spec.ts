@@ -48,13 +48,6 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     timeout: 20_000,
   });
 
-  await expect.poll(
-    () => viewport.evaluate((element) => {
-      const node = element as HTMLElement;
-      return node.scrollWidth - node.clientWidth;
-    }),
-    { message: 'the long code line produces horizontal overflow' },
-  ).toBeGreaterThan(0);
   const metrics = await viewport.evaluate((element) => {
     const node = element as HTMLElement;
     const rect = node.getBoundingClientRect();
@@ -65,10 +58,13 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     const lineRect = line.getBoundingClientRect();
     return {
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
       lineTopInset: lineRect.top - codeRect.top,
       lineBottomInset: codeRect.bottom - lineRect.bottom,
     };
   });
+  expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
   expect(Math.abs(metrics.lineTopInset - metrics.lineBottomInset)).toBeLessThanOrEqual(1);
 
   const overflowX = await viewport.evaluate((element) => getComputedStyle(element).overflowX);

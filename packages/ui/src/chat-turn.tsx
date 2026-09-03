@@ -17,9 +17,9 @@
  * under the License.
  */
 
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ComponentPropsWithoutRef, type ReactNode } from 'react';
 import { useMountedRef } from './use-mounted-ref.js';
-import { ICON_SIZE, Ban, BookOpen, Check, Clock, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
+import { ICON_SIZE, Ban, Check, Copy, GitBranch, Info, Pencil, RefreshCcw, Timer } from './icons.js';
 import { type ClipboardCopyPhase, useClipboardCopyFeedback } from './clipboard-feedback.js';
 import { Markdown } from './markdown.js';
 import { formatTurnDuration, turnAbortStatusLabel } from './chat-display-helpers.js';
@@ -35,7 +35,6 @@ import {
   ChatMessageMetadata,
   ChatSystemMessage,
   ChatTokenizedText,
-  Collapsible,
   HStack,
   IconButton as UiIconButton,
   Spinner,
@@ -57,7 +56,6 @@ import type { TransientUserMessageProjection } from './chat-view.js';
 import { type LiveProviderRetry } from './live-turn-projection.js';
 import { providerRetryDisplaySeconds } from '@maka/core/provider-retry-countdown';
 import {
-  assistantFinalReply,
   finalAssistantReplyText,
   type TurnTimelineItem,
   type TurnViewModel,
@@ -67,11 +65,6 @@ import { AttachmentKindIcon } from './attachment-kinds.js';
 import { QuoteRefChip } from './quote-ref-chip.js';
 import { Marker, markerVariants } from './primitives/chat.js';
 import { ToolTrow, toolTrowHasVisibleSpinner } from './tool-activity.js';
-import {
-  isProcessingRunning,
-  processingHasError,
-  summarizeProcessing,
-} from './processing-summary.js';
 import { formatBytes } from './tool-activity/preview-utils.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
@@ -641,56 +634,6 @@ export const TurnView = memo(function TurnView(props: {
           segment.repliesTo === undefined
             ? 'assistant-opening'
             : `assistant-after-${segment.repliesTo}`;
-        const segmentHasRunningWork = segment.items.some(
-          (item) =>
-            (item.kind === 'processing' && isProcessingRunning(item.children)) ||
-            (item.kind === 'thinking' && item.live === true),
-        );
-        const turnCompleted =
-          ownsTurnChrome && turn.status === 'completed' && !props.liveStreaming;
-        const finalReply = assistantFinalReply(segment.items, turnCompleted);
-        const finalAnswerIndex = finalReply?.index ?? -1;
-        const workItems = segment.items.filter((_, index) => index !== finalAnswerIndex);
-        const finalAnswer =
-          finalAnswerIndex >= 0 ? segment.items[finalAnswerIndex] : undefined;
-        const workLogCollapsed =
-          !props.liveStreaming && turn.status !== 'running' && !segmentHasRunningWork;
-        const renderTimelineItem = (
-          item: AssistantFoldedTimelineEntry,
-          index: number,
-          collapseProcessing: boolean,
-        ): ReactNode => {
-          if (item.kind !== 'processing') {
-            return (
-              <TurnTimelineEntry
-                key={timelineEntryKey(item, index)}
-                item={item}
-                onStreamingSettled={props.liveStreaming?.onStreamingSettled}
-                onOpenLinkedSession={props.onOpenLinkedSession}
-                onSwitchToBypassAndRetry={
-                  props.onSwitchToBypassAndRetry
-                    ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                    : undefined
-                }
-                initialLiveContent={props.liveStreaming?.initialLiveContent}
-              />
-            );
-          }
-          return (
-            <ProcessingBlock
-              key={`processing-${item.id}`}
-              entries={item.children}
-              autoCollapse={collapseProcessing}
-              onOpenLinkedSession={props.onOpenLinkedSession}
-              onSwitchToBypassAndRetry={
-                props.onSwitchToBypassAndRetry
-                  ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
-                  : undefined
-              }
-              initialLiveContent={props.liveStreaming?.initialLiveContent}
-            />
-          );
-        };
         return (
           <Fragment key={assistantKey}>
             <LocalizedChatMessage
@@ -701,22 +644,38 @@ export const TurnView = memo(function TurnView(props: {
             >
             <div className="maka-assistant-answer-content">
               {/* The turn timeline is the rendering source of truth
-                (materialize.ts). Before a final answer, commentary and activity
-                remain ordinary timeline entries. Once the Turn completes, the
-                last text stays visible and all earlier work moves into one
-                disclosure. Failed and aborted Turns fold all retained work. */}
-              {workItems.length > 0 && (
-                <TurnWorkLog
-                  collapsed={workLogCollapsed}
-                  durationMs={ownsTurnChrome ? turn.workDurationMs : undefined}
-                  startedAt={ownsTurnChrome ? turn.startedAt : undefined}
-                >
-                  {workItems.map((item, index) =>
-                    renderTimelineItem(item, index, workLogCollapsed)
-                  )}
-                </TurnWorkLog>
+                (materialize.ts): each step's 深度思考 disclosure, answer bubble,
+                and Astryx tool group in the order the model produced them.
+                #1307: runs of reasoning + tools between answer texts render
+                through the derived fold as collapsed Processing blocks. */}
+              {segment.items.map((item, index) =>
+                item.kind === 'processing' ? (
+                  <ProcessingBlock
+                    key={`processing-${item.id}`}
+                    entries={item.children}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
+                    onSwitchToBypassAndRetry={
+                      props.onSwitchToBypassAndRetry
+                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                        : undefined
+                    }
+                    initialLiveContent={props.liveStreaming?.initialLiveContent}
+                  />
+                ) : (
+                  <TurnTimelineEntry
+                    key={timelineEntryKey(item, index)}
+                    item={item}
+                    onStreamingSettled={props.liveStreaming?.onStreamingSettled}
+                    onOpenLinkedSession={props.onOpenLinkedSession}
+                    onSwitchToBypassAndRetry={
+                      props.onSwitchToBypassAndRetry
+                        ? () => props.onSwitchToBypassAndRetry?.(turn.turnId)
+                        : undefined
+                    }
+                    initialLiveContent={props.liveStreaming?.initialLiveContent}
+                  />
+                ),
               )}
-              {finalAnswer && renderTimelineItem(finalAnswer, finalAnswerIndex, true)}
               {/* A failed turn's banner states the OUTCOME of the turn, so it
                   belongs after the work it is the outcome of. `description`
                   carries the parked-resume diagnostic when there
@@ -926,7 +885,7 @@ function TurnFooterActions(props: {
   context: string;
   onAction?: (actionId: TurnFooterActionMeta['id']) => void;
   /** Assistant text used by the inline copy action. */
-  assistantText: string;
+  assistantText?: string;
 }) {
   const copy = getConversationCopy(useUiLocale()).messages;
   const [copyPhase, setCopyPhase] = useState<ClipboardCopyPhase | null>(null);
@@ -957,7 +916,7 @@ function TurnFooterActions(props: {
   }
 
   async function copyAssistantText() {
-    if (copyPendingRef.current) return;
+    if (!props.assistantText || copyPendingRef.current) return;
     copyPendingRef.current = true;
     clearCopyResetTimer();
     setCopyPhase('pending');
@@ -1021,7 +980,7 @@ function TurnFooterActions(props: {
                 data-action={action.id}
                 data-pending={isActionPending || undefined}
                 data-copy-feedback={isCopyAction && copyPhase ? copyPhase : undefined}
-                isDisabled={!action.enabled || copyIsPending}
+                aria-disabled={!action.enabled || copyIsPending}
                 aria-busy={isActionPending || undefined}
                 onClick={() => void handleClick(action)}
               />
@@ -1325,126 +1284,25 @@ function TurnTimelineEntry(props: {
   );
 }
 
-function TurnWorkLog(props: {
-  children: ReactNode;
-  collapsed: boolean;
-  durationMs?: number;
-  startedAt?: number;
-}) {
-  const locale = useUiLocale();
-  const copy = getConversationCopy(locale).messages;
-  const [expanded, setExpanded] = useState(!props.collapsed);
-  const [capturedDurationMs, setCapturedDurationMs] = useState<number | undefined>();
-  const previousCollapsed = useRef(props.collapsed);
-  const rootRef = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    const shouldCollapse = props.collapsed && !previousCollapsed.current;
-    previousCollapsed.current = props.collapsed;
-    if (!shouldCollapse) return;
-    if (
-      rootRef.current &&
-      typeof document !== 'undefined' &&
-      rootRef.current.contains(document.activeElement)
-    ) {
-      rootRef.current
-        .querySelector<HTMLButtonElement>(':scope > .astryx-collapsible-trigger')
-        ?.focus();
-    }
-    setExpanded(false);
-    if (props.durationMs === undefined && props.startedAt !== undefined) {
-      setCapturedDurationMs(Math.max(0, Date.now() - props.startedAt));
-    }
-  }, [props.collapsed, props.durationMs, props.startedAt]);
-
-  const durationMs = props.durationMs ?? capturedDurationMs;
-  const label =
-    durationMs === undefined
-      ? copy.workLog
-      : copy.workLogDuration(formatTurnDuration(durationMs));
-
-  return (
-    <Collapsible
-      ref={rootRef}
-      className="maka-work-log"
-      data-work-log="true"
-      data-collapsed={props.collapsed ? 'true' : 'false'}
-      isOpen={expanded}
-      isDisabled={!props.collapsed}
-      onOpenChange={setExpanded}
-      trigger={(
-        <span className="maka-work-log-trigger">
-          <Clock className="maka-work-log-icon" size={ICON_SIZE.control} aria-hidden="true" />
-          <span className="maka-work-log-label">{label}</span>
-        </span>
-      )}
-    >
-      <div className="maka-work-log-content">{props.children}</div>
-    </Collapsible>
-  );
-}
-
 function ProcessingBlock(props: {
   entries: FoldedTimelineChild[];
-  /** Collapse once when the phase produces its final answer or settles. */
-  autoCollapse: boolean;
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
   initialLiveContent?: ReadonlyMap<string, string>;
 }) {
-  const locale = useUiLocale();
   const { entries } = props;
-  const [expanded, setExpanded] = useState(!props.autoCollapse);
-  const previousAutoCollapse = useRef(props.autoCollapse);
-  const running = isProcessingRunning(entries);
-  const hasError = processingHasError(entries);
-  const summary = summarizeProcessing(entries, locale);
-
-  useEffect(() => {
-    const shouldCollapse = props.autoCollapse && !previousAutoCollapse.current;
-    previousAutoCollapse.current = props.autoCollapse;
-    if (shouldCollapse) setExpanded(false);
-  }, [props.autoCollapse]);
-
   return (
-    <Collapsible
-      className="maka-processing-block"
-      data-processing="block"
-      data-running={running ? 'true' : undefined}
-      data-error={hasError ? 'true' : undefined}
-      isOpen={expanded}
-      onOpenChange={setExpanded}
-      trigger={(
-        <span className="maka-processing-trigger">
-        <span className="maka-processing-icon" aria-hidden="true">
-          <BookOpen size={ICON_SIZE.control} />
-        </span>
-        <span className="maka-processing-summary">{summary}</span>
-        </span>
-      )}
-    >
-      <div className="maka-processing-sequence">
-        {entries.map((entry, index) =>
-          entry.kind === 'tools' ? (
-            <ToolTrow
-              key={timelineEntryKey(entry, index)}
-              items={entry.items}
-              variant="rows"
-              onOpenLinkedSession={props.onOpenLinkedSession}
-              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-            />
-          ) : (
-            <TurnTimelineEntry
-              key={timelineEntryKey(entry, index)}
-              item={entry}
-              onOpenLinkedSession={props.onOpenLinkedSession}
-              onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
-              initialLiveContent={props.initialLiveContent}
-            />
-          ),
-        )}
-      </div>
-    </Collapsible>
+    <div className="maka-processing-sequence">
+      {entries.map((entry, index) => (
+        <TurnTimelineEntry
+          key={timelineEntryKey(entry, index)}
+          item={entry}
+          onOpenLinkedSession={props.onOpenLinkedSession}
+          onSwitchToBypassAndRetry={props.onSwitchToBypassAndRetry}
+          initialLiveContent={props.initialLiveContent}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -1465,7 +1323,6 @@ function DeepThinking(props: { text: string; live: boolean; settledText?: string
         streaming={props.live}
         settledText={props.settledText}
         density="compact"
-        tone="muted"
       />
     </ChatReasoning>
   );

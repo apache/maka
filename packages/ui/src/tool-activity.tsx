@@ -334,12 +334,10 @@ export function ToolTrow({
   items,
   onOpenLinkedSession,
   onSwitchToBypassAndRetry,
-  variant = 'group',
 }: {
   items: ToolActivityItem[];
   onOpenLinkedSession?(sessionId: string): void;
   onSwitchToBypassAndRetry?(): void | Promise<void>;
-  variant?: 'group' | 'rows';
 }) {
   const locale = useUiLocale();
   if (items.length === 0) return null;
@@ -351,21 +349,11 @@ export function ToolTrow({
   return (
     <>
       {segments.map((segment) => segment.kind === 'tools' ? (
-        variant === 'rows' ? (
-          segment.calls.map((call) => (
-            <ChatToolCalls
-              key={call.key}
-              className="maka-tool-activity-card"
-              calls={[call]}
-            />
-          ))
-        ) : (
-          <ChatToolCalls
-            key={segment.key}
-            className="maka-tool-activity-card"
-            calls={segment.calls}
-          />
-        )
+        <ChatToolCalls
+          key={segment.key}
+          className="maka-tool-activity-card"
+          calls={segment.calls}
+        />
       ) : (
         <LinkedAgentList
           key={segment.key}

@@ -159,16 +159,6 @@ test('data-backed conversation exposes ordered todos and keyboard access to tool
   await expect(page.getByRole('main')).toHaveCount(1);
   await enterMainFromSkipLink(page);
 
-  const workLog = page.getByRole('button', { name: /^用时 / });
-  await tabTo(page, workLog, 'work log');
-  await page.keyboard.press('Enter');
-  await expect(workLog).toHaveAttribute('aria-expanded', 'true');
-
-  const processingSummary = page.getByRole('button', { name: '运行 1 条命令' });
-  await tabTo(page, processingSummary, 'processing summary');
-  await page.keyboard.press('Enter');
-  await expect(processingSummary).toHaveAttribute('aria-expanded', 'true');
-
   const toolCall = page.getByRole('button', { name: /^检查测试状态/ });
   await tabTo(page, toolCall, 'tool result');
   await page.keyboard.press('Enter');

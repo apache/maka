@@ -782,10 +782,8 @@ function codexAssistantProviderOptions(
 ): Record<string, unknown> | undefined {
   const phase = record?.phase;
   if (phase !== 'commentary' && phase !== 'final_answer') return undefined;
-  const itemId = stringField(record, 'id');
   return {
     openai: {
-      ...(itemId !== undefined ? { itemId } : {}),
       phase,
     },
   };

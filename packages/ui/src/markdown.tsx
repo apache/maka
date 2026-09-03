@@ -59,8 +59,6 @@ export function Markdown(props: {
   settledText?: string;
   /** Block rhythm. Transcript turns pass `compact`; documents leave it. */
   density?: 'default' | 'compact';
-  /** Semantic text emphasis for surfaces such as expandable reasoning logs. */
-  tone?: 'default' | 'muted';
 }) {
   const safeText = redactSecrets(props.text);
   const safeSettledText = props.settledText === undefined
@@ -83,7 +81,6 @@ export function Markdown(props: {
         streaming={streaming}
         settledText={safeSettledText}
         density={props.density}
-        tone={props.tone}
       />
     </Suspense>
   );

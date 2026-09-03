@@ -354,7 +354,6 @@ describe('CodexSessionAdapter', () => {
         text: 'Use canvas. Then process the pixels.',
         providerOptions: {
           openai: {
-            itemId: 'assistant-item-1',
             phase: 'final_answer',
           },
         },

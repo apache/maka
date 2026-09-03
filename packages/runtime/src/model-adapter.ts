@@ -993,7 +993,6 @@ function translateChunk(
       return [
         {
           kind: 'text-start',
-          ...(providerOptions !== undefined ? { providerOptions } : {}),
           ...(providerItemBoundary ? { providerItemBoundary: true } : {}),
         },
       ];

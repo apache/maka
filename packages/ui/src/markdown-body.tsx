@@ -146,7 +146,6 @@ export function MarkdownBody(props: {
   streaming?: boolean;
   settledText?: string;
   density?: 'default' | 'compact';
-  tone?: 'default' | 'muted';
 }) {
   const mathCache = useRef(createMarkdownMathCache());
   const transformMathSource = useCallback(
@@ -164,7 +163,6 @@ export function MarkdownBody(props: {
   return (
     <div
       data-maka-contract="markdown"
-      data-maka-markdown-tone={props.tone ?? 'default'}
       data-maka-script={hasHanProse(props.text) ? 'han' : undefined}
       // Migration-only identity wrapper. `display: contents` gives the
       // contract harness a stable declared subtree without adding a layout

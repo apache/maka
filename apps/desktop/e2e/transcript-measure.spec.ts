@@ -27,16 +27,7 @@ test('assistant prose reaches the transcript column edge on a wide window', asyn
   await composer.fill('measure');
   await composer.press('Enter');
 
-  const answer = page
-    .locator('.maka-turn')
-    .last()
-    .getByRole('article', { name: 'Maka 的回答' });
-  await expect(
-    answer.getByText(
-      'This proves the session stream, SQLite storage, and renderer loop are connected.',
-      { exact: true },
-    ),
-  ).toBeVisible({ timeout: 20_000 });
+  const answer = page.getByRole('article', { name: 'Maka 的回答' }).last();
   const paragraph = answer.locator('[role="paragraph"]').first();
   await expect(paragraph).toBeVisible();
 

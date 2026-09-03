@@ -135,33 +135,8 @@ describe('transcript markdown rhythm', () => {
       rule[1],
       /padding-block\s*:\s*0/,
       'ListItem block padding is no longer zeroed on the compact surface, so the real ' +
-      'list-item gap is padding + gap and the declared ladder is not the spacing you get. ' +
+        'list-item gap is padding + gap and the declared ladder is not the spacing you get. ' +
         `Found: { ${rule[1].trim()} }`,
-    );
-  });
-
-  it('gives muted markdown a semantic color boundary for nested Astryx controls', async () => {
-    const markup = renderToStaticMarkup(
-      <MarkdownBody text={SAMPLE} density="compact" tone="muted" />,
-    );
-    assert.match(
-      markup,
-      /data-maka-markdown-tone="muted"/,
-      'muted markdown lost the DOM hook used to recolor nested Astryx controls',
-    );
-
-    const css = (await readFile(join(UI_SRC, 'styles.css'), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
-    const rule = new RegExp(
-      String.raw`data-maka-markdown-tone="muted"[^{]*\.astryx-markdown\s*\{([^}]*)\}`,
-    ).exec(css);
-    assert.ok(
-      rule,
-      'muted markdown no longer scopes its Astryx token overrides to the document root',
-    );
-    assert.match(
-      rule[1],
-      /--color-text-primary\s*:\s*var\(--muted-foreground\)/,
-      'nested Markdown controls can restore primary text and visually compete with commentary',
     );
   });
 });

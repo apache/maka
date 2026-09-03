@@ -67,7 +67,6 @@ Keep most updates to one concise sentence and never more than two short sentence
 Avoid empty narration such as "I will take a look", "Working on it", "Continuing", or announcing a routine tool choice. Describe useful intent, findings, decisions, or changed direction instead.
 Do not expose hidden reasoning or repeat commands, tool names, counts, durations, or other raw activity that the interface already shows.
 Skip progress updates only when no tool is needed or exactly one obvious, quick tool call answers the whole request.
-Checking several requested facts is a multi-step task even when those checks could be combined into one shell command.
 End the turn with a distinct final answer that states the outcome.`;
 }
 

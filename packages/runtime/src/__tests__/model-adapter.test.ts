@@ -575,7 +575,7 @@ describe('ModelAdapter stream and error normalization', () => {
     );
   });
 
-  test('preserves native Responses text item metadata at both stream boundaries', () => {
+  test('preserves native Responses item boundaries and terminal metadata', () => {
     const adapter = new ModelAdapter({
       connection: {
         slug: 'openai',
@@ -601,7 +601,7 @@ describe('ModelAdapter stream and error normalization', () => {
         id: 'message-1',
         providerMetadata: metadata,
       }),
-      [{ kind: 'text-start', providerOptions: metadata, providerItemBoundary: true }],
+      [{ kind: 'text-start', providerItemBoundary: true }],
     );
     assert.deepEqual(
       adapter.translateChunk({
@@ -634,7 +634,7 @@ describe('ModelAdapter stream and error normalization', () => {
         id: 'message-1',
         providerMetadata: metadata,
       }),
-      [{ kind: 'text-start', providerOptions: metadata }],
+      [{ kind: 'text-start' }],
     );
     assert.deepEqual(
       adapter.translateChunk({

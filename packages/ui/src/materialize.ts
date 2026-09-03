@@ -241,8 +241,7 @@ export function materializeTools(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
   return messages
-    .filter((message): message is Extract<StoredMessage, { type: "tool_call" }> =>
-      message.type === "tool_call")
+    .filter((message) => message.type === "tool_call")
     .map((call) => {
       const result = results.get(call.id);
       return {
@@ -436,8 +435,6 @@ export interface TurnViewModel {
   modelId?: string;
   /** Wall-clock ms between earliest user/tool message and assistant message. */
   durationMs?: number;
-  /** Wall-clock ms covered by the turn's settled durable event span. */
-  workDurationMs?: number;
   /** Token totals summed across all `token_usage` messages within the turn. */
   tokens?: {
     input: number;
@@ -707,11 +704,6 @@ export function materializeTurns(
   const turnRecordById = new Map(
     turnRecords.map((turn) => [turn.turnId, turn]),
   );
-  const terminalStateTsByTurnId = new Map<string, number>();
-  for (const message of messages) {
-    if (message.type !== "turn_state" || message.status === "running") continue;
-    terminalStateTsByTurnId.set(message.turnId, message.ts);
-  }
   const order: string[] = [];
   const byId = new Map<string, TurnViewModel>();
   const looseTurnId = "__loose";
@@ -853,62 +845,29 @@ export function materializeTurns(
   // reaches exactly one timeline).
   for (const turnId of order) {
     const turn = byId.get(turnId)!;
-    const turnMessages = messagesByTurn.get(turnId) ?? [];
     turn.timeline = buildTurnTimeline(
-      turnMessages,
+      messagesByTurn.get(turnId) ?? [],
       toolItemByUseId,
     );
     turn.tools = timelineTools(turn.timeline);
-    if (turn.status !== "running") {
-      const terminalStateTs = terminalStateTsByTurnId.get(turnId);
-      const settledAt = terminalStateTs ?? Math.max(
-        turn.startedAt,
-        ...turnMessages.map((message) => message.ts),
-      );
-      turn.workDurationMs = settledAt - turn.startedAt;
-    }
   }
 
   return order.map((turnId) => byId.get(turnId)!);
 }
 
 /**
- * The turn's final reply is present only when the last meaningful item in the
- * completed timeline segment is non-empty assistant text. Intermediate text
- * narrates work in progress; if thinking or tool activity follows it, the turn
- * did not settle on a final reply. The clipboard therefore must not use the
- * `\n\n`-joined `assistant.text` aggregate (#2407). Turns with no timeline text
- * entry retain the legacy aggregate fallback.
+ * The turn's final reply: the last answer step on the timeline. Intermediate
+ * steps (text emitted between tool calls) narrate the work in progress; the
+ * clipboard wants only the answer the turn settled on (#2407), not the
+ * `\n\n`-joined `assistant.text` aggregate. Falls back to the aggregate for
+ * turns with no timeline text entry.
  */
-export interface AssistantFinalReply {
-  index: number;
-  text: string;
-}
-
-export function assistantFinalReply<T extends { kind: string; text?: string }>(
-  items: readonly T[],
-  completed: boolean,
-): AssistantFinalReply | undefined {
-  if (!completed) return undefined;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item?.kind === "text" && item.text?.trim().length === 0) continue;
-    return item?.kind === "text" && item.text !== undefined
-      ? { index, text: item.text }
-      : undefined;
-  }
-  return undefined;
-}
-
 export function finalAssistantReplyText(turn: TurnViewModel): string {
-  if (turn.status !== "completed") return "";
-  const lastSteeringIndex = turn.timeline.findLastIndex((item) => item.kind === "user");
-  const latestAnswer = turn.timeline.slice(lastSteeringIndex + 1);
-  const answer = assistantFinalReply(latestAnswer, true);
-  if (answer) return answer.text;
-  return turn.timeline.some((item) => item.kind === "text")
-    ? ""
-    : (turn.assistant?.text ?? "");
+  for (let index = turn.timeline.length - 1; index >= 0; index -= 1) {
+    const item = turn.timeline[index];
+    if (item?.kind === "text" && item.text.length > 0) return item.text;
+  }
+  return turn.assistant?.text ?? "";
 }
 
 /**

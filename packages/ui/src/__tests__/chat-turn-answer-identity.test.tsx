@@ -317,48 +317,6 @@ test('uses human conversation context instead of raw ids in action names', async
   );
 });
 
-test('renders the Copy availability derived by the turn presentation', async () => {
-  const { container, root } = domRoot();
-  const progressOnly = {
-    ...turnWith([
-      { kind: 'text' as const, text: 'I will inspect it.', messageId: 'progress' },
-      {
-        kind: 'tools' as const,
-        items: [{
-          toolUseId: 'read-1',
-          toolName: 'Read',
-          activityKind: 'read' as const,
-          status: 'completed' as const,
-          args: { path: 'README.md' },
-        }],
-      },
-    ]),
-    status: 'completed' as const,
-    assistant: {
-      id: 'aggregate',
-      role: 'assistant' as const,
-      text: 'I will inspect it.',
-      ts: 2,
-    },
-  };
-
-  await act(() => {
-    root.render(
-      <LocaleProvider locale="en">
-        <TurnView
-          turn={progressOnly}
-          footerActions={[{ id: 'copy', label: 'Copy', enabled: false }]}
-        />
-      </LocaleProvider>,
-    );
-  });
-
-  assert.equal(
-    container.querySelector('[data-action="copy"]')?.getAttribute('aria-disabled'),
-    'true',
-  );
-});
-
 test('does not edit and resend a message with folder references', async () => {
   const { container, root } = domRoot();
   let editCalls = 0;

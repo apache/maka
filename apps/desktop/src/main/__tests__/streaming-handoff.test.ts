@@ -224,9 +224,8 @@ describe('single live-turn handoff', () => {
       }],
     });
 
-    // A tool-bearing run owns one compact Processing disclosure while the
-    // model-authored text remains a separate timeline boundary.
-    assert.equal((markup.match(/maka-processing-block/g) ?? []).length, 1);
+    // Thinking and tools own their disclosures; do not wrap them in another.
+    assert.equal((markup.match(/maka-processing-block/g) ?? []).length, 0);
     assert.ok(markup.indexOf('深度思考') >= 0);
     assert.ok(markup.indexOf('深度思考') < markup.indexOf('最终答案'));
     assert.ok(markup.indexOf('最终答案') < markup.indexOf('Bash'));

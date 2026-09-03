@@ -388,7 +388,6 @@ export interface ModelRequestMetadata {
 export type ModelStreamEvent =
   | {
       kind: 'text-start';
-      providerOptions?: ProviderOptions;
       /** Native Responses output item boundary; internal to adapter/backend replay. */
       providerItemBoundary?: true;
     }
