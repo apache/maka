@@ -782,7 +782,7 @@ export const AlibabaConnectionDetailPage: Story = {
 
 // Real path: 设置 → 模型 → click a connection whose provider has no model-list
 // endpoint — 添加模型 stands where 更新模型目录 would, and the models Maka's
-// bundled metadata cannot describe carry a 补充规格 editor on their row.
+// bundled metadata cannot describe carry a 配置参数 editor on their row.
 export const StaticCatalogConnectionDetail: Story = {
   render: () => (
     <ProviderStory
@@ -793,7 +793,7 @@ export const StaticCatalogConnectionDetail: Story = {
 };
 
 // Real path: 设置 → 模型 → click a custom relay — several enabled models, each
-// with a 补充规格 editor, and 批量设置思考档位 in the section's action cluster
+// with a 配置参数 editor, and 批量设置思考档位 in the section's action cluster
 // writing into all of them at once. Opening its menu shows each level's
 // coverage across the table: `low` and `high` on 1 of 4, everything else on
 // none.
