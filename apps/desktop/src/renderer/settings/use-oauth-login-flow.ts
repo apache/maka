@@ -100,6 +100,7 @@ export interface OAuthLoginFlowController {
   // Undefined until the probe resolves; surfaces read unknown as enabled so a
   // slow Host never hides an action that would in fact succeed.
   enrollmentEnabled: boolean | undefined;
+  reportError(title: string, message: string): void;
   startLogin(): Promise<void>;
   logout: (() => Promise<void>) | undefined;
   refresh(): Promise<boolean>;
@@ -133,8 +134,17 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
   const [authRequestId, setAuthRequestId] = useState<string | null>(null);
   const [stateHint, setStateHint] = useState<string | null>(null);
   const [pendingAction, setPendingAction] = useState<OAuthLoginPendingAction | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [enrollmentEnabled, setEnrollmentEnabled] = useState<boolean | undefined>(undefined);
+  const [feedback, setFeedback] = useState<{
+    readonly errorMessage: string | null;
+    readonly enrollmentEnabled: boolean | undefined;
+  }>({ errorMessage: null, enrollmentEnabled: undefined });
+  const { errorMessage, enrollmentEnabled } = feedback;
+  const setErrorMessage = (next: string | null) => {
+    setFeedback((current) => ({ ...current, errorMessage: next }));
+  };
+  const setEnrollmentEnabled = (next: boolean) => {
+    setFeedback((current) => ({ ...current, enrollmentEnabled: next }));
+  };
   const pendingGuard = useRef(createOneShotActionGuard<OAuthLoginPendingAction>()).current;
   const authRequestIdRef = useRef<string | null>(null);
   const oauthLoginFlowMountedRef = useMountedRef();
@@ -177,6 +187,11 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function reportError(title: string, message: string): void {
+    reportHostError(title, message);
+    setErrorMessage(message);
+  }
 
   function beginPendingAction(action: OAuthLoginPendingAction): boolean {
     if (!pendingGuard.begin(action)) return false;
@@ -307,6 +322,7 @@ export function useOAuthLoginFlow(params: OAuthLoginFlowParams): OAuthLoginFlowC
     errorMessage,
     actionBusy,
     enrollmentEnabled,
+    reportError,
     startLogin,
     logout: accountBridge ? logout : undefined,
     refresh,

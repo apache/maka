@@ -73,7 +73,7 @@ export const CATALOG_INITIAL_FILTER: CatalogFilter = { query: '', category: 'all
 export interface CreatedOAuthConnectionIdentity {
   connectionId: string;
   slug: string;
-  providerType: 'openai-codex' | 'xai-oauth';
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 /**
@@ -243,7 +243,11 @@ export function ProviderSetupPage(props: {
   if (props.target.method === 'account') {
     return (
       <div tabIndex={-1} role="region" aria-labelledby={props.labelledBy} className="settingsRouteLevel" data-maka-contract="provider-setup">
-        <OAuthLoginPanel cardId={props.target.cardId} onLoginSuccess={props.onAccountCreated} />
+        <OAuthLoginPanel
+          bridge={props.bridge}
+          cardId={props.target.cardId}
+          onLoginSuccess={props.onAccountCreated}
+        />
       </div>
     );
   }

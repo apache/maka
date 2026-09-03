@@ -59,16 +59,12 @@ import {
   connectionTestFailureMessage,
   getProviderSettingsCopy,
   providerPanelActionErrorMessage,
+  type ConnectionOAuthBridge,
+  type ConnectionOAuthProviderBridge,
   type ConnectionsBridge,
   type CredentialPresenceStatus,
 } from '../features/connection-settings';
-import {
-  useRuntimeHostSettingsErrorReporter,
-  useRuntimeHostSettingsTarget,
-} from './runtime-host-settings-target.js';
-import {
-  runtimeHostOAuthExistingLoginBridges,
-} from './runtime-host-settings-bridge.js';
+import { useRuntimeHostSettingsErrorReporter } from './runtime-host-settings-target.js';
 
 // Maps an OAuth model-connection provider type to the browser-assisted login
 // service that can re-run its authorization from inside the connection dialog. Only
@@ -85,47 +81,62 @@ export interface OAuthLoginService {
 
 export function oauthLoginServiceFor(
   providerType: ProviderType,
-  host: import('../../preload/bridge-contract.js').DesktopRuntimeHostRef,
+  oauth: ConnectionOAuthBridge | undefined,
   connectionId: string,
   connectionLabel?: string,
 ): OAuthLoginService | null {
+  if (!oauth) return null;
   switch (providerType) {
     case 'openai-codex':
-      return {
-        ...runtimeHostOAuthExistingLoginBridges(
-          window.maka.openAiCodex,
-          host,
-          connectionId,
-        ),
-        display: { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
-        showsDeviceCode: true,
-      };
+      return oauthLoginService(
+        oauth.openAiCodex,
+        connectionId,
+        { name: connectionLabel ?? 'OpenAI Codex', shortName: 'Codex' },
+        true,
+      );
     case 'xai-oauth':
-      return {
-        ...runtimeHostOAuthExistingLoginBridges(
-          window.maka.xaiOAuth,
-          host,
-          connectionId,
-        ),
-        display: { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
-        showsDeviceCode: false,
-      };
+      return oauthLoginService(
+        oauth.xaiOAuth,
+        connectionId,
+        { name: connectionLabel ?? 'xAI Grok', shortName: 'SuperGrok / X Premium' },
+        false,
+      );
     // Copilot re-login is the same Host-owned device grant the catalog drives;
     // importing a local `gh` credential stays a catalog action, so an expired
     // connection is re-authorized here exactly like every other OAuth account.
     case 'github-copilot':
-      return {
-        ...runtimeHostOAuthExistingLoginBridges(
-          window.maka.githubCopilotSubscription,
-          host,
-          connectionId,
-        ),
-        display: { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
-        showsDeviceCode: true,
-      };
+      return oauthLoginService(
+        oauth.githubCopilotSubscription,
+        connectionId,
+        { name: connectionLabel ?? 'GitHub Copilot', shortName: 'GitHub Copilot' },
+        true,
+      );
     default:
       return null;
   }
+}
+
+function oauthLoginService(
+  provider: ConnectionOAuthProviderBridge,
+  connectionId: string,
+  display: OAuthLoginService['display'],
+  showsDeviceCode: boolean,
+): OAuthLoginService {
+  return {
+    authorizationBridge: {
+      getAuthUrl: () => provider.getAuthUrl({ kind: 'existing', connectionId }),
+      openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
+      completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
+      cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),
+      getEnrollmentState: () => provider.getEnrollmentState(),
+    },
+    accountBridge: {
+      getAccountState: () => provider.getAccountState(connectionId),
+      logout: () => provider.logout(connectionId),
+    },
+    display,
+    showsDeviceCode,
+  };
 }
 
 export interface ConnectionDetailProps {
@@ -145,7 +156,6 @@ export interface ConnectionDetailProps {
 // the guard, lifecycle gate, and cross-calls (save auto-fetches models) stay in
 // one place with zero behavior change.
 export function useConnectionDetail(props: ConnectionDetailProps) {
-  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
@@ -192,7 +202,7 @@ export function useConnectionDetail(props: ConnectionDetailProps) {
   const oauthLoginService = needsOAuth && !retired && connection.connectionId
     ? oauthLoginServiceFor(
         connection.providerType,
-        host,
+        props.bridge.oauth,
         connection.connectionId,
         `${connection.name} · ${connection.slug}`,
       )

@@ -27,23 +27,24 @@ import {
   useMountedRef,
   useUiLocale,
 } from '@maka/ui';
-import { getProviderSettingsCopy, type ProviderSettingsCopy } from '../features/connection-settings';
+import {
+  getProviderSettingsCopy,
+  type ConnectionOAuthProviderBridge,
+  type ConnectionsBridge,
+  type ProviderSettingsCopy,
+} from '../features/connection-settings';
 import {
   useOAuthLoginFlow,
   subscriptionActionErrorMessage,
   subscriptionResultMessage,
+  type OAuthAuthorizationFlowBridge,
   type OAuthConnectionIdentity,
   type SubscriptionSnapshot,
 } from './use-oauth-login-flow';
 import {
   RuntimeHostSettingsGenerationBoundary,
-  useRuntimeHostSettingsErrorReporter,
   useRuntimeHostSettingsGenerationKey,
-  useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
-import {
-  runtimeHostOAuthAuthorizationBridge,
-} from './runtime-host-settings-bridge.js';
 
 export type OAuthCardId = 'codex' | 'github-copilot' | 'xai';
 
@@ -76,7 +77,6 @@ export function useOAuthCards(props: {
   query?: string;
   connections: readonly LlmConnection[];
 }) {
-  const host = useRuntimeHostSettingsTarget();
   const generationKey = useRuntimeHostSettingsGenerationKey();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
@@ -114,6 +114,7 @@ export function useOAuthCards(props: {
  * level, the same ones the catalog and the connection detail use.
  */
 export function OAuthLoginPanel(props: {
+  bridge: ConnectionsBridge;
   cardId: OAuthCardId;
   onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
 }) {
@@ -125,13 +126,25 @@ export function OAuthLoginPanel(props: {
 }
 
 function OAuthLoginPanelForCurrentGeneration(props: {
+  bridge: ConnectionsBridge;
   cardId: OAuthCardId;
   onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
 }) {
   if (props.cardId === 'github-copilot') {
-    return <GitHubCopilotLoginPanel onLoginSuccess={props.onLoginSuccess} />;
+    return (
+      <GitHubCopilotLoginPanel
+        bridge={props.bridge}
+        onLoginSuccess={props.onLoginSuccess}
+      />
+    );
   }
-  return <SubscriptionLoginPanel service={props.cardId} onLoginSuccess={props.onLoginSuccess} />;
+  return (
+    <SubscriptionLoginPanel
+      bridge={props.bridge}
+      service={props.cardId}
+      onLoginSuccess={props.onLoginSuccess}
+    />
+  );
 }
 
 /** The subtitle the setup level's header shows above each login panel. */
@@ -155,10 +168,10 @@ function modelOAuthCards(copy: ProviderSettingsCopy['oauthSection']): ReadonlyAr
 }
 
 function SubscriptionLoginPanel(props: {
+  bridge: ConnectionsBridge;
   service: 'codex' | 'xai';
   onLoginSuccess(connection: OAuthConnectionIdentity): void | Promise<void>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
   const copy = getProviderSettingsCopy(useUiLocale()).oauthSection;
   const isXai = props.service === 'xai';
   const display: SubscriptionDisplay = isXai
@@ -171,9 +184,8 @@ function SubscriptionLoginPanel(props: {
   // page can drive the exact same flow behind its relogin button.
   const flow = useOAuthLoginFlow({
     mode: 'create',
-    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
-      isXai ? window.maka.xaiOAuth : window.maka.openAiCodex,
-      host,
+    authorizationBridge: authorizationBridge(
+      oauthProviderBridge(props.bridge, isXai ? 'xaiOAuth' : 'openAiCodex'),
       { kind: 'create' },
     ),
     display: { name: display.name, shortName: display.shortName },
@@ -208,12 +220,11 @@ function SubscriptionLoginPanel(props: {
 }
 
 function GitHubCopilotLoginPanel(props: {
+  bridge: ConnectionsBridge;
   onLoginSuccess(connection?: OAuthConnectionIdentity): void | Promise<void>;
 }) {
-  const host = useRuntimeHostSettingsTarget();
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).oauthSection;
-  const reportHostError = useRuntimeHostSettingsErrorReporter();
   const mountedRef = useMountedRef();
   // Copilot now enrolls through the same Host-owned device grant as Codex and
   // xAI, so it drives the shared browser-assisted controller rather than a
@@ -221,9 +232,8 @@ function GitHubCopilotLoginPanel(props: {
   // holds stays available beside it as the secondary route to the same account.
   const flow = useOAuthLoginFlow({
     mode: 'create',
-    authorizationBridge: runtimeHostOAuthAuthorizationBridge(
-      window.maka.githubCopilotSubscription,
-      host,
+    authorizationBridge: authorizationBridge(
+      oauthProviderBridge(props.bridge, 'githubCopilotSubscription'),
       { kind: 'create' },
     ),
     display: { name: 'GitHub Copilot', shortName: 'GitHub Copilot' },
@@ -240,10 +250,11 @@ function GitHubCopilotLoginPanel(props: {
     if (actionBusy) return;
     setImporting(true);
     try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
+      const oauth = requiredOAuthBridge(props.bridge);
+      const result = await oauth.githubCopilotSubscription.connectExistingLogin();
       if (!mountedRef.current) return;
       if (!result.ok) {
-        reportHostError(
+        flow.reportError(
           copy.copilotActionFailed,
           subscriptionResultMessage(result.message, copy.copilotActionFailed, locale, result.reason),
         );
@@ -252,7 +263,7 @@ function GitHubCopilotLoginPanel(props: {
       await props.onLoginSuccess();
     } catch (error) {
       if (mountedRef.current) {
-        reportHostError(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
+        flow.reportError(copy.copilotActionFailed, subscriptionActionErrorMessage(error, locale));
       }
     } finally {
       if (mountedRef.current) setImporting(false);
@@ -287,6 +298,31 @@ function GitHubCopilotLoginPanel(props: {
       </HStack>
     </VStack>
   );
+}
+
+function requiredOAuthBridge(bridge: ConnectionsBridge) {
+  if (!bridge.oauth) throw new Error('Connection OAuth bridge is unavailable');
+  return bridge.oauth;
+}
+
+function oauthProviderBridge(
+  bridge: ConnectionsBridge,
+  provider: 'openAiCodex' | 'xaiOAuth' | 'githubCopilotSubscription',
+): ConnectionOAuthProviderBridge {
+  return requiredOAuthBridge(bridge)[provider];
+}
+
+function authorizationBridge(
+  provider: ConnectionOAuthProviderBridge,
+  target: { readonly kind: 'create' } | { readonly kind: 'existing'; readonly connectionId: string },
+): OAuthAuthorizationFlowBridge {
+  return {
+    getAuthUrl: () => provider.getAuthUrl(target),
+    openAuthUrl: (authRequestId) => provider.openAuthUrl(authRequestId),
+    completeAuthorization: (authRequestId) => provider.completeAuthorization(authRequestId),
+    cancelAuthorization: (authRequestId) => provider.cancelAuthorization(authRequestId),
+    getEnrollmentState: () => provider.getEnrollmentState(),
+  };
 }
 
 interface SubscriptionDisplay {

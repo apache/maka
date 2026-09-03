@@ -24,6 +24,9 @@ export {
 } from './services-context.js';
 export type {
   ApiKeyOnboardingBridge,
+  ConnectionOAuthBridge,
+  ConnectionOAuthLoginTarget,
+  ConnectionOAuthProviderBridge,
   ConnectionSettingsServices,
   ConnectionsBridge,
   DesktopConnectionOnboardingIdentity,

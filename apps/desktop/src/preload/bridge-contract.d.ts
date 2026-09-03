@@ -379,7 +379,7 @@ export type DesktopOAuthLoginTarget =
 export interface DesktopOAuthConnectionIdentity {
   readonly connectionId: string;
   readonly slug: string;
-  readonly providerType: 'openai-codex' | 'xai-oauth';
+  readonly providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot';
 }
 
 export type DesktopOAuthAuthorizationStartResult =
