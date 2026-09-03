@@ -2688,9 +2688,8 @@ export class RootTurnCoordinator implements HostedExecutionAuthority {
     if (admission.execution.kind === 'context_compact') return undefined;
     const mode =
       admission.execution.kind === 'safe_boundary_continuation'
-        ? ((
-            await this.readRunIfPresent(admission.sessionId, admission.execution.sourceRunId)
-          )?.opening.configuration.orchestrationMode ??
+        ? ((await this.readRunIfPresent(admission.sessionId, admission.execution.sourceRunId))
+            ?.opening.configuration.orchestrationMode ??
           resolveEffectiveOrchestration(session.orchestrationMode, undefined).mode)
         : resolveEffectiveOrchestration(session.orchestrationMode, admission.turnOrchestration)
             .mode;

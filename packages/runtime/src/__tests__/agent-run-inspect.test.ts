@@ -48,7 +48,11 @@ describe('inspectAgentRunReadModel', () => {
         opening: makeOpening(),
       }),
     );
-    await runStore.appendEvent(sessionId, runId, makeRunEvent({ type: 'turn_started', ts: ts + 1 }));
+    await runStore.appendEvent(
+      sessionId,
+      runId,
+      makeRunEvent({ type: 'turn_started', ts: ts + 1 }),
+    );
     await runStore.appendEvent(
       sessionId,
       runId,
@@ -154,7 +158,6 @@ describe('inspectAgentRunReadModel', () => {
       true,
     );
   });
-
 });
 
 class MemoryAgentRunStore implements AgentRunStore, RuntimeEventStore {

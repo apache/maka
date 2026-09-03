@@ -23,10 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import type { AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
-import type {
-  RuntimeEvent,
-  RuntimeEventInvocationOpenedContent,
-} from '@maka/core/runtime-event';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { StoredMessage } from '@maka/core/session';
 import { decodeCanonicalToolResultContent } from '@maka/core/tool-result-record-schema';
@@ -1286,11 +1283,11 @@ test('conversation copy rewrites a complete tool recovery bundle atomically', as
   try {
     await runStore.ready?.();
     await seedRun(runtimeEventStore, {
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      });
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
     const sourceEvents: RuntimeEvent[] = [
       runtimeEvent({
         id: 'event-user',
@@ -1492,11 +1489,11 @@ test('conversation copy rewrites the parent operation id of a nested Code Mode c
   try {
     await runStore.ready?.();
     await seedRun(runtimeEventStore, {
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      });
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
     const sourceEvents: RuntimeEvent[] = [
       runtimeEvent({
         id: 'event-user',
@@ -1639,11 +1636,11 @@ test('conversation copy rewrites the nested identity of a model call attempt', a
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     await seedRun(runtimeEventStore, {
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      });
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
     for (const event of [
       runtimeEvent({
         id: 'event-user',
@@ -1743,11 +1740,11 @@ test('conversation copy repairs a model call attempt stranded by a pre-fix copy'
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     await seedRun(runtimeEventStore, {
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      });
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
     for (const event of [
       runtimeEvent({
         id: 'event-user',
@@ -2143,7 +2140,10 @@ test('conversation copy clones one terminal Runtime ledger with new owned identi
         }),
       /missing Artifact artifact-deleted/,
     );
-    assert.deepEqual(await runtimeEventStore.listSessionInvocations('session-missing-artifact'), []);
+    assert.deepEqual(
+      await runtimeEventStore.listSessionInvocations('session-missing-artifact'),
+      [],
+    );
     // A copied run and its copied invocation share one fresh identity, so the
     // copy mints one id here rather than two.
     const ids = [
@@ -2815,11 +2815,11 @@ test('conversation copy rebuilds projection transitions against the copied event
     const runStore = createSqliteAgentRunStore(root);
     const runtimeEventStore = createWorkspaceRuntimeStore(root);
     await seedRun(runtimeEventStore, {
-        runId: 'run-source',
-        invocationId: 'invocation-source',
-        turnId: 'turn-1',
-        cwd: root,
-      });
+      runId: 'run-source',
+      invocationId: 'invocation-source',
+      turnId: 'turn-1',
+      cwd: root,
+    });
     const resultEvent = runtimeEvent({
       id: 'event-result',
       ts: 2,
@@ -2980,7 +2980,8 @@ test('conversation copy carries a transition recorded by a later, uncopied run',
       ['run-first', 'turn-1'],
       ['run-second', 'turn-2'],
     ]) {
-      await seedRun(runtimeEventStore, 
+      await seedRun(
+        runtimeEventStore,
         runFacts({
           runId,
           invocationId: `invocation-${runId}`,
@@ -3148,7 +3149,8 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
       ['run-first', 'turn-1'],
       ['run-second', 'turn-2'],
     ]) {
-      await seedRun(runtimeEventStore, 
+      await seedRun(
+        runtimeEventStore,
         runFacts({ runId, invocationId: `invocation-${runId}`, turnId, cwd: root }),
       );
     }

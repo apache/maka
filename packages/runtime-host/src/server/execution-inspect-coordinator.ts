@@ -236,7 +236,11 @@ export class HostExecutionInspectCoordinator {
       const candidatePage: ExecutionInspectQueryResult = {
         kind: 'session_trace_page',
         ...candidateTrace,
-        nextCursor: tracePageCursorAfter(runPage.invocations, candidateRunCount, runPage.nextCursor),
+        nextCursor: tracePageCursorAfter(
+          runPage.invocations,
+          candidateRunCount,
+          runPage.nextCursor,
+        ),
       };
       if (
         candidateTrace.turns.length > EXECUTION_INSPECT_TRACE_PAGE_MAX_TURNS ||

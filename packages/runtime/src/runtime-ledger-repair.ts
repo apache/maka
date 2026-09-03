@@ -23,7 +23,10 @@ import { DEFAULT_TOOL_MODE } from '@maka/core/tool-mode';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import { buildInvocationOpenedEvent, isSessionInlineInvocation } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  isSessionInlineInvocation,
+} from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { SessionHeader } from '@maka/core/session';
 import type { StoredMessage, TurnRecord } from '@maka/core/session';

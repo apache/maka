@@ -406,7 +406,11 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, latest.checkpointId);
     assert.deepEqual(
@@ -499,7 +503,11 @@ describe('history compact checkpoint', () => {
       new Map([['run-1', [checkpointEvent('ledger-v3', 'run-1', checkpoint, 20)]]]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.deepEqual(loaded, checkpoint);
     assert.equal(
@@ -535,7 +543,11 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -564,7 +576,11 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -649,7 +665,11 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
   });
@@ -685,7 +705,9 @@ describe('history compact checkpoint', () => {
       readEvents: async () => [canonicalEvent],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, valid.checkpointId);
     assert.deepEqual(replacedEventIds, [poisonedProjection.id]);
@@ -712,7 +734,11 @@ describe('history compact checkpoint', () => {
       ]),
     );
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, furthest.checkpointId);
   });
@@ -758,7 +784,11 @@ describe('history compact checkpoint', () => {
         ],
       ]),
     );
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', runIds);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(
+      store,
+      'session-1',
+      runIds,
+    );
 
     assert.equal(loaded?.checkpointId, tip.checkpointId);
   });
@@ -778,7 +808,9 @@ describe('history compact checkpoint', () => {
       },
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
   });
@@ -791,7 +823,9 @@ describe('history compact checkpoint', () => {
       },
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded, undefined);
   });
@@ -820,7 +854,9 @@ describe('history compact checkpoint', () => {
       readEvents: async () => [event],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(repaired, [event]);
@@ -843,7 +879,9 @@ describe('history compact checkpoint', () => {
       readEvents: async () => [event],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.equal(repaired, false);
@@ -878,7 +916,9 @@ describe('history compact checkpoint', () => {
       readEvents: async () => [canonicalEvent],
     };
 
-    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', ['run-canonical']);
+    const loaded = await loadLatestHistoryCompactCheckpointFromRunLedger(store, 'session-1', [
+      'run-canonical',
+    ]);
 
     assert.equal(loaded?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(replacedEventIds, [invalidProjection.id]);

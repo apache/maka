@@ -1273,16 +1273,16 @@ export async function createExecutionRuntimeHostComposition(
       startTurn: (sessionId, input, _activity, abortSignal, isCurrent) =>
         graphExecutions.run(sessionId, input, abortSignal, isCurrent),
       inspectAttempt: async (rootSessionId, attemptId, turnId) => {
-        const runs = (
-          await stores.runtimeEventStore.listSessionInvocations(rootSessionId)
-        ).filter((run) => {
-          const root = run.opening.root;
-          return (
-            root.kind === 'agent_graph_supervisor_wake' &&
-            root.attemptId === attemptId &&
-            run.turnId === turnId
-          );
-        });
+        const runs = (await stores.runtimeEventStore.listSessionInvocations(rootSessionId)).filter(
+          (run) => {
+            const root = run.opening.root;
+            return (
+              root.kind === 'agent_graph_supervisor_wake' &&
+              root.attemptId === attemptId &&
+              run.turnId === turnId
+            );
+          },
+        );
         if (runs.length > 1) {
           throw new Error(
             `Agent graph supervisor wake attempt ${attemptId} has multiple AgentRuns`,

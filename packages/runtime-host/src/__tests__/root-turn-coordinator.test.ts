@@ -808,10 +808,7 @@ test('turn.start durably applies one exact per-Turn orchestration override', asy
     if (!started.ok) return;
     assertStartedTurn(started);
 
-    const run = await readInvocation(fixture.stores, 
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     assert.equal(run.opening.configuration.orchestrationMode, 'swarm');
     assert.equal(run.opening.configuration.orchestrationSource, 'turn_override');
     assert.equal(run.opening.configuration.agentSwarmAuthorization, 'turn_override');
@@ -1842,7 +1839,10 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       (await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(child.id)).length,
       1,
     );
-    assert.equal((await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length, 1);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length,
+      1,
+    );
 
     backend?.release();
     await managed;
@@ -1869,7 +1869,10 @@ test('worktree child Sessions reject roots outside managed child execution', asy
       () => recovery.recover(),
       /Unable to recover admitted Turn legacy-external-child-turn: operation_unavailable/,
     );
-    assert.equal((await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length, 1);
+    assert.equal(
+      (await fixture.stores.runtimeEventStore.listSessionInvocations(child.id)).length,
+      1,
+    );
   } finally {
     backend?.release();
     await recoveryCoordinator?.close();
@@ -2097,10 +2100,7 @@ test('Agent Graph supervisor wake waits for root idle and binds one durable exec
       source: 'host_api',
     });
 
-    const graphRun = await readInvocation(fixture.stores, 
-      fixture.sessionId,
-      graphAdmission!.runId,
-    );
+    const graphRun = await readInvocation(fixture.stores, fixture.sessionId, graphAdmission!.runId);
     assert.deepEqual(graphRun.opening.root, {
       kind: 'agent_graph_supervisor_wake',
       wakeId,
@@ -2512,7 +2512,10 @@ test('Agent Graph supervisor wake revalidates freshness before durable root admi
       await fixture.stores.agentRunStore.listRootTurnAdmissionsForRecovery(fixture.sessionId),
       [],
     );
-    assert.deepEqual(await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId), []);
+    assert.deepEqual(
+      await fixture.stores.runtimeEventStore.listSessionInvocations(fixture.sessionId),
+      [],
+    );
     assert.deepEqual(await fixture.stores.sessionStore.readMessages(fixture.sessionId), []);
     assert.equal(fixture.drainRequested(), false);
   } finally {
@@ -3017,7 +3020,8 @@ test('hosted linked child roots share admission, message, terminal, and stop aut
     const joinedInterrupted = await joinedInitial;
     assert.equal(interrupted.status, 'cancelled');
     assert.deepEqual(joinedInterrupted, interrupted);
-    const interruptedRun = await readInvocation(stores, 
+    const interruptedRun = await readInvocation(
+      stores,
       interrupted.childSessionId,
       interrupted.runId,
     );
@@ -4487,10 +4491,7 @@ test('post-start backend failure closes its owner without draining an unrelated 
       runId: unrelatedStarted.result.turn.runId,
     });
     assert.equal(unrelatedBackend.stopCount, 0);
-    const run = await readInvocation(fixture.stores, 
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -4665,10 +4666,7 @@ test('post-start backend AggregateError is contained after its failed terminal t
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
     assert.equal(fixture.drainRequested(), false);
 
-    const run = await readInvocation(fixture.stores, 
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -4684,7 +4682,9 @@ test('post-start backend AggregateError is contained after its failed terminal t
     if (queried.ok && queried.result.status === 'failed') {
       assert.equal(
         queried.result.failureMessage,
-        run.terminalEvent?.content?.kind === 'error' ? run.terminalEvent.content.message : undefined,
+        run.terminalEvent?.content?.kind === 'error'
+          ? run.terminalEvent.content.message
+          : undefined,
       );
       assert.ok(queried.result.failureMessage);
     }
@@ -4743,10 +4743,7 @@ test('post-start message owner cleanup failure drains after its failed terminal 
 
     await waitUntil(() => fixture.drainRequested());
     await waitUntil(() => fixture.coordinator.readRootState(fixture.sessionId).kind === 'idle');
-    const run = await readInvocation(fixture.stores, 
-      fixture.sessionId,
-      started.result.turn.runId,
-    );
+    const run = await readInvocation(fixture.stores, fixture.sessionId, started.result.turn.runId);
     const events = await fixture.stores.runtimeEventStore.readImmutableRuntimeEvents(
       fixture.sessionId,
       started.result.turn.runId,
@@ -5028,9 +5025,7 @@ async function seedPendingSafeBoundaryContinuation(
               orchestrationMode: sourceOrchestrationMode,
               orchestrationSource: 'session' as const,
               agentSwarmAuthorization:
-                sourceOrchestrationMode === 'swarm'
-                  ? ('session_mode' as const)
-                  : ('none' as const),
+                sourceOrchestrationMode === 'swarm' ? ('session_mode' as const) : ('none' as const),
             }
           : { orchestrationMode: 'default' as const, orchestrationSource: 'session' as const }),
       },

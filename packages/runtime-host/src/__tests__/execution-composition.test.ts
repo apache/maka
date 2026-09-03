@@ -467,9 +467,9 @@ test('production recovery preserves legacy Automation history and closes an orph
         kind: 'legacy_automation',
         automationId: 'historical-automation',
       });
-      const recoveredRun = (
-        await stores.runtimeEventStore.listSessionInvocations(pending.id)
-      ).find((candidate) => candidate.runId === 'legacy-automation-run');
+      const recoveredRun = (await stores.runtimeEventStore.listSessionInvocations(pending.id)).find(
+        (candidate) => candidate.runId === 'legacy-automation-run',
+      );
       assert.ok(recoveredRun);
       assert.equal(recoveredRun && runtimeInvocationOutcome(recoveredRun), 'failed');
       assert.deepEqual(recoveredRun?.opening.root, {

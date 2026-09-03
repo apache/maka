@@ -362,7 +362,7 @@ test('recovers a steering transcript message from the committed RuntimeEvent led
       runtimeEventStore: recoveredRuntimeEventStore,
       readMessages: (sessionId) => recoveredStore.readMessages(sessionId),
       appendMessage: (sessionId, message) => recoveredStore.appendMessage(sessionId, message),
-        newId: () => 'unused-id',
+      newId: () => 'unused-id',
       now: () => 10,
     });
 

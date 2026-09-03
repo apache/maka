@@ -2268,14 +2268,10 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.equal(rootComposition?.contextWindow, 32_768);
     assert.match(rootComposition?.baseSystemPromptHash ?? '', /^sha256:[a-f0-9]{64}$/u);
     assert.ok(rootComposition?.toolNames.includes('view_agent_graph'));
-    const wakeRuns = runs.filter(
-      (run) => run.opening.root.kind === 'agent_graph_supervisor_wake',
-    );
+    const wakeRuns = runs.filter((run) => run.opening.root.kind === 'agent_graph_supervisor_wake');
     assert.ok(wakeRuns.length > 0);
     assert.ok(wakeRuns.every((run) => runtimeInvocationOutcome(run) === 'completed'));
-    assert.ok(
-      wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'),
-    );
+    assert.ok(wakeRuns.every((run) => run.opening.configuration.orchestrationMode === 'graph'));
     assert.equal(liveResidencies, 0);
 
     const sessions = await execution.sessionStore.listForRecovery();
@@ -2285,7 +2281,9 @@ test('production Host executes and durably supervises an Agent Graph over a real
     assert.ok(child);
     assert.equal(child?.subagentRuntime?.profile, 'local_read');
     assert.equal(child?.subagentParent?.parentSessionId, session.id);
-    const childRuns = child ? await execution.runtimeEventStore.listSessionInvocations(child.id) : [];
+    const childRuns = child
+      ? await execution.runtimeEventStore.listSessionInvocations(child.id)
+      : [];
     assert.equal(childRuns.length, 1);
     assert.equal(childRuns[0] && runtimeInvocationOutcome(childRuns[0]), 'completed');
 

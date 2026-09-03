@@ -18,10 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import type {
-  RuntimeEvent,
-  RuntimeEventInvocationOpenedContent,
-} from '@maka/core/runtime-event';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import {
   buildInvocationOpenedEvent,
   type RuntimeInvocationRecord,

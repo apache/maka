@@ -202,7 +202,10 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Large'));
       for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
-        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, `run-${index}`, index));
+        await seedInvocation(
+          stores.runtimeEventStore,
+          runHeader(session.id, `run-${index}`, index),
+        );
       }
 
       const oversized = await coordinator.handlers['execution.inspect.query'](
@@ -303,7 +306,10 @@ describe('HostExecutionInspectCoordinator', () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Target Turn'));
       for (let index = 0; index <= EXECUTION_INSPECT_SESSION_MAX_RUNS; index += 1) {
-        await seedInvocation(stores.runtimeEventStore, runHeader(session.id, `unrelated-${index}`, index));
+        await seedInvocation(
+          stores.runtimeEventStore,
+          runHeader(session.id, `unrelated-${index}`, index),
+        );
       }
       const runId = 'target-run';
       const turnId = `turn-${runId}`;
@@ -447,7 +453,10 @@ describe('HostExecutionInspectCoordinator', () => {
   test('keeps earlier Session history reachable when one projected page exceeds the result limit', async () => {
     await withCoordinator(async ({ stores, coordinator }) => {
       const session = await stores.sessionStore.create(sessionInput('Oversized trace result'));
-      await seedInvocation(stores.runtimeEventStore, runHeader(session.id, 'oversized-result-run', 2));
+      await seedInvocation(
+        stores.runtimeEventStore,
+        runHeader(session.id, 'oversized-result-run', 2),
+      );
       for (let index = 0; index < 128; index += 1) {
         await stores.runtimeEventStore.appendRuntimeEvent(session.id, 'oversized-result-run', {
           ...runtimeEvent(session.id, 'oversized-result-run', index + 2),

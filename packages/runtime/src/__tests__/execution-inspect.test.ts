@@ -22,11 +22,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
-import type {
-  AgentRunEvent,
-  AgentRunEventType,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunEventType, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { buildInvocationOpenedEvent } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { createSessionStore } from '@maka/storage/session-store';

@@ -598,7 +598,11 @@ function runInvocation(input: {
         toolMode: 'direct',
       },
       root: input.wake
-        ? { kind: 'agent_graph_supervisor_wake', wakeId: input.wake.wakeId, attemptId: input.wake.attemptId }
+        ? {
+            kind: 'agent_graph_supervisor_wake',
+            wakeId: input.wake.wakeId,
+            attemptId: input.wake.attemptId,
+          }
         : { kind: 'user' },
       source: { kind: 'fresh' },
     },

@@ -534,7 +534,12 @@ function stream(run: RuntimeInvocationRecord, operatorId: string, events: readon
   };
 }
 
-function runtimeEvent(run: RuntimeInvocationRecord, id: string, ts: number, text: string): RuntimeEvent {
+function runtimeEvent(
+  run: RuntimeInvocationRecord,
+  id: string,
+  ts: number,
+  text: string,
+): RuntimeEvent {
   return {
     id,
     invocationId: run.invocationId,

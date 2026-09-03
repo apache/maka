@@ -330,7 +330,6 @@ test('stops an oversized active projection before retaining the full RuntimeEven
   assert.equal(visited, 8_193);
 });
 
-
 function runtimeEvent(sessionId: string, overrides: Partial<RuntimeEvent>): RuntimeEvent {
   return {
     id: 'event-1',

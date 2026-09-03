@@ -29,7 +29,10 @@ import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
-import { buildInvocationOpenedEvent, isSessionInlineInvocation } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  isSessionInlineInvocation,
+} from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationLineage } from '@maka/core/runtime-event';
 import {

@@ -926,10 +926,7 @@ async function seedSource(
       persistedContinuationChild?.opening.lineage?.agentId,
       continuationChild.opening?.lineage?.agentId,
     );
-    assert.deepEqual(
-      persistedContinuationChild?.opening.source,
-      continuationChild.opening?.source,
-    );
+    assert.deepEqual(persistedContinuationChild?.opening.source, continuationChild.opening?.source);
     const artifact = await artifacts.create({
       id: 'source-artifact',
       sessionId: source.id,
@@ -1793,7 +1790,10 @@ async function verifyDurableBranch(
     );
     assert.equal((await artifacts.listPage('revision-target', { offset: 0, limit: 10 })).total, 0);
     assert.deepEqual(await todos.readOrBootstrap('revision-target'), { items: [] });
-    assert.deepEqual(await execution.runtimeEventStore.listSessionInvocations('revision-target'), []);
+    assert.deepEqual(
+      await execution.runtimeEventStore.listSessionInvocations('revision-target'),
+      [],
+    );
     await assert.rejects(
       () => execution.sessionStore.readHeaderSnapshot('revision-target'),
       /not found/i,
@@ -1930,7 +1930,8 @@ async function verifyDurableBranch(
     assert.equal(graphResult.content.items[0]?.childSessionId, graphChildSessionId);
     assert.equal(graphResult.content.items[0]?.runId, 'graph-child-run');
     assert.deepEqual(graphResult.content.items[0]?.artifactIds, ['graph-child-artifact']);
-    const graphRevisionRuns = await execution.runtimeEventStore.listSessionInvocations(graphRevisionTargetId);
+    const graphRevisionRuns =
+      await execution.runtimeEventStore.listSessionInvocations(graphRevisionTargetId);
     const graphRevisionRun = graphRevisionRuns.find((run) => run.turnId === 'linked-turn');
     assert.ok(graphRevisionRun);
     const graphRuntimeResult = (

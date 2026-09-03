@@ -23,11 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type {
-  AgentRunEvent,
-  AgentRunStore,
-  EmittedAgentRunEvent,
-} from '@maka/core/agent-run';
+import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { readLatestContextDiagnostics } from '../context-diagnostics.js';
 import { readLatestContextSnapshot } from '../latest-context-snapshot.js';
@@ -1019,11 +1015,9 @@ function runStore(
   runs: Array<{ runId: string; events: AgentRunEvent[] }>,
 ): Pick<AgentRunStore, 'readEvents'> {
   return {
-    readEvents: async (_sessionId, runId) =>
-      runs.find((run) => run.runId === runId)?.events ?? [],
+    readEvents: async (_sessionId, runId) => runs.find((run) => run.runId === runId)?.events ?? [],
   };
 }
-
 
 function attemptEvent(
   runId: string,

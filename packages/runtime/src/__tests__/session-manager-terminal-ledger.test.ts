@@ -280,10 +280,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const [run] = await runStore.listSessionInvocations(session.id);
     if (!run) throw new Error('run was not recorded');
     assert.strictEqual(runtimeInvocationOutcome(run), 'cancelled');
-    assert.strictEqual(
-      run.terminalEvent?.actions?.stateDelta?.abortSource,
-      'renderer.stop_button',
-    );
+    assert.strictEqual(run.terminalEvent?.actions?.stateDelta?.abortSource, 'renderer.stop_button');
     const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
       isTerminalRuntimeEvent,
     );
@@ -350,10 +347,7 @@ describe('SessionManager terminal ledger invariants', () => {
     const [run] = await runStore.listSessionInvocations(session.id);
     if (!run) throw new Error('run was not recorded');
     assert.strictEqual(runtimeInvocationOutcome(run), 'cancelled');
-    assert.strictEqual(
-      run.terminalEvent?.actions?.stateDelta?.abortSource,
-      'renderer.stop_button',
-    );
+    assert.strictEqual(run.terminalEvent?.actions?.stateDelta?.abortSource, 'renderer.stop_button');
     const terminalEvents = (await runStore.readRuntimeEvents(session.id, run.runId)).filter(
       isTerminalRuntimeEvent,
     );
@@ -1198,9 +1192,7 @@ describe('SessionManager terminal ledger invariants', () => {
       'missing_terminal_event',
     );
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.recovered, undefined);
-    await new RuntimeReadModel({ runtimeEventStore: runStore }).getSessionView(
-      session.id,
-    );
+    await new RuntimeReadModel({ runtimeEventStore: runStore }).getSessionView(session.id);
   });
 
   test('direct AgentRun stop synthesizes a cancelled terminal fact when no terminal event was recorded', async () => {
@@ -1254,9 +1246,7 @@ describe('SessionManager terminal ledger invariants', () => {
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.abortSource, 'renderer.stop_button');
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.failureClass, undefined);
     assert.strictEqual(terminalEvents[0]?.actions?.stateDelta?.recovered, undefined);
-    await new RuntimeReadModel({ runtimeEventStore: runStore }).getSessionView(
-      session.id,
-    );
+    await new RuntimeReadModel({ runtimeEventStore: runStore }).getSessionView(session.id);
   });
 
   test('a stop settlement racing finalize commits exactly one terminal run event', async () => {
@@ -2061,7 +2051,6 @@ describe('SessionManager terminal ledger invariants', () => {
       ['rt-completed', 'rt-failed'],
     );
   });
-
 });
 
 type ScriptEvent =

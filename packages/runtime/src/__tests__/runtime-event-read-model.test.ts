@@ -52,9 +52,7 @@ function endedAs(
     terminalEvent: {
       ...invocation.terminalEvent!,
       status,
-      ...(failureClass
-        ? { actions: { endInvocation: true, stateDelta: { failureClass } } }
-        : {}),
+      ...(failureClass ? { actions: { endInvocation: true, stateDelta: { failureClass } } } : {}),
     },
   };
 }
@@ -1340,7 +1338,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     // owns no chat row, so a broken one costs a reader nothing the session view
     // would otherwise show.
     test(`a sandbox boundary ${name} stays unclaimed`, () => {
-      const out = projectRuntimeEventsToStoredMessages([makeEvent()], { invocations: [invocation] });
+      const out = projectRuntimeEventsToStoredMessages([makeEvent()], {
+        invocations: [invocation],
+      });
 
       assert.deepStrictEqual(out.messages, []);
       assert.deepStrictEqual(
@@ -2176,7 +2176,9 @@ describe('compareRuntimeReadModelMessages', () => {
   });
 
   test('rejects missing tool result and assistant text cases', () => {
-    const projected = projectRuntimeEventsToStoredMessages(baseEvents(), { invocations: [invocation] });
+    const projected = projectRuntimeEventsToStoredMessages(baseEvents(), {
+      invocations: [invocation],
+    });
     const missing = projected.messages.filter(
       (message) => message.type !== 'tool_result' && message.type !== 'assistant',
     );

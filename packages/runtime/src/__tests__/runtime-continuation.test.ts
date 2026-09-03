@@ -26,10 +26,7 @@ import {
   runtimePrefixSegment,
   type ImmutableRuntimePrefixV1,
 } from '@maka/core/runtime-boundary';
-import type {
-  RuntimeEvent,
-  RuntimeEventInvocationOpenedContent,
-} from '@maka/core/runtime-event';
+import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 
 import { createLocalContinuationSafetyInspector } from '../continuation-safety.js';
