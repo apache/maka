@@ -24,6 +24,7 @@ import type { ClientCapabilityProvider } from '@maka/runtime-host/client';
 import {
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
+  clientCapabilityEntityId,
   decodeClientCapabilityReplaceInput,
   type ClientCapabilityCallResult,
   type ClientCapabilityOffer,
@@ -57,7 +58,7 @@ export function createMcpCapabilityProvider(
   for (const source of tools) {
     const descriptor = projectMcpTool(
       source.descriptor,
-      capabilityEntityId(source.descriptor.serverId),
+      clientCapabilityEntityId(source.descriptor.serverId),
     );
     const identity = `${descriptor.serverId}\0${descriptor.name}`;
     if (projectedIdentities.has(identity)) {
@@ -115,18 +116,11 @@ export function createMcpCapabilityProvider(
 function projectMcpTool(tool: McpToolDescriptor, wireServerId: string) {
   return {
     serverId: wireServerId,
-    name: capabilityEntityId(tool.name),
+    name: clientCapabilityEntityId(tool.name),
     ...(tool.description ? { description: tool.description } : {}),
     inputSchema: structuredClone(tool.inputSchema),
     ...(tool.annotations ? { annotations: { ...tool.annotations } } : {}),
   };
-}
-
-function capabilityEntityId(value: string): string {
-  if (/^[A-Za-z0-9_-]{1,128}$/u.test(value)) return value;
-  const label = value.replace(/[^A-Za-z0-9_-]+/gu, '_').slice(0, 103) || 'mcp';
-  const digest = createHash('sha256').update(value).digest('hex').slice(0, 24);
-  return `${label}_${digest}`;
 }
 
 function projectMcpResult(result: McpCallResult): ClientCapabilityCallResult {

@@ -1,5 +1,7 @@
 {
-  "epoch": 107,
-  "files": ["packages/runtime-host/src/protocol/client-capability.ts"],
-  "reason": "Pure refactor: extracts decodeClientCapabilityToolInputSchema and exports decodeClientCapabilityToolDescriptor so the desktop native capability path can share the same decoder (#4490). Wire shape, validation limits, and error behavior are unchanged; older and newer peers decode identical frames."
+  "epoch": 109,
+  "files": [
+    "packages/runtime-host/src/protocol/client-capability.ts"
+  ],
+  "reason": "Pure additions: extracts decodeClientCapabilityToolInputSchema and exports decodeClientCapabilityToolDescriptor so the desktop native capability path can share the same decoder, and exports clientCapabilityEntityId for wire-safe identity normalization (#4490). Wire shape, validation limits, and error behavior are unchanged; older and newer peers decode identical frames."
 }

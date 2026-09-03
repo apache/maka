@@ -27,7 +27,12 @@ import type {
   McpToolBinding,
   McpToolDescriptor,
 } from '@maka/core/mcp';
-import { buildMcpTools, mcpProxyToolName, type McpToolProvider } from '../mcp-tools.js';
+import {
+  buildMcpTools,
+  buildMcpToolsWithIdentities,
+  mcpProxyToolName,
+  type McpToolProvider,
+} from '../mcp-tools.js';
 import { selectCollaborationTools } from '../plan-mode.js';
 
 test('buildMcpTools projects discovery, abort, and rich model output', async () => {
@@ -268,6 +273,28 @@ test('mcpProxyToolName is stable, provider-safe, and bounded to 64 chars', () =>
   assert.notEqual(
     first,
     mcpProxyToolName('服 务/'.repeat(20), 'tool.with punctuation '.repeat(20) + 'different'),
+  );
+});
+
+test('buildMcpToolsWithIdentities pairs each proxy tool with its source identity', () => {
+  const provider = fakeProvider(
+    [
+      boundTool(descriptor('read server', 'read.item', true), binding('read-binding')),
+      boundTool(descriptor('write', 'mutate-item', undefined), binding('write-binding')),
+    ],
+    async () => ({ content: [] }),
+  );
+  const identified = buildMcpToolsWithIdentities(provider);
+  assert.deepEqual(
+    identified.map(({ tool, serverId, toolName }) => [tool.name, serverId, toolName]),
+    [
+      ['mcp__read_server__read_item', 'read server', 'read.item'],
+      ['mcp__write__mutate-item', 'write', 'mutate-item'],
+    ],
+  );
+  assert.deepEqual(
+    buildMcpTools(provider).map((tool) => tool.name),
+    identified.map(({ tool }) => tool.name),
   );
 });
 

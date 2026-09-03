@@ -30,6 +30,7 @@ import {
   CLIENT_CAPABILITY_MAX_OFFERS,
   CLIENT_CAPABILITY_MAX_TOOLS,
   CLIENT_CAPABILITY_MAX_TOOLS_PER_OFFER,
+  clientCapabilityEntityId,
   decodeClientCapabilityReplaceInput,
   decodeClientCapabilityToolDescriptor,
   type ClientCapabilityCallFrame,
@@ -51,11 +52,18 @@ const COMPUTER_USE_OFFER_ID = "desktop_computer_use";
 // Same wire length as the registrationId the Client Capability channel assigns.
 const MANIFEST_REGISTRATION_ID_PLACEHOLDER = "00000000-0000-4000-8000-000000000000";
 
+/** A tool published under its own wire identity instead of the group default. */
+export interface DesktopIdentifiedCapabilityTool {
+  readonly tool: MakaTool;
+  readonly serverId: string;
+  readonly toolName: string;
+}
+
 export interface DesktopCapabilityGroup {
   readonly offerId: string;
   readonly label: string;
   readonly description: string;
-  readonly tools: readonly MakaTool[];
+  readonly tools: readonly (MakaTool | DesktopIdentifiedCapabilityTool)[];
   /**
    * Marks a dynamically sourced group: tools the decoder rejects are omitted
    * with a diagnostic, the group may be chunked past the single-offer tool
@@ -489,13 +497,17 @@ function prepareCapabilityGroups(
   onDiagnostic?: (diagnostic: string) => void,
 ): PreparedDesktopCapabilityGroup[] {
   return groups.flatMap((group) => {
-    const tools = group.tools.flatMap((tool): PreparedDesktopCapabilityTool[] => {
+    const tools = group.tools.flatMap((entry): PreparedDesktopCapabilityTool[] => {
+      const tool = isIdentifiedEntry(entry) ? entry.tool : entry;
+      const identity = isIdentifiedEntry(entry)
+        ? { serverId: entry.serverId, toolName: entry.toolName }
+        : undefined;
       const declaredSchema = declaredToolInputSchema(tool);
       let descriptor: ClientCapabilityToolDescriptor;
       try {
         descriptor = Object.freeze(
           decodeClientCapabilityToolDescriptor(
-            capabilityToolDescriptor(group.offerId, tool, declaredSchema),
+            capabilityToolDescriptor(group.offerId, tool, declaredSchema, identity),
           ),
         );
       } catch (error) {
@@ -611,14 +623,21 @@ function manifestFitsBudget(
   );
 }
 
+function isIdentifiedEntry(
+  entry: MakaTool | DesktopIdentifiedCapabilityTool,
+): entry is DesktopIdentifiedCapabilityTool {
+  return 'tool' in entry;
+}
+
 function capabilityToolDescriptor(
   offerId: string,
   tool: MakaTool,
   inputSchema: Record<string, unknown>,
+  identity?: { readonly serverId: string; readonly toolName: string },
 ): ClientCapabilityToolDescriptor {
   return Object.freeze({
-    serverId: offerId,
-    name: tool.name,
+    serverId: clientCapabilityEntityId(identity?.serverId ?? offerId),
+    name: clientCapabilityEntityId(identity?.toolName ?? tool.name),
     description: tool.description,
     inputSchema,
     ...(tool.activityKind ? { activityKind: tool.activityKind } : {}),

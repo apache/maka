@@ -508,10 +508,28 @@ describe('Host Client Capability coordinator', () => {
       'done',
       sent,
     );
-    await registerSessionTools(coordinator, 'connection-a', 'registration-mcp', 'desktop_mcp', [
-      'fixture_echo',
-      'fixture_ping',
-    ]);
+    // Production shape: one offer per MCP server, descriptors carrying the
+    // real MCP identity.
+    const registered = await coordinator.handlers['client.capability.replace'](
+      {
+        registrationId: 'registration-mcp',
+        offers: [
+          {
+            offerId: 'desktop_mcp_fixture',
+            version: '1',
+            affinity: 'session',
+            hostPathAccess: 'none',
+            label: 'MCP: fixture',
+            tools: [
+              { serverId: 'fixture', name: 'echo', inputSchema: { type: 'object' } },
+              { serverId: 'fixture', name: 'ping', inputSchema: { type: 'object' } },
+            ],
+          },
+        ],
+      },
+      connectionContext('connection-a'),
+    );
+    assert.equal(registered.ok, true, JSON.stringify(registered));
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);
@@ -519,13 +537,13 @@ describe('Host Client Capability coordinator', () => {
 
     // accept -> approval -> admit -> execute: the provider is never admitted
     // before the approval resolves.
-    const preparedEcho = await prepare(tools.get('fixture_echo'), {}, 'tool-echo');
+    const preparedEcho = await prepare(tools.get('echo'), {}, 'tool-echo');
     assert.equal(approvalCount, 1);
     assert.equal(approvedTarget?.capability, 'desktop_mcp');
     assert.deepEqual(approvedTarget?.scope, {
       kind: 'mcp_tool',
-      serverId: 'desktop_mcp',
-      toolName: 'fixture_echo',
+      serverId: 'fixture',
+      toolName: 'echo',
     });
     assert.equal(
       sent.some((frame) => isRecord(frame) && frame.kind === 'client.capability.admitted'),
@@ -542,7 +560,7 @@ describe('Host Client Capability coordinator', () => {
 
     // The persisted Session Grant covers the approved tool without a new
     // approval...
-    const preparedEchoAgain = await prepare(tools.get('fixture_echo'), {}, 'tool-echo-again');
+    const preparedEchoAgain = await prepare(tools.get('echo'), {}, 'tool-echo-again');
     assert.equal(approvalCount, 1);
     assert.deepEqual(
       await preparedEchoAgain.execute(managedContext('tool-echo-again')),
@@ -550,12 +568,12 @@ describe('Host Client Capability coordinator', () => {
     );
 
     // ...while a sibling tool under the same offer needs its own grant.
-    const preparedPing = await prepare(tools.get('fixture_ping'), {}, 'tool-ping');
+    const preparedPing = await prepare(tools.get('ping'), {}, 'tool-ping');
     assert.equal(approvalCount, 2);
     assert.deepEqual(approvedTarget?.scope, {
       kind: 'mcp_tool',
-      serverId: 'desktop_mcp',
-      toolName: 'fixture_ping',
+      serverId: 'fixture',
+      toolName: 'ping',
     });
     assert.deepEqual(await preparedPing.execute(managedContext('tool-ping')), textResult('done'));
 
@@ -581,9 +599,13 @@ describe('Host Client Capability coordinator', () => {
       'done',
       sent,
     );
-    await registerSessionTools(coordinator, 'connection-a', 'registration-mcp', 'desktop_mcp', [
-      'fixture_echo',
-    ]);
+    await registerSessionTools(
+      coordinator,
+      'connection-a',
+      'registration-mcp',
+      'desktop_mcp_fixture',
+      ['echo'],
+    );
     assert.deepEqual(await coordinator.bindSession('session-a', 'connection-a'), { ok: true });
     const snapshot = coordinator.snapshotForSession('session-a');
     assert.ok(snapshot);

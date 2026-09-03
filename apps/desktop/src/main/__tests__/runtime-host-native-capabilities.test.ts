@@ -702,6 +702,69 @@ test('reports dynamic tools the decoder rejects instead of dropping them silentl
   assert.match(diagnostics[0] ?? '', /Invalid description/u);
 });
 
+test('publishes identified tools under their real normalized MCP identity', async () => {
+  const provider = createDesktopNativeCapabilityProvider({
+    browserTools: [],
+    resolveBrowserUrl: () => 'https://example.com/',
+    releaseBrowserSession() {},
+    computerUseTools: [] as never,
+    releaseComputerUseSession() {},
+    additionalGroups: () => [
+      {
+        offerId: 'desktop_mcp_fixture',
+        label: 'MCP: fixture',
+        description: 'MCP tools connected by this Desktop client.',
+        dynamic: true,
+        tools: [
+          {
+            tool: tool('mcp__fixture__echo', z.object({}), async () => 'echo result'),
+            serverId: 'fixture',
+            toolName: 'echo',
+          },
+          {
+            tool: tool('mcp__my_server__run', z.object({}), async () => 'run result'),
+            serverId: 'my.server',
+            toolName: 'run',
+          },
+        ],
+      },
+    ],
+  });
+
+  const published = provider.offers()[0]?.tools ?? [];
+  assert.equal(published[0]?.serverId, 'fixture');
+  assert.equal(published[0]?.name, 'echo');
+  // Unsafe identities are normalized to wire-safe entity ids.
+  assert.match(published[1]?.serverId ?? '', /^my_server_[0-9a-f]{24}$/u);
+  const normalizedServerId = published[1]?.serverId ?? assert.fail('Expected normalized serverId');
+
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp_fixture',
+        serverId: 'fixture',
+        toolName: 'echo',
+        arguments: {},
+      }),
+    ),
+    { content: [{ type: 'text', text: 'echo result' }] },
+  );
+  assert.deepEqual(
+    await call(
+      provider,
+      capabilityFrame({
+        offerId: 'desktop_mcp_fixture',
+        serverId: normalizedServerId,
+        toolName: 'run',
+        arguments: {},
+      }),
+    ),
+    { content: [{ type: 'text', text: 'run result' }] },
+  );
+  await provider.close();
+});
+
 test('chunks and degrades a dynamic capability group deterministically', () => {
   const mcpTools = Array.from({ length: 70 }, (_, index) =>
     tool(`mcp_tool_${String(index).padStart(3, '0')}`, z.object({}), async () => 'ok'),

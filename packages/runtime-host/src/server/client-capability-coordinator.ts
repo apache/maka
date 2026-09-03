@@ -66,7 +66,7 @@ import { clientCapabilityProviderId } from './client-capability-provider-id.js';
 const DEFAULT_CALL_TIMEOUT_MS = 150_000;
 const DESKTOP_BROWSER_SERVER_ID = 'desktop_browser';
 const DESKTOP_SETTINGS_SERVER_ID = 'desktop_settings';
-const DESKTOP_MCP_SERVER_ID = 'desktop_mcp';
+const DESKTOP_MCP_OFFER_PREFIX = 'desktop_mcp';
 const DESKTOP_BROWSER_TOOLS = new Set([
   'browser_navigate',
   'browser_snapshot',
@@ -1523,10 +1523,13 @@ function managedClientCapabilityGrantTarget(
       scope: Object.freeze({ kind: 'browser_origin', origin: url.origin }),
     });
   }
-  // Desktop MCP tools publish under a shared Desktop-owned server identity;
-  // chunking may spread one logical group across several offerIds, so the
-  // admission policy keys on the descriptor serverId rather than the offerId.
-  if (serverId === DESKTOP_MCP_SERVER_ID) {
+  // Desktop MCP tools publish one offer per MCP server (chunked past the
+  // single-offer tool limit), every offerId carrying the desktop_mcp prefix.
+  // The Session Grant scope takes the descriptor's real MCP server identity.
+  if (
+    tool.offerId === DESKTOP_MCP_OFFER_PREFIX ||
+    tool.offerId.startsWith(`${DESKTOP_MCP_OFFER_PREFIX}_`)
+  ) {
     if (evidence.kind !== 'none') {
       throw new Error('Desktop MCP admission does not accept scope evidence');
     }

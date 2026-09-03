@@ -45,7 +45,7 @@ import {
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_ID,
   SCHEDULED_TASK_NATIVE_EFFECT_SERVICE_VERSION,
 } from '@maka/runtime/scheduled-task-tools';
-import { buildMcpTools } from '@maka/runtime/mcp-tools';
+import { buildMcpToolsWithIdentities } from '@maka/runtime/mcp-tools';
 import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
@@ -64,7 +64,7 @@ import {
   openRuntimeHostPeerEndpointOwner,
   type RuntimeHostPeerEndpointOwner,
 } from '@maka/runtime-host/peer-reachability';
-import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
+import { clientCapabilityEntityId, type WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
 import { createWorkBoardStore } from "@maka/storage/work-board-store";
@@ -975,7 +975,13 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
       releaseBrowserSession,
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
-        const mcpTools = buildMcpTools(mcpManager);
+        const mcpTools = buildMcpToolsWithIdentities(mcpManager);
+        const mcpServers = new Map<string, typeof mcpTools>();
+        for (const identified of mcpTools) {
+          const server = mcpServers.get(identified.serverId);
+          if (server) server.push(identified);
+          else mcpServers.set(identified.serverId, [identified]);
+        }
         return [
           {
             offerId: "desktop_settings",
@@ -991,18 +997,20 @@ const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
               "Use durable Rive workflows through this Desktop client.",
             tools: [riveWorkflowTool],
           },
-          ...(mcpTools.length === 0
-            ? []
-            : [
-                {
-                  offerId: "desktop_mcp",
-                  label: "MCP",
-                  description:
-                    "Use MCP tools connected by this Desktop client.",
-                  tools: mcpTools,
-                  dynamic: true,
-                },
-              ]),
+          // One offer per MCP server keeps grant contracts server-scoped: a
+          // server change re-prompts only that server's tools.
+          ...[...mcpServers.keys()].sort().map((serverId) => ({
+            offerId: `desktop_mcp_${clientCapabilityEntityId(serverId, 116)}`,
+            label: `MCP: ${serverId}`.slice(0, 128),
+            description:
+              "Use MCP tools connected by this Desktop client.",
+            tools: (mcpServers.get(serverId) ?? []).map((identified) => ({
+              tool: identified.tool,
+              serverId: identified.serverId,
+              toolName: identified.toolName,
+            })),
+            dynamic: true as const,
+          })),
         ];
       },
       additionalServices: (scope) => [
