@@ -94,13 +94,6 @@ export interface CuPoint {
   y: number;
 }
 
-export interface CuRegion {
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-}
-
 export interface ComputerUseRect {
   x: number;
   y: number;
@@ -163,9 +156,6 @@ export interface ComputerUseBoundAction extends ComputerUseFrameIdentity {
    */
   presentationScreenPoint?: CuPoint;
 }
-
-export const CU_SCROLL_DIRECTIONS = ['up', 'down', 'left', 'right'] as const;
-export type CuScrollDirection = (typeof CU_SCROLL_DIRECTIONS)[number];
 
 export const CU_ACTION_TYPES = ['screenshot', 'type', 'key', 'wait'] as const;
 
@@ -683,9 +673,8 @@ const SEMANTIC_ACTIONS = new Set([
   'set_value',
   'select_text',
   'secondary_action',
-  // Scrolling an element moves what is on screen without changing any value.
-  // It is still a mutation of the target's state, and it is the semantic twin
-  // of the coordinate `scroll` that already sits in POINTER_ACTIONS.
+  // Scrolling an element moves what is on screen without changing any value,
+  // but it still mutates the target's UI state.
   'scroll_element',
   // A sequence of element actions is still element actions: same class, same
   // approval, one call.

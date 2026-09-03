@@ -24,7 +24,7 @@ import type {
   CuPresentationFence,
 } from '@maka/runtime/computer-use-types';
 
-export type CursorActionKind = 'move' | 'click' | 'drag' | 'scroll';
+export type CursorActionKind = 'click' | 'scroll';
 
 export interface CursorMoveInput {
   actionId: string;
@@ -151,7 +151,7 @@ export function createComputerUseOverlayHook(controller: OverlayCursorSink): CuO
         screenX: screenPoint.x,
         screenY: screenPoint.y,
         kind,
-        pulse: result.outcome.ok && (kind === 'click' || kind === 'drag'),
+        pulse: kind === 'click',
         // `complete` raises the cursor for the landing, so it has to know
         // where to come back down to.
         ...(context.targetWindowId !== undefined ? { targetWindowId: context.targetWindowId } : {}),

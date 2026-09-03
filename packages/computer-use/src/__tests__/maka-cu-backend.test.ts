@@ -94,6 +94,7 @@ const MALFORMED = process.env.MAKACU_MOCK_MALFORMED || '';
 const LAUNCH_ERROR = process.env.MAKACU_MOCK_LAUNCH_ERROR || '';
 const HANG_OBSERVE = process.env.MAKACU_MOCK_HANG_OBSERVE === '1';
 const TRUNCATED = process.env.MAKACU_MOCK_TRUNCATED === '1';
+const NO_FOCUSED_ELEMENT = process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT === '1';
 let DIFFERENCE_PRESENTATION = '';
 const LAUNCH_TOOK_FOREGROUND = process.env.MAKACU_MOCK_LAUNCH_FOREGROUND === '1';
 const WINDOW_ORIGIN_Y = Number(process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y || '25');
@@ -172,7 +173,7 @@ function snapshot(includeImage) {
       displayId: '69732928',
     },
     windowDigest: digest('window_' + snapshotSeq),
-    focusedElementToken: 'el_2',
+    focusedElementToken: NO_FOCUSED_ELEMENT ? null : 'el_2',
     selectedText: null,
     image: includeImage ? writeImage(id) : null,
     displays: [{
@@ -182,7 +183,10 @@ function snapshot(includeImage) {
       scaleFactor: 2,
     }],
     obscuringRects: [],
-    elements: [element(1, 'Fixture Window', false), element(2, 'Send', true)],
+    elements: [
+      element(1, 'Fixture Window', false),
+      element(2, 'Send', !NO_FOCUSED_ELEMENT),
+    ],
     truncated: { elements: TRUNCATED, depth: false },
   };
   if (DIFFERENCE_PRESENTATION && previousSnapshotId) {
@@ -406,6 +410,7 @@ function makeBackend(
     launchError?: string;
     hangObserve?: boolean;
     truncated?: boolean;
+    noFocusedElement?: boolean;
     differencePresentation?: 'no-change' | 'difference' | 'full';
     timeoutMs?: number;
     launchTookForeground?: boolean;
@@ -443,6 +448,7 @@ function makeBackend(
   process.env.MAKACU_MOCK_LAUNCH_ERROR = opts.launchError ?? '';
   process.env.MAKACU_MOCK_HANG_OBSERVE = opts.hangObserve ? '1' : '';
   process.env.MAKACU_MOCK_TRUNCATED = opts.truncated ? '1' : '';
+  process.env.MAKACU_MOCK_NO_FOCUSED_ELEMENT = opts.noFocusedElement ? '1' : '';
   process.env.MAKACU_MOCK_LAUNCH_FOREGROUND = opts.launchTookForeground ? '1' : '';
   process.env.MAKACU_MOCK_WINDOW_ORIGIN_Y = String(opts.windowOriginY ?? 25);
   const backend = createMakaCuBackend({
@@ -1246,6 +1252,22 @@ describe('maka-cu backend', () => {
     // `require`, which is the strict check the frame binding already earns.
     assert.equal(dispatch?.focusToken, 'el_2');
     assert.equal(dispatch?.focusPolicy, undefined);
+  });
+
+  it('refuses keyboard dispatch when the observation has no verified focus owner', async () => {
+    const { backend, logPath } = makeBackend({ noFocusedElement: true });
+    const observation = await observeFixture(backend);
+    const result = await backend.run({ type: 'key', text: 'Tab' }, signal(), {
+      ...RUN_CONTEXT,
+      boundAction: boundWindow(observation),
+    });
+
+    assert.equal(!result.outcome.ok && result.outcome.error, 'unsupported_action');
+    assert.match(
+      result.outcome.ok ? '' : result.outcome.message,
+      /no focused element.*element_id|click the field and observe again/i,
+    );
+    assert.equal(received(await readRecords(logPath), 'dispatch.key').length, 0);
   });
 
   it('refuses a key aimed at a control outside the quoted frame', async () => {

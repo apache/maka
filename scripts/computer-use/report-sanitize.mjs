@@ -73,15 +73,7 @@ const SAFE_ACTION_TYPES = new Set([
 const SAFE_TRACE_PATHS = new Set(['ax', 'cdp', 'cgevent', 'screenshot-detail']);
 const SAFE_TRACE_EFFECTS = new Set(['confirmed', 'unverifiable']);
 const SAFE_DISPATCH_ADDRESSES = new Set(['ax', 'px', 'semantic', 'none']);
-const SAFE_DISPATCH_TOOLS = new Set([
-  'click',
-  'set_value',
-  'page',
-  'press_key',
-  'scroll',
-  'drag',
-  'zoom',
-]);
+const SAFE_DISPATCH_TOOLS = new Set(['click', 'set_value', 'page', 'press_key', 'scroll']);
 
 function safeUrlOrigin(value) {
   try {

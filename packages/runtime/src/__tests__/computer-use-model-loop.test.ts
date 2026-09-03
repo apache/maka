@@ -195,6 +195,67 @@ describe('AiSdkBackend Computer Use model loop', () => {
       true,
     );
   });
+
+  test('a keyboard refusal reaches the next model step and the turn still completes', async () => {
+    const durable = createDurableTurnHarness({
+      turnId: 'turn-1',
+      text: 'Try the requested key and report the result.',
+    });
+    const backendCalls: string[] = [];
+    const computerBackend = fakeComputerBackend({ current: '' }, backendCalls);
+    const [computerTool] = buildComputerUseTools({ backend: computerBackend });
+    let modelStep = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        modelStep += 1;
+        const chunks =
+          modelStep === 1
+            ? toolCall('observe', {
+                action: 'observe',
+                app: 'pid:42',
+                window_id: 7,
+              })
+            : modelStep === 2
+              ? (() => {
+                  const observation = latestObservation(options.prompt);
+                  return toolCall('key', {
+                    action: 'key',
+                    observation_id: observation.observation_id,
+                    text: 'Tab',
+                  });
+                })()
+              : (() => {
+                  assert.match(stringsIn(options.prompt).join('\n'), /unsupported_action/);
+                  return textCompletion('The keyboard action was refused.');
+                })();
+        return {
+          stream: simulateReadableStream({
+            chunks,
+            initialDelayInMs: null,
+            chunkDelayInMs: null,
+          }),
+        };
+      },
+    });
+    const runtime = createRuntime({
+      model,
+      computerTool,
+      messages: [],
+      telemetry: [],
+      durable,
+    });
+
+    const events = await drainWithDurableTurn(runtime.send(durable.sendInput()), durable);
+
+    assert.equal(modelStep, 3);
+    assert.deepEqual(backendCalls, ['list_apps', 'observe', 'key']);
+    assert.equal(events.at(-1)?.type, 'complete');
+    const textComplete = [...events].reverse().find((event) => event.type === 'text_complete');
+    assert.equal(
+      textComplete?.type === 'text_complete' ? textComplete.text : undefined,
+      'The keyboard action was refused.',
+    );
+  });
 });
 
 function fakeComputerBackend(value: { current: string }, calls: string[]): CuDispatchBackend {

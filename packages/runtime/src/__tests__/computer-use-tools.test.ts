@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { CU_TOOL_ACTION_TYPES, type CuAction } from '@maka/core/computer-use';
+import {
+  computerUseApprovalSummary,
+  CU_TOOL_ACTION_TYPES,
+  type CuAction,
+} from '@maka/core/computer-use';
 import { zodSchema } from 'ai';
 import {
   adaptToCuAction,
@@ -911,6 +915,44 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         element_id: '5',
       },
     );
+  });
+
+  test('keyboard actions reach approval as observation-bound keyboard mutations', async () => {
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () => observation();
+    const [tool] = buildComputerUseTools({ backend });
+    const observed = (await tool.impl(
+      { action: 'observe', app: 'Fixture', window_id: 7 } as never,
+      ctx(),
+    )) as { text: string };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+
+    for (const args of [
+      { action: 'type', observation_id: observationId, text: 'hello' },
+      { action: 'key', observation_id: observationId, text: 'Tab' },
+      { action: 'press_key', observation_id: observationId, text: 'Return' },
+    ] as const) {
+      const permissionArgs = tool.permissionArgs?.(args as never, {
+        sessionId: 's1',
+        turnId: 't1',
+        toolCallId: `approve-${args.action}`,
+      });
+      assert.deepEqual(permissionArgs, {
+        ...args,
+        app: 'Fixture',
+        window_id: 7,
+      });
+      assert.deepEqual(computerUseApprovalSummary(permissionArgs), {
+        action: args.action,
+        approvalClass: 'keyboard_mutation',
+        rememberForTurnAllowed: true,
+        app: 'Fixture',
+        windowId: 7,
+        observationId,
+      });
+    }
   });
 
   test('an element action may repeat the target it already named, and the host still resolves it', async () => {
@@ -2100,6 +2142,57 @@ describe('buildComputerUseTools — the `maka_computer` MakaTool', () => {
         action: 'click_element',
         observation_id: observationId,
         element_id: '5',
+      } as never,
+      ctx(),
+    );
+    await entered;
+
+    tools.clearSession('s1');
+    release();
+
+    const result = (await pending) as { text: string; error?: string };
+    assert.equal(result.error, 'outcome_unknown');
+    assert.match(result.text, /outcome_unknown/);
+    assert.doesNotMatch(result.text, /user_stopped|no_active_frame/);
+    assert.equal(tools.sessionEvents.snapshot('s1').status, 'user_stopped');
+  });
+
+  test('clearSession cannot mask a delivered keyboard mutation outcome', async () => {
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const backend = fakeBackend() as CuDispatchBackend & {
+      observeApp: NonNullable<CuDispatchBackend['observeApp']>;
+    };
+    backend.observeApp = async () => observation();
+    backend.run = async () => {
+      started();
+      await gate;
+      return {
+        outcome: {
+          ok: false,
+          error: 'capture_failed',
+          message: 'keyboard verification failed after delivery',
+          completedSubSteps: 1,
+        },
+      };
+    };
+    const tools = buildComputerUseTools({ backend });
+    const [tool] = tools;
+    const observed = (await tool.impl({ action: 'observe', app: 'Fixture' } as never, ctx())) as {
+      text: string;
+    };
+    const observationId = JSON.parse(observed.text).observation_id as string;
+    const pending = tool.impl(
+      {
+        action: 'key',
+        observation_id: observationId,
+        text: 'Tab',
       } as never,
       ctx(),
     );
