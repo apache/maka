@@ -36,7 +36,6 @@ import {
   VStack,
 } from '@astryxdesign/core';
 import { Collapsible } from '@astryxdesign/core/Collapsible';
-import { Search } from '@maka/ui/icons';
 import {
   Button,
   FormLayout,
@@ -92,6 +91,8 @@ type ManagedOnboardingPhase =
       readonly selectedIds: readonly string[];
       /** The model new chats start on. Always one of `selectedIds`. */
       readonly defaultId: string;
+      /** The picker's search text; it belongs to this step and leaves with it. */
+      readonly filter: string;
     };
 
 /** Past this many models the picker needs a filter to be usable. */
@@ -124,7 +125,6 @@ export function AddProviderForm(props: {
   const [requestHeaders, setRequestHeaders] = useState<RequestHeaderDraft[]>([]);
   const [requestBodyText, setRequestBodyText] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [modelFilter, setModelFilter] = useState('');
   const [formState, setFormState] = useState<{
     readonly managedPhase: ManagedOnboardingPhase;
     readonly error: ProviderFormError | null;
@@ -163,7 +163,6 @@ export function AddProviderForm(props: {
 
   function resetManagedVerification(options?: { clearKey?: boolean }) {
     setManagedPhase({ kind: 'input' });
-    setModelFilter('');
     if (options?.clearKey) setApiKey('');
   }
 
@@ -248,6 +247,7 @@ export function AddProviderForm(props: {
         defaultId: selectedIds.includes(recommendedDefaultModel)
           ? recommendedDefaultModel
           : selectedIds[0]!,
+        filter: '',
       });
     } catch (err) {
       if (addProviderMountedRef.current) {
@@ -489,7 +489,8 @@ export function AddProviderForm(props: {
   ) : null;
 
   if (usesApiKeyDialog && managedPhase.kind === 'models') {
-    const normalizedFilter = modelFilter.trim().toLocaleLowerCase();
+    const normalizedFilter = managedPhase.filter.trim().toLocaleLowerCase();
+    const setFilter = (filter: string) => setManagedPhase({ ...managedPhase, filter });
     const showsFilter = managedPhase.models.length > MODEL_FILTER_THRESHOLD;
     const visibleModels = managedPhase.models.filter((model) =>
       !normalizedFilter ||
@@ -540,12 +541,11 @@ export function AddProviderForm(props: {
         </HStack>
         {showsFilter && (
           <TextInput
-            value={modelFilter}
-            onChange={setModelFilter}
+            value={managedPhase.filter}
+            onChange={setFilter}
             placeholder={copy.onboardingSearchModels}
             label={copy.onboardingSearchModels}
             isLabelHidden
-            startIcon={Search}
             hasClear
             isDisabled={busy}
           />
@@ -554,7 +554,7 @@ export function AddProviderForm(props: {
           <EmptyState
             isCompact
             title={copy.onboardingNoModelsMatch}
-            actions={<Button variant="ghost" size="sm" label={copy.onboardingClearAll} onClick={() => setModelFilter('')} />}
+            actions={<Button variant="ghost" size="sm" label={copy.onboardingClearAll} onClick={() => setFilter('')} />}
           />
         ) : (
           <CheckboxList

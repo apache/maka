@@ -17,10 +17,10 @@
  * under the License.
  */
 
-import type { ReactNode } from 'react';
 import {
   Banner,
   EmptyState,
+  Heading,
   HStack,
   List,
   ListItem,
@@ -38,7 +38,6 @@ import { Button, TextInput, useUiLocale } from '@maka/ui';
 import { AddProviderForm } from './provider-add-form';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { OAuthLoginPanel, useOAuthCards, type OAuthCard, type OAuthCardId } from './provider-oauth-section';
-import { SettingsSection } from './settings-section';
 import {
   getProviderSettingsCopy,
   type ApiKeyOnboardingBridge,
@@ -77,7 +76,7 @@ const CATALOG_GROUPS: readonly ProviderCatalogGroup[] = ['recommended', 'plans',
 
 /**
  * Level 2: the provider catalog. One search field over everything, and below
- * it the providers as labeled groups — the same 推荐 / 模型计划 / API / 聚合
+ * it the providers as labeled groups — the same 推荐 / 订阅计划 / API / 聚合
  * / 本地 vocabulary the registry already carries, laid out the way every other
  * settings page lays out its groups. A category picker used to stand beside
  * the search field; the groups make it redundant, because scrolling past a
@@ -85,19 +84,44 @@ const CATALOG_GROUPS: readonly ProviderCatalogGroup[] = ['recommended', 'plans',
  *
  * Typing collapses the groups into one flat list: a search is asking "where
  * is X", and the answer should not be spread across five headings.
+ *
+ * The `shortlist` mode is the recommended group alone, under its own heading
+ * and without the search field: the empty connection list shows it so a first
+ * run is one click from a provider's form. It is a mode of this component
+ * rather than a sibling because both need the same account-card query, and
+ * the architecture ledger holds this file to one such call.
  */
 export function ProviderCatalogPage(props: {
-  filter: CatalogFilter;
   connections: readonly LlmConnection[];
-  onFilterChange(filter: CatalogFilter): void;
   onPick(target: SetupTarget): void;
-}) {
+} & (
+  | { mode: 'catalog'; filter: CatalogFilter; onFilterChange(filter: CatalogFilter): void }
+  | { mode: 'shortlist' }
+)) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).panel;
   const oauthCopy = getProviderSettingsCopy(locale).oauthSection;
-  const { query } = props.filter;
+  const query = props.mode === 'catalog' ? props.filter.query : '';
   const normalizedQuery = query.trim();
   const oauth = useOAuthCards({ query: normalizedQuery, connections: props.connections });
+  const staleBanner = oauth.refreshError && (
+    <Banner status="warning" role="alert" title={oauthCopy.staleState} description={oauth.refreshError} />
+  );
+
+  if (props.mode === 'shortlist') {
+    return (
+      <VStack gap={4}>
+        {staleBanner}
+        <ProviderCatalogRows
+          title={copy.recommended}
+          locale={locale}
+          cards={oauth.cards}
+          providers={providersMatching(RECOMMENDED_PROVIDER_TYPES, '', locale)}
+          onPick={props.onPick}
+        />
+      </VStack>
+    );
+  }
 
   const searchField = (
     <TextInput
@@ -117,9 +141,7 @@ export function ProviderCatalogPage(props: {
     return (
       <VStack gap={4} data-maka-contract="provider-catalog">
         {searchField}
-        {oauth.refreshError && (
-          <Banner status="warning" role="alert" title={oauthCopy.staleState} description={oauth.refreshError} />
-        )}
+        {staleBanner}
         {isEmpty ? (
           // Filter empty (DESIGN.md §10 tier 1): a filter no-match always carries
           // the clear action, on any tier — the user must be able to exit.
@@ -136,7 +158,7 @@ export function ProviderCatalogPage(props: {
             )}
           />
         ) : (
-          <ProviderCatalogRows cards={oauth.cards} providers={providers} onPick={props.onPick} />
+          <ProviderCatalogRows locale={locale} cards={oauth.cards} providers={providers} onPick={props.onPick} />
         )}
       </VStack>
     );
@@ -145,9 +167,7 @@ export function ProviderCatalogPage(props: {
   return (
     <VStack gap={8} data-maka-contract="provider-catalog">
       {searchField}
-      {oauth.refreshError && (
-        <Banner status="warning" role="alert" title={oauthCopy.staleState} description={oauth.refreshError} />
-      )}
+      {staleBanner}
       {CATALOG_GROUPS.map((group) => {
         const providers = group === 'recommended'
           ? providersMatching(RECOMMENDED_PROVIDER_TYPES, '', locale)
@@ -155,41 +175,36 @@ export function ProviderCatalogPage(props: {
         const cards = group === 'recommended' ? oauth.cards : [];
         if (providers.length === 0 && cards.length === 0) return null;
         return (
-          <SettingsSection key={group} title={copy.groups[group]} variant="bare">
-            <ProviderCatalogRows cards={cards} providers={providers} onPick={props.onPick} />
-          </SettingsSection>
+          <ProviderCatalogRows
+            key={group}
+            title={copy.groups[group]}
+            locale={locale}
+            cards={cards}
+            providers={providers}
+            onPick={props.onPick}
+          />
         );
       })}
     </VStack>
   );
 }
 
-/** The recommended providers, for surfaces that show a shortlist instead of the catalog. */
-export function useRecommendedProviders(connections: readonly LlmConnection[]): {
-  cards: OAuthCard[];
-  providers: ProviderType[];
-} {
-  const locale = useUiLocale();
-  const oauth = useOAuthCards({ connections });
-  return { cards: oauth.cards, providers: providersMatching(RECOMMENDED_PROVIDER_TYPES, '', locale) };
-}
-
 /**
  * One list of provider rows: account sign-ins first, then keyed providers.
- * The catalog renders one per group; the empty connection list renders one
- * with the recommended shortlist, so a first run is a single click away from
- * a provider's form.
+ * `title` is the group heading, rendered by the List itself so the list is
+ * labelled by it.
  */
-export function ProviderCatalogRows(props: {
+function ProviderCatalogRows(props: {
+  title?: string;
+  locale: 'zh' | 'en';
   cards: readonly OAuthCard[];
   providers: readonly ProviderType[];
   onPick(target: SetupTarget): void;
-  header?: ReactNode;
 }) {
-  const locale = useUiLocale();
+  const { locale } = props;
   const providerCopy = getProviderSettingsCopy(locale);
   return (
-    <List hasDividers header={props.header}>
+    <List hasDividers header={props.title && <Heading level={3}>{props.title}</Heading>}>
       {props.cards.map((card) => (
         <ListItem
           key={card.id}

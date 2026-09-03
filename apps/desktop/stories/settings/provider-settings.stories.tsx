@@ -755,6 +755,18 @@ export const ProblemConnections: Story = {
   render: () => <ProviderStory bridge={createBridge({ connections: problemConnections, defaultSlug: 'zai-live' })} />,
 };
 
+// Real path: first run — no connection yet, so the list offers the recommended
+// providers as rows, one click from a provider's form.
+export const EmptyProviders: Story = {
+  render: () => <ProviderStory bridge={createBridge({ connections: [] })} />,
+  play: async ({ canvasElement }) => {
+    await waitFor(() => {
+      expect(canvasElement.querySelector('.providerCatalogRow[data-provider="opencode-free"]')).not.toBeNull();
+    }, { timeout: 5_000 });
+    expect(canvasElement.querySelector('[data-maka-contract="provider-catalog"]')).toBeNull();
+  },
+};
+
 // Real path: 设置 → 模型 → click a connection row — the detail page it routes to.
 export const ConnectionDetailPage: Story = {
   render: () => (

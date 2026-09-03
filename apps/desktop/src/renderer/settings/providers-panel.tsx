@@ -22,12 +22,15 @@ import {
   Badge,
   Banner,
   Button,
+  Divider,
   EmptyState,
+  Heading,
   HStack,
   List,
   ListItem,
   Skeleton,
   StatusDot,
+  Text,
   VStack,
 } from '@astryxdesign/core';
 import { ICON_SIZE, ChevronRight, Cpu } from '@maka/ui/icons';
@@ -43,9 +46,7 @@ import { connectionChipStatus } from './provider-connection-status';
 import {
   CATALOG_INITIAL_FILTER,
   ProviderCatalogPage,
-  ProviderCatalogRows,
   ProviderSetupPage,
-  useRecommendedProviders,
   type CatalogFilter,
   type CreatedOAuthConnectionIdentity,
   type SetupTarget,
@@ -54,7 +55,6 @@ import { isRetiredProvider } from '@maka/core/provider-registry';
 import { ConnectionDetail } from './provider-connection-detail';
 import { useSettingsRouteFocus } from './settings-route-focus';
 import { SettingsRouteHeader } from './settings-route-header';
-import { SettingsSection } from './settings-section';
 import { ProviderLogo, providerDisplay } from './provider-display';
 import { oauthPanelSubtitle } from './provider-oauth-section';
 import {
@@ -413,6 +413,7 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
             subtitle={copy.addHelp}
           />
           <ProviderCatalogPage
+            mode="catalog"
             filter={catalogFilter}
             connections={connections}
             onFilterChange={setCatalogFilter}
@@ -541,22 +542,29 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
             />
           ) : null}
           {/* The list is a labeled group like every other settings page: what
-              it holds, why it matters, and the one group-level action. */}
-          <SettingsSection
-            title={copy.connections}
-            description={copy.connectionsHelp}
-            variant="bare"
-            action={(
-              <Button
-                ref={addButtonRef}
-                variant="primary"
-                label={copy.addConnection}
-                onClick={openCatalog}
-                isDisabled={addBlocked}
-                data-maka-contract="add-connection"
-              />
-            )}
-          >
+              it holds, why it matters, and the one group-level action. This is
+              SettingsSection's header written out: the architecture ledger
+              freezes this file's dependency list, so the section kit cannot be
+              imported here until the panel moves to its feature owner. */}
+          <section className="settingsSection">
+            <HStack gap={3} align="start" justify="between" wrap="wrap">
+              <VStack gap={0.5}>
+                <Heading level={3}>{copy.connections}</Heading>
+                <Text type="supporting" size="sm" color="secondary">{copy.connectionsHelp}</Text>
+              </VStack>
+              <div>
+                <Button
+                  ref={addButtonRef}
+                  variant="primary"
+                  label={copy.addConnection}
+                  onClick={openCatalog}
+                  isDisabled={addBlocked}
+                  data-maka-contract="add-connection"
+                />
+              </div>
+            </HStack>
+            <Divider />
+            <div className="settingsSectionBody">
             {connections.length === 0 && !loadError ? (
               <EmptyState
                 isCompact
@@ -603,18 +611,21 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
                 })}
               </List>
             )}
-          </SettingsSection>
+            </div>
+          </section>
           {connections.length === 0 && !loadError && (
             /* First run: the providers most people connect, one click from
                their form. The full catalog is one more click away above. */
-            <RecommendedProvidersSection
-              connections={connections}
-              isDisabled={addBlocked}
-              onPick={(target) => {
-                returnFocusRef.current = null;
-                setRoute({ kind: 'setup', target, origin: 'list' });
-              }}
-            />
+            <div inert={addBlocked || undefined}>
+              <ProviderCatalogPage
+                mode="shortlist"
+                connections={connections}
+                onPick={(target) => {
+                  returnFocusRef.current = null;
+                  setRoute({ kind: 'setup', target, origin: 'list' });
+                }}
+              />
+            </div>
           )}
         </>
       )}
@@ -631,26 +642,6 @@ function ProvidersPanelContent({ bridge, apiKeyOnboardingBridge, initialPage = '
       status?.label,
     );
   }
-}
-
-function RecommendedProvidersSection(props: {
-  connections: readonly ProjectedLlmConnection[];
-  isDisabled: boolean;
-  onPick(target: SetupTarget): void;
-}) {
-  const copy = getProviderSettingsCopy(useUiLocale()).panel;
-  const recommended = useRecommendedProviders(props.connections);
-  return (
-    <SettingsSection title={copy.recommended} variant="bare">
-      <div inert={props.isDisabled || undefined}>
-        <ProviderCatalogRows
-          cards={recommended.cards}
-          providers={recommended.providers}
-          onPick={props.onPick}
-        />
-      </div>
-    </SettingsSection>
-  );
 }
 
 /** Provider · models · default model — the row's second line, and the detail's subtitle. */

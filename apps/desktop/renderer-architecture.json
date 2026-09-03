@@ -3296,7 +3296,7 @@
         "hookCalls": {
           "useActionGuard": 1,
           "useMountedRef": 1,
-          "useState": 12,
+          "useState": 11,
           "useUiLocale": 1
         },
         "lifecycleMethods": {},
@@ -3314,7 +3314,6 @@
           "@astryxdesign/core/Collapsible": 1,
           "@maka/core/llm-connections": 3,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
           "react": 1
         }
       },
@@ -3389,8 +3388,8 @@
         "bridgePaths": {},
         "environmentCapabilities": {},
         "hookCalls": {
-          "useOAuthCards": 2,
-          "useUiLocale": 3
+          "useOAuthCards": 1,
+          "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3400,13 +3399,11 @@
           "./provider-add-form": 1,
           "./provider-display": 1,
           "./provider-oauth-section": 1,
-          "./settings-section": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 1,
           "@maka/core/provider-registry": 1,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
-          "react": 1
+          "@maka/ui/icons": 1
         }
       },
       "src/renderer/settings/provider-connection-detail.tsx": {
@@ -3418,9 +3415,9 @@
           "useMountedRef": 2,
           "useOAuthLoginFlow": 1,
           "useRuntimeHostSettingsErrorReporter": 2,
-          "useState": 9,
+          "useState": 8,
           "useToast": 2,
-          "useUiLocale": 4
+          "useUiLocale": 3
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3440,10 +3437,8 @@
           "./use-oauth-login-flow": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 1,
-          "@maka/core/model-catalog": 1,
           "@maka/core/model-thinking": 1,
           "@maka/ui": 1,
-          "@maka/ui/icons": 1,
           "react": 1
         }
       },
@@ -3532,12 +3527,11 @@
         "hookCalls": {
           "useEffect": 4,
           "useMountedRef": 1,
-          "useRecommendedProviders": 1,
           "useRef": 6,
           "useRuntimeHostSettingsErrorReporter": 1,
           "useSettingsRouteFocus": 1,
           "useState": 6,
-          "useUiLocale": 2
+          "useUiLocale": 1
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,
@@ -3553,7 +3547,6 @@
           "./settings-error-copy": 1,
           "./settings-route-focus": 1,
           "./settings-route-header": 1,
-          "./settings-section": 1,
           "@astryxdesign/core": 1,
           "@maka/core/llm-connections": 1,
           "@maka/core/provider-registry": 1,

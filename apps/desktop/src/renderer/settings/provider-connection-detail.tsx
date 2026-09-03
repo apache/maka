@@ -25,13 +25,12 @@ import {
   DropdownMenuCheckboxItem,
   HStack,
   Link,
-  StatusDot,
   Switch,
   Text,
+  Token,
   VStack,
 } from '@astryxdesign/core';
 import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
-import type { ModelCatalogEntry } from '@maka/core/model-catalog';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -41,7 +40,6 @@ import {
 } from '@maka/core/model-thinking';
 import {
   Button,
-  dotForStatus,
   NumberInput,
   RelativeTime,
   Selector,
@@ -50,7 +48,6 @@ import {
   useToast,
   useUiLocale,
 } from '@maka/ui';
-import { Search } from '@maka/ui/icons';
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsActions, SettingsRow, SettingsSection } from './settings-section';
@@ -153,6 +150,8 @@ type EditingRow =
   | 'headers'
   | 'body'
   | { model: string }
+  /* The 添加模型 dialog: one thing is open at a time, so it is a row here. */
+  | 'add-model'
   | null;
 
 function ConnectionDetailInner(props: ConnectionDetailProps) {
@@ -247,7 +246,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // `save` became per-field — rode along with the next save.
   const [editingRow, setEditingRow] = useState<EditingRow>(null);
   const editingModelId = editingRow !== null && typeof editingRow === 'object' ? editingRow.model : null;
-  const [addModelOpen, setAddModelOpen] = useState(false);
   const [modelFilter, setModelFilter] = useState('');
   const [savedHeaderNames, setSavedHeaderNames] = useState<readonly string[]>([]);
   const [headerDrafts, setHeaderDrafts] = useState<RequestHeaderDraft[]>([]);
@@ -395,7 +393,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // are marked, not hoisted, so a row does not jump when it is toggled.
   const modelRows = (() => {
     const seen = new Set<string>();
-    const rows: Array<{ id: string; entry: ModelCatalogEntry | undefined }> = [];
+    const rows: Array<{ id: string; entry: (typeof modelChoices)[number] | undefined }> = [];
     for (const entry of modelChoices) {
       if (!entry.canUseAsChatDefault) continue;
       seen.add(entry.id);
@@ -415,23 +413,24 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const showsModelFilter = modelRows.length > MODEL_FILTER_THRESHOLD;
   const enabledCount = modelRows.filter(({ id }) => enabledModelIds.includes(id)).length;
 
-  // The list row needs a compact status to mark itself with; the detail page
-  // reports the same fact as a row, with the last test's message and time as
-  // its supporting line, so the page is not two red banners saying one thing.
-  const statusTone = issue ? issue.tone : connection.lastTestStatus === 'verified' ? 'success' : 'neutral';
+  // The last test is a dated fact, not a live signal, so it reads as one
+  // supporting line — 正常 · time, or the failure and its message — rather
+  // than a status dot, which would claim the page is watching the connection
+  // right now. Only a failure gets color: a Token in the error tone, so the
+  // healthy row stays as quiet as the rows around it.
   const statusLabel = issue
     ? issue.label
     : connection.lastTestStatus === 'verified'
       ? copy.statusHealthy
       : copy.statusUntested;
   const statusDetail = lastTestMessage && lastTestMessage !== statusLabel ? lastTestMessage : null;
-  const statusDescription = statusDetail || Number.isFinite(lastTestAtMs) ? (
-    <>
-      {statusDetail}
-      {statusDetail && Number.isFinite(lastTestAtMs) ? ' · ' : null}
-      {Number.isFinite(lastTestAtMs) && <RelativeTime ts={lastTestAtMs} />}
-    </>
-  ) : undefined;
+  const statusDescription = (
+    <HStack gap={1.5} vAlign="center" wrap="wrap">
+      {issue ? <Token size="sm" color="red" label={statusLabel} /> : <span>{statusLabel}</span>}
+      {statusDetail && <span>· {statusDetail}</span>}
+      {Number.isFinite(lastTestAtMs) && <span>· <RelativeTime ts={lastTestAtMs} /></span>}
+    </HStack>
+  );
 
   function modelEnableSwitch(id: string, label: string) {
     const enabled = enabledModelIds.includes(id);
@@ -609,22 +608,16 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
             label={copy.status}
             description={statusDescription}
             end={(
-              <>
-                <span className="settingsStatus">
-                  <StatusDot variant={dotForStatus(statusTone)} label={statusLabel} />
-                  <span>{statusLabel}</span>
-                </span>
-                {/* clickAction reports the probe through the button itself
-                    (spinner + aria-busy) instead of renaming it to 测试中… */}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  isDisabled={allActionsBusy || !hasUsableCredential}
-                  isLoading={testing}
-                  clickAction={() => runTest()}
-                  label={copy.testConnection}
-                />
-              </>
+              /* clickAction reports the probe through the button itself
+                 (spinner + aria-busy) instead of renaming it to 测试中… */
+              <Button
+                variant="secondary"
+                size="sm"
+                isDisabled={allActionsBusy || !hasUsableCredential}
+                isLoading={testing}
+                clickAction={() => runTest()}
+                label={copy.testConnection}
+              />
             )}
           />
         )}
@@ -655,7 +648,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               {supportsRemoteDiscovery && (
                 <Button variant="secondary" size="sm" isDisabled={allActionsBusy || !hasUsableCredential} clickAction={() => refreshModels()} label={copy.updateModels} />
               )}
-              <Button variant="secondary" size="sm" isDisabled={allActionsBusy} onClick={() => setAddModelOpen(true)} label={copy.addModel} />
+              <Button variant="secondary" size="sm" isDisabled={allActionsBusy} onClick={() => openRow('add-model')} label={copy.addModel} />
               {/* One control for the whole table. A relay usually fronts one
                   model family that accepts the same reasoning_effort values,
                   and declaring that per row was models × levels clicks for a
@@ -725,7 +718,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                   placeholder={copy.filterModels}
                   label={copy.filterModels}
                   isLabelHidden
-                  startIcon={Search}
                   hasClear
                   size="sm"
                   width="100%"
@@ -792,6 +784,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
               >
                 <Text type="supporting" color="secondary">{copy.capabilitiesHelp}</Text>
                 <CapabilityEditor
+                  copy={copy}
                   modelId={id}
                   isRelay={isRelay}
                   declared={declared}
@@ -809,7 +802,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </SettingsSection>
       )}
       <AddModelDialog
-        isOpen={addModelOpen}
+        isOpen={editingRow === 'add-model'}
         /* The catalog, not just the selection: the resolved entries are usually
            a proper superset of what the user enabled. Checking only the
            selection lets a listed-but-unchecked id through, and the dialog
@@ -821,7 +814,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         /* A write started after the dialog opened would make the store drop
            this submission silently, taking the typed id with it. */
         isSubmitDisabled={allActionsBusy}
-        onOpenChange={setAddModelOpen}
+        onOpenChange={(open) => setEditingRow(open ? 'add-model' : null)}
         onSubmit={addDeclaredModel}
       />
       {!retired && (
@@ -920,6 +913,7 @@ function formatTokenCount(value: number): string {
  * Edits land in the hook's per-model draft; the row's 保存 commits the table.
  */
 function CapabilityEditor(props: {
+  copy: ReturnType<typeof getProviderSettingsCopy>['detail'];
   modelId: string;
   isRelay: boolean;
   declared: RelayModelProfile | undefined;
@@ -932,8 +926,7 @@ function CapabilityEditor(props: {
   onContextWindow(value: number | null): void;
   onServiceTier(tier: 'fast' | undefined): void;
 }) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
-  const { modelId, declared } = props;
+  const { copy, modelId, declared } = props;
   // Vision resolves to one of three states: absent (Auto), true (Enabled),
   // false (explicitly Disabled). Only Auto is ever ambiguous, and three
   // distinct options keep it honest.
