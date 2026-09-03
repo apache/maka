@@ -442,6 +442,27 @@ export function normalizeWorkBoardLinkedSessions(
   return { ok: true, value: result };
 }
 
+/**
+ * Lenient read path for stored items: drop malformed or duplicate link entries
+ * instead of failing the whole item, so one corrupt reference cannot hide an
+ * otherwise valid board item. The strict {@link normalizeWorkBoardLinkedSessions}
+ * guard remains on the write path.
+ */
+function tolerantWorkBoardLinkedSessions(value: unknown): WorkBoardLinkedSession[] {
+  if (!Array.isArray(value)) return [];
+  const result: WorkBoardLinkedSession[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const normalized = normalizeWorkBoardLinkedSession(entry);
+    if (!normalized.ok) continue;
+    const key = `${normalized.value.profileId}\u0000${normalized.value.hostId}\u0000${normalized.value.sessionId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(normalized.value);
+  }
+  return result;
+}
+
 export function normalizeUpdateWorkBoardItemInput(
   input: unknown,
 ): WorkBoardNormalizeResult<UpdateWorkBoardItemInput> {
@@ -587,8 +608,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
   if (!creator.ok) return null;
   const provenance = normalizeWorkBoardProvenance(value.provenance);
   if (!provenance.ok) return null;
-  const linkedSessions = normalizeWorkBoardLinkedSessions(value.linkedSessions);
-  if (!linkedSessions.ok) return null;
+  const linkedSessions = tolerantWorkBoardLinkedSessions(value.linkedSessions);
   const createdAt = asSafeInteger(value.createdAt);
   const updatedAt = asSafeInteger(value.updatedAt);
   if (createdAt === null || updatedAt === null) return null;
@@ -609,7 +629,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
       archivedAt,
       creator: creator.value,
       provenance: provenance.value,
-      linkedSessions: linkedSessions.value,
+      linkedSessions,
       createdAt,
       updatedAt,
     };
@@ -626,7 +646,7 @@ export function decodeWorkBoardItem(value: unknown): WorkBoardItem | null {
     archived: false,
     creator: creator.value,
     provenance: provenance.value,
-    linkedSessions: linkedSessions.value,
+    linkedSessions,
     createdAt,
     updatedAt,
   };

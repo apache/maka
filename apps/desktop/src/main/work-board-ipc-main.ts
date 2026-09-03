@@ -165,8 +165,16 @@ export function registerWorkBoardIpc(input: {
             'Work Board linked Session does not belong to an available Runtime Host',
           );
         }
+        const itemId = requireWorkBoardId(id);
+        const item = await store.get(itemId);
+        if (!item || item.scope.kind !== 'project') {
+          throw new WorkBoardStoreError(
+            'invalid_input',
+            'Only project-scoped Work Board items can link a Session',
+          );
+        }
         const linked = await store.linkSession(
-          requireWorkBoardId(id),
+          itemId,
           link,
           options as WorkBoardMutationOptions | undefined,
         );

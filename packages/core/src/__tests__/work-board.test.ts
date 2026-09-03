@@ -184,6 +184,21 @@ describe('Work Board contract', () => {
     );
   });
 
+  test('drops malformed stored link entries instead of hiding the whole item', () => {
+    const valid = { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 10 };
+    const decoded = decodeWorkBoardItem({
+      ...baseItem,
+      linkedSessions: [
+        valid,
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-2' }, // missing linkedAt
+        { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-3', linkedAt: 'nope' },
+        valid, // duplicate
+      ],
+    });
+    assert.ok(decoded);
+    assert.deepEqual(decoded.linkedSessions, [valid]);
+  });
+
   test('rejects unknown fields at the contract boundary', () => {
     const unknownCreate = normalizeCreateWorkBoardItemInput({
       scope: { kind: 'inbox' },

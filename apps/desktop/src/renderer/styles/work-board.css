@@ -131,6 +131,7 @@
   display: flex;
   gap: 4px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 
 .maka-work-board-message {

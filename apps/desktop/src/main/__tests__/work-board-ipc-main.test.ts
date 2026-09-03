@@ -150,12 +150,17 @@ describe('Work Board IPC', () => {
       try {
         const created = await ipc.invoke<WorkBoardIpcResult<{ id: string; revision: number }>>(
           'workBoard:create',
-          itemInput(),
+          {
+            scope: { kind: 'project', projectId: 'p1' },
+            title: 'Review auth',
+            creator: { kind: 'user' },
+            provenance: { kind: 'manual' },
+          },
         );
         assert.ok(created.ok);
         const id = created.ok ? created.value.id : '';
 
-      const renamed = await ipc.invoke<
+        const renamed = await ipc.invoke<
           WorkBoardIpcResult<{ title: string; revision: number; state: string }>
         >('workBoard:update', id, { title: 'Review auth v2' });
         assert.ok(renamed.ok);
@@ -256,6 +261,35 @@ describe('Work Board IPC', () => {
           'workBoard:linkSession',
           created.ok ? created.value.id : '',
           { profileId: 'profile-1', hostId: 'host-1', sessionId: 'missing', linkedAt: 1 },
+        );
+        assert.equal(linked.ok, false);
+        if (!linked.ok) assert.equal(linked.code, 'invalid_input');
+      } finally {
+        registration.close();
+      }
+    });
+  });
+
+  test('rejects linking a Session to an Inbox item even when the Host validates', async () => {
+    await withTempRoot(async (root) => {
+      const ipc = createFakeIpcMain();
+      const window = createFakeWindowController();
+      const registration = registerWorkBoardIpc({
+        ipcMain: ipc as unknown as Pick<IpcMain, 'handle'>,
+        workspaceRoot: root,
+        mainWindowController: window,
+        validateLinkedSession: async () => true,
+      });
+      try {
+        const created = await ipc.invoke<WorkBoardIpcResult<{ id: string }>>(
+          'workBoard:create',
+          itemInput(),
+        );
+        assert.ok(created.ok);
+        const linked = await ipc.invoke<WorkBoardIpcResult<unknown>>(
+          'workBoard:linkSession',
+          created.ok ? created.value.id : '',
+          { profileId: 'profile-1', hostId: 'host-1', sessionId: 'session-1', linkedAt: 1 },
         );
         assert.equal(linked.ok, false);
         if (!linked.ok) assert.equal(linked.code, 'invalid_input');
