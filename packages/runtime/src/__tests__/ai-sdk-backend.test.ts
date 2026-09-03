@@ -4596,11 +4596,22 @@ describe('AiSdkBackend model history', () => {
       ],
     });
 
-    assert.equal(summarizeCalls, 1);
     releaseSummary();
     const [firstResult, secondResult] = await Promise.all([first, second]);
-    assert.deepEqual(secondResult, firstResult);
-    assert.equal(recorded.length, 1);
+    assert.equal(summarizeCalls, 1);
+    assert.equal(secondResult.outcome.kind, 'compacted');
+    assert.equal(firstResult.outcome.kind, 'compacted');
+    assert.equal(recorded.length, 2);
+    const firstCheckpoint = recorded[0];
+    const secondCheckpoint = recorded[1];
+    assert.ok(firstCheckpoint);
+    assert.ok(secondCheckpoint);
+    assert.equal(firstCheckpoint.version, 2);
+    assert.equal(secondCheckpoint.version, 2);
+    if (firstCheckpoint.version === 2 && secondCheckpoint.version === 2) {
+      assert.equal(secondCheckpoint.summary, firstCheckpoint.summary);
+      assert.deepEqual(secondCheckpoint.coverage, firstCheckpoint.coverage);
+    }
   });
 
   test('manual compactHistory compacts one completed turn with multiple agent steps', async () => {

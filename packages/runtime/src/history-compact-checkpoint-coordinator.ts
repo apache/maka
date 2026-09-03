@@ -90,9 +90,17 @@ export class HistoryCompactCheckpointCoordinator {
       .catch(() => {})
       .then(async () => {
         const durableCheckpoint = await this.load(sessionId);
-        if (!canReplaceHistoryCompactCheckpoint(durableCheckpoint, checkpoint)) {
+        const sameEffectiveCheckpoint = hasSameEffectiveCoverage(durableCheckpoint, checkpoint);
+        if (
+          !sameEffectiveCheckpoint &&
+          !canReplaceHistoryCompactCheckpoint(durableCheckpoint, checkpoint)
+        ) {
           throw new Error('History compact checkpoint was superseded before persistence');
         }
+        // A concurrent caller may have received the same effective checkpoint
+        // from the summarizer coalescer. Keep its run-local ledger event too so
+        // the rider Turn retains provenance even though the session checkpoint
+        // itself is already current.
         await run.recordHistoryCompactCheckpoint(checkpoint);
         this.checkpoints.set(sessionId, checkpoint);
         this.scheduleCleanup(sessionId, checkpoint);
@@ -154,4 +162,36 @@ export class HistoryCompactCheckpointCoordinator {
       });
     this.cleanups.set(sessionId, tracked);
   }
+}
+
+function hasSameEffectiveCoverage(
+  current: HistoryCompactCheckpoint | undefined,
+  candidate: HistoryCompactCheckpoint,
+): boolean {
+  if (!current) return false;
+  const currentContent = checkpointContent(current);
+  const candidateContent = checkpointContent(candidate);
+  return (
+    current.sessionId === candidate.sessionId &&
+    current.version === candidate.version &&
+    current.highWaterName === candidate.highWaterName &&
+    current.phase === candidate.phase &&
+    current.coverage.eventCount === candidate.coverage.eventCount &&
+    current.coverage.turnCount === candidate.coverage.turnCount &&
+    current.coverage.sourceDigest === candidate.coverage.sourceDigest &&
+    current.coverage.through.runId === candidate.coverage.through.runId &&
+    current.coverage.through.turnId === candidate.coverage.through.turnId &&
+    current.coverage.through.runtimeEventId === candidate.coverage.through.runtimeEventId &&
+    JSON.stringify(current.source) === JSON.stringify(candidate.source) &&
+    JSON.stringify(current.headAnchor) === JSON.stringify(candidate.headAnchor) &&
+    JSON.stringify(current.memoryExtractionBoundary) ===
+      JSON.stringify(candidate.memoryExtractionBoundary) &&
+    JSON.stringify(currentContent) === JSON.stringify(candidateContent)
+  );
+}
+
+function checkpointContent(checkpoint: HistoryCompactCheckpoint): unknown {
+  return checkpoint.version === 2
+    ? { summary: checkpoint.summary, summaryFormat: checkpoint.summaryFormat }
+    : { providerState: checkpoint.providerState };
 }

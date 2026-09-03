@@ -209,18 +209,16 @@ export class AiSdkCompaction {
     providerReasoningReplayEventIds: ReadonlySet<string>,
   ) => Promise<ModelMessage[]>;
   private readonly canReplayProviderNative: (plan: RuntimeEventModelReplayPlan) => boolean;
-  private historyCompactAbortController: AbortController | null = null;
+  private readonly historyCompactAbortControllers = new Set<AbortController>();
   /**
-   * Exact duplicate compaction requests share one physical summarizer call.
-   * Automatic capacity checks and explicit/manual entry can converge while a
-   * checkpoint is still being written; dispatching both would race the same
-   * source prefix and charge the provider twice. The key is derived from the
-   * source/configuration rather than the issuing turn id so callers that are
-   * otherwise asking for the same fold share the result.
+   * Exact duplicate summary inputs share one physical provider call. The map
+   * lives at the summarizer boundary, where the existing effective-history
+   * fingerprint already describes the request that spends provider budget.
+   * Each caller still completes its own checkpoint/turn bookkeeping.
    */
-  private readonly inFlightHistoryCompactions = new Map<
+  private readonly inFlightHistorySummaries = new Map<
     string,
-    Promise<AiSdkCompactHistoryResult>
+    Promise<string | HistoryCompactProviderState | undefined>
   >();
   /**
    * Session-scoped circuit for exact malformed compaction inputs. A retry or
@@ -293,25 +291,14 @@ export class AiSdkCompaction {
 
   /** Abort an in-flight manual history compaction (called by AiSdkBackend.stop). */
   public abortHistoryCompact(): void {
-    this.historyCompactAbortController?.abort();
+    for (const controller of this.historyCompactAbortControllers) controller.abort();
   }
 
-  public compactHistory(
+  public async compactHistory(
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
-    const key = historyCompactRequestKey(input, automaticMemoryBoundary);
-    const existing = this.inFlightHistoryCompactions.get(key);
-    if (existing) return existing;
-    const pending = this.compactHistoryOnce(input, automaticMemoryBoundary);
-    this.inFlightHistoryCompactions.set(key, pending);
-    const clear = () => {
-      if (this.inFlightHistoryCompactions.get(key) === pending) {
-        this.inFlightHistoryCompactions.delete(key);
-      }
-    };
-    void pending.then(clear, clear);
-    return pending;
+    return this.compactHistoryOnce(input, automaticMemoryBoundary);
   }
 
   private async compactHistoryOnce(
@@ -319,7 +306,7 @@ export class AiSdkCompaction {
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
     const historyCompactAbortController = new AbortController();
-    this.historyCompactAbortController = historyCompactAbortController;
+    this.historyCompactAbortControllers.add(historyCompactAbortController);
     try {
       const policy = this.input.contextBudget;
       const summarizer = this.input.summarizeHistoryCompact;
@@ -421,7 +408,13 @@ export class AiSdkCompaction {
             source: {
               foldedRuntimeEvents: [...coveredRuntimeEvents],
               ...(input.runtimeContextInvocations
-                ? { invocations: input.runtimeContextInvocations }
+                ? {
+                    invocations: input.runtimeContextInvocations.filter((invocation) =>
+                      coveredRuntimeEvents.some(
+                        (event) => event.invocationId === invocation.invocationId,
+                      ),
+                    ),
+                  }
                 : {}),
             },
             newlyFoldedRuntimeEvents: [...newlyFoldedRuntimeEvents],
@@ -496,9 +489,7 @@ export class AiSdkCompaction {
         }),
       };
     } finally {
-      if (this.historyCompactAbortController === historyCompactAbortController) {
-        this.historyCompactAbortController = null;
-      }
+      this.historyCompactAbortControllers.delete(historyCompactAbortController);
     }
   }
 
@@ -544,8 +535,13 @@ export class AiSdkCompaction {
     const priorFailure = this.malformedSummaryFailures.get(fingerprint);
     if (priorFailure) throw new HistoryCompactSummarizerError(priorFailure);
 
+    const existing = this.inFlightHistorySummaries.get(fingerprint);
+    if (existing) return existing;
+
+    const pending = Promise.resolve().then(() => summarizer(input));
+    this.inFlightHistorySummaries.set(fingerprint, pending);
     try {
-      return await Promise.resolve(summarizer(input));
+      return await pending;
     } catch (error) {
       if (
         error instanceof HistoryCompactSummarizerError &&
@@ -560,6 +556,10 @@ export class AiSdkCompaction {
         }
       }
       throw error;
+    } finally {
+      if (this.inFlightHistorySummaries.get(fingerprint) === pending) {
+        this.inFlightHistorySummaries.delete(fingerprint);
+      }
     }
   }
 
@@ -1410,25 +1410,6 @@ function projectAcceptedMidTurnCompactionMessages(
 
 function sha256(text: string): string {
   return createHash('sha256').update(text).digest('hex');
-}
-
-function historyCompactRequestKey(
-  input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
-  automaticMemoryBoundary: HistoryCompactMemoryExtractionBoundary | undefined,
-): string {
-  const runtimeContext = input.runtimeContext
-    .filter((event) => event.turnId !== input.turnId)
-    .filter(isHistoryCompactContentEvent);
-  const sourceRunIds = new Set(runtimeContext.map((event) => event.runId));
-  return sha256(
-    stableStringifyForSignature({
-      runtimeContext,
-      runtimeContextRunHeaders: (input.runtimeContextRunHeaders ?? []).filter((header) =>
-        sourceRunIds.has(header.runId),
-      ),
-      automaticMemoryBoundary,
-    }),
-  );
 }
 
 function modelMessageSignature(message: ModelMessage): string {
