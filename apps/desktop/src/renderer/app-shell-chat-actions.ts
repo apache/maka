@@ -281,6 +281,10 @@ export function createAppShellChatActions(deps: {
     });
   }
 
+  function removeOptimisticUserMessage(sessionId: string, turnId: string): void {
+    removeTransientMessage(sessionId, turnId);
+  }
+
   // Explicit orchestration reserves an exact Turn identity before IPC, so its
   // renderer command surface keeps the existing first-token wait. Ordinary
   // messages never call this path: LocalIntent presents the message and the
@@ -368,7 +372,7 @@ export function createAppShellChatActions(deps: {
         if (input.exactTurn) disarmTurnActive(sessionId, messageId);
         return { kind: 'unreconciled' };
       }
-      removeTransientMessage(sessionId, messageId);
+      removeOptimisticUserMessage(sessionId, messageId);
       if (input.exactTurn) disarmTurnActive(sessionId, messageId);
       if (surfaceVisible) {
         showSkillInvocationFeedback(uiLocale, toastApi, result.skillInvocation, sessionId);
@@ -457,6 +461,41 @@ export function createAppShellChatActions(deps: {
     };
     try {
       const messageId = crypto.randomUUID();
+      async function submitIntoSession(sessionId: string, messageId: string) {
+        if (exactTurn) armTurnActive(sessionId, messageId);
+        const attachmentItems =
+          pending && pending.length > 0
+            ? toComposerIngestItems(pending)
+            : undefined;
+        const retainedAttachments =
+          pending && pending.length > 0
+            ? retainedAttachmentRefs(pending)
+            : undefined;
+        const sendCommand = {
+          text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...(retainedAttachments && retainedAttachments.length > 0
+            ? { retainedAttachments }
+            : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        };
+        return submitAndProject({
+          sessionId,
+          messageId,
+          placement: 'current_turn',
+          command: {
+            ...sendCommand,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+          },
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('quotes', quotes),
+          exactTurn,
+          isSurfaceVisible: () => activeIdRef.current === sessionId,
+        });
+      }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
         if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
@@ -501,53 +540,18 @@ export function createAppShellChatActions(deps: {
         // cannot become durable text without live identity.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
-          removeTransientMessage(session.id, messageId);
+          removeOptimisticUserMessage(session.id, messageId);
           await discardUnsentSession();
           return false;
         }
-        if (exactTurn) armTurnActive(session.id, messageId);
-        const attachmentItems =
-          pending && pending.length > 0
-            ? toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending && pending.length > 0
-            ? retainedAttachmentRefs(pending)
-            : undefined;
-        const sendCommand = {
-          text,
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('attachmentItems', attachmentItems),
-          ...(retainedAttachments && retainedAttachments.length > 0
-            ? { retainedAttachments }
-            : {}),
-          ...copiedArray('directoryReferences', directoryReferences),
-          ...copiedArray('quotes', quotes),
-          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
-        };
-        const submitted = await submitAndProject({
-          sessionId: session.id,
-          messageId,
-          placement: 'current_turn',
-          command: {
-            ...sendCommand,
-            ...(options.turnOrchestration
-              ? { turnOrchestration: options.turnOrchestration }
-              : {}),
-          },
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...copiedArray('quotes', quotes),
-          exactTurn,
-          isSurfaceVisible: () => activeIdRef.current === session.id,
-        });
+        const submitted = await submitIntoSession(session.id, messageId);
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
-        // #4598: an `unreconciled` outcome kept the Session but proves nothing
-        // about it, so it must not look like a resolved first send to the
-        // caller (the Work Board only links tasks to projected Sessions).
+        // The callback fires only when this send's first message projected;
+        // an unreconciled first message stays unreported.
         if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
         await refreshSessions();
         return true;
@@ -583,42 +587,9 @@ export function createAppShellChatActions(deps: {
           inlineReferences: [],
         },
       );
-      if (exactTurn) armTurnActive(sessionId, messageId);
-      const attachmentItems =
-        pending && pending.length > 0
-          ? toComposerIngestItems(pending)
-          : undefined;
-      const retainedAttachments =
-        pending && pending.length > 0
-          ? retainedAttachmentRefs(pending)
-          : undefined;
-      const sendCommand = {
-        text,
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...copiedArray('attachmentItems', attachmentItems),
-        ...(retainedAttachments && retainedAttachments.length > 0
-          ? { retainedAttachments }
-          : {}),
-        ...copiedArray('directoryReferences', directoryReferences),
-        ...copiedArray('quotes', quotes),
-        ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
-      };
-      const submitted = await submitAndProject({
-        sessionId,
-        messageId,
-        placement: 'current_turn',
-        command: {
-          ...sendCommand,
-          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        },
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...copiedArray('quotes', quotes),
-        exactTurn,
-        isSurfaceVisible: () => activeIdRef.current === sessionId,
-      });
+      const submitted = await submitIntoSession(sessionId, messageId);
       if (submitted.kind === 'refused') return false;
-      if (submitted.kind === 'unreconciled') return true;
-      options.onSessionResolved?.(sessionId);
+      // An existing-Session send never reports a resolved Session.
       return true;
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
@@ -639,7 +610,7 @@ export function createAppShellChatActions(deps: {
         (newChatOwner !== null && isNewChatSendSurfaceActive(newChatOwner));
       await discardUnsentSession();
       if (optimisticSessionId && optimisticMessageId) {
-        removeTransientMessage(optimisticSessionId, optimisticMessageId);
+        removeOptimisticUserMessage(optimisticSessionId, optimisticMessageId);
       }
       // The turn never reached the runtime — close the model-wait window so the
       // "正在处理…" indicator doesn't hang after a failed send. Nothing else has
@@ -720,7 +691,7 @@ export function createAppShellChatActions(deps: {
       // would clear the composer draft the user has to retry from.
       return submitted.kind !== 'refused';
     } catch (error) {
-      removeTransientMessage(sessionId, messageId);
+      removeOptimisticUserMessage(sessionId, messageId);
       throw error;
     }
   }
