@@ -36,7 +36,9 @@ import {
   EXTERNAL_SESSION_IMPORT_LOOKUP_MAX_SOURCE_IDS,
   createSessionStore,
   isSessionNotFoundError,
+  normalizeSessionHeader,
 } from '../session-store.js';
+import type { SessionConversationCopy, SessionHeader } from '@maka/core/session';
 import { OPERATIONAL_STATE_DATABASE_NAME } from '../operational-state-store.js';
 import { createSqliteSessionMetadataStore } from '../sqlite-session-metadata-store.js';
 
@@ -1464,6 +1466,74 @@ describe('SQLite SessionStore', () => {
         assert.equal(isSessionNotFoundError(error), true);
         return true;
       });
+    } finally {
+      await store.close?.();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test('normalizeSessionHeader accepts an empty side-conversation copy but rejects a fabricated branch turn', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-empty-copy-lineage-'));
+    const store = createSessionStore(root);
+    try {
+      const source = await store.create(makeInput({ cwd: root, name: 'Source' }));
+      const base = await store.create(makeInput({ cwd: root, name: 'Side chat' }));
+      const emptyCopy: SessionConversationCopy = {
+        kind: 'branch',
+        sourceSessionId: source.id,
+        // sourceTurnId intentionally absent: an empty copy carries no source turn.
+        requestFingerprint: `sha256:${'a'.repeat(64)}`,
+        state: 'committed',
+        intent: 'side_conversation',
+      };
+      const emptyHeader: SessionHeader = {
+        ...base,
+        parentSessionId: source.id,
+        conversationCopy: emptyCopy,
+      };
+
+      // An empty side-conversation copy records provenance (parentSessionId)
+      // without fabricating a branchOfTurnId, and round-trips unchanged.
+      const normalized = normalizeSessionHeader(emptyHeader);
+      assert.equal(normalized.conversationCopy?.sourceTurnId, undefined);
+      assert.equal(normalized.branchOfTurnId, undefined);
+      assert.equal(normalized.parentSessionId, source.id);
+
+      // An empty copy must not fabricate a branchOfTurnId.
+      assert.throws(
+        () => normalizeSessionHeader({ ...emptyHeader, branchOfTurnId: 'fabricated-turn' }),
+        /malformed fields/,
+      );
+
+      // An empty copy is only valid for the side_conversation intent.
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, intent: undefined },
+          }),
+        /malformed fields/,
+      );
+
+      // A through-turn copy must anchor its branchOfTurnId to the source turn:
+      // absent here, so it is rejected...
+      assert.throws(
+        () =>
+          normalizeSessionHeader({
+            ...emptyHeader,
+            conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+          }),
+        /malformed fields/,
+      );
+      // ...and accepted once the header anchors to the same turn.
+      assert.equal(
+        normalizeSessionHeader({
+          ...emptyHeader,
+          branchOfTurnId: 'source-turn',
+          conversationCopy: { ...emptyCopy, sourceTurnId: 'source-turn' },
+        }).conversationCopy?.sourceTurnId,
+        'source-turn',
+      );
     } finally {
       await store.close?.();
       await rm(root, { recursive: true, force: true });

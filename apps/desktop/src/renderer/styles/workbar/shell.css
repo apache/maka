@@ -223,10 +223,6 @@
   box-shadow: var(--shadow-low);
 }
 
-.maka-workbar-tab[data-preparing] {
-  cursor: progress;
-}
-
 .maka-workbar-tab-icon {
   width: var(--icon-control);
   height: var(--icon-control);

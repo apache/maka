@@ -352,7 +352,8 @@ function SessionListGroups(props: {
   }>;
 }) {
   const rail = useSessionRailData();
-  const copy = getConversationCopy(useUiLocale()).sessions;
+  const locale = useUiLocale();
+  const copy = getConversationCopy(locale).sessions;
   const [renameTarget, setRenameTarget] = useState<SessionRenameTarget | null>(null);
   /**
    * The control the rename was started from, so focus can go back to it.
@@ -470,18 +471,26 @@ function SessionListGroups(props: {
   if (rail.groupVariant === 'project') {
     const activeGroups = props.groups.filter((group) => group.project?.archivedAt === undefined);
     const archivedGroups = props.groups.filter((group) => group.project?.archivedAt !== undefined);
+    const pinnedGroup = groupSessionsForHistory(
+      activeGroups.flatMap((group) => group.sessions),
+      locale,
+    ).find((group) => group.id === 'pinned');
 
     function renderProjectGroup(
       group: (typeof props.groups)[number],
+      includePinned = false,
     ): ReactNode {
       const project = group.project;
+      const sessions = includePinned
+        ? group.sessions
+        : group.sessions.filter((session) => !session.isFlagged);
       return (
         <ProjectNavRow
           key={group.key}
           groupKey={group.key}
           label={group.label}
           project={project}
-          sessions={group.sessions}
+          sessions={sessions}
           streamingSessionIds={rail.streamingSessionIds}
           projectActions={rail.projectActions}
           onStartRename={(opener) => {
@@ -494,23 +503,37 @@ function SessionListGroups(props: {
       );
     }
 
+    // Two sibling sections, the same shape the time view has. A section groups
+    // items; it is not one of them. Putting the pinned section next to bare
+    // project rows would make the same level hold both a group heading and
+    // navigation items, and the pinned zone would be the only one there without
+    // a folder icon, a disclosure or a row menu.
     return (
       <>
         {renameDialog}
-        {activeGroups.map(renderProjectGroup)}
-        {archivedGroups.length > 0 && (
-          <SideNavItem
-            label={copy.archivedProjects}
-            collapsible={{
-              isCollapsed: !archivedExpanded,
-              onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
-            }}
-          >
-            {/* Always mount children: Astryx derives collapsible chrome from
-                !!children. Nulling on collapse removes the chevron and makes
-                the controlled isCollapsed prop a no-op. */}
-            {archivedGroups.map(renderProjectGroup)}
-          </SideNavItem>
+        {pinnedGroup && (
+          <SideNavSection title={pinnedGroup.label} className="maka-session-group">
+            {pinnedGroup.sessions.map((session) => renderSessionRow(session))}
+          </SideNavSection>
+        )}
+        {(activeGroups.length > 0 || archivedGroups.length > 0) && (
+          <SideNavSection title={copy.projects} className="maka-session-group">
+            {activeGroups.map((group) => renderProjectGroup(group))}
+            {archivedGroups.length > 0 && (
+              <SideNavItem
+                label={copy.archivedProjects}
+                collapsible={{
+                  isCollapsed: !archivedExpanded,
+                  onCollapsedChange: (collapsed) => setArchivedExpanded(!collapsed),
+                }}
+              >
+                {/* Always mount children: Astryx derives collapsible chrome from
+                    !!children. Nulling on collapse removes the chevron and makes
+                    the controlled isCollapsed prop a no-op. */}
+                {archivedGroups.map((group) => renderProjectGroup(group, true))}
+              </SideNavItem>
+            )}
+          </SideNavSection>
         )}
       </>
     );
@@ -552,6 +575,10 @@ function ProjectNavRow(props: {
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const hoverDescriptionId = useId();
+  // The same list the row draws its subtree from. A summary counting rows that
+  // were hoisted into the pinned section describes a project row that has no
+  // disclosure and no children, and puts its menu somewhere else than the count
+  // implies.
   const hoverSummary = useMemo(
     () =>
       createProjectHoverCardSummary(

@@ -17,37 +17,37 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { test } from 'node:test';
-import type { TurnViewModel } from '@maka/ui';
-import { deriveAppShellTurnPresentation } from '../../renderer/app-shell-turn-view-model.js';
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import type { TurnViewModel } from "@maka/ui";
+import { deriveAppShellTurnPresentation } from "../../renderer/app-shell-turn-view-model.js";
 
-test('disables Copy when a completed turn ends with tool activity', () => {
+test("disables Copy when a completed turn ends with tool activity", () => {
   const turn: TurnViewModel = {
-    turnId: 'turn-1',
-    status: 'completed',
+    turnId: "turn-1",
+    status: "completed",
     partialOutputRetained: false,
     assistant: {
-      id: 'assistant-aggregate',
-      role: 'assistant',
-      text: 'I am checking it.',
+      id: "assistant-aggregate",
+      role: "assistant",
+      text: "I am checking it.",
       ts: 2,
     },
     timeline: [
       {
-        kind: 'text',
-        text: 'I am checking it.',
-        messageId: 'progress-1',
+        kind: "text",
+        text: "I am checking it.",
+        messageId: "progress-1",
       },
       {
-        kind: 'tools',
+        kind: "tools",
         items: [
           {
-            toolUseId: 'read-1',
-            toolName: 'Read',
-            activityKind: 'read',
-            status: 'completed',
-            args: { path: 'README.md' },
+            toolUseId: "read-1",
+            toolName: "Read",
+            activityKind: "read",
+            status: "completed",
+            args: { path: "README.md" },
           },
         ],
       },
@@ -58,35 +58,34 @@ test('disables Copy when a completed turn ends with tool activity', () => {
   };
 
   const presentation = deriveAppShellTurnPresentation([turn], {
-    activeId: 'session-1',
+    activeId: "session-1",
     pendingTurnActions: new Set(),
-    uiLocale: 'en',
-    pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
+    uiLocale: "en",
   });
-  const copy = presentation.footerActionsByTurn['turn-1']?.find(
-    (action) => action.id === 'copy',
+  const copy = presentation.footerActionsByTurn["turn-1"]?.find(
+    (action) => action.id === "copy",
   );
 
   assert.equal(copy?.enabled, false);
-  assert.equal(copy?.tooltip, 'This response has no content to copy');
+  assert.equal(copy?.tooltip, "This response has no content to copy");
 });
 
-test('disables Copy for retained partial text from a failed turn', () => {
+test("disables Copy for retained partial text from a failed turn", () => {
   const turn: TurnViewModel = {
-    turnId: 'turn-failed',
-    status: 'failed',
+    turnId: "turn-failed",
+    status: "failed",
     partialOutputRetained: true,
     assistant: {
-      id: 'assistant-partial',
-      role: 'assistant',
-      text: 'Partial answer',
+      id: "assistant-partial",
+      role: "assistant",
+      text: "Partial answer",
       ts: 2,
     },
     timeline: [
       {
-        kind: 'text',
-        text: 'Partial answer',
-        messageId: 'partial-1',
+        kind: "text",
+        text: "Partial answer",
+        messageId: "partial-1",
       },
     ],
     tools: [],
@@ -95,15 +94,14 @@ test('disables Copy for retained partial text from a failed turn', () => {
   };
 
   const presentation = deriveAppShellTurnPresentation([turn], {
-    activeId: 'session-1',
+    activeId: "session-1",
     pendingTurnActions: new Set(),
-    uiLocale: 'en',
-    pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
+    uiLocale: "en",
   });
-  const copy = presentation.footerActionsByTurn['turn-failed']?.find(
-    (action) => action.id === 'copy',
+  const copy = presentation.footerActionsByTurn["turn-failed"]?.find(
+    (action) => action.id === "copy",
   );
 
   assert.equal(copy?.enabled, false);
-  assert.equal(copy?.tooltip, 'This response has no content to copy');
+  assert.equal(copy?.tooltip, "This response has no content to copy");
 });

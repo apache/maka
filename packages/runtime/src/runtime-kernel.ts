@@ -532,7 +532,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     execution.run = run;
     execution.phase = 'attached';
-    if (execution.stopIntent) run.stop(execution.stopIntent.input.source);
+    if (execution.stopIntent) {
+      run.stop(execution.stopIntent.input.source, execution.stopIntent.input.workHubActionId);
+    }
   }
 
   private reserveExecutionClaim(
@@ -1712,6 +1714,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     const existing = this.stopAttempts.get(sessionId);
     if (existing) return existing;
     const intent: SessionStopIntent = { input, claims: new Set() };
@@ -1721,7 +1724,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
       execution.stopIntent = intent;
       intent.claims.add(execution);
     }
-    for (const execution of executions) execution.run?.stop(input.source);
+    for (const execution of executions) {
+      execution.run?.stop(input.source, input.workHubActionId);
+    }
     for (const execution of executions) {
       execution.abortController.abort(execution.cancellation);
     }
@@ -1777,7 +1782,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     active: BackendGeneration,
     run: AgentRun,
   ): StopOperation | undefined {
-    run.stop(input.source);
+    run.stop(input.source, input.workHubActionId);
     if (!run.hasPendingStop()) return this.stopOperations.get(sessionId);
     const existingOperation = this.stopOperations.get(sessionId);
     const operation = existingOperation ?? this.buildStopOperation(input);
@@ -1820,7 +1825,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private buildStopOperation(input: StopSessionInput): StopOperation {
-    const abortSource = normalizeStopSessionSource(input.source);
+    const abortSource = normalizeStopSessionSource(input.source, input.workHubActionId);
     const ts = this.deps.now();
     return {
       abortSource,

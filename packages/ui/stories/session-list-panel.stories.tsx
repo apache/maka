@@ -414,6 +414,7 @@ export const ProjectGroups: Story = {
       makeSession({
         id: 'proj-main',
         name: '主仓会话',
+        isFlagged: true,
         lastMessageAt: NOW - 4 * 60 * 1000,
       }),
       makeSession({
@@ -455,6 +456,87 @@ export const ProjectGroups: Story = {
                 label: missing.name,
                 project: missing,
                 sessions: [],
+              },
+            ],
+            projectActions: {
+              onNew: noop,
+              onRename: noop,
+              onArchive: noop,
+              onRestore: noop,
+              onRelink: noop,
+            },
+          })}
+        />
+      </StoryFrame>
+    );
+  },
+};
+
+// Group-by-project where a project's only task is pinned, so the project row
+// has nothing left to show. What the row says about itself — disclosure,
+// action placement, the hover card's task count — has to follow what is
+// actually under it, and an archived project sits below the live ones.
+export const ProjectGroupsPinnedOnlyTask: Story = {
+  render: () => {
+    const solo = makeProject({
+      id: 'project-solo',
+      name: '独苗项目',
+      preferredPath: '/workspace/solo',
+    });
+    const docs = makeProject({
+      id: 'project-docs',
+      name: '产品文档',
+      preferredPath: '/workspace/docs',
+    });
+    const retired = makeProject({
+      id: 'project-retired',
+      name: '旧版桌面端',
+      preferredPath: '/workspace/legacy',
+      archivedAt: NOW - 30 * 24 * 60 * 60 * 1000,
+    });
+    const sessions = [
+      makeSession({
+        id: 'solo-only',
+        name: '唯一的任务',
+        isFlagged: true,
+        lastMessageAt: NOW - 6 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'docs-a',
+        name: '文档站改版',
+        lastMessageAt: NOW - 30 * 60 * 1000,
+      }),
+      makeSession({
+        id: 'retired-a',
+        name: '旧版遗留任务',
+        lastMessageAt: NOW - 40 * 24 * 60 * 60 * 1000,
+      }),
+    ];
+    return (
+      <StoryFrame height={720}>
+        <SessionRail
+          {...panelProps({
+            sessions,
+            activeId: 'docs-a',
+            viewMode: 'project',
+            groups: [
+              {
+                id: `project:${solo.id}`,
+                label: solo.name,
+                project: solo,
+                sessions: [sessions[0]!],
+              },
+              {
+                id: `project:${docs.id}`,
+                label: docs.name,
+                project: docs,
+                sessions: [sessions[1]!],
+              },
+              {
+                id: `project:${retired.id}`,
+                label: retired.name,
+                project: retired,
+                sessions: [sessions[2]!],
               },
             ],
             projectActions: {

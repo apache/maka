@@ -18,6 +18,8 @@
  */
 
 import { useState } from 'react';
+import { useUiLocale } from '@maka/ui';
+import { getSessionCollaborationCopy } from '../../../locales/session-collaboration-copy.js';
 
 export interface SessionCollaborationDialogTarget {
   readonly sessionId: string;
@@ -27,9 +29,11 @@ export interface SessionCollaborationDialogTarget {
 
 export function useSessionCollaborationDialog() {
   const [target, setTarget] = useState<SessionCollaborationDialogTarget>();
+  const shareActionLabel = getSessionCollaborationCopy(useUiLocale()).shareAction;
 
   return {
     target,
+    shareActionLabel,
     isOpen: target !== undefined,
     open: setTarget,
     openSession(session: {

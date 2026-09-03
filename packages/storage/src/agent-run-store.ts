@@ -1897,9 +1897,13 @@ function assertRootTurnAdmissionContract(admission: RootTurnAdmission): void {
       'Invalid root turn admission contract: Skill invocation requires external message execution',
     );
   }
-  if (admission.authorization && execution.kind !== 'external_message') {
+  if (
+    admission.authorization &&
+    execution.kind !== 'external_message' &&
+    execution.kind !== 'regenerate'
+  ) {
     throw new Error(
-      'Invalid root turn admission contract: authorization proof requires external message execution',
+      'Invalid root turn admission contract: authorization proof requires external message or regenerate execution',
     );
   }
   if (execution.kind === 'claimed_agent_graph_intent') {
@@ -2094,13 +2098,24 @@ function normalizeRootExecutionDescriptor(value: unknown): RootExecutionDescript
   }
   if (value.kind === 'scheduled_task') {
     if (
-      !hasExactKeys(value, ['kind', 'scheduledTaskId']) ||
+      !hasExactKeys(value, [
+        'kind',
+        'scheduledTaskId',
+        ...(Object.hasOwn(value, 'executionFingerprint') ? ['executionFingerprint'] : []),
+      ]) ||
       typeof value.scheduledTaskId !== 'string' ||
-      !isSafeId(value.scheduledTaskId)
+      !isSafeId(value.scheduledTaskId) ||
+      (value.executionFingerprint !== undefined && !isSha256Digest(value.executionFingerprint))
     ) {
       throw new Error('Invalid root execution descriptor');
     }
-    return Object.freeze({ kind: 'scheduled_task', scheduledTaskId: value.scheduledTaskId });
+    return Object.freeze({
+      kind: 'scheduled_task',
+      scheduledTaskId: value.scheduledTaskId,
+      ...(value.executionFingerprint !== undefined
+        ? { executionFingerprint: value.executionFingerprint }
+        : {}),
+    });
   }
   if (value.kind === 'automation' || value.kind === 'legacy_automation') {
     if (

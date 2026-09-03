@@ -301,18 +301,7 @@ export async function runRuntimeHostSetupCli(
 }
 
 async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions): Promise<string> {
-  let legacyRootPath: string | undefined;
-  try {
-    legacyRootPath = (
-      await readRuntimeHostManagedServiceConfig(
-        resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
-      )
-    ).rootPath;
-  } catch (error) {
-    if (!(error instanceof RuntimeHostServiceManagerError) || error.code !== 'not_installed') {
-      throw error;
-    }
-  }
+  const legacyRootPath = (await readOptionalLegacyServiceConfig(options.clientDataRoot))?.rootPath;
   const path = resolve(
     options.rootPath ??
       legacyRootPath ??
@@ -323,6 +312,21 @@ async function resolveRuntimeHostSetupRootId(options: RuntimeHostSetupCliOptions
     await repairStorageRootAfterRemount({ path, kind: 'interactive' });
   }
   return (await resolveStorageRoot({ path, kind: 'interactive' })).rootId;
+}
+
+async function readOptionalLegacyServiceConfig(
+  clientDataRoot: string,
+): Promise<RuntimeHostManagedServiceConfig | null> {
+  try {
+    return await readRuntimeHostManagedServiceConfig(
+      resolveRuntimeHostManagedServiceConfigPath(clientDataRoot),
+    );
+  } catch (error) {
+    if (error instanceof RuntimeHostServiceManagerError && error.code === 'not_installed') {
+      return null;
+    }
+    throw error;
+  }
 }
 
 async function runRuntimeHostSetupLocked(
@@ -356,7 +360,10 @@ async function runRuntimeHostSupervisedSetupLocked(
 }> {
   emit({ kind: 'progress', phase: 'checking_environment' });
   const legacyServiceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const legacyBackend = deps.createBackend(legacyServiceId, options.clientDataRoot);
+  const legacyConfig = await readOptionalLegacyServiceConfig(options.clientDataRoot);
+  const legacyBackend = legacyConfig
+    ? deps.createBackend(legacyServiceId, options.clientDataRoot)
+    : undefined;
   const legacyCommon = {
     clientDataRoot: options.clientDataRoot,
     defaultRootPath: options.defaultRootPath,
@@ -366,11 +373,9 @@ async function runRuntimeHostSupervisedSetupLocked(
       ? { expectedTarget: legacyManagedTarget(options.expectedTarget, legacyServiceId) }
       : {}),
   } as const;
-  const legacyStatus = await deps.manageService(
-    { ...legacyCommon, action: 'status' },
-    legacyBackend,
-  );
-  const legacyConfig = legacyStatus.service.config;
+  const legacyStatus = legacyBackend
+    ? await deps.manageService({ ...legacyCommon, action: 'status' }, legacyBackend)
+    : undefined;
   const capability = await resolveStorageRoot({
     path: resolve(
       options.rootPath ??
@@ -386,7 +391,7 @@ async function runRuntimeHostSupervisedSetupLocked(
       deps.convergeOperator(currentConfig, desiredConfig),
     verifyOperator: deps.verifyOperator,
     resolveProvider: (provider) => deps.resolveLifecycleProvider(capability.rootId, provider),
-    ...(legacyConfig
+    ...(legacyConfig && legacyBackend
       ? legacyMigrationDeps(legacyConfig, legacyBackend, legacyServiceId, options.clientDataRoot)
       : {}),
   };
@@ -394,8 +399,8 @@ async function runRuntimeHostSupervisedSetupLocked(
     capability.rootId,
     lifecycleDeps,
     {
-      ...(legacyConfig ? { retirementSupervisor: legacyBackend } : {}),
-      ...(legacyConfig
+      ...(legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
+      ...(legacyBackend
         ? {
             activatePrevious: () =>
               deps
@@ -409,8 +414,10 @@ async function runRuntimeHostSupervisedSetupLocked(
   const current = recovered.kind === 'active' ? recovered.config : undefined;
   assertExpectedDeploymentGeneration(options.expectedTarget, current);
   const legacyToMigrate = current ? null : legacyConfig;
-  if (current && legacyConfig) await assertLegacyArtifactsAbsent(legacyBackend);
-  if (legacyToMigrate) await assertCompatibleExistingVersion(legacyStatus, options.version);
+  if (current && legacyBackend) await assertLegacyArtifactsAbsent(legacyBackend);
+  if (legacyToMigrate && legacyStatus) {
+    await assertCompatibleExistingVersion(legacyStatus, options.version);
+  }
   if (current && current.launch.package.version !== options.version && !options.updateExisting) {
     throw new RuntimeHostSetupError(
       'version_change_requires_update',
@@ -469,7 +476,7 @@ async function runRuntimeHostSupervisedSetupLocked(
         );
       }
       emit({ kind: 'progress', phase: 'installing_service' });
-      if (legacyToMigrate) {
+      if (legacyToMigrate && legacyBackend) {
         await legacyBackend.verifyDeployment(legacyToMigrate, {
           acceptLegacyConfigLaunch: true,
         });
@@ -486,8 +493,8 @@ async function runRuntimeHostSupervisedSetupLocked(
             : 'install',
         ...(current ? { current } : {}),
         desired,
-        ...(legacyToMigrate ? { retirementSupervisor: legacyBackend } : {}),
-        ...(legacyToMigrate
+        ...(legacyToMigrate && legacyBackend ? { retirementSupervisor: legacyBackend } : {}),
+        ...(legacyToMigrate && legacyBackend
           ? {
               activatePrevious: () =>
                 deps
@@ -696,15 +703,7 @@ async function runRuntimeHostOnDemandSetupLocked(
   }
   emit({ kind: 'progress', phase: 'checking_environment' });
   const legacyServiceId = resolveRuntimeHostManagedServiceId(options.clientDataRoot);
-  const legacyConfigPath = resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot);
-  let legacyConfig: RuntimeHostManagedServiceConfig | null = null;
-  try {
-    legacyConfig = await readRuntimeHostManagedServiceConfig(legacyConfigPath);
-  } catch (error) {
-    if (!(error instanceof RuntimeHostServiceManagerError) || error.code !== 'not_installed') {
-      throw error;
-    }
-  }
+  const legacyConfig = await readOptionalLegacyServiceConfig(options.clientDataRoot);
   const legacyBackend = legacyConfig
     ? deps.createBackend(legacyServiceId, options.clientDataRoot)
     : undefined;
@@ -911,7 +910,10 @@ async function runRuntimeHostOnDemandSetupLocked(
 
   activation = await deps.activateManaged({ rootId: capability.rootId });
   if (legacyConfig) {
-    await removeRuntimeHostServiceFile(legacyConfigPath, 'legacy service config');
+    await removeRuntimeHostServiceFile(
+      resolveRuntimeHostManagedServiceConfigPath(options.clientDataRoot),
+      'legacy service config',
+    );
     if (
       legacyConfig.managedDeploymentRoot &&
       resolve(legacyConfig.managedDeploymentRoot) !== resolve(config.deploymentRoot)

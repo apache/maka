@@ -132,12 +132,34 @@ export type WorkHubCoordinationProposal =
       readonly target:
         | { readonly disposition: 'delegate_existing'; readonly candidateRef: string }
         | { readonly disposition: 'create_new'; readonly title: string };
+    }
+  | {
+      readonly disposition: 'stop_work';
+      /**
+       * The expected state the Action Policy resolved against. It carries no
+       * authority of its own; the Action Gate revalidates it against current
+       * durable facts, so a resolution that has gone stale fails closed instead
+       * of stopping work the user never resolved.
+       *
+       * Which delegation the stop ends is not stated here. A client cannot
+       * prove which link is live, so the Gate resolves it from its own active
+       * links, and on replay from the durable claim this action already owns.
+       */
+      readonly expects: WorkHubCoordinationStopPreconditions;
     };
 
-export interface WorkHubCoordinationDestructiveConfirmation {
-  /** Kept outside strategy output so a model proposal cannot authorize Stop. */
-  readonly kind: 'user_correction';
+export interface WorkHubCoordinationStopPreconditions {
+  /**
+   * Session the resolved delegation was proposed against. Sole-active-delegation
+   * is proved by the Host from durable state under the admission lease, so the
+   * proposal states only what it resolved, never its own proof.
+   */
+  readonly targetSessionId: string;
 }
+
+export type WorkHubCoordinationDestructiveConfirmation =
+  /** Kept outside strategy output so a model proposal cannot authorize Stop. */
+  { readonly kind: 'user_correction' } | { readonly kind: 'user_stop' };
 
 export interface WorkHubCoordinationCreateContext {
   /** Trusted desktop context. Model/strategy output never contains a workspace or identity. */
@@ -174,6 +196,12 @@ export type WorkHubCoordinationActResult =
       readonly targetSessionId: string;
       readonly targetTurnId: string;
       readonly steered?: true;
+    }
+  | {
+      readonly disposition: 'stop_work';
+      readonly outcome: 'cancelled_pending' | 'stop_delivered' | 'already_terminal' | 'not_owned';
+      readonly targetSessionId: string;
+      readonly targetTurnId?: string;
     };
 
 export const WORKHUB_COORDINATION_OPERATION_SPECS = {
@@ -359,6 +387,9 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
   }
   if (proposal.disposition === 'replace') {
     const confirmation = decodeWorkHubCoordinationDestructiveConfirmation(input.confirmation);
+    if (confirmation.kind !== 'user_correction') {
+      throw invalidProtocolFrame('Invalid WorkHub replacement confirmation');
+    }
     if (proposal.target.disposition === 'delegate_existing') {
       if (input.candidateSetId === undefined || input.create !== undefined) {
         throw invalidProtocolFrame('Invalid WorkHub replacement context');
@@ -377,6 +408,17 @@ export function decodeWorkHubCoordinationActInput(value: unknown): WorkHubCoordi
       create: decodeWorkHubCoordinationCreateContext(input.create),
       confirmation,
     };
+  }
+  if (proposal.disposition === 'stop_work') {
+    const confirmation = decodeWorkHubCoordinationDestructiveConfirmation(input.confirmation);
+    if (
+      confirmation.kind !== 'user_stop' ||
+      input.candidateSetId !== undefined ||
+      input.create !== undefined
+    ) {
+      throw invalidProtocolFrame('Invalid WorkHub stop context');
+    }
+    return { ...base, confirmation };
   }
   if (
     input.candidateSetId !== undefined ||
@@ -439,6 +481,39 @@ export function decodeWorkHubCoordinationActResult(value: unknown): WorkHubCoord
       targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
       targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
       ...(exact.steered === true ? { steered: true as const } : {}),
+    };
+  }
+  if (result.disposition === 'stop_work') {
+    const exact = requireShapedRecord(
+      result,
+      'WorkHub Coordination stop result',
+      ['disposition', 'outcome', 'targetSessionId'],
+      ['targetTurnId'],
+    );
+    if (
+      exact.outcome !== 'cancelled_pending' &&
+      exact.outcome !== 'stop_delivered' &&
+      exact.outcome !== 'already_terminal' &&
+      exact.outcome !== 'not_owned'
+    ) {
+      throw invalidProtocolFrame('Invalid WorkHub stop outcome');
+    }
+    if (
+      ((exact.outcome === 'stop_delivered' || exact.outcome === 'not_owned') &&
+        exact.targetTurnId === undefined) ||
+      (exact.outcome === 'cancelled_pending' && exact.targetTurnId !== undefined)
+    ) {
+      throw invalidProtocolFrame('Invalid WorkHub stop target Turn');
+    }
+    return {
+      disposition: 'stop_work',
+      outcome: exact.outcome,
+      targetSessionId: requireEntityId(exact.targetSessionId, 'WorkHub target Session id'),
+      ...(exact.targetTurnId === undefined
+        ? {}
+        : {
+            targetTurnId: requireEntityId(exact.targetTurnId, 'WorkHub target Turn id'),
+          }),
     };
   }
   throw invalidProtocolFrame('Invalid WorkHub Coordination action disposition');
@@ -544,7 +619,23 @@ function decodeWorkHubCoordinationProposal(value: unknown): WorkHubCoordinationP
     }
     throw invalidProtocolFrame('Invalid WorkHub replacement target');
   }
+  if (proposal.disposition === 'stop_work') {
+    const exact = requireExactRecord(proposal, 'WorkHub stop proposal', ['disposition', 'expects']);
+    return {
+      disposition: 'stop_work',
+      expects: decodeWorkHubCoordinationStopPreconditions(exact.expects),
+    };
+  }
   throw invalidProtocolFrame('Invalid WorkHub Coordination proposal disposition');
+}
+
+function decodeWorkHubCoordinationStopPreconditions(
+  value: unknown,
+): WorkHubCoordinationStopPreconditions {
+  const expects = requireExactRecord(value, 'WorkHub stop preconditions', ['targetSessionId']);
+  return {
+    targetSessionId: requireEntityId(expects.targetSessionId, 'WorkHub target Session id'),
+  };
 }
 
 function decodeWorkHubCoordinationCreateContext(value: unknown): WorkHubCoordinationCreateContext {
@@ -558,10 +649,10 @@ function decodeWorkHubCoordinationDestructiveConfirmation(
   value: unknown,
 ): WorkHubCoordinationDestructiveConfirmation {
   const confirmation = requireExactRecord(value, 'WorkHub destructive confirmation', ['kind']);
-  if (confirmation.kind !== 'user_correction') {
+  if (confirmation.kind !== 'user_correction' && confirmation.kind !== 'user_stop') {
     throw invalidProtocolFrame('Invalid WorkHub destructive confirmation');
   }
-  return { kind: 'user_correction' };
+  return { kind: confirmation.kind };
 }
 
 function candidateSetId(value: unknown): string {

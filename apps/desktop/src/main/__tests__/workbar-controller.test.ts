@@ -469,9 +469,6 @@ describe('useWorkbarController', () => {
     await act(async () => controller().commands.toggleRight());
     assert.equal(controller().host.quotes?.some((panel) => panel.id === panelId), true);
 
-    await act(async () =>
-      controller().host.onPreparingStateChange?.(panelId, false),
-    );
     await act(async () => controller().host.onContentStateChange?.(panelId, true));
     const tab = controller().host.panelsState.right.tabs.find(
       (candidate) => candidate.id === `side-chat:${panelId}`,

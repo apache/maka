@@ -79,11 +79,7 @@
    Keyed on the sidenav handle's own testid, not on the class: every Astryx
    ResizeHandle carries that class, and a page's own inspector handle is a
    `position: relative` flex item, so the same `top` shoved its divider 36px
-   down the page — it started below the header's rule instead of meeting it.
-
-   e2e/sidebar-geometry.spec.ts drags this handle from its vertical centre and
-   asserts the column width changes, so this rule and sidebar.css's grab-zone
-   fix both fail loudly if the handle stops being grabbable. */
+   down the page — it started below the header's rule instead of meeting it. */
 .maka-shell-astryx [data-testid="astryx-sidenav-resize-handle"] {
   top: var(--h-titlebar);
 }
@@ -633,7 +629,11 @@ dialog:modal {
 }
 
 .sessionTurnRequestComposer {
-  padding: var(--space-3);
+  padding-block-start: var(--space-2);
+}
+
+.sessionTurnRequestReconnectButton {
+  display: inline-flex;
 }
 
 .sessionCollaborationReadOnly {
@@ -642,18 +642,48 @@ dialog:modal {
   text-align: center;
 }
 
+.sessionTurnRequestQueue {
+  margin-block-start: var(--space-2);
+}
+
+.sessionTurnRequestQueueToggle {
+  width: 100%;
+  justify-content: space-between;
+}
+
+.sessionTurnRequestQueueToggle svg {
+  transition: transform var(--duration-fast) var(--ease-standard);
+}
+
+.sessionTurnRequestQueueToggle svg.isExpanded {
+  transform: rotate(180deg);
+}
+
 .sessionTurnRequestHistory {
   display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  border-bottom: var(--border-width-hairline) solid var(--border);
+  max-height: 12rem;
+  overflow-y: auto;
+  margin-block-start: var(--space-1);
+  border-top: var(--border-width-hairline) solid var(--border);
 }
 
 .sessionTurnRequestHistoryRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2);
+}
+
+.sessionTurnRequestHistoryRow + .sessionTurnRequestHistoryRow {
+  border-top: var(--border-width-hairline) solid var(--border);
+}
+
+.sessionTurnRequestHistoryBody {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: baseline;
-  gap: var(--space-3);
+  gap: var(--space-0-5);
+  min-width: 0;
+  flex: 1;
 }
 
 .sessionTurnRequestHistoryText {
@@ -661,16 +691,4 @@ dialog:modal {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sessionTurnRequestComposer {
-  display: grid;
-  gap: var(--space-2);
-}
-
-.sessionTurnRequestComposerFooter {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
 }

@@ -29,6 +29,7 @@ import { describe, test } from 'node:test';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { SHELL_RUN_UPDATE_BUFFER_MAX_ENTRIES } from '@maka/core/shell-run-result';
 import { resolveConnectionModelCatalog } from '@maka/core/model-catalog';
+import { deriveConnectionSlug } from '@maka/core/llm-connections';
 import { type PermissionMode } from '@maka/core/permission';
 import { type OrchestrationMode } from '@maka/core/orchestration';
 import { type SessionEvent, type ShellRunUpdate } from '@maka/core/events';
@@ -181,6 +182,7 @@ function defaultOnboardingProviders(): OnboardingProviderEntry[] {
     ...provider,
     target: { kind: 'create', providerType: provider.providerType },
     label: provider.label,
+    suggestedSlug: deriveConnectionSlug(provider.providerType),
     enabledModelIds: [],
   }));
 }
@@ -819,6 +821,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -840,7 +844,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('sk-good');
     terminal.input('\r');
     await waitFor(() => verifyCalls.length === 2);
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     assert.deepEqual(verifyCalls, ['sk-bad', 'sk-good']);
 
     process.emit('SIGTERM');
@@ -877,11 +881,13 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/setup');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('配置模型提供商'));
-    terminal.input('\r');
+    terminal.input('\r'); // pick provider -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-test');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' ');
     terminal.input('\r');
     await waitFor(() => saveCalls === 1);
@@ -1002,6 +1008,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> arms the key prompt
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1059,6 +1067,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1166,6 +1176,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider A -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1183,9 +1195,11 @@ describe('Maka Pi TUI runner', () => {
         return false;
       }
     });
-    // Abandon A: Esc back to search, move to the second provider, pick it, and
-    // start typing its key (do not submit).
-    terminal.input('\x1b');
+    // Abandon A: Esc back through the identity step to the search, move to the
+    // second provider, pick it, and start typing its key (do not submit).
+    terminal.input('\x1b'); // key -> identity (slug field)
+    terminal.input('\x1b'); // identity slug -> name field
+    terminal.input('\x1b'); // identity name -> search
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), '1/3') !== null;
@@ -1194,7 +1208,9 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\x1b[B'); // down to the second provider
-    terminal.input('\r');
+    terminal.input('\r'); // pick provider B -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1260,6 +1276,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1269,7 +1287,7 @@ describe('Maka Pi TUI runner', () => {
     });
     terminal.input('sk-test');
     terminal.input('\r'); // verify ok -> models
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' '); // toggle the first model on
     terminal.input('\r'); // save A — deferred
     await waitFor(() => saveCalls.length === 1);
@@ -1280,11 +1298,11 @@ describe('Maka Pi TUI runner', () => {
         return false;
       }
     });
-    // Abandon A: Esc back to the key step.
+    // Abandon A: Esc back to the key step (3/4 with the identity step present).
     terminal.input('\x1b');
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '2/3') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), '3/4') !== null;
       } catch {
         return false;
       }
@@ -1301,7 +1319,7 @@ describe('Maka Pi TUI runner', () => {
     assert.doesNotMatch(plainTerminalOutput(terminal.screenOutput()), /Models enabled/u);
 
     terminal.input('\r'); // verify the now-existing Connection
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input('\r'); // preserve the prior selection and save again
     await waitFor(() => saveCalls.length === 2);
     assert.deepEqual(saveCalls[1]?.target, {
@@ -1347,24 +1365,30 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/setup');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
-    terminal.input('\r');
+    terminal.input('\r'); // pick provider -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-a');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' ');
     terminal.input('\r');
     await waitFor(() => saveCalls.length === 1);
 
     terminal.input('\x1b'); // models -> key
-    terminal.input('\x1b'); // key -> provider search
+    terminal.input('\x1b'); // key -> identity (slug field)
+    terminal.input('\x1b'); // identity slug -> name field
+    terminal.input('\x1b'); // identity name -> provider search
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('1/3'));
     terminal.input('\r'); // reselect the same add-account row as a new intent
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     resolveFirstSave(savedOnboardingRefreshFailed('first-account-id'));
     terminal.input('sk-b');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' ');
     terminal.input('\r');
     await waitFor(() => saveCalls.length === 2);
@@ -1417,10 +1441,13 @@ describe('Maka Pi TUI runner', () => {
     });
     // Filter down to the relay entries and pick the first (OpenAI Chat).
     terminal.input('relay');
-    terminal.input('\r');
-    // The relay flow inserts the base-URL step (2/4) before the key.
+    terminal.input('\r'); // pick relay -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> base URL step
+    // The create flow inserts the identity step (2/5) and the relay flow the
+    // base-URL step (3/5) before the key.
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Base URL'));
-    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('3/5'));
     // A malformed endpoint is rejected in place, before any host call.
     terminal.input('not a url');
     terminal.input('\r');
@@ -1439,7 +1466,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\r');
     await waitFor(() => verifyCalls.length === 1);
     assert.equal(verifyCalls[0]?.baseUrl, 'https://relay.example.test/v1');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('5/5'));
     terminal.input(' '); // toggle the discovered model on
     terminal.input('\r'); // save
     await waitFor(() => saveCalls.length === 1);
@@ -1493,6 +1520,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1502,7 +1531,7 @@ describe('Maka Pi TUI runner', () => {
     });
     terminal.input('sk-test');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' '); // toggle the first model on
     terminal.input('\r'); // save — deferred
     await waitFor(() => saveCalls.length === 1);
@@ -1510,7 +1539,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x1b');
     await waitFor(() => {
       try {
-        return latestPlainLineContaining(terminal.writes.join(''), '2/3') !== null;
+        return latestPlainLineContaining(terminal.writes.join(''), '3/4') !== null;
       } catch {
         return false;
       }
@@ -1518,7 +1547,7 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('\x03'); // Ctrl+C closes the wizard
     // The wizard frame leaving the screen proves the overlay released input
     // focus, so the next line routes to the editor.
-    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('2/3'));
+    await waitFor(() => !plainTerminalOutput(terminal.screenOutput()).includes('3/4'));
     // The save completes after the user left. Its projection may be older than
     // a newer attempt, so it must not replace the running model choices.
     resolveFirstSave(
@@ -1579,6 +1608,8 @@ describe('Maka Pi TUI runner', () => {
       }
     });
     terminal.input('\r'); // pick provider -> key phase
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => {
       try {
         return latestPlainLineContaining(terminal.writes.join(''), 'API key') !== null;
@@ -1635,11 +1666,13 @@ describe('Maka Pi TUI runner', () => {
     });
 
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
-    terminal.input('\r');
+    terminal.input('\r'); // pick provider -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-test');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' ');
     terminal.input('\r');
 
@@ -1650,6 +1683,216 @@ describe('Maka Pi TUI runner', () => {
       }),
     ]);
     assert.equal(terminal.stopCalls, 1);
+  });
+
+  test('wizard identity step sends a caller-chosen slug and name on the create target', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const saveCalls: OnboardingSaveInput[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [
+          {
+            providerType: 'openai',
+            label: 'OpenAI',
+            requiresBaseUrl: false,
+            target: { kind: 'create', providerType: 'openai' },
+            suggestedSlug: 'openai',
+            enabledModelIds: [],
+          },
+        ],
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+        save: async (input) => {
+          saveCalls.push(input);
+          return savedOnboardingResult();
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r'); // pick the only row -> identity step, name focused
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+    // Replace the prefilled provider label with a display name.
+    for (let i = 0; i < 'OpenAI'.length; i++) terminal.input('\x7f');
+    terminal.input('Work OpenAI');
+    terminal.input('\r'); // name -> slug field
+    // Replace the derived suggestion with a chosen slug.
+    for (let i = 0; i < 'openai'.length; i++) terminal.input('\x7f');
+    terminal.input('openai-work');
+    terminal.input('\r'); // slug -> key phase
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-live');
+    terminal.input('\r');
+    await waitFor(() => verifyCalls.length === 1);
+    assert.deepEqual(verifyCalls[0]?.target, {
+      kind: 'create',
+      providerType: 'openai',
+      slug: 'openai-work',
+      name: 'Work OpenAI',
+    });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+    terminal.input(' '); // toggle the model on
+    terminal.input('\r'); // save
+    await waitFor(() => saveCalls.length === 1);
+    assert.deepEqual(saveCalls[0]?.target, verifyCalls[0]?.target);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('accepting the identity defaults sends a bare create target any Host vintage takes', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const saveCalls: OnboardingSaveInput[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [
+          {
+            providerType: 'openai',
+            label: 'OpenAI',
+            requiresBaseUrl: false,
+            target: { kind: 'create', providerType: 'openai' },
+            suggestedSlug: 'openai',
+            enabledModelIds: [],
+          },
+        ],
+        save: async (input) => {
+          saveCalls.push(input);
+          return savedOnboardingResult();
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r'); // pick -> identity
+    terminal.input('\r'); // accept default name
+    terminal.input('\r'); // accept derived slug
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-live');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+    assert.deepEqual(saveCalls[0]?.target, { kind: 'create', providerType: 'openai' });
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
+  });
+
+  test('a slug_taken rejection bounces the wizard back to the identity step', async () => {
+    const terminal = new FakeTerminal();
+    const driver = new SlashCommandDriver();
+    const verifyCalls: OnboardingVerifyInput[] = [];
+    const saveCalls: OnboardingSaveInput[] = [];
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'bypass',
+      terminal,
+      onboarding: fakeOnboardingSurface({
+        providers: [
+          {
+            providerType: 'openai',
+            label: 'OpenAI',
+            requiresBaseUrl: false,
+            target: { kind: 'create', providerType: 'openai' },
+            suggestedSlug: 'openai',
+            enabledModelIds: [],
+          },
+        ],
+        verify: async (input) => {
+          verifyCalls.push(input);
+          return verifyCalls.length === 1
+            ? { kind: 'rejected' as const, reason: 'slug_taken' as const }
+            : { kind: 'ok', models: [{ id: 'gpt-5.5' }] };
+        },
+        save: async (input) => {
+          saveCalls.push(input);
+          return savedOnboardingResult();
+        },
+      }),
+    });
+
+    await waitForTuiPaint(terminal);
+    terminal.input('/setup');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
+    terminal.input('\r'); // pick -> identity
+    terminal.input('\r'); // accept default name
+    terminal.input('\r'); // accept derived slug
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-live');
+    terminal.input('\r');
+    // The Host-derived slug lost a race: the wizard returns to the identity
+    // step with the collision message, key draft cleared, slug text intact.
+    await waitFor(() => verifyCalls.length === 1);
+    await waitFor(() =>
+      plainTerminalOutput(terminal.screenOutput()).includes('That slug is already taken'),
+    );
+    assert.ok(plainTerminalOutput(terminal.screenOutput()).includes('2/4'));
+    for (let i = 0; i < 'openai'.length; i++) terminal.input('\x7f');
+    terminal.input('openai-9');
+    terminal.input('\r'); // slug -> key phase
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
+    terminal.input('sk-live');
+    terminal.input('\r');
+    await waitFor(() => verifyCalls.length === 2);
+    assert.deepEqual(verifyCalls[1]?.target, {
+      kind: 'create',
+      providerType: 'openai',
+      slug: 'openai-9',
+    });
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
+    terminal.input(' ');
+    terminal.input('\r');
+    await waitFor(() => saveCalls.length === 1);
+    assert.deepEqual(saveCalls[0]?.target, verifyCalls[1]?.target);
+
+    process.emit('SIGTERM');
+    await Promise.race([
+      run,
+      delay(CLOSE_BUDGET_MS).then(() => {
+        throw new Error('TUI did not close after SIGTERM');
+      }),
+    ]);
   });
 
   test('freezes and preserves the editor draft while a boundary request owns input', async () => {
@@ -1887,6 +2130,46 @@ describe('Maka Pi TUI runner', () => {
         answers: ['Extend', null, 'Use the existing seam'],
       },
     ]);
+
+    exitMaka(terminal);
+    await run;
+  });
+
+  test('a question overlay opened on a short terminal keeps its input row after the terminal grows (#4610)', async () => {
+    const terminal = new FakeTerminal(60, 12);
+    const driver = new LongOptionsQuestionDriver();
+    const run = runMakaPiTui({
+      title: 'Maka',
+      driver,
+      cwd: '/repo',
+      model: 'claude-sonnet-4-5',
+      connectionSlug: 'claude-subscription',
+      permissionMode: 'ask',
+      terminal,
+    });
+
+    terminal.input('choose');
+    terminal.input('\r');
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Pick a strategy'));
+    // Over the small budget the overlay self-clamps: the free-text input row
+    // and divider survive and the option tails are elided.
+    let screen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(screen.includes('方案甲'), 'option labels stay visible when clamped');
+    assert.ok(screen.includes('Other: type your answer'), 'input row must survive clamping');
+    assert.ok(!screen.includes('TAIL-A'), 'option tails are elided at 12 rows');
+
+    // Growing the terminal lifts the cap: the full options render and the
+    // input row stays on screen. A maxHeight frozen at open time would keep
+    // slicing to the old 8 rows here (review on #4615).
+    terminal.resize(60, 24);
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('TAIL-B'));
+    screen = plainTerminalOutput(terminal.screenOutput());
+    assert.ok(screen.includes('TAIL-A'), 'option tails render after the grow');
+    assert.ok(screen.includes('Other: type your answer'), 'input row must survive the resize');
+
+    terminal.input('\x1b');
+    await waitFor(() => driver.responses.length === 1);
+    assert.deepEqual(driver.responses, [{ requestId: 'question-1', answers: [null] }]);
 
     exitMaka(terminal);
     await run;
@@ -8038,11 +8321,13 @@ describe('Maka Pi TUI runner', () => {
     terminal.input('/setup');
     terminal.input('\r');
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('Set Up Provider'));
-    terminal.input('\r');
+    terminal.input('\r'); // pick provider -> identity step
+    terminal.input('\r'); // accept default name -> slug field
+    terminal.input('\r'); // accept derived slug -> key phase
     await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('API key'));
     terminal.input('sk-test');
     terminal.input('\r');
-    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('3/3'));
+    await waitFor(() => plainTerminalOutput(terminal.screenOutput()).includes('4/4'));
     terminal.input(' ');
     terminal.input('\r');
     await waitFor(() => saveCalls.length === 1);
@@ -8573,6 +8858,51 @@ class UserQuestionPromptDriver extends FakeSessionDriver {
   }
   async stop(): Promise<void> {
     this.stopCalls += 1;
+    this.release?.();
+  }
+  async rewindToTurn(): Promise<MakaSessionRewindResult> {
+    throw new Error('rewind not supported');
+  }
+  startNewSession(): Promise<void> {
+    return Promise.resolve();
+  }
+  getSessionId(): string {
+    return 'session-1';
+  }
+}
+
+class LongOptionsQuestionDriver extends FakeSessionDriver {
+  readonly responses: UserQuestionResponse[] = [];
+  private release: (() => void) | undefined;
+  preparePrompt(prompt: string): Promise<MakaPreparedSessionTurn> {
+    return prepareTestPrompt(this, prompt);
+  }
+  async *promptEvents(_prompt: string): AsyncIterable<SessionEvent> {
+    const filler = '兼容性说明'.repeat(12);
+    yield {
+      type: 'user_question_request',
+      id: 'event-question',
+      turnId: 'turn-1',
+      ts: 1,
+      requestId: 'question-1',
+      toolUseId: 'tool-1',
+      questions: [
+        {
+          question: 'Pick a strategy',
+          options: [
+            { label: '方案甲', description: `${filler}TAIL-A` },
+            { label: '方案乙', description: `${filler}TAIL-B` },
+          ],
+        },
+      ],
+    };
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+    yield { type: 'complete', id: 'complete-1', turnId: 'turn-1', ts: 2, stopReason: 'end_turn' };
+  }
+  async respondToUserQuestion(response: UserQuestionResponse): Promise<void> {
+    this.responses.push(response);
     this.release?.();
   }
   async rewindToTurn(): Promise<MakaSessionRewindResult> {

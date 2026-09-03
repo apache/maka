@@ -23,7 +23,10 @@ import type { ActiveInteractionRequestEvent } from '@maka/core/events';
 import { redactSecrets } from '@maka/core/redaction';
 import type { CreateSessionRequestInput } from '@maka/core/runtime-inputs';
 import { isSideConversationSession } from '@maka/core/side-conversation';
-import type { SessionChangedEvent, SessionChangedReason } from '@maka/core/session';
+import type {
+  SessionChangedEvent,
+  SessionChangedReason,
+} from '@maka/core/session';
 import type { BotRegistry } from '@maka/runtime/bots';
 import {
   type RuntimeHostSshOperatorActivationInput,
@@ -163,7 +166,7 @@ export interface DesktopRuntimeHostCandidateDeps {
       sessionId: string;
       kind: 'branch' | 'revision';
       sourceSessionId: string;
-      sourceTurnId: string;
+      sourceTurnId?: string;
       intent?: 'side_conversation';
     }) => Promise<void>;
   }) => SessionCopyCleanupAuthority;
@@ -780,7 +783,7 @@ export async function createDesktopRuntimeHostCandidate(
             await client.copySession(kind, {
               sourceSessionId,
               targetSessionId: sessionId,
-              sourceTurnId,
+              ...(sourceTurnId === undefined ? {} : { sourceTurnId }),
               ...(intent ? { intent } : {}),
             });
           },

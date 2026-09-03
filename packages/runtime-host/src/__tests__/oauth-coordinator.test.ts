@@ -26,6 +26,10 @@ import { test } from 'node:test';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import { OAuthDeviceAuthorizationExpiredError } from '@maka/runtime/oauth-provider-contracts';
 import {
+  GitHubCopilotEntitlementError,
+  GitHubCopilotEntitlementUnavailableError,
+} from '@maka/runtime/github-copilot-oauth-enrollment';
+import {
   parseOAuthSubscriptionTokens,
   type OAuthSubscriptionTokens,
 } from '@maka/runtime/subscription-credentials';
@@ -808,6 +812,206 @@ test('OAuth login rejects an experimentally disabled provider before presentatio
   }
 });
 
+test('GitHub Copilot enrollment runs its device grant on the Host, not in a Client', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const presentationCalls: string[] = [];
+    const client = await attachPresentation(
+      fixture.capabilities,
+      'client-copilot',
+      presentationCalls,
+    );
+    const tokens = tokenFixture('gho_account_token', {
+      base_url: 'https://api.githubcopilot.com',
+    });
+    let polls = 0;
+    const entitlementChecks: string[] = [];
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () => {
+        polls += 1;
+        return tokens;
+      },
+      verifyGitHubCopilotEntitlement: async (input) => {
+        entitlementChecks.push(input.tokens.access_token);
+        return [{ id: 'copilot-test-model' }];
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot', fixture.connection.connectionId),
+      operationContext('client-copilot', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot');
+    assert.equal(terminal.phase, 'authenticated');
+    assert.equal(terminal.connection.providerType, 'github-copilot');
+    // The one-time code reaches the user through the Host's presentation seam,
+    // so no Client ever holds the grant or the credential it produces.
+    assert.deepEqual(presentationCalls, ['client-copilot']);
+    assert.equal(polls, 1);
+    // The account was adopted only after the provider confirmed it reaches a model.
+    assert.deepEqual(entitlementChecks, ['gho_account_token']);
+    assert.equal(fixture.invalidations, 1);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment refuses an account that reaches no Copilot model', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-entitlement', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // A GitHub account without a live Copilot subscription authorizes the
+      // grant and then reaches nothing.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementError();
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot-entitlement', fixture.connection.connectionId),
+      operationContext('client-copilot-entitlement', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-entitlement');
+    assert.equal(terminal.phase, 'failed');
+    // The account is what was refused, not the authorization the user completed.
+    assert.equal(terminal.failure, 'provider_rejected');
+    // Nothing was adopted: no credential, no backend invalidation, no residency.
+    const resolved = await fixture.stores.operations.resolveExecutionConnection({
+      kind: 'catalog_slug',
+      connectionSlug: fixture.connection.slug,
+    });
+    assert.equal(
+      resolved.kind === 'ready' ? resolved.secretMaterial.connection : undefined,
+      undefined,
+    );
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('GitHub Copilot enrollment reports an unanswered entitlement check as retryable', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const client = await attachPresentation(fixture.capabilities, 'client-copilot-unavailable', []);
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: () => true,
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => {
+        fixture.invalidations += 1;
+      },
+      onFatal: (error) => {
+        throw error;
+      },
+      now: () => NOW,
+      startGitHubCopilotAuthorization: async () => ({
+        deviceCode: 'host-only-device-code',
+        userCode: 'ABCD-1234',
+        verificationUrl: 'https://github.com/login/device',
+        expiresAt: NOW + 900_000,
+        intervalMs: 5_000,
+      }),
+      pollGitHubCopilotAuthorization: async () =>
+        tokenFixture('gho_account_token', { base_url: 'https://api.githubcopilot.com' }),
+      // The Copilot API never answered — a 429, a 5xx, or a dropped
+      // connection. Nothing was learned about the subscription.
+      verifyGitHubCopilotEntitlement: async () => {
+        throw new GitHubCopilotEntitlementUnavailableError(503);
+      },
+    });
+
+    const started = await coordinator.handlers['oauth.login.start'](
+      oauthStart('attempt-copilot-unavailable', fixture.connection.connectionId),
+      operationContext('client-copilot-unavailable', fixture.acquireResidency),
+    );
+    assert.equal(started.ok, true);
+    const terminal = await waitForTerminal(coordinator, 'attempt-copilot-unavailable');
+    assert.equal(terminal.phase, 'failed');
+    // Not provider_rejected: telling a subscribed user their account is
+    // ineligible sends them after a plan they already have.
+    assert.equal(terminal.failure, 'authorization_failed');
+    assert.equal(fixture.invalidations, 0);
+    assert.equal(fixture.activeResidencies, 0);
+    await coordinator.close();
+    client.close();
+  });
+});
+
+test('OAuth enrollment query reports the Host gate answer per provider', async () => {
+  await withFixture('github-copilot', async (fixture) => {
+    const coordinator = new HostOAuthCoordinator({
+      runtimePolicy: fixture.stores,
+      activation: fixture.activation,
+      clientCapabilities: fixture.capabilities,
+      isProviderEnabled: (candidate) => candidate === 'github-copilot',
+      acquireResidency: fixture.acquireResidency,
+      invalidateBackends: async () => undefined,
+      onFatal: (error) => {
+        throw error;
+      },
+    });
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'github-copilot' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'github-copilot', enabled: true } },
+    );
+    assert.deepEqual(
+      await coordinator.handlers['oauth.enrollment.query'](
+        { provider: 'openai-codex' },
+        operationContext('client-enrollment', fixture.acquireResidency),
+      ),
+      { ok: true, result: { provider: 'openai-codex', enabled: false } },
+    );
+    await coordinator.close();
+  });
+});
+
 test('OAuth credential commit excludes overlapping backend activations in both directions', async () => {
   await withFixture('openai-codex', async (fixture) => {
     const client = await attachPresentation(fixture.capabilities, 'client-activation', []);
@@ -984,7 +1188,7 @@ function operationContext(connectionId: string, acquireResidency: () => { releas
 }
 
 async function withFixture(
-  providerType: 'openai-codex' | 'xai-oauth',
+  providerType: 'openai-codex' | 'xai-oauth' | 'github-copilot',
   run: (fixture: {
     root: string;
     stores: RuntimePolicyStoresWriter;

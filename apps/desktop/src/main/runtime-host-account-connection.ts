@@ -17,11 +17,7 @@
  * under the License.
  */
 
-import {
-  PROVIDER_REGISTRY,
-  providerFallbackModelIds,
-  type ProviderType,
-} from '@maka/core/llm-connections';
+import { PROVIDER_REGISTRY, type ProviderType } from '@maka/core/llm-connections';
 import type {
   ConnectionCatalogEntry,
   ConnectionCatalogSnapshot,
@@ -31,7 +27,6 @@ import type { DesktopRuntimeHostClient } from './runtime-host-client.js';
 
 export type RuntimeHostAccountConnectionClient = Pick<
   DesktopRuntimeHostClient,
-  | 'createConnection'
   | 'deleteCredential'
   | 'fetchConnectionModels'
   | 'loadConnectionCatalog'
@@ -39,67 +34,6 @@ export type RuntimeHostAccountConnectionClient = Pick<
   | 'setDefaultConnectionTarget'
   | 'updateConnection'
 >;
-
-export interface RuntimeHostAccountConnectionIdentity {
-  readonly providerType: ProviderType;
-  readonly slug: string;
-}
-
-export async function ensureRuntimeHostAccountConnection(
-  client: RuntimeHostAccountConnectionClient,
-  identity: RuntimeHostAccountConnectionIdentity,
-  enabledModelIds?: readonly string[],
-): Promise<ConnectionCatalogEntry> {
-  let catalog = await client.loadConnectionCatalog();
-  const existing = findRuntimeHostAccountConnection(catalog, identity.providerType);
-  const desiredModels =
-    enabledModelIds && enabledModelIds.length > 0
-      ? enabledModelIds
-      : existing?.enabledModelIds.length
-        ? existing.enabledModelIds
-        : providerFallbackModelIds(PROVIDER_REGISTRY[identity.providerType]);
-  if (!existing) {
-    const slugOwner = catalog.connections.find(({ slug }) => slug === identity.slug);
-    if (slugOwner) {
-      throw new Error(`Connection slug belongs to ${slugOwner.providerType}`);
-    }
-    const defaults = PROVIDER_REGISTRY[identity.providerType];
-    const created = await client.createConnection(catalog.revision, {
-      slug: identity.slug,
-      name: defaults.label,
-      providerType: identity.providerType,
-      ...(defaults.baseUrl ? { baseUrl: defaults.baseUrl } : {}),
-      enabled: true,
-      enabledModelIds: [...desiredModels],
-    });
-    if (created.kind !== 'committed') {
-      throw new Error(`Unable to create account Connection: ${created.kind}`);
-    }
-    catalog = await client.loadConnectionCatalog();
-    const connection = findRuntimeHostAccountConnection(catalog, identity.providerType);
-    if (!connection) throw new Error('Account Connection was not committed');
-    return connection;
-  }
-  if (
-    existing.enabled &&
-    sameStrings(existing.enabledModelIds, desiredModels)
-  ) {
-    return existing;
-  }
-  const updated = await client.updateConnection(
-    { connectionId: existing.connectionId, revision: existing.revision },
-    accountConnectionChanges(existing, true, desiredModels),
-  );
-  if (updated.kind !== 'committed') {
-    throw new Error(`Unable to prepare account Connection: ${updated.kind}`);
-  }
-  const prepared = findRuntimeHostAccountConnection(
-    await client.loadConnectionCatalog(),
-    identity.providerType,
-  );
-  if (!prepared) throw new Error('Account Connection disappeared after preparation');
-  return prepared;
-}
 
 export async function synchronizeRuntimeHostAccountConnection(
   client: RuntimeHostAccountConnectionClient,
@@ -140,38 +74,6 @@ export async function synchronizeRuntimeHostAccountConnectionById(
   if (selected.kind !== 'committed') {
     throw new Error(`Unable to select account default: ${selected.kind}`);
   }
-}
-
-export async function setRuntimeHostAccountCredential(
-  client: RuntimeHostAccountConnectionClient &
-    Pick<DesktopRuntimeHostClient, 'setCredential'>,
-  connection: ConnectionCatalogEntry,
-  secret: string,
-): Promise<void> {
-  const locator = runtimeHostAccountCredential(connection);
-  const current = await client.queryCredential(locator);
-  const result = await client.setCredential({
-    locator,
-    expected: current?.configured
-      ? { credentialId: current.credentialId, revision: current.revision }
-      : null,
-    secret,
-  });
-  if (result.kind !== 'committed') {
-    throw new Error(`Unable to save account credential: ${result.kind}`);
-  }
-}
-
-export async function disableRuntimeHostAccountConnection(
-  client: RuntimeHostAccountConnectionClient,
-  providerType: ProviderType,
-): Promise<void> {
-  const connection = findRuntimeHostAccountConnection(
-    await client.loadConnectionCatalog(),
-    providerType,
-  );
-  if (!connection) return;
-  return disableRuntimeHostAccountConnectionById(client, connection.connectionId);
 }
 
 export async function disableRuntimeHostAccountConnectionById(
@@ -252,8 +154,4 @@ function accountConnectionChanges(
     // leaves the stored table untouched, so this path can never clobber
     // declarations another writer made.
   };
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
 }

@@ -19,6 +19,12 @@
 
 export {
   readWorkHubRequestIntent,
-  workHubCorrectionTargetsSession,
+  workHubCorrectionAdmitsReference,
 } from '@maka/core/workhub-creation-intent';
 export type { WorkHubRequestIntent } from '@maka/core/workhub-creation-intent';
+export { createExactNameSessionResolver } from '@maka/core/workhub-session-resolver';
+export type {
+  WorkHubResolverSession,
+  WorkHubSessionResolution,
+  WorkHubSessionResolver,
+} from '@maka/core/workhub-session-resolver';

@@ -112,7 +112,9 @@ export async function smokePackagedFilesystemWorker(
 
 function assertSingleArchitecture(output, subject, expectedArch) {
   const architectures = output.trim().split(/\s+/).filter(Boolean);
-  if (architectures.length !== 1 || architectures[0] !== expectedArch) {
+  // lipo names Intel Mach-O slices x86_64; Node and the release target use x64.
+  const machoArch = expectedArch === 'x64' ? 'x86_64' : expectedArch;
+  if (architectures.length !== 1 || architectures[0] !== machoArch) {
     throw new Error(
       `${subject} must contain only ${expectedArch}, found: ${architectures.join(', ')}`,
     );

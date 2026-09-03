@@ -473,6 +473,9 @@ export class RuntimeHostSessionProjector {
         turnId: root.turnId,
         ts: this.#now(),
         stopReason: 'end_turn',
+        ...(root.contextCompactionOutcome
+          ? { contextCompactionOutcome: root.contextCompactionOutcome }
+          : {}),
       });
     } else if (root.status === 'failed') {
       events.push({

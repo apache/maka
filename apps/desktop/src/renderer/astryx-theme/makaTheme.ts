@@ -174,8 +174,14 @@ export const makaTheme = defineTheme({
     // sites existed and the five-selector bridge in astryx-mount.css reached
     // exactly five of them (issue #3446 F2); the other 57 were the drift.
     // Root is the right place: nothing in maka.css re-declares this pair below
-    // the root except the on-dark/on-light blocks and the four Banner status
-    // rules, both of which are deliberate inversions that must keep winning.
+    // the root except the on-dark/on-light blocks (see the surface note at the
+    // bottom of this file) and the four Banner status rules, both of which are
+    // deliberate inversions that must keep winning.
+    //
+    // Pointing an Astryx token at a product var carries an obligation: the var
+    // has to encode its own modes, because `color-scheme` — not a selector — is
+    // what an inverted surface flips. maka-tokens.css states that rule and
+    // ink-ladder-contract holds the tokens named here to it.
     //
     // --color-text-disabled is deliberately NOT here. Astryx's
     // light-dark(#a3a3a3, #525252) measures 2.52:1 / 2.29:1, under the AA floor
@@ -214,5 +220,32 @@ export const makaTheme = defineTheme({
     // font-size the rest of the ladder keeps out (DESIGN.md §6). 28px is what
     // its `1.75rem` resolves to at a 16px root: no pixel moves.
     '--radius-page': '28px',
+  },
+  // Solid inverted surfaces carry ONE ink tier — DESIGN.md §3, the Tinted
+  // Surface Rule. Not by analogy with the 0.24 tints: the reason here is that
+  // --color-on-dark and --color-on-light are one flat value each, shared by
+  // every inverted surface, so a rung muted against THIS plate cannot be
+  // written at all. The choice is one tier or an unmuted grey that ignores the
+  // surface under it. The measurement agrees rather than decides — on the error
+  // toast's #AA071E the muted rung reaches 2.99:1, the number Astryx's own
+  // secondary reaches there too — so this is a deliberate deviation, not a
+  // repair.
+  //
+  // Astryx's defaults already point text/icon PRIMARY at the on-colors here;
+  // naming secondary the same value is what collapses the tier. Everything
+  // else on these surfaces follows `color-scheme` on its own, now that the
+  // palette carries its modes in `light-dark()` values instead of a `.dark`
+  // selector (maka-tokens.css).
+  onDark: {
+    tokens: {
+      '--color-text-secondary': 'var(--color-on-dark)',
+      '--color-icon-secondary': 'var(--color-on-dark)',
+    },
+  },
+  onLight: {
+    tokens: {
+      '--color-text-secondary': 'var(--color-on-light)',
+      '--color-icon-secondary': 'var(--color-on-light)',
+    },
   },
 });

@@ -129,11 +129,7 @@ test('requires plaintext confirmation and reports the issued invitation routes',
       name: 'Peer Lab',
       transport: {
         kind: 'libp2p-direct',
-        peerId: '12D3KooWpeer',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: [
-          '/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay',
-        ],
+        reachability: peerReachability(),
       },
     }),
   );
@@ -150,6 +146,22 @@ test('requires plaintext confirmation and reports the issued invitation routes',
     { kind: 'peer', coordinationRelayCount: 1 },
   );
 });
+
+function peerReachability() {
+  return {
+    lease: {
+      version: 1 as const,
+      peerId: '12D3KooWpeer',
+      revision: 1,
+      issuedAt: 1,
+      expiresAt: 2,
+      directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+      coordinationRoutes: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+    },
+    publicKey: Buffer.from('public').toString('base64url'),
+    signature: Buffer.from('signature').toString('base64url'),
+  };
+}
 
 test('treats an unavailable collaboration authority as an empty background inbox', async () => {
   const handlers = new Map<string, IpcHandler>();

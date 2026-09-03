@@ -39,8 +39,11 @@ The generic side-conversation entry extends that foundation:
 - an empty side chat adopts its first accepted prompt as the tab title and
   keeps that title stable through later follow-ups and panel moves;
 - selecting transcript text still appends quote context to the same panel;
-- the fork is created eagerly when the panel opens, with a short preparation
-  state before the Composer receives focus;
+- the Composer is usable the moment the panel opens; the fork is created lazily
+  on the first send — branching from the latest settled turn when one exists, or
+  with an empty context (inheriting the source's model, cwd, and permission but
+  no transcript) when the source has not completed a turn yet, so opening the
+  panel never depends on the main Session's turn state;
 - the child receives the `mode:side_conversation` label, which adds a system
   boundary declaring inherited parent history reference-only;
 - the main Session and its active turn continue independently;
@@ -108,14 +111,18 @@ a fixed menu wired to the side-chat feature.
 
 ## Desktop Side-Chat Lifecycle
 
-Opening a new side chat first installs a non-closable
-`sidechat-loading:<parent>:<index>` tab. It then forks the latest parent state
-and replaces the loading tab with `sidechat:<conversation-id>`.
+Codex installs a non-closable `sidechat-loading:<parent>:<index>` tab, forks the
+latest parent state, then swaps in `sidechat:<conversation-id>`.
 
-Maka now matches that user-visible loading contract while keeping its stable
-panel id: the tab shows a spinner and cannot be closed, dragged, reordered, or
-moved until the eager fork is ready. It then becomes the ordinary closeable
-Side Chat tab without remounting the panel draft.
+Maka diverges from that eager loading contract: opening a side chat installs a
+normal `sidechat:<conversation-id>` tab whose Composer is usable immediately —
+there is no loading tab or preparation spinner, and the tab is closeable,
+draggable, and reorderable from the start. The fork is created lazily on the
+first send: it branches from the latest settled parent turn when one exists, or
+forks with an empty context (inheriting the parent's model, cwd, and permission
+but no transcript, and no in-progress Todo) when the parent has not completed a
+turn yet. Opening the panel never depends on the parent's turn state, and no
+mid-flight turn is ever copied.
 
 The fork is marked both ephemeral and side-conversation, excluded from recent
 conversation surfaces, and receives a developer boundary that:
@@ -137,7 +144,7 @@ The panel visibility controller deliberately distinguishes hiding, closing, and
 moving:
 
 - activating or opening a tab reveals its target panel;
-- the loading tab means a newly created side chat reveals the panel immediately;
+- opening a side chat reveals its panel immediately, before any fork exists;
 - manually hiding a panel preserves its tabs, active tab, draft, and stream;
 - selected-text follow-up searches the right panel first, then the bottom
   panel, preferring each panel's active side chat before its first side chat;
@@ -268,7 +275,8 @@ Maka now has the first usable slice of the same architecture:
   without changing Skill token serialization or draft ownership;
 - first-prompt title adoption for side chats opened from the titlebar,
   launcher, command palette, or selected-text flow;
-- a non-closable, non-draggable loading tab while the eager fork is prepared;
+- an immediately usable Composer on open, with the fork created lazily on the
+  first send (no loading tab or preparation spinner);
 - stable per-kind tab icons, with Side Chat switching from its normal icon to
   a spinner while a turn is active;
 - one replaceable preview tab per panel for automatically opened artifacts;
@@ -362,16 +370,15 @@ pass were fixed at their ownership boundaries:
   inherited model and a responsive 160px maximum; the wider bottom panel keeps
   the normal Composer geometry.
 
-The eager fork also has a short accessible preparation status. Once ready, the
-empty transcript returns to the same blank state as an ordinary chat, and the
-side Composer receives focus. An interrupted development process was also
+The side Composer receives focus as soon as the panel opens (no preparation
+status, since there is no eager fork). The empty transcript shows the same blank
+state as an ordinary chat. An interrupted development process was also
 restarted against the same workspace to verify that its orphaned fork was
 removed before the session list rendered.
 
-The latest visual pass covered the dark command palette, dark right-panel
-loading and ready states, and the light bottom-panel state. The loading tab
-keeps a stable footprint, removes its close affordance while busy, and restores
-the normal tab chrome after the fork commits.
+The latest visual pass covered the dark command palette, the dark right-panel
+and light bottom-panel states. A newly opened side chat shows a normal,
+closeable tab immediately — there is no separate loading tab or busy footprint.
 
 The active-turn pass confirms that Side Chat changes only its tab icon to a
 spinner while processing. The close affordance remains available during a

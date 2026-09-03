@@ -705,6 +705,7 @@ const emptyUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW },
   totalRequests: 0,
   totalCostUsd: 0,
+  totalDurationMs: 0,
   totalTokens: {
     input: 0,
     output: 0,
@@ -736,6 +737,7 @@ const populatedUsageSummary: WorkbarSessionUsageSummary = {
   range: { from: NOW, to: NOW + 43_600 },
   totalRequests: 3,
   totalCostUsd: 0.0243,
+  totalDurationMs: 38_400,
   totalTokens: {
     input: 81_300,
     output: 740,
@@ -901,6 +903,21 @@ function bridge(options: {
       branchFromTurn: async () => ({ ok: true, session: SIDE_CHAT_SESSION }),
       cleanupSessionCopy: async () => undefined,
       abandonSessionCopy: async () => undefined,
+      compact: async () => ({
+        kind: 'finished' as const,
+        turn: {
+          sessionId: SIDE_CHAT_SESSION.id,
+          turnId: 'story-side-chat-compact-turn',
+          runId: 'story-side-chat-compact-run',
+          status: 'completed' as const,
+          terminalEventId: 'story-side-chat-compact-complete',
+          contextCompactionOutcome: {
+            kind: 'unchanged' as const,
+            reason: 'already_current',
+          },
+        },
+        outcome: { kind: 'unchanged' as const, reason: 'already_current' },
+      }),
       send: async () => ({ ok: true, turnId: 'story-side-chat-turn' }),
       stop: async () => undefined,
       steer: async () => ({ kind: 'started', turnId: 'story-side-chat-turn' }),

@@ -41,16 +41,13 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
   ].join('\n'));
   await composer.press('Enter');
 
-  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
-    timeout: 20_000,
-  });
   const codeBlocks = page.locator('.maka-markdown-code[data-maka-code-layout="single-line"]');
   const viewport = codeBlocks.last().locator('[role="group"]');
   await expect(viewport).toBeVisible();
+  await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
+    timeout: 20_000,
+  });
 
-  await expect.poll(
-    () => viewport.evaluate((element) => element.scrollWidth - element.clientWidth),
-  ).toBeGreaterThan(0);
   const metrics = await viewport.evaluate((element) => {
     const node = element as HTMLElement;
     const rect = node.getBoundingClientRect();
@@ -61,41 +58,20 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     const lineRect = line.getBoundingClientRect();
     return {
       rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
       lineTopInset: lineRect.top - codeRect.top,
       lineBottomInset: codeRect.bottom - lineRect.bottom,
     };
   });
+  expect(metrics.scrollWidth).toBeGreaterThan(metrics.clientWidth);
   expect(Math.abs(metrics.lineTopInset - metrics.lineBottomInset)).toBeLessThanOrEqual(1);
 
   const overflowX = await viewport.evaluate((element) => getComputedStyle(element).overflowX);
   expect(overflowX).toBe('auto');
 
-  const code = viewport.locator('code');
-  const codeBox = await code.boundingBox();
-  if (!codeBox) throw new Error('code line has no visible bounds');
-  const textY = codeBox.y + Math.min(codeBox.height / 2, 18);
-  await page.mouse.move(metrics.rect.x + 24, textY);
-  await page.mouse.down();
-  await page.mouse.move(metrics.rect.x + metrics.rect.width + 50, textY, {
-    steps: 20,
-  });
-  await expect.poll(
-    () => viewport.evaluate((element) => (element as HTMLElement).scrollLeft),
-  ).toBeGreaterThan(0);
-  await expect.poll(
-    () => viewport.evaluate(() => window.getSelection()?.toString().length ?? 0),
-  ).toBeGreaterThan(10);
-  const afterSelectionDrag = await viewport.evaluate((element) => ({
-    scrollLeft: (element as HTMLElement).scrollLeft,
-    selection: window.getSelection()?.toString() ?? '',
-  }));
-  await page.mouse.up();
-
   const viewportBox = await viewport.boundingBox();
   if (!viewportBox) throw new Error('native scroll viewport has no visible bounds');
-  await viewport.evaluate((element) => {
-    (element as HTMLElement).scrollLeft = 0;
-  });
   await page.mouse.move(
     viewportBox.x + viewportBox.width / 2,
     viewportBox.y + viewportBox.height / 2,
@@ -120,6 +96,36 @@ test('a one-line Markdown code block exposes native and selection horizontal scr
     (element) => (element as HTMLElement).scrollLeft,
   );
 
+  await viewport.evaluate((element) => {
+    (element as HTMLElement).scrollLeft = 0;
+    window.getSelection()?.removeAllRanges();
+  });
+  const line = viewport.locator('code > [data-line]').first();
+  // Font loading reflows the glyphs; measure only after it settles or the
+  // anchor can land outside the text and no selection ever forms.
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const lineBox = await line.boundingBox();
+  if (!lineBox) throw new Error('code line has no visible bounds');
+  const textY = lineBox.y + Math.min(lineBox.height / 2, 18);
+  await page.mouse.move(lineBox.x + 24, textY);
+  await page.mouse.down();
+  // Prove the selection anchored before the long auto-scroll drag.
+  await page.mouse.move(lineBox.x + 90, textY, { steps: 6 });
+  await expect.poll(
+    () => viewport.evaluate(() => window.getSelection()?.toString().length ?? 0),
+  ).toBeGreaterThan(0);
+  await page.mouse.move(metrics.rect.x + metrics.rect.width + 50, textY, { steps: 20 });
+  await expect.poll(
+    () => viewport.evaluate((element) => (element as HTMLElement).scrollLeft),
+  ).toBeGreaterThan(0);
+  await expect.poll(
+    () => viewport.evaluate(() => window.getSelection()?.toString().length ?? 0),
+  ).toBeGreaterThan(10);
+  const afterSelectionDrag = await viewport.evaluate((element) => ({
+    scrollLeft: (element as HTMLElement).scrollLeft,
+    selection: window.getSelection()?.toString() ?? '',
+  }));
+  await page.mouse.up();
   expect(afterWheelScroll).toBeGreaterThan(0);
   expect(afterKeyboardScroll).toBeGreaterThan(0);
   expect(afterSelectionDrag.scrollLeft).toBeGreaterThan(0);

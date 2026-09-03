@@ -45,7 +45,6 @@ export interface AppShellTurnPresentationContext {
   activeId: string | undefined;
   pendingTurnActions: ReadonlySet<string>;
   uiLocale: UiLocale;
-  pendingKeyOf(sessionId: string, turnId: string, actionId: TurnFooterActionMeta['id']): string;
 }
 
 export interface AppShellTurnPresentationDerivation {
@@ -129,7 +128,10 @@ export function createAppShellTurnPresentationDerivation(): AppShellTurnPresenta
       const lineageEntry = lineage.get(turn.turnId);
       const pendingForTurn = new Set<TurnFooterActionMeta['id']>();
       for (const id of PENDING_ACTION_IDS) {
-        if (context.activeId && context.pendingTurnActions.has(context.pendingKeyOf(context.activeId, turn.turnId, id))) {
+        if (
+          context.activeId &&
+          context.pendingTurnActions.has(`${context.activeId}:${turn.turnId}:${id}`)
+        ) {
           pendingForTurn.add(id);
         }
       }

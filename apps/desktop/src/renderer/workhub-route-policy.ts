@@ -18,9 +18,12 @@
  */
 
 import {
+  createExactNameSessionResolver,
   readWorkHubRequestIntent,
-  workHubCorrectionTargetsSession,
+  workHubCorrectionAdmitsReference,
   type WorkHubRequestIntent,
+  type WorkHubResolverSession,
+  type WorkHubSessionResolver,
 } from './application/contracts/workhub-request-intent.js';
 
 interface WorkHubRouteTarget {
@@ -58,7 +61,41 @@ export type WorkHubRouteDecision =
   | { kind: 'discussion' }
   | { kind: 'new_session'; title: string; correctedFrom?: WorkHubRouteTarget };
 
+
+/**
+ * Both reasons are about the reference itself — what the user's words name —
+ * which is the only question this policy can answer on its own.
+ *
+ * Whether the named Session still owns work a stop can reach is not asked
+ * here. Only the Host knows that, it proves it under the admission lease
+ * anyway, and a renderer that answered from its own view would contradict the
+ * Host in exactly the windows where its view is empty: a second window, a
+ * reload, a reconnect. So a resolved reference submits, and a Session with
+ * nothing to stop is refused by the Gate.
+ */
+export type WorkHubStopClarificationReason =
+  /** The stop names no safe target of its own — a pronoun or a bare noun. */
+  | 'stop_target_required'
+  /** The stop names more than one existing Session. */
+  | 'stop_target_ambiguous'
+  /** The Host refused the stop; its conflict is the whole answer. */
+  | 'stop_target_unavailable';
+
+/**
+ * A stop clarification never offers route options. Choosing one re-sends the
+ * original text as work, and stop-shaped text is exactly what must not be
+ * delivered to a Session that way, so the reason carries the whole answer.
+ */
+export type WorkHubStopRouteDecision =
+  | { kind: 'not_requested' }
+  | { kind: 'clarification'; reason: WorkHubStopClarificationReason }
+  | { kind: 'target'; target: WorkHubRouteTarget };
+
 export interface WorkHubRoutePolicy {
+  resolveStop(input: {
+    text: string;
+    sessions: WorkHubRoutableSession[];
+  }): WorkHubStopRouteDecision;
   resolve(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
@@ -101,15 +138,67 @@ const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
  * It owns only transient inference context. Session identity, transcript,
  * execution state, and recovery continue to come from the Session port.
  */
-export function createWorkHubRoutePolicy(): WorkHubRoutePolicy {
-  return createWorkHubRoutePolicyVisit();
+export function createWorkHubRoutePolicy(
+  sessionResolver: WorkHubSessionResolver = createExactNameSessionResolver(),
+): WorkHubRoutePolicy {
+  return createWorkHubRoutePolicyVisit(sessionResolver);
 }
 
-function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
+function createWorkHubRoutePolicyVisit(
+  sessionResolver: WorkHubSessionResolver,
+): WorkHubRoutePolicy {
   let currentFocus: WorkHubRouteTarget | undefined;
   let previousFocus: WorkHubRouteTarget | undefined;
 
   return {
+    // The stop Action Policy. Action Intent says only that the user issued a
+    // stop imperative and what work it refers to; the shared Session Resolver
+    // recalls which visible Sessions that reference names; this policy decides
+    // whether the resolution is sufficient for a destructive action.
+    //
+    // Direct stop is a narrow claim over WorkHub's own active delegations, not
+    // a filter over every sentence that begins with "stop". A reference that
+    // recalls no WorkHub identity — "Stop using the deprecated API" — is
+    // ordinary work and falls through to routing; an unsafe or anaphoric
+    // reference still fails closed, and a resolved Session that is not uniquely
+    // stoppable says why.
+    resolveStop({ text, sessions }) {
+      const intent = readWorkHubRequestIntent(text);
+      if (!intent.stop.cue) return { kind: 'not_requested' };
+      const reference = intent.stop.imperative ? intent.stop.target : undefined;
+      if (!reference) {
+        return { kind: 'clarification', reason: 'stop_target_required' };
+      }
+      const sessionByRef = new Map(
+        sessions.map((session) => [session.target.sessionId, session]),
+      );
+      const resolution = sessionResolver.resolve({
+        reference: { text: reference },
+        sessions: sessions.map(resolverSession),
+      });
+      if (resolution.kind === 'none') return { kind: 'not_requested' };
+      // Stop's own tail rule. The Resolver reports what the reference said
+      // after the name; a destructive command may add punctuation and nothing
+      // else, so `Stop Payments and Login` names no stoppable target here even
+      // though `Payments` matched.
+      const admissible = resolution.candidates.filter(
+        ({ evidence }) =>
+          evidence.kind === 'elided_name_punctuation' ||
+          /^[.!?。！？]*$/u.test(evidence.remainder),
+      );
+      if (admissible.length === 0) return { kind: 'not_requested' };
+      // Stop admits one candidate only. A ranked resolver may return several;
+      // this action never picks a winner from a ranking it cannot justify.
+      if (resolution.kind === 'ambiguous' || admissible.length > 1) {
+        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
+      }
+      const resolved = sessionByRef.get(admissible[0]!.ref);
+      if (!resolved) return { kind: 'not_requested' };
+      // The reference resolved, which is everything this policy can prove.
+      // Which delegation to end, and whether there is one at all, is the
+      // Host's answer and is made under the lease that performs the stop.
+      return { kind: 'target', target: resolved.target };
+    },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);
       if (intent.execution === 'ambiguous') {
@@ -142,8 +231,20 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
         }
         const alternatives = sessions.filter((session) =>
           session.target.sessionId !== correctedFrom.sessionId);
+        // Correction recalls its target through the same shared port as stop,
+        // then applies its own tail rule: a correction may name the Session and
+        // go on to say what to do with it.
+        const correctionResolution = sessionResolver.resolve({
+          reference: { text: correctionText },
+          sessions: alternatives.map(resolverSession),
+        });
+        const affirmed = new Set(
+          (correctionResolution.kind === 'none' ? [] : correctionResolution.candidates)
+            .filter(({ evidence }) => workHubCorrectionAdmitsReference(correctionText, evidence))
+            .map(({ ref }) => ref),
+        );
         const affirmedCorrections = alternatives.filter((session) =>
-          workHubCorrectionTargetsSession(intent, session.sessionName));
+          affirmed.has(session.target.sessionId));
         if (affirmedCorrections.length === 1) {
           return {
             kind: 'target',
@@ -268,13 +369,23 @@ function createWorkHubRoutePolicyVisit(): WorkHubRoutePolicy {
       }
     },
     newVisit() {
-      return createWorkHubRoutePolicyVisit();
+      return createWorkHubRoutePolicyVisit(sessionResolver);
     },
     rememberTarget(target) {
       if (currentFocus?.sessionId === target.sessionId) return;
       previousFocus = currentFocus;
       currentFocus = target;
     },
+  };
+}
+
+/** Presents one routable Session to the Resolver as a bounded opaque candidate. */
+function resolverSession(session: WorkHubRoutableSession): WorkHubResolverSession {
+  return {
+    ref: session.target.sessionId,
+    sessionName: session.sessionName,
+    projectName: session.projectName,
+    updatedAt: session.updatedAt,
   };
 }
 

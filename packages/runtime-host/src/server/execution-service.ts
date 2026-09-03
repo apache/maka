@@ -38,7 +38,14 @@ import {
 import type { StartRuntimeHostWebSocketListenerOptions } from './websocket-listener.js';
 import type { PublishedProjectDirectoryRoot } from './project-directory-authority.js';
 import type { RuntimeHostPeerListenerConfiguration } from './peer-listener.js';
-import { openRuntimeHostPeerMeshOwner, type RuntimeHostPeerMeshOwner } from '../peer-mesh/owner.js';
+import {
+  openRuntimeHostPeerMeshComponent,
+  type RuntimeHostPeerMeshComponent,
+} from '../peer-mesh/owner.js';
+import {
+  openRuntimeHostPeerEndpointOwner,
+  type RuntimeHostPeerEndpointOwner,
+} from '../peer-reachability/owner.js';
 
 export interface ExecutionRuntimeHostServiceOptions {
   readonly rootPath: string;
@@ -50,7 +57,9 @@ export interface ExecutionRuntimeHostServiceOptions {
     StartRuntimeHostWebSocketListenerOptions,
     'accessAuthority' | 'accept' | 'isReady'
   >;
-  readonly peer?: RuntimeHostPeerListenerConfiguration & { readonly meshDataRoot?: string };
+  readonly peer?: RuntimeHostPeerListenerConfiguration & {
+    readonly meshDataRoot?: string;
+  };
 }
 
 export interface ExecutionRuntimeHostServiceDependencies
@@ -90,36 +99,50 @@ export async function startExecutionRuntimeHostService(
   );
   if (!ownership) throw new RuntimeHostRootAlreadyOwnedError(capability.canonicalPath);
   const { owner } = ownership;
-  let peerOwner: RuntimeHostPeerMeshOwner | undefined;
+  let peerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
+  let peerMesh: RuntimeHostPeerMeshComponent | undefined;
   let host: RuntimeHostKernel | undefined;
   try {
-    if (options.peer?.meshDataRoot) {
-      try {
-        peerOwner = await openRuntimeHostPeerMeshOwner({
-          ...options.peer,
-          dataRoot: options.peer.meshDataRoot,
-          endpointKind: 'host',
-          onBackgroundReconcileError: (error) => {
-            console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
-          },
-        });
-      } catch (error) {
-        console.error(
-          '[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:',
-          error,
-        );
-      }
+    if (options.peer) {
+      peerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
+        ...options.peer,
+        dataRoot: options.peer.meshDataRoot ?? `${options.peer.keyPath}.state`,
+        onBackgroundReachabilityError: (error) => {
+          console.error('[runtime-host] peer reachability publication failed:', error);
+        },
+      });
+      if (options.peer.meshDataRoot)
+        try {
+          peerMesh = await openRuntimeHostPeerMeshComponent({
+            dataRoot: options.peer.meshDataRoot,
+            endpoint: peerEndpointOwner,
+            endpointKind: 'host',
+            onBackgroundReconcileError: (error) => {
+              console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+            },
+          });
+        } catch (error) {
+          console.error(
+            '[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:',
+            error,
+          );
+        }
     }
     let peerTermination: { readonly error: unknown } | undefined;
-    if (peerOwner) {
+    if (peerEndpointOwner) {
       const terminate = (error: unknown) => {
         peerTermination ??= { error };
         void host?.close().catch(() => undefined);
       };
-      void peerOwner.closed.then(
-        () => terminate(new Error('Runtime Host Peer Mesh owner stopped unexpectedly')),
+      void peerEndpointOwner.closed.then(
+        () => terminate(new Error('Runtime Host peer endpoint stopped unexpectedly')),
         terminate,
       );
+    }
+    if (peerMesh) {
+      void peerMesh.closed.catch((error: unknown) => {
+        console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+      });
     }
     const accessAuthority = await openRuntimeHostAccessAuthority(owner.controlDirectory);
     host = await RuntimeHostKernel.start({
@@ -129,23 +152,27 @@ export async function startExecutionRuntimeHostService(
       shutdownGraceMs: options.shutdownGraceMs,
       composition,
       accessAuthority,
-      ...(peerOwner ? { peerMesh: peerOwner.mesh } : {}),
-      ...(options.websocket || options.peer
+      ...(peerMesh ? { peerMesh: peerMesh.mesh } : {}),
+      ...(options.websocket || peerEndpointOwner
         ? {
             listenerSetFactory: (input) =>
               startRuntimeHostAuthenticatedListenerSet(input, {
                 ...(options.websocket
                   ? { websocket: { ...options.websocket, accessAuthority } }
                   : {}),
-                ...(options.peer
+                ...(peerEndpointOwner
                   ? {
-                      peer: peerOwner
-                        ? { client: peerOwner.client, accessAuthority }
-                        : { ...options.peer, accessAuthority },
+                      peer: {
+                        client: peerEndpointOwner.client,
+                        reachability: peerEndpointOwner.reachability,
+                        accessAuthority,
+                      },
                     }
                   : {}),
               }).then((listeners) =>
-                peerOwner ? attachPeerOwnerCleanup(listeners, peerOwner) : listeners,
+                peerEndpointOwner
+                  ? attachPeerOwnerCleanup(listeners, peerEndpointOwner, peerMesh)
+                  : listeners,
               ),
           }
         : {}),
@@ -157,7 +184,8 @@ export async function startExecutionRuntimeHostService(
     return host;
   } catch (error) {
     await host?.close().catch(() => undefined);
-    await peerOwner?.close().catch(() => undefined);
+    await peerMesh?.close().catch(() => undefined);
+    await peerEndpointOwner?.close().catch(() => undefined);
     if (!owner.closed) await owner.close();
     throw error;
   }
@@ -165,14 +193,16 @@ export async function startExecutionRuntimeHostService(
 
 export function attachPeerOwnerCleanup(
   listeners: RuntimeHostListenerSet,
-  owner: RuntimeHostPeerMeshOwner,
+  endpoint: RuntimeHostPeerEndpointOwner,
+  mesh?: RuntimeHostPeerMeshComponent,
 ): RuntimeHostListenerSet {
   return {
     ...listeners,
     cleanup: async () => {
       const errors: unknown[] = [];
       await listeners.cleanup().catch((error: unknown) => errors.push(error));
-      await owner.close().catch((error: unknown) => errors.push(error));
+      await mesh?.close().catch((error: unknown) => errors.push(error));
+      await endpoint.close().catch((error: unknown) => errors.push(error));
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) {
         throw new AggregateError(errors, 'Unable to close Runtime Host Direct peer resources');

@@ -20,9 +20,13 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type {
+  WorkHubActionClaim,
+  WorkHubActionClaimOutcome,
   WorkHubDelegationAssignedMessage,
   WorkHubDelegationReplacementAbortedMessage,
   WorkHubDelegationReplacementRequestedMessage,
+  WorkHubDelegationStopRequestedMessage,
+  WorkHubDelegationStopResolvedMessage,
   WorkHubDelegationSupersededMessage,
 } from '@maka/core/session';
 import {
@@ -35,6 +39,10 @@ import {
   type WorkHubDelegationAssignmentInput,
   type WorkHubDelegationReplacementAbortInput,
   type WorkHubDelegationReplacementInput,
+  type WorkHubDelegationRetirementClaim,
+  type WorkHubDelegationStopInput,
+  type WorkHubDelegationStopResolutionInput,
+  type WorkHubRetirementResult,
 } from '../server/workhub-coordination-action-gate.js';
 import type { ConnectionContext } from '../server/operation-dispatcher.js';
 
@@ -310,6 +318,633 @@ describe('WorkHub Coordination Action Gate', () => {
         error instanceof WorkHubActionGateFailure && error.code === 'candidate_unavailable',
     );
     assert.equal(effects.assignments.length, 1);
+  });
+
+  /**
+   * A stop proposal as the Action Policy produces it: opaque identities plus
+   * the active-delegation state it resolved against, never a display name.
+   */
+  const stopProposal = (targetSessionId: string) => ({
+    disposition: 'stop_work' as const,
+    expects: { targetSessionId },
+  });
+
+  test('stops exactly one named durable delegation and replays its observed outcome', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'a'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    const input = {
+      actionId: 'stop-action',
+      userText: 'Stop Payments',
+      proposal: stopProposal('payments'),
+      confirmation: { kind: 'user_stop' as const },
+    };
+
+    const first = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.deepEqual(first, {
+      disposition: 'stop_work',
+      outcome: 'cancelled_pending',
+      targetSessionId: 'payments',
+    });
+    assert.equal(effects.retirements.length, 1);
+    assert.equal(effects.stopRequests.size, 1);
+    assert.equal(effects.stopResolutions.size, 1);
+
+    const replay = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.deepEqual(replay, first);
+    assert.equal(effects.retirements.length, 1);
+  });
+
+  test('a deleted delegation target does not disable stop for every other Session', async () => {
+    const effects = fakeEffects([
+      session('payments', { name: 'Payments' }),
+      session('login', { name: 'Login' }),
+    ]);
+    for (const [actionId, targetSessionId, name] of [
+      ['pay-action', 'payments', 'Payments'],
+      ['login-action', 'login', 'Login'],
+    ] as const) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'pay-action' ? '4' : '5').repeat(64)}`,
+            targetSessionId,
+            targetSessionName: name,
+            disposition: 'delegate_existing',
+            userText: `Work in ${name}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+
+    // Nothing retires a delegation when its Session is deleted, so this one
+    // stays active forever. It must not be able to veto an unrelated stop.
+    effects.sessions = effects.sessions.filter(({ id }) => id !== 'payments');
+
+    const stopped = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-login',
+        userText: 'Stop Login',
+        proposal: stopProposal('login'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+    assert.equal(stopped.disposition, 'stop_work');
+
+    // The dangling delegation itself still fails closed: its own target is gone.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-payments',
+          userText: 'Stop Payments',
+          proposal: stopProposal('payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+  });
+
+  test('a finished delegation stops competing for the sole-delegation proof', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    for (const actionId of ['finished-action', 'live-action']) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'live-action' ? '6' : '7').repeat(64)}`,
+            targetSessionId: 'payments',
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: `Work from ${actionId}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    // The link outlives the work, so the completed delegation is still active.
+    const settled = new Set(['delegation-finished-action']);
+    effects.readDelegationRetirement = async (assignment) =>
+      settled.has(assignment.delegationId) ? 'retired' : 'not_retired';
+
+    const stopped = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-live',
+        userText: 'Stop Payments',
+        proposal: stopProposal('payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+    assert.equal(stopped.disposition, 'stop_work');
+  });
+
+  test('a competitor the Host cannot resolve yet fails the stop closed', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    for (const actionId of ['unreadable-action', 'live-action']) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'live-action' ? '6' : '7').repeat(64)}`,
+            targetSessionId: 'payments',
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: `Work from ${actionId}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    // Unreadable is not the same as finished, so it still blocks the proof.
+    effects.readDelegationRetirement = async (assignment) =>
+      assignment.actionId === 'unreadable-action' ? 'recovering' : 'not_retired';
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-unresolved-competitor',
+          userText: 'Stop Payments',
+          proposal: stopProposal('payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.stopRequests.size, 0);
+  });
+
+  test('rejects a stop that does not identify one active durable delegation', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    for (const actionId of ['source-action', 'other-action']) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'source-action' ? '1' : '2').repeat(64)}`,
+            targetSessionId: 'payments',
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: `Work from ${actionId}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+
+    // Stop admits a sole active delegation, and the Host proves that from
+    // durable state — the proposal cannot assert its way past it.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-ambiguous-payments',
+          userText: 'Stop Payments',
+          proposal: stopProposal('payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.stopRequests.size, 0);
+    assert.equal(effects.retirements.length, 0);
+  });
+
+  test('rejects stop authority from confirmation alone or a stale precondition', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'b'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    // Action Intent still has to carry a direct stop imperative. It only says
+    // that the user asked to stop work; which work is the Resolver's answer and
+    // this Gate's revalidated precondition, so no text here selects a target.
+    for (const userText of [
+      'Stop it',
+      'Pause Payments',
+      'How do I stop Payments?',
+      'Do not stop Payments',
+    ]) {
+      await assert.rejects(
+        new WorkHubCoordinationActionGate(effects).act(
+          {
+            actionId: `stop-${userText}`,
+            userText,
+            proposal: stopProposal('payments'),
+            confirmation: { kind: 'user_stop' },
+          },
+          CONTEXT,
+        ),
+        (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+        userText,
+      );
+    }
+    // A precondition that disagrees with durable state fails closed: this
+    // delegation does not belong to the Session the proposal resolved.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-wrong-session',
+          userText: 'Stop Payments',
+          proposal: stopProposal('login'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.retirements.length, 0);
+  });
+
+  test('records not_owned without treating a shared user Turn as stopped', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'c'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    effects.retireDelegation = async () => ({
+      outcome: 'not_owned',
+      targetTurnId: 'shared-turn',
+    });
+
+    const result = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-shared',
+        userText: 'Stop Payments',
+        proposal: stopProposal('payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+    assert.deepEqual(result, {
+      disposition: 'stop_work',
+      outcome: 'not_owned',
+      targetSessionId: 'payments',
+      targetTurnId: 'shared-turn',
+    });
+    assert.equal(effects.supersessions.size, 0);
+    effects.supersessions.set('delegation-source-action', {
+      type: 'workhub_coordination',
+      id: 'later-supersession',
+      turnId: 'later-correction',
+      ts: 9,
+      schemaVersion: 2,
+      kind: 'delegation_superseded',
+      actionId: 'later-correction',
+      actionFingerprint: `sha256:${'d'.repeat(64)}`,
+      coordinationTurnId: 'later-correction',
+      supersededActionId: 'source-action',
+      supersededDelegationId: 'delegation-source-action',
+      replacementDelegationId: 'replacement-delegation',
+    });
+    assert.deepEqual(
+      await new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'stop-shared',
+          userText: 'Stop Payments',
+          proposal: stopProposal('payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      result,
+    );
+  });
+
+  test('a recovering stop keeps its action identity out of a second delegation', async () => {
+    const effects = fakeEffects([
+      session('payments', { name: 'Payments' }),
+      session('login', { name: 'Login' }),
+    ]);
+    for (const [actionId, targetSessionId, name] of [
+      ['source-action', 'payments', 'Payments'],
+      ['other-action', 'login', 'Login'],
+    ] as const) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'source-action' ? '1' : '2').repeat(64)}`,
+            targetSessionId,
+            targetSessionName: name,
+            disposition: 'delegate_existing',
+            userText: `Work in ${name}`,
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    effects.retireDelegation = async () => ({ outcome: 'recovering' as const });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'reused-stop',
+          userText: 'Stop Payments',
+          proposal: stopProposal('payments'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'operation_unavailable',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-source-action']);
+
+    // A fresh gate is the Host after restart: only the durable action owner can
+    // refuse the second delegation this identity is now trying to claim.
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(
+        {
+          actionId: 'reused-stop',
+          userText: 'Stop Login',
+          proposal: stopProposal('login'),
+          confirmation: { kind: 'user_stop' },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-source-action']);
+    assert.equal(effects.stopResolutions.size, 0);
+  });
+
+  test('a committed stop identity cannot replay against another Session with the same name', async () => {
+    const effects = fakeEffects([
+      session('payments-primary', { name: 'Payments' }),
+      session('payments-secondary', { name: 'Payments' }),
+    ]);
+    for (const [actionId, targetSessionId] of [
+      ['primary-action', 'payments-primary'],
+      ['secondary-action', 'payments-secondary'],
+    ] as const) {
+      effects.assignmentRecords.set(
+        actionId,
+        assignmentRecord(
+          {
+            actionId,
+            actionFingerprint: `sha256:${(actionId === 'primary-action' ? '1' : '2').repeat(64)}`,
+            targetSessionId,
+            targetSessionName: 'Payments',
+            disposition: 'delegate_existing',
+            userText: 'Fix payment retry',
+          },
+          `${actionId}-turn`,
+        ),
+      );
+    }
+    effects.retireDelegation = async () => ({ outcome: 'recovering' as const });
+    const stopInput = (targetSessionId: string) => ({
+      actionId: 'reused-stop',
+      userText: 'Stop Payments',
+      proposal: stopProposal(targetSessionId),
+      confirmation: { kind: 'user_stop' as const },
+    });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(stopInput('payments-primary'), CONTEXT),
+      (error) =>
+        error instanceof WorkHubActionEffectFailure && error.code === 'operation_unavailable',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-primary-action']);
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(stopInput('payments-secondary'), CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.deepEqual([...effects.stopRequests.keys()], ['delegation-primary-action']);
+  });
+
+  test('a stop action identity cannot cross into a delegation assignment', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'7'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'crossing-action',
+        userText: 'Stop Payments',
+        proposal: stopProposal('payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    await assert.rejects(
+      gate.act(
+        {
+          actionId: 'crossing-action',
+          userText: 'Fix the login redirect',
+          candidateSetId: snapshot.candidateSetId,
+          proposal: {
+            disposition: 'delegate_existing',
+            candidateRef: snapshot.candidates[0]!.candidateRef,
+          },
+        },
+        CONTEXT,
+      ),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.assignments.length, 0);
+  });
+
+  test('a fresh attempt after not_owned converges instead of conflicting forever', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'8'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    let retirements = 0;
+    effects.retireDelegation = async () => {
+      retirements += 1;
+      return { outcome: 'not_owned' as const, targetTurnId: 'shared-turn' };
+    };
+    const first = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-first',
+        userText: 'Stop Payments',
+        proposal: stopProposal('payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+
+    const retried = await new WorkHubCoordinationActionGate(effects).act(
+      {
+        actionId: 'stop-second',
+        userText: 'Stop Payments',
+        proposal: stopProposal('payments'),
+        confirmation: { kind: 'user_stop' },
+      },
+      CONTEXT,
+    );
+
+    assert.deepEqual(retried, first);
+    assert.equal(retirements, 1);
+    assert.equal(effects.stopResolutions.size, 1);
+  });
+
+  test('a committed stop converges once its target Session is durably removed', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'9'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    effects.retireDelegation = async () => ({ outcome: 'recovering' as const });
+    const input = {
+      actionId: 'stop-removed-target',
+      userText: 'Stop Payments',
+      proposal: stopProposal('payments'),
+      confirmation: { kind: 'user_stop' as const },
+    };
+    const unresolved = (error: unknown) =>
+      error instanceof WorkHubActionEffectFailure && error.code === 'operation_unavailable';
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      unresolved,
+    );
+    assert.equal(effects.stopRequests.size, 1);
+
+    // Unreadable is not proof. Only the removal tombstone resolves the claim.
+    effects.sessions = [];
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      unresolved,
+    );
+    assert.equal(effects.stopResolutions.size, 0);
+
+    effects.removedSessionIds.add('payments');
+    const resolved = await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT);
+    assert.deepEqual(resolved, {
+      disposition: 'stop_work',
+      outcome: 'already_terminal',
+      targetSessionId: 'payments',
+    });
+    assert.deepEqual(
+      await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      resolved,
+    );
+    assert.equal(effects.stopResolutions.size, 1);
+  });
+
+  test('keeps display names as stop evidence rather than admission authority', async () => {
+    const effects = fakeEffects([session('payments', { name: 'Renamed Payments' })]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'e'.repeat(64)}`,
+          targetSessionId: 'payments',
+          targetSessionName: 'Old Payments',
+          disposition: 'delegate_existing',
+          userText: 'Fix payment retry',
+        },
+        'source-turn',
+      ),
+    );
+    // The reference the user typed is the Session's old name. Resolution is the
+    // Resolver's business; admission proves the opaque identity, so a rename
+    // between resolution and admission cannot invalidate the claim.
+    const input = {
+      actionId: 'stop-renamed',
+      userText: 'Stop Old Payments',
+      proposal: stopProposal('payments'),
+      confirmation: { kind: 'user_stop' as const },
+    };
+    assert.equal(
+      (await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT)).disposition,
+      'stop_work',
+    );
+    assert.equal(
+      effects.stopRequests.get('delegation-source-action')?.targetSessionName,
+      'Renamed Payments',
+    );
+    effects.sessions[0] = session('payments', { name: 'Renamed Again' });
+    assert.equal(
+      (await new WorkHubCoordinationActionGate(effects).act(input, CONTEXT)).disposition,
+      'stop_work',
+    );
+    assert.equal(
+      effects.stopRequests.get('delegation-source-action')?.targetSessionName,
+      'Renamed Payments',
+    );
   });
 
   test('rejects waiting targets independently of strategy behavior', async () => {
@@ -1547,6 +2182,66 @@ describe('WorkHub Coordination Action Gate', () => {
     assert.equal(effects.supersessions.has('delegation-source-action'), true);
   });
 
+  test('rejects a conflicting post-migration claim before replaying a prepared replacement', async () => {
+    const effects = fakeEffects([session('source'), session('destination')]);
+    effects.assignmentRecords.set(
+      'source-action',
+      assignmentRecord(
+        {
+          actionId: 'source-action',
+          actionFingerprint: `sha256:${'c'.repeat(64)}`,
+          targetSessionId: 'source',
+          targetSessionName: 'source',
+          disposition: 'delegate_existing',
+          userText: 'Wrong target',
+        },
+        'source-turn',
+      ),
+    );
+    const gate = new WorkHubCoordinationActionGate(effects);
+    const snapshot = await gate.candidates();
+    const input = {
+      actionId: 'migrated-prepared-replacement',
+      userText: 'No, send this to destination',
+      candidateSetId: snapshot.candidateSetId,
+      confirmation: { kind: 'user_correction' as const },
+      proposal: {
+        disposition: 'replace' as const,
+        replacesActionId: 'source-action',
+        target: {
+          disposition: 'delegate_existing' as const,
+          candidateRef: snapshot.candidates.find(
+            (candidate) => candidate.sessionId === 'destination',
+          )!.candidateRef,
+        },
+      },
+    };
+    const prepareReplacement = effects.prepareReplacement;
+    effects.prepareReplacement = async (replacement) => {
+      await prepareReplacement(replacement);
+      throw new WorkHubActionEffectFailure('internal_failure', 'simulated pre-retirement crash');
+    };
+
+    await assert.rejects(gate.act(input, CONTEXT));
+    assert.equal(effects.replacements.has('delegation-source-action'), true);
+    assert.equal(effects.retirements.length, 0);
+
+    effects.actionClaims.clear();
+    effects.actionClaims.set(input.actionId, {
+      actionId: input.actionId,
+      operation: 'answer_here',
+      actionFingerprint: `sha256:${'d'.repeat(64)}`,
+      subject: 'coordination-session',
+    });
+
+    await assert.rejects(
+      new WorkHubCoordinationActionGate(effects).act(input, CONTEXT),
+      (error) => error instanceof WorkHubActionGateFailure && error.code === 'action_conflict',
+    );
+    assert.equal(effects.retirements.length, 0);
+    assert.equal(effects.assignments.length, 0);
+  });
+
   test('refreshes replacement target display identity after retiring the source', async () => {
     const effects = fakeEffects([
       session('source'),
@@ -1572,11 +2267,12 @@ describe('WorkHub Coordination Action Gate', () => {
       (candidate) => candidate.sessionId === 'destination',
     )!;
     const retireDelegation = effects.retireDelegation;
-    effects.retireDelegation = async (assignment) => {
-      await retireDelegation.call(effects, assignment);
+    effects.retireDelegation = async (assignment, retirement) => {
+      const result = await retireDelegation.call(effects, assignment, retirement);
       effects.sessions = effects.sessions.map((candidate) =>
         candidate.id === 'destination' ? { ...candidate, name: 'Renamed destination' } : candidate,
       );
+      return result;
     };
     const assign = effects.assign;
     effects.assign = async (input) => {
@@ -1635,8 +2331,8 @@ describe('WorkHub Coordination Action Gate', () => {
         (candidate) => candidate.sessionId === 'destination',
       )!;
       const retireDelegation = effects.retireDelegation;
-      effects.retireDelegation = async (assignment) => {
-        await retireDelegation.call(effects, assignment);
+      effects.retireDelegation = async (assignment, retirement) => {
+        const result = await retireDelegation.call(effects, assignment, retirement);
         effects.sessions = effects.sessions.map((candidate) =>
           candidate.id !== 'destination'
             ? candidate
@@ -1644,6 +2340,7 @@ describe('WorkHub Coordination Action Gate', () => {
               ? { ...candidate, isArchived: true }
               : { ...candidate, status: 'waiting_for_user' },
         );
+        return result;
       };
       const input = {
         actionId: `target-became-${lifecycle}`,
@@ -1722,8 +2419,8 @@ describe('WorkHub Coordination Action Gate', () => {
       },
     };
     const retireDelegation = effects.retireDelegation;
-    effects.retireDelegation = async (assignment) => {
-      await retireDelegation.call(effects, assignment);
+    effects.retireDelegation = async (assignment, retirement) => {
+      await retireDelegation.call(effects, assignment, retirement);
       throw new Error('simulated process exit after retirement');
     };
 
@@ -1829,8 +2526,13 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
   const replacements = new Map<string, WorkHubDelegationReplacementRequestedMessage>();
   const replacementAborts = new Map<string, WorkHubDelegationReplacementAbortedMessage>();
   const supersessions = new Map<string, WorkHubDelegationSupersededMessage>();
+  const stopRequests = new Map<string, WorkHubDelegationStopRequestedMessage>();
+  const stopResolutions = new Map<string, WorkHubDelegationStopResolvedMessage>();
+  const actionClaims = new Map<string, WorkHubActionClaim>();
   return {
     sessions: [...initialSessions],
+    actionClaims,
+    removedSessionIds: new Set<string>(),
     answers: [] as Array<{ turnId: string; text: string }>,
     clarifications: [] as Array<{
       turnId: string;
@@ -1842,12 +2544,44 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     replacements,
     replacementAborts,
     supersessions,
+    stopRequests,
+    stopResolutions,
     retirements: [] as WorkHubDelegationAssignedMessage[],
+    retirementClaims: [] as WorkHubDelegationRetirementClaim[],
     async listSessions() {
       return this.sessions;
     },
+    async claimAction(claim: WorkHubActionClaim): Promise<WorkHubActionClaimOutcome> {
+      const existing = actionClaims.get(claim.actionId);
+      if (!existing) {
+        actionClaims.set(claim.actionId, claim);
+        return 'claimed';
+      }
+      return existing.operation === claim.operation &&
+        existing.actionFingerprint === claim.actionFingerprint &&
+        existing.subject === claim.subject
+        ? 'same_claim'
+        : 'conflict';
+    },
+    async readActionClaim(actionId: string) {
+      return actionClaims.get(actionId);
+    },
+    async probeTargetRemoval(sessionId: string) {
+      if (this.sessions.some((session) => session.id === sessionId)) return 'present' as const;
+      return this.removedSessionIds.has(sessionId) ? ('removed' as const) : ('absent' as const);
+    },
     async readAssignment(actionId: string) {
       return assignmentRecords.get(actionId);
+    },
+    async listActiveAssignments() {
+      return [...assignmentRecords.values()].filter((assignment) => {
+        const stopOutcome = stopResolutions.get(assignment.delegationId)?.outcome;
+        return (
+          !supersessions.has(assignment.delegationId) &&
+          !replacementAborts.has(assignment.delegationId) &&
+          (stopOutcome === undefined || stopOutcome === 'not_owned')
+        );
+      });
     },
     async readReplacement(delegationId: string) {
       return replacements.get(delegationId);
@@ -1857,6 +2591,12 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     },
     async readSupersession(delegationId: string) {
       return supersessions.get(delegationId);
+    },
+    async readStopRequest(delegationId: string) {
+      return stopRequests.get(delegationId);
+    },
+    async readStopResolution(delegationId: string) {
+      return stopResolutions.get(delegationId);
     },
     async answer(input: { turnId: string; text: string }) {
       this.answers.push(input);
@@ -1941,16 +2681,72 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
       replacementAborts.set(replacement.replacesDelegationId, aborted);
       return aborted;
     },
-    async readDelegationRetirement(assignment: WorkHubDelegationAssignedMessage) {
-      return this.retirements.some((retired) => retired.delegationId === assignment.delegationId)
-        ? ('retired' as const)
-        : ('not_retired' as const);
+    async prepareStop(input: WorkHubDelegationStopInput) {
+      const existing = stopRequests.get(input.stopsDelegationId);
+      if (existing) return existing;
+      const requested: WorkHubDelegationStopRequestedMessage = {
+        type: 'workhub_coordination',
+        id: `stop-${input.actionId}`,
+        turnId: input.actionId,
+        ts: 5,
+        schemaVersion: 3,
+        kind: 'delegation_stop_requested',
+        actionId: input.actionId,
+        actionFingerprint: input.actionFingerprint,
+        coordinationTurnId: input.actionId,
+        stopsActionId: input.stopsActionId,
+        stopsDelegationId: input.stopsDelegationId,
+        targetSessionId: input.targetSessionId,
+        targetMessageId: input.targetMessageId,
+        targetSessionName: input.targetSessionName,
+        userText: input.userText,
+      };
+      stopRequests.set(input.stopsDelegationId, requested);
+      return requested;
     },
-    async retireDelegation(assignment: WorkHubDelegationAssignedMessage) {
+    async resolveStop(input: WorkHubDelegationStopResolutionInput) {
+      const request = input.request;
+      const existing = stopResolutions.get(request.stopsDelegationId);
+      if (existing) return existing;
+      const resolved: WorkHubDelegationStopResolvedMessage = {
+        type: 'workhub_coordination',
+        id: `resolved-${request.actionId}`,
+        turnId: request.actionId,
+        ts: 6,
+        schemaVersion: 3,
+        kind: 'delegation_stop_resolved',
+        actionId: request.actionId,
+        actionFingerprint: request.actionFingerprint,
+        coordinationTurnId: request.coordinationTurnId,
+        stopsActionId: request.stopsActionId,
+        stopsDelegationId: request.stopsDelegationId,
+        targetSessionId: request.targetSessionId,
+        outcome: input.outcome,
+        ...(input.targetTurnId ? { targetTurnId: input.targetTurnId } : {}),
+      };
+      stopResolutions.set(request.stopsDelegationId, resolved);
+      return resolved;
+    },
+    async readDelegationRetirement(
+      assignment: WorkHubDelegationAssignedMessage,
+    ): Promise<'not_retired' | 'retired' | 'recovering'> {
+      return this.retirements.some((retired) => retired.delegationId === assignment.delegationId)
+        ? 'retired'
+        : 'not_retired';
+    },
+    async retireDelegation(
+      assignment: WorkHubDelegationAssignedMessage,
+      retirement: WorkHubDelegationRetirementClaim,
+    ): Promise<WorkHubRetirementResult> {
       this.retirements.push(assignment);
+      this.retirementClaims.push(retirement);
+      return { outcome: 'cancelled_pending' as const };
     },
   } satisfies WorkHubActionGateEffects & {
     sessions: WorkHubActionGateSession[];
+    actionClaims: Map<string, WorkHubActionClaim>;
+    removedSessionIds: Set<string>;
+    retirementClaims: WorkHubDelegationRetirementClaim[];
     answers: Array<{ turnId: string; text: string }>;
     clarifications: Array<{ turnId: string; userText: string; assistantText: string }>;
     assignments: WorkHubDelegationAssignmentInput[];
@@ -1958,6 +2754,8 @@ function fakeEffects(initialSessions: WorkHubActionGateSession[]) {
     replacements: Map<string, WorkHubDelegationReplacementRequestedMessage>;
     replacementAborts: Map<string, WorkHubDelegationReplacementAbortedMessage>;
     supersessions: Map<string, WorkHubDelegationSupersededMessage>;
+    stopRequests: Map<string, WorkHubDelegationStopRequestedMessage>;
+    stopResolutions: Map<string, WorkHubDelegationStopResolvedMessage>;
     retirements: WorkHubDelegationAssignedMessage[];
   };
 }

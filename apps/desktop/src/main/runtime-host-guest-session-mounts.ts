@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   decodeRemoteRuntimeHostProfile,
   RUNTIME_HOST_ACCESS_CREDENTIAL_MAX_BYTES,
+  RuntimeHostPermanentReconnectError,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostConnectionPhase,
   type RuntimeHostRemoteTransport,
@@ -40,7 +41,10 @@ import {
   decodeDesktopCollaborationInvitation,
   DESKTOP_COLLABORATION_INVITATION_CODE_MAX_BYTES,
 } from './runtime-host-collaboration-invitation.js';
-import { RuntimeHostPairingFinalizationInterruptedError } from './runtime-host-desktop-manager.js';
+import {
+  RuntimeHostPairingFinalizationInterruptedError,
+  type RuntimeHostGuestAccessFinalization,
+} from './runtime-host-desktop-manager.js';
 
 const STORE_SCHEMA_VERSION = 1;
 const STORE_SLOT = 'desktop-guest-session-mounts';
@@ -63,7 +67,7 @@ interface GuestSessionMountDocument {
 interface LiveGuestActivationBase {
   readonly controller: AbortController;
   stage: 'connecting' | 'finalizing';
-  finalization?: Promise<void>;
+  finalization?: Promise<RuntimeHostGuestAccessFinalization>;
   task: Promise<unknown>;
 }
 
@@ -139,7 +143,7 @@ export function createDesktopGuestSessionMountService(input: {
     mountId: string,
     signal: AbortSignal,
     onAccessActivated?: () => void,
-  ) => Promise<void>;
+  ) => Promise<RuntimeHostGuestAccessFinalization>;
   readonly unmount: (mountId: string) => Promise<void>;
   readonly wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   readonly onError?: (error: Error, mount: GuestSessionMount) => void;
@@ -177,8 +181,7 @@ export function createDesktopGuestSessionMountService(input: {
     if (
       closed ||
       mount.transport.kind !== 'libp2p-direct' ||
-      endpoint.peerId !== mount.transport.peerId ||
-      (endpoint.routeHints.length === 0 && endpoint.coordinationRelays.length === 0)
+      endpoint.lease.peerId !== mount.transport.reachability.lease.peerId
     ) return;
     void mutate(async () => {
       if (removingMounts.has(mount.mountId)) return;
@@ -186,19 +189,14 @@ export function createDesktopGuestSessionMountService(input: {
       const retained = current.get(mount.mountId);
       if (
         retained?.transport.kind !== 'libp2p-direct' ||
-        retained.transport.peerId !== endpoint.peerId ||
-        (
-          sameStrings(retained.transport.routeHints, endpoint.routeHints) &&
-          sameStrings(retained.transport.coordinationRelays, endpoint.coordinationRelays)
-        )
+        retained.transport.reachability.lease.peerId !== endpoint.lease.peerId ||
+        retained.transport.reachability.lease.revision >= endpoint.lease.revision
       ) return;
       const updated = decodeMount({
         ...retained,
         transport: {
           kind: 'libp2p-direct',
-          peerId: endpoint.peerId,
-          routeHints: endpoint.routeHints,
-          coordinationRelays: endpoint.coordinationRelays,
+          reachability: endpoint,
         },
       });
       await persist(new Map(current).set(mount.mountId, updated));
@@ -208,7 +206,7 @@ export function createDesktopGuestSessionMountService(input: {
   const activate = async (
     activation: LiveGuestActivation,
     mount: GuestSessionMount,
-  ): Promise<void> => {
+  ): Promise<RuntimeHostGuestAccessFinalization> => {
     activation.stage = 'connecting';
     await input.mount(resolveMountTarget(mount), activation.controller.signal, (phase) => {
       if (activation.kind === 'import') {
@@ -238,8 +236,9 @@ export function createDesktopGuestSessionMountService(input: {
     );
     activation.finalization = finalization;
     try {
-      await finalization;
+      const result = await finalization;
       activation.controller.signal.throwIfAborted();
+      return result;
     } finally {
       if (activation.finalization === finalization) activation.finalization = undefined;
     }
@@ -273,7 +272,9 @@ export function createDesktopGuestSessionMountService(input: {
             removingMounts.has(mount.mountId)
           ) return;
           activation.stage = 'connecting';
-          onError(asError(error), mount);
+          const failure = asError(error);
+          onError(failure, mount);
+          if (failure instanceof RuntimeHostPermanentReconnectError) return;
           await wait(delayMs, activation.controller.signal);
           delayMs = Math.min(delayMs * 2, STARTUP_RETRY_MAX_MS);
         }
@@ -364,12 +365,15 @@ export function createDesktopGuestSessionMountService(input: {
     let reconcile = false;
     try {
       reportImportProgress(activation.onProgress, 'discovering_host');
-      await activate(activation, mount);
+      const finalization = await activate(activation, mount);
       activation.controller.signal.throwIfAborted();
       if (!(await load()).has(mount.mountId)) {
         throw new Error('Shared Session mount was removed while connecting');
       }
-      return { kind: 'connected', mountId: mount.mountId };
+      return {
+        kind: finalization === 'ready' ? 'connected' : 'recovering',
+        mountId: mount.mountId,
+      };
     } catch (error) {
       if (
         activation.stage === 'finalizing' &&
@@ -385,11 +389,13 @@ export function createDesktopGuestSessionMountService(input: {
         activation.controller.abort(new Error('Shared Session mount activation failed'));
         await input.unmount(mount.mountId).catch(() => undefined);
       }
-      return {
-        kind: 'error',
-        reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
-        message: asError(error).message,
-      };
+      return reconcile
+        ? { kind: 'recovering', mountId: mount.mountId }
+        : {
+            kind: 'error',
+            reason: isPeerPathUnavailable(error) ? 'peer_path_unavailable' : 'connection_failed',
+            message: asError(error).message,
+          };
     } finally {
       activations.delete(activation);
       if (reconcile) beginStartupReconciliation(mount);
@@ -570,11 +576,11 @@ function decodeMount(value: unknown): GuestSessionMount {
 
 function isPeerPathUnavailable(error: unknown): boolean {
   if (!isRecord(error) || typeof error.code !== 'string') return false;
-  return error.code === 'direct_path_unavailable' || error.code === 'transit_unavailable';
-}
-
-function sameStrings(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+  return (
+    error.code === 'direct_path_unavailable' ||
+    error.code === 'transit_unavailable' ||
+    error.code === 'peer_reachability_needs_repair'
+  );
 }
 
 function collaborationProgressForConnectionPhase(

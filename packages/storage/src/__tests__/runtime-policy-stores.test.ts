@@ -4498,13 +4498,16 @@ describe('runtime policy stores', () => {
         (await stores.connectionCatalog.getSnapshot()).revision,
         connectionDraft('copilot-import', 'github-copilot', 'Copilot import'),
       );
-      assert.deepEqual(
-        await stores.operations.beginInteractiveOAuthLogin({
-          attemptId: 'copilot-login',
-          target: { kind: 'existing', connectionId: copilot.connectionId },
-        }),
-        { kind: 'provider_action_unavailable' },
-      );
+      // GitHub Copilot enrolls through the Host OAuth seam like every other
+      // account login, so its admission must be a real ticket, not hidden.
+      const copilotAdmission = await stores.operations.beginInteractiveOAuthLogin({
+        attemptId: 'copilot-login',
+        target: { kind: 'existing', connectionId: copilot.connectionId },
+      });
+      assert.equal(copilotAdmission.kind, 'ready');
+      if (copilotAdmission.kind === 'ready') {
+        assert.equal(copilotAdmission.identity.providerType, 'github-copilot');
+      }
 
       // A retired provider keeps its stored connection, so the login entry
       // point is reachable and has to refuse on its own.

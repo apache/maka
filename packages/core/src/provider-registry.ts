@@ -353,6 +353,7 @@ const volcengineCodingPlanModelIds = [
 const volcengineAgentPlanModelIds = [
   'ark-code-latest',
   'glm-5.3',
+  'glm-5.3-flash',
   'doubao-seed-2.0-mini',
   'doubao-seed-2.0-lite',
   'deepseek-v4-flash',

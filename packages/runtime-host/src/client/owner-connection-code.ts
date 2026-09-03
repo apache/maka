@@ -27,7 +27,7 @@ import {
   type RuntimeHostRemoteTransport,
 } from './host-profile.js';
 
-const PREFIX = 'maka-runtime-host:connect:v1:';
+const PREFIX = 'maka-runtime-host:connect:v2:';
 const ENCODED_MAX_BYTES = 48 * 1024;
 
 export const REMOTE_DESKTOP_OWNER_ACCESS_POLICY = Object.freeze({
@@ -45,7 +45,7 @@ const boundedString = (maxBytes: number) =>
 const nameSchema = boundedString(128);
 const payloadSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     name: boundedString(128),
     rootId: z.string().refine((value) => {
       try {
@@ -87,10 +87,13 @@ export async function issueRuntimeHostOwnerConnectionCode(
   const rootId = requireHostRootId(input.client.rootId);
   const endpoint = (await input.client.status()).peerEndpoint;
   if (!endpoint) throw new Error('Runtime Host Direct peer is not available');
-  if (input.expectedPeerId && endpoint.peerId !== input.expectedPeerId) {
+  if (input.expectedPeerId && endpoint.lease.peerId !== input.expectedPeerId) {
     throw new Error('Runtime Host Direct peer identity changed');
   }
-  const transport = requireDirectPeerTransport({ kind: 'libp2p-direct', ...endpoint });
+  const transport = requireDirectPeerTransport({
+    kind: 'libp2p-direct',
+    reachability: endpoint,
+  });
   const prepared = await input.client.request('access.credential.prepare', {
     ...REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
     principalId: input.principalId,
@@ -108,7 +111,7 @@ export function encodeRuntimeHostOwnerConnectionCode(
   input: RuntimeHostOwnerConnectionCode,
 ): string {
   const transport = requireDirectPeerTransport(input.transport);
-  const payload = payloadSchema.parse({ schemaVersion: 1, ...input, transport });
+  const payload = payloadSchema.parse({ schemaVersion: 2, ...input, transport });
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
   if (Buffer.byteLength(encoded, 'utf8') > ENCODED_MAX_BYTES) {
     throw new RangeError('Runtime Host connection code is too large');

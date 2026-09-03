@@ -67,9 +67,29 @@ bounded, valid ordinary Session; `create_new` creates an ordinary Session before
 delegating and is visibly announced as new work; and `clarify` continues in the
 Coordination Session without guessing or creating.
 
+**Action Intent**: A bounded interpretation of what the user is trying to do,
+such as discuss, delegate, inspect, continue, stop, or resume. It carries trusted
+user-input evidence but no selected Session and no execution authority.
+
+**Session Resolver**: The shared, replaceable capability that recalls and ranks
+visible existing ordinary Sessions for a user reference. It may return ranked
+candidates, no candidate, or ambiguity. It never returns `create_new`, chooses a
+final coordination outcome, or grants execution authority. Exact-name matching is
+only a temporary deterministic implementation; future ranked implementations use
+the same contract.
+
+**Action Policy**: Deterministic, action-specific rules that combine Action Intent,
+Session resolution, and current product constraints to propose an existing-target
+action, explicit creation, clarification, local discussion, or safe rejection.
+Creation is a policy decision rather than a retrieval result.
+
+**Action Proposal**: A closed typed request produced by an Action Policy. It uses
+opaque stable target identities and expected-state preconditions, but remains
+advisory until the Action Gate revalidates and admits it.
+
 **delegation**: A bounded reference from a Coordination Turn to one target ordinary
 Session and Turn, including only its identity, disposition, and coordination-owned
-link status (`active`, `superseded`, or `aborted`). A link is `aborted` only when a
+link status (`active`, `superseded`, `aborted`, or `stopped`). A link is `aborted` only when a
 correction retired its source but the replacement target became unavailable or
 started waiting before admission; it is not the target Turn's execution status.
 Delegation links the separately authoritative transcripts; it does not copy the
@@ -104,6 +124,63 @@ cannot be admitted after source retirement,
 the Coordination transcript records an auditable replacement-aborted terminal
 fact and removes the retired source from active linkage.
 Correction never replaces either Session's transcript authority.
+
+**Direct stop**: A user's explicit imperative to retire one active durable
+delegation. A delegation link ends only by supersession or a resolved stop, so a
+delegation whose work has finished is still linked; it is no longer a stop target,
+because there is nothing left in it to stop. Only work that could still be stopped
+makes a Session's stop target ambiguous, and execution state that cannot be read
+is never treated as finished. The initial deterministic implementation accepts exact display-name
+references behind the shared Session Resolver contract; exact-name syntax is not
+the long-term product boundary. Pronouns, pause/wait language, questions, advice,
+negation, unresolved or ambiguous targets, and model-supplied Session, Turn, Run,
+or Message identities grant no Stop authority. A future ranked resolver may recall
+a Session from other permitted evidence, but the Action Policy must still require a
+sufficiently resolved active WorkHub delegation and the Action Gate must revalidate
+its stable identity. The stop proposal therefore carries opaque identities and the
+expected active-delegation state the policy resolved against, never a display name;
+the Action Gate readmits it only while the assignment still belongs to that Session
+and that Session's active delegations are still exactly the one being stopped.
+A rename between resolution and admission is irrelevant, and a stale resolution
+fails closed. WorkHub first records
+`delegation_stop_requested`, resolves the source action to its durable
+delegation, and lets the target Session's Message authority observe one of four
+outcomes: `cancelled_pending`, `stop_delivered`, `already_terminal`, or `not_owned`.
+It then records the neutral `delegation_stop_resolved` fact. `stop_delivered` means
+the exact owning root accepted the Stop operation; the UI says that WorkHub asked
+it to stop rather than inventing an execution result. `not_owned` means the
+Message was consumed by a shared or user-owned Turn; WorkHub does not stop that
+Turn, preserves the active link, and navigates the user to the owning Session.
+A stop reference that recalls no existing WorkHub Session is ordinary work — `Stop
+using the deprecated API` is a task, not a destructive command — and routes
+normally. An ambiguous recall, a resolved Session that is not uniquely stoppable,
+and an unsafe or anaphoric reference each fail closed with the reason they failed
+rather than an unanswerable prompt. Whether a resolved Session is uniquely
+stoppable is asked of the Host once a reference resolves, never answered from a
+client's delegation projection: that projection is empty until the Coordination
+stream fills it, so a fresh window or a reconnect would otherwise state
+confidently that running work does not exist.
+An unresolved direct-stop claim and a replacement claim are mutually exclusive;
+the first durable destructive claim wins. A `not_owned` resolution releases that
+exclusion so a later explicit route correction can proceed, and because it leaves
+the delegation active, a later attempt under a fresh request identity converges on
+that same immutable `not_owned` outcome instead of colliding with the first claim.
+The pending-Message cancellation tombstone binds the durable stop action that
+created it, so a crash after cancellation but before resolution still replays
+`cancelled_pending` rather than degrading to `already_terminal`. Owning-root Stop
+likewise writes the direct-stop action identity into the exact root Turn's
+durable abort source. A retry recognizes only that matching proof; an earlier or
+concurrent manual Stop remains `already_terminal`. Root registration is in-memory,
+so between a Host restart and execution recovery a running root looks inactive.
+`already_terminal` is an immutable observation, so only a durably terminal target
+snapshot may claim it; an unrecovered target is still resolving instead. Stop admission holds the
+Coordination Session and every currently active target Session lane
+while it rechecks current target identities and active links; a concurrent new
+delegation therefore cannot invalidate the one-target proof after the request
+record commits. Removing the target Session destroys the Message proof a
+committed claim still needs; the removal tombstone outlives that Session and
+resolves the claim as `already_terminal`, while a target that is merely
+unreadable, or one that never existed here, stays unresolved.
 
 **R2.4**: The deterministic context-continuity routing baseline. It remains useful
 as an experiment baseline or target resolver behind WorkHub's coordination layer;

@@ -99,6 +99,24 @@ const CREATION_REQUEST_PREFIX =
 const NAMED_CREATION_TITLE_INTRODUCER =
   /\b(?:new|brand[- ]new)\s+(?:session|work|task)[\s,，:：-]+(?:(?:called|named|titled)|with\s+(?:the\s+)?title)\s+|(?:新的?|全新的?)?\s*(?:Session|会话|工作|任务)[\s,，:：-]*(?:叫做?|名叫|名为|命名为|标题为|名称为|名字为)\s*/iu;
 const LEADING_CORRECTION_SEPARATOR = /^[\s,.;:!?，。；：！？—–-]+/u;
+const DIRECT_STOP_REQUEST =
+  /^\s*(?:(?:please|kindly)\s+)?(?:stop|cancel|terminate|halt)\s+(?:(?:the|this)\s+)?(?:(?:session|work|task|job)\s+)?(.+?)\s*[.!。！]?\s*$/iu;
+const DIRECT_CHINESE_STOP_REQUEST =
+  /^\s*(?:(?:请|请帮我|帮我|麻烦你?)\s*)?(?:停止|取消|终止|中止)\s*(?:(?:这个|该)?(?:会话|工作|任务)\s*)?(.+?)\s*[。！]?\s*$/iu;
+const UNSAFE_STOP_TARGET =
+  /^(?:it|this|that|one|everything|all|current|session|work|task|job|(?:this|that|current)\s+(?:session|work|task|job)|它|这个|那个|全部|当前|会话|工作|任务|(?:这个|那个|当前)(?:会话|工作|任务))$/iu;
+
+/**
+ * Where a Session name matched inside a trusted reference, and what followed.
+ *
+ * `remainder` is neutral evidence, not a verdict: the action's policy decides
+ * whether that leftover text is acceptable for what it is about to do.
+ */
+export type WorkHubSessionNameMatch =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'named'; readonly remainder: string }
+  /** The reference is the name with its own trailing punctuation dropped. */
+  | { readonly kind: 'elided_name_punctuation' };
 
 /** How much authority trusted user text carries for starting work. */
 export type WorkHubExecutionIntent = 'imperative' | 'ambiguous' | 'non_executable';
@@ -118,6 +136,13 @@ export interface WorkHubRequestIntent {
   readonly correction: {
     readonly cue: boolean;
     readonly existingTarget?: string;
+  };
+  readonly stop: {
+    /** A direct stop speech act was present, but its target may still be unsafe. */
+    readonly cue: boolean;
+    /** True only for a direct, explicitly named stop command. */
+    readonly imperative: boolean;
+    readonly target?: string;
   };
 }
 
@@ -276,6 +301,8 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
       : { kind: 'unusable' };
   const correctionCue = hasWorkHubCorrectionCue(source);
   const existingTarget = affirmativeWorkHubExistingCorrectionTarget(source);
+  const stopCue = directWorkHubStopCue(source, literalMask.malformed);
+  const stopTarget = stopCue ? directWorkHubStopTarget(source, false) : undefined;
   const actions = allMatches(masked, EXECUTION_ACTION);
   const execution: WorkHubExecutionIntent =
     literalMask.malformed || naming.kind === 'unusable' || hasDominatingDeliberation(masked)
@@ -291,6 +318,11 @@ export function readWorkHubRequestIntent(value: string): WorkHubRequestIntent {
     correction: {
       cue: correctionCue,
       ...(existingTarget ? { existingTarget } : {}),
+    },
+    stop: {
+      cue: stopCue,
+      imperative: Boolean(stopTarget),
+      ...(stopTarget ? { target: stopTarget } : {}),
     },
   };
 }
@@ -360,10 +392,22 @@ function affirmativeWorkHubExistingCorrectionTarget(value: string): string | und
   return lastTarget;
 }
 
-function correctionTargetMatchesSession(target: string, sessionName: string): boolean {
-  const normalizedTarget = normalizeCorrectionIdentity(target);
+/**
+ * The one rule for reading a Session name out of a trusted reference.
+ *
+ * It is deliberately action-agnostic: it reports where the name matched and
+ * what text was left over, and says nothing about whether that leftover is
+ * acceptable. Each action's policy owns that question, because the answer
+ * genuinely differs — a stop reference may carry only punctuation after the
+ * name, while a correction may carry a further instruction.
+ */
+export function matchWorkHubSessionName(
+  reference: string,
+  sessionName: string,
+): WorkHubSessionNameMatch {
+  const normalizedTarget = normalizeCorrectionIdentity(reference);
   const normalizedName = normalizeCorrectionIdentity(sessionName);
-  if (!normalizedName) return false;
+  if (!normalizedName) return { kind: 'none' };
   const quotedNames = [
     `"${normalizedName}"`,
     `“${normalizedName}”`,
@@ -377,14 +421,35 @@ function correctionTargetMatchesSession(target: string, sessionName: string): bo
         normalizedTarget.startsWith(candidate) &&
         !/[\p{L}\p{N}]/u.test(normalizedTarget[candidate.length] ?? ''),
     );
-  if (!matchedName) return false;
+  if (!matchedName) {
+    // A name whose own trailing punctuation the reference dropped still names
+    // it, but nothing may follow: there is no boundary left to trust.
+    return /[.!。！]$/u.test(normalizedName) &&
+      normalizedTarget === normalizedName.replace(/[.!。！]+$/u, '').trim()
+      ? { kind: 'elided_name_punctuation' }
+      : { kind: 'none' };
+  }
   if (matchedName === normalizedName && hasUnsafeUnquotedHardClauseBoundary(sessionName)) {
-    return false;
+    return { kind: 'none' };
   }
-  if (hasUnquotedTerminalWithdrawal(target)) {
-    return false;
-  }
-  const remainder = normalizedTarget.slice(matchedName.length).trim();
+  return { kind: 'named', remainder: normalizedTarget.slice(matchedName.length).trim() };
+}
+
+/**
+ * The correction policy's tail rule. A correction may name its target and then
+ * say what to do with it, but a withdrawal anywhere in the reference retracts
+ * the whole thing.
+ *
+ * It takes a match rather than a Session name so that a caller which already
+ * resolved candidates through the shared Session Resolver applies exactly this
+ * rule to exactly that recall, instead of matching names a second time.
+ */
+export function workHubCorrectionAdmitsReference(
+  reference: string,
+  match: WorkHubSessionNameMatch,
+): boolean {
+  if (match.kind !== 'named' || hasUnquotedTerminalWithdrawal(reference)) return false;
+  const { remainder } = match;
   if (!remainder || /^(?:instead\s*)?[.!?。！？]?$/iu.test(remainder)) return true;
   const supplemental = remainder.match(/^[,;，；]\s*(.+)$/u)?.[1]?.trim();
   const supplementalBody = supplemental?.replace(/[.!?。！？]+\s*$/u, '').trim();
@@ -395,6 +460,36 @@ function correctionTargetMatchesSession(target: string, sessionName: string): bo
       ) &&
       readWorkHubRequestIntent(supplementalBody).execution === 'imperative',
   );
+}
+
+function correctionTargetMatchesSession(target: string, sessionName: string): boolean {
+  return workHubCorrectionAdmitsReference(target, matchWorkHubSessionName(target, sessionName));
+}
+
+function directWorkHubStopTarget(value: string, malformedLiteral: boolean): string | undefined {
+  if (malformedLiteral || /[?？]\s*$/u.test(value)) return undefined;
+  const match = DIRECT_STOP_REQUEST.exec(value) ?? DIRECT_CHINESE_STOP_REQUEST.exec(value);
+  const rawTarget = match?.[1]?.trim();
+  if (!rawTarget) return undefined;
+  const target = stripMatchingStopQuotes(rawTarget.replace(/[.!。！]+\s*$/u, '').trim());
+  if (!target || UNSAFE_STOP_TARGET.test(target)) return undefined;
+  return target;
+}
+
+function directWorkHubStopCue(value: string, malformedLiteral: boolean): boolean {
+  if (malformedLiteral || /[?？]\s*$/u.test(value)) return false;
+  return Boolean(DIRECT_STOP_REQUEST.test(value) || DIRECT_CHINESE_STOP_REQUEST.test(value));
+}
+
+function stripMatchingStopQuotes(value: string): string {
+  const pairs = new Map([
+    ['"', '"'],
+    ["'", "'"],
+    ['“', '”'],
+    ['‘', '’'],
+  ]);
+  const closer = pairs.get(value[0] ?? '');
+  return closer && value.endsWith(closer) ? value.slice(1, -1).trim() : value;
 }
 
 function normalizeCorrectionIdentity(value: string): string {

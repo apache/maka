@@ -38,18 +38,20 @@ test('preserves a Branch copy identity after an ambiguous failure and completes 
   const actions = createAppShellTurnActions({
     uiLocale: 'en',
     activeIdRef: { current: 'branch-action-source' },
-    addPendingTurnAction: (key) => {
-      if (pending.has(key)) return false;
-      pending.add(key);
-      return true;
-    },
-    clearPendingTurnAction: (key) => {
-      pending.delete(key);
+    turnActionRegistry: {
+      addKey: (key) => {
+        if (pending.has(key)) return false;
+        pending.add(key);
+        return true;
+      },
+      clearKey: (key) => {
+        pending.delete(key);
+      },
+      keyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
     },
     openSessionInChat: (sessionId) => {
       opened.push(sessionId);
     },
-    pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
     refreshMessages: async () => true,
     refreshSessions: async () => [],
     setMessages: () => undefined,

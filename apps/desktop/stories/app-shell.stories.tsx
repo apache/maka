@@ -371,7 +371,6 @@ function ComposedShell(props: {
       activeId: active?.id,
       pendingTurnActions: new Set<string>(),
       uiLocale: 'zh',
-      pendingKeyOf: (sessionId, turnId, actionId) => `${sessionId}:${turnId}:${actionId}`,
     });
   const projectGroups: SessionGroup[] = catalogProjects.map((item) => ({
     id: `project:${item.id}`,
