@@ -377,9 +377,7 @@ export function createAppShellSessionEventHandlers(options: {
           const queue = current[sessionId];
           if (!queue?.entries.some((entry) => entry.messageId === event.messageId)) return current;
           const entries = queue.entries.filter((entry) => entry.messageId !== event.messageId);
-          if (entries.length > 0) {
-            return { ...current, [sessionId]: { ...queue, entries } };
-          }
+          if (entries.length > 0) return { ...current, [sessionId]: { ...queue, entries } };
           const next = { ...current };
           delete next[sessionId];
           return next;
