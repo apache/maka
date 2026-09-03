@@ -409,12 +409,23 @@
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-list {
   gap: var(--md-gap-list);
 }
+/* Prose reads differently from chrome. Han glyphs fill the whole em box, so
+   the 20px body leading that suits a control row leaves CJK paragraphs with
+   no air between lines; 1.6 is the common CJK reading ratio. Inherited from
+   the document root, so headings and code keep the leading their own role
+   tokens declare. `text-autospace` puts the conventional hair space between
+   Han and Latin or digit runs when the model did not type one. */
+[data-maka-contract="markdown"] .astryx-markdown {
+  line-height: 1.6;
+  text-autospace: normal;
+}
 /* Heading scale: size says "this is a heading", weight and colour say which
    level. Astryx's document ladder (20/18/16/14) is a page scale and an agent
-   turn emits `##` every few lines, so the transcript keeps two size steps —
-   but it keeps TWO, not one. The previous rule flattened h2-h6 onto a single
-   size, which left h2 and h3 identical in size, weight AND colour: three
-   levels of structure rendered as three identical bold lines.
+   turn emits `##` every few lines, so the transcript flattens h1 onto h2 and
+   keeps two size steps above body: 18 for h1/h2, 16 for h3. h3 needs its own
+   size rung because weight alone cannot carry it in CJK — PingFang's Regular
+   and Semibold are close enough that an h3 at body size is indistinguishable
+   from a bold sentence, and a Chinese turn lost a whole level of structure.
    Cursor (1.43/1.32/1.21), Claude Code (1.14/1.07/1.0) and Codex
    (1.71/1.43/1.21) all flatten here relative to their own document styles, and
    opencode goes further — 17/15/13 with h4+ dropped to a muted colour. Nobody
@@ -447,18 +458,19 @@
    on its first commit, passing while already false. A comment that is checked
    when these rules are read beats an assertion that lies. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:is([data-level="1"], [data-level="2"]) {
+  font: var(--maka-text-heading-2);
+}
+[data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading[data-level="3"] {
   font: var(--maka-text-heading-3);
 }
-[data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"]) {
-  font: var(--maka-text-heading-4);
-}
-/* Below h3 the size ladder is spent — h4-h6 already sit at body size, and
-   growing them back would re-create the slabs the flattening exists to avoid.
-   Colour is the one axis left that costs no vertical space, so the deepest
-   levels step down in ink instead. opencode makes the same call at the same
-   point (13px h4-h6 dropped to muted); it is why a turn can carry four levels
-   of structure inside two type sizes. */
+/* Below h3 the size ladder is spent — h4-h6 sit at body size, and growing
+   them back would re-create the slabs the flattening exists to avoid. Colour
+   is the one axis left that costs no vertical space, so the deepest levels
+   step down in ink instead. opencode makes the same call at the same point
+   (13px h4-h6 dropped to muted); it is why a turn can carry four levels of
+   structure inside two type sizes. */
 [data-maka-contract="markdown"] .astryx-markdown[data-density="compact"] .astryx-markdown-heading:not([data-level="1"], [data-level="2"], [data-level="3"]) {
+  font: var(--maka-text-heading-4);
   color: var(--muted-foreground);
 }
 
