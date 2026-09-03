@@ -238,6 +238,16 @@ async function renderOwnershipProbe(
   };
 }
 
+async function commitIdleCompanion(
+  rendered: Awaited<ReturnType<typeof renderOwnershipProbe>>,
+): Promise<void> {
+  await act(async () => {
+    assert.equal(await rendered.send('prepare side conversation'), false);
+    await Promise.resolve();
+  });
+  await awaitCompanion(rendered.container);
+}
+
 const REBOUND_MODEL: Partial<SessionSummary> = {
   llmConnectionId: 'connection-2',
   llmConnectionSlug: 'openai-2',
@@ -388,7 +398,7 @@ test('dispatches /compact to the committed companion fork without sending model 
     },
     send: async () => {
       sendCalls += 1;
-      return { ok: true as const, turnId: 'unexpected-send' };
+      return { ok: false as const, reason: 'seed only' };
     },
     steer: async () => {
       steerCalls += 1;
@@ -396,6 +406,8 @@ test('dispatches /compact to the committed companion fork without sending model 
     },
   });
 
+  await commitIdleCompanion(rendered);
+  sendCalls = 0;
   assert.equal(await rendered.send('  /compact  '), true);
   assert.deepEqual(compactCalls, ['side-conversation']);
   assert.equal(sendCalls, 0);
@@ -444,10 +456,12 @@ test('keeps an async companion compaction exclusive until its terminal event', a
     },
     send: async () => {
       sendCalls += 1;
-      return { ok: true as const, turnId: 'unexpected-send' };
+      return { ok: false as const, reason: 'seed only' };
     },
   });
 
+  await commitIdleCompanion(rendered);
+  sendCalls = 0;
   assert.equal(await rendered.send('/compact'), true);
   assert.equal(await rendered.send('ordinary question'), false);
   assert.equal(compactCalls, 1);
@@ -479,6 +493,7 @@ test('releases an async companion compaction after a Host interruption', async (
     },
   );
 
+  await commitIdleCompanion(rendered);
   assert.equal(await rendered.send('/compact'), true);
   assert.equal(await rendered.send('/compact'), false);
   await act(async () => {
@@ -521,6 +536,7 @@ test('does not settle a pending companion compaction from another turn outcome',
     },
   });
 
+  await commitIdleCompanion(rendered);
   let compactResult!: Promise<boolean>;
   await act(async () => {
     compactResult = rendered.send('/compact');
@@ -587,6 +603,7 @@ test('clears a failed companion compaction request so it can be retried', async 
     },
   });
 
+  await commitIdleCompanion(rendered);
   assert.equal(await rendered.send('/compact'), false);
   assert.equal(await rendered.send('/compact'), true);
   assert.equal(compactCalls, 2);
@@ -627,32 +644,30 @@ test('rejects /compact while the companion is running without consuming staged q
 
 test('rejects /compact while the companion fork is preparing', async () => {
   const pendingFork = deferred<SessionSummary>();
-  let send!: (text: string) => Promise<boolean>;
   let compactCalls = 0;
   let branchStarted = false;
-  const rendered = await renderProbe(
-    {
-      branchFromTurn: async () => {
-        branchStarted = true;
-        return { ok: true as const, session: await pendingFork.promise };
-      },
-      compact: async () => {
-        compactCalls += 1;
-        throw new Error('compact should not run before fork commit');
-      },
+  const rendered = await renderOwnershipProbe({
+    branchFromTurn: async () => {
+      branchStarted = true;
+      return { ok: true as const, session: await pendingFork.promise };
     },
-    {
-      ownership: true,
-      onSend: (value) => (send = value),
-      ready: () => branchStarted,
+    compact: async () => {
+      compactCalls += 1;
+      throw new Error('compact should not run before fork commit');
     },
-  );
+  });
 
-  assert.equal(await send('/compact'), false);
+  let sendResult!: Promise<boolean>;
+  await act(async () => {
+    sendResult = rendered.send('prepare pending fork');
+    await Promise.resolve();
+  });
+  await waitUntil(() => branchStarted);
+  assert.equal(await rendered.send('/compact'), false);
   assert.equal(compactCalls, 0);
   await act(async () => {
     pendingFork.resolve(session('side-conversation'));
-    await Promise.resolve();
+    assert.equal(await sendResult, false);
   });
 });
 
@@ -669,6 +684,7 @@ test('rejects /compact for an archived companion fork without invoking Runtime H
     },
   });
 
+  await commitIdleCompanion(rendered);
   assert.equal(await rendered.send('/compact'), false);
   assert.equal(compactCalls, 0);
 });
