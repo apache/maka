@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import type { AgentRunHeader } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import {
   hydrateAgentGraphInputHandoffs,
@@ -29,7 +29,7 @@ import { projectAgentGraphRecords } from '../stream-graph-projection.js';
 
 describe('agent graph operator handoffs', () => {
   test('hydrates a selected result or terminal record from the authoritative RuntimeEvent stream', async () => {
-    const run = runHeader();
+    const run = runInvocation();
     const events = [
       runtimeEvent(run, {
         id: 'result-event',
@@ -88,7 +88,7 @@ describe('agent graph operator handoffs', () => {
   });
 
   test('bounds hydrated conclusion text across all selected inputs', async () => {
-    const run = runHeader();
+    const run = runInvocation();
     const events = [
       runtimeEvent(run, {
         id: 'long-result',
@@ -103,7 +103,7 @@ describe('agent graph operator handoffs', () => {
       streams: [
         {
           operator: { operatorId: 'researcher', sessionId: run.sessionId },
-          run: { ...run, status: 'running', completedAt: undefined },
+          run: { ...run, terminalEvent: undefined },
           events,
         },
       ],
@@ -122,7 +122,7 @@ describe('agent graph operator handoffs', () => {
   });
 
   test('fails closed when a committed record cannot resolve its source event', async () => {
-    const run = runHeader();
+    const run = runInvocation();
     const event = runtimeEvent(run, {
       id: 'result-event',
       ts: 11,
@@ -201,30 +201,57 @@ describe('agent graph operator handoffs', () => {
   });
 });
 
-function runHeader(): AgentRunHeader {
-  return {
-    runId: 'run-child',
-    invocationId: 'invocation-child',
+/** The child's one finished invocation, as its own events describe it. */
+function runInvocation(): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'child-session',
+    invocationId: 'invocation-child',
+    runId: 'run-child',
     turnId: 'turn-child',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionSlug: 'deepseek',
-    modelId: 'deepseek-chat',
-    cwd: '/workspace',
-    permissionMode: 'explore',
-    createdAt: 10,
-    updatedAt: 12,
-    completedAt: 12,
+  };
+  return {
+    ...identity,
+    openedAt: 10,
+    opening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: 'deepseek-connection',
+        llmConnectionSlug: 'deepseek',
+        modelId: 'deepseek-chat',
+      },
+      configuration: {
+        cwd: '/workspace',
+        permissionMode: 'explore',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: { kind: 'user' },
+      source: { kind: 'fresh' },
+    },
+    terminalEvent: {
+      ...identity,
+      id: 'run-child-terminal',
+      ts: 12,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
   };
 }
 
 function runtimeEvent(
-  run: AgentRunHeader,
+  run: RuntimeInvocationRecord,
   overrides: Partial<RuntimeEvent> & Pick<RuntimeEvent, 'id' | 'ts'>,
 ): RuntimeEvent {
   return {
-    invocationId: run.invocationId!,
+    invocationId: run.invocationId,
     runId: run.runId,
     sessionId: run.sessionId,
     turnId: run.turnId,

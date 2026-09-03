@@ -17,7 +17,8 @@
  * under the License.
  */
 
-import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
@@ -71,7 +72,7 @@ interface MidTurnFixture {
   toolExecutions: string[];
   summarizerCalls: number;
   priorEvents: RuntimeEvent[];
-  priorRunHeaders: AgentRunHeader[];
+  priorInvocations: RuntimeInvocationRecord[];
   anchor: RuntimeEvent;
   /** The fixture's durable RuntimeEvent ledger for the current turn/run. */
   ledger: RuntimeEvent[];
@@ -164,7 +165,7 @@ interface MidTurnFixtureOptions {
   /** Prior-turn RuntimeEvents appended after the shaped priors (e.g. a persisted usage anchor). */
   extraPriorEvents?: readonly RuntimeEvent[];
   /** Run headers for the prior turns, so a persisted anchor can be identity-gated. */
-  priorRunHeaders?: readonly AgentRunHeader[];
+  priorInvocations?: readonly RuntimeInvocationRecord[];
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
   /** An always-active tool whose schema dominates the request payload. */
@@ -660,7 +661,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return fixture.ledgerReads;
     },
     priorEvents,
-    priorRunHeaders: [...(options.priorRunHeaders ?? [])],
+    priorInvocations: [...(options.priorInvocations ?? [])],
     anchor,
     ledger,
     modelCalls,
@@ -685,7 +686,7 @@ async function runFixtureTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
-    runtimeContextRunHeaders: [...fixture.priorRunHeaders],
+    runtimeContextInvocations: [...fixture.priorInvocations],
   })) {
     if (consumer === 'slow') {
       // Scheduling perturbation: hold the durable write back across several
@@ -1233,7 +1234,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       finalAtSecondCall: true,
       firstStepUsage: { input: 150, output: 40 },
       extraPriorEvents: [priorUsageEvent({ inputTokens: 300, outputTokens: 20 })],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1305,7 +1306,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       singleRequest: true,
       finalStepUsage: { input: 3_716, output: 10 },
       extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1322,7 +1323,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       singleRequest: true,
       finalStepUsage: { input: 4_000, output: 10 },
       extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1344,7 +1345,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       singleRequest: true,
       finalStepUsage: { input: 900, output: 10 },
       extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1363,7 +1364,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
       singleRequest: true,
       finalStepUsage: { input: 3_716, output: 10 },
       extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture, consumer);
 
@@ -1775,9 +1776,21 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     // alone that decides: a matching header folds at step 0, while a header
     // naming another model and no header at all leave the request alone.
     const anchor = priorUsageEvent({ inputTokens: 30_000, outputTokens: 10 });
-    for (const [priorRunHeaders, folds] of [
-      [[priorRunHeader()], true],
-      [[{ ...priorRunHeader(), modelId: 'some-other-model' }], false],
+    const otherModel = priorRunInvocation();
+    for (const [priorInvocations, folds] of [
+      [[priorRunInvocation()], true],
+      [
+        [
+          {
+            ...otherModel,
+            opening: {
+              ...otherModel.opening,
+              route: { ...otherModel.opening.route, modelId: 'some-other-model' },
+            },
+          },
+        ],
+        false,
+      ],
       [[], false],
     ] as const) {
       const fixture = buildFixture({
@@ -1785,7 +1798,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
         contextWindow: 20_000,
         finalAtSecondCall: true,
         extraPriorEvents: [anchor],
-        priorRunHeaders: [...priorRunHeaders],
+        priorInvocations: [...priorInvocations],
       });
       await runFixtureTurn(fixture);
 
@@ -1814,7 +1827,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
           actions: { tokenUsage: { input: 0, output: 0 } },
         },
       ],
-      priorRunHeaders: [priorRunHeader()],
+      priorInvocations: [priorRunInvocation()],
     });
     await runFixtureTurn(fixture);
 
@@ -1843,7 +1856,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
         finalAtSecondCall: true,
         modelMaxOutputTokens: 600,
         extraPriorEvents: [priorUsageEvent({ inputTokens: 900, outputTokens: anchorOutput })],
-        priorRunHeaders: [priorRunHeader()],
+        priorInvocations: [priorRunInvocation()],
       });
       await runFixtureTurn(fixture);
       // 960 + 120 crosses 1,000; 905 + 10 does not. The 600-token output limit
@@ -1893,22 +1906,48 @@ function priorUsageEvent(lastRequestAnchor: {
   };
 }
 
-function priorRunHeader(): AgentRunHeader {
-  return {
-    runId: 'run-0',
-    invocationId: 'run-0',
+/** The prior invocation on this route, as its own events describe it. */
+function priorRunInvocation(): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
+    invocationId: 'run-0',
+    runId: 'run-0',
     turnId: 'turn-0',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionId: 'test-connection-id',
-    llmConnectionSlug: 'anthropic-main',
-    modelId: 'mock-model-id',
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: 'test-connection-id',
+        llmConnectionSlug: 'anthropic-main',
+        modelId: 'mock-model-id',
+      },
+      configuration: {
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: { kind: 'user' },
+      source: { kind: 'fresh' },
+    },
+    terminalEvent: {
+      ...identity,
+      id: `${identity.runId}-terminal`,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
   };
 }
 

@@ -19,16 +19,16 @@
 
 /**
  * The invocation index is a query over the canonical events, not a second
- * record. This test writes real turns through the production seams and then
- * asks both authorities the same question: which invocations does this Session
- * have, and what route did each one open with?
+ * record. This test writes real turns through the production seams, then checks
+ * that what the index answers is exactly what rebuilding from those events
+ * alone produces.
  */
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { runtimeInvocationOpeningFromRunHeader } from '@maka/core/agent-run';
+import { runtimeInvocationsFromSessionEvents } from '@maka/core/runtime-invocation';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
 import { createSessionStore } from '@maka/storage/session-store';
@@ -36,7 +36,7 @@ import type { SessionEvent } from '@maka/core/events';
 import type { BackendSendInput } from '@maka/core/backend-types';
 import { BackendRegistry, SessionManager } from '../session-manager.js';
 
-test('the invocation index returns the same inventory as the Run header table', async () => {
+test('the invocation index returns the same inventory as a rebuild from events alone', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-invocation-index-'));
   try {
     const sessionStore = createSessionStore(root);
@@ -81,36 +81,20 @@ test('the invocation index returns the same inventory as the Run header table', 
       }
     }
 
-    const runs = await runStore.listSessionRuns(session.id);
     const invocations = await runtimeEventStore.listSessionInvocations(session.id);
-    assert.equal(runs.length, 3);
+    const rebuilt = runtimeInvocationsFromSessionEvents(
+      session.id,
+      await runtimeEventStore.readSessionRuntimeEvents(session.id),
+    );
+    assert.equal(invocations.length, 3);
 
     assert.deepStrictEqual(
-      invocations
-        .map((invocation) => ({
-          runId: invocation.runId,
-          invocationId: invocation.invocationId,
-          turnId: invocation.turnId,
-        }))
-        .sort((a, b) => a.runId.localeCompare(b.runId)),
-      runs
-        .map((run) => ({
-          runId: run.runId,
-          invocationId: run.invocationId ?? run.runId,
-          turnId: run.turnId,
-        }))
-        .sort((a, b) => a.runId.localeCompare(b.runId)),
-      'clearing the index and rebuilding from events must give the same inventory',
+      invocations,
+      rebuilt,
+      'the index must return exactly what a rebuild from events alone produces',
     );
 
-    for (const run of runs) {
-      const invocation = invocations.find((candidate) => candidate.runId === run.runId);
-      assert.ok(invocation, `invocation for ${run.runId} must be enumerable from events alone`);
-      assert.deepStrictEqual(
-        invocation.opening,
-        runtimeInvocationOpeningFromRunHeader(run),
-        'replay provenance read from events must equal the header projection',
-      );
+    for (const invocation of invocations) {
       assert.equal(
         invocation.terminalEvent?.status,
         'completed',

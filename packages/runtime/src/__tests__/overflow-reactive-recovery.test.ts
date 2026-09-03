@@ -27,7 +27,8 @@ import type { SessionHeader } from '@maka/core/session';
 import type { SessionEvent } from '@maka/core/events';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import { z } from 'zod';
-import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
+import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
@@ -204,7 +205,7 @@ interface ReactiveFixture {
   summarizerCalls: () => number;
   anchor: RuntimeEvent;
   priorEvents: RuntimeEvent[];
-  priorRunHeaders: AgentRunHeader[];
+  priorInvocations: RuntimeInvocationRecord[];
   events: SessionEvent[];
   messages: unknown[];
   llmCalls: ReactiveLlmCall[];
@@ -495,10 +496,10 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
               ]
             : []),
         ];
-  const priorRunHeaders: AgentRunHeader[] = options.reasoningReplayTail
+  const priorInvocations: RuntimeInvocationRecord[] = options.reasoningReplayTail
     ? [
-        priorRunHeader('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
-        priorRunHeader('prior-run', 'source-connection-id', 'source-model-id'),
+        priorRunInvocation('same-route-prior-run', 'test-connection-id', 'mock-model-id'),
+        priorRunInvocation('prior-run', 'source-connection-id', 'source-model-id'),
       ]
     : [];
   const anchor: RuntimeEvent = {
@@ -713,7 +714,7 @@ function buildReactiveFixture(options: ReactiveFixtureOptions): ReactiveFixture 
     summarizerCalls: () => counters.summarizerCalls,
     anchor,
     priorEvents,
-    priorRunHeaders,
+    priorInvocations,
     events,
     messages,
     llmCalls,
@@ -736,7 +737,7 @@ async function runTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
-    runtimeContextRunHeaders: fixture.priorRunHeaders,
+    runtimeContextInvocations: [...fixture.priorInvocations],
     ...(pullSteering ? { pullSteering } : {}),
   })) {
     if (consumer === 'slow') {
@@ -1988,23 +1989,54 @@ function header(): SessionHeader {
   };
 }
 
-function priorRunHeader(runId: string, llmConnectionId: string, modelId: string): AgentRunHeader {
-  return {
-    runId,
+/** One prior invocation, as its own opening fact and terminal event describe it. */
+function priorRunInvocation(
+  runId: string,
+  llmConnectionId: string,
+  modelId: string,
+): RuntimeInvocationRecord {
+  const identity = {
     sessionId: 'session-1',
+    invocationId: `invocation-${runId}`,
+    runId,
     turnId: 'turn-0',
-    status: 'completed',
-    backendKind: 'ai-sdk',
-    llmConnectionId,
-    llmConnectionSlug: 'anthropic-source',
-    modelId,
-    providerStateIdentity:
-      runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
-    cwd: '/tmp/maka',
-    permissionMode: 'ask',
-    createdAt: 1,
-    updatedAt: 2,
-    completedAt: 2,
+  };
+  return {
+    ...identity,
+    openedAt: 1,
+    opening: {
+      kind: 'invocation_opened',
+      protocol: 'invocation_opened_v1',
+      route: {
+        provenance: 'runtime',
+        backendKind: 'ai-sdk',
+        llmConnectionId: llmConnectionId,
+        llmConnectionSlug: 'anthropic-source',
+        modelId: modelId,
+        providerStateIdentity:
+          runId === 'same-route-prior-run' ? PROVIDER_STATE_IDENTITY : `sha256:${'2'.repeat(64)}`,
+      },
+      configuration: {
+        cwd: '/tmp/maka',
+        permissionMode: 'ask',
+        collaborationMode: 'agent',
+        orchestrationMode: 'default',
+        orchestrationSource: 'session',
+        toolMode: 'direct',
+      },
+      root: { kind: 'user' },
+      source: { kind: 'fresh' },
+    },
+    terminalEvent: {
+      ...identity,
+      id: `${identity.runId}-terminal`,
+      ts: 2,
+      partial: false,
+      role: 'system',
+      author: 'system',
+      status: 'completed',
+      actions: { endInvocation: true },
+    },
   };
 }
 
