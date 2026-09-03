@@ -931,18 +931,11 @@ h2 {
   font-size: 12.5px;
   color: var(--muted-foreground);
 }
-.foot .top {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px 24px;
-  align-items: center;
-  margin-bottom: 18px;
-}
 .foot .links {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 16px;
-  flex: 1;
+  margin-bottom: 18px;
 }
 .foot .links a {
   color: var(--foreground);
