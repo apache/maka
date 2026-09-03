@@ -243,3 +243,16 @@
     display: none;
   }
 }
+
+/* Under reduced motion the base.css global freezes Astryx's ring mid-spin,
+   and a motionless ring reads as broken — hide it and let the pulse's static
+   dot carry the state. Both reduce paths get the same treatment. */
+@media (prefers-reduced-motion: reduce) {
+  .maka-agent-graph-heartbeat {
+    display: none;
+  }
+}
+
+[data-maka-reduced-motion="true"] .maka-agent-graph-heartbeat {
+  display: none;
+}

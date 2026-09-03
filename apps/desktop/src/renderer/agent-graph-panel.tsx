@@ -205,7 +205,10 @@ export function AgentGraphPanel(props: {
     stopState.rootSessionId === props.rootSessionId && stopState.graphId === selectedGraphId;
   const stopPending = stopFeedbackMatchesSelection && stopState.pending;
   const stopError = stopFeedbackMatchesSelection && stopState.error;
-  const graphLive = snapshot !== undefined && isAgentGraphLive(snapshot.status);
+  // `error` must gate liveness: a failed snapshot read leaves the last known
+  // status in place, and a spinner asserting liveness while liveness is unknown
+  // is exactly the false signal this panel exists to avoid.
+  const graphLive = !error && snapshot !== undefined && isAgentGraphLive(snapshot.status);
 
   useEffect(() => {
     setSnapshot(undefined);
