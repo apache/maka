@@ -19,7 +19,10 @@
 
 import type { AgentRunEvent, AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
-import { isSessionInlineInvocation } from '@maka/core/runtime-invocation';
+import {
+  buildInvocationOpenedEvent,
+  isSessionInlineInvocation,
+} from '@maka/core/runtime-invocation';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
 import { type StorageRef, type ToolResultContent } from '@maka/core/events';
@@ -346,10 +349,23 @@ export async function prepareConversationRuntimeLedgerCopy(input: {
     }),
   );
   await rebuildCopiedProjectionTransitions(input.sourceSessionId, sourceRuns, runs, input.runStore);
+  // A restored opening takes the place the migration could not give it: right
+  // before the first event of its run in the Session's order.
+  const restoredOpenings = new Map(
+    selectedRunEvents.flatMap(({ run, restoredOpening }) =>
+      restoredOpening ? [[run.runId, restoredOpening] as const] : [],
+    ),
+  );
+  const inlineRuntimeEvents = input.sourceEvents.flatMap((event) => {
+    const opening = restoredOpenings.get(event.runId);
+    if (!opening) return [event];
+    restoredOpenings.delete(event.runId);
+    return [opening, event];
+  });
   const plan = {
     sourceSessionId: input.sourceSessionId,
     copyTurnIds,
-    inlineRuntimeEvents: [...input.sourceEvents],
+    inlineRuntimeEvents,
     runs,
   };
   assertConversationRuntimeLedgerCopySupported(plan);
@@ -646,7 +662,15 @@ export async function cloneConversationRuntimeLedger(
 
 interface ConversationCopyRunEvents {
   readonly run: RuntimeInvocationRecord;
+  /** The run's events, beginning with its opening. */
   readonly events: readonly RuntimeEvent[];
+  /**
+   * The opening as an event, when the run's own events did not carry one:
+   * the migration shelved openings of runs that already owned an immutable
+   * sequence, and a copy is where such a run gets its opening back as event
+   * one, because the copy is a fresh sequence.
+   */
+  readonly restoredOpening?: RuntimeEvent;
 }
 
 async function loadConversationCopyRunEvents(
@@ -667,7 +691,18 @@ async function loadConversationCopyRunEvents(
           projectedEvents.length > 0
             ? projectedEvents
             : runtimeEventStore.readRuntimeEvents(run.sessionId, run.runId),
-        ).then((events) => ({ run, events })),
+        ).then((events) => {
+          if (events.some((event) => event.content?.kind === 'invocation_opened')) {
+            return { run, events };
+          }
+          const restoredOpening = buildInvocationOpenedEvent({
+            id: `invocation_opened:${run.runId}`,
+            run,
+            openedAt: run.openedAt,
+            opening: run.opening,
+          });
+          return { run, events: [restoredOpening, ...events], restoredOpening };
+        }),
       ];
     }),
   );

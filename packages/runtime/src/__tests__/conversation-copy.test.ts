@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import type { AgentRunStore, EmittedAgentRunEvent } from '@maka/core/agent-run';
 import type { RuntimeEvent, RuntimeEventInvocationOpenedContent } from '@maka/core/runtime-event';
@@ -42,6 +43,7 @@ import {
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
 import { createSqliteAgentRunStore } from '@maka/storage/agent-run-store';
 import { createWorkspaceRuntimeStore } from '@maka/storage/runtime-event-persistence';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { createSqliteRuntimeStore } from '@maka/storage/sqlite-runtime-store';
 import {
   archivedToolResultContainsLinkedChildReferences,
@@ -3189,6 +3191,104 @@ test('conversation copy reproduces the source fold rather than re-deciding it', 
         : 'artifact-target-b',
     );
     assert.doesNotMatch(JSON.stringify(reduced.events), /SECRET_ARCHIVED_TOOL_RESULT_BODY/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('conversation copy gives a run whose opening the migration shelved its opening back', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-conversation-shelved-copy-'));
+  try {
+    const runStore = createSqliteAgentRunStore(root);
+    const runtimeEventStore = createWorkspaceRuntimeStore(root);
+    await seedRun(
+      runtimeEventStore,
+      runFacts({ runId: 'run-source', invocationId: 'run-source', turnId: 'turn-1', cwd: root }),
+    );
+    const sourceEvents: RuntimeEvent[] = [
+      runtimeEvent({
+        id: 'event-user',
+        invocationId: 'run-source',
+        role: 'user',
+        author: 'user',
+        content: { kind: 'text', text: 'hello' },
+      }),
+      runtimeEvent({
+        id: 'event-terminal',
+        invocationId: 'run-source',
+        ts: 3,
+        status: 'completed',
+      }),
+    ];
+    for (const event of sourceEvents) {
+      await runtimeEventStore.appendRuntimeEvent('session-source', 'run-source', event);
+    }
+    // Leave the run the way the migration leaves one that already owned an
+    // immutable sequence: its opening on the legacy shelf, not among its events.
+    const db = new DatabaseSync(join(root, OPERATIONAL_STATE_DATABASE_NAME));
+    try {
+      const opening = db
+        .prepare(
+          "SELECT event_id, payload_json, committed_at FROM runtime_events WHERE run_id = 'run-source' AND event_kind = 'invocation_opened'",
+        )
+        .get() as { event_id: string; payload_json: string; committed_at: number };
+      db.prepare('DELETE FROM runtime_session_event_ordinals WHERE event_id = ?').run(
+        opening.event_id,
+      );
+      db.prepare('DELETE FROM runtime_events WHERE event_id = ?').run(opening.event_id);
+      db.prepare(`
+        INSERT INTO runtime_legacy_invocation_openings (
+          invocation_id, session_id, run_id, turn_id, opened_at, opening_json
+        ) VALUES ('run-source', 'session-source', 'run-source', 'turn-1', ?, ?)
+      `).run(
+        opening.committed_at,
+        JSON.stringify((JSON.parse(opening.payload_json) as { content: unknown }).content),
+      );
+    } finally {
+      db.close();
+    }
+    const [sourceRun] = await runtimeEventStore.listSessionInvocations('session-source');
+    assert.equal(sourceRun?.runId, 'run-source', 'the shelved opening still names the run');
+    assert.equal(
+      (await runtimeEventStore.readRuntimeEvents('session-source', 'run-source')).some(
+        (event) => event.content?.kind === 'invocation_opened',
+      ),
+      false,
+      'but its events do not carry it',
+    );
+
+    const source = await new RuntimeReadModel({ runtimeEventStore }).getSessionView(
+      'session-source',
+    );
+    const copied = await cloneConversationRuntimeLedger({
+      plan: await prepareTestCopyPlan(source, source.messages, runStore, runtimeEventStore),
+      copiedMessages: source.messages,
+      referenceMap: {
+        mode: 'exact',
+        linkedChildren: { mode: 'reject' },
+        sourceSessionId: 'session-source',
+        targetSessionId: 'session-target',
+        artifactIds: new Map(),
+        relativePaths: new Map(),
+      },
+      runStore,
+      runtimeEventStore,
+      newId: () => crypto.randomUUID(),
+    });
+
+    const [targetRun] = await runtimeEventStore.listSessionInvocations('session-target');
+    assert.equal(targetRun?.runId, copied.runIdMap[0]?.targetRunId);
+    assert.equal(targetRun?.terminalEvent?.status, 'completed');
+    assert.deepEqual(targetRun?.opening.configuration.cwd, root);
+    const targetEvents = await runtimeEventStore.readRuntimeEvents(
+      'session-target',
+      targetRun!.runId,
+    );
+    assert.deepEqual(
+      targetEvents.map((event) => event.content?.kind ?? event.status),
+      ['invocation_opened', 'text', 'completed'],
+      'the copy is a fresh sequence, so the opening is its first event',
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
