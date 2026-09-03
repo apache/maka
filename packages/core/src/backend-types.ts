@@ -160,6 +160,8 @@ export interface HostedInteractionBridge {
     request: FormRequestEvent;
     settlement: HostedFormSettlement;
   }): Promise<void>;
+  /** Withdraw one exact producer-owned form without closing the surrounding Run. */
+  withdrawFormRequest(requestId: string): Promise<void>;
   admitSandboxBoundaryRequest(input: {
     request: SandboxBoundaryRequestEvent;
     settlement: HostedSandboxBoundarySettlement;

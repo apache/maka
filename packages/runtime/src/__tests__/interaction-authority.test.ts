@@ -91,6 +91,7 @@ describe('Runtime Interaction authority seam', () => {
             acceptSandboxBoundaryRequest: async () => {},
             acceptUserQuestionRequest: async () => {},
             acceptFormRequest: async () => {},
+            withdrawFormRequest: async () => {},
             close: async (reason) => {
               log.push(`close:${reason}`);
             },
@@ -603,6 +604,7 @@ function authority(
       release: () => {},
       ...overrides,
       acceptFormRequest: overrides.acceptFormRequest ?? (async () => {}),
+      withdrawFormRequest: overrides.withdrawFormRequest ?? (async () => {}),
     }),
   };
 }

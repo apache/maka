@@ -287,6 +287,7 @@ describe('browser tool execution', () => {
       {
         signal: new AbortController().signal,
         accept: async () => undefined,
+        requestInteraction: async () => assert.fail('Unexpected provider interaction'),
       },
     );
     assert.equal(resolved, 2);

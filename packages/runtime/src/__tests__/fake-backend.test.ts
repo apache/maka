@@ -45,6 +45,7 @@ test('Fake question publication waits for exact hosted admission', async () => {
           await allowAdmission.promise;
         },
         acceptFormRequest: async () => {},
+        withdrawFormRequest: async () => {},
         close: async () => {},
         release: () => {},
       }),

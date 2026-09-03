@@ -26,6 +26,7 @@ import type {
   McpToolDescriptor,
   McpToolSnapshot,
 } from '@maka/core/mcp';
+import type { InteractionFormInput, InteractionFormResult } from '@maka/core/interaction';
 import type { PermissionMode, ToolCategory } from '@maka/core/permission';
 import type { ExecutionBoundary } from '@maka/core/sandbox-boundary';
 import type { ToolRecoveryMode } from '@maka/core/runtime-event';
@@ -57,6 +58,7 @@ export interface McpToolProvider {
 export interface McpPreparedToolCall {
   execute(options?: {
     readonly emitProgress?: (current: number, total: number) => void;
+    readonly requestInteraction?: McpToolCallOptions['requestInteraction'];
   }): Promise<McpCallResult>;
   cancel(): Promise<void> | void;
 }
@@ -66,6 +68,10 @@ export interface McpToolCallOptions {
   readonly timeoutMs?: number;
   readonly context: McpToolInvocationContext;
   readonly emitProgress?: (current: number, total: number) => void;
+  readonly requestInteraction?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
 }
 
 export interface McpToolInvocationContext {
@@ -137,6 +143,12 @@ export function buildMcpTools(
                     ...(executionContext.emitProgress
                       ? { emitProgress: executionContext.emitProgress }
                       : {}),
+                    ...(executionContext.requestUserForm
+                      ? {
+                          requestInteraction: (form, interactionOptions) =>
+                            executionContext.requestUserForm!(form, interactionOptions),
+                        }
+                      : {}),
                   }),
                 cancel: () => prepared.cancel(),
               };
@@ -171,6 +183,14 @@ export function buildMcpTools(
             cwd: context.cwd,
           },
           ...(context.emitProgress ? { emitProgress: context.emitProgress } : {}),
+          ...(context.requestUserForm
+            ? {
+                requestInteraction: (
+                  form: InteractionFormInput,
+                  interactionOptions?: { readonly cancellationSignal?: AbortSignal },
+                ) => context.requestUserForm!(form, interactionOptions),
+              }
+            : {}),
         });
       },
       toModelOutput: ({ output }) => mcpResultToModelOutput(output),

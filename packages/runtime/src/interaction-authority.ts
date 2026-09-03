@@ -120,6 +120,7 @@ export interface RuntimeInteractionRunFacet
     RuntimeInteractionRunIdentity {}
 
 export interface RuntimeInteractionRunOwner extends RuntimeInteractionRunFacet {
+  withdrawFormRequest(requestId: string): Promise<void>;
   close(reason: RuntimeInteractionRunClosureReason): Promise<void>;
   release(): void;
 }
@@ -381,6 +382,10 @@ export class RuntimeInteractionRunBinding implements HostedInteractionBridge {
         `Form ${tracked.requestId} completed admission after Interaction publication sealed`,
       );
     }
+  }
+
+  withdrawFormRequest(requestId: string): Promise<void> {
+    return this.owner.withdrawFormRequest(requestId);
   }
 
   async admitSandboxBoundaryRequest(input: {

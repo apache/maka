@@ -230,12 +230,26 @@ describe('HostInteractionCoordinator', () => {
           closure: (reason) => closures.push(reason),
         }),
       });
-      await owner.close('turn_terminal');
-      assert.deepEqual(closures, ['turn_terminal']);
+      await owner.withdrawFormRequest('form_2');
+      assert.deepEqual(closures, ['producer_cancelled']);
       assert.deepEqual((await store.readInteraction('form_2'))?.outcome?.outcome, {
         kind: 'closure',
-        reason: 'turn_terminal',
+        reason: 'producer_cancelled',
         committedAt: 102,
+      });
+
+      await owner.acceptFormRequest({
+        request: formEvent('form_3', 12),
+        continuation: formContinuation('form_3', {
+          closure: (reason) => closures.push(reason),
+        }),
+      });
+      await owner.close('turn_terminal');
+      assert.deepEqual(closures, ['producer_cancelled', 'turn_terminal']);
+      assert.deepEqual((await store.readInteraction('form_3'))?.outcome?.outcome, {
+        kind: 'closure',
+        reason: 'turn_terminal',
+        committedAt: 103,
       });
       owner.release();
       await coordinator.close();

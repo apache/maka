@@ -310,7 +310,10 @@ export interface MakaToolContext {
     view?: 'result' | 'events' | 'runtime_events' | 'all';
   }) => Promise<unknown>;
   askUserQuestion?: (questions: UserQuestion[]) => Promise<UserQuestionResult>;
-  requestUserForm?: (form: InteractionFormInput) => Promise<InteractionFormResult>;
+  requestUserForm?: (
+    form: InteractionFormInput,
+    options?: { readonly cancellationSignal?: AbortSignal },
+  ) => Promise<InteractionFormResult>;
   requestSandboxBoundary?: (
     expansion: SandboxBoundaryExpansion,
     justification: string,
@@ -1722,8 +1725,15 @@ export class ToolRuntime {
           }),
           askUserQuestion: (questions) =>
             this.askUserQuestion(turnId, toolUseId, questions, ctx.abortSignal, queue),
-          requestUserForm: (form) =>
-            this.requestUserForm(turnId, toolUseId, form, ctx.abortSignal, queue),
+          requestUserForm: (form, options) =>
+            this.requestUserForm(
+              turnId,
+              toolUseId,
+              form,
+              ctx.abortSignal,
+              queue,
+              options?.cancellationSignal,
+            ),
           requestSandboxBoundary: (expansion, justification) =>
             this.requestSandboxBoundary(
               turnId,
@@ -2634,8 +2644,10 @@ export class ToolRuntime {
     form: InteractionFormInput,
     abortSignal: AbortSignal,
     queue: DurableSessionEventSink,
+    producerCancellationSignal?: AbortSignal,
   ): Promise<InteractionFormResult> {
-    throwIfAborted(abortSignal);
+    const interactionSignal = composeChildAbortSignal(abortSignal, producerCancellationSignal);
+    throwIfAborted(interactionSignal);
     const hostedRun = this.interactionRun();
     const requestId = this.input.newId();
     const request = projectInteractionFormRequest({ toolUseId, ...form });
@@ -2649,7 +2661,26 @@ export class ToolRuntime {
       this.userForms.reject(requestId, abortErrorFromSignal(abortSignal));
       this.finishDeferredFormTurnClosure();
     };
+    let hostedAdmission: Promise<void> | undefined;
+    let producerWithdrawal: Promise<void> | undefined;
+    const onProducerCancellation = (): void => {
+      if (abortSignal.aborted) return;
+      if (hostedRun) {
+        producerWithdrawal ??= Promise.resolve().then(async () => {
+          try {
+            await hostedAdmission;
+          } catch {
+            return;
+          }
+          await hostedRun.withdrawFormRequest(requestId);
+        });
+      } else if (producerCancellationSignal) {
+        this.userForms.reject(requestId, abortErrorFromSignal(producerCancellationSignal));
+        this.finishDeferredFormTurnClosure();
+      }
+    };
     abortSignal.addEventListener('abort', onAbort, { once: true });
+    producerCancellationSignal?.addEventListener('abort', onProducerCancellation, { once: true });
     if (hostedRun) void parked.catch(() => undefined);
     try {
       const requestEvent: FormRequestEvent = {
@@ -2665,11 +2696,14 @@ export class ToolRuntime {
       };
       if (hostedRun) {
         const settlement = this.createFormSettlement(turnId, requestId);
-        const admission = hostedRun.admitFormRequest({ request: requestEvent, settlement });
+        const admission = Promise.resolve().then(() =>
+          hostedRun.admitFormRequest({ request: requestEvent, settlement }),
+        );
+        hostedAdmission = admission;
         try {
-          await racePromiseWithAbort(admission, abortSignal);
+          await racePromiseWithAbort(admission, interactionSignal);
         } catch (error) {
-          if (abortSignal.aborted) {
+          if (interactionSignal.aborted) {
             void admission.catch((admissionError) => {
               this.userForms.reject(
                 requestId,
@@ -2682,7 +2716,7 @@ export class ToolRuntime {
               );
               this.finishDeferredFormTurnClosure();
             });
-            throw abortErrorFromSignal(abortSignal);
+            throw abortErrorFromSignal(interactionSignal);
           }
           this.userForms.reject(
             requestId,
@@ -2701,10 +2735,10 @@ export class ToolRuntime {
           );
         }
       }
-      throwIfAborted(abortSignal);
+      throwIfAborted(interactionSignal);
       queue.push(requestEvent);
-      const response = await racePromiseWithAbort(parked, abortSignal);
-      throwIfAborted(abortSignal);
+      const response = await racePromiseWithAbort(parked, interactionSignal);
+      throwIfAborted(interactionSignal);
       const answerAck: FormAnswerAckEvent = {
         type: 'form_answer_ack',
         id: this.input.newId(),
@@ -2720,6 +2754,8 @@ export class ToolRuntime {
         : { action: response.action };
     } finally {
       abortSignal.removeEventListener('abort', onAbort);
+      producerCancellationSignal?.removeEventListener('abort', onProducerCancellation);
+      if (producerWithdrawal) await producerWithdrawal;
     }
   }
 

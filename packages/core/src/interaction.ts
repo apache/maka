@@ -72,6 +72,7 @@ export const INTERACTION_FORM_VALUE_MAX_BYTES = 2_048;
 export const INTERACTION_CLOSURE_REASONS = [
   'turn_stopped',
   'turn_terminal',
+  'producer_cancelled',
   'timed_out',
   'host_restarted',
   'provider_disconnected',
