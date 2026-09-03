@@ -352,7 +352,7 @@
           "@maka/ui": 1
         },
         "importSpecifiers": 39,
-        "nonTriviaTokens": 4275
+        "nonTriviaTokens": 4292
       },
       "src/renderer/app-shell-chrome-actions.tsx": {
         "importDeclarations": 5,
