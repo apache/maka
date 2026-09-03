@@ -103,17 +103,30 @@ type ToastApi = {
   info(title: string, description?: string): void;
 };
 
+type DirectoryReferences = NonNullable<TransientUserMessageProjection['directoryReferences']>;
+type MessageContextOptions = {
+  directoryReferences?: DirectoryReferences;
+  quotes?: readonly QuoteRef[];
+  workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
+};
+type SendOptions = MessageContextOptions & {
+  turnOrchestration?: TurnOrchestration;
+  displayText?: string;
+  onSessionResolved?: (sessionId: string) => void;
+};
+
+function copiedArray<K extends string, T>(
+  key: K,
+  values: readonly T[] | undefined,
+): Partial<Record<K, T[]>> {
+  return values?.length ? { [key]: [...values] } as Record<K, T[]> : {};
+}
+
 export interface AppShellChatActions {
   send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options?: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    },
+    options?: SendOptions,
   ): Promise<boolean>;
   /**
    * Resolves with whether the Message was sent. An unproven outcome counts as
@@ -125,10 +138,7 @@ export interface AppShellChatActions {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options?: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    },
+    options?: MessageContextOptions,
   ): Promise<boolean>;
   respondToSandboxBoundary(response: SandboxBoundaryResponse): Promise<void>;
   respondToUserQuestion(response: UserQuestionResponse): Promise<void>;
@@ -235,17 +245,20 @@ export function createAppShellChatActions(deps: {
       placement?: TransientUserMessageProjection['transientPlacement'];
       hostTurnId?: string;
       updateOnly?: boolean;
+      directoryReferences?: DirectoryReferences;
       quotes?: readonly QuoteRef[];
       inlineReferences?: readonly InlineReference[];
     } = {},
   ): void {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     const next: TransientUserMessageProjection = {
       id: messageId,
       ts: Date.now(),
       text,
-      ...(attachments.length > 0 ? { attachments: [...attachments] } : {}),
-      ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
+      ...copiedArray('attachments', attachments),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [...(options.inlineReferences ?? [])],
       transientPlacement: options.placement ?? 'current_turn',
       ...(options.hostTurnId ? { hostTurnId: options.hostTurnId } : {}),
@@ -336,6 +349,7 @@ export function createAppShellChatActions(deps: {
     isSurfaceVisible?: () => boolean;
   }): Promise<SubmittedMessage> {
     const { sessionId, messageId, placement } = input;
+    const directoryReferences = input.command.directoryReferences;
     const quotes = input.quotes ?? [];
     const result = await window.maka.sessions.submitMessage(sessionId, placement, {
       ...input.command,
@@ -383,7 +397,8 @@ export function createAppShellChatActions(deps: {
         updateOnly: true,
         placement,
         ...(result.turnId ? { hostTurnId: result.turnId } : {}),
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('directoryReferences', directoryReferences),
+        ...copiedArray('quotes', quotes),
         inlineReferences: result.inlineReferences ?? [],
       },
     );
@@ -397,14 +412,9 @@ export function createAppShellChatActions(deps: {
   async function send(
     text: string,
     pending?: readonly PendingAttachment[],
-    options: {
-      turnOrchestration?: TurnOrchestration;
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-      displayText?: string;
-      onSessionResolved?: (sessionId: string) => void;
-    } = {},
+    options: SendOptions = {},
   ): Promise<boolean> {
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes;
     const exactTurn = options.turnOrchestration !== undefined;
     const initialSessionId = activeIdRef.current;
@@ -444,6 +454,41 @@ export function createAppShellChatActions(deps: {
     };
     try {
       const messageId = crypto.randomUUID();
+      async function submitIntoSession(sessionId: string, messageId: string) {
+        if (exactTurn) armTurnActive(sessionId, messageId);
+        const attachmentItems =
+          pending && pending.length > 0
+            ? toComposerIngestItems(pending)
+            : undefined;
+        const retainedAttachments =
+          pending && pending.length > 0
+            ? retainedAttachmentRefs(pending)
+            : undefined;
+        const sendCommand = {
+          text,
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...(retainedAttachments && retainedAttachments.length > 0
+            ? { retainedAttachments }
+            : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
+        };
+        return submitAndProject({
+          sessionId,
+          messageId,
+          placement: 'current_turn',
+          command: {
+            ...sendCommand,
+            ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
+          },
+          ...(options.displayText ? { displayText: options.displayText } : {}),
+          ...copiedArray('quotes', quotes),
+          exactTurn,
+          isSurfaceVisible: () => activeIdRef.current === sessionId,
+        });
+      }
       if (!initialSessionId) {
         if (!initialNewTaskTarget) return false;
         if (pending && pending.length > 0) preflightAttachmentItems(pending, uiLocale);
@@ -463,6 +508,22 @@ export function createAppShellChatActions(deps: {
         });
         unsentSessionId = session.id;
         optimisticSessionId = session.id;
+        optimisticMessageId = messageId;
+        // Stage the first row before activation. `setActiveId` projects this
+        // session-owned transient in the same state transition that replaces
+        // the new-chat surface, so the empty-session Maka hero cannot paint
+        // between observation settling and the submitted content appearing.
+        showTransientUserMessage(
+          session.id,
+          messageId,
+          options.displayText ?? text,
+          [],
+          {
+            ...copiedArray('directoryReferences', directoryReferences),
+            ...copiedArray('quotes', quotes),
+            inlineReferences: [],
+          },
+        );
         // Consumed: the choice is now the created Session's, not the next
         // draft's. A failed create leaves it in place so a retry keeps it.
         if (newChatPermissionChoice) clearNewChatPermissionChoice();
@@ -472,62 +533,19 @@ export function createAppShellChatActions(deps: {
         // cannot become durable text without live identity.
         await activateSessionForFirstSend(session.id);
         if (activeIdRef.current !== session.id) {
+          removeOptimisticUserMessage(session.id, messageId);
           await discardUnsentSession();
           return false;
         }
-        optimisticMessageId = messageId;
-        showTransientUserMessage(
-          session.id,
-          messageId,
-          options.displayText ?? text,
-          [],
-          {
-            ...(quotes && quotes.length > 0 ? { quotes } : {}),
-            inlineReferences: [],
-          },
-        );
-        if (exactTurn) armTurnActive(session.id, messageId);
-        const attachmentItems =
-          pending && pending.length > 0
-            ? toComposerIngestItems(pending)
-            : undefined;
-        const retainedAttachments =
-          pending && pending.length > 0
-            ? retainedAttachmentRefs(pending)
-            : undefined;
-        const sendCommand = {
-          text,
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments && retainedAttachments.length > 0
-            ? { retainedAttachments }
-            : {}),
-          ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
-        };
-        const submitted = await submitAndProject({
-          sessionId: session.id,
-          messageId,
-          placement: 'current_turn',
-          command: {
-            ...sendCommand,
-            ...(options.turnOrchestration
-              ? { turnOrchestration: options.turnOrchestration }
-              : {}),
-          },
-          ...(options.displayText ? { displayText: options.displayText } : {}),
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
-          exactTurn,
-          isSurfaceVisible: () => activeIdRef.current === session.id,
-        });
+        const submitted = await submitIntoSession(session.id, messageId);
         if (submitted.kind === 'refused') {
           await discardUnsentSession();
           return false;
         }
         unsentSessionId = undefined;
-        options.onSessionResolved?.(session.id);
+        // The callback fires only when this send's first message projected;
+        // an unreconciled first message stays unreported.
+        if (submitted.kind === 'projected') options.onSessionResolved?.(session.id);
         await refreshSessions();
         return true;
       }
@@ -557,47 +575,14 @@ export function createAppShellChatActions(deps: {
         options.displayText ?? text,
         [],
         {
-          ...(quotes && quotes.length > 0 ? { quotes } : {}),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
           inlineReferences: [],
         },
       );
-      if (exactTurn) armTurnActive(sessionId, messageId);
-      const attachmentItems =
-        pending && pending.length > 0
-          ? toComposerIngestItems(pending)
-          : undefined;
-      const retainedAttachments =
-        pending && pending.length > 0
-          ? retainedAttachmentRefs(pending)
-          : undefined;
-      const sendCommand = {
-        text,
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(attachmentItems && attachmentItems.length > 0 ? { attachmentItems } : {}),
-        ...(retainedAttachments && retainedAttachments.length > 0
-          ? { retainedAttachments }
-          : {}),
-        ...(quotes && quotes.length > 0 ? { quotes: [...quotes] } : {}),
-        ...(options.workspaceFileReferences && options.workspaceFileReferences.length > 0
-          ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-          : {}),
-      };
-      const submitted = await submitAndProject({
-        sessionId,
-        messageId,
-        placement: 'current_turn',
-        command: {
-          ...sendCommand,
-          ...(options.turnOrchestration ? { turnOrchestration: options.turnOrchestration } : {}),
-        },
-        ...(options.displayText ? { displayText: options.displayText } : {}),
-        ...(quotes && quotes.length > 0 ? { quotes } : {}),
-        exactTurn,
-        isSurfaceVisible: () => activeIdRef.current === sessionId,
-      });
+      const submitted = await submitIntoSession(sessionId, messageId);
       if (submitted.kind === 'refused') return false;
-      if (submitted.kind === 'unreconciled') return true;
-      options.onSessionResolved?.(sessionId);
+      // An existing-Session send never reports a resolved Session.
       return true;
     } catch (error) {
       // Capture ownership before cleanup clears the optimistic Session. A
@@ -666,16 +651,15 @@ export function createAppShellChatActions(deps: {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending?: readonly PendingAttachment[],
-    options: {
-      quotes?: readonly QuoteRef[];
-      workspaceFileReferences?: readonly WorkspaceFileReferencePosition[];
-    } = {},
+    options: MessageContextOptions = {},
   ): Promise<boolean> {
     const messageId = crypto.randomUUID();
+    const directoryReferences = options.directoryReferences;
     const quotes = options.quotes ?? [];
     showTransientUserMessage(sessionId, messageId, text, retainedAttachmentRefs(pending ?? []), {
       placement,
-      ...(quotes.length > 0 ? { quotes } : {}),
+      ...copiedArray('directoryReferences', directoryReferences),
+      ...copiedArray('quotes', quotes),
       inlineReferences: [],
     });
     try {
@@ -687,14 +671,13 @@ export function createAppShellChatActions(deps: {
         placement,
         command: {
           text,
-          ...(attachmentItems.length > 0 ? { attachmentItems } : {}),
-          ...(retainedAttachments.length > 0 ? { retainedAttachments } : {}),
-          ...(quotes.length > 0 ? { quotes: [...quotes] } : {}),
-          ...(options.workspaceFileReferences?.length
-            ? { workspaceFileReferences: [...options.workspaceFileReferences] }
-            : {}),
+          ...copiedArray('attachmentItems', attachmentItems),
+          ...copiedArray('retainedAttachments', retainedAttachments),
+          ...copiedArray('directoryReferences', directoryReferences),
+          ...copiedArray('quotes', quotes),
+          ...copiedArray('workspaceFileReferences', options.workspaceFileReferences),
         },
-        ...(quotes.length > 0 ? { quotes } : {}),
+        ...copiedArray('quotes', quotes),
         isSurfaceVisible: () => activeIdRef.current === sessionId,
       });
       // A refused Message opened nothing and left no row. Reporting it as sent

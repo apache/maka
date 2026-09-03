@@ -35,7 +35,6 @@ import {
   type SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
 import { type RuntimeExecutionConnection } from '@maka/core/llm-connections';
-import type { ProviderRuntimeAdapter } from '@maka/core/llm-connections';
 import { lookupModelMetadata } from '@maka/core/model-metadata';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
 import {
@@ -57,14 +56,19 @@ import {
   openAiResponsesBaseUrl,
   openResponsesUrl,
 } from './provider-urls.js';
+import { createOpenResponsesCompatibilityFinalizer } from './open-responses-compatibility.js';
 import { resolveModelRuntime, type ResolvedModelRuntime } from './model-runtime.js';
+import { runtimeProviderName, type RuntimeProviderAdapter } from './provider-runtime-policy.js';
 import { openAiCodexHeaders } from './subscription-auth.js';
 import { createRequestCustomizationFetch } from './request-customization-fetch.js';
+import { createStreamUsageFallbackFetch } from './stream-usage-fallback-fetch.js';
+import { withOpenCodeSessionHeader } from './opencode-session-header.js';
 
 export interface ModelFactoryInput {
   connection: RuntimeExecutionConnection;
   apiKey: string;
   modelId: string;
+  sessionId?: string;
   fetch?: typeof globalThis.fetch;
   requestHeaders?: Readonly<Record<string, string>>;
   resolvedRuntime?: ResolvedModelRuntime;
@@ -78,6 +82,7 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
     connection,
     apiKey,
     modelId,
+    sessionId,
     fetch,
     requestHeaders,
     resolvedRuntime,
@@ -86,13 +91,20 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
   } = input;
   const runtime = resolvedRuntime ?? resolveModelRuntime(connection, modelId);
   const { adapter, baseUrl: baseURL, wire, reasoningReplay } = runtime;
+  const effectiveRequestHeaders = withOpenCodeSessionHeader(
+    connection.providerType,
+    sessionId,
+    requestHeaders,
+  );
   const hasRequestCustomization =
-    Object.keys(requestHeaders ?? {}).length > 0 ||
+    Object.keys(effectiveRequestHeaders ?? {}).length > 0 ||
     Object.keys(connection.requestBodyOverlay ?? {}).length > 0;
-  const requestFetch = createRequestCustomizationFetch(fetch ?? globalThis.fetch, {
-    headers: requestHeaders,
+  const baseFetch = fetch ?? globalThis.fetch;
+  const requestCustomization = {
+    headers: effectiveRequestHeaders,
     bodyOverlay: connection.requestBodyOverlay,
-  });
+  } as const;
+  const requestFetch = createRequestCustomizationFetch(baseFetch, requestCustomization);
 
   if (adapter.kind === 'google' && adapter.normalizeBaseUrl === false) {
     return createGoogle({ apiKey, baseURL, fetch: requestFetch }).chat(modelId);
@@ -135,11 +147,20 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           fetch: requestFetch,
         }).chat(modelId);
       }
+      if (reasoningReplay.kind !== 'openai-chat-plaintext') {
+        throw new Error('Copilot OpenAI Chat wire requires plaintext reasoning replay');
+      }
+      const reasoningTransport = createOpenAiChatReasoningTransport(
+        requestFetch,
+        openAiChatReasoningTransportState ??
+          createOpenAiChatReasoningTransportState(reasoningReplay.requestField),
+      );
       return createOpenAICompatible({
         name: 'github-copilot',
         apiKey,
         baseURL,
-        fetch: requestFetch,
+        fetch: reasoningTransport.fetch,
+        transformRequestBody: reasoningTransport.transformRequestBody,
       }).chatModel(modelId);
     }
 
@@ -178,11 +199,23 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           throw new Error('Responses wire requires a Responses continuation contract');
         }
         if (reasoningReplay.contract.adapter === 'open-responses') {
+          const finalizeBody = createOpenResponsesCompatibilityFinalizer(
+            reasoningReplay.contract.compatibility,
+          );
+          // Request customization is applied first; provider compatibility is
+          // the final authority before network dispatch, so an overlay cannot
+          // re-enable storage or violate the provider's tool-choice contract.
+          const responsesFetch = finalizeBody
+            ? createRequestCustomizationFetch(baseFetch, {
+                ...requestCustomization,
+                finalizeBody,
+              })
+            : requestFetch;
           return createOpenResponses({
-            name: openAiCompatibleProviderName(adapter, connection),
+            name: runtimeProviderName(adapter, connection),
             apiKey,
             url: openResponsesUrl(baseURL),
-            fetch: requestFetch,
+            fetch: responsesFetch,
           })(modelId);
         }
         return createOpenAI({
@@ -209,11 +242,17 @@ export function getAIModel(input: ModelFactoryInput): LanguageModelV4 {
           )
         : reasoningTransport.transformRequestBody;
       const model = createOpenAICompatible({
-        name: openAiCompatibleProviderName(adapter, connection),
+        name: runtimeProviderName(adapter, connection),
         apiKey,
         baseURL,
-        includeUsage: adapter.includeUsage,
-        fetch: reasoningTransport.fetch,
+        // Ask every Chat Completions server for stream usage unless the
+        // registry opts a provider out. Usage is the only signal the runtime's
+        // context handling reads (#4559): without `stream_options.include_usage`
+        // an OpenAI-compatible relay or a local Ollama returns none, and the
+        // proactive compaction baseline, the eviction check, and the usage
+        // indicator all go dark for exactly the connections that need them.
+        includeUsage: adapter.includeUsage ?? true,
+        fetch: createStreamUsageFallbackFetch(reasoningTransport.fetch, baseURL),
         transformRequestBody,
         ...(adapter.replayAssistantReasoningDetails
           ? { metadataExtractor: reasoningDetailsMetadataExtractor() }
@@ -717,7 +756,7 @@ function buildFamilyWire(
     // Connection-aware: a relay model's declared variants count too.
     const reasons = thinkingVariantsForConnection(connection, modelId).length > 0;
     if (reasoningReplay.contract.adapter === 'open-responses') {
-      // @ai-sdk/open-responses@2.0.28 passes a provider-native reasoningEffort
+      // @ai-sdk/open-responses@2.0.34 passes a provider-native reasoningEffort
       // through verbatim, ahead of the cross-provider top-level `reasoning`
       // enum that cannot express DeepSeek's `max` (whose documented mapping
       // sends `xhigh` to high, not max). The SDK resolves providerOptions
@@ -725,7 +764,7 @@ function buildFamilyWire(
       // openai-compatible — so key by the same name getAIModel passes.
       return explicitReasoningEffort || serviceTier
         ? {
-            [openAiCompatibleProviderName(adapter, connection)]: {
+            [runtimeProviderName(adapter, connection)]: {
               ...(explicitReasoningEffort ? { reasoningEffort: explicitReasoningEffort } : {}),
               ...(serviceTier ? { serviceTier } : {}),
             },
@@ -810,20 +849,6 @@ function buildFamilyWire(
   }
 }
 
-/**
- * The provider IDENTITY passed as `name` to `createOpenAICompatible` in
- * `getAIModel` — the raw slug for custom relays. Distinct from the
- * providerOptions key the SDK wants: see `openAiCompatibleProviderOptionsKey`.
- */
-function openAiCompatibleProviderName(
-  adapter: ProviderRuntimeAdapter,
-  connection: RuntimeExecutionConnection,
-): string {
-  return adapter.kind === 'openai-compatible' && adapter.name === 'connection'
-    ? connection.slug
-    : connection.providerType;
-}
-
 // Mirrors @ai-sdk/openai-compatible's own toCamelCase derivation, so the
 // key we emit always matches the alias the SDK resolves.
 function toCamelCase(name: string): string {
@@ -844,8 +869,8 @@ function toCamelCase(name: string): string {
  * silently read nothing for dashed providers.
  */
 function openAiCompatibleProviderOptionsKey(
-  adapter: ProviderRuntimeAdapter,
+  adapter: RuntimeProviderAdapter,
   connection: RuntimeExecutionConnection,
 ): string {
-  return toCamelCase(openAiCompatibleProviderName(adapter, connection));
+  return toCamelCase(runtimeProviderName(adapter, connection));
 }

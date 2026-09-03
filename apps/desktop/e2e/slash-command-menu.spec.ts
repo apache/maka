@@ -135,6 +135,79 @@ test('offers commands only for the first token and keeps explicit Skill queries 
   await expect(inlineMenu.getByRole('group', { name: '命令' })).toHaveCount(0);
 });
 
+test('does not open the slash menu for path separators', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+
+  for (const prefix of ['帮我整理到/Users', 'path/to/file']) {
+    await composer.fill(prefix);
+    await composer.evaluate((editable) => {
+      // Chromium can put the next typed character in a new text node. Recreate
+      // that observed input shape without letting Playwright normalize the DOM.
+      const node = editable.appendChild(document.createTextNode('/'));
+      const range = document.createRange();
+      range.setStart(node, 1);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      editable.dispatchEvent(new InputEvent('input', {
+        bubbles: true,
+        data: '/',
+        inputType: 'insertText',
+      }));
+    });
+
+    await expect(menu).toHaveCount(0);
+    await expect.poll(() => composer.textContent()).toBe(`${prefix}/`);
+    await expect
+      .poll(() =>
+        composer.evaluate((editable) => {
+          const selection = window.getSelection();
+          if (!selection?.focusNode || !editable.contains(selection.focusNode)) return -1;
+          const range = document.createRange();
+          range.selectNodeContents(editable);
+          range.setEnd(selection.focusNode, selection.focusOffset);
+          return range.toString().length;
+        }),
+      )
+      .toBe(`${prefix}/`.length);
+  }
+});
+
+test('opens the slash menu after a DOM block break', async ({
+  invocableSkillsWindow: page,
+}) => {
+  const composer = page.locator(COMPOSER_INPUT);
+  const menu = page.getByRole('listbox', { name: '命令和技能' });
+
+  await composer.fill('first line');
+  await composer.evaluate((editable) => {
+    const block = document.createElement('div');
+    const slash = block.appendChild(document.createTextNode('/'));
+    editable.appendChild(block);
+
+    const range = document.createRange();
+    range.setStart(slash, 1);
+    range.collapse(true);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    editable.dispatchEvent(new InputEvent('input', {
+      bubbles: true,
+      data: '/',
+      inputType: 'insertText',
+    }));
+  });
+
+  await expect.poll(() => composer.evaluate((editable) => editable.innerText)).toBe(
+    'first line\n/',
+  );
+  await expect(menu).toBeVisible();
+});
+
 test('dispatches /side instead of steering it into a running turn', async ({
   invocableSkillsWindow: page,
 }) => {

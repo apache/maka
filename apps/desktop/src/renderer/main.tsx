@@ -24,27 +24,17 @@ import { applyCachedThemeBeforeMount } from './cached-theme-bootstrap';
 import type { OnboardingSnapshot } from '../preload/bridge-contract.js';
 import './styles.css';
 import { readSystemUiLocale } from './use-system-ui-locale';
-import { WorkbarServicesProvider } from './features/workbar';
-import { createDesktopWorkbarServices } from './platform/desktop/create-workbar-services';
-import { GoalServicesProvider } from './features/goals';
-import { createDesktopGoalServices } from './platform/desktop/create-goal-services';
-import { ModuleHubServicesProvider } from './features/module-hub';
-import { createDesktopModuleHubServices } from './platform/desktop/create-module-hub-services';
-import { SessionNavigationServicesProvider } from './features/session-navigation';
-import { createDesktopSessionNavigationServices } from './platform/desktop/create-session-navigation-services';
-import { TaskEntryServicesProvider } from './features/task-entry';
-import { createDesktopTaskEntryServices } from './platform/desktop/create-task-entry-services';
+import {
+  createDesktopFeatureServices,
+  DesktopFeatureServicesProvider,
+} from './composition/desktop-feature-services';
 
 const ONBOARDING_SNAPSHOT_RETRY_DELAY_MS = 150;
 const ONBOARDING_SNAPSHOT_TIMEOUT_MS = 2_500;
 
 syncUiLocaleDocument(readSystemUiLocale());
 applyCachedThemeBeforeMount();
-const workbarServices = createDesktopWorkbarServices();
-const goalServices = createDesktopGoalServices();
-const moduleHubServices = createDesktopModuleHubServices();
-const sessionNavigationServices = createDesktopSessionNavigationServices();
-const taskEntryServices = createDesktopTaskEntryServices();
+const desktopFeatureServices = createDesktopFeatureServices();
 
 /**
  * Prefetch the onboarding snapshot BEFORE mounting React. The preload
@@ -77,16 +67,8 @@ async function prefetchOnboardingSnapshot(): Promise<OnboardingSnapshot | null> 
 
 void prefetchOnboardingSnapshot().then((initialOnboardingSnapshot) => {
   createRoot(document.getElementById('root')!).render(
-    <SessionNavigationServicesProvider services={sessionNavigationServices}>
-      <TaskEntryServicesProvider services={taskEntryServices}>
-        <ModuleHubServicesProvider services={moduleHubServices}>
-          <GoalServicesProvider services={goalServices}>
-            <WorkbarServicesProvider services={workbarServices}>
-              <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
-            </WorkbarServicesProvider>
-          </GoalServicesProvider>
-        </ModuleHubServicesProvider>
-      </TaskEntryServicesProvider>
-    </SessionNavigationServicesProvider>,
+    <DesktopFeatureServicesProvider services={desktopFeatureServices}>
+      <App initialOnboardingSnapshot={initialOnboardingSnapshot} />
+    </DesktopFeatureServicesProvider>,
   );
 });

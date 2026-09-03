@@ -26,19 +26,19 @@ import {
   isRuntimeHostTerminalTurn as isTerminalTurn,
   projectRuntimeHostInteractionRequest,
 } from "@maka/runtime-host/adapter";
-import type {
-  InteractionAnsweredSnapshot,
-  InteractionPendingSnapshot,
-  SessionDomainChange,
-  SessionContinuitySnapshot,
-  SubscriptionFrame,
+import {
+  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
+  type InteractionAnsweredSnapshot,
+  type InteractionPendingSnapshot,
+  type SessionDomainChange,
+  type SessionContinuitySnapshot,
+  type SubscriptionFrame,
 } from "@maka/runtime-host/protocol";
 import type { DesktopRuntimeHostClient } from "./runtime-host-client.js";
 import { RuntimeHostSubscriptionError } from "@maka/runtime-host/client";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   DESKTOP_TRANSCRIPT_GLOBAL_CACHE_MAX_BYTES,
-  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
   DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
   type DesktopTranscriptBatch,
   type DesktopTranscriptBatchPayload,
@@ -561,6 +561,12 @@ export class RuntimeHostSessionObserver {
         decision: answered.outcome.decision,
         status: answered.outcome.status,
         revision: answered.revision,
+      });
+    } else if (answered.outcome.kind === "client_capability_decision") {
+      this.#broadcast(answered.sessionId, {
+        type: "client_capability_decision_ack",
+        ...base,
+        decision: answered.outcome.decision,
       });
     }
   }
@@ -1460,7 +1466,7 @@ function requireTranscriptRangeBytes(value: number): number {
 
 function resetDeliveryWorkingSetBytes(residentBytes: number): number {
   return (
-    Math.min(residentBytes, DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES) +
+    Math.min(residentBytes, SESSION_TRANSCRIPT_RANGE_MAX_BYTES) +
     Math.min(
       residentBytes,
       (TRANSCRIPT_DELIVERY_WINDOW * 2 + 1) * DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,

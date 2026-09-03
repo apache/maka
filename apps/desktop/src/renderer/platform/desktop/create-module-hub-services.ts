@@ -84,22 +84,7 @@ export function createDesktopModuleHubServices(
       delete: (skillRef, host) => bridge.skills.delete(skillRef, host),
       open: (skillId, target, host) => bridge.skills.open(skillId, target, host),
     },
-    scheduledTasks: {
-      list: (host) => bridge.scheduledTasks.list(host),
-      create: (input, host) => bridge.scheduledTasks.create(input, host),
-      update: (id, patch, host) =>
-        bridge.scheduledTasks.update(id, patch, host),
-      setEnabled: (id, enabled, host) =>
-        bridge.scheduledTasks.setEnabled(id, enabled, host),
-      triggerNow: (id, host) => bridge.scheduledTasks.triggerNow(id, host),
-      snooze: (id, host) => bridge.scheduledTasks.snooze(id, host),
-      clearRunHistory: (id, host) =>
-        bridge.scheduledTasks.clearRunHistory(id, host),
-      delete: (id, host) => bridge.scheduledTasks.delete(id, host),
-      subscribeChanges: (handler) =>
-        bridge.scheduledTasks.subscribeChanges(handler),
-      subscribeDue: (handler) => bridge.scheduledTasks.subscribeDue(handler),
-    },
+    scheduledTasks: bridge.scheduledTasks,
     clientSettings: {
       supported: clientSettingsSupported,
       async getKeepSystemAwake() {

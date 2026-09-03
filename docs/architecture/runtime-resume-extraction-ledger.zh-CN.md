@@ -26,6 +26,8 @@
 - PR A 已合并：`upstream/main@086ec99d`（#1521）
 - 当前 PR B 平铺基线：`upstream/main@e4c6ddbf`
 - 当前 PR B 平铺分支：`codex/runtime-continuation-correctness`
+- 跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)
+- 跟踪：[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)
 
 ## 1. 目的
 
@@ -304,17 +306,17 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | 文件 | PR B 职责 |
 |---|---|
 | `continuation-replay.ts` | 每个 lineage segment 的唯一 provider replay materializer |
-| `model-history.ts` | 冻结 `PROVIDER_REPLAY_PROJECTION_VERSION = 1` |
+| `model-history.ts` | 冻结 `PROVIDER_REPLAY_PROJECTION_VERSION`（PR B 时为 1；#4286 起为 2） |
 | `runtime-resume.ts` | immutable lineage planner、V2 replay-edge 与历史 claim authority 校验、exact claim/start/terminal 分类 |
 | `runtime-kernel.ts` | immediate-source latest 重验、exact tool equality、原子 claim、provider T1 顺序 |
 | `agent-run.ts` | Run create 与 backend reservation 之间提交 continuation-start |
 | `runtime-continuation-admission.ts` | opaque、runner-bound、one-shot start proof/receipt 及精确 identity 绑定 |
 | `runtime-kernel.ts` | continuation dispatch fail closed；仅消费合法的一次性 start proof |
-| `session-manager.ts` | claim-only saga、claim-owned child admission defer、proven-abandonment retry、branch/revision 创建前 preflight |
+| `session-manager.ts` | claim-only saga、branch/revision 创建前 preflight；历史 linked-child admission descriptor 仅作重启关闭兼容，不再提供 live child retry |
 | `runtime-event-read-model.ts` | continuation-start 是消息不可见的 canonical audit fact |
 | `runtime-continuation*.test.ts` | lineage、claim、T1、SIGKILL crash matrix |
 | `session-manager.test.ts` | proof 防伪、one-shot、provider replay mutation fence 与无重复 user event |
-| `session-manager.test.ts` | production-shaped plan/execute/race/failure/stop，以及 linked/legacy child retry 的 V2 claim/start |
+| `session-manager.test.ts` | production-shaped plan/execute/race/failure/stop，以及历史 linked-child admission 的重启关闭兼容 |
 
 #### UI 与文档
 
@@ -359,8 +361,8 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | start writer exact retry | 同一个物理 `event_seq=1` |
 | terminal 后追加 immutable event | rejected；exact terminal retry 仍幂等 |
 | stop after durable start | provider dispatch 被 fence |
-| claim-owned linked child admission 与 generic repair 竞争 | generic repair defer |
-| child abandonment retry | 必须证明 deterministic repair start + terminal，字符串篡改 fail closed |
+| claim-owned historical linked-child admission closure 与 generic repair 竞争 | generic repair defer |
+| historical child abandonment closure | deterministic repair start + terminal，provider 0 次；字符串篡改 fail closed |
 | branch/revision 遇到 V1/V2 continuation 或 authority fact | 创建新 Session 前拒绝 |
 | SIGKILL after claim/run create/live start/terminal event/terminal header | reopen 后稳定分类；live start/no-terminal 保守 park |
 
@@ -369,20 +371,17 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 - authority-capable `SessionManager + SqliteRuntimeStore` 的协议与 production-shaped 路径已覆盖；
 - runtime-host 的 execution-store facade 当前仍以 file RuntimeEvent store 为主，尚未拥有 B2
   continuation authority；
-- hosted child provider RateLimit retry 只保留 `durable_continuation` 单一准入：continuation
-  authority 与 safety inspector 任一缺席，都会在任何 claim/Run/T1 之前 fail closed，禁止
-  静默 fallback；早期的 `legacy_provider_retry` 兼容 lane 已在 host authority lifecycle
-  integration 完成后移除；
+- hosted child provider RateLimit retry 入口已经删除；历史 `linked_child_resume` /
+  `linked_child_provider_retry` descriptor 只在 startup recovery 中收敛为 durable terminal
+  fact，provider 调用次数为 0；早期的 `legacy_provider_retry` 兼容 lane 也已移除；
 - PR D 必须在同一 storage-root lease 下接入 SQLite authority，并锁定
-  `claim repair → linked-child admission repair → generic ledger repair → planning` 的 owner 顺序；
+  `claim repair → historical linked-child admission closure → generic ledger repair → planning`
+  的 owner 顺序；
 - SQLite canonical terminal 可幂等提交；文件型 AgentRun projection 当前是跨存储 saga。确定性
   event id 能让单恢复者重试收敛，但两个进程同时 repair 时还没有 append-if-absent/CAS；
   PR D 的 lease/fencing 或 projection CAS 是宣称跨进程 exactly-once 前的硬前置；
-- 在上述 composition/owner 测试完成前，不能把当前切片描述为 hosted auto-resume 已默认可用。
-  `legacy_provider_retry` 兼容 lane（仅维持升级前的 provider 429 重试能力，不具有 durable
-  continuation、跨进程 exactly-once 或 crash-resume 承诺）已在 host authority lifecycle
-  integration 完成 typed authority composition 后移除；child provider retry 现在只走
-  durable continuation 准入，组合不完整即 fail closed。
+- 在上述 composition/owner 测试完成前，不能把当前切片描述为 hosted auto-resume 已默认可用；
+  当前也不存在 child provider retry 的 live 或降级准入路径。
 
 ### 8.4 明确不进入 PR B
 
@@ -468,7 +467,7 @@ Schema 9 进一步要求该 authority stream 在首次写入前绑定 authentica
 - SQLite/JSONL/tool/recovery/continuation/copy writer bypass；
 - 两进程 exact/conflicting baseline arbitration；
 - 两进程 schema 6/7→8 migration；
-- DB rootId exact binding、跨 root 单文件复制拒绝、whole-root storage authority import/adopt 与 unbound operational data fail closed；既有 managed worktree relocation 和 legacy DB binding 仍是独立维护协议，不由 M0 baseline open 暗中完成；
+- DB rootId exact binding、跨 root 单文件复制拒绝、whole-root storage authority import/adopt 与 unbound operational data fail closed；legacy DB binding 仍是独立维护协议；旧 baseline-open producer 已删除，后续 workspace artifact admission 由 Gitoxide data plane 单独建立；
 - Linux/macOS process-kill crash harness；
 - workspace fact 不进入 UI/provider message projection。
 

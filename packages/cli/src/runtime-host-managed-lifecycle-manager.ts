@@ -78,6 +78,7 @@ export async function manageRuntimeHostManagedLifecycle(
   };
   const resolved = await resolveRecoverableRuntimeHostManagedDeployment(rootId, lifecycleDeps, {
     ...(input.expectedTarget ? { expectedTarget: input.expectedTarget } : {}),
+    allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
   });
   if (resolved.kind === 'absent') {
     if (input.action === 'uninstall' && input.expectedTarget) {
@@ -142,9 +143,14 @@ export async function manageRuntimeHostManagedLifecycle(
         rootPath: config.root.path,
         rootId,
         supervisor: provider.supervisor,
-        allowInterruptActiveTasks: true,
+        allowInterruptActiveTasks: input.allowInterruptActiveTasks ?? false,
       });
-      if (retirement.kind === 'active_tasks') throw new Error('Unexpected active-task refusal');
+      if (retirement.kind === 'active_tasks') {
+        throw new RuntimeHostServiceManagerError(
+          'active_tasks',
+          'Runtime Host still owns active work; it was not restarted',
+        );
+      }
       await retirement.owner.close();
     }
     try {
@@ -359,7 +365,7 @@ function presentationManager(
   config: RuntimeHostManagedDeploymentConfig,
 ): Exclude<RuntimeHostManagedServiceStatus['manager'], 'none'> {
   if (config.lifecycle.mode === 'on_demand') return 'on_demand';
-  return config.lifecycle.provider === 'systemd_user' ? 'systemd_user' : 'launch_agent';
+  return config.lifecycle.provider;
 }
 
 function projectLegacyConfig(

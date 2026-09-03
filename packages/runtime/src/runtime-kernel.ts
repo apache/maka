@@ -32,7 +32,6 @@ import type {
   RuntimeContinuationAuthorityStore,
   RuntimeEventStore,
 } from '@maka/core/runtime-event-store';
-import { isSessionInlineRun } from '@maka/core/agent-run';
 import {
   type ActiveInteractionRequestEvent,
   type CompleteEvent,
@@ -50,7 +49,7 @@ import type {
   TurnStateMessage,
 } from '@maka/core/session';
 import { isDeepStrictEqual } from 'node:util';
-import type { ChildAgentTurnInput, UserMessageInput } from '@maka/core/runtime-inputs';
+import type { UserMessageInput } from '@maka/core/runtime-inputs';
 import type { SandboxBoundaryResponse } from '@maka/core/sandbox-boundary';
 import {
   resolveEffectiveOrchestration,
@@ -86,6 +85,7 @@ import type {
   BackendFactoryContext,
   BackendRegistry,
   CompactSessionInput,
+  PreparedBackendActivation,
   ResolvedChildToolActivation,
   SessionStore,
   StopSessionInput,
@@ -98,12 +98,10 @@ import {
   normalizeStopSessionSource,
   turnHasRetainedOutput as messagesHaveRetainedOutput,
 } from './session-projection-helpers.js';
-import {
-  assertAgentDefinitionRunnable,
-  buildToolsForAgentDefinition,
-  requireBuiltinAgentDefinition,
-} from './agent-catalog.js';
+import { buildToolsForAgentDefinition } from './agent-catalog.js';
 import { loadLatestHistoryCompactCheckpointFromRunLedger } from './history-compact-ledger.js';
+import { loadModelProjectionTransitionsFromRunLedger } from './model-projection-transition-ledger.js';
+import type { ModelProjectionTransition } from '@maka/core/model-projection-transition';
 import {
   canReplaceHistoryCompactCheckpoint,
   type HistoryCompactCheckpoint,
@@ -119,9 +117,15 @@ import {
   type RuntimeContinuation,
   type RuntimeContinuationSafetyObservation,
 } from './runtime-resume.js';
-import { buildContinuationReplayPlan, digestProviderReplay } from './continuation-replay.js';
 import {
+  buildContinuationReplayPlan,
+  digestProviderReplayAdmission,
+  type ContinuationReplayAdmissionRoute,
+} from './continuation-replay.js';
+import {
+  admitProviderReasoningReplayItems,
   buildRuntimeEventModelReplayPlan,
+  compatibleProviderReasoningReplayEventIds,
   PROVIDER_REPLAY_PROJECTION_VERSION,
 } from './model-history.js';
 import {
@@ -142,6 +146,8 @@ import {
   RuntimeInteractionFailStopError,
   RuntimeInteractionInvariantError,
   bindRuntimeInteractionRun,
+  isHostedInteractionRequestEvent,
+  isHostedInteractionSettlementAckEvent,
   type RuntimeInteractionAuthority,
   type RuntimeInteractionRunBinding,
   type RuntimeInteractionRunClosureReason,
@@ -169,16 +175,6 @@ export interface RuntimeKernelLike {
   ): AsyncIterable<SessionEvent>;
   compactSession(sessionId: string, input?: CompactSessionInput): AsyncIterable<SessionEvent>;
   preflightContextCompaction(sessionId: string): Promise<void>;
-  startChildTurn(
-    sessionId: string,
-    input: ChildAgentTurnInput,
-    execution?: RuntimeExecutionClaim,
-  ): AsyncIterable<SessionEvent>;
-  startChildRetry?(
-    sessionId: string,
-    input: ChildAgentRetryInput,
-    execution?: RuntimeExecutionClaim,
-  ): AsyncIterable<SessionEvent>;
   stopSession(sessionId: string, input?: StopSessionInput): Promise<void>;
   respondToSandboxBoundary(sessionId: string, response: SandboxBoundaryResponse): Promise<void>;
   listActiveInteractions?(sessionId: string): ActiveInteractionRequestEvent[];
@@ -253,27 +249,11 @@ export class RuntimeOwnerCleanupError extends Error {
   }
 }
 
-export interface ChildAgentRetryInput {
-  parentRunId: string;
-  spec: ChildAgentTurnInput['spec'];
-  continuation: RuntimeContinuation;
-  /** Retry an ordinary session-inline AgentRun inside a linked child Session. */
-  linkedSession?: boolean;
-  onRunStarted?: () => void | Promise<void>;
-}
-
 export type BackendActivationBoundary = <T>(operation: () => Promise<T> | T) => Promise<T>;
 
 interface ChildToolActivation {
   readonly tools: readonly MakaTool[];
   readonly shell?: TurnShellPlan;
-}
-
-function requireChildToolActivation(
-  activation: ChildToolActivation | undefined,
-): ChildToolActivation {
-  if (!activation) throw new Error('Child tool activation was not prepared');
-  return activation;
 }
 
 export interface RuntimeKernelDeps {
@@ -305,9 +285,9 @@ export type { HistoryCompactCleanupRequest } from './history-compact-checkpoint-
 interface BackendGeneration extends AgentRunActiveSession {
   sessionId: string;
   generation: number;
-  route: { kind: 'parent' } | { kind: 'child'; activeKey: string };
   phase: 'active' | 'stopping' | 'disposing' | 'failed' | 'terminated';
   backend: AgentBackend;
+  providerStateIdentity?: `sha256:${string}`;
   stopBackend: AgentBackend['stop'];
   stopState:
     | { kind: 'idle' }
@@ -374,6 +354,7 @@ interface PendingExecutionClaim {
   rejectSettled(error: unknown): void;
   phase: 'pending' | 'attached' | 'reserved' | 'released' | 'failed';
   run?: AgentRun;
+  backendPreparation?: PreparedBackendActivation;
   stopIntent?: SessionStopIntent;
   finalization?: ExecutionClaimOutcome;
 }
@@ -396,7 +377,6 @@ interface InteractionRequestOwner {
 
 export class RuntimeKernel implements RuntimeKernelLike {
   private readonly active = new Map<string, BackendGeneration>();
-  private readonly childActive = new Map<string, BackendGeneration>();
   private readonly backendGenerations = new Map<number, BackendGeneration>();
   private readonly backendActivationBuilds = new Map<string, Promise<BackendGeneration>>();
   private readonly stopOperations = new Map<string, StopOperation>();
@@ -554,7 +534,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     execution.run = run;
     execution.phase = 'attached';
-    if (execution.stopIntent) run.stop(execution.stopIntent.input.source);
+    if (execution.stopIntent) {
+      run.stop(execution.stopIntent.input.source, execution.stopIntent.input.workHubActionId);
+    }
   }
 
   private reserveExecutionClaim(
@@ -651,6 +633,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     input: UserMessageInput,
     options: TurnStartOptions = {},
   ): AsyncIterable<SessionEvent> {
+    assertNoRemovedChildAgentRunLineage(input);
     if (this.pendingContinuationSessions.has(sessionId)) {
       throw new Error('Cannot start a turn while a runtime continuation is being claimed');
     }
@@ -764,18 +747,34 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
 
     const header = await this.deps.store.readHeader(continuation.sessionId);
-    const sourceRun = await this.deps.runStore.readRun(
-      continuation.sessionId,
-      continuation.sourceRunId,
+    const [sourceRun, sessionRuns] = await Promise.all([
+      this.deps.runStore.readRun(continuation.sessionId, continuation.sourceRunId),
+      this.deps.runStore.listSessionRuns(continuation.sessionId),
+    ]);
+    const targetProviderStateIdentity = (
+      await this.deps.backends.prepare(header.backend, {
+        sessionId: continuation.sessionId,
+        workspaceRoot: header.workspaceRoot,
+        header,
+        abortSignal: execution.abortController.signal,
+      })
+    ).providerStateIdentity;
+    const admissionRoute: ContinuationReplayAdmissionRoute = {
+      runHeaders: sessionRuns,
+      targetProviderStateIdentity,
+      targetModelId: header.model,
+    };
+    const sourceEvents = await revalidateContinuationBoundary(
+      continuationAuthority,
+      continuation,
+      admissionRoute,
     );
-    const sourceEvents = await revalidateContinuationBoundary(continuationAuthority, continuation);
     assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
     await this.revalidateContinuationSafety(continuation);
 
     const userInput: UserMessageInput = {
       turnId: continuation.turnId,
       text: '',
-      parentRunId: continuation.sourceRunId,
       parentTurnId: continuation.sourceTurnId,
     };
     const effectiveOrchestration = effectiveOrchestrationForRun(sourceRun, header);
@@ -788,6 +787,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
       effectiveOrchestration,
       effectiveToolMode,
+      targetProviderStateIdentity,
       claimedAt,
     });
     const claim = continuationClaimForExecution(continuation, claimedAt, targetRunHeader);
@@ -800,7 +800,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     }
     await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
 
-    const sessionRuns = await this.deps.runStore.listSessionRuns(continuation.sessionId);
     const existingClaim = sessionRuns.find(
       (runHeader) =>
         runHeader.continuationSource?.sourceRunId === continuation.sourceRunId &&
@@ -826,6 +825,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
       sessionId: continuation.sessionId,
       header,
       userInput,
+      runLineage: { parentRunId: continuation.sourceRunId },
       runId: continuation.runId,
       invocationId: continuation.invocationId,
       store: this.deps.store,
@@ -912,6 +912,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.attachExecutionClaim(execution, run);
     yield* this.runAgentContinuation(
       continuation,
+      admissionRoute,
       run,
       execution,
       {
@@ -1021,7 +1022,12 @@ export class RuntimeKernel implements RuntimeKernelLike {
           runId: run.runId,
         });
       }
-      begin = await this.runBackendActivation(() => run.beginOperation());
+      begin = await this.runBackendActivation(async () => {
+        run.bindProviderStateIdentity(
+          await this.prepareBackendForExecution(sessionId, header, execution),
+        );
+        return await run.beginOperation();
+      });
       await input.hostedRoot?.onRunStarted?.();
       this.settleReservedExecutionClaim(execution, run, { ok: true });
     } catch (error) {
@@ -1039,6 +1045,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         turnId: run.turnId,
         runId: run.runId,
         runtimeContext: begin.runtimeContext,
+        runtimeContextRunHeaders: begin.runtimeContextRunHeaders,
       });
       if (run.isStopped()) return;
       const tokenUsageEvent: TokenUsageEvent = {
@@ -1119,351 +1126,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return active;
   }
 
-  async *startChildTurn(
-    sessionId: string,
-    input: ChildAgentTurnInput,
-    suppliedExecution?: RuntimeExecutionClaim,
-  ): AsyncIterable<SessionEvent> {
-    const execution = this.takeExecutionClaim(sessionId, suppliedExecution);
-    try {
-      yield* this.startChildTurnClaimed(sessionId, input, execution);
-    } finally {
-      this.releaseExecutionClaim(execution);
-    }
-  }
-
-  private async *startChildTurnClaimed(
-    sessionId: string,
-    input: ChildAgentTurnInput,
-    execution: PendingExecutionClaim,
-  ): AsyncIterable<SessionEvent> {
-    await this.enterExecutionClaim(execution);
-    const parentHeader = await this.deps.store.readHeader(sessionId);
-    const definition = requireBuiltinAgentDefinition(input.spec.id);
-    let childActivation: ChildToolActivation | undefined;
-    const childHeader: SessionHeader = {
-      ...parentHeader,
-      permissionMode: definition.permissionMode,
-    };
-    const userInput: UserMessageInput = {
-      turnId: input.turnId,
-      text: input.prompt,
-      parentRunId: input.parentRunId,
-      ...(input.resumedFromRunId ? { resumedFromRunId: input.resumedFromRunId } : {}),
-      agentId: definition.id,
-      agentName: definition.name,
-    };
-    const activeKey = childActiveKey(sessionId, input.turnId);
-    const run = new AgentRun({
-      sessionId,
-      header: childHeader,
-      userInput,
-      store: this.deps.store,
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-      ...(this.deps.toolBoundaryProtocol
-        ? { toolBoundaryProtocol: this.deps.toolBoundaryProtocol }
-        : {}),
-      repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
-      newId: this.deps.newId,
-      now: this.deps.now,
-      effectiveOrchestration: resolveEffectiveOrchestration('default', undefined),
-      recordSessionMessages: false,
-      hooks: {
-        reserveRun: async (targetSessionId, nextHeader, activeRun) => {
-          const activation = requireChildToolActivation(childActivation);
-          const active = await this.reserveChildRun(
-            activeKey,
-            targetSessionId,
-            nextHeader,
-            definition.systemPrompt,
-            activation.tools,
-            activation.shell,
-            activeRun,
-            execution,
-          );
-          this.reserveExecutionClaim(execution, active, activeRun);
-          return active;
-        },
-        unregisterRun: (active, activeRun) => this.unregisterChildRun(active, activeRun),
-        updateHeader: async (_targetSessionId, patch) => ({ ...childHeader, ...patch }),
-        updateStatus: async () => {},
-        appendTurnState: async () => {},
-      },
-    });
-
-    this.attachExecutionClaim(execution, run);
-    yield* this.runAgentTurn(sessionId, run, execution, {
-      prepareBackendActivation: async () => {
-        const available = await this.childToolActivationForSession(sessionId);
-        assertAgentDefinitionRunnable({ definition, tools: available.tools });
-        childActivation = {
-          tools: buildToolsForAgentDefinition(available.tools, definition),
-          ...(available.shell ? { shell: available.shell } : {}),
-        };
-      },
-    });
-  }
-
-  async *startChildRetry(
-    sessionId: string,
-    input: ChildAgentRetryInput,
-    suppliedExecution?: RuntimeExecutionClaim,
-  ): AsyncIterable<SessionEvent> {
-    const execution = this.takeExecutionClaim(sessionId, suppliedExecution);
-    try {
-      yield* this.startChildRetryClaimed(sessionId, input, execution);
-    } finally {
-      this.releaseExecutionClaim(execution);
-    }
-  }
-
-  private async *startChildRetryClaimed(
-    sessionId: string,
-    input: ChildAgentRetryInput,
-    execution: PendingExecutionClaim,
-  ): AsyncIterable<SessionEvent> {
-    const continuation = snapshotRuntimeContinuation(input.continuation);
-    await this.enterExecutionClaim(execution);
-    if (continuation.sessionId !== sessionId) {
-      throw new Error('Child retry continuation belongs to a different session');
-    }
-    const parentHeader = await this.deps.store.readHeader(sessionId);
-    const linkedSnapshot = input.linkedSession ? parentHeader.subagentRuntime : undefined;
-    if (
-      input.linkedSession &&
-      (parentHeader.subagentParent?.kind !== 'subagent' ||
-        !linkedSnapshot ||
-        linkedSnapshot.agentId !== input.spec.id)
-    ) {
-      throw new Error('Linked child retry is missing its durable runtime snapshot');
-    }
-    const definition = linkedSnapshot
-      ? {
-          id: linkedSnapshot.agentId,
-          name: linkedSnapshot.agentName,
-          systemPrompt: linkedSnapshot.systemPrompt,
-          permissionMode: parentHeader.permissionMode,
-          tools: linkedSnapshot.toolNames,
-        }
-      : requireBuiltinAgentDefinition(input.spec.id);
-    const preflightActivation = await this.childToolActivationForSession(sessionId);
-    if (!linkedSnapshot) {
-      assertAgentDefinitionRunnable({
-        definition: requireBuiltinAgentDefinition(input.spec.id),
-        tools: preflightActivation.tools,
-      });
-    }
-    const preflightChildTools = buildToolsForAgentDefinition(preflightActivation.tools, definition);
-    if (linkedSnapshot && preflightChildTools.length !== linkedSnapshot.toolNames.length) {
-      throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
-    }
-    const childHeader: SessionHeader = linkedSnapshot
-      ? parentHeader
-      : {
-          ...parentHeader,
-          permissionMode: definition.permissionMode,
-        };
-    const userInput: UserMessageInput = {
-      turnId: continuation.turnId,
-      text: '',
-      ...(!linkedSnapshot ? { parentRunId: input.parentRunId } : {}),
-      retriedFromRunId: continuation.sourceRunId,
-      agentId: definition.id,
-      agentName: definition.name,
-    };
-    const effectiveOrchestration = resolveEffectiveOrchestration('default', undefined);
-    if (!this.deps.runStore || !this.deps.runtimeEventStore) {
-      throw new Error('Child retry continuation requires AgentRunStore and RuntimeEventStore');
-    }
-    const sourceRun = await this.deps.runStore.readRun(sessionId, continuation.sourceRunId);
-    const effectiveToolMode = effectiveToolModeForRun(sourceRun);
-    const continuationAuthority = requireRuntimeContinuationAuthority(this.deps.runtimeEventStore);
-    const sourceEvents = await revalidateContinuationBoundary(continuationAuthority, continuation);
-    assertContinuationSourceUnchanged(continuation, sourceRun, sourceEvents);
-    await this.revalidateContinuationSafety(
-      continuation,
-      preflightChildTools.map((tool) => tool.name),
-    );
-
-    const claimedAt = this.deps.now();
-    const targetRunHeader = continuationTargetRunHeaderForExecution({
-      continuation,
-      sessionHeader: childHeader,
-      userInput,
-      workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
-      effectiveOrchestration,
-      effectiveToolMode,
-      claimedAt,
-    });
-    const claim = continuationClaimForExecution(continuation, claimedAt, targetRunHeader);
-    const claimResult = await continuationAuthority.claimContinuation({
-      claim,
-    });
-    if (claimResult.kind !== 'acquired') {
-      throw new RuntimeContinuationRevalidationError(
-        'continuation_claim_conflict',
-        `Child retry continuation boundary is already claimed by ${claimResult.claim.claimId}`,
-      );
-    }
-    await this.deps.continuationFailpoint?.('after_continuation_claim_committed');
-    const continuationToolBoundaryProtocol = this.deps.toolBoundaryProtocol;
-    const durableAdmission: {
-      claimedRunHeader: AgentRunHeader;
-      commitContinuationStart: (
-        startedAt: number,
-      ) => Promise<{ startEventId: string; created: true }>;
-    } = {
-      claimedRunHeader: claim.targetRunHeader,
-      commitContinuationStart: async (startedAt) => {
-        const source = claim.boundary.segments.at(-1)!;
-        const eventId = this.deps.newId();
-        const result = await continuationAuthority.commitContinuationStart({
-          claim,
-          event: {
-            id: eventId,
-            ...claim.target,
-            ts: startedAt,
-            partial: false,
-            role: 'system',
-            author: 'system',
-            actions: {
-              ...(continuationToolBoundaryProtocol
-                ? {
-                    runtimeProtocol: {
-                      toolBoundary: continuationToolBoundaryProtocol,
-                    },
-                  }
-                : {}),
-              continuationStart: {
-                protocol: 'continuation_start_v2',
-                provenance: 'runtime_admission',
-                claimId: claim.claimId,
-                boundaryDigest: claim.boundaryDigest,
-                immediateSource: {
-                  sessionId: source.identity.sessionId,
-                  invocationId: source.identity.invocationId,
-                  runId: source.identity.runId,
-                  turnId: source.identity.turnId,
-                  highWater: source.position.lastEventSeq,
-                  prefixDigest: source.prefixDigest,
-                },
-                replayManifestDigest: claim.boundary.manifestDigest,
-                providerProjectionVersion: claim.providerProjectionVersion,
-                providerReplayDigest: claim.providerReplayDigest,
-              },
-            },
-          },
-        });
-        if (!result.created) {
-          throw new Error(
-            'Continuation-start already existed; refusing to reissue provider admission',
-          );
-        }
-        return { startEventId: eventId, created: true };
-      },
-    };
-    const activeKey = childActiveKey(sessionId, continuation.turnId);
-    let childActivation: ChildToolActivation | undefined;
-    const run = new AgentRun({
-      sessionId,
-      header: childHeader,
-      userInput,
-      runId: continuation.runId,
-      invocationId: continuation.invocationId,
-      store: this.deps.store,
-      runStore: this.deps.runStore,
-      runtimeEventStore: this.deps.runtimeEventStore,
-      ...(continuationToolBoundaryProtocol
-        ? { toolBoundaryProtocol: continuationToolBoundaryProtocol }
-        : {}),
-      repairRunRuntimeLedger: this.deps.repairRunRuntimeLedger,
-      newId: this.deps.newId,
-      now: this.deps.now,
-      workspaceIdentity: continuation.safetySnapshot.workspaceIdentity,
-      effectiveOrchestration,
-      effectiveToolMode,
-      ...durableAdmission,
-      recordSessionMessages: false,
-      hooks: {
-        reserveRun: async (targetSessionId, nextHeader, activeRun) => {
-          let active: BackendGeneration;
-          if (linkedSnapshot) {
-            active = await this.reserveParentRun(targetSessionId, nextHeader, activeRun, execution);
-          } else {
-            const activation = requireChildToolActivation(childActivation);
-            active = await this.reserveChildRun(
-              activeKey,
-              targetSessionId,
-              nextHeader,
-              definition.systemPrompt,
-              activation.tools,
-              activation.shell,
-              activeRun,
-              execution,
-            );
-          }
-          this.reserveExecutionClaim(execution, active, activeRun);
-          return active;
-        },
-        unregisterRun: (active, activeRun) =>
-          linkedSnapshot
-            ? this.unregisterParentRun(active, activeRun)
-            : this.unregisterChildRun(active, activeRun),
-        updateHeader: (targetSessionId, patch) =>
-          linkedSnapshot
-            ? this.updateHeader(targetSessionId, patch)
-            : Promise.resolve({ ...childHeader, ...patch }),
-        updateStatus: (targetSessionId, status, blockedReason, ts) =>
-          linkedSnapshot
-            ? this.updateStatus(targetSessionId, status, blockedReason, ts)
-            : Promise.resolve(),
-        appendTurnState: (targetSessionId, turnId, status, lineage, options) =>
-          linkedSnapshot
-            ? this.appendTurnState(targetSessionId, turnId, status, lineage, options)
-            : Promise.resolve(),
-      },
-    });
-
-    this.attachExecutionClaim(execution, run);
-    // The retry replays without a second user prompt; the source boundary is
-    // consumed through claim + continuation-start T1.
-    yield* this.runAgentContinuation(
-      continuation,
-      run,
-      execution,
-      input.linkedSession === true
-        ? {
-            sessionId,
-            turnId: continuation.turnId,
-            runId: continuation.runId,
-          }
-        : undefined,
-      input.onRunStarted,
-      async () => {
-        const available = await this.childToolActivationForSession(sessionId);
-        if (!linkedSnapshot) {
-          assertAgentDefinitionRunnable({
-            definition: requireBuiltinAgentDefinition(input.spec.id),
-            tools: available.tools,
-          });
-        }
-        const tools = buildToolsForAgentDefinition(available.tools, definition);
-        if (linkedSnapshot && tools.length !== linkedSnapshot.toolNames.length) {
-          throw new Error('Linked child retry durable runtime tool snapshot is unavailable');
-        }
-        childActivation = {
-          tools,
-          ...(available.shell ? { shell: available.shell } : {}),
-        };
-        await this.revalidateContinuationSafety(
-          continuation,
-          tools.map((tool) => tool.name),
-        );
-      },
-    );
-  }
-
   private async *runAgentTurn(
     sessionId: string,
     run: AgentRun,
@@ -1492,6 +1154,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
       }
       begin = await this.runBackendActivation(async () => {
         await prepareBackendActivation?.();
+        run.bindProviderStateIdentity(
+          await this.prepareBackendForExecution(sessionId, run.headerSnapshot(), execution),
+        );
         const started = await run.begin();
         await owners.bindInteraction(this.deps.interactionAuthority, {
           sessionId,
@@ -1624,6 +1289,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private async *runAgentContinuation(
     continuation: RuntimeContinuation,
+    admissionRoute: ContinuationReplayAdmissionRoute,
     run: AgentRun,
     execution: PendingExecutionClaim,
     messageOwner?: RuntimeMessageRunIdentity,
@@ -1643,6 +1309,13 @@ export class RuntimeKernel implements RuntimeKernelLike {
           throw new Error('Durable continuation omitted final safety revalidation');
         }
         await revalidateSafety();
+        run.bindProviderStateIdentity(
+          await this.prepareBackendForExecution(
+            continuation.sessionId,
+            run.headerSnapshot(),
+            execution,
+          ),
+        );
         const started = await run.beginContinuation(continuation);
         await owners.bindInteraction(this.deps.interactionAuthority, {
           sessionId: continuation.sessionId,
@@ -1668,6 +1341,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     try {
       continuationMetadata = consumeAdmittedRuntimeContinuation({
         continuation,
+        admissionRoute,
         startAdmission:
           'continuationStartAdmission' in begin
             ? begin.continuationStartAdmission
@@ -1706,6 +1380,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
         text: '',
         context: [],
         runtimeContext: continuation.runtimeContext,
+        runtimeContextRunHeaders: admissionRoute.runHeaders,
         continuation: continuationMetadata,
       },
       onSessionEvent: async (sessionEvent, runtimeEvent) => {
@@ -1917,10 +1592,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     binding: RuntimeInteractionRunBinding | undefined,
     event: SessionEvent,
   ): void {
-    if (
-      binding &&
-      (event.type === 'user_question_request' || event.type === 'sandbox_boundary_request')
-    ) {
+    if (binding && isHostedInteractionRequestEvent(event)) {
       binding.assertPendingAdmission(event);
     }
   }
@@ -2041,6 +1713,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   stopSession(sessionId: string, input: StopSessionInput = {}): Promise<void> {
+    normalizeStopSessionSource(input.source, input.workHubActionId);
     const existing = this.stopAttempts.get(sessionId);
     if (existing) return existing;
     const intent: SessionStopIntent = { input, claims: new Set() };
@@ -2050,7 +1723,9 @@ export class RuntimeKernel implements RuntimeKernelLike {
       execution.stopIntent = intent;
       intent.claims.add(execution);
     }
-    for (const execution of executions) execution.run?.stop(input.source);
+    for (const execution of executions) {
+      execution.run?.stop(input.source, input.workHubActionId);
+    }
     for (const execution of executions) {
       execution.abortController.abort(execution.cancellation);
     }
@@ -2106,7 +1781,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
     active: BackendGeneration,
     run: AgentRun,
   ): StopOperation | undefined {
-    run.stop(input.source);
+    run.stop(input.source, input.workHubActionId);
     if (!run.hasPendingStop()) return this.stopOperations.get(sessionId);
     const existingOperation = this.stopOperations.get(sessionId);
     const operation = existingOperation ?? this.buildStopOperation(input);
@@ -2149,7 +1824,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private buildStopOperation(input: StopSessionInput): StopOperation {
-    const abortSource = normalizeStopSessionSource(input.source);
+    const abortSource = normalizeStopSessionSource(input.source, input.workHubActionId);
     const ts = this.deps.now();
     return {
       abortSource,
@@ -2587,9 +2262,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
 
   private detachBackendGeneration(active: BackendGeneration): void {
     if (this.active.get(active.sessionId) === active) this.active.delete(active.sessionId);
-    for (const [key, child] of this.childActive.entries()) {
-      if (child === active) this.childActive.delete(key);
-    }
   }
 
   private stopOperationReferences(active: BackendGeneration): boolean {
@@ -2598,31 +2270,22 @@ export class RuntimeKernel implements RuntimeKernelLike {
     );
   }
 
-  /**
-   * Builds the backend recorder hooks shared by `ensureActive` and
-   * `ensureChildActive`. The two paths are structurally identical except for
-   * which active-session map they resolve against — captured here by
-   * `resolveActive`, so each call site binds its own resolver. Callers retain
-   * the intentionally divergent fields (`allowMidTurnHistoryCompaction`,
-   * `shellRunContextSummary`, system prompt/tools source) at their own sites.
-   */
   private buildBackendRecorderHooks(input: {
-    resolveActive: () => BackendGeneration | undefined;
     sessionId: string;
   }): Pick<
     BackendFactoryContext,
     | 'recordRunTrace'
-    | 'recordProviderRequestCapture'
-    | 'recordProviderRequestAttempt'
     | 'recordModelCallAttempt'
     | 'recordRunComposition'
     | 'loadHistoryCompactCheckpoint'
     | 'recordHistoryCompactCheckpoint'
+    | 'loadModelProjectionTransitions'
+    | 'recordModelProjectionTransition'
     | 'loadTurnRuntimeEvents'
   > {
-    const { resolveActive, sessionId } = input;
+    const { sessionId } = input;
     const runFor = (turnId: string): AgentRun | undefined => {
-      const active = resolveActive();
+      const active = this.active.get(sessionId);
       const runId = active?.turnToRunId.get(turnId);
       return runId ? active?.activeRuns.get(runId) : undefined;
     };
@@ -2632,23 +2295,14 @@ export class RuntimeKernel implements RuntimeKernelLike {
       },
       ...(this.deps.runStore
         ? {
-            recordProviderRequestCapture: (capture) => {
-              const run = runFor(capture.turnId);
-              if (!run)
-                return Promise.reject(new Error('No active AgentRun for provider request capture'));
-              return run.recordProviderRequestCapture(capture);
-            },
-            recordProviderRequestAttempt: (attempt) => {
-              runFor(attempt.turnId)?.recordProviderRequestAttempt(attempt);
-            },
             // Resolved by runId rather than turnId: the canonical record names
             // the run it belongs to, so it needs no turn-to-run indirection.
             recordModelCallAttempt: (commit) => {
-              const run = resolveActive()?.activeRuns.get(commit.attempt.runId);
+              const run = this.active.get(sessionId)?.activeRuns.get(commit.attempt.runId);
               return run?.recordModelCallAttempt(commit) ?? Promise.resolve();
             },
             recordRunComposition: (runId, snapshot) => {
-              const run = resolveActive()?.activeRuns.get(runId);
+              const run = this.active.get(sessionId)?.activeRuns.get(runId);
               if (!run) {
                 return Promise.reject(new Error('No active AgentRun for Run Composition'));
               }
@@ -2659,6 +2313,20 @@ export class RuntimeKernel implements RuntimeKernelLike {
               checkpoint: HistoryCompactCheckpoint,
               turnId: string,
             ) => this.historyCompactCoordinator.record(sessionId, checkpoint, runFor(turnId)),
+            loadModelProjectionTransitions: () =>
+              loadModelProjectionTransitionsFromRunLedger(this.deps.runStore!, sessionId),
+            recordModelProjectionTransition: (
+              transition: ModelProjectionTransition,
+              turnId: string,
+            ) => {
+              const run = runFor(turnId);
+              if (!run) {
+                return Promise.reject(
+                  new Error('No active AgentRun for model projection transition'),
+                );
+              }
+              return run.recordModelProjectionTransition(transition);
+            },
           }
         : {}),
       ...(this.deps.runtimeEventStore
@@ -2672,6 +2340,23 @@ export class RuntimeKernel implements RuntimeKernelLike {
           }
         : {}),
     };
+  }
+
+  private async prepareBackendForExecution(
+    sessionId: string,
+    header: SessionHeader,
+    execution: PendingExecutionClaim,
+  ): Promise<`sha256:${string}` | undefined> {
+    const existing = this.active.get(sessionId);
+    if (existing) return existing.providerStateIdentity;
+    const prepared = await this.deps.backends.prepare(header.backend, {
+      sessionId,
+      workspaceRoot: header.workspaceRoot,
+      header,
+      abortSignal: execution.abortController.signal,
+    });
+    execution.backendPreparation = prepared;
+    return prepared.providerStateIdentity;
   }
 
   private async ensureActive(
@@ -2694,8 +2379,17 @@ export class RuntimeKernel implements RuntimeKernelLike {
     const entry = await this.shareBackendActivation(`parent:${sessionId}`, async () => {
       const current = this.active.get(sessionId);
       if (current) return current;
+      const prepared =
+        execution.backendPreparation ??
+        (await this.deps.backends.prepare(header.backend, {
+          sessionId,
+          workspaceRoot: header.workspaceRoot,
+          header,
+          abortSignal: execution.abortController.signal,
+        }));
+      execution.run?.bindProviderStateIdentity(prepared.providerStateIdentity);
       const subagent = await this.resolveSubagentActivation(header);
-      const backend = await this.deps.backends.build(header.backend, {
+      const backend = await prepared.build({
         sessionId,
         workspaceRoot: header.workspaceRoot,
         header,
@@ -2709,17 +2403,17 @@ export class RuntimeKernel implements RuntimeKernelLike {
             }
           : {}),
         ...this.buildBackendRecorderHooks({
-          resolveActive: () => this.active.get(sessionId),
           sessionId,
         }),
         allowMidTurnHistoryCompaction: Boolean(this.deps.runtimeEventStore),
-        shellRunContextSummary: () =>
-          this.deps.shellRuns?.buildContextSummary(sessionId) ?? Promise.resolve(undefined),
       });
-      await this.rejectCancelledBackendActivation(backend, header, { kind: 'parent' }, execution);
-      const generation = this.createBackendGeneration(sessionId, backend, header, {
-        kind: 'parent',
-      });
+      await this.rejectCancelledBackendActivation(backend, header, execution);
+      const generation = this.createBackendGeneration(
+        sessionId,
+        backend,
+        header,
+        prepared.providerStateIdentity,
+      );
       this.active.set(sessionId, generation);
       return generation;
     });
@@ -2780,64 +2474,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return await this.deps.resolveChildTools(sessionId);
   }
 
-  private async ensureChildActive(
-    activeKey: string,
-    sessionId: string,
-    header: SessionHeader,
-    systemPrompt: string,
-    tools: readonly MakaTool[],
-    turnShellPlan: TurnShellPlan | undefined,
-    execution: PendingExecutionClaim,
-  ): Promise<BackendGeneration> {
-    await this.clearBackendQuarantineForActivation(sessionId, execution);
-    let existing = this.childActive.get(activeKey);
-    if (existing) {
-      existing.cachedHeader = header;
-      return existing;
-    }
-    await this.waitForBackendDisposal(sessionId);
-    existing = this.childActive.get(activeKey);
-    if (existing) {
-      existing.cachedHeader = header;
-      return existing;
-    }
-    const entry = await this.shareBackendActivation(`child:${activeKey}`, async () => {
-      const current = this.childActive.get(activeKey);
-      if (current) return current;
-      const backend = await this.deps.backends.build(header.backend, {
-        sessionId,
-        workspaceRoot: header.workspaceRoot,
-        header,
-        store: this.deps.store,
-        abortSignal: execution.abortController.signal,
-        appendMessage: async () => {},
-        systemPrompt,
-        tools,
-        ...(turnShellPlan ? { turnShellPlan } : {}),
-        ...this.buildBackendRecorderHooks({
-          resolveActive: () => this.childActive.get(activeKey),
-          sessionId,
-        }),
-        // A child-only ledger cannot claim coverage of the parent session prefix.
-        allowMidTurnHistoryCompaction: false,
-      });
-      await this.rejectCancelledBackendActivation(
-        backend,
-        header,
-        { kind: 'child', activeKey },
-        execution,
-      );
-      const generation = this.createBackendGeneration(sessionId, backend, header, {
-        kind: 'child',
-        activeKey,
-      });
-      this.childActive.set(activeKey, generation);
-      return generation;
-    });
-    entry.cachedHeader = header;
-    return entry;
-  }
-
   private async reserveParentRun(
     sessionId: string,
     header: SessionHeader,
@@ -2849,41 +2485,18 @@ export class RuntimeKernel implements RuntimeKernelLike {
     return active;
   }
 
-  private async reserveChildRun(
-    activeKey: string,
-    sessionId: string,
-    header: SessionHeader,
-    systemPrompt: string,
-    tools: readonly MakaTool[],
-    turnShellPlan: TurnShellPlan | undefined,
-    run: AgentRun,
-    execution: PendingExecutionClaim,
-  ): Promise<BackendGeneration> {
-    const active = await this.ensureChildActive(
-      activeKey,
-      sessionId,
-      header,
-      systemPrompt,
-      tools,
-      turnShellPlan,
-      execution,
-    );
-    this.reserveGenerationRun(active, run);
-    return active;
-  }
-
   private createBackendGeneration(
     sessionId: string,
     backend: AgentBackend,
     header: SessionHeader,
-    route: BackendGeneration['route'],
+    providerStateIdentity?: `sha256:${string}`,
   ): BackendGeneration {
     const active: BackendGeneration = {
       sessionId,
       generation: ++this.nextBackendGeneration,
-      route,
       phase: 'active',
       backend,
+      ...(providerStateIdentity ? { providerStateIdentity } : {}),
       stopBackend: undefined as never,
       stopState: { kind: 'idle' },
       cachedHeader: header,
@@ -2898,11 +2511,10 @@ export class RuntimeKernel implements RuntimeKernelLike {
   private async rejectCancelledBackendActivation(
     backend: AgentBackend,
     header: SessionHeader,
-    route: BackendGeneration['route'],
     execution: PendingExecutionClaim,
   ): Promise<void> {
     if (!execution.abortController.signal.aborted) return;
-    const generation = this.createBackendGeneration(execution.sessionId, backend, header, route);
+    const generation = this.createBackendGeneration(execution.sessionId, backend, header);
     const disposal = await this.quarantineBackendGeneration(generation);
     if (!disposal.ok) {
       throw new AggregateError(
@@ -2947,9 +2559,7 @@ export class RuntimeKernel implements RuntimeKernelLike {
   }
 
   private isCurrentGeneration(active: BackendGeneration): boolean {
-    return active.route.kind === 'parent'
-      ? this.active.get(active.sessionId) === active
-      : this.childActive.get(active.route.activeKey) === active;
+    return this.active.get(active.sessionId) === active;
   }
 
   private unregisterRun(active: AgentRunActiveSession, run: AgentRun): void {
@@ -2963,19 +2573,6 @@ export class RuntimeKernel implements RuntimeKernelLike {
     this.unregisterRun(active, run);
     await this.settleRunStopOperation(active.sessionId, run);
     await this.settleBackendGenerationAfterRunExit(active as BackendGeneration);
-    await this.flushBackendInvalidation(active.sessionId);
-  }
-
-  private async unregisterChildRun(active: AgentRunActiveSession, run: AgentRun): Promise<void> {
-    this.unregisterRun(active, run);
-    if (active.activeRuns.size > 0) return;
-    await this.settleRunStopOperation(active.sessionId, run);
-    const generation = active as BackendGeneration;
-    await this.settleBackendGenerationAfterRunExit(generation);
-    if (generation.phase === 'active') {
-      await this.quarantineBackendGeneration(generation);
-    }
-    await this.settleBackendGenerationAfterRunExit(generation);
     await this.flushBackendInvalidation(active.sessionId);
   }
 
@@ -3184,6 +2781,7 @@ function requireRuntimeContinuationAuthority(
 async function revalidateContinuationBoundary(
   store: RuntimeContinuationAuthorityStore,
   continuation: RuntimeContinuation,
+  admissionRoute: ContinuationReplayAdmissionRoute,
 ): Promise<RuntimeEvent[]> {
   if (
     !continuation.boundary ||
@@ -3221,6 +2819,7 @@ async function revalidateContinuationBoundary(
   const replay = buildContinuationReplayPlan({
     prefixes: prefixes as [ImmutableRuntimePrefixV1, ...ImmutableRuntimePrefixV1[]],
     providerProjectionVersion: continuation.providerProjectionVersion,
+    admissionRoute,
   });
   if (
     replay.kind !== 'replayable' ||
@@ -3277,6 +2876,7 @@ function continuationTargetRunHeaderForExecution(input: {
   workspaceIdentity: string;
   effectiveOrchestration: EffectiveOrchestration;
   effectiveToolMode: ToolMode;
+  targetProviderStateIdentity: `sha256:${string}` | undefined;
   claimedAt: number;
 }): AgentRunHeader {
   const {
@@ -3304,6 +2904,9 @@ function continuationTargetRunHeaderForExecution(input: {
     ...(sessionHeader.llmConnectionId === undefined
       ? {}
       : { llmConnectionId: sessionHeader.llmConnectionId }),
+    ...(input.targetProviderStateIdentity
+      ? { providerStateIdentity: input.targetProviderStateIdentity }
+      : {}),
     llmConnectionSlug: sessionHeader.llmConnectionSlug,
     modelId: sessionHeader.model,
     cwd: sessionHeader.cwd,
@@ -3316,9 +2919,7 @@ function continuationTargetRunHeaderForExecution(input: {
     toolMode: effectiveToolMode,
     createdAt: claimedAt,
     updatedAt: claimedAt,
-    ...(userInput.parentRunId ? { parentRunId: userInput.parentRunId } : {}),
-    ...(userInput.resumedFromRunId ? { resumedFromRunId: userInput.resumedFromRunId } : {}),
-    ...(userInput.retriedFromRunId ? { retriedFromRunId: userInput.retriedFromRunId } : {}),
+    parentRunId: continuation.sourceRunId,
     ...(userInput.parentTurnId ? { parentTurnId: userInput.parentTurnId } : {}),
     ...(userInput.retriedFromTurnId ? { retriedFromTurnId: userInput.retriedFromTurnId } : {}),
     ...(userInput.regeneratedFromTurnId
@@ -3344,6 +2945,7 @@ function continuationTargetRunHeaderForExecution(input: {
 
 function consumeAdmittedRuntimeContinuation(input: {
   continuation: RuntimeContinuation;
+  admissionRoute: ContinuationReplayAdmissionRoute;
   startAdmission: RuntimeContinuationStartAdmissionProof;
   toolBoundaryProtocol?: ToolBoundaryProtocol;
 }): RuntimeContinuationMetadata {
@@ -3390,9 +2992,23 @@ function consumeAdmittedRuntimeContinuation(input: {
     throw new Error('Runtime continuation durable admission boundary is inconsistent');
   }
   const replay = buildRuntimeEventModelReplayPlan(continuation.runtimeContext);
+  const providerReasoningReplayEventIds = compatibleProviderReasoningReplayEventIds(
+    continuation.runtimeContext,
+    input.admissionRoute.runHeaders,
+    input.admissionRoute.targetProviderStateIdentity,
+    input.admissionRoute.targetModelId,
+  );
+  const admittedItems = admitProviderReasoningReplayItems(
+    replay.items,
+    providerReasoningReplayEventIds,
+  );
   if (
-    digestProviderReplay(continuation.providerProjectionVersion, replay.items) !==
-    continuation.providerReplayDigest
+    digestProviderReplayAdmission({
+      providerProjectionVersion: continuation.providerProjectionVersion,
+      targetProviderStateIdentity: input.admissionRoute.targetProviderStateIdentity,
+      targetModelId: input.admissionRoute.targetModelId,
+      items: admittedItems,
+    }) !== continuation.providerReplayDigest
   ) {
     throw new Error('Runtime continuation provider replay identity changed after admission');
   }
@@ -3679,10 +3295,6 @@ class RuntimeRunOwnerScope {
   }
 }
 
-function childActiveKey(sessionId: string, turnId: string): string {
-  return `${sessionId}:${turnId}`;
-}
-
 function effectiveOrchestrationForRun(
   run: AgentRunHeader,
   session: SessionHeader,
@@ -3705,14 +3317,26 @@ function effectiveToolModeForRun(run: AgentRunHeader): ToolMode {
   return run.toolMode ?? DEFAULT_TOOL_MODE;
 }
 
+function assertNoRemovedChildAgentRunLineage(input: UserMessageInput): void {
+  const legacy = input as UserMessageInput & {
+    parentRunId?: unknown;
+    resumedFromRunId?: unknown;
+    retriedFromRunId?: unknown;
+  };
+  if (
+    legacy.parentRunId !== undefined ||
+    legacy.resumedFromRunId !== undefined ||
+    legacy.retriedFromRunId !== undefined
+  ) {
+    throw new Error('Live Turn cannot use removed child AgentRun lineage');
+  }
+}
+
 async function interactionResumeAllowed(
   interactionRun: RuntimeInteractionRunBinding | undefined,
   event: SessionEvent,
 ): Promise<boolean> {
-  if (
-    !interactionRun ||
-    (event.type !== 'user_question_answer_ack' && event.type !== 'sandbox_boundary_decision_ack')
-  ) {
+  if (!interactionRun || !isHostedInteractionSettlementAckEvent(event)) {
     return true;
   }
   return await interactionRun.canResumeAfterSettlementAck(event);

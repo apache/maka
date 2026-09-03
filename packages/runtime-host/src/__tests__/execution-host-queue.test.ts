@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -41,10 +42,8 @@ import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -68,7 +67,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -79,18 +77,14 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
   type TurnStartResult,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -112,7 +106,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 test('subscribed Clients share one canonical queue and ordered root handoff', async () => {
@@ -218,17 +211,18 @@ test('subscribed Clients share one canonical queue and ordered root handoff', as
     await tui.close();
     await fixture.stopHost(host);
     const chain = await fixture.readAdmissionChain();
+    assert.equal(chain.length, 3);
     assert.deepEqual(
-      chain.map((admission) => admission.turnId),
+      chain.slice(0, 2).map((admission) => admission.turnId),
       [firstTurnId, successor.snapshot.rootTurn.turnId],
     );
+    assert.equal(chain[2]?.previousRootTurnId, successor.snapshot.rootTurn.turnId);
     assert.deepEqual(
-      chain[1]?.sourceMessages.map((source) => source.messageId),
-      [desktopFollowupId, tuiFollowupId],
+      chain.slice(1).map((admission) => admission.sourceMessages.map((source) => source.messageId)),
+      [[desktopFollowupId], [tuiFollowupId]],
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${desktopFollowupContent.text}\n\n${tuiFollowupContent.text}`,
-    });
+    assert.deepEqual(chain[1]?.normalizedInput, desktopFollowupContent);
+    assert.deepEqual(chain[2]?.normalizedInput, tuiFollowupContent);
   });
 });
 

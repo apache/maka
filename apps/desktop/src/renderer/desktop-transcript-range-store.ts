@@ -31,7 +31,7 @@ export interface DesktopTranscriptRangeController {
   readonly store: DesktopTranscriptRangeStore;
   ready(): Promise<void>;
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean>;
-  loadBefore(maxBytes?: number): Promise<void>;
+  loadBefore(maxBytes?: number, anchorTurnId?: string): Promise<void>;
   loadAround(sequence: number): Promise<void>;
   loadLatest(): Promise<void>;
   reload(): Promise<void>;
@@ -58,10 +58,15 @@ export function createDesktopTranscriptRangeController(
       await current();
       return store.waitForDurableMessage(messageId, timeoutMs);
     },
-    async loadBefore(maxBytes) {
+    async loadBefore(maxBytes, anchorTurnId) {
       const range = store.range();
       if (!range.hasOlder) return;
-      await (await current()).loadBefore(range.oldestSequence, maxBytes);
+      await (await current()).loadBefore(
+        anchorTurnId === undefined
+          ? range.oldestSequence
+          : store.sequenceForTurn(anchorTurnId) ?? range.oldestSequence,
+        maxBytes,
+      );
     },
     async loadAround(sequence) {
       await (await current()).loadAround(sequence);
@@ -104,6 +109,7 @@ interface PendingRecord {
 
 interface StoredRecord {
   readonly message: StoredMessage;
+  readonly encoded: string;
 }
 
 interface OverlayRecord extends StoredRecord {
@@ -132,6 +138,8 @@ export class DesktopTranscriptRangeStore {
   readonly #expectedSessionId: string;
   readonly #durable = new Map<number, StoredRecord>();
   readonly #overlay = new Map<string, OverlayRecord>();
+  readonly #durableOrder: number[] = [];
+  readonly #overlayOrder: string[] = [];
   readonly #pending = new Map<string, PendingRecord>();
   #sourceSessionId: string | undefined;
   #generation: string | undefined;
@@ -144,6 +152,7 @@ export class DesktopTranscriptRangeStore {
   #hasNewer = false;
   #ready = false;
   #batchChanged = false;
+  #snapshot: DesktopTranscriptRangeSnapshot | undefined;
   readonly #durableWaiters = new Set<() => void>();
 
   constructor(sessionKey: string) {
@@ -172,12 +181,16 @@ export class DesktopTranscriptRangeStore {
     this.#hasNewer = batch.hasNewer;
     for (const sequence of batch.evictedDurableSequences) {
       if (this.#durable.delete(sequence)) {
+        removeOrdered(this.#durableOrder, sequence);
         this.#refreshSequenceBounds(sequence);
         changed = true;
       }
     }
     for (const messageId of batch.completedOverlayMessageIds) {
-      changed = this.#overlay.delete(messageId) || changed;
+      if (this.#overlay.delete(messageId)) {
+        removeOrdered(this.#overlayOrder, messageId);
+        changed = true;
+      }
     }
     for (const fragment of batch.fragments) {
       changed = this.#acceptFragment(fragment) || changed;
@@ -190,20 +203,23 @@ export class DesktopTranscriptRangeStore {
     if (!batch.ready) return false;
     const committed = this.#batchChanged;
     this.#batchChanged = false;
+    if (committed) this.#snapshot = this.#createSnapshot();
     for (const notify of this.#durableWaiters) notify();
     return committed;
   }
 
   snapshot(): DesktopTranscriptRangeSnapshot {
-    const range = this.range();
-    const durable = [...this.#durable.entries()].sort(([left], [right]) => left - right);
-    const overlay = [...this.#overlay.values()].sort((left, right) => left.order - right.order);
-    return {
-      ...range,
-      messages: durable
-        .map(([, record]) => structuredClone(record.message))
-        .concat(overlay.map((record) => structuredClone(record.message))),
-    };
+    this.#snapshot ??= this.#createSnapshot();
+    return this.#snapshot;
+  }
+
+  durableEntries(): ReadonlyArray<{ readonly sequence: number; readonly message: StoredMessage }> {
+    return [...this.#durable.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([sequence, record]) => ({
+        sequence,
+        message: structuredClone(record.message),
+      }));
   }
 
   range(): DesktopTranscriptRangeState {
@@ -234,6 +250,13 @@ export class DesktopTranscriptRangeStore {
     return this.#newestUserSequence;
   }
 
+  sequenceForTurn(turnId: string): number | null {
+    for (const sequence of this.#durableOrder) {
+      if (this.#durable.get(sequence)?.message.turnId === turnId) return sequence;
+    }
+    return null;
+  }
+
   waitForDurableMessage(messageId: string, timeoutMs: number): Promise<boolean> {
     if (this.hasDurableMessage(messageId)) return Promise.resolve(true);
     return new Promise((resolve) => {
@@ -257,6 +280,8 @@ export class DesktopTranscriptRangeStore {
     }
     this.#durable.clear();
     this.#overlay.clear();
+    this.#durableOrder.length = 0;
+    this.#overlayOrder.length = 0;
     this.#pending.clear();
     this.#sourceSessionId = batch.sessionId;
     this.#generation = batch.generation;
@@ -269,6 +294,7 @@ export class DesktopTranscriptRangeStore {
     this.#hasNewer = batch.hasNewer;
     this.#ready = false;
     this.#batchChanged = false;
+    this.#snapshot = undefined;
   }
 
   #acceptFragment(fragment: DesktopTranscriptFragment): boolean {
@@ -307,10 +333,10 @@ export class DesktopTranscriptRangeStore {
     pending.receivedBytes += bytes.byteLength;
     if (pending.receivedBytes < pending.totalBytes) return false;
     const encoded = new TextDecoder('utf-8', { fatal: true }).decode(pending.bytes);
-    const message = projectDesktopStoredMessage(
+    const message = freezeTranscriptValue(projectDesktopStoredMessage(
       { hostId: this.#hostId },
       decodeStoredMessage(markPersisted<StoredMessage>(JSON.parse(encoded))),
-    );
+    ));
     const projected = JSON.stringify(message);
     this.#pending.delete(key);
     if (pending.source === 'durable') {
@@ -319,10 +345,12 @@ export class DesktopTranscriptRangeStore {
       }
       const sequence = pending.identity as number;
       const existing = this.#durable.get(sequence);
-      if (existing && JSON.stringify(existing.message) !== projected) {
+      if (existing && existing.encoded !== projected) {
         throw new Error('Desktop transcript durable record changed');
       }
-      this.#durable.set(sequence, { message });
+      if (existing) return false;
+      this.#durable.set(sequence, { message, encoded: projected });
+      insertOrdered(this.#durableOrder, sequence, (left, right) => left - right);
       this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
       this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
       if (message.type === 'user') {
@@ -337,24 +365,70 @@ export class DesktopTranscriptRangeStore {
       throw new Error('Invalid Desktop transcript overlay order');
     }
     const existing = this.#overlay.get(pending.identity);
+    if (
+      existing
+      && existing.encoded === projected
+      && existing.order === pending.order
+    ) {
+      return false;
+    }
+    if (existing) removeOrdered(this.#overlayOrder, pending.identity);
     this.#overlay.set(pending.identity, {
       message,
+      encoded: projected,
       order: pending.order,
     });
-    return (
-      !existing ||
-      JSON.stringify(existing.message) !== projected ||
-      existing.order !== pending.order
+    insertOrdered(
+      this.#overlayOrder,
+      pending.identity,
+      (left, right) => {
+        const order = this.#overlay.get(left)!.order - this.#overlay.get(right)!.order;
+        return order === 0 ? left.localeCompare(right) : order;
+      },
     );
+    return true;
   }
 
   #refreshSequenceBounds(deletedSequence: number): void {
     if (deletedSequence !== this.#oldestSequence && deletedSequence !== this.#newestSequence) return;
-    this.#oldestSequence = null;
-    this.#newestSequence = null;
-    for (const sequence of this.#durable.keys()) {
-      this.#oldestSequence = Math.min(this.#oldestSequence ?? sequence, sequence);
-      this.#newestSequence = Math.max(this.#newestSequence ?? sequence, sequence);
-    }
+    this.#oldestSequence = this.#durableOrder[0] ?? null;
+    this.#newestSequence = this.#durableOrder.at(-1) ?? null;
   }
+
+  #createSnapshot(): DesktopTranscriptRangeSnapshot {
+    const messages = Object.freeze([
+      ...this.#durableOrder.map((sequence) => this.#durable.get(sequence)!.message),
+      ...this.#overlayOrder.map((messageId) => this.#overlay.get(messageId)!.message),
+    ]);
+    return Object.freeze({
+      ...this.range(),
+      messages,
+    });
+  }
+}
+
+function freezeTranscriptValue<T>(value: T): T {
+  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) freezeTranscriptValue(child);
+  return Object.freeze(value);
+}
+
+function insertOrdered<T>(
+  items: T[],
+  value: T,
+  compare: (left: T, right: T) => number,
+): void {
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (compare(items[middle]!, value) <= 0) low = middle + 1;
+    else high = middle;
+  }
+  items.splice(low, 0, value);
+}
+
+function removeOrdered<T>(items: T[], value: T): void {
+  const index = items.indexOf(value);
+  if (index >= 0) items.splice(index, 1);
 }

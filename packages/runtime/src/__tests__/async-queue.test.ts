@@ -19,7 +19,6 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { expect } from '../test-helpers.js';
 import { AsyncEventQueue } from '../async-queue.js';
 
 describe('AsyncEventQueue', () => {
@@ -28,7 +27,7 @@ describe('AsyncEventQueue', () => {
     q.close();
     const out: number[] = [];
     for await (const v of q) out.push(v);
-    expect(out).toEqual([]);
+    assert.deepStrictEqual(out, []);
   });
 
   test('push after close is dropped (no throw)', async () => {
@@ -38,7 +37,7 @@ describe('AsyncEventQueue', () => {
     q.push(2); // silently dropped
     const out: number[] = [];
     for await (const v of q) out.push(v);
-    expect(out).toEqual([1]);
+    assert.deepStrictEqual(out, [1]);
   });
 
   test('error rejects waiting consumer', async () => {
@@ -58,7 +57,7 @@ describe('AsyncEventQueue', () => {
 
     await Promise.resolve(); // let consumer park
     q.error(failure);
-    expect(await consumerErr).toBe(failure);
+    assert.strictEqual(await consumerErr, failure);
   });
 
   test('return() from iterator closes the queue', async () => {
@@ -69,10 +68,10 @@ describe('AsyncEventQueue', () => {
 
     const iter = q[Symbol.asyncIterator]();
     const r1 = await iter.next();
-    expect(r1).toEqual({ value: 1, done: false });
+    assert.deepStrictEqual(r1, { value: 1, done: false });
     await iter.return?.();
     const r2 = await iter.next();
-    expect(r2).toEqual({ value: 2, done: false });
+    assert.deepStrictEqual(r2, { value: 2, done: false });
   });
 
   test('interleaved push/next preserves FIFO', async () => {
@@ -91,7 +90,7 @@ describe('AsyncEventQueue', () => {
     q.close();
     await reader;
 
-    expect(out).toEqual([10, 20, 30]);
+    assert.deepStrictEqual(out, [10, 20, 30]);
   });
 });
 
@@ -110,19 +109,19 @@ describe('AsyncEventQueue consumption boundary', () => {
 
     const consumer = (async () => {
       const iter = q[Symbol.asyncIterator]();
-      expect(await iter.next()).toEqual({ value: 1, done: false });
+      assert.deepStrictEqual(await iter.next(), { value: 1, done: false });
       await ackGate;
       q.ackConsumed();
-      expect(await iter.next()).toEqual({ value: 2, done: false });
+      assert.deepStrictEqual(await iter.next(), { value: 2, done: false });
       q.ackConsumed();
     })();
 
     await Promise.resolve();
-    expect(settled).toBe(false);
+    assert.strictEqual(settled, false);
 
     releaseAck();
     await consumed;
-    expect(settled).toBe(true);
+    assert.strictEqual(settled, true);
     await consumer;
     q.close();
   });
@@ -141,8 +140,8 @@ describe('AsyncEventQueue consumption boundary', () => {
     await iter.next();
     q.ackConsumed();
     await throughFirst;
-    expect(settled).toBe(true);
-    expect(await iter.next()).toEqual({ value: 2, done: false });
+    assert.strictEqual(settled, true);
+    assert.deepStrictEqual(await iter.next(), { value: 2, done: false });
     q.ackConsumed();
     q.close();
   });

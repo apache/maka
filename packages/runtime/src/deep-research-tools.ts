@@ -63,7 +63,6 @@ const DEEP_RESEARCH_ALLOWED_TOOL_NAMES = new Set([
   'Read',
   'Glob',
   'Grep',
-  'ExploreAgent',
   'WebSearch',
   DEEP_RESEARCH_START_TOOL_NAME,
   DEEP_RESEARCH_SAVE_ARTIFACT_TOOL_NAME,
@@ -649,7 +648,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     summary: string;
     open_questions?: string[];
     next_steps?: string[];
-    task_ids?: string[];
     artifact_ids?: string[];
   },
   string
@@ -663,7 +661,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
     displayName: 'Checkpoint Research',
     description:
       'Record a durable research checkpoint after a meaningful round or before context compaction. ' +
-      'Include unresolved questions, next steps, task ids, and the artifacts needed to resume.',
+      'Include unresolved questions, next steps, and the artifacts needed to resume.',
     parameters: z.object({
       round: z.number().int().min(1).describe('Monotonic research round number.'),
       stage: z.enum(DEEP_RESEARCH_ACTIVE_STAGES).describe('Current two-stage workflow phase.'),
@@ -680,7 +678,6 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
         .optional()
         .describe('Questions still requiring evidence or resolution.'),
       next_steps: itemArray.optional().describe('Concrete continuation steps.'),
-      task_ids: refArray.optional().describe('Related ids from the session Task Ledger.'),
       artifact_ids: refArray.optional().describe('Known research artifact ids required to resume.'),
     }),
     impl: async (input, ctx) => {
@@ -694,7 +691,7 @@ function buildCheckpointTool(deps: BuildDeepResearchToolsDeps): MakaTool<
           summary: input.summary,
           openQuestions: dedupe(input.open_questions ?? []),
           nextSteps: dedupe(input.next_steps ?? []),
-          taskIds: dedupe(input.task_ids ?? []),
+          taskIds: [],
           artifactIds: dedupe(input.artifact_ids ?? []),
         },
         mutationContext(ctx),

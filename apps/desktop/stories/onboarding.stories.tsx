@@ -52,7 +52,6 @@ function makeConnection(input: {
     providerType: input.providerType,
     defaultModel: 'glm-4.7',
     enabled: true,
-    modelsFetchedAt: Date.now() - 60_000,
     lastTestAt: new Date(Date.now() - 60_000).toISOString(),
     createdAt: Date.now() - 6 * 24 * 60 * 60 * 1000,
     updatedAt: Date.now() - 60_000,
@@ -85,7 +84,11 @@ function DetailPane(props: { children?: ReactNode }) {
       >
         <div className="maka-detail-with-artifacts">
           <div className="mainColumn" data-home-surface="true">
-            <ChatSurfaceLayout scrollOwner="host" composer={null}>
+            <ChatSurfaceLayout
+              scrollOwner="host"
+              composer={null}
+              data-maka-onboarding={props.children === undefined ? undefined : 'true'}
+            >
               <ChatView messages={[]} scrollBehavior="smooth" onNew={() => undefined} emptyOverride={emptyOverride} />
             </ChatSurfaceLayout>
           </div>

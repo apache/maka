@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -257,7 +258,11 @@ test('owned Host exits promptly after its first connection closes', async () => 
   assert.equal(result.kind, 'connected', connectFailure(result));
   if (result.kind !== 'connected') return;
   await result.connection.close();
-  assert.equal(await result.host.settle(500), true);
+  // Prompt means the owned launch's idleGraceMs of 0, as opposed to the 30 s
+  // default grace, so the bound only has to sit well below that. Shutdown takes
+  // about 30 ms on an idle machine and stretches past 500 ms under a full CI
+  // suite while still exiting cleanly: the Host is starved, not stuck.
+  assert.equal(await result.host.settle(5_000), true);
 });
 
 test('an exited owned Candidate permits one real successor in the same election', {
@@ -456,15 +461,4 @@ async function waitForDefined<T>(
       setTimeout(resolve, 20);
     });
   }
-}
-
-function deferred<T>(): {
-  readonly promise: Promise<T>;
-  resolve(value: T): void;
-} {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
 }

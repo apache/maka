@@ -20,11 +20,11 @@
 import { randomUUID } from "node:crypto";
 import type { IpcMainInvokeEvent } from "electron";
 import { MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
-import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   type SessionChangedEvent,
   type SessionChangedReason,
@@ -42,6 +42,7 @@ import {
   normalizeRegenerateTurnInput,
   normalizeRuntimeHostReviseBeforeTurnInput,
   normalizeSandboxBoundaryResponse,
+  normalizeClientCapabilityResponse,
   normalizeSessionSendCommand,
   normalizeStopSessionInput,
   normalizeUserQuestionResponse,
@@ -95,6 +96,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "interruptTurn"
   | 'listSessionTurns'
   | 'listSessionTurnLandmarks'
+  | 'queryMessageExecutions'
   | 'queryMessages'
   | "queryTurnResume"
   | "readExecutionBoundary"
@@ -144,13 +146,6 @@ async function submitMessageWithReconnect(
 export interface RuntimeHostSessionExecutionIpcDeps {
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
-  observations: Pick<
-    RuntimeHostSessionObservationRegistry,
-    | 'loadTranscriptAround'
-    | 'loadTranscriptBefore'
-    | 'observe'
-    | 'openTranscript'
-  >;
   attachmentApprovals: AttachmentApprovalRegistry;
   emitSessionsChanged: (
     reason: SessionChangedReason,
@@ -173,6 +168,65 @@ export interface RuntimeHostSessionExecutionIpcDeps {
     >;
   };
   newId?: () => string;
+}
+
+export interface RuntimeHostSessionObservationIpcDeps {
+  observations: Pick<
+    RuntimeHostSessionObservationRegistry,
+    | 'loadTranscriptAround'
+    | 'loadTranscriptBefore'
+    | 'observe'
+    | 'openTranscript'
+    | 'releaseTarget'
+  >;
+  resolveSideConversation(sessionId: string): Promise<boolean>;
+}
+
+/** Register the complete Desktop surface available to an observation-only Session. */
+export function registerRuntimeHostSessionObservationIpc(
+  deps: RuntimeHostSessionObservationIpcDeps,
+  ipcMain: ReconnectableReadIpcMain,
+  enableE2eControls = false,
+): void {
+  handleReconnectableRead(
+    ipcMain,
+    'sessions:observe',
+    async (event, sessionId: unknown, observerId: unknown) => {
+      const normalizedSessionId = requiredId(sessionId, 'Session');
+      await deps.observations.observe(
+        normalizedSessionId,
+        requiredId(observerId, 'Session observer'),
+        event.sender as RuntimeHostSessionObserverTarget,
+        await deps.resolveSideConversation(normalizedSessionId),
+      );
+    },
+  );
+  ipcMain.handle(
+    'sessions:transcript:open',
+    async (event, sessionId: unknown, consumerId: unknown) =>
+      deps.observations.openTranscript(
+        requiredId(sessionId, 'Session'),
+        requiredId(consumerId, 'Transcript consumer'),
+        event.sender as RuntimeHostTranscriptTarget,
+      ),
+  );
+  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptBefore(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
+    await deps.observations.loadTranscriptAround(
+      normalizeTranscriptRangeRequest(input),
+      event.sender.id,
+    );
+  });
+  if (enableE2eControls) {
+    ipcMain.handle('sessions:e2e:release-renderer-observations', (event) =>
+      deps.observations.releaseTarget(event.sender.id),
+    );
+  }
 }
 
 /**
@@ -211,47 +265,14 @@ export function registerRuntimeHostSessionExecutionIpc(
     },
   );
 
-  handleReconnectableRead(
-    ipcMain,
-    "sessions:observe",
-    async (event, sessionId: unknown, observerId: unknown) => {
-      const normalizedSessionId = requiredId(sessionId, "Session");
-      const normalizedObserverId = requiredId(observerId, "Session observer");
-      const session = await deps.client.getSession(normalizedSessionId);
-      if (!session) {
-        throw new Error(`Runtime Host Session not found: ${normalizedSessionId}`);
-      }
-      await deps.observations.observe(
-        normalizedSessionId,
-        normalizedObserverId,
-        event.sender as RuntimeHostSessionObserverTarget,
-        isSideConversationSession(session.labels),
-      );
-    },
-  );
   ipcMain.handle(
-    'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown) => {
-      const result = await deps.observations.openTranscript(
-        requiredId(sessionId, 'Session'),
-        requiredId(consumerId, 'Transcript consumer'),
-        event.sender as RuntimeHostTranscriptTarget,
-      );
-      return result;
+    'sessions:queryMessageExecutions',
+    async (_event, sessionId: string, messageIds: unknown) => {
+      if (!Array.isArray(messageIds)) throw new Error('Invalid Message identities');
+      return deps.client.queryMessageExecutions({ sessionId, messageIds });
     },
   );
-  ipcMain.handle('sessions:transcript:load-before', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptBefore(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
-  ipcMain.handle('sessions:transcript:load-around', async (event, input: unknown) => {
-    await deps.observations.loadTranscriptAround(
-      normalizeTranscriptRangeRequest(input),
-      event.sender.id,
-    );
-  });
+
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
     deps.client.listSessionTurns(requiredId(sessionId, 'Session')),
   );
@@ -340,6 +361,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -372,7 +394,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: submitted.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: submitted.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: submitted.skillInvocation,
         };
       }
       // The sending surface believed this Session idle; nudge it to refresh so
@@ -385,7 +407,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         ...(sideConversation ? { messageId } : {}),
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: submitted.skillInvocation,
       };
     },
   );
@@ -461,6 +483,7 @@ export function registerRuntimeHostSessionExecutionIpc(
             ? { displayText: command.displayText }
             : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
+          ...(command.directoryReferences ? { directoryReferences: command.directoryReferences } : {}),
           ...(command.quotes ? { quotes: command.quotes } : {}),
           inlineReferences,
         },
@@ -487,7 +510,7 @@ export function registerRuntimeHostSessionExecutionIpc(
           turnId: result.turnId,
           attachments,
           inlineReferences,
-          skillInvocation: result.skillInvocation ?? EMPTY_SKILL_INVOCATION,
+          skillInvocation: result.skillInvocation,
         };
       }
       // The submitting surface believed this Session idle when it steered;
@@ -498,7 +521,7 @@ export function registerRuntimeHostSessionExecutionIpc(
         disposition: result.disposition,
         attachments,
         inlineReferences,
-        skillInvocation: EMPTY_SKILL_INVOCATION,
+        skillInvocation: result.skillInvocation,
       };
     },
   );
@@ -624,6 +647,22 @@ export function registerRuntimeHostSessionExecutionIpc(
       deps.observer.publishInteractionAnswer(answered, pending);
     },
   );
+  ipcMain.handle(
+    "sessions:respondToClientCapability",
+    async (_event, sessionId: string, input: unknown) => {
+      const response = normalizeClientCapabilityResponse(input);
+      const pending = await requireInteraction(deps.observer, sessionId, response.requestId);
+      if (pending.request.kind !== "client_capability") {
+        throw new Error("Interaction is not a Client Capability request");
+      }
+      const answered = await deps.client.answerInteraction({
+        sessionId,
+        interactionId: response.requestId,
+        answer: { kind: "client_capability", decision: response.decision },
+      });
+      deps.observer.publishInteractionAnswer(answered, pending);
+    },
+  );
 
   ipcMain.handle("sessions:compact", async (_event, sessionId: string) => {
     const turnId = newId();
@@ -683,7 +722,9 @@ export function registerRuntimeHostSessionExecutionIpc(
         deps.client.copySession("branch", {
           sourceSessionId: sessionId,
           targetSessionId: normalized.copyId,
-          sourceTurnId: normalized.sourceTurnId,
+          ...(normalized.sourceTurnId === undefined
+            ? {}
+            : { sourceTurnId: normalized.sourceTurnId }),
           ...(normalized.sideConversation ? { intent: 'side_conversation' as const } : {}),
         });
       let branch;
@@ -694,7 +735,9 @@ export function registerRuntimeHostSessionExecutionIpc(
                 sessionId: normalized.copyId,
                 kind: 'branch',
                 sourceSessionId: sessionId,
-                sourceTurnId: normalized.sourceTurnId,
+                ...(normalized.sourceTurnId === undefined
+                  ? {}
+                  : { sourceTurnId: normalized.sourceTurnId }),
                 intent: 'side_conversation',
                 ownerId: bindCopyOwner(event),
               },

@@ -142,6 +142,8 @@ RuntimeEvents preserve canonical message semantics for AI interaction, but they 
 
 “State-space replay” in this chapter therefore means reconstructing interaction semantics and Runtime state first. A future promise of bit-exact deterministic replay would also require versioning or snapshotting runtime configuration, prompts, the tool catalog, projection policy, and provider request shape. This does not weaken the Event Log; it clarifies why the log is the correct foundation. Message facts remain stable while request materialization can evolve independently.
 
+Tracking: [Recovery-grade RuntimeEvent ledger #615](https://github.com/apache/maka/issues/615)
+
 ## Two lines of intellectual influence
 
 The design has two explicit conceptual roots.
@@ -167,6 +169,8 @@ Before following the main path, separate the three lifecycle concepts that are o
 | Run | Which concrete execution attempt is this, and what is its state? | `runId` / `AgentRun` |
 
 RuntimeEvents still carry `invocationId` as a compatibility and event-correlation field. On the production path it is bound to the Run identity; it no longer implies a separate Invocation lifecycle object or Runner layer.
+
+Tracking: [RuntimeInvocation event spine #4311](https://github.com/apache/maka/issues/4311)
 
 The key distinction is simple: **a Turn is not a Run, and chat messages are not execution state.** A user-visible exchange needs a system-visible execution envelope. Without one, the system can only say that some messages appeared; it cannot reliably say whether the execution actually ended.
 
@@ -392,6 +396,8 @@ Continuing execution is a separate path. `safe_boundary_continuation` resumes fr
 - Startup recovery performs deterministic termination and repair, not arbitrary warm resume. Continuation is a separate path: `safe_boundary_continuation` resumes from a verified safe boundary, is marked by `continuationSource` on the Run header, and is admitted and dispatched by `RuntimeKernel`; see [Chapter 8](./runtime-resume-architecture.md) for the difference.
 
 These are real architecture boundaries, not details to hide. Future Backend decomposition or checkpoint work must preserve request shape, tool visibility, event order, and the terminal invariant before optimizing for smaller files.
+
+Tracking: [`AiSdkBackend` decomposition #3909](https://github.com/apache/maka/issues/3909)
 
 ## Code-reading map
 

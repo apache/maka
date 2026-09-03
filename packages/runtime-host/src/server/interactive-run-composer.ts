@@ -25,17 +25,12 @@ import { type RunCompositionSourceRevision } from '@maka/core/run-composition';
 import {
   buildDeepResearchSystemPromptFragment,
   isDeepResearchSession,
-} from '@maka/core/explore-agent';
+} from '@maka/core/deep-research';
 import { activePlanExecution, type PlanSessionState, type PlanStore } from '@maka/core/plan';
 import type { PermissionMode } from '@maka/core/permission';
 import type { RuntimeExecutionConnection } from '@maka/core/llm-connections';
 import type { RuntimePolicySnapshot } from '@maka/core/runtime-policy';
 import type { SessionToolProfile } from '@maka/core/session';
-import {
-  filterModelVisibleTaskLedgerTasks,
-  renderTaskLedgerPromptText,
-  type TaskLedgerStore,
-} from '@maka/core/task-ledger';
 import { assembleMainSessionSystemPrompt } from '@maka/runtime/system-prompt/main-session-prompt';
 import { buildAskUserQuestionTool } from '@maka/runtime/ask-user-question-tool';
 import { buildBuiltinTools, type BuildBuiltinToolsOptions } from '@maka/runtime/builtin-tools';
@@ -44,11 +39,9 @@ import {
   buildSubmitPlanTool,
   buildUpdatePlanTool,
 } from '@maka/runtime/plan-tools';
-import { buildExploreAgentTool } from '@maka/runtime/explore-agent-tool';
 import { buildParentAgentTools } from '@maka/runtime/subagent-tools';
 import { buildPersonalizationPromptFragment } from '@maka/runtime/system-prompt/personalization-prompt';
 import { buildRequestSandboxBoundaryTool } from '@maka/runtime/sandbox-boundary-tool';
-import { buildSessionEnvironmentPromptFragment } from '@maka/runtime/system-prompt/session-environment-prompt';
 import {
   buildHostCapabilitiesFromBinding,
   buildSkillAgentToolFromInventory,
@@ -58,26 +51,16 @@ import {
   type SkillCatalogBudgetOptions,
   type SkillInventoryResolver,
 } from '@maka/runtime/skills';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { buildSessionTodoTools, type SessionTodoToolStore } from '@maka/runtime/session-todo-tools';
 import { buildWorkspaceInstructionsPromptFragment } from '@maka/runtime/system-prompt/workspace-instructions';
 import { isDeepResearchToolAllowed } from '@maka/runtime/deep-research-tools';
 import { listRunnableBuiltinAgentDefinitions } from '@maka/runtime/agent-catalog';
-import {
-  renderInterruptedPlanContext,
-  renderPlanExecutionPrompt,
-  renderPlanModePrompt,
-  selectCollaborationTools,
-} from '@maka/runtime/plan-mode';
-import { resolveProjectGitInfo } from '@maka/runtime/system-prompt/project-context';
+import { renderPlanModePrompt, selectCollaborationTools } from '@maka/runtime/plan-mode';
 import { routeWebFetchTools } from '@maka/runtime/web-fetch-tool';
 import { routeWebSearchTools } from '@maka/runtime/native-web-search-tool';
 import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type ToolGroup } from '@maka/runtime/tool-availability';
-import {
-  resolveTurnShellPlan,
-  type TurnShellPlan,
-  turnShellDisplayName,
-} from '@maka/runtime/shell-detect';
+import { resolveTurnShellPlan, type TurnShellPlan } from '@maka/runtime/shell-detect';
 import type {
   ClientCapabilitySnapshot,
   HostClientCapabilityCoordinator,
@@ -110,13 +93,12 @@ export interface InteractiveRunComposerInput {
   readonly runtimePolicy: RuntimePolicySnapshot;
   readonly skills: HostSkillCatalogCoordinator;
   readonly memory: HostMemoryCoordinator;
-  readonly taskLedger: TaskLedgerStore;
+  readonly sessionTodo: SessionTodoToolStore;
   readonly childInstruction?: string;
   readonly sideConversation?: boolean;
   readonly boundTools?: readonly MakaTool[];
   readonly toolProfile?: SessionToolProfile;
   readonly skillBudget?: SkillCatalogBudgetOptions;
-  readonly platform?: NodeJS.Platform;
   /**
    * Turn-scoped shell resolution captured at backend admission. One plan
    * drives guidance and every Bash execution for the turn; a broken saved
@@ -124,7 +106,6 @@ export interface InteractiveRunComposerInput {
    * while the Bash/PTY boundary fails closed.
    */
   readonly shell?: TurnShellPlan;
-  readonly now?: () => Date;
   readonly clientCapabilities?: Pick<ClientCapabilitySnapshot, 'tools' | 'groups'>;
   readonly builtinTools?: BuildBuiltinToolsOptions;
   readonly hostTools?: readonly MakaTool[];
@@ -154,7 +135,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
   const defaultTools = input.boundTools
     ? input.boundTools
     : buildDefaultHostTools(
-        input.taskLedger,
+        input.sessionTodo,
         inventoryFor,
         builtinTools,
         input.hostTools,
@@ -247,11 +228,7 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
               input.plan?.mode === 'plan'
                 ? renderPlanModePrompt({ fullAccess: input.plan.permissionMode === 'bypass' })
                 : undefined,
-              input.deepResearch
-                ? buildDeepResearchSystemPromptFragment({
-                    exploreAgentAvailable: tools.some(({ name }) => name === 'ExploreAgent'),
-                  })
-                : undefined,
+              input.deepResearch ? buildDeepResearchSystemPromptFragment() : undefined,
               input.sideConversation ? buildSideConversationSystemPromptFragment() : undefined,
             ]);
         return Object.freeze({
@@ -282,34 +259,6 @@ export function createInteractiveRunComposer(input: InteractiveRunComposerInput)
     tools,
     toolAvailability,
     resolveSystemPrompt,
-    turnTailPrompt: async (context: HostModelPromptContext) => {
-      const environment = buildSessionEnvironmentPromptFragment({
-        cwd: context.cwd,
-        projectGit: await resolveProjectGitInfo(context.cwd),
-        ...(input.platform ? { platform: input.platform } : {}),
-        ...(input.shell ? { shell: turnShellDisplayName(input.shell) } : {}),
-        ...(input.now ? { now: input.now() } : {}),
-      });
-      const tasks = filterModelVisibleTaskLedgerTasks(
-        await input.taskLedger.list(context.sessionId, {
-          classifyResumeTrust: true,
-          includeArchived: false,
-        }),
-      );
-      return (
-        joinFragments([
-          environment,
-          renderTaskLedgerTail(tasks),
-          input.plan
-            ? renderPlanTail(
-                input.plan.state,
-                input.plan.mode,
-                input.plan.permissionMode === 'bypass',
-              )
-            : undefined,
-        ]) ?? environment
-      );
-    },
   });
 }
 
@@ -337,7 +286,6 @@ export interface InteractiveRunToolSurfaceInput {
   readonly boundTools?: readonly MakaTool[];
   readonly childTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
-  readonly taskLedger: TaskLedgerStore;
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly tavilyReady: boolean;
 }
@@ -371,7 +319,6 @@ export function routeInteractiveRunToolSurface(input: InteractiveRunToolSurfaceI
     ...(childTools
       ? {
           parentAgentTools: buildParentAgentTools({
-            taskLedger: input.taskLedger,
             definitions: listRunnableBuiltinAgentDefinitions({
               tools: childTools,
               worktreeChildExecutorAvailable: input.worktreePatchWriteBackAvailable,
@@ -427,7 +374,6 @@ export function createInteractiveRunComposerFactory(
         ...(backendContext.tools ? { boundTools: backendContext.tools } : {}),
         ...(input.childTools ? { childTools: input.childTools } : {}),
         ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
-        taskLedger: input.taskLedger,
         worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
         tavilyReady,
       });
@@ -436,7 +382,7 @@ export function createInteractiveRunComposerFactory(
         runtimePolicy,
         skills: input.skills,
         memory: input.memory,
-        taskLedger: input.taskLedger,
+        sessionTodo: input.sessionTodo,
         ...(backendContext.systemPrompt ? { childInstruction: backendContext.systemPrompt } : {}),
         ...(isSideConversationSession(backendContext.header.labels)
           ? { sideConversation: true }
@@ -497,7 +443,7 @@ function assertUniqueToolNames(tools: readonly MakaTool[]): void {
 }
 
 function buildDefaultHostTools(
-  taskLedger: TaskLedgerStore,
+  sessionTodo: SessionTodoToolStore,
   inventoryFor: SkillInventoryResolver,
   builtinOptions?: BuildBuiltinToolsOptions,
   hostTools: readonly MakaTool[] = [],
@@ -510,8 +456,7 @@ function buildDefaultHostTools(
   const builtins = builtinOptions ? buildBuiltinTools(builtinOptions) : [];
   const question = buildAskUserQuestionTool();
   const sandboxBoundary = buildRequestSandboxBoundaryTool();
-  const exploreAgent = buildExploreAgentTool();
-  const taskTools = buildTaskLedgerTools({ store: taskLedger });
+  const todoTools = buildSessionTodoTools(sessionTodo);
   const activeExecution = plan ? activePlanExecution(plan.state) : undefined;
   const interruptedExecution = plan
     ? [...plan.state.executions].reverse().find((execution) => execution.status === 'interrupted')
@@ -531,10 +476,9 @@ function buildDefaultHostTools(
     ...hostTools.map((tool) => tool.name),
     question.name,
     sandboxBoundary.name,
-    exploreAgent.name,
     'Skill',
     'SkillSearch',
-    ...taskTools.map((tool) => tool.name),
+    ...todoTools.map((tool) => tool.name),
     ...(scheduledTaskTool ? [scheduledTaskTool.name] : []),
     ...goalTools.map((tool) => tool.name),
     ...parentAgentTools.map((tool) => tool.name),
@@ -548,10 +492,9 @@ function buildDefaultHostTools(
     ...hostTools,
     question,
     sandboxBoundary,
-    exploreAgent,
     buildSkillAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
     buildSkillSearchAgentToolFromInventory(inventoryFor, skillHost, { shadowTracker }),
-    ...taskTools,
+    ...todoTools,
     ...(scheduledTaskTool ? [scheduledTaskTool] : []),
     ...goalTools,
     ...parentAgentTools,
@@ -563,27 +506,6 @@ function buildDefaultHostTools(
 function requireDeepResearchTools(tools: readonly MakaTool[] | undefined): readonly MakaTool[] {
   if (!tools) throw new Error('Runtime Host Deep Research tools are not composed');
   return tools;
-}
-
-function renderPlanTail(
-  state: PlanSessionState,
-  mode: 'agent' | 'plan',
-  fullAccess: boolean,
-): string | undefined {
-  const active = activePlanExecution(state);
-  const execution =
-    active ??
-    (mode === 'plan'
-      ? [...state.executions].reverse().find((candidate) => candidate.status === 'interrupted')
-      : undefined);
-  if (!execution) return undefined;
-  const proposal = state.proposals.find(
-    (candidate) => candidate.proposalId === execution.proposalId,
-  );
-  if (!proposal) return undefined;
-  return active
-    ? renderPlanExecutionPrompt({ proposal, execution: active })
-    : renderInterruptedPlanContext({ proposal, execution, fullAccess });
 }
 
 function filterToolGroups(groups: readonly ToolGroup[], names: ReadonlySet<string>): ToolGroup[] {
@@ -698,25 +620,6 @@ function renderMemoryPrompt(body: string): string {
     '<local-memory>',
     body,
     '</local-memory>',
-  ].join('\n');
-}
-
-function renderTaskLedgerTail(
-  tasks: Parameters<typeof renderTaskLedgerPromptText>[0],
-): string | undefined {
-  if (tasks.length === 0) return undefined;
-  const rendered = renderTaskLedgerPromptText(tasks);
-  if (!rendered.text) return undefined;
-  return [
-    'Current task ledger (current-turn context only; maintain it with task_create, task_update, task_list, and task_get — activate them via tool_search first when they are not already visible):',
-    '<task-ledger>',
-    rendered.text,
-    ...(rendered.omittedCount > 0
-      ? [
-          `omitted=${rendered.omittedCount} (use task_list/task_get via tool_search for the complete ledger)`,
-        ]
-      : []),
-    '</task-ledger>',
   ].join('\n');
 }
 

@@ -20,11 +20,20 @@
 import type { UiLocale } from '@maka/core/ui-locale';
 import type { MessageBoxOptions } from 'electron';
 import type {
+  RuntimeHostNonRestartableAction,
   RuntimeHostRestartableConflict,
   RuntimeHostWaitConflict,
 } from './runtime-host-desktop-manager.js';
 
 type Conflict = RuntimeHostRestartableConflict | RuntimeHostWaitConflict;
+export type RuntimeHostUpgradeDialogDecision = 'restart' | 'replace' | 'wait' | 'cancel';
+
+type RuntimeHostUpgradeAvailability = RuntimeHostNonRestartableAction | 'restart';
+
+export interface RuntimeHostUpgradeDialog {
+  readonly options: MessageBoxOptions;
+  readonly decisions: readonly RuntimeHostUpgradeDialogDecision[];
+}
 type ActivityKey =
   | 'goal'
   | 'scheduledTask'
@@ -34,32 +43,57 @@ type ActivityKey =
   | 'graph'
   | 'other';
 
-export function buildRuntimeHostUpgradeDialogOptions(
+export function buildRuntimeHostUpgradeDialog(
   conflict: Conflict,
-  canRestart: boolean,
+  availability: RuntimeHostUpgradeAvailability,
   locale: UiLocale,
-): MessageBoxOptions {
-  const activity = conflict.handshake?.activity;
-  const hasWork =
-    (activity?.activeOperations ?? 0) > 0 || (activity?.residencies.length ?? 0) > 0;
+): RuntimeHostUpgradeDialog {
   const copy = UPGRADE_COPY[locale];
-  const buttons = canRestart ? [copy.restart, copy.wait, copy.cancel] : [copy.wait, copy.cancel];
+  const choices: { readonly label: string; readonly decision: RuntimeHostUpgradeDialogDecision }[] =
+    [];
+  const action =
+    availability === 'restart'
+      ? 'restart'
+      : availability === 'replace_may_interrupt_work'
+        ? 'replace'
+        : undefined;
+  const canWait =
+    availability === 'wait' ||
+    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service');
+  if (action) {
+    choices.push({
+      label: action === 'restart' ? copy.restart : copy.replace,
+      decision: action,
+    });
+  }
+  if (canWait) choices.push({ label: copy.wait, decision: 'wait' });
+  choices.push({ label: copy.cancel, decision: 'cancel' });
+  const cancelId = choices.length - 1;
   return {
-    type: 'warning',
-    title: copy.title,
-    message: copy.message,
-    detail: formatActivity(conflict, locale),
-    buttons,
-    defaultId: hasWork || !canRestart ? (canRestart ? 1 : 0) : 0,
-    cancelId: canRestart ? 2 : 1,
-    noLink: true,
+    options: {
+      type: 'warning',
+      title: copy.title,
+      message: copy.message,
+      detail: formatActivity(conflict, availability, canWait, locale),
+      buttons: choices.map((choice) => choice.label),
+      defaultId: cancelId,
+      cancelId,
+      noLink: true,
+    },
+    decisions: choices.map((choice) => choice.decision),
   };
 }
 
-function formatActivity(conflict: Conflict, locale: UiLocale): string {
+function formatActivity(
+  conflict: Conflict,
+  availability: RuntimeHostUpgradeAvailability,
+  canWait: boolean,
+  locale: UiLocale,
+): string {
   const activity = conflict.handshake?.activity;
   const copy = UPGRADE_COPY[locale];
   const lines: string[] = [];
+  lines.push(copy.processId(conflict.registration.pid));
   if (activity) {
     const minutes = Math.max(1, Math.round(activity.processUptimeSeconds / 60));
     lines.push(copy.uptime(minutes));
@@ -68,10 +102,20 @@ function formatActivity(conflict: Conflict, locale: UiLocale): string {
     for (const residency of activity.residencies) {
       lines.push(`${copy.activity[activityKey(residency.label)]}: ${residency.count}`);
     }
+  } else if (availability === 'replace_may_interrupt_work') {
+    lines.push(copy.idleNotVerified);
   } else lines.push(copy.unknownActivity);
-  lines.push('', copy.restartWarning);
-  if (conflict.kind !== 'upgrade_required' || !conflict.restartable) lines.push(copy.exitOwner);
-  lines.push(copy.waitExplanation);
+  if (availability === 'replace_may_interrupt_work') {
+    lines.push('', copy.replaceWarning, copy.replaceExplanation);
+  } else if (availability === 'restart') {
+    lines.push('', copy.restartWarning);
+  } else if (conflict.kind !== 'upgrade_required' || !conflict.restartable) {
+    lines.push('');
+    lines.push(copy.exitOwner(conflict.registration.pid));
+  }
+  if (canWait) {
+    lines.push(copy.waitExplanation);
+  }
   return lines.join('\n');
 }
 
@@ -93,15 +137,22 @@ const UPGRADE_COPY = {
     title: 'Older Runtime Host is running',
     message: 'Another Runtime Host process still owns this workspace.',
     restart: 'Restart Runtime Host',
+    replace: 'Stop Host and Continue',
     wait: 'Wait',
     cancel: 'Cancel Startup',
     uptime: (n: number) => `Running for about ${n} ${n === 1 ? 'minute' : 'minutes'}`,
     connections: (n: number) => `${n} other client(s) are still connected`,
     operations: (n: number) => `${n} operation(s) are running`,
+    idleNotVerified: 'Maka could not verify that this Host is idle during the safe replacement check.',
     unknownActivity: 'This Host version cannot report its background activity.',
+    processId: (pid: number) => `Process ID (PID): ${pid}`,
     restartWarning:
       'Restarting preserves durable state, but it can interrupt in-flight external work.',
-    exitOwner: 'Exit the process that owns this Host to replace it safely.',
+    replaceWarning:
+      'Stopping preserves durable state, but it can interrupt in-flight external work.',
+    replaceExplanation: 'Maka will stop this Host, replace it safely, and continue startup.',
+    exitOwner: (pid: number) =>
+      `End process ${pid} with your system process manager to replace this Host safely.`,
     waitExplanation: 'If you wait, Maka will continue automatically when this Host exits.',
     activity: {
       goal: 'Goal', scheduledTask: 'Scheduled Task', dailyReview: 'Daily Review',
@@ -113,14 +164,20 @@ const UPGRADE_COPY = {
     title: '旧版 Runtime Host 正在运行',
     message: '另一个 Runtime Host 进程仍占用此工作区。',
     restart: '重启 Runtime Host',
+    replace: '停止 Host 并继续',
     wait: '等待',
     cancel: '取消启动',
     uptime: (n: number) => `已运行约 ${n} 分钟`,
     connections: (n: number) => `仍有 ${n} 个其他客户端连接`,
     operations: (n: number) => `有 ${n} 个操作正在运行`,
+    idleNotVerified: '安全替换检查无法确认此 Host 是否处于空闲状态。',
     unknownActivity: '此 Host 版本无法报告后台活动。',
+    processId: (pid: number) => `进程 ID (PID)：${pid}`,
     restartWarning: '重启会保留持久化状态，但可能中断正在进行的外部工作。',
-    exitOwner: '请退出当前占用此 Host 的进程，以便安全替换。',
+    replaceWarning: '停止 Host 会保留持久化状态，但可能中断正在进行的外部工作。',
+    replaceExplanation: 'Maka 将停止并安全替换此 Host，然后继续启动。',
+    exitOwner: (pid: number) =>
+      `请使用系统进程管理工具结束进程 ${pid}，以便安全替换此 Host。`,
     waitExplanation: '若选择等待，当前 Host 退出后 Maka 将自动继续。',
     activity: {
       goal: '目标', scheduledTask: '计划任务', dailyReview: '每日回顾', execution: '活动执行',

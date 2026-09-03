@@ -40,6 +40,7 @@ import {
   type DurableRuntimeEventStore,
   type EvidenceReadBudget,
   type RootTurnAdmission,
+  type RootTurnAdmissionAuthorization,
   type RootTurnSourceMessageReceipt,
 } from './agent-run-store.js';
 import {
@@ -80,7 +81,10 @@ const executionStoresReaderKinds = new WeakMap<object, StorageRootKind>();
 const executionStoresWritersByLease = new WeakMap<object, object>();
 const executionStoresWritersOpeningByLease = new WeakMap<object, Promise<void>>();
 
-export { normalizeRootTurnAdmissionPayload } from './agent-run-store.js';
+export {
+  normalizeRootTurnAdmissionPayload,
+  rootTurnAdmissionRecordFits,
+} from './agent-run-store.js';
 export {
   isSessionNotFoundError,
   SessionReadMarkerMessageNotFoundError,
@@ -102,6 +106,7 @@ export type {
   EvidenceReadBudget,
   ImmutableSteeringMessageProof,
   RootTurnAdmission,
+  RootTurnAdmissionAuthorization,
   RootTurnAdmissionStore,
   RootTurnStartRejectionStore,
   RootTurnSourceMessage,
@@ -111,8 +116,10 @@ export type {
   RuntimeEventScanResult,
 } from './agent-run-store.js';
 export type {
+  MarkMessagesHandedOffInput,
   MessageAdmissionStore,
   PendingMessageAdmission,
+  ProvenSteeringMessageHandoff,
 } from './message-admission-store.js';
 export { submittedTurnIntentsEqual } from './submitted-turn-intent.js';
 export type { SubmittedTurnIntent } from './submitted-turn-intent.js';
@@ -125,6 +132,8 @@ export type {
   SessionHeaderSnapshot,
   SessionTranscriptMessageLookupRequest,
   SessionTranscriptPageRequest,
+  SessionTranscriptRecordScanPage,
+  SessionTranscriptRecordScanRequest,
   SessionTranscriptStoragePage,
   SessionTranscriptStorageFragment,
 } from './session-store.js';
@@ -354,6 +363,19 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.createStableSession(request, initialBoundary)),
       assignWorkHubMessage: (request) => run(() => sessionStore.assignWorkHubMessage(request)),
       readWorkHubAssignment: (actionId) => run(() => sessionStore.readWorkHubAssignment(actionId)),
+      readWorkHubReplacement: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacement(delegationId)),
+      readWorkHubReplacementAbort: (delegationId) =>
+        run(() => sessionStore.readWorkHubReplacementAbort(delegationId)),
+      readWorkHubSupersession: (delegationId) =>
+        run(() => sessionStore.readWorkHubSupersession(delegationId)),
+      readWorkHubStopRequest: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopRequest(delegationId)),
+      readWorkHubStopResolution: (delegationId) =>
+        run(() => sessionStore.readWorkHubStopResolution(delegationId)),
+      claimWorkHubAction: (claim) => run(() => sessionStore.claimWorkHubAction(claim)),
+      readWorkHubActionClaim: (actionId) =>
+        run(() => sessionStore.readWorkHubActionClaim(actionId)),
       discardStableConversationCopy: (sessionId, requestFingerprint) =>
         run(() => sessionStore.discardStableConversationCopy(sessionId, requestFingerprint)),
       createSubagent: (input, initialBoundary) =>
@@ -389,6 +411,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
       readMessagesSnapshot: (sessionId) => run(() => sessionStore.readMessagesSnapshot(sessionId)),
       readTranscriptPageSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptPageSnapshot(sessionId, request)),
+      readTranscriptRecordsSnapshot: (sessionId, request) =>
+        run(() => sessionStore.readTranscriptRecordsSnapshot(sessionId, request)),
       readTranscriptMessagesSnapshot: (sessionId, request) =>
         run(() => sessionStore.readTranscriptMessagesSnapshot(sessionId, request)),
       readTranscriptHighWaterSnapshot: (sessionId) =>
@@ -420,6 +444,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => sessionStore.readMessageAdmission(sessionId, messageId)),
       hasCancelledMessageAdmission: (sessionId, messageId) =>
         run(() => sessionStore.hasCancelledMessageAdmission(sessionId, messageId)),
+      claimMessageAdmissionCancellation: (sessionId, messageId, claimId) =>
+        run(() => sessionStore.claimMessageAdmissionCancellation(sessionId, messageId, claimId)),
       listMessageAdmissions: (sessionId) =>
         run(() => sessionStore.listMessageAdmissions(sessionId)),
       markMessagesHandedOff: (input) => run(() => sessionStore.markMessagesHandedOff(input)),
@@ -490,6 +516,8 @@ async function createExecutionStoresForWrite<K extends StorageRootKind, E extend
         run(() => agentRunStore.readEventsForEvidence(sessionId, runId)),
       readEventProjection: (sessionId, type) =>
         run(() => agentRunStore.readEventProjection(sessionId, type)),
+      readEventLedgerRevision: (sessionId) =>
+        run(() => agentRunStore.readEventLedgerRevision(sessionId)),
       repairEventProjection: (sessionId, type, event, options) =>
         run(() => agentRunStore.repairEventProjection(sessionId, type, event, options)),
       admitRootTurn: (input: AdmitRootTurnInput): Promise<AdmitRootTurnResult> =>

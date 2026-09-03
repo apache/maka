@@ -23,6 +23,9 @@ export interface SessionContextRef {
   readonly refId: string;
 }
 
+/** Maximum Unicode code points accepted for durable context-offload identities. */
+export const CONTEXT_OFFLOAD_ID_MAX_CODE_POINTS = 512;
+
 export type ContextOffloadOwner =
   | {
       readonly kind: 'read_image_snapshot';
@@ -53,16 +56,18 @@ export interface ContextOffloadLimits {
   readonly workspacePhysicalBytes: number;
 }
 
+export type ContextOffloadPutFailureReason =
+  | 'too_large'
+  | 'session_quota_exceeded'
+  | 'workspace_quota_exceeded'
+  | 'identity_conflict'
+  | 'unavailable';
+
 export type ContextOffloadPutResult =
   | { readonly ok: true; readonly record: ContextOffloadRecord }
   | {
       readonly ok: false;
-      readonly reason:
-        | 'too_large'
-        | 'session_quota_exceeded'
-        | 'workspace_quota_exceeded'
-        | 'identity_conflict'
-        | 'unavailable';
+      readonly reason: ContextOffloadPutFailureReason;
     };
 
 export type ContextOffloadReadResult =
@@ -104,6 +109,26 @@ export interface ContextOffloadGarbageCollectionResult {
   readonly deletedBlobs: number;
   readonly deletedBytes: number;
   readonly hasMore: boolean;
+}
+
+export class ReadImageSnapshotStoreError extends Error {
+  constructor(readonly reason: ContextOffloadPutFailureReason) {
+    super(`Read image snapshot storage failed: ${reason}`);
+    this.name = 'ReadImageSnapshotStoreError';
+  }
+}
+
+export interface ReadImageSnapshotReader {
+  read(input: SessionContextRef): Promise<ContextOffloadReadResult>;
+}
+
+export interface ReadImageSnapshotStore extends ReadImageSnapshotReader {
+  snapshot(input: {
+    /** Stable identity of the Read result within its Session. */
+    readonly ownerId: string;
+    readonly bytes: Uint8Array;
+    readonly mimeType: string;
+  }): Promise<SessionContextRef>;
 }
 
 /**

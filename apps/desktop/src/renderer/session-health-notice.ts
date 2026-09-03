@@ -21,16 +21,17 @@
  * Derivation of the session health notice shown above the composer.
  *
  * #1038 — the notice answers exactly one question: "will the next send
- * fail for a recoverable connection/session reason, and where should the
- * user go?". The answer comes from `projectSessionSendOutcome`, already
+ * fail for a recoverable connection/session reason, and what should the
+ * user do?". The answer comes from `projectSessionSendOutcome`, already
  * resolved by main and carried in the onboarding snapshot. Runtime Host
  * remains the submission authority; the renderer only maps this
  * compatibility projection to copy:
  *
  *   - `ready` / `rebind` → no notice (`rebind` supplies a compatible
  *     target for renderer readiness checks, #1032).
- *   - `blocked` → destructive notice whose copy names the failing
- *     connection and points at the matching Settings section.
+ *   - `blocked` → destructive notice whose copy names the recovery action;
+ *     identity repair opens the exact model picker, configuration repair opens
+ *     the matching Settings section.
  *
  * `lastTestStatus` is an intentional pre-send reminder (product contract
  * decided in #1038). E4 locks that it must NOT gate send, so here it
@@ -62,6 +63,12 @@ export interface SessionHealthNoticeInput {
   outcome: SessionSendProjection | undefined;
   /** Persisted connections are used only to name a blocked session's own connection. */
   connections: readonly IdentifiedLlmConnection[];
+  /** Whether the current surface can offer an exact account-and-model choice. */
+  hasModelChoices: boolean;
+  /** False while the active Host's first connection snapshot is still loading. */
+  modelChoicesSettled: boolean;
+  /** True while the existing model switcher cannot safely mutate this Session. */
+  modelPickerDisabled: boolean;
   /**
    * The session's own connection's most recent credential test result.
    * Advisory reminder only — never interpreted as a send block (E4).
@@ -69,10 +76,10 @@ export interface SessionHealthNoticeInput {
   lastTestStatus: 'verified' | 'needs_reauth' | 'error' | undefined;
 }
 
-// #1209 (U1): every health-notice CTA points at 设置 · 模型 — the single
-// place that manages model connections, credentials, and OAuth. The former
-// 'account' target routed to a redundant page that has since been retired.
-export type SessionHealthNoticeTarget = 'models';
+// Configuration failures remain owned by 设置 · 模型. Identity recovery is
+// different: an existing catalog choice is selected from the composer's exact
+// model picker. Loading retries here; credential repair remains in Settings.
+export type SessionHealthNoticeTarget = 'models' | 'model_picker' | 'model_choices_refresh';
 
 export interface SessionHealthNotice {
   tone: 'info' | 'warning' | 'destructive';
@@ -80,7 +87,11 @@ export interface SessionHealthNotice {
   label: string;
   /** Longer explanation for tooltip / assistive text. */
   tooltip?: string;
-  /** Which Settings section the click handler should navigate to. */
+  /** Optional action-specific label; Settings actions use the shared fallback. */
+  actionLabel?: string;
+  /** A live Turn or pending switch keeps the recovery action visible but inert. */
+  actionDisabled?: boolean;
+  /** Which recovery surface the click handler should open. */
   onClickTarget: SessionHealthNoticeTarget;
 }
 
@@ -105,12 +116,31 @@ function blockedNotice(
       connection.slug === session.llmConnectionSlug,
   );
   const name = own?.name ?? session.llmConnectionSlug;
-  const copy = getDesktopConversationCopy(input.locale).health.blocked[outcome.reason];
+  const healthCopy = getDesktopConversationCopy(input.locale).health;
+  const copy = healthCopy.blocked[outcome.reason];
+  const identityRecovery =
+    outcome.reason === 'legacy_connection_identity' ||
+    outcome.reason === 'connection_missing' ||
+    outcome.reason === 'connection_identity_mismatch';
+  if (identityRecovery && !input.modelChoicesSettled) {
+    return {
+      tone: 'destructive',
+      label: copy.label,
+      tooltip: healthCopy.connectionChoicesLoading.tooltip,
+      actionLabel: healthCopy.connectionChoicesLoading.actionLabel,
+      onClickTarget: 'model_choices_refresh',
+    };
+  }
+  const opensModelPicker = identityRecovery && input.hasModelChoices;
   return {
     tone: 'destructive',
     label: copy.label,
-    tooltip: copy.tooltip(name, session.model),
-    onClickTarget: 'models',
+    tooltip: opensModelPicker
+      ? copy.tooltip(name, session.model)
+      : (copy.settingsTooltip?.(name, session.model) ?? copy.tooltip(name, session.model)),
+    ...(opensModelPicker && copy.actionLabel ? { actionLabel: copy.actionLabel } : {}),
+    ...(opensModelPicker && input.modelPickerDisabled ? { actionDisabled: true } : {}),
+    onClickTarget: opensModelPicker ? 'model_picker' : 'models',
   };
 }
 

@@ -39,7 +39,7 @@ test('WorkHub Coordination resolve has a closed empty input and bounded identity
     sessionId: 'coordination',
   });
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.resolve'].mode, 'command');
-  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 49);
+  assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 86);
   assert.throws(
     () => decodeWorkHubCoordinationResolveInput({ sessionId: 'caller-selected' }),
     (error) => error instanceof RuntimeHostProtocolError,
@@ -66,6 +66,109 @@ test('WorkHub Coordination answer and summary inputs are closed and bounded', ()
       userText: 'Continue payment work',
       assistantText: 'Submitted to Payment',
     },
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-correction',
+      userText: 'No, use login instead',
+      candidateSetId: `sha256:${'e'.repeat(64)}`,
+      confirmation: { kind: 'user_correction' },
+      proposal: {
+        disposition: 'replace',
+        replacesActionId: 'action-payments',
+        target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+      },
+    }).proposal,
+    {
+      disposition: 'replace',
+      replacesActionId: 'action-payments',
+      target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+    },
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActInput({
+      actionId: 'action-stop',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments' },
+      },
+      confirmation: { kind: 'user_stop' },
+    }),
+    {
+      actionId: 'action-stop',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments' },
+      },
+      confirmation: { kind: 'user_stop' },
+    },
+  );
+  for (const invalid of [
+    {
+      actionId: 'action-stop-no-confirmation',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments' },
+      },
+    },
+    {
+      actionId: 'action-stop-wrong-confirmation',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments' },
+      },
+      confirmation: { kind: 'user_correction' },
+    },
+    {
+      actionId: 'action-stop-injected',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments' },
+        targetSessionId: 'injected',
+      },
+      confirmation: { kind: 'user_stop' },
+    },
+    // Preconditions are part of the closed proposal shape, not an optional hint.
+    {
+      actionId: 'action-stop-missing-preconditions',
+      userText: 'Stop Payments',
+      proposal: { disposition: 'stop_work', stopsActionId: 'action-payments' },
+      confirmation: { kind: 'user_stop' },
+    },
+    // Preconditions are a closed shape: no room for a second, client-asserted proof.
+    {
+      actionId: 'action-stop-extra-precondition',
+      userText: 'Stop Payments',
+      proposal: {
+        disposition: 'stop_work',
+        expects: { targetSessionId: 'payments', activeActionIds: ['action-payments'] },
+      },
+      confirmation: { kind: 'user_stop' },
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActInput(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActInput({
+        actionId: 'action-unconfirmed-correction',
+        userText: 'Use login instead',
+        candidateSetId: `sha256:${'f'.repeat(64)}`,
+        proposal: {
+          disposition: 'replace',
+          replacesActionId: 'action-payments',
+          target: { disposition: 'delegate_existing', candidateRef: 'candidate_login' },
+        },
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
   );
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.answer'].mode, 'command');
   assert.equal(HOST_OPERATION_SPECS['workhub.coordination.record'].mode, 'command');
@@ -248,4 +351,64 @@ test('WorkHub Coordination action results preserve the admitted disposition', ()
       }),
     (error) => error instanceof RuntimeHostProtocolError,
   );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActResult({
+      disposition: 'replace',
+      replacementDisposition: 'delegate_existing',
+      targetSessionId: 'login',
+      targetTurnId: 'turn-login',
+    }),
+    {
+      disposition: 'replace',
+      replacementDisposition: 'delegate_existing',
+      targetSessionId: 'login',
+      targetTurnId: 'turn-login',
+    },
+  );
+  assert.deepEqual(
+    decodeWorkHubCoordinationActResult({
+      disposition: 'stop_work',
+      outcome: 'not_owned',
+      targetSessionId: 'payments',
+      targetTurnId: 'shared-turn',
+    }),
+    {
+      disposition: 'stop_work',
+      outcome: 'not_owned',
+      targetSessionId: 'payments',
+      targetTurnId: 'shared-turn',
+    },
+  );
+  assert.throws(
+    () =>
+      decodeWorkHubCoordinationActResult({
+        disposition: 'stop_work',
+        outcome: 'stopped',
+        targetSessionId: 'payments',
+      }),
+    (error) => error instanceof RuntimeHostProtocolError,
+  );
+  for (const invalid of [
+    {
+      disposition: 'stop_work',
+      outcome: 'stop_delivered',
+      targetSessionId: 'payments',
+    },
+    {
+      disposition: 'stop_work',
+      outcome: 'not_owned',
+      targetSessionId: 'payments',
+    },
+    {
+      disposition: 'stop_work',
+      outcome: 'cancelled_pending',
+      targetSessionId: 'payments',
+      targetTurnId: 'unexpected-turn',
+    },
+  ]) {
+    assert.throws(
+      () => decodeWorkHubCoordinationActResult(invalid),
+      (error) => error instanceof RuntimeHostProtocolError,
+    );
+  }
 });

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -34,6 +35,7 @@ import { createServer, type Server } from 'node:http';
 import { connect, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { test } from 'node:test';
 import { TOOL_BOUNDARY_PROTOCOL_V1 } from '@maka/core/runtime-event';
 import { canonicalToolArgsHash } from '@maka/core/tool-args-identity';
@@ -45,11 +47,11 @@ import {
   type StoredMessage,
 } from '@maka/core/session';
 import { markPersisted } from '@maka/core/persisted-value';
-import type { Task } from '@maka/core/task-ledger';
+import type { SessionTodoItem } from '@maka/core/session-todo';
 import type { ScheduledTask } from '@maka/core/scheduled-task';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
+import { buildSessionTodoTools } from '@maka/runtime/session-todo-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -65,6 +67,7 @@ import {
   openInteractiveExecutionStoresForRead,
   openInteractiveExecutionStoresForWrite,
 } from '@maka/storage/execution-stores';
+import { OPERATIONAL_STATE_DATABASE_NAME } from '@maka/storage/operational-state-store';
 import { openInteractiveRuntimePolicyStoresForWrite } from '@maka/storage/runtime-policy-stores';
 import {
   resolveRootControlNamespace,
@@ -73,7 +76,7 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
+import { openInteractiveSessionTodoStoreForWrite } from '@maka/storage/session-todo-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -84,17 +87,14 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
+import { HostSessionTodoCoordinator } from '../server/session-todo-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -117,7 +117,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 const decodeStoredMessage = (value: unknown): StoredMessage =>
@@ -165,6 +164,10 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
   timeout: 30_000,
 }, async () => {
   await withExecutionRoot(async (fixture) => {
+    const seededConnection = await fixture.seedConnectionEffect(
+      'http://127.0.0.1:1',
+      'test-secret',
+    );
     const host = await fixture.startHost();
     const desktop = await connectClient(fixture.root);
     try {
@@ -178,8 +181,9 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
             kind: 'agent_run',
             execution: {
               cwd: fixture.root,
-              llmConnectionSlug: 'fake',
-              model: 'fake-model',
+              llmConnectionId: seededConnection.connectionId,
+              llmConnectionSlug: seededConnection.slug,
+              model: seededConnection.enabledModelIds[0]!,
               permissionMode: 'ask',
               collaborationMode: 'agent',
               orchestrationMode: 'default',
@@ -189,6 +193,21 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
       });
       assert.equal(created.kind, 'task');
       if (created.kind !== 'task') return;
+
+      // Simulate a record written by a pre-#3927 build. Legacy rows remain
+      // readable, but must fail closed before a Session or AgentRun is bound.
+      const database = new DatabaseSync(join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME));
+      try {
+        database
+          .prepare(
+            `UPDATE workflow_scheduled_tasks
+             SET record_json = json_remove(record_json, '$.effect.execution.llmConnectionId')
+             WHERE task_id = ?`,
+          )
+          .run(created.task.id);
+      } finally {
+        database.close();
+      }
 
       const fired = await desktop.request('scheduled-task.mutate', {
         kind: 'trigger_now',
@@ -206,6 +225,105 @@ test('production Host fails slug-only ScheduledTask Agent runs before binding ex
       assert.equal(fired.task.runs[0]?.runId, undefined);
     } finally {
       await desktop.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
+test('two UDS Clients never rebind an Agent ScheduledTask after Connection slug reuse', {
+  timeout: 30_000,
+}, async () => {
+  await withExecutionRoot(async (fixture) => {
+    const original = await fixture.seedConnectionEffect('http://127.0.0.1:1', 'test-secret');
+    const model = original.enabledModelIds[0]!;
+    const host = await fixture.startHost();
+    const creator = await connectClient(fixture.root);
+    const trigger = await connectClient(fixture.root);
+    try {
+      const created = await creator.request('scheduled-task.mutate', {
+        kind: 'create',
+        input: {
+          title: 'Connection slug reuse proof',
+          intentBody: 'The deleted account must never be replaced silently.',
+          schedule: { kind: 'once', runAt: Date.now() + 60_000 },
+          effect: {
+            kind: 'agent_run',
+            execution: {
+              cwd: fixture.root,
+              llmConnectionId: original.connectionId,
+              llmConnectionSlug: original.slug,
+              model,
+              permissionMode: 'ask',
+              collaborationMode: 'agent',
+              orchestrationMode: 'default',
+            },
+          },
+        },
+      });
+      assert.equal(created.kind, 'task');
+      if (created.kind !== 'task') return;
+
+      const catalog = await trigger.request('connection.catalog.query', { kind: 'start' });
+      assert.equal(catalog.kind, 'page');
+      if (catalog.kind !== 'page') return;
+      const header = catalog.items.find(
+        (item) => item.kind === 'connection' && item.connectionId === original.connectionId,
+      );
+      assert.equal(header?.kind, 'connection');
+      if (header?.kind !== 'connection') return;
+
+      const removed = await trigger.request('connection.catalog.remove', {
+        expected: { connectionId: original.connectionId, revision: header.revision },
+      });
+      assert.equal(removed.kind, 'committed');
+      if (removed.kind !== 'committed') return;
+      const replacement = await trigger.request('connection.catalog.create', {
+        expectedCatalogRevision: removed.catalogRevision,
+        connection: {
+          slug: original.slug,
+          name: 'Replacement account',
+          providerType: original.providerType,
+          ...(original.baseUrl === undefined ? {} : { baseUrl: original.baseUrl }),
+          enabled: true,
+          enabledModelIds: [model],
+        },
+      });
+      assert.equal(replacement.kind, 'committed');
+      if (replacement.kind !== 'committed') return;
+      assert.notEqual(replacement.connection.connectionId, original.connectionId);
+
+      const fired = await trigger.request('scheduled-task.mutate', {
+        kind: 'trigger_now',
+        taskId: created.task.id,
+      });
+      assert.equal(fired.kind, 'task');
+      if (fired.kind !== 'task') return;
+      assert.equal(fired.task.runs[0]?.outcome, 'failed');
+      assert.equal(fired.task.lastError, 'ScheduledTask model connection identity changed');
+      const failedRun = fired.task.runs[0];
+      assert.ok(failedRun?.sessionId);
+      assert.ok(failedRun?.runId);
+      const databaseAfterFire = new DatabaseSync(
+        join(fixture.root, OPERATIONAL_STATE_DATABASE_NAME),
+      );
+      try {
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM session_metadata WHERE session_id = ?')
+            .get(failedRun.sessionId),
+          undefined,
+        );
+        assert.equal(
+          databaseAfterFire
+            .prepare('SELECT 1 AS present FROM core_agent_runs WHERE run_id = ?')
+            .get(failedRun.runId),
+          undefined,
+        );
+      } finally {
+        databaseAfterFire.close();
+      }
+    } finally {
+      await Promise.allSettled([creator.close(), trigger.close()]);
       await fixture.stopHost(host);
     }
   });
@@ -240,137 +358,50 @@ test('production Host settles dispatched Client Capabilities before publishing R
   });
 });
 
-test('dual UDS Clients query persisted Task Ledger tool-port mutations across Host restart', async () => {
+test('dual UDS Clients query the same persisted SessionTodo snapshot across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
-    const initialRunId = randomUUID();
-    const initialTurnId = randomUUID();
-    // Exercise the Runtime-facing port before Host startup; Hosted tool composition is separate.
-    const toolPortProjection = await withOwnedTaskLedgerToolPort(
-      fixture,
-      async (coordinator, tools) => {
-        const context = taskLedgerToolContext(fixture, {
-          runId: initialRunId,
-          turnId: initialTurnId,
-          toolCallId: randomUUID(),
-        });
-        const create = requireTaskLedgerTool<TaskCreateInput>(tools, 'task_create');
-        const createInput = create.parameters.parse({
-          tasks: Array.from({ length: TASK_LEDGER_PAGE_MAX_ITEMS + 1 }, (_, index) => ({
-            subject: `Authority acceptance task ${index + 1}`,
-          })),
-        });
-        await create.impl(createInput, context);
-
-        const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-        const updateInput = update.parameters.parse({ id: 'T1', status: 'in_progress' });
-        await update.impl(updateInput, {
-          ...context,
-          toolCallId: randomUUID(),
-        });
-        return coordinator.list(fixture.sessionId, {
-          includeTerminal: true,
-          includeArchived: false,
-          classifyResumeTrust: true,
-        });
-      },
-    );
-    assert.equal(toolPortProjection.length, TASK_LEDGER_PAGE_MAX_ITEMS + 1);
-    assert.deepEqual(toolPortProjection[0]?.owner, {
-      actor: 'main_agent',
-      runId: initialRunId,
-      turnId: initialTurnId,
+    const initial: SessionTodoItem[] = Array.from({ length: 129 }, (_, index) => ({
+      content: `Authority acceptance todo ${index + 1}`,
+      status: index === 0 ? 'in_progress' : 'pending',
+    }));
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: initial }), sessionTodoToolContext(fixture));
     });
 
     const host = await fixture.startHost();
     const desktop = await connectClient(fixture.root);
     const tui = await connectClient(fixture.root);
-    let staleContinuation:
-      | {
-          revision: TaskLedgerRevision;
-          cursor: string;
-          task: Task;
-        }
-      | undefined;
     try {
-      const desktopProjection = await collectTaskLedgerProjection(desktop, fixture.sessionId);
-      const tuiProjection = await collectTaskLedgerProjection(tui, fixture.sessionId);
-      assert.deepEqual(
-        desktopProjection.pages.map((page) => page.tasks.length),
-        [TASK_LEDGER_PAGE_MAX_ITEMS, 1],
-      );
+      const [desktopProjection, tuiProjection] = await Promise.all([
+        desktop.request('session.todo.query', { sessionId: fixture.sessionId }),
+        tui.request('session.todo.query', { sessionId: fixture.sessionId }),
+      ]);
+      assert.deepEqual(desktopProjection, { sessionId: fixture.sessionId, items: initial });
       assert.deepEqual(tuiProjection, desktopProjection);
-      assert.deepEqual(desktopProjection.tasks, toolPortProjection);
-
-      const byKey = await tui.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: 'T1',
-      });
-      assert.equal(byKey.kind, 'task');
-      if (byKey.kind !== 'task') throw new Error('Expected Task Ledger get result');
-      assert.equal(byKey.sessionId, fixture.sessionId);
-      assert.deepEqual(byKey.task, desktopProjection.tasks[0]);
-      assert.equal(byKey.task?.owner?.runId, initialRunId);
-      assert.equal(byKey.task?.owner?.turnId, initialTurnId);
-
-      const firstPage = desktopProjection.pages[0];
-      assert.ok(firstPage?.nextCursor);
-      staleContinuation = {
-        revision: firstPage.revision,
-        cursor: firstPage.nextCursor,
-        task: desktopProjection.tasks[1]!,
-      };
     } finally {
       await Promise.allSettled([desktop.close(), tui.close()]);
       await fixture.stopHost(host);
     }
 
-    assert.ok(staleContinuation);
-    const { revision: staleRevision, cursor: staleCursor, task: taskToChange } = staleContinuation;
-    const successorTurnId = randomUUID();
-    const changedSubject = `${taskToChange.subject} after authority reacquisition`;
-    await withOwnedTaskLedgerToolPort(fixture, async (_coordinator, tools) => {
-      const update = requireTaskLedgerTool<TaskUpdateInput>(tools, 'task_update');
-      const input = update.parameters.parse({
-        id: taskToChange.key,
-        subject: changedSubject,
-      });
-      await update.impl(
-        input,
-        taskLedgerToolContext(fixture, {
-          runId: randomUUID(),
-          turnId: successorTurnId,
-          toolCallId: randomUUID(),
-        }),
-      );
+    const changed = [
+      { content: 'Changed after authority reacquisition', status: 'completed' },
+    ] as const;
+    await withOwnedSessionTodoToolPort(fixture, async (_coordinator, tools) => {
+      const write = requireSessionTodoWriteTool(tools);
+      await write.impl(write.parameters.parse({ todos: changed }), sessionTodoToolContext(fixture));
     });
 
     const successorHost = await fixture.startHost();
     const successor = await connectClient(fixture.root);
     try {
-      const continued = await successor.request('task.ledger.query', {
-        kind: 'list_continue',
-        sessionId: fixture.sessionId,
-        revision: staleRevision,
-        cursor: staleCursor,
-      });
-      assert.equal(continued.kind, 'revision_changed');
-      if (continued.kind !== 'revision_changed') {
-        throw new Error('Expected stale Task Ledger continuation to report revision_changed');
-      }
-      assert.equal(continued.expected, staleRevision);
-      assert.notEqual(continued.actual, staleRevision);
-
-      const changed = await successor.request('task.ledger.query', {
-        kind: 'get',
-        sessionId: fixture.sessionId,
-        taskRef: taskToChange.key,
-      });
-      assert.equal(changed.kind, 'task');
-      if (changed.kind !== 'task') throw new Error('Expected changed Task Ledger task result');
-      assert.equal(changed.sessionId, fixture.sessionId);
-      assert.equal(changed.task?.subject, changedSubject);
-      assert.equal(changed.revision, continued.actual);
+      assert.deepEqual(
+        await successor.request('session.todo.query', { sessionId: fixture.sessionId }),
+        {
+          sessionId: fixture.sessionId,
+          items: changed,
+        },
+      );
     } finally {
       await successor.close();
       await fixture.stopHost(successorHost);
@@ -490,6 +521,82 @@ test('two UDS Clients share one Runtime Policy authority and CAS winner', async 
       await fixture.stopHost(host);
     }
   });
+});
+
+test('two UDS Clients serialize same-provider account creation through one Host lane', async () => {
+  const provider = await startConnectionEffectProvider({ responseDelayMs: 50 });
+  try {
+    await withExecutionRoot(async (fixture) => {
+      const host = await fixture.startHost();
+      const desktop = await connectClient(fixture.root);
+      const tui = await connectClient(fixture.root);
+      const secrets = ['desktop-account-secret', 'tui-account-secret'] as const;
+      let identities: Array<{ connectionId: string; slug: string }> = [];
+      try {
+        const results = await Promise.all(
+          [desktop, tui].map((client, index) =>
+            client.request('connection.onboarding.save', {
+              target: { kind: 'create', providerType: 'openai-compatible' },
+              apiKey: secrets[index]!,
+              baseUrl: provider.baseUrl,
+              enabledModelIds: [CONNECTION_EFFECT_MODEL_IDS[0]!],
+            }),
+          ),
+        );
+        assert.ok(results.every((result) => result.kind === 'saved'));
+        identities = results.map((result) => {
+          if (result.kind !== 'saved') throw new Error('Onboarding did not save');
+          return {
+            connectionId: result.connection.connectionId,
+            slug: result.connection.slug,
+          };
+        });
+        assert.notEqual(identities[0]?.connectionId, identities[1]?.connectionId);
+        assert.deepEqual(identities.map(({ slug }) => slug).sort(), [
+          'openai-compatible',
+          'openai-compatible-2',
+        ]);
+      } finally {
+        await Promise.allSettled([desktop.close(), tui.close()]);
+        await fixture.stopHost(host);
+      }
+
+      const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
+      assert.ok(owner);
+      if (!owner) return;
+      try {
+        const stores = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+        const catalog = await stores.connectionCatalog.getSnapshot();
+        assert.deepEqual(
+          catalog.connections
+            .filter(({ providerType }) => providerType === 'openai-compatible')
+            .map(({ connectionId, slug }) => ({ connectionId, slug }))
+            .sort((left, right) => left.slug.localeCompare(right.slug)),
+          [...identities].sort((left, right) => left.slug.localeCompare(right.slug)),
+        );
+        for (const [index, identity] of identities.entries()) {
+          assert.equal(
+            (
+              await stores.operations.exportCredentialMaterial({
+                scope: 'connection',
+                connectionId: identity.connectionId,
+                kind: 'api_key',
+              })
+            )?.secret,
+            secrets[index],
+          );
+        }
+      } finally {
+        await owner.close();
+      }
+      assert.deepEqual(
+        provider.requests.map(({ authorization }) => authorization).sort(),
+        secrets.map((secret) => `Bearer ${secret}`).sort(),
+      );
+    });
+  } finally {
+    await provider.close();
+  }
 });
 
 test('two UDS Clients await slow connection effects against one canonical catalog', async () => {
@@ -1137,105 +1244,49 @@ test('two UDS Clients settle one hosted sandbox boundary and resume its exact Ru
   });
 });
 
-interface TaskCreateInput {
-  tasks: Array<{ subject: string; parent_id?: string }>;
-}
-
-interface TaskUpdateInput {
-  id: string;
-  status?: 'pending' | 'in_progress' | 'blocked' | 'completed' | 'failed' | 'cancelled';
-  subject?: string;
-  blockedReason?: string;
-  failureReason?: string;
-  completionEvidence?: string;
-  explicitReopen?: boolean;
-}
-
-type TaskLedgerPage = Extract<TaskLedgerQueryResult, { kind: 'page' }>;
-type TaskLedgerTool<Input> = MakaTool<Input, string> & {
-  parameters: { parse(value: unknown): Input };
+type SessionTodoWriteTool = MakaTool<{ todos: SessionTodoItem[] }, string> & {
+  parameters: { parse(value: unknown): { todos: SessionTodoItem[] } };
 };
 
-async function withOwnedTaskLedgerToolPort<T>(
+async function withOwnedSessionTodoToolPort<T>(
   fixture: ExecutionFixture,
-  run: (coordinator: HostTaskLedgerCoordinator, tools: MakaTool[]) => Promise<T>,
+  run: (coordinator: HostSessionTodoCoordinator, tools: MakaTool[]) => Promise<T>,
 ): Promise<T> {
   const owner = await tryAcquireInteractiveRootOwner(fixture.capability);
   assert.ok(owner);
-  if (!owner) throw new Error('Unable to acquire the interactive Task Ledger tool port');
-  let writer: Awaited<ReturnType<typeof openInteractiveTaskLedgerStoreForWrite>> | undefined;
+  if (!owner) throw new Error('Unable to acquire the interactive SessionTodo tool port');
+  let writer: Awaited<ReturnType<typeof openInteractiveSessionTodoStoreForWrite>> | undefined;
   try {
-    writer = await openInteractiveTaskLedgerStoreForWrite(owner.lease);
-    const coordinator = new HostTaskLedgerCoordinator(writer, new SessionAdmissionGate(), {
-      probeSessionRemoval: async () => ({ kind: 'present' }),
-    });
-    return await run(coordinator, buildTaskLedgerTools({ store: coordinator }));
+    writer = await openInteractiveSessionTodoStoreForWrite(owner.lease);
+    const coordinator = new HostSessionTodoCoordinator(
+      writer,
+      new SessionAdmissionGate(),
+      { probeSessionRemoval: async () => ({ kind: 'present' }) },
+      () => {},
+      () => {},
+    );
+    return await run(coordinator, buildSessionTodoTools(coordinator));
   } finally {
     writer?.close();
     await owner.close();
   }
 }
 
-function requireTaskLedgerTool<Input>(
-  tools: readonly MakaTool[],
-  name: 'task_create' | 'task_update',
-): TaskLedgerTool<Input> {
-  const tool = tools.find((candidate) => candidate.name === name);
-  assert.ok(tool, `Expected ${name} Runtime tool`);
-  return tool as TaskLedgerTool<Input>;
+function requireSessionTodoWriteTool(tools: readonly MakaTool[]): SessionTodoWriteTool {
+  const tool = tools.find((candidate) => candidate.name === 'todo_write');
+  assert.ok(tool, 'Expected todo_write Runtime tool');
+  return tool as SessionTodoWriteTool;
 }
 
-function taskLedgerToolContext(
-  fixture: ExecutionFixture,
-  identity: Pick<MakaToolContext, 'runId' | 'turnId' | 'toolCallId'>,
-): MakaToolContext {
+function sessionTodoToolContext(fixture: ExecutionFixture): MakaToolContext {
   return {
     sessionId: fixture.sessionId,
     cwd: fixture.root,
-    ...identity,
+    runId: randomUUID(),
+    turnId: randomUUID(),
+    toolCallId: randomUUID(),
     abortSignal: new AbortController().signal,
     emitOutput: () => {},
-  };
-}
-
-async function collectTaskLedgerProjection(
-  client: RuntimeHostConnection,
-  sessionId: string,
-): Promise<{
-  revision: TaskLedgerRevision;
-  pages: TaskLedgerPage[];
-  tasks: Task[];
-}> {
-  const pages: TaskLedgerPage[] = [];
-  let result = await client.request('task.ledger.query', {
-    kind: 'list_start',
-    sessionId,
-  });
-  assert.equal(result.kind, 'page');
-  if (result.kind !== 'page') throw new Error('Expected initial Task Ledger page');
-  const revision = result.revision;
-
-  while (true) {
-    assert.equal(result.sessionId, sessionId);
-    assert.equal(result.revision, revision);
-    pages.push(result);
-    if (result.nextCursor === null) break;
-    result = await client.request('task.ledger.query', {
-      kind: 'list_continue',
-      sessionId,
-      revision,
-      cursor: result.nextCursor,
-    });
-    assert.equal(result.kind, 'page');
-    if (result.kind !== 'page') {
-      throw new Error('Task Ledger changed while collecting a stable projection');
-    }
-  }
-
-  return {
-    revision,
-    pages,
-    tasks: pages.flatMap((page) => page.tasks),
   };
 }
 

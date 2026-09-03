@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -43,6 +44,8 @@ test('Fake question publication waits for exact hosted admission', async () => {
           admissionStarted.resolve();
           await allowAdmission.promise;
         },
+        acceptFormRequest: async () => {},
+        withdrawFormRequest: async () => {},
         close: async () => {},
         release: () => {},
       }),
@@ -214,11 +217,3 @@ test('a lease is acked only after its event is consumed, and nacked when the con
   assert.deepEqual(acked, []);
   assert.deepEqual(nacked, ['lease-1']);
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
-}

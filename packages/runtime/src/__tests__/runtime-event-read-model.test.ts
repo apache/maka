@@ -24,7 +24,6 @@ import type { CreateSessionInput, SessionListFilter } from '@maka/core/runtime-i
 import type { RuntimeEvent, RuntimeEventActions } from '@maka/core/runtime-event';
 import type { SessionHeader, SessionSummary, StoredMessage, TurnRecord } from '@maka/core/session';
 import { deriveTurnRecords } from '@maka/core/session';
-import { expect } from '../test-helpers.js';
 import {
   compareRuntimeReadModelMessages,
   isHardRuntimeEventReadModelDiagnostic,
@@ -33,6 +32,7 @@ import {
   projectRuntimeEventsToStoredMessagesWithArchiveStatuses,
 } from '../runtime-event-read-model.js';
 import { buildRuntimeEventModelReplayPlan } from '../model-history.js';
+import { backfillRuntimeEventsFromStoredMessages } from '../runtime-event-backfill.js';
 import { BackendRegistry, SessionManager, type SessionStore } from '../session-manager.js';
 
 const ts = 1_800_000_000_000;
@@ -258,6 +258,39 @@ function equivalentLegacyMessages(): StoredMessage[] {
 }
 
 describe('projectRuntimeEventsToStoredMessages', () => {
+  test('exposes a session image ref as a Markdown image source to the model', () => {
+    const replay = buildRuntimeEventModelReplayPlan([
+      ev({
+        role: 'user',
+        author: 'user',
+        content: {
+          kind: 'text',
+          text: 'show this',
+          attachments: [
+            {
+              kind: 'image',
+              name: 'preview.png',
+              mimeType: 'image/png',
+              bytes: 3,
+              ref: {
+                kind: 'session_file',
+                sessionId,
+                relativePath: 'attachment-123',
+              },
+            },
+          ],
+        },
+      }),
+    ]);
+
+    const item = replay.items[0];
+    assert.equal(item?.kind, 'text');
+    assert.match(
+      item?.kind === 'text' ? item.content : '',
+      /Markdown image source: "maka:\/\/runtime\/attachments\/attachment-123"/,
+    );
+  });
+
   test('projects user displayText from RuntimeEvent text content', () => {
     const typed = '/skill:alpha 帮我整理';
     const envelope = 'The user explicitly invoked…\n\n<user-message>\n帮我整理\n</user-message>';
@@ -274,7 +307,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       ],
       { runHeaders: [header] },
     );
-    expect(out.messages).toEqual([
+    assert.deepStrictEqual(out.messages, [
       {
         type: 'user',
         id: 'user-skill',
@@ -294,29 +327,32 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         displayText: typed,
       },
     ]);
-    expect(compare.diagnostics).toEqual([]);
+    assert.deepStrictEqual(compare.diagnostics, []);
   });
 
   test('full RuntimeEvent turn projects legacy-compatible rows', () => {
     const out = projectRuntimeEventsToStoredMessages(baseEvents(), { runHeaders: [header] });
 
-    expect(out.messages.map((message) => message.type)).toEqual([
-      'user',
-      'tool_call',
-      'permission_decision',
-      'tool_result',
-      'assistant',
-      'token_usage',
-      'turn_state',
-    ]);
-    expect(out.messages[1]).toMatchObject({
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.type),
+      [
+        'user',
+        'tool_call',
+        'permission_decision',
+        'tool_result',
+        'assistant',
+        'token_usage',
+        'turn_state',
+      ],
+    );
+    assert.partialDeepStrictEqual(out.messages[1], {
       type: 'tool_call',
       id: 'tool-1',
       toolName: 'Read',
       displayName: 'Read file',
       intent: 'inspect',
     });
-    expect(out.messages[2]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[2], {
       type: 'permission_decision',
       id: 'req-1',
       toolUseId: 'tool-1',
@@ -324,24 +360,24 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       decision: 'allow',
       hint: 'needs read access',
     });
-    expect(out.messages[3]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[3], {
       type: 'tool_result',
       id: 'legacy-result',
       toolUseId: 'tool-1',
       durationMs: 42,
     });
-    expect(out.messages[4]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[4], {
       type: 'assistant',
       modelId: 'claude-sonnet-4-5',
       text: 'The file says: file contents',
     });
-    expect(out.messages[6]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[6], {
       type: 'turn_state',
       status: 'completed',
       parentTurnId: 'parent-turn',
       partialOutputRetained: true,
     });
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('projects provider-native search through the canonical read model while replay keeps raw output', () => {
@@ -417,48 +453,55 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     ];
 
     const projected = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
-    expect(projected.diagnostics).toEqual([]);
-    expect(projected.messages[0]).toMatchObject({
-      type: 'assistant',
-      providerOptions: {
+    assert.deepStrictEqual(projected.diagnostics, []);
+    assert.partialDeepStrictEqual(projected.messages[0], { type: 'assistant' });
+    assert.deepStrictEqual(
+      (projected.messages[0] as { providerOptions?: unknown }).providerOptions,
+      {
         openai: {
           itemId: 'message-1',
           annotations: [{ type: 'url_citation', url: 'https://maka.example/' }],
         },
       },
-    });
-    expect(projected.messages[1]).toMatchObject({
+    );
+    assert.partialDeepStrictEqual(projected.messages[1], {
       type: 'tool_call',
-      providerOptions: { anthropic: { type: 'server_tool_use' } },
       providerExecuted: true,
     });
-    expect(projected.messages[2]).toMatchObject({
+    assert.deepStrictEqual(
+      (projected.messages[1] as { providerOptions?: unknown }).providerOptions,
+      {
+        anthropic: { type: 'server_tool_use' },
+      },
+    );
+    assert.partialDeepStrictEqual(projected.messages[2], {
       type: 'tool_result',
       providerExecuted: true,
       providerOutput: rawProviderOutput,
-      content: {
-        kind: 'web_search',
-        provider: 'model',
-        query: 'latest Maka',
-        rows: [
-          {
-            title: 'Maka',
-            url: 'https://maka.example/',
-            snippet: '',
-            source: 'maka.example',
-          },
-        ],
-      },
+    });
+    assert.deepStrictEqual((projected.messages[2] as { content?: unknown }).content, {
+      kind: 'web_search',
+      provider: 'model',
+      query: 'latest Maka',
+      rows: [
+        {
+          title: 'Maka',
+          url: 'https://maka.example/',
+          snippet: '',
+          source: 'maka.example',
+        },
+      ],
     });
 
     const replay = buildRuntimeEventModelReplayPlan(events);
-    expect(replay.diagnostics).toEqual([]);
-    expect(
+    assert.deepStrictEqual(replay.diagnostics, []);
+    assert.partialDeepStrictEqual(
       replay.items.find((item) => item.kind === 'tool_result' && item.toolCallId === 'search-1'),
-    ).toMatchObject({
-      output: rawProviderOutput,
-      providerExecuted: true,
-    });
+      {
+        output: rawProviderOutput,
+        providerExecuted: true,
+      },
+    );
   });
 
   test('projects an AskUserQuestion round trip without a legacy row for the live request', () => {
@@ -512,12 +555,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages.map((message) => message.type)).toEqual([
-      'tool_call',
-      'tool_result',
-      'turn_state',
-    ]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.type),
+      ['tool_call', 'tool_result', 'turn_state'],
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('replays generic provider tool results without Maka result decoding', () => {
@@ -596,26 +638,23 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     const replay = buildRuntimeEventModelReplayPlan(events);
 
-    expect(replay.items.map((item) => item.kind)).toEqual([
-      'tool_call',
-      'tool_result',
-      'tool_call',
-      'tool_result',
-      'tool_call',
-      'tool_result',
-    ]);
-    expect(
+    assert.deepStrictEqual(
+      replay.items.map((item) => item.kind),
+      ['tool_call', 'tool_result', 'tool_call', 'tool_result', 'tool_call', 'tool_result'],
+    );
+    assert.deepStrictEqual(
       replay.items.filter((item) => item.kind === 'tool_result').map((item) => item.output),
-    ).toEqual([
-      42,
-      { providerPayload: true, values: [1, 2, 3] },
-      {
-        kind: 'subagent',
-        status: 'waiting_permission',
-        providerPayload: true,
-      },
-    ]);
-    expect(replay.diagnostics).toEqual([]);
+      [
+        42,
+        { providerPayload: true, values: [1, 2, 3] },
+        {
+          kind: 'subagent',
+          status: 'waiting_permission',
+          providerPayload: true,
+        },
+      ],
+    );
+    assert.deepStrictEqual(replay.diagnostics, []);
   });
 
   test('folds retired permission modes while projecting persisted tool results', () => {
@@ -647,12 +686,68 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     const projected = out.messages.find((message) => message.type === 'tool_result');
-    expect(
+    assert.deepStrictEqual(
       projected?.type === 'tool_result' && projected.content.kind === 'subagent'
         ? projected.content.permissionMode
         : undefined,
-    ).toEqual('ask');
-    expect(out.diagnostics).toEqual([]);
+      'ask',
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  test('folds retired ExploreAgent results before model replay', () => {
+    const result = {
+      kind: 'explore_agent',
+      ok: false,
+      terminalStatus: 'failed',
+      mode: 'read_only',
+      objective: 'Trace the session lifecycle.',
+      roots: ['packages/runtime'],
+      queries: ['SessionManager'],
+      filesInspected: 0,
+      filesSkipped: 0,
+      bytesRead: 0,
+      candidateFiles: [],
+      matches: [],
+      notes: [],
+      summary: '未完成：目标无效。',
+      report: '',
+      reason: 'invalid_objective',
+      message: '目标无效。',
+    } as const;
+    const events = [
+      ev({
+        id: 'evt-explore-call',
+        role: 'model',
+        author: 'agent',
+        content: {
+          kind: 'function_call',
+          id: 'explore-1',
+          name: 'ExploreAgent',
+          args: { objective: result.objective },
+        },
+      }),
+      ev({
+        id: 'evt-explore-result',
+        role: 'tool',
+        author: 'tool',
+        content: {
+          kind: 'function_response',
+          id: 'explore-1',
+          name: 'ExploreAgent',
+          result: result as never,
+        },
+      }),
+    ];
+
+    const replay = buildRuntimeEventModelReplayPlan(events);
+
+    assert.deepStrictEqual(
+      (replay.items.find((item) => item.kind === 'tool_result') as { output?: unknown } | undefined)
+        ?.output,
+      { kind: 'text', text: '未完成：目标无效。' },
+    );
+    assert.deepStrictEqual(replay.diagnostics, []);
   });
 
   test('restores a settled Agent Swarm function response', () => {
@@ -700,8 +795,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     const projected = out.messages.find((message) => message.type === 'tool_result');
-    expect(projected?.type === 'tool_result' ? projected.content : undefined).toEqual(result);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(
+      projected?.type === 'tool_result' ? projected.content : undefined,
+      result,
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('projects first-observed step content order for stable live handoff', () => {
@@ -733,7 +831,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     const assistant = out.messages.find((message) => message.type === 'assistant');
-    expect((assistant as unknown as { contentOrder?: string[] } | undefined)?.contentOrder).toEqual(
+    assert.deepStrictEqual(
+      (assistant as unknown as { contentOrder?: string[] } | undefined)?.contentOrder,
       ['tools', 'thinking', 'text'],
     );
   });
@@ -759,24 +858,24 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     const out = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
     const projected = out.messages.find((message) => message.type === 'tool_result');
 
-    expect(projected).toMatchObject({
-      type: 'tool_result',
-      toolUseId: 'tool-1',
-      content: {
-        kind: 'archived_tool_result',
-        status: 'not_loaded',
-        artifactId: 'artifact-tool-result',
-        bodySha256: 'a'.repeat(64),
-        runtimeEventId: 'evt-tool-result',
-        toolCallId: 'tool-1',
-        toolName: 'Read',
-        originalEstimatedTokens: 200,
-        originalBytes: 800,
-        rewriteVersion: 1,
-        reason: 'stale_tool_result_pruned_before_compact',
-      },
+    assert.partialDeepStrictEqual(projected, { type: 'tool_result', toolUseId: 'tool-1' });
+    assert.deepStrictEqual((projected as { content?: unknown } | undefined)?.content, {
+      kind: 'archived_tool_result',
+      status: 'not_loaded',
+      artifactId: 'artifact-tool-result',
+      bodySha256: 'a'.repeat(64),
+      runtimeEventId: 'evt-tool-result',
+      toolCallId: 'tool-1',
+      toolName: 'Read',
+      originalEstimatedTokens: 200,
+      originalBytes: 800,
+      rewriteVersion: 1,
+      reason: 'stale_tool_result_pruned_before_compact',
     });
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual(['archived_tool_result_placeholder']);
+    assert.deepStrictEqual(
+      out.diagnostics.map((diag) => diag.code),
+      ['archived_tool_result_placeholder'],
+    );
   });
 
   test('legacy archived tool-result placeholders gain a deterministic ArchiveRead ref for replay', () => {
@@ -829,24 +928,24 @@ describe('projectRuntimeEventsToStoredMessages', () => {
 
     const defaultOut = projectRuntimeEventsToStoredMessages(events, { runHeaders: [header] });
     const defaultProjected = defaultOut.messages.find((message) => message.type === 'tool_result');
-    expect(defaultProjected).toMatchObject({ type: 'tool_result' });
-    expect(archivedStatus(defaultProjected)).toBe('not_loaded');
+    assert.partialDeepStrictEqual(defaultProjected, { type: 'tool_result' });
+    assert.strictEqual(archivedStatus(defaultProjected), 'not_loaded');
 
     const missingOut = projectRuntimeEventsToStoredMessagesWithArchiveStatuses(events, {
       runHeaders: [header],
       archiveStatuses: { 'evt-tool-result': 'missing' },
     });
     const missingProjected = missingOut.messages.find((message) => message.type === 'tool_result');
-    expect(missingProjected).toMatchObject({ type: 'tool_result' });
-    expect(archivedStatus(missingProjected)).toBe('missing');
+    assert.partialDeepStrictEqual(missingProjected, { type: 'tool_result' });
+    assert.strictEqual(archivedStatus(missingProjected), 'missing');
 
     const corruptOut = projectRuntimeEventsToStoredMessagesWithArchiveStatuses(events, {
       runHeaders: [header],
       archiveStatuses: [{ runtimeEventId: 'evt-tool-result', status: 'corrupt' }],
     });
     const corruptProjected = corruptOut.messages.find((message) => message.type === 'tool_result');
-    expect(corruptProjected).toMatchObject({ type: 'tool_result' });
-    expect(archivedStatus(corruptProjected)).toBe('corrupt');
+    assert.partialDeepStrictEqual(corruptProjected, { type: 'tool_result' });
+    assert.strictEqual(archivedStatus(corruptProjected), 'corrupt');
   });
 
   test('partial RuntimeEvents are excluded', () => {
@@ -869,9 +968,12 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toHaveLength(1);
-    expect(out.messages[0]).toMatchObject({ type: 'assistant', text: 'final' });
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual(['partial_skipped']);
+    assert.strictEqual(out.messages.length, 1);
+    assert.partialDeepStrictEqual(out.messages[0], { type: 'assistant', text: 'final' });
+    assert.deepStrictEqual(
+      out.diagnostics.map((diag) => diag.code),
+      ['partial_skipped'],
+    );
   });
 
   test('tool dispatch recovery facts are accepted without creating legacy message rows', () => {
@@ -897,8 +999,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('question answer acknowledgements remain non-visible audit facts', () => {
@@ -915,8 +1017,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('terminal recovery bundle facts are accepted without creating legacy message rows', () => {
@@ -965,8 +1067,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('continuation-start recovery facts are accepted without creating legacy message rows', () => {
@@ -1004,8 +1106,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('sandbox boundary request and decision facts are accepted without creating legacy message rows', () => {
@@ -1053,8 +1155,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   // Claiming the key alone would let any shape ride in under a control-fact
@@ -1197,10 +1299,11 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     test(`a sandbox boundary ${name} stays unclaimed`, () => {
       const out = projectRuntimeEventsToStoredMessages([makeEvent()], { runHeaders: [header] });
 
-      expect(out.messages).toEqual([]);
-      expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-        'unclaimed_control_fact',
-      ]);
+      assert.deepStrictEqual(out.messages, []);
+      assert.deepStrictEqual(
+        out.diagnostics.map((diagnostic) => diagnostic.code),
+        ['unclaimed_control_fact'],
+      );
     });
   }
 
@@ -1249,9 +1352,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     ];
 
-    expect(out.messages).toEqual(legacy);
-    expect(out.diagnostics).toEqual([]);
-    expect(compareRuntimeReadModelMessages(out.messages, legacy).compatible).toBe(true);
+    assert.deepStrictEqual(out.messages, legacy);
+    assert.deepStrictEqual(out.diagnostics, []);
+    assert.strictEqual(compareRuntimeReadModelMessages(out.messages, legacy).compatible, true);
   });
 
   test('per-step thinking pairs each step assistant row by its own message id', () => {
@@ -1298,7 +1401,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     );
 
     const assistants = out.messages.filter((message) => message.type === 'assistant');
-    expect(assistants).toEqual([
+    assert.deepStrictEqual(assistants, [
       {
         type: 'assistant',
         id: 'step-1',
@@ -1318,7 +1421,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         thinking: { text: 'reasoning two', signature: 'sig-2' },
       },
     ]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('unsupported and incomplete events are diagnostic-only', () => {
@@ -1354,18 +1457,21 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
+    assert.deepStrictEqual(out.messages, []);
     // The orphaned permission decision carries no content, so its catch-all is
     // the soft code — but the projector that tried to build its row and failed
     // still reports `incomplete_event`, which stays hard. Downgrading the
     // catch-all never downgrades a projector that attempted a message.
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual([
-      'incomplete_event',
-      'unclaimed_control_fact',
-      'incomplete_event',
-      'unsupported_event',
-      'unsupported_event',
-    ]);
+    assert.deepStrictEqual(
+      out.diagnostics.map((diag) => diag.code),
+      [
+        'incomplete_event',
+        'unclaimed_control_fact',
+        'incomplete_event',
+        'unsupported_event',
+        'unsupported_event',
+      ],
+    );
   });
 
   // Where the projection draws the line between a view it can still serve and
@@ -1389,12 +1495,19 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages.map((message) => message.id)).toEqual(['evt-user', 'evt-assistant']);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
-      'unclaimed_control_fact',
-    ]);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.eventId)).toEqual(['evt-control']);
-    expect(out.diagnostics.some(isHardRuntimeEventReadModelDiagnostic)).toBe(false);
+    assert.deepStrictEqual(
+      out.messages.map((message) => message.id),
+      ['evt-user', 'evt-assistant'],
+    );
+    assert.deepStrictEqual(
+      out.diagnostics.map((diagnostic) => diagnostic.code),
+      ['unclaimed_control_fact'],
+    );
+    assert.deepStrictEqual(
+      out.diagnostics.map((diagnostic) => diagnostic.eventId),
+      ['evt-control'],
+    );
+    assert.strictEqual(out.diagnostics.some(isHardRuntimeEventReadModelDiagnostic), false);
   });
 
   test('an unclaimed event that carries content stays hard', () => {
@@ -1410,9 +1523,12 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toEqual([]);
-    expect(out.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(['unsupported_event']);
-    expect(out.diagnostics.every(isHardRuntimeEventReadModelDiagnostic)).toBe(true);
+    assert.deepStrictEqual(out.messages, []);
+    assert.deepStrictEqual(
+      out.diagnostics.map((diagnostic) => diagnostic.code),
+      ['unsupported_event'],
+    );
+    assert.strictEqual(out.diagnostics.every(isHardRuntimeEventReadModelDiagnostic), true);
   });
 
   test('failed terminal RuntimeEvent maps to failed turn state when run header carries failure class', () => {
@@ -1430,7 +1546,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     );
 
-    expect(out.messages).toEqual([
+    assert.deepStrictEqual(out.messages, [
       {
         type: 'turn_state',
         id: 'evt-failed',
@@ -1442,7 +1558,49 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         partialOutputRetained: false,
       },
     ]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.diagnostics, []);
+  });
+
+  test('a session written with the retired context_budget_exhausted reads back as context_overflow', () => {
+    // The runtime no longer decides locally that a request cannot be made to
+    // fit, so that outcome is gone from the live contract. Sessions persisted
+    // before still carry it, and must still decode — as the one name that
+    // survives.
+    const out = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-budget-exhausted',
+          ts: ts + 9,
+          status: 'failed',
+          actions: {
+            endInvocation: true,
+            stateDelta: {
+              stopReason: 'context_budget_exhausted',
+              failureClass: 'context_budget_exhausted',
+              contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+            },
+          },
+        }),
+      ],
+      {
+        runHeaders: [{ ...header, status: 'failed', failureClass: 'context_budget_exhausted' }],
+      },
+    );
+
+    assert.deepStrictEqual(
+      out.messages.find((message) => message.type === 'turn_state'),
+      {
+        type: 'turn_state',
+        id: 'evt-budget-exhausted',
+        turnId,
+        ts: ts + 9,
+        status: 'failed',
+        parentTurnId: 'parent-turn',
+        errorClass: 'context_overflow',
+        partialOutputRetained: false,
+      },
+    );
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('tool step cap terminal fact projects a persistent system notice', () => {
@@ -1463,13 +1621,16 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     );
 
-    expect(out.messages.find((message) => message.type === 'system_note')).toEqual({
-      type: 'system_note',
-      id: 'evt-step-limit:step-limit-notice',
-      turnId,
-      ts: ts + 9,
-      kind: 'step_limit',
-    });
+    assert.deepStrictEqual(
+      out.messages.find((message) => message.type === 'system_note'),
+      {
+        type: 'system_note',
+        id: 'evt-step-limit:step-limit-notice',
+        turnId,
+        ts: ts + 9,
+        kind: 'step_limit',
+      },
+    );
   });
 
   test('aborted terminal RuntimeEvent preserves abort source from runtime state', () => {
@@ -1487,7 +1648,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     );
 
-    expect(out.messages).toEqual([
+    assert.deepStrictEqual(out.messages, [
       {
         type: 'turn_state',
         id: 'evt-aborted',
@@ -1500,7 +1661,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
         partialOutputRetained: false,
       },
     ]);
-    expect(out.diagnostics).toEqual([]);
+    assert.deepStrictEqual(out.diagnostics, []);
   });
 
   test('aborted terminal RuntimeEvent keeps an explicit diagnostic when abort source is unavailable', () => {
@@ -1518,12 +1679,15 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       },
     );
 
-    expect(out.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[0], {
       type: 'turn_state',
       status: 'aborted',
       abortedAt: ts + 9,
     });
-    expect(out.diagnostics.map((diag) => diag.code)).toEqual(['incomplete_event']);
+    assert.deepStrictEqual(
+      out.diagnostics.map((diag) => diag.code),
+      ['incomplete_event'],
+    );
   });
 
   test('projects tool_call stepId from refs so the UI timeline keeps step pairing', () => {
@@ -1544,7 +1708,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
     const withStep = projectRuntimeEventsToStoredMessages([stepCall('tool-step', 'step-1')], {
       runHeaders: [header],
     });
-    expect(withStep.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(withStep.messages[0], {
       type: 'tool_call',
       id: 'tool-step',
       stepId: 'step-1',
@@ -1556,8 +1720,8 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       runHeaders: [header],
     });
     const legacyCall = withoutStep.messages[0];
-    expect(legacyCall).toMatchObject({ type: 'tool_call', id: 'tool-legacy' });
-    expect(legacyCall && 'stepId' in legacyCall).toBe(false);
+    assert.partialDeepStrictEqual(legacyCall, { type: 'tool_call', id: 'tool-legacy' });
+    assert.strictEqual(legacyCall && 'stepId' in legacyCall, false);
   });
 
   test('retains nested CodeMode identity on tool rows used by the UI read model', () => {
@@ -1593,9 +1757,9 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages).toHaveLength(2);
+    assert.strictEqual(out.messages.length, 2);
     for (const message of out.messages) {
-      expect(message).toMatchObject({
+      assert.partialDeepStrictEqual(message, {
         origin: 'code_mode',
         modelVisibility: 'hidden',
         parentToolCallId: 'exec-1',
@@ -1624,7 +1788,7 @@ describe('projectRuntimeEventsToStoredMessages', () => {
       { runHeaders: [header] },
     );
 
-    expect(out.messages[0]).toMatchObject({
+    assert.partialDeepStrictEqual(out.messages[0], {
       type: 'tool_call',
       id: 'tool-kind',
       activityKind: 'command',
@@ -1660,6 +1824,15 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
   // entry covers the field, not its contents. A new key inside a state delta is
   // out of reach of any contract keyed on the action surface.
   stateDelta: { action: { continuationStart: true } },
+  managedMutationTerminal: {
+    action: {
+      protocol: 'managed_mutation_terminal_v1',
+      operationId: 'coverage-operation',
+      dispatchEventId: 'coverage-dispatch',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      terminalKind: 'no_workspace_change',
+    },
+  },
   continuationStart: {
     action: {
       protocol: 'continuation_start_v2',
@@ -1721,6 +1894,20 @@ const ACTION_COVERAGE_SAMPLES: ActionCoverageSamples = {
     action: { requestId: 'coverage-question' },
     event: { author: 'user', refs: { toolCallId: 'coverage-question-tool' } },
   },
+  formRequest: {
+    action: {
+      requestId: 'coverage-form',
+      toolUseId: 'coverage-form-tool',
+      message: 'Choose settings',
+      requester: { name: 'deploy' },
+      fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+    },
+    event: { refs: { toolCallId: 'coverage-form-tool' } },
+  },
+  formAnswerAccepted: {
+    action: { requestId: 'coverage-form' },
+    event: { author: 'user', refs: { toolCallId: 'coverage-form-tool' } },
+  },
   transferToAgent: { action: 'agent-b' },
   // The terminal fact is one of the actions that does own a row.
   endInvocation: { action: true },
@@ -1780,12 +1967,12 @@ describe('RuntimeEventActions projection coverage', () => {
     test(`actions.${field} projects without an unclaimed-event diagnostic`, () => {
       const actions = { [field]: sample.action } as RuntimeEventActions;
       // Guards an entry that names a field but leaves it absent at runtime.
-      expect(field in actions).toBe(true);
+      assert.strictEqual(field in actions, true);
       const out = projectRuntimeEventsToStoredMessages([ev({ ...sample.event, actions })], {
         runHeaders: [header],
       });
 
-      expect(out.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic)).toEqual([]);
+      assert.deepStrictEqual(out.diagnostics.filter(isUnclaimedRuntimeEventDiagnostic), []);
     });
   }
 });
@@ -1841,8 +2028,8 @@ describe('compareRuntimeReadModelMessages', () => {
 
     const result = compareRuntimeReadModelMessages(projected.messages, legacy);
 
-    expect(result.compatible).toBe(true);
-    expect(result.diagnostics).toEqual([]);
+    assert.strictEqual(result.compatible, true);
+    assert.deepStrictEqual(result.diagnostics, []);
   });
 
   test('rejects a mismatched tool activity kind', () => {
@@ -1864,7 +2051,55 @@ describe('compareRuntimeReadModelMessages', () => {
       },
     ];
 
-    expect(compareRuntimeReadModelMessages(projected, legacy).compatible).toBe(false);
+    assert.strictEqual(compareRuntimeReadModelMessages(projected, legacy).compatible, false);
+  });
+
+  test('carries the cross-turn request anchor both ways and compares on it', () => {
+    const lastRequestAnchor = { inputTokens: 120, outputTokens: 30 };
+    const anchored = ev({
+      id: 'evt-token-anchor',
+      role: 'system',
+      author: 'system',
+      actions: { tokenUsage: { input: 370, output: 60, lastRequestAnchor } },
+    });
+    const projected = projectRuntimeEventsToStoredMessages(
+      [
+        ev({
+          id: 'evt-anchor-user',
+          role: 'user',
+          author: 'user',
+          content: { kind: 'text', text: 'read the file' },
+        }),
+        anchored,
+      ],
+      { runHeaders: [header] },
+    );
+    const usage = projected.messages.find((message) => message.type === 'token_usage');
+    assert.partialDeepStrictEqual(usage, { type: 'token_usage', input: 370, lastRequestAnchor });
+
+    const backfilled = backfillRuntimeEventsFromStoredMessages({
+      run: header,
+      messages: projected.messages,
+      now: () => ts,
+    });
+    assert.deepStrictEqual(
+      backfilled.events.find((event) => event.actions?.tokenUsage)?.actions?.tokenUsage
+        ?.lastRequestAnchor,
+      lastRequestAnchor,
+    );
+
+    assert.strictEqual(
+      compareRuntimeReadModelMessages(
+        [usage as StoredMessage],
+        [
+          {
+            ...(usage as Extract<StoredMessage, { type: 'token_usage' }>),
+            lastRequestAnchor: undefined,
+          },
+        ],
+      ).compatible,
+      false,
+    );
   });
 
   test('rejects mismatched replay-critical token usage fields', () => {
@@ -1880,18 +2115,21 @@ describe('compareRuntimeReadModelMessages', () => {
       providerRequestTraceId: 'provider-trace-1',
     };
 
-    expect(
+    assert.strictEqual(
       compareRuntimeReadModelMessages([usage], [{ ...usage, runtimeSteps: 4 }]).compatible,
-    ).toBe(false);
-    expect(
+      false,
+    );
+    assert.strictEqual(
       compareRuntimeReadModelMessages([usage], [{ ...usage, contextRemaining: 8000 }]).compatible,
-    ).toBe(false);
-    expect(
+      false,
+    );
+    assert.strictEqual(
       compareRuntimeReadModelMessages(
         [usage],
         [{ ...usage, providerRequestTraceId: 'provider-trace-2' }],
       ).compatible,
-    ).toBe(false);
+      false,
+    );
   });
 
   test('rejects missing tool result and assistant text cases', () => {
@@ -1901,11 +2139,11 @@ describe('compareRuntimeReadModelMessages', () => {
     );
     const result = compareRuntimeReadModelMessages(missing, equivalentLegacyMessages());
 
-    expect(result.compatible).toBe(false);
-    expect(result.diagnostics.map((diag) => diag.code)).toEqual([
-      'missing_legacy_message',
-      'missing_legacy_message',
-    ]);
+    assert.strictEqual(result.compatible, false);
+    assert.deepStrictEqual(
+      result.diagnostics.map((diag) => diag.code),
+      ['missing_legacy_message', 'missing_legacy_message'],
+    );
   });
 });
 
@@ -1924,7 +2162,7 @@ describe('SessionManager read behavior', () => {
       manager.getMessages(sessionId),
       /RuntimeReadModel requires AgentRunStore and RuntimeEventStore/,
     );
-    expect(store.readMessagesCalls).toBe(0);
+    assert.strictEqual(store.readMessagesCalls, 0);
   });
 });
 
@@ -1989,7 +2227,7 @@ async function expectRejects(promise: Promise<unknown>, pattern: RegExp): Promis
   try {
     await promise;
   } catch (error) {
-    expect(error instanceof Error ? error.message : String(error)).toMatch(pattern);
+    assert.match(String(error instanceof Error ? error.message : String(error)), pattern);
     return;
   }
   throw new Error(`Expected promise to reject with ${pattern}`);

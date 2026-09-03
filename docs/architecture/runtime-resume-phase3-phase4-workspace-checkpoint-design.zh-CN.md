@@ -19,17 +19,19 @@
 
 # Runtime Resume Phase 3–4 实施路线
 
-> 路线更新（2026-08-02）：workspace 主线已从“通用 checkpoint 抽象优先”切换为
-> **Git-native managed workspace**。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
-> 新实现不再以通用 per-file checkpoint、native manifest 或 CAS object store 为前置。
-> 当前 M0 的 baseline-only 权威合同见
+> 路线更新（2026-08-29）：旧 Git executable managed-workspace path 已删除，后续 workspace 主线从
+> **Gitoxide data plane** 重新建立 production admission。本文保留 Recovery/Continuation 已落地协议与旧路线的历史论证；
+> 新实现不再以通用 per-file checkpoint、native manifest、CAS object store 或旧 Git CLI owner 为前置。
+> 已保留的 baseline authority 合同见
 > [Workspace Version Authority v1](./runtime-workspace-version-authority-v1.zh-CN.md)。
 
 - 状态：Implementation tracked
-- 更新日期：2026-08-02
+- 更新日期：2026-08-29
 - 事实权威：immutable RuntimeEvents
 - 主要平台：Linux、macOS；Windows 有限支持
 - 拆分审计：`runtime-resume-extraction-ledger.zh-CN.md`
+- 跟踪：[生产级 Write/Edit 恢复 #4319](https://github.com/apache/maka/issues/4319)
+- 跟踪：[safe-boundary continuation 加固 #4324](https://github.com/apache/maka/issues/4324)
 
 ## 1. 四个正交平面
 
@@ -47,7 +49,7 @@ RuntimeEvent 是语义事实的唯一权威，但不能替代执行所有权的�
 | recovery semantics | immutable RuntimeEvents | call、dispatch、outcome、observation、decision |
 | execution ownership | admission/claim CAS | 一个 source boundary 只能有一个执行者 |
 | projection | SQLite tables | 可删除、可从事件重建 |
-| workspace artifact | managed Git artifact owner（强模式） | 保存/验证 workspace 状态，不能单独授权 continuation |
+| workspace artifact | 当前无生产 writer；后续 Gitoxide data plane | 保存/验证 workspace 状态，不能单独授权 continuation |
 
 ## 2. Phase 3A：工具恢复
 
@@ -165,15 +167,9 @@ composite replay 存在时，它是 tool-state 与 provider suffix 的唯一 gat
 `buildResumePlanFromRuntimeEvents()` 只服务无 composite boundary 的 legacy 路径，不能在外层
 再次把已经安全裁掉的 `definitely_not_dispatched` call 判为 dangling。
 
-`retryChildAgentWithExecution()` 同样通过 `RuntimeContinuationPlanner` 构造 immutable
-composite boundary。旧 child 的 `retriedFromRunId/resumedFromRunId` 边从对应 immutable prefix
-严格派生临时 V1 segment；新 child retry 持久化 V2 `continuationSource`。该路径不再使用
-`readRuntimeEvents()`、`events.length` 或独立的 `buildResumePlanFromRuntimeEvents()` 组装
-provider history。
-
 最终同时冻结：
 
-- `providerProjectionVersion = 1`；
+- `providerProjectionVersion`（PR B 时冻结为 1；#4286 起为 2）；
 - composite `providerReplayDigest`；
 - segment boundary manifest。
 
@@ -287,9 +283,9 @@ sequenceDiagram
 5. 通过 dedicated writer 提交 `continuation_start_v2`，必须是 target `event_seq=1`；
 6. 才允许 append running turn state、reserve backend、标记 running、调用 provider。
 
-linked child 与 legacy child 的 provider retry 也按这套顺序执行：重新验证 boundary/replay、
-workspace/background/tool catalog，竞争同一个 SQLite boundary claim，再写 continuation-start。
-`retriedFromRunId` 继续承担产品查询与展示语义，但不承担并发执行所有权。
+linked child 当前通过普通 Session turn 执行，不再有 same-session child AgentRun 的 provider
+retry 入口。历史 `linked_child_resume` / `linked_child_provider_retry` descriptor 与
+`retriedFromRunId` 只保留重启关闭、查询和展示兼容，不会重新触发 provider。
 
 live continuation-start 同时绑定 claim id、boundary digest、immediate source identity/high-water/prefix
 digest、replay manifest、provider projection version 和 provider replay digest。V2 AgentRun header 的
@@ -327,11 +323,10 @@ failed terminal，failureClass 为
 另一个进程擅自补 terminal，因为原 provider 可能仍存活。SQLite writer 同时拒绝 terminal 后追加
 任何 immutable event，作为最终写侧防线。
 
-linked-child 的 generic admission repair 在发现 target identity 已由 continuation claim 占有时
-必须 defer，不能抢先创建一个缺少 V2 source 的同 id Run。只有同时证明 claim target、B2.1
-deterministic repair start、deterministic terminal 与 target header 全部一致，才允许把
-`continuation_abandoned_before_provider_dispatch` Run 作为 child provider retry source。仅凭
-字符串 failureClass 或 V2 header 不构成证明。
+历史 linked-child admission closure 在发现 target identity 已由 continuation claim 占有时必须
+defer，不能抢先创建一个缺少 V2 source 的同 id Run。没有 claim owner 时，该 closure 只保留旧
+descriptor 的 lineage 并物化 durable failed terminal fact，provider 调用数为 0；它不会把 repaired
+Run 重新变成 child provider retry source。
 
 canonical continuation authority 读取失败时，best-effort startup 必须隔离整个 session，不允许
 退回 generic/legacy repair。否则一个暂时读不到 claim 的 host 可能把 claim-owned target 当成普通
@@ -377,18 +372,17 @@ lease/fencing 或 append-if-absent 解决。
 #### B3：明确延后
 
 本 PR 不实现通用 provider retry、ShellRun reattach、Bash 重放、conversation clone identity
-rewrite 或其他 typed continuation branch。authority-capable SessionManager 内已有的
-linked-child RateLimit retry 与 B2.1 repair retry 是窄协议，不代表 runtime-host 已获得生产启用
-资格。其他能力必须在各自拥有 durable handle/幂等协议后独立设计，不能复用 B2 的普通
-continuation claim 来暗示副作用可重跑。
+rewrite 或其他 typed continuation branch。linked-child RateLimit retry 入口已经删除；B2.1
+repair retry 只修复已持久化的 continuation authority，不会重新调用 provider。其他能力必须在
+各自拥有 durable handle/幂等协议后独立设计，不能复用 B2 的普通 continuation claim 来暗示
+副作用可重跑。
 
 兼容约束：早期的 `legacy_provider_retry` lane（只允许 continuation authority 与 safety
 inspector 同时缺席的组合，半配置状态 fail closed；执行前重验 immutable immediate-source
 replay，但不产生 claim/start，也不能承接
 `continuation_abandoned_before_provider_dispatch`）已在 host authority lifecycle
-integration 接入 typed SQLite authority owner 后移除。child provider RateLimit retry 现在
-只走 durable continuation 准入：authority 或 safety inspector 任一缺席时在 claim/Run/T1
-之前 fail closed，没有降级模式。
+integration 接入 typed SQLite authority owner 后移除。历史 child admission descriptor 在
+恢复时只会被收敛为 durable terminal fact，不存在 provider retry 降级模式。
 
 B3 之前，branch/revision preflight 必须在创建目标 Session 之前拒绝任何 V1/V2
 `continuationSource` 与 continuation-start，稳定返回
@@ -414,6 +408,8 @@ tool-boundary protocol
 provider materializer/projection version
 permission/sandbox execution-policy digest（会影响可执行语义时）
 ```
+
+跟踪：[sandbox boundary negotiation #3731](https://github.com/apache/maka/issues/3731)。该 issue 只覆盖 permission/sandbox execution-policy 跨安全续接，不覆盖完整 execution profile 的其余字段。
 
 boundary 证明“继续哪一段事实”，execution profile 证明“按照哪套执行语义继续”。两者必须分开
 摘要并同时匹配；不能在执行时用当前 Session 配置重新生成 target header，从而把 plan 后的模型、
@@ -461,7 +457,7 @@ authority、同一 ledger transaction domain。lease 要携带 epoch/fencing tok
 | observation | 动作 |
 |---|---|
 | `matches_expected_state` | cleanup/finalize，合成 outcome，提交 PR A bundle |
-| `matches_prior_state` | park，reason=`redo_disabled_pending_cas` |
+| `matches_prior_state` | park，reason=`reconcile_matches_prior_state` |
 | `diverged` | park，不覆盖外部写入 |
 | `unreadable` | park，不猜测 |
 
@@ -482,8 +478,8 @@ authority、同一 ledger transaction domain。lease 要携带 epoch/fencing tok
 sandbox、one-call grant 和 abort boundary 的执行所有权。
 
 PR C 沿用 PR A 的 durable vocabulary：`matches_expected_state` 可 finalize；
-`matches_prior_state`、`diverged`、`unreadable` 均提交 terminal parked decision。UI 可以把
-`matches_prior_state` 映射为 `redo_disabled_pending_cas`，但不新增第二套 durable fact 名称。
+`matches_prior_state`、`diverged`、`unreadable` 均提交 terminal parked decision。UI 直接展示
+durable reason code（如 `reconcile_matches_prior_state`），不维护第二套展示层状态名。
 
 ### PR D — Host owner lifecycle
 
@@ -517,7 +513,7 @@ Host owner 使用显式 `opening -> ready -> closing -> closed` 状态机；`clo
 
 ```text
 continuation claim repair
-→ linked-child admission repair
+→ historical linked-child admission closure
 → generic AgentRun ledger repair
 → ordinary continuation planning / auto-resume
 ```
@@ -539,95 +535,29 @@ Attached 模式继续服务现有用户目录与兼容场景，但不冒充强 w
 - 旧的 generic checkpoint provider、per-file carrier 与 observe-only user-repository Git 路线只保留为
   attached/legacy research，不再是 `managed_worktree` 的实现前置。
 
-### Git-native managed workspace
+### Gitoxide managed workspace
 
-强模式以 Maka-owned repository/worktree 为 artifact carrier。Git 证明文件世界，SQLite immutable
-RuntimeEvents 决定 Maka 是否接受某个文件版本；Git commit、ref、receipt 与 projection 都不是第二套真相。
-内置并校验的 Git CLI 是该模式的运行能力，不要求用户自行安装 Git，也不修改用户 repository 的 index/ref。
+旧 Git executable-backed managed workspace 从未获得生产 baseline/profile 调用方，其 service、owner、
+receipt、worktree materialization 与 Runtime Host admission path 已删除。schema 9 RuntimeEvents、workspace
+projection reader/rebuild 与升级合同继续保留；它们是历史事实 authority，不是可执行 Git path。
 
-## 4. Git-native managed workspace 演进
+## 4. Gitoxide managed workspace 后续边界
 
-### M0 — Baseline admission（已合并）
+跟踪：[Gitoxide workspace continuity #4325](https://github.com/apache/maka/issues/4325)
 
-M0 只证明一条接受链：
+后续强模式必须从 Gitoxide data plane 建立新的 production composition，并分别证明：
 
-```text
-authenticated storage-root owner
-→ create/reopen Maka-owned managed Git workspace
-→ durable exact receipt
-→ SQLite atomic epoch + baseline acceptance
-→ post-commit DB/Git/root-owner revalidation
-→ publish usable baseline
-```
+- packaged helper 的 trust root、artifact identity 与 bounded invocation；
+- repository admission 与 schema 9 workspace authority 的单一写入边界；
+- mutation T1/T2、workspace version 与 tool outcome 的原子接受；
+- workspace-bound continuation、restore、rebaseline 与 product workflow。
 
-M0 不接 Desktop、CLI、runtime host 或工具执行。Whole-root import 当前只恢复 storage-root identity 与
-SQLite ownership；既有 linked worktree 的路径迁移需要独立 relocation/rematerialization 协议。非空且未绑定的
-legacy DB 继续 fail closed，未来由显式、备份后、可审计的 root-binding maintenance flow 处理，不能藏在首次
-baseline open 中。
+不能恢复旧 Git CLI、receipt、quarantine、write owner 或 `managed_worktree_v1` profile，也不能让 Gitoxide
+foundation 在尚无 Desktop/CLI/T1 consumer 时冒充产品能力。
 
-### M1 — Execution admission 与环境可用性
-
-只允许 host 从 M0 成功返回的 accepted handle 取得工具 cwd，并证明：
-
-- managed owner 与 runtime host 的启动、drain、关闭顺序；
-- 每次执行前 exact instance/HEAD/tree/ownership revalidation；
-- ignored dependencies、`.env` 与 build scratch 使用明确 provisioning/overlay policy，不污染 canonical tree；
-- 外部修改 Maka-owned worktree 时检测 drift、fail closed 并 quarantine；
-- attached 与 managed execution profile 在类型和配置上不可静默互相 fallback。
-
-M1 拆成独立不变量，避免一次 PR 同时跨越 host lifecycle、runtime protocol 与 platform I/O：
-
-1. **M1.1 execution scope admission（已合并）**：M0 只返回 owner-bound opaque handle；同一 owner 每次
-   execution 都在 drain residency 内重新证明 canonical head、Git receipt、HEAD/tree/ownership 与 root
-   identity，最后只签发 callback 生命周期内有效的 opaque scope，不公开 raw cwd。provisioning 固定为
-   `canonical_tree_only_v1`，`workspaceEffect` 固定为 `none`。同一 handle 可以并发多个只读 admission，
-   `close()` 必须等待全部 active scope drain；普通 production admission 先做一次 exact Git verification，再以
-   SQLite head 作为最后一次 durable reread；preliminary verification 仅存在于配置 crash failpoint 的
-   production-shaped 测试路径；过期或伪造 scope 通过 typed
-   `ManagedWorkspaceExecutionAuthorityError` 的稳定 code fail closed；
-2. **M1.2 owner-bound worker 与 runtime-host composition（已合并）**：storage-internal bridge 只能用同 owner 的 active
-   scope 解析 cwd，M2 前只允许 Read/Glob/Grep；建立不可混淆的 managed/attached typed profile 与
-   startup/drain/shutdown 顺序，关闭顺序固定为 tool operations → managed owner → root owner；
-3. **M1.3 environment provisioning**：单独设计 ignored dependency、secret 与 scratch overlay。M1.1 不复制
-   `.env`、`node_modules` 或 build output，也不以 attached checkout silent fallback 掩盖能力缺失。
-
-M1.1 合同见
-[Managed Workspace Execution Admission v1](./runtime-managed-workspace-execution-admission-v1.zh-CN.md)。
-
-### M2 — Mutation version acceptance
-
-每个 mutating tool 使用 candidate ref/version 协议：
-
-1. T1 前冻结 execution profile、base workspace version 与 mutation identity；
-2. 工具只在 owned worktree 中执行；
-3. Git artifact owner 捕获并验证 candidate commit/tree；
-4. SQLite 在一个 authority transaction 中接受 tool outcome 与 successor workspace version；
-5. artifact orphan 可回收；canonical fact 已接受而 artifact 缺失时 fail closed；
-6. crash matrix 覆盖执行前后、candidate durable 前后、SQLite commit 前后与返回前复验。
-
-这一步取代旧的“先做通用 checkpoint contract，再接 observe-only Git carrier”。不得同时维护两套
-managed workspace version writer。
-
-### M3 — Workspace-bound continuation / resume
-
-Continuation boundary 同时绑定 immutable RuntimeEvent cursor 与 accepted workspace version/epoch：
-
-- planner 与 execution revalidation 读取同一 canonical boundary；
-- startup reopen 必须重新证明 exact Git artifact、storage root 与 owner；
-- operation effect 无法证明、artifact 漂移或 execution profile 不匹配时 park；
-- 自动 resume 仍由独立用户设置控制，默认关闭；手动恢复与自动恢复不能共享一个含糊开关。
-
-### M4 — Product workflows
-
-在 M0–M3 的事实与 owner 边界稳定后，再分别交付：
-
-- isolated restore，不覆盖用户当前目录；
-- explicit rebaseline，创建新 epoch 并要求模型重新读取；
-- publish/merge/undo、retention 与 orphan GC；
-- whole-root managed-workspace relocation；
-- replication/cross-device 与 multi-agent merge。
-
-每项都必须是独立 PR；不能借“恢复产品化”一次跨越 schema、runtime protocol、host lifecycle 与 platform I/O。
+当前先行的 persistence/runtime authority 只定义 managed T1 reservation、terminal settlement 与
+accepted successor 的原子事实边界，不执行 Git mutation，也不恢复旧 worktree owner。完整合同见
+[Managed Mutation Lifecycle Authority v1](./runtime-managed-workspace-mutation-lifecycle-authority-v1.zh-CN.md)。
 
 ## 5. 依赖顺序
 
@@ -635,25 +565,15 @@ Continuation boundary 同时绑定 immutable RuntimeEvent cursor 与 accepted wo
 PR A recovery persistence authority (merged)
 └─> PR B continuation correctness (merged)
 
-Git-native workspace:
-M0.1 Git artifact owner (merged)
-  + M0.2 workspace version authority (merged)
-  + M0.3 managed owner lifecycle (merged)
-  └─> M0.4 baseline open bundle (merged)
-       └─> M1.1 execution scope admission (merged)
-            └─> M1.2 runtime-host composition (merged)
-                 └─> M1.3 explicit environment provisioning
-                      └─> M2 mutation version acceptance
-                           └─> M3 workspace-bound continuation
-                                └─> M4 restore / rebaseline / publish / replication
-
-Independent maintenance gates before broad production enablement:
-  - legacy non-empty DB root-binding adoption
-  - whole-root managed-workspace relocation/rematerialization
+Gitoxide foundation/data plane
+└─> production artifact admission
+    └─> schema 9 workspace authority writer composition
+        └─> mutation acceptance
+            └─> workspace-bound continuation and product workflows
 ```
 
-旧 PR C–H 的论证可作为历史材料，但不再代表 `managed_worktree` 的施工依赖图；其中不具备生产消费者的
-generic checkpoint、observe-only carrier 与预设抽象不得迁入新主线。
+旧 PR C–H 与 Git-CLI managed-workspace 路线只作为历史论证；其中没有真实消费者的 checkpoint、carrier、
+receipt 与 owner 抽象不得迁入新主线。
 
 ## 6. 工程门槛
 

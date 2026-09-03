@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 import { act, createElement } from 'react';
@@ -34,15 +35,6 @@ const EMPTY: DesktopConnectionSnapshot = {
 function snapshot(defaultConnection: string): DesktopConnectionSnapshot {
   return { ...EMPTY, defaultConnection };
 }
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 test('keeps connection projections isolated and cached by owning Host', async () => {
   const { root } = installReactRenderer();
   const sessionA = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
@@ -174,6 +166,370 @@ test('reports connection refresh failures against their owning Host', async () =
     { profileId: 'profile-b' },
     { profileId: 'profile-default' },
   ]);
+});
+
+test('keeps serving the last ready snapshot while a refresh is in flight (#4611)', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const refreshes: Array<ReturnType<typeof deferred<DesktopConnectionSnapshot>>> = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async () => {
+        const pending = deferred<DesktopConnectionSnapshot>();
+        refreshes.push(pending);
+        return pending.promise;
+      },
+    },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+  const projectionStatus = () => current.projection.status;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+    await Promise.resolve();
+  });
+  assert.equal(refreshes.length, 1);
+  await act(async () => {
+    refreshes[0]?.resolve(snapshot('stale-connection'));
+    await refreshes[0]?.promise;
+  });
+  assert.equal(projectionStatus(), 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'stale-connection');
+
+  let failedRefresh!: Promise<void>;
+  await act(async () => {
+    failedRefresh = current.refreshConnections();
+    await Promise.resolve();
+  });
+  assert.equal(projectionStatus(), 'refreshing');
+  assert.equal(
+    current.snapshot.defaultConnection,
+    'stale-connection',
+    'a pending refresh must keep serving the last ready snapshot (#4611): emptying ' +
+      'it flashed the composer "no model connection" banner and blocked send',
+  );
+  await act(async () => {
+    current.seedSnapshot(snapshot('stale-onboarding-seed'));
+    await Promise.resolve();
+  });
+  assert.equal(
+    projectionStatus(),
+    'refreshing',
+    'an onboarding seed must not repopulate a projection mid-refresh',
+  );
+  await act(async () => {
+    refreshes[1]?.reject(new Error('refresh failed'));
+    await failedRefresh;
+  });
+  assert.equal(projectionStatus(), 'refreshing', 'a failed refresh must remain unsettled');
+  assert.equal(
+    current.snapshot.defaultConnection,
+    'stale-connection',
+    'a failed refresh must not retract the last ready snapshot either (#4611)',
+  );
+
+  let recoveredRefresh!: Promise<void>;
+  await act(async () => {
+    recoveredRefresh = current.refreshConnections();
+    await Promise.resolve();
+    refreshes[2]?.resolve(snapshot('replacement-connection'));
+    await recoveredRefresh;
+  });
+  assert.equal(projectionStatus(), 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'replacement-connection');
+});
+
+test('a first load with no prior snapshot still reads empty until ready (#4611)', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const pending = deferred<DesktopConnectionSnapshot>();
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: { getSnapshot: async () => pending.promise },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+    await Promise.resolve();
+  });
+  assert.equal(current.projection.status, 'refreshing');
+  assert.deepEqual(
+    current.snapshot,
+    EMPTY,
+    'nothing has been read yet, so there is no stale snapshot to serve',
+  );
+  await act(async () => {
+    pending.resolve(snapshot('first-connection'));
+    await pending.promise;
+  });
+  assert.equal(current.snapshot.defaultConnection, 'first-connection');
+});
+
+test('the startup seed fills an in-flight first refresh (#4611)', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const pending = deferred<DesktopConnectionSnapshot>();
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: { getSnapshot: async () => pending.promise },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+    await Promise.resolve();
+  });
+  assert.equal(current.projection.status, 'refreshing');
+  // The mount layout effect beat the shell's passive seed effect to the key;
+  // the seed must still land or the cold-start composer reads EMPTY (#4611).
+  await act(async () => {
+    current.seedSnapshot(snapshot('startup-seed-connection'));
+  });
+  assert.equal(current.snapshot.defaultConnection, 'startup-seed-connection');
+  // The in-flight read stays authoritative once it lands.
+  await act(async () => {
+    pending.resolve(snapshot('read-connection'));
+    await pending.promise;
+  });
+  assert.equal(current.projection.status, 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'read-connection');
+});
+
+test('a refresh that resolves to a genuinely empty catalog shows empty (#4611)', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const results: DesktopConnectionSnapshot[] = [snapshot('doomed-connection'), EMPTY];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: { getSnapshot: async () => results.shift() ?? EMPTY },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+    await Promise.resolve();
+  });
+  assert.equal(current.snapshot.defaultConnection, 'doomed-connection');
+  // The connection was deleted upstream: after the refresh lands the banner
+  // must appear — stale-while-revalidate covers the flight, not the outcome.
+  await act(async () => {
+    await current.refreshConnections();
+  });
+  assert.equal(current.projection.status, 'ready');
+  assert.deepEqual(current.snapshot, EMPTY);
+});
+
+test('a default-Host identity change never serves the previous Host catalog (#4611 review)', async () => {
+  const { root } = installReactRenderer();
+  let currentHost = { profileId: 'profile-a', hostId: 'host-a' };
+  const reads: Array<{ hostId: string; pending: ReturnType<typeof deferred<DesktopConnectionSnapshot>> }> = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    runtimeHostProfiles: { getDefaultHost: async () => currentHost },
+    connections: {
+      getSnapshot: (_sessionId?: string, host?: { hostId: string }) => {
+        const pending = deferred<DesktopConnectionSnapshot>();
+        reads.push({ hostId: host?.hostId ?? 'unknown', pending });
+        return pending.promise;
+      },
+    },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'default' },
+    });
+    return null;
+  }
+
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  await act(async () => {
+    root.render(createElement(Probe));
+  });
+  await act(async () => {
+    reads[0]?.pending.resolve(snapshot('connection-a'));
+    await reads[0]?.pending.promise;
+  });
+  assert.equal(current.snapshot.defaultConnection, 'connection-a');
+
+  // Same Host: a refresh keeps serving the last ready snapshot mid-flight.
+  await act(async () => {
+    void current.refreshConnections();
+    await flush();
+  });
+  assert.equal(current.projection.status, 'refreshing');
+  assert.equal(current.snapshot.defaultConnection, 'connection-a');
+  await act(async () => {
+    reads[1]?.pending.resolve(snapshot('connection-a2'));
+    await reads[1]?.pending.promise;
+  });
+  assert.equal(current.snapshot.defaultConnection, 'connection-a2');
+
+  // The default Host switches A -> B: Host A's catalog must not survive into
+  // Host B's read window, nor be resurrected when Host B's read fails.
+  currentHost = { profileId: 'profile-b', hostId: 'host-b' };
+  let failedRead!: Promise<void>;
+  await act(async () => {
+    failedRead = current.refreshConnections();
+    await flush();
+  });
+  assert.equal(reads.at(-1)?.hostId, 'host-b');
+  assert.equal(current.projection.status, 'refreshing');
+  assert.deepEqual(
+    current.snapshot,
+    EMPTY,
+    "Host A connections must not stay visible while Host B's catalog is read",
+  );
+  await act(async () => {
+    reads.at(-1)?.pending.reject(new Error('host b read failed'));
+    await failedRead;
+  });
+  assert.deepEqual(
+    current.snapshot,
+    EMPTY,
+    "a failed Host B read must not resurrect Host A's catalog",
+  );
+
+  // Recovery reads Host B for real.
+  await act(async () => {
+    void current.refreshConnections();
+    await flush();
+    reads.at(-1)?.pending.resolve(snapshot('connection-b'));
+    await reads.at(-1)?.pending.promise;
+  });
+  assert.equal(current.projection.status, 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'connection-b');
+});
+
+test('an older failed refresh cannot erase a newer successful snapshot', async () => {
+  const { root } = installReactRenderer();
+  const sessionId = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const refreshes: Array<ReturnType<typeof deferred<DesktopConnectionSnapshot>>> = [];
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async () => {
+        const pending = deferred<DesktopConnectionSnapshot>();
+        refreshes.push(pending);
+        return pending.promise;
+      },
+    },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe() {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe));
+    await Promise.resolve();
+  });
+  let older!: Promise<void>;
+  let newer!: Promise<void>;
+  await act(async () => {
+    older = current.refreshConnections();
+    newer = current.refreshConnections();
+    await Promise.resolve();
+  });
+  assert.equal(refreshes.length, 3);
+  await act(async () => {
+    refreshes[2]?.resolve(snapshot('newest-connection'));
+    await newer;
+  });
+  assert.equal(current.snapshot.defaultConnection, 'newest-connection');
+
+  await act(async () => {
+    refreshes[1]?.reject(new Error('older refresh failed'));
+    await older;
+  });
+  assert.equal(current.projection.status, 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'newest-connection');
+
+  await act(async () => {
+    refreshes[0]?.resolve(snapshot('initial-late'));
+    await refreshes[0]?.promise;
+  });
+  assert.equal(current.snapshot.defaultConnection, 'newest-connection');
+});
+
+test('a previous Host refresh failure cannot erase the current Host snapshot', async () => {
+  const { root } = installReactRenderer();
+  const sessionA = desktopSessionKey({ hostId: 'host-a', sessionId: 'session-a' });
+  const sessionB = desktopSessionKey({ hostId: 'host-b', sessionId: 'session-b' });
+  const pendingA = deferred<DesktopConnectionSnapshot>();
+  (globalThis.window as unknown as { maka: unknown }).maka = {
+    connections: {
+      getSnapshot: async (sessionId?: string) =>
+        sessionId === sessionA ? pendingA.promise : snapshot('connection-b'),
+    },
+  };
+  let current!: ReturnType<typeof useShellConnections>;
+
+  function Probe(props: { sessionId: string }) {
+    current = useShellConnections({
+      toastApi: { error: () => undefined },
+      uiLocale: 'en',
+      target: { kind: 'session', sessionId: props.sessionId },
+    });
+    return null;
+  }
+
+  await act(async () => {
+    root.render(createElement(Probe, { sessionId: sessionA }));
+    await Promise.resolve();
+    root.render(createElement(Probe, { sessionId: sessionB }));
+    await Promise.resolve();
+  });
+  assert.equal(current.snapshot.defaultConnection, 'connection-b');
+
+  await act(async () => {
+    pendingA.reject(new Error('old Host failed'));
+    await pendingA.promise.catch(() => undefined);
+  });
+  assert.equal(current.projection.status, 'ready');
+  assert.equal(current.snapshot.defaultConnection, 'connection-b');
 });
 
 afterEach(() => {

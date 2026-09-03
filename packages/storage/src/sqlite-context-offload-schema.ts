@@ -19,7 +19,7 @@
 
 import type { DatabaseSync } from 'node:sqlite';
 
-export const SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION = 2;
+export const SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION = 3;
 const SQLITE_INITIALIZATION_BUSY_TIMEOUT_MS = 5_000;
 const SQLITE_INITIALIZATION_RETRY_DELAY_MS = 10;
 const initializationRetryGate = new Int32Array(new SharedArrayBuffer(4));
@@ -27,9 +27,14 @@ const initializationRetryGate = new Int32Array(new SharedArrayBuffer(4));
 const INITIAL_SCHEMA = `
   CREATE TABLE context_blobs (
     blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
+    storage_kind TEXT NOT NULL CHECK(storage_kind IN ('inline', 'managed_file')),
     payload BLOB NOT NULL,
-    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0 AND length(payload) = size_bytes),
-    created_at INTEGER NOT NULL CHECK(created_at >= 0)
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    CHECK(
+      (storage_kind = 'inline' AND length(payload) = size_bytes) OR
+      (storage_kind = 'managed_file' AND length(payload) BETWEEN 1 AND 512)
+    )
   );
 
   CREATE TABLE context_refs (
@@ -59,6 +64,15 @@ const INITIAL_SCHEMA = `
 
   CREATE INDEX context_gc_candidates_eligible
     ON context_gc_candidates(unreferenced_at, blob_id);
+
+  CREATE TABLE context_file_deletions (
+    locator BLOB PRIMARY KEY CHECK(length(locator) BETWEEN 1 AND 512),
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
+  );
+
+  CREATE INDEX context_file_deletions_pending
+    ON context_file_deletions(enqueued_at, locator);
 
   CREATE TABLE context_session_usage (
     session_id TEXT PRIMARY KEY,
@@ -94,19 +108,90 @@ const SCHEMA_V2_MIGRATION = `
   );
 `;
 
+const SCHEMA_V3_MIGRATION = `
+  CREATE TABLE context_blobs_v3 (
+    blob_id BLOB PRIMARY KEY CHECK(length(blob_id) = 32),
+    storage_kind TEXT NOT NULL CHECK(storage_kind IN ('inline', 'managed_file')),
+    payload BLOB NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    CHECK(
+      (storage_kind = 'inline' AND length(payload) = size_bytes) OR
+      (storage_kind = 'managed_file' AND length(payload) BETWEEN 1 AND 512)
+    )
+  );
+
+  CREATE TABLE context_refs_v3 (
+    ref_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    owner_kind TEXT NOT NULL CHECK(
+      owner_kind IN ('read_image_snapshot', 'tool_result_archive')
+    ),
+    owner_id TEXT NOT NULL,
+    blob_id BLOB NOT NULL REFERENCES context_blobs_v3(blob_id) ON DELETE RESTRICT,
+    media_type TEXT NOT NULL,
+    created_at INTEGER NOT NULL CHECK(created_at >= 0),
+    UNIQUE(session_id, owner_kind, owner_id)
+  );
+
+  CREATE TABLE context_gc_candidates_v3 (
+    blob_id BLOB PRIMARY KEY
+      REFERENCES context_blobs_v3(blob_id) ON DELETE CASCADE,
+    unreferenced_at INTEGER NOT NULL CHECK(unreferenced_at >= 0)
+  );
+
+  INSERT INTO context_blobs_v3(blob_id, storage_kind, payload, size_bytes, created_at)
+  SELECT blob_id, 'inline', payload, size_bytes, created_at FROM context_blobs;
+
+  INSERT INTO context_refs_v3(
+    ref_id, session_id, owner_kind, owner_id, blob_id, media_type, created_at
+  )
+  SELECT ref_id, session_id, owner_kind, owner_id, blob_id, media_type, created_at
+  FROM context_refs;
+
+  INSERT INTO context_gc_candidates_v3(blob_id, unreferenced_at)
+  SELECT blob_id, unreferenced_at FROM context_gc_candidates;
+
+  DROP TABLE context_refs;
+  DROP TABLE context_gc_candidates;
+  DROP TABLE context_blobs;
+
+  ALTER TABLE context_blobs_v3 RENAME TO context_blobs;
+  ALTER TABLE context_refs_v3 RENAME TO context_refs;
+  ALTER TABLE context_gc_candidates_v3 RENAME TO context_gc_candidates;
+
+  CREATE INDEX context_refs_session
+    ON context_refs(session_id, created_at, ref_id);
+  CREATE INDEX context_refs_blob
+    ON context_refs(blob_id);
+  CREATE INDEX context_gc_candidates_eligible
+    ON context_gc_candidates(unreferenced_at, blob_id);
+
+  CREATE TABLE context_file_deletions (
+    locator BLOB PRIMARY KEY CHECK(length(locator) BETWEEN 1 AND 512),
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    enqueued_at INTEGER NOT NULL CHECK(enqueued_at >= 0)
+  );
+
+  CREATE INDEX context_file_deletions_pending
+    ON context_file_deletions(enqueued_at, locator);
+`;
+
 const REQUIRED_SCHEMA_OBJECTS = Object.freeze([
   ['table', 'context_blobs'],
   ['table', 'context_refs'],
   ['table', 'context_session_usage'],
   ['table', 'context_store_usage'],
   ['table', 'context_gc_candidates'],
+  ['table', 'context_file_deletions'],
   ['index', 'context_refs_session'],
   ['index', 'context_refs_blob'],
   ['index', 'context_gc_candidates_eligible'],
+  ['index', 'context_file_deletions_pending'],
 ] as const);
 
 const REQUIRED_TABLE_COLUMNS = Object.freeze({
-  context_blobs: ['blob_id', 'payload', 'size_bytes', 'created_at'],
+  context_blobs: ['blob_id', 'storage_kind', 'payload', 'size_bytes', 'created_at'],
   context_refs: [
     'ref_id',
     'session_id',
@@ -119,12 +204,14 @@ const REQUIRED_TABLE_COLUMNS = Object.freeze({
   context_session_usage: ['session_id', 'reference_count', 'logical_bytes'],
   context_store_usage: ['singleton', 'blob_count', 'physical_bytes'],
   context_gc_candidates: ['blob_id', 'unreferenced_at'],
+  context_file_deletions: ['locator', 'size_bytes', 'enqueued_at'],
 } as const);
 
 const REQUIRED_INDEX_COLUMNS = Object.freeze({
   context_refs_session: ['session_id', 'created_at', 'ref_id'],
   context_refs_blob: ['blob_id'],
   context_gc_candidates_eligible: ['unreferenced_at', 'blob_id'],
+  context_file_deletions_pending: ['enqueued_at', 'locator'],
 } as const);
 
 export function configureSqliteContextOffloadDatabase(db: DatabaseSync): void {
@@ -152,7 +239,7 @@ export function migrateSqliteContextOffloadDatabase(db: DatabaseSync): void {
 
   db.exec('BEGIN IMMEDIATE');
   try {
-    const current = readSqliteContextOffloadSchemaVersion(db);
+    let current = readSqliteContextOffloadSchemaVersion(db);
     if (current > SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION) throw newerSchemaError(current);
     if (current === 0) {
       if (hasApplicationSchemaObjects(db)) {
@@ -160,10 +247,17 @@ export function migrateSqliteContextOffloadDatabase(db: DatabaseSync): void {
       }
       db.exec(INITIAL_SCHEMA);
       db.exec(`PRAGMA user_version = ${SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION}`);
+      current = SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION;
     }
     if (current === 1) {
       db.exec(SCHEMA_V2_MIGRATION);
+      db.exec('PRAGMA user_version = 2');
+      current = 2;
+    }
+    if (current === 2) {
+      db.exec(SCHEMA_V3_MIGRATION);
       db.exec(`PRAGMA user_version = ${SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION}`);
+      current = SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION;
     }
     validateSchema(db);
     db.exec('COMMIT');

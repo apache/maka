@@ -185,7 +185,6 @@ test('repairs imported transcript turns into provider-neutral canonical history'
       sessionId: session.id,
       currentRunId,
       currentTurnId: 'turn-3',
-      linkedChildSession: false,
       runStore: runs,
       runtimeEventStore: runtimeEvents,
       runStoreAvailable: true,

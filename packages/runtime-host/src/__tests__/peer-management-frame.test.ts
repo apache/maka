@@ -37,6 +37,7 @@ test('peer management frames preserve a bounded machine-readable descriptor', ()
       routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
       coordinationRelays: [],
       automaticRelayDiscovery: true,
+      webRtcStunPolicy: { kind: 'custom' as const, urls: ['stun:stun.example:3478'] },
     },
   };
   assert.deepEqual(

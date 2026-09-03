@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
 import { Text } from '@astryxdesign/core/Text';
-import { SegmentedControl, SegmentedControlItem } from '@astryxdesign/core';
 import { Banner, Button, FormLayout, Selector, Spinner, TextInput, useUiLocale } from '@maka/ui';
 import type { DesktopRuntimeHostOnboardingSnapshot } from '../../preload/bridge-contract.js';
 import {
@@ -36,6 +35,7 @@ import {
 
 export function RuntimeHostOnboardingDialog(props: {
   readonly isOpen: boolean;
+  readonly initialTargetKind: 'ssh' | 'wsl';
   readonly onClose: () => void;
   readonly onRemoteHostAdded: (profileId: string) => void;
 }) {
@@ -47,7 +47,7 @@ export function RuntimeHostOnboardingDialog(props: {
     revision: 0,
   });
   const [name, setName] = useState('');
-  const [targetKind, setTargetKind] = useState<'ssh' | 'wsl'>('ssh');
+  const targetKind = props.initialTargetKind;
   const [destination, setDestination] = useState('');
   const [distribution, setDistribution] = useState('');
   const [distributions, setDistributions] = useState<readonly string[]>([]);
@@ -74,7 +74,7 @@ export function RuntimeHostOnboardingDialog(props: {
   }, [props.isOpen]);
 
   useEffect(() => {
-    if (!props.isOpen || !navigator.userAgent.includes('Windows')) return;
+    if (!props.isOpen || targetKind !== 'wsl') return;
     let disposed = false;
     void window.maka.runtimeHostOnboarding.listWslDistributions().then((available) => {
       if (disposed) return;
@@ -82,7 +82,7 @@ export function RuntimeHostOnboardingDialog(props: {
       setDistribution((current) => current || available[0] || '');
     }, () => undefined);
     return () => { disposed = true; };
-  }, [props.isOpen]);
+  }, [props.isOpen, targetKind]);
 
   const running = snapshot.kind === 'running';
   const canStart =
@@ -144,7 +144,9 @@ export function RuntimeHostOnboardingDialog(props: {
         header={(
           <DialogHeader
             title={copy.setupTitle}
-            subtitle={copy.setupDescription}
+            subtitle={targetKind === 'wsl'
+              ? copy.setupWslDescription
+              : copy.setupSshDescription}
             onOpenChange={(open) => {
               if (!open) close();
             }}
@@ -172,18 +174,6 @@ export function RuntimeHostOnboardingDialog(props: {
                     isDisabled={running}
                     onChange={setName}
                   />
-                  {navigator.userAgent.includes('Windows') ? (
-                    <SegmentedControl
-                      label={copy.setupTarget}
-                      value={targetKind}
-                      layout="fill"
-                      size="sm"
-                      onChange={(value) => setTargetKind(value as 'ssh' | 'wsl')}
-                    >
-                      <SegmentedControlItem value="ssh" label={copy.sshComputer} />
-                      <SegmentedControlItem value="wsl" label={copy.wslEnvironment} />
-                    </SegmentedControl>
-                  ) : null}
                   {targetKind === 'wsl' ? (
                     distributions.length > 0 ? (
                       <Selector

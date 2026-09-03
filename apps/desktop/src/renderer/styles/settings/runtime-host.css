@@ -39,7 +39,7 @@
 
 .settingsRuntimeHostTransport p {
   margin: 0 0 var(--space-1);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -110,7 +110,7 @@
 }
 
 .settingsRuntimeHostManagementFacts dt {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -198,7 +198,7 @@
 
 .settingsRuntimeHostDirectPeerAdvanced summary {
   width: fit-content;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   cursor: pointer;
   font: var(--maka-text-supporting);
 }
@@ -207,9 +207,14 @@
   margin-bottom: var(--space-2);
 }
 
+.settingsRuntimeHostDirectPeerStun {
+  display: grid;
+  gap: var(--space-2);
+}
+
 .settingsRuntimeHostManagementLogs {
   overflow-wrap: anywhere;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-code);
 }
 
@@ -261,7 +266,7 @@
 
 .settingsRuntimeHostAccessIdentity span,
 .settingsRuntimeHostAccessMeta > span {
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   font: var(--maka-text-supporting);
 }
 
@@ -289,6 +294,100 @@
   gap: var(--space-4);
 }
 
+.settingsPeerMeshEndpoint {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshConnectivity {
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshConnectivity summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  cursor: pointer;
+  list-style: none;
+}
+
+.settingsPeerMeshConnectivity summary::-webkit-details-marker {
+  display: none;
+}
+
+.settingsPeerMeshConnectivitySummary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshConnectivitySummary > span:first-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshConnectivityChevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshConnectivity[open] .settingsPeerMeshConnectivityChevron {
+  transform: rotate(180deg);
+}
+
+.settingsPeerMeshConnectivityHelp {
+  display: inline-flex;
+  color: var(--muted-foreground);
+}
+
+.settingsPeerMeshConnectivityBody {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivitySection {
+  display: grid;
+  gap: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshConnectivityHeading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.settingsPeerMeshTechnicalIdentity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settingsPeerMeshTechnicalIdentity > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .settingsPeerMeshIdentity,
 .settingsPeerMeshToolbar,
 .settingsPeerMeshCardHeading,
@@ -309,9 +408,52 @@
   background: var(--background-secondary);
 }
 
+.settingsPeerMeshRename {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-container);
+  background: var(--background-secondary);
+}
+
+.settingsPeerMeshPeerId {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  cursor: copy;
+  text-align: start;
+}
+
+.settingsPeerMeshPeerId:hover,
+.settingsPeerMeshPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.settingsRuntimeHostPeerId {
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: copy;
+  font: inherit;
+  text-align: start;
+}
+
+.settingsRuntimeHostPeerId:hover,
+.settingsRuntimeHostPeerId:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .settingsPeerMeshIdentity > div,
 .settingsPeerMeshToolbar > div:first-child,
-.settingsPeerMeshCardIdentity > div,
 .settingsPeerMeshMemberIdentity > div,
 .settingsPeerMeshFocusedHeading > div {
   display: flex;
@@ -322,7 +464,6 @@
 }
 
 .settingsPeerMeshIdentityIcon,
-.settingsPeerMeshCardIcon,
 .settingsPeerMeshFocusedIcon,
 .settingsPeerMeshEmptyIcon {
   display: grid;
@@ -332,8 +473,7 @@
   background: oklch(from var(--accent) l c h / 0.1);
 }
 
-.settingsPeerMeshIdentityIcon,
-.settingsPeerMeshCardIcon {
+.settingsPeerMeshIdentityIcon {
   width: 32px;
   height: 32px;
   border-radius: var(--radius-control);
@@ -378,6 +518,28 @@
   gap: var(--space-3);
 }
 
+.settingsPeerMeshFilter {
+  display: flex;
+  justify-content: flex-end;
+  padding-block: var(--space-1);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
+}
+
+.settingsPeerMeshFilteredEmpty {
+  display: flex;
+  min-height: 120px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  padding: var(--space-4);
+  text-align: center;
+}
+
+.settingsPeerMeshFilteredEmpty > p {
+  max-width: 360px;
+}
+
 .settingsPeerMeshCard {
   display: flex;
   flex-direction: column;
@@ -388,7 +550,63 @@
   background: var(--background-secondary);
 }
 
-.settingsPeerMeshCardIdentity,
+.settingsPeerMeshCardDisclosure {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+  text-align: start;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.settingsPeerMeshCardDisclosure > span:first-child > span:first-child {
+  min-width: 0;
+  flex: 1;
+}
+
+.settingsPeerMeshCardTitleBlock {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshCardTitle {
+  min-width: 0;
+  overflow: hidden;
+  font: var(--maka-text-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settingsPeerMeshCardSubtitle {
+  color: var(--muted-foreground);
+  font: var(--maka-text-supporting);
+}
+
+.settingsPeerMeshChevron {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  transition: transform 120ms ease;
+}
+
+.settingsPeerMeshChevron.isExpanded {
+  transform: rotate(180deg);
+}
+
 .settingsPeerMeshCardControls,
 .settingsPeerMeshMemberIdentity,
 .settingsPeerMeshFocusedHeading,
@@ -402,17 +620,73 @@
   flex: 0 0 auto;
 }
 
-.settingsPeerMeshCardIdentity {
-  min-width: 0;
+.settingsPeerMeshCardDetails {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
 }
 
-.settingsPeerMeshName {
-  overflow: hidden;
-  color: var(--foreground-primary);
-  font: var(--maka-text-body);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.settingsPeerMeshTransit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-control);
+  background: var(--foreground-2);
+}
+
+.settingsPeerMeshTransitIdentity,
+.settingsPeerMeshTransitTitle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshTransitIdentity > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshTransitIcon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-control);
+  color: var(--accent);
+  background: oklch(from var(--accent) l c h / 0.1);
+}
+
+.settingsPeerMeshTransitHelp {
+  display: inline-flex;
+  cursor: help;
+}
+
+.settingsPeerMeshTransitHelp svg {
+  color: var(--muted-foreground);
+}
+
+.settingsPeerMeshTransitMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshTransitMetrics > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width-hairline) solid var(--border-soft);
+  border-radius: var(--radius-control);
 }
 
 .settingsPeerMeshMembersHeading {
@@ -424,6 +698,12 @@
 .settingsPeerMeshMembers {
   display: flex;
   flex-direction: column;
+}
+
+.settingsPeerMeshMeshId {
+  margin-top: var(--space-1);
+  padding-top: var(--space-3);
+  border-top: var(--border-width-hairline) solid var(--border-soft);
 }
 
 .settingsPeerMeshMember {
@@ -443,11 +723,11 @@
 }
 
 .settingsPeerMeshMemberState-local,
-.settingsPeerMeshMemberState-route_available {
+.settingsPeerMeshMemberState-reachable {
   background: var(--success);
 }
 
-.settingsPeerMeshMemberState-coordination_only {
+.settingsPeerMeshMemberState-reconnecting {
   background: var(--warning);
 }
 
@@ -456,6 +736,25 @@
   max-width: min(360px, 55vw);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settingsPeerMeshMemberHeading {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settingsPeerMeshMemberName {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settingsPeerMeshMemberHeading code {
+  min-width: 0;
 }
 
 .settingsPeerMeshFocusedView {
@@ -502,7 +801,7 @@
 
 .settingsPeerMeshInvitationNote svg {
   margin-top: 2px;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 @media (max-width: 620px) {
@@ -514,10 +813,81 @@
   .settingsPeerMeshToolbar > div:last-child {
     align-self: stretch;
   }
+
+  .settingsPeerMeshTransitMetrics {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsPeerMeshTechnicalIdentity {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 @media (max-height: 620px) {
   .settingsRuntimeHostSshTerminal {
     height: 220px;
   }
+}
+.sessionCollaborationStack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.sessionCollaborationInvitationAction {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sessionCollaborationDisclosure {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--background-subtle);
+}
+
+.sessionCollaborationAccess {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sessionCollaborationAccessRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+}
+
+.sessionCollaborationAccessActions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sessionCollaborationTurnRequest {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--background-subtle);
+}
+
+.sessionCollaborationTurnRequest > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sessionCollaborationTurnRequestText {
+  white-space: pre-wrap;
 }

@@ -21,8 +21,12 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import { estimateRuntimeEventsTokens } from '../context-budget-helpers.js';
+import {
+  applyRuntimeEventContextBudget,
+  shouldAppendContextCompactedNote,
+  shouldAppendContextCompactionFailedOpenNote,
+} from '../context-budget.js';
+import { estimateRuntimeEventsTokens } from '../model-history.js';
 import { buildHistoryCompactCheckpoint } from '../history-compact-checkpoint.js';
 
 test('estimates only model-visible provider context', () => {
@@ -37,7 +41,6 @@ test('estimates only model-visible provider context', () => {
 test('capacity policy keeps the canonical ledger until a checkpoint replaces it', () => {
   const events = [textEvent('user', 'large history '.repeat(100))];
   const result = applyRuntimeEventContextBudget(events, {
-    maxHistoryEstimatedTokens: 1,
     historyCompact: { enabled: true },
   });
   assert.deepEqual(result?.events, events);
@@ -58,7 +61,7 @@ test('checkpoint replay uses the canonical ledger before stale tool results are 
     charsPerToken: 1,
     providerState: {
       kind: 'openai_codex_remote_v2',
-      connectionSlug: 'codex',
+      connectionId: 'connection-codex',
       modelId: 'gpt-test',
       itemId: 'compact-item',
       encryptedContent: 'encrypted',
@@ -67,24 +70,6 @@ test('checkpoint replay uses the canonical ledger before stale tool results are 
 
   const result = applyRuntimeEventContextBudget([...coveredEvents, tail], {
     charsPerToken: 1,
-    staleToolResultPrune: {
-      enabled: true,
-      maxResultEstimatedTokens: 1,
-      minRecentTurnsFull: 0,
-      archiveRefs: [
-        {
-          runtimeEventId: 'result',
-          toolCallId: 'tool-call',
-          toolName: 'Bash',
-          artifactId: 'artifact-1',
-          bodySha256: createHash('sha256').update(serializedPayload).digest('hex'),
-          originalEstimatedTokens: serializedPayload.length,
-          originalBytes: Buffer.byteLength(serializedPayload, 'utf8'),
-          rewriteVersion: 1,
-          reason: 'stale_tool_result_pruned_before_compact',
-        },
-      ],
-    },
     historyCompact: { enabled: true, checkpoint },
   });
 
@@ -127,3 +112,60 @@ function toolResultEvent(id: string, result: string): RuntimeEvent {
     content: { kind: 'function_response', id: 'tool-call', name: 'Bash', result },
   };
 }
+
+test('compaction notes fire for a fold made by the request hook, not only for a replay', () => {
+  // Since #4486 every new fold happens in the request-projection hook
+  // (`activeStep`); the turn that was compacted must show the note in that
+  // turn, not one turn later when the checkpoint is replayed (#4559).
+  const shell = {
+    enabled: true,
+    estimatedTokensBefore: 1,
+    estimatedTokensAfter: 1,
+    keptTurns: 1,
+    droppedTurns: 0,
+    keptEvents: 1,
+    droppedEvents: 0,
+  };
+  const decision = (stage: 'priorReplay' | 'activeStep', outcome: 'replaced' | 'failedOpen') => ({
+    ...shell,
+    compactionDecisions: [
+      {
+        stage,
+        sourceKind: 'runtimeEvents' as const,
+        decision: outcome,
+        boundaryKind: 'historyCompact' as const,
+      },
+    ],
+  });
+  assert.equal(shouldAppendContextCompactedNote(decision('activeStep', 'replaced')), true);
+  assert.equal(shouldAppendContextCompactedNote(decision('priorReplay', 'replaced')), true);
+  assert.equal(shouldAppendContextCompactedNote(decision('activeStep', 'failedOpen')), false);
+  assert.equal(
+    shouldAppendContextCompactionFailedOpenNote(decision('activeStep', 'failedOpen')),
+    true,
+  );
+  assert.equal(
+    shouldAppendContextCompactionFailedOpenNote(decision('priorReplay', 'failedOpen')),
+    true,
+  );
+  assert.equal(
+    shouldAppendContextCompactionFailedOpenNote(decision('priorReplay', 'replaced')),
+    false,
+  );
+  // A non-history boundary never speaks as a history compaction.
+  assert.equal(
+    shouldAppendContextCompactedNote({
+      ...shell,
+      compactionDecisions: [
+        {
+          stage: 'activeStep',
+          sourceKind: 'runtimeEvents',
+          decision: 'replaced',
+          boundaryKind: 'activeToolResultPrune',
+        },
+      ],
+    } as never),
+    false,
+  );
+  assert.equal(shouldAppendContextCompactedNote(undefined), false);
+});

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
@@ -173,7 +174,7 @@ test('WebSocket admission, health, Origin, and message policy fail closed', {
 test('credential revocation during WebSocket upgrade cannot admit stale authority', async () => {
   let credentialActive = true;
   let accepted = false;
-  const authority: RuntimeHostAccessAuthority = {
+  const authority: Pick<RuntimeHostAccessAuthority, 'authenticate'> = {
     authenticate: () => {
       if (!credentialActive) return undefined;
       credentialActive = false;
@@ -186,16 +187,6 @@ test('credential revocation during WebSocket upgrade cannot admit stale authorit
         canUseHostPaths: false,
       });
     },
-    issue: async () => assert.fail('Credential issue is not expected'),
-    replace: async () => assert.fail('Credential replacement is not expected'),
-    prepare: async () => assert.fail('Credential preparation is not expected'),
-    prepareRotation: async () => assert.fail('Credential rotation is not expected'),
-    revoke: async () => assert.fail('Credential revoke is not expected'),
-    revokePrincipal: async () => assert.fail('Principal revoke is not expected'),
-    revokeRotation: async () => assert.fail('Credential rotation revoke is not expected'),
-    finalize: async () => assert.fail('Credential finalize is not expected'),
-    subscribeRevocations: () => () => undefined,
-    close: async () => undefined,
   };
   const listener = await startRuntimeHostWebSocketListener({
     host: '127.0.0.1',
@@ -257,12 +248,4 @@ function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
       timer.unref();
     }),
   ]);
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
-    resolve = resolvePromise;
-  });
-  return { promise, resolve };
 }

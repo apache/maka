@@ -20,7 +20,4 @@
 export { TaskEntryHost } from './ui/task-entry-host.js';
 export { TaskEntryServicesProvider } from './services-context.js';
 export { useTaskEntryController } from './controller/use-task-entry-controller.js';
-export type {
-  TaskEntryError,
-} from './controller/use-task-entry-controller.js';
 export type { TaskEntryServices } from './ports.js';

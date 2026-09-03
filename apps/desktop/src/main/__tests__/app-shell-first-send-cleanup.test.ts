@@ -32,6 +32,7 @@
  * no E2E can reach deterministically.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 
@@ -302,7 +303,7 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
-  it('waits for the new session observation before submitting its first message', async () => {
+  it('projects the first message before activation while waiting to submit until observation', async () => {
     const observation = deferred<void>();
     const order: string[] = [];
     const activeIdRef = { current: undefined as string | undefined };
@@ -325,6 +326,9 @@ describe('composer first-send cleanup', () => {
       const sending = createAppShellChatActions({
         ...createActionsDeps(),
         activeIdRef,
+        addTransientMessage: () => {
+          order.push('optimistic');
+        },
         activateSessionForFirstSend: async (sessionId) => {
           order.push('observe');
           activeIdRef.current = sessionId;
@@ -333,11 +337,11 @@ describe('composer first-send cleanup', () => {
         },
       }).send('hello');
       await new Promise((resolve) => setImmediate(resolve));
-      assert.deepEqual(order, ['create', 'observe']);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe']);
 
       observation.resolve();
       assert.equal(await sending, true);
-      assert.deepEqual(order, ['create', 'observe', 'seeded', 'submit']);
+      assert.deepEqual(order, ['create', 'optimistic', 'observe', 'seeded', 'submit']);
     } finally {
       restoreWindow();
     }
@@ -419,6 +423,81 @@ describe('composer first-send cleanup', () => {
     assert.deepEqual(removed, []);
   });
 
+  it('does not report a resolved Session from an existing-Session send', async () => {
+    // `onSessionResolved` is the contract for a Session this send created and
+    // whose first message projected (the new-Session branch). An existing-
+    // Session send must never fire it, or a consumer binding follow-up state
+    // to a newly resolved Session (e.g. a Work Board start claim) would bind
+    // it to an unrelated pre-existing conversation.
+    let resolved = 0;
+    const restoreWindow = installWindow({
+      sessions: {
+        submitMessage: async () => ({
+          ok: true,
+          attachments: [],
+          skillInvocation: { loaded: [], failed: [] },
+        }),
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions({
+        ...createActionsDeps(),
+        activeIdRef: { current: 'existing-session' },
+      });
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      assert.equal(result, true);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
+  it('does not report a resolved Session when the first send is outcome_unknown', async () => {
+    // `onSessionResolved` is the contract for a Session this send created AND
+    // whose first message projected. `outcome_unknown` maps to `unreconciled`:
+    // `send()` intentionally returns `true` (the Message may well have been
+    // admitted), but the callback must not fire — a consumer binding follow-up
+    // state to a newly resolved Session (e.g. a Work Board start claim) would
+    // otherwise bind to a Session whose first message was never confirmed.
+    let resolved = 0;
+    const removed: string[] = [];
+    const restoreWindow = installWindow({
+      newTasks: { create: async () => ({ id: 'session-1' }) },
+      sessions: {
+        submitMessage: async () => ({
+          ok: false,
+          reason: 'outcome_unknown' as const,
+        }),
+        remove: async (sessionId: string) => {
+          removed.push(sessionId);
+        },
+      },
+    });
+
+    try {
+      const actions = createAppShellChatActions(createActionsDeps());
+      const result = await actions.send('hello', undefined, {
+        onSessionResolved: () => {
+          resolved += 1;
+        },
+      });
+      // The row stays for canonical transcript to settle, so the session is
+      // kept and the send reports success — only the callback is silenced.
+      assert.equal(result, true);
+      assert.deepEqual(removed, []);
+    } finally {
+      restoreWindow();
+    }
+
+    assert.equal(resolved, 0);
+  });
+
   it('returns a sparse existing session to latest before sending', async () => {
     const latest = deferred<void>();
     const order: string[] = [];
@@ -459,15 +538,6 @@ describe('composer first-send cleanup', () => {
     }
   });
 });
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
-}
-
 /**
  * #1433 round 5: the failure feedback for a send is addressed to the surface
  * that sent, and `showModelSetupToast` is not just a toast — it ends in

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { ModelCallCommit } from '@maka/core/agent-run';
+import type { AgentRunHeader, ModelCallCommit } from '@maka/core/agent-run';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { setImmediate as flushMacrotask } from 'node:timers/promises';
@@ -36,7 +36,6 @@ import {
 } from '../session-event-runtime-mapper.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import { applyRuntimeEventContextBudget } from '../context-budget.js';
-import { evaluateHistoryCompactCheckpointReplay } from '../history-compaction.js';
 import type {
   HistoryCompactCheckpoint,
   HistoryCompactProviderState,
@@ -62,6 +61,7 @@ const RAW_SPAN_TWO = 'RAW_SPAN_TWO_'.repeat(160);
 const ROLLING_TAIL = 'ROLLING_TAIL_'.repeat(740);
 const HUGE_RESULT = 'HUGE_RESULT_'.repeat(670);
 const ANCHOR_TEXT = 'compact this very long turn but keep my exact words';
+const BIG_ACTIVE_TOOL_SCHEMA_CHARS = 12_000;
 
 interface MidTurnFixture {
   backend: AiSdkBackend;
@@ -71,6 +71,7 @@ interface MidTurnFixture {
   toolExecutions: string[];
   summarizerCalls: number;
   priorEvents: RuntimeEvent[];
+  priorRunHeaders: AgentRunHeader[];
   anchor: RuntimeEvent;
   /** The fixture's durable RuntimeEvent ledger for the current turn/run. */
   ledger: RuntimeEvent[];
@@ -102,12 +103,15 @@ interface MidTurnFixtureOptions {
   contextWindow?: number;
   /** Omit the model's context window entirely (unknown model metadata). */
   withoutContextWindow?: boolean;
+  /** Keep the model-reported window as metadata without making it a Maka target. */
+  declareContextWindow?: boolean;
+  /** The model's declared output limit, a provider fact the trigger reserves for the reply. */
+  modelMaxOutputTokens?: number;
   /**
    * Derive the policy from the runtime default (buildDefaultContextBudgetPolicy)
    * instead of the hand-built one, so a test can exercise the shipped default.
    */
   useRuntimeDefaultPolicy?: boolean;
-  reserveTokens?: number;
   summarize?: (
     input: HistoryCompactSummaryInput,
   ) =>
@@ -143,6 +147,8 @@ interface MidTurnFixtureOptions {
   firstResult?: string;
   /** The model finishes on the second request instead of running three steps. */
   finalAtSecondCall?: boolean;
+  /** One request and no tool call, so only the step-0 comparison can fire. */
+  singleRequest?: boolean;
   /** Add a third tool step whose result outgrows even a rolled-forward fold (finding A). */
   rollingOverflow?: boolean;
   /** Tool-search availability with a huge deferred schema (finding D). */
@@ -151,15 +157,32 @@ interface MidTurnFixtureOptions {
   assistantTextInFirstStep?: boolean;
   /** Override the first step's reported usage; 'missing' = empty usage object. */
   firstStepUsage?: { input: number; output: number } | 'missing';
-  /** Volatile per-request turn tail (cwd/task state) appended to the user message. */
-  volatileTurnTail?: boolean;
+  /** Make the first provider step end at its output limit. */
+  firstStepFinishReason?: 'length';
+  /** Override the final (text) step's reported usage. */
+  finalStepUsage?: { input: number; output: number };
+  /** Prior-turn RuntimeEvents appended after the shaped priors (e.g. a persisted usage anchor). */
+  extraPriorEvents?: readonly RuntimeEvent[];
+  /** Run headers for the prior turns, so a persisted anchor can be identity-gated. */
+  priorRunHeaders?: readonly AgentRunHeader[];
   /** System prompt size sent through the provider's separate system field. */
   systemPromptChars?: number;
+  /** An always-active tool whose schema dominates the request payload. */
+  bigActiveTool?: boolean;
+  /**
+   * Run as a child agent with a two-step budget, so the turn's LAST request is
+   * the child-summary finalization step: it adds a prompt fragment and sends no
+   * tool schemas at all.
+   */
+  childFinalization?: boolean;
   /** Enable and capture automatic Memory extraction without allowing it to settle. */
   captureMemoryExtraction?: boolean;
   memoryGate?:
     | { readonly allowed: true }
-    | { readonly allowed: false; readonly reason: 'disabled' | 'incognito' | 'unavailable' };
+    | {
+        readonly allowed: false;
+        readonly reason: 'disabled' | 'incognito' | 'unavailable';
+      };
 }
 
 /**
@@ -172,8 +195,13 @@ interface MidTurnFixtureOptions {
 type ConsumerMode = 'immediate' | 'slow';
 
 function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
-  const contextWindow = options.contextWindow ?? 2_000;
-  const reserveTokens = options.reserveTokens ?? 1_500;
+  // Most cases model a user-declared target. Keep it between the first and
+  // second mock request baselines so the normal three-step journey folds once.
+  // Steps report 100/20, then 150/30, then 120/10, so the baselines are 120,
+  // 180 and 130 and the reserve (twice the last reply) is 40, 60 and 20. A
+  // default window of 190 keeps the first request inside it and crosses on the
+  // second, which is the journey these fixtures describe.
+  const contextWindow = options.contextWindow ?? 190;
   const recorded: HistoryCompactCheckpoint[] = [];
   const toolExecutions: string[] = [];
   const events: SessionEvent[] = [];
@@ -195,9 +223,8 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     outputTokens: { total: output, text: output, reasoning: 0 },
   });
   const firstStepUsage = (): ReturnType<typeof usage> => {
-    // A usage object the SDK accepts but whose token counts are absent — the
-    // adapter's normalization fails closed (undefined) and the capacity hook's
-    // usability check must fall back to cold start (the finding-1 shape).
+    // A usage object the SDK accepts but whose token counts are absent. The
+    // adapter fails closed (undefined), so the capacity hook has no baseline.
     if (options.firstStepUsage === 'missing')
       return { inputTokens: {}, outputTokens: {} } as ReturnType<typeof usage>;
     if (options.firstStepUsage)
@@ -206,10 +233,18 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
   };
   const toolCallChunks = (id: string, name: string, args: object): LanguageModelV4StreamPart[] => [
     { type: 'stream-start', warnings: [] },
-    { type: 'tool-call', toolCallId: id, toolName: name, input: JSON.stringify(args) },
+    {
+      type: 'tool-call',
+      toolCallId: id,
+      toolName: name,
+      input: JSON.stringify(args),
+    },
     {
       type: 'finish',
-      finishReason: { unified: 'tool-calls', raw: 'tool_calls' },
+      finishReason:
+        id === 'tool-1' && options.firstStepFinishReason === 'length'
+          ? { unified: 'length', raw: 'length' }
+          : { unified: 'tool-calls', raw: 'tool_calls' },
       usage: id === 'tool-1' ? firstStepUsage() : usage(150, 30),
     },
   ];
@@ -218,19 +253,30 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     { type: 'text-start', id: 'text-1' },
     { type: 'text-delta', id: 'text-1', delta: 'done' },
     { type: 'text-end', id: 'text-1' },
-    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: usage(120, 10) },
+    {
+      type: 'finish',
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: options.finalStepUsage
+        ? usage(options.finalStepUsage.input, options.finalStepUsage.output)
+        : usage(120, 10),
+    },
   ];
   const chunksForCall = (call: number): LanguageModelV4StreamPart[] => {
     if (options.bigToolGroup) {
       return call === 1 ? toolCallChunks('tool-1', 'tool_search', { query: 'Big' }) : doneChunks();
     }
+    if (options.singleRequest) return doneChunks();
     if (call === 1) {
       const first = toolCallChunks('tool-1', 'Read', { path: 'one.md' });
       if (!options.assistantTextInFirstStep) return first;
       return [
         first[0]!,
         { type: 'text-start', id: 'step1-text' },
-        { type: 'text-delta', id: 'step1-text', delta: 'ASSISTANT_SENTINEL step one reasoning' },
+        {
+          type: 'text-delta',
+          id: 'step1-text',
+          delta: 'ASSISTANT_SENTINEL step one reasoning',
+        },
         { type: 'text-end', id: 'step1-text' },
         ...first.slice(1),
       ];
@@ -253,7 +299,11 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       if (call === 3) recordedAtThirdRequest = recorded.length > 0;
       const chunks = chunksForCall(call);
       return {
-        stream: simulateReadableStream({ chunks, initialDelayInMs: null, chunkDelayInMs: null }),
+        stream: simulateReadableStream({
+          chunks,
+          initialDelayInMs: null,
+          chunkDelayInMs: null,
+        }),
       };
     },
   });
@@ -335,6 +385,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
               `PRIOR_FACT answer ${'q'.repeat(priorChars)}`,
             ),
           ];
+  priorEvents.push(...(options.extraPriorEvents ?? []));
   const anchor: RuntimeEvent = {
     ...runtimeTextEvent('anchor-1', 'turn-1', 'user', ANCHOR_TEXT),
     ...(options.currentImage
@@ -411,7 +462,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
 
   const backend = createTestAiSdkBackend({
     sessionId: 'session-1',
-    header: header(),
+    header: options.childFinalization
+      ? { ...header(), collaborationMode: 'agent' as const }
+      : header(),
+    ...(options.childFinalization ? { maxSteps: 2 } : {}),
     appendMessage: async (message) => {
       messages.push(message);
     },
@@ -420,7 +474,18 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       ...(options.providerNative
         ? { slug: 'codex-subscription', providerType: 'openai-codex' as const }
         : {}),
-      models: [{ id: 'mock-model-id', ...(options.withoutContextWindow ? {} : { contextWindow }) }],
+      models: [
+        {
+          id: 'mock-model-id',
+          ...(options.withoutContextWindow ? {} : { contextWindow }),
+          ...(options.modelMaxOutputTokens !== undefined
+            ? { maxOutputTokens: options.modelMaxOutputTokens }
+            : {}),
+        },
+      ],
+      ...(options.withoutContextWindow || options.declareContextWindow === false
+        ? {}
+        : { relayModelProfiles: { 'mock-model-id': { contextWindow } } }),
     },
     apiKey: 'sk-test',
     modelId: 'mock-model-id',
@@ -449,6 +514,16 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           return { body: RAW_SPAN_TWO };
         },
       },
+      ...(options.bigActiveTool
+        ? [
+            {
+              name: 'BigActive',
+              description: `BIG_ACTIVE_SCHEMA ${'A'.repeat(BIG_ACTIVE_TOOL_SCHEMA_CHARS)}`,
+              parameters: z.object({ q: z.string() }),
+              impl: async () => ({ ok: true }),
+            },
+          ]
+        : []),
       ...(options.bigToolGroup
         ? [
             {
@@ -465,32 +540,25 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     ...(options.bigToolGroup
       ? { toolAvailability: { groups: [{ id: 'big', toolNames: ['Big'] }] } }
       : {}),
-    ...(options.volatileTurnTail
-      ? { turnTailPrompt: 'VOLATILE_TAIL_SENTINEL cwd=/tmp/maka task=keep-going' }
-      : {}),
     ...(options.systemPromptChars ? { systemPrompt: 'S'.repeat(options.systemPromptChars) } : {}),
     contextBudget: options.useRuntimeDefaultPolicy
-      ? buildDefaultContextBudgetPolicy(
-          {
-            ...connection(),
-            models: [
-              { id: 'mock-model-id', ...(options.withoutContextWindow ? {} : { contextWindow }) },
-            ],
-          },
-          {
-            name: 'runtime-default-mid-turn',
-            modelId: 'mock-model-id',
-          },
-        )
+      ? buildDefaultContextBudgetPolicy({
+          name: 'runtime-default-mid-turn',
+          modelId: 'mock-model-id',
+        })
       : {
           name: 'mid-turn-test',
-          maxHistoryEstimatedTokens: 100_000,
           historyCompact: {
             enabled: true,
-            midTurn: { enabled: true, reserveTokens },
+            midTurn: { enabled: true },
           },
           ...(options.activeToolResultPrune
-            ? { activeToolResultPrune: { enabled: true, maxCurrentResultEstimatedTokens: 30 } }
+            ? {
+                activeToolResultPrune: {
+                  enabled: true,
+                  maxCurrentResultEstimatedTokens: 30,
+                },
+              }
             : {}),
         },
     ...(options.activeToolResultPrune
@@ -509,7 +577,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       const summary = options.providerNative
         ? ({
             kind: 'openai_codex_remote_v2',
-            connectionSlug: 'codex-subscription',
+            connectionId: 'test-connection-id',
             modelId: 'mock-model-id',
             itemId: 'cmp_mid_turn',
             encryptedContent: 'MID_TURN_ENCRYPTED_STATE',
@@ -527,7 +595,9 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
     },
     ...(options.meteredSummarizer
       ? {
-          recordProviderRequestCapture: async () => ({ artifactId: 'artifact-mid-turn-capture' }),
+          persistPreparedRequestArtifact: async () => ({
+            artifactId: 'artifact-mid-turn-capture',
+          }),
           recordModelCallAttempt: (commit: ModelCallCommit<ModelCallAttempt>) => {
             commits.push(commit);
             modelCalls.push(commit.attempt);
@@ -551,7 +621,10 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
           memoryExtraction: {
             gate: async () => options.memoryGate ?? { allowed: true as const },
             automaticGate: () => options.memoryGate ?? { allowed: true as const },
-            remember: async () => ({ status: 'unavailable' as const, requestedItems: [] }),
+            remember: async () => ({
+              status: 'unavailable' as const,
+              requestedItems: [],
+            }),
             extract: (snapshot: MemoryExtractionSourceSnapshot) => {
               memorySnapshots.push(snapshot);
               return new Promise<void>(() => {});
@@ -587,6 +660,7 @@ function buildFixture(options: MidTurnFixtureOptions = {}): MidTurnFixture {
       return fixture.ledgerReads;
     },
     priorEvents,
+    priorRunHeaders: [...(options.priorRunHeaders ?? [])],
     anchor,
     ledger,
     modelCalls,
@@ -611,6 +685,7 @@ async function runFixtureTurn(
     text: ANCHOR_TEXT,
     context: [],
     runtimeContext: [...fixture.priorEvents],
+    runtimeContextRunHeaders: [...fixture.priorRunHeaders],
   })) {
     if (consumer === 'slow') {
       // Scheduling perturbation: hold the durable write back across several
@@ -644,7 +719,43 @@ function compactionDecisions(
 }
 
 function defineMidTurnSuite(consumer: ConsumerMode): void {
-  test('compacts over the high water, persists first, and continues the same turn', async () => {
+  test('keeps user_stop when stopping while a usage-triggered fold is summarizing', async () => {
+    // The fold now starts from the provider's real usage instead of a local
+    // estimate, but a user stop during its summarizer call must still end the
+    // turn as user_stop — not as a summarizer failure and not as a completed
+    // turn.
+    let markSummaryStarted: (() => void) | undefined;
+    const summaryStarted = new Promise<void>((resolve) => {
+      markSummaryStarted = resolve;
+    });
+    let finishSummary: (() => void) | undefined;
+    const fixture = buildFixture({
+      summarize: () =>
+        new Promise<undefined>((resolve) => {
+          finishSummary = () => resolve(undefined);
+          markSummaryStarted?.();
+        }),
+    });
+    const turn = runFixtureTurn(fixture, consumer);
+    await summaryStarted;
+    await fixture.backend.stop('user_stop');
+    finishSummary?.();
+    await turn;
+
+    // The stop landed while the summarizer was running: nothing was persisted,
+    // no further tool ran, and the one request attempted after the stop was
+    // rejected by the transport on its already-aborted signal.
+    assert.equal(fixture.recorded.length, 0);
+    assert.deepEqual(fixture.toolExecutions, ['one.md', 'two.md']);
+    assert.equal(
+      fixture.events.some((event) => event.type === 'abort'),
+      true,
+    );
+    const complete = fixture.events.find((event) => event.type === 'complete');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'user_stop');
+  });
+
+  test('compacts after provider usage crosses the declared window, persists first, and continues the same turn', async () => {
     const fixture = buildFixture();
     await runFixtureTurn(fixture, consumer);
 
@@ -661,12 +772,15 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(fixture.recordedBeforeThirdRequest(), true);
     const checkpoint = fixture.recorded[0]!;
     assert.equal(checkpoint.phase, 'mid_turn');
-    assert.deepEqual(checkpoint.headAnchor, { runtimeEventId: 'anchor-1', turnId: 'turn-1' });
+    assert.deepEqual(checkpoint.headAnchor, {
+      runtimeEventId: 'anchor-1',
+      turnId: 'turn-1',
+    });
     // Coverage: [prior-user, prior-model, anchor, call-1, result-1] — all of
     // them durable in the ledger before the checkpoint was recorded.
     assert.equal(checkpoint.coverage.eventCount, 5);
 
-    // The next step's prompt is [compact block, verbatim head anchor, preserved tail].
+    // The next step's prompt is [compact block, verbatim head anchor, preserved active span].
     const thirdPrompt = promptJson(fixture, 2);
     assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
     assert.match(thirdPrompt, /MID_TURN_SUMMARY_SENTINEL/);
@@ -688,17 +802,6 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(midTurnDecision?.decision, 'replaced');
     assert.equal(midTurnDecision?.reason, 'context_limit');
     assert.deepEqual(midTurnDecision?.boundaryIds, [checkpoint.checkpointId]);
-
-    // Invariant: a persisted checkpoint always passes the single replay gate
-    // under the same policy the backend replays with — the next projection
-    // selects it (no coverage_miss, no size rejection).
-    const fit = evaluateHistoryCompactCheckpointReplay(
-      checkpoint,
-      fixture.ledger,
-      undefined,
-      100_000,
-    );
-    assert.equal(fit.fits, true);
   });
 
   test('replays a Codex V2 mid-turn checkpoint as native provider state', async () => {
@@ -802,9 +905,8 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     // Recovery: re-project prior turns + the durable current-turn ledger with
     // normal thresholds — the checkpoint replays and the covered raw span is
-    // never re-injected, even though the raw history is below the high water.
+    // never re-injected, even though the raw history is otherwise small.
     const replay = applyRuntimeEventContextBudget([...fixture.priorEvents, ...fixture.ledger], {
-      maxHistoryEstimatedTokens: 100_000,
       historyCompact: { enabled: true, checkpoint },
     });
 
@@ -820,29 +922,24 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.equal(replayJson.includes('RAW_SPAN_TWO_'), true);
   });
 
-  test('ends the turn with context_budget_exhausted when over the window with no safe span', async () => {
+  test('sends an over-window request no shaper could rescue, rather than ending the turn', async () => {
     // No prior turns and a window the first step's usage already exceeds: the
-    // pool is [anchor, one open call/result pair], so no safe completed span.
+    // pool is [anchor, one open call/result pair], so no safe completed span
+    // and nothing to compact. Only the provider can say whether that request
+    // fits, so it goes out and the turn runs to its own end.
     const fixture = buildFixture({
       contextWindow: 120,
-      reserveTokens: 100,
       withoutPriorTurns: true,
     });
     await runFixtureTurn(fixture, consumer);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // Explicit outcome, not a raw provider error.
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     assert.equal(
       fixture.events.some((event) => event.type === 'error'),
       false,
     );
-    // The over-budget request was aborted before it could stream (the second
-    // doStream attempt sees an already-aborted signal and rejects).
-    assert.equal(fixture.model.doStreamCalls.length <= 2, true);
+    assert.equal(fixture.model.doStreamCalls.length, 3);
     assert.equal(
       fixture.events.some(
         (event) =>
@@ -850,14 +947,13 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
           event.toolName === 'Read' &&
           JSON.stringify(event.args).includes('two.md'),
       ),
-      false,
+      true,
     );
   });
 
-  test('preserves no_safe_completed_span when no summary input can fit', async () => {
+  test('a summary that cannot fit its own input fails open and still dispatches', async () => {
     const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
+      contextWindow: 100,
       useRuntimeDefaultPolicy: true,
       summarize: () => {
         throw new HistoryCompactSummarizerError('input_too_large');
@@ -867,57 +963,11 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     await runFixtureTurn(fixture, consumer);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
     assert.equal(fixture.summarizerCalls > 0, true);
   });
 
-  test('ends the turn with summarizer_failed detail when over the window and the summary fails', async () => {
-    // Estimate at the first boundary ≈ 120 real usage + result chars/4 ≈ 200;
-    // window 150 puts it over the hard cap while priors leave a safe span.
-    const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      summarize: () => {
-        throw new Error('summarizer down');
-      },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-  });
-
-  test('ends the turn with head_anchor_exceeds_capacity when even the minimal projection cannot fit', async () => {
-    // Big priors leave a safe span, the summary succeeds, and the fold
-    // GENUINELY shrinks the payload — but the last request's real input
-    // (1400 tokens) is so large that even the [block, anchor, open pair]
-    // projection stays over the 150-token window: the irreducible remainder
-    // exceeds capacity. (A non-shrinking fold is a different failure —
-    // summarizer_failed via replacement_not_smaller.)
-    const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      priorChars: 2_000,
-      firstStepUsage: { input: 1_400, output: 20 },
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'head_anchor_exceeds_capacity');
-    // The fold itself was valid and durable; it just could not rescue.
-    assert.equal(fixture.recorded.length, 1);
-  });
-
-  test('fails open with write_failed diagnostics when the checkpoint write fails under the window', async () => {
+  test('fails open with write_failed diagnostics when the checkpoint write fails', async () => {
     const fixture = buildFixture({
       record: () => {
         throw new Error('disk full');
@@ -951,7 +1001,9 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
         finishReason: 'stop',
       }),
     });
-    const fixture = buildFixture({ summarize: (input) => malformedSummarize(input) });
+    const fixture = buildFixture({
+      summarize: (input) => malformedSummarize(input),
+    });
     await runFixtureTurn(fixture, consumer);
 
     // The turn still completes on the raw projection; nothing durable claims
@@ -978,41 +1030,56 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
 
     await runFixtureTurn(fixture, consumer);
 
+    // One repair budget for the whole turn: a later step never re-runs it.
     assert.equal(fixture.summarizerCalls, 1);
     assert.equal(fixture.recorded.length, 0);
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'malformed_summary_missing_section');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('exhausts with write_failed in the durable diagnostics when the write fails over the window', async () => {
-    // Big priors make folding rescue the over-window estimate, so the plan
-    // compacts and the failure happens AT the recorder — over the window that
-    // is the explicit exhausted outcome, and the durable diagnostics must
-    // carry write_failed even though the terminal enum has no write member.
+  test('bounds a provider-error summarizer failure across later steps in the same turn', async () => {
+    // The baseline that fired this trigger survives a fail-open, so without a
+    // latch every later step re-evaluates it and dispatches the same doomed
+    // call. Live evidence: 15 consecutive failed summarizer calls over ~47
+    // minutes on a provider that answers slowly and fails (#4634).
     const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      priorChars: 2_000,
-      record: () => {
-        throw new Error('disk full');
+      rollingOverflow: true,
+      summarize: () => {
+        throw new HistoryCompactSummarizerError('provider_error');
       },
+    });
+
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 0);
+    const failedOpen = compactionDecisions(fixture).filter(
+      (decision) => decision.decision === 'failedOpen',
+    );
+    assert.ok(failedOpen.length >= 1);
+    assert.equal(failedOpen[0]?.failOpenReason, 'provider_error');
+  });
+
+  test('does not report provider dropping when the step dropped its tool schemas', async () => {
+    // A finalization step resolves an empty tool set, so its request loses
+    // several thousand schema tokens with no fold, prune or image omission.
+    // Maka shaped that request; the provider dropped nothing.
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      childFinalization: true,
+      finalStepUsage: { input: 50, output: 10 },
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-
-    const lastCall = fixture.llmCalls.at(-1);
-    const exhaustedDecision = (lastCall?.contextBudget?.compactionDecisions ?? []).find(
-      (decision) => decision.phase === 'mid_turn' && decision.reason === 'context_budget_exhausted',
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
     );
-    assert.equal(exhaustedDecision?.skippedReasonCounts?.write_failed, 1);
   });
 
   test('fails closed before provider dispatch when the durable ledger read fails', async () => {
@@ -1054,93 +1121,24 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     assert.match(thirdPrompt, /active_current_turn_tool_result_pruned_before_next_step/);
   });
 
-  test('a rolling second compaction that still exceeds the window ends explicitly (review finding A)', async () => {
-    // Review round-3 finding A: the old post-fold re-estimate subtracted the
-    // RAW covered span from a usage estimate anchored to the ALREADY-compacted
-    // previous request, over-crediting the second fold and letting a
-    // still-over-window request stream. The final-payload owner measures the
-    // real replacement projection instead: the third step's huge result makes
-    // even [second block, anchor, tail] exceed the window, so the turn must
-    // end with the explicit outcome — never send the over-window request.
+  test('compacts at most once per send', async () => {
+    // The proactive fold already covers everything except the live head. A
+    // second fold in the same send would buy the small verbatim tail and cost
+    // the most recent context, so the send spends one call and no more.
     const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
     await runFixtureTurn(fixture, consumer);
 
-    // The first fold happened and its projection was used (three requests ran).
-    assert.equal(fixture.recorded.length, 2);
-    assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
-    // The second fold rolled forward from the first checkpoint...
-    assert.equal(fixture.recorded[1]?.previousCheckpointId, fixture.recorded[0]?.checkpointId);
-    // ...but its replacement still exceeds the window: explicit outcome.
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'head_anchor_exceeds_capacity');
-    // The over-window fourth request never streamed.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
-      false,
-    );
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(fixture.recorded.length, 1);
   });
 
-  test('an aborted multi-step send records the accumulated usage of the completed steps', async () => {
-    // The terminal LLM-call record is fail-closed on usage evidence (#972),
-    // and an aborted send may never resolve the SDK's final usage promise. But
-    // every COMPLETED step reported real usage at its finish-step boundary,
-    // so the terminal record must carry that accumulated sum — the capacity
-    // verdict diagnostics ride this record and the completed steps' cost is
-    // real. Three steps stream (100/20 + 150/30 + 150/30) before the step-4
-    // verdict aborts the send.
-    const fixture = buildFixture({ priorChars: 2_000, rollingOverflow: true });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(
-      complete?.type === 'complete' ? complete.stopReason : undefined,
-      'context_budget_exhausted',
-    );
-    // Three requests streamed; the fourth is rejected locally before the
-    // provider adapter is called and therefore reports no usage.
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const lastCall = fixture.llmCalls.at(-1);
-    assert.equal(lastCall?.status, 'error');
-    assert.equal(lastCall?.errorClass, 'ContextBudgetExhausted');
-    assert.equal(lastCall?.inputTokens, 400);
-    assert.equal(lastCall?.outputTokens, 80);
-    assert.equal(lastCall?.totalTokens, 480);
-  });
-
-  test('an unusable completed-step usage sample fails the whole record closed — no partial sum (review round-7)', async () => {
-    // #972 semantics: incomplete usage evidence fails closed. The first
-    // completed step's usage is unusable (normalization returns undefined),
-    // so the sum of the remaining steps (150/30 + 150/30) is a PARTIAL cost.
-    // LlmCallRecord has no partial marker — downstream reads any record as
-    // the whole call — so the truthful outcome is no record at all; the
-    // terminal result stays observable on the durable CompleteEvent.
-    const fixture = buildFixture({
-      priorChars: 2_000,
-      rollingOverflow: true,
-      firstStepUsage: 'missing',
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(
-      complete?.type === 'complete' ? complete.stopReason : undefined,
-      'context_budget_exhausted',
-    );
-    assert.equal(fixture.llmCalls.length, 0);
-  });
-
-  test('the verdict is issued after pruning — a prune-rescuable step is not exhausted (review finding C)', async () => {
+  test('a prune-rescuable step is rescued by the prune, not compacted (review finding C)', async () => {
     // Review round-3 finding C repro: one huge tool result, no safe completed
     // span for the capacity hook, but the active tool-result prune (which runs
     // AFTER the capacity hook) archives the result down to a placeholder that
-    // fits the window. A verdict inside the capacity hook would have declared
-    // context_budget_exhausted before the rescue could run.
+    // fits the window.
     const fixture = buildFixture({
-      contextWindow: 500,
-      reserveTokens: 100,
+      contextWindow: 100,
       withoutPriorTurns: true,
       hugeFirstResult: true,
       finalAtSecondCall: true,
@@ -1165,182 +1163,286 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
   test('the trigger counts same-turn tool-schema growth from tool_search (review finding D)', async () => {
     // Review round-3 finding D repro: the model activates a ~12.7k-char tool
     // group mid-turn. The schema lands in every later request, so the payload
-    // estimate must count it: the next request cannot fit the 500-token window
-    // and the pool has no safe completed span, so the turn ends explicitly
-    // instead of streaming a ~3k-token request into a 500-token window.
+    // estimate must count it — without that the 500-token window is never
+    // crossed and the trigger never fires at all.
     const fixture = buildFixture({
-      contextWindow: 500,
-      reserveTokens: 100,
+      contextWindow: 100,
       withoutPriorTurns: true,
       bigToolGroup: true,
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // The over-window second request never streamed the expanded schema.
-    assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
-      false,
-    );
-  });
-
-  test('a fold that cannot shrink the real payload is refused, not applied (runaway summary)', async () => {
-    // The summarizer returns a block far larger than the span it replaces.
-    // Applying it would hand the verdict owner a WORSE request than the raw
-    // projection; the hook measures the materialized payload and keeps the raw
-    // messages instead. Validation runs before the recorder, so the rejected
-    // checkpoint is never persisted (asserted below).
-    const fixture = buildFixture({
-      summarize: () =>
-        `## Goal\n${'GIANT_SUMMARY_'.repeat(600)}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`,
-    });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    // The raw span stayed; the giant block was never sent.
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.equal(thirdPrompt.includes('RAW_SPAN_ONE_'), true);
-    assert.equal(thirdPrompt.includes('GIANT_SUMMARY_'), false);
+    // The pool has no safe completed span, so the fired trigger fails open.
     const failedOpen = compactionDecisions(fixture).find(
       (decision) => decision.phase === 'mid_turn' && decision.decision === 'failedOpen',
     );
-    assert.equal(failedOpen?.failOpenReason, 'replacement_not_smaller');
-    // Review round-4 finding 3: a checkpoint whose replacement was REJECTED
-    // must never be persisted — replay applies the session's latest checkpoint
-    // before any high-water check, so a persisted runaway block would poison
-    // every later projection even though this step correctly refused it.
-    assert.equal(fixture.recorded.length, 0);
+    assert.equal(failedOpen?.failOpenReason, 'no_safe_completed_span');
   });
 
-  test("the usage baseline is the last request's INPUT tokens — output is not double-counted (review finding 1)", async () => {
-    // Review round-4 finding 1 repro shape: a step with heavy output. The
-    // signed payload delta already carries the freshly generated assistant
-    // output and tool results, so a baseline of input+output counts the
-    // output twice (~500 real tokens estimated as ~900) and terminates a
-    // turn that actually fits the window.
-    const fixture = buildFixture({
-      contextWindow: 500,
-      reserveTokens: 100,
-      withoutPriorTurns: true,
+  test("the usage baseline is the last request's input plus output", async () => {
+    // Baseline 120 (100 + 20) with a 40-token reserve (twice the 20-token
+    // reply). A window of 155 is crossed only because the baseline counts the
+    // output: input alone plus the reserve is 140, which fits.
+    const compacting = buildFixture({
+      contextWindow: 155,
       finalAtSecondCall: true,
-      firstStepUsage: { input: 300, output: 380 },
+      firstStepUsage: { input: 100, output: 20 },
     });
-    await runFixtureTurn(fixture, consumer);
+    await runFixtureTurn(compacting, consumer);
 
-    // input(300) + payload delta (~hundred tokens) fits the 500 window; the
-    // double-counting baseline (680 + delta) would have exhausted it.
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    assert.equal(fixture.model.doStreamCalls.length, 2);
-  });
+    assert.equal(compacting.summarizerCalls, 1);
+    assert.match(promptJson(compacting, 1), /maka_history_compact_checkpoint/);
 
-  test('a usage object without usable input tokens falls back to cold start, never to zero (review finding 1)', async () => {
-    // Reverse direction: the adapter normalizes missing token fields to 0. A
-    // zero baseline plus a small delta estimates a huge request as tiny and
-    // lets it stream over the window; an unusable usage sample must instead
-    // fall back to the whole-payload cold-start estimate, which triggers the
-    // fold here (big priors leave a safe span, so compaction rescues).
-    const fixture = buildFixture({
-      contextWindow: 1_000,
-      reserveTokens: 100,
-      priorChars: 2_000,
+    const fitting = buildFixture({
+      contextWindow: 165,
       finalAtSecondCall: true,
-      firstStepUsage: 'missing',
+      firstStepUsage: { input: 100, output: 20 },
     });
-    await runFixtureTurn(fixture, consumer);
+    await runFixtureTurn(fitting, consumer);
 
-    assert.equal(fixture.recorded.length, 1);
-    const secondPrompt = promptJson(fixture, 1);
-    assert.match(secondPrompt, /maka_history_compact_checkpoint/);
-    assert.equal(secondPrompt.includes('PRIOR_FACT'), false);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    assert.equal(fitting.summarizerCalls, 0);
   });
 
-  test('the volatile turn tail survives a capacity replacement (review finding 2)', async () => {
-    // The initial provider user message decorates the durable anchor text
-    // with a volatile turn tail (cwd, shell context, task state). The
-    // replacement projection is materialized from the ledger, where the
-    // anchor holds only the raw user text — the rendering must go through
-    // the same decoration owner or compaction silently drops that context
-    // (and even counts the drop as shrinkage).
-    const fixture = buildFixture({ volatileTurnTail: true });
-    await runFixtureTurn(fixture, consumer);
-
-    assert.equal(fixture.recorded.length, 1);
-    const thirdPrompt = promptJson(fixture, 2);
-    assert.match(thirdPrompt, /maka_history_compact_checkpoint/);
-    assert.equal(thirdPrompt.includes(ANCHOR_TEXT), true);
-    assert.equal(thirdPrompt.includes('VOLATILE_TAIL_SENTINEL'), true);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-  });
-
-  test('an over-window runaway summary terminates as summarizer_failed, not head_anchor_exceeds_capacity (review finding 4)', async () => {
-    // A non-shrinking replacement proves the summarizer's output is unusable,
-    // not that the irreducible remainder (anchor + tail + overhead) exceeds
-    // capacity — the terminal detail must say so; the diagnostic reason keeps
-    // the precise replacement_not_smaller cause.
+  test('reports an accepted request past the window the model reports when nothing is declared', async () => {
+    // The kimi k3-256k shape: the provider accepts past its own reported
+    // window without rejecting or truncating, so no other signal fires.
     const fixture = buildFixture({
-      contextWindow: 150,
-      reserveTokens: 100,
-      summarize: () =>
-        `## Goal\n${'GIANT_SUMMARY_'.repeat(600)}\n\n## Progress\n- done\n\n## Next Steps\n1. continue\n\n## Critical Context\n- (none)`,
+      contextWindow: 100,
+      declareContextWindow: false,
+      finalAtSecondCall: true,
+      firstStepUsage: { input: 150, output: 40 },
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-    const lastCall = fixture.llmCalls.at(-1);
-    const exhaustedDecision = (lastCall?.contextBudget?.compactionDecisions ?? []).find(
-      (decision) => decision.phase === 'mid_turn' && decision.reason === 'context_budget_exhausted',
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
+        (message as { kind?: string }).kind === 'context_reported_window_exceeded',
     );
-    assert.equal(exhaustedDecision?.skippedReasonCounts?.replacement_not_smaller, 1);
-    // The rejected checkpoint was never persisted.
-    assert.equal(fixture.recorded.length, 0);
+    assert.deepEqual(note?.data, { usedTokens: 190, reportedContextWindow: 100 });
+    // A hint is still not a declaration: nothing folded on its own.
+    assert.equal(fixture.summarizerCalls, 0);
   });
 
-  test('the cold-start estimate covers the FULL provider input including the system prompt (review round-5 finding 2)', async () => {
-    // The system prompt travels in the separate `system` field, not in
-    // messages. With usage missing, a cold-start estimate over messages+tools
-    // alone (~2150 tokens) stays under the 2900 high water and lets a real
-    // ~3650-token request stream into a 3000-token window. The single payload
-    // measure must include the system prompt: constant between adjacent
-    // requests (signed deltas unaffected), decisive for cold start.
+  test('does not repeat the reported-window note once the session is already past the line', async () => {
+    // On these providers usage keeps growing past the reported window, so the
+    // note fires on the crossing, not on every send. A persisted anchor that
+    // is already over the line carries that across sessions.
     const fixture = buildFixture({
-      contextWindow: 3_000,
-      reserveTokens: 100,
-      withoutPriorTurns: true,
-      hugeFirstResult: true,
+      contextWindow: 100,
+      declareContextWindow: false,
       finalAtSecondCall: true,
-      firstStepUsage: 'missing',
-      systemPromptChars: 6_000,
+      firstStepUsage: { input: 150, output: 40 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 300, outputTokens: 20 })],
+      priorRunHeaders: [priorRunHeader()],
     });
     await runFixtureTurn(fixture, consumer);
 
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-    // The over-window second request never streamed.
     assert.equal(
-      fixture.events.some((event) => event.type === 'text_complete' && event.text === 'done'),
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_reported_window_exceeded',
+      ),
       false,
     );
-    // Every completed step's usage was unusable, so there is no usage
-    // evidence at all: the fail-closed terminal record is skipped and the
-    // exhausted outcome is observable only through the CompleteEvent above.
-    assert.equal(fixture.llmCalls.length, 0);
+  });
+
+  test('does not report the reported window when the user declared one', async () => {
+    // With a declaration the overrun note owns this case; two notes for one
+    // fact would be noise.
+    const fixture = buildFixture({
+      contextWindow: 100,
+      finalAtSecondCall: true,
+      firstStepUsage: { input: 150, output: 40 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_reported_window_exceeded',
+      ),
+      false,
+    );
+  });
+
+  test('reports a reply that ran past the declared window', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      firstStepUsage: { input: 150, output: 60 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
+        (message as { type?: string }).type === 'system_note' &&
+        (message as { kind?: string }).kind === 'context_window_overrun',
+    );
+    assert.deepEqual(note?.data, { usedTokens: 210, declaredContextWindow: 200 });
+  });
+
+  test('does not report an overrun for an exchange that stayed inside the window', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      firstStepUsage: { input: 150, output: 40 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_window_overrun',
+      ),
+      false,
+    );
+  });
+
+  test('reports provider context dropping across the send boundary', async () => {
+    // The Ollama shape: the provider truncates to its own window, so the input
+    // it counts is the SAME on every later request while the user keeps adding
+    // turns. A send of one or two steps never sees that from the inside
+    // (#4623). One request here, so only the step-0 comparison can write it.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 3_716, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string; data?: unknown } =>
+        (message as { kind?: string }).kind === 'context_provider_dropping',
+    );
+    assert.deepEqual(note?.data, { inputTokens: 3_716, priorInputTokens: 3_716 });
+  });
+
+  test('does not report dropping across the boundary when the input grew', async () => {
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 4_000, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('does not report dropping across the boundary when the input merely shrank', async () => {
+    // A manual compaction leaves the pre-compaction anchor behind, a turn can
+    // carry a smaller tool set, and a user can edit or branch history. All
+    // three shrink the input legitimately, and none lands on exactly the same
+    // count, so equality is what separates them from a truncating provider.
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      singleRequest: true,
+      finalStepUsage: { input: 900, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('does not report dropping across the boundary when this send folded first', async () => {
+    // A fold before the first request explains a smaller input by itself.
+    const fixture = buildFixture({
+      contextWindow: 3_000,
+      singleRequest: true,
+      finalStepUsage: { input: 3_716, output: 10 },
+      extraPriorEvents: [priorUsageEvent({ inputTokens: 3_716, outputTokens: 12 })],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 1);
+    assert.equal(
+      fixture.messages.some(
+        (message) => (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('records provider context dropping when an append-only step reports the same usage', async () => {
+    // The Ollama shape: the provider truncates to its own window, so input
+    // stops growing rather than dropping while Maka keeps appending. A
+    // plateau is the signal the copy promises ("usage did not grow").
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      firstStepUsage: { input: 100, output: 20 },
+      finalStepUsage: { input: 100, output: 10 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string } =>
+        (message as { type?: string }).type === 'system_note',
+    );
+    assert.equal(note?.kind, 'context_provider_dropping');
+  });
+
+  test('records provider context dropping only for an unshaped usage decrease', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      finalStepUsage: { input: 50, output: 10 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    const note = fixture.messages.find(
+      (message): message is { type: 'system_note'; kind: string } =>
+        (message as { type?: string }).type === 'system_note',
+    );
+    assert.equal(note?.kind, 'context_provider_dropping');
+  });
+
+  test('does not call provider context dropping when active pruning explains the decrease', async () => {
+    const fixture = buildFixture({
+      contextWindow: 200,
+      finalAtSecondCall: true,
+      hugeFirstResult: true,
+      activeToolResultPrune: true,
+      finalStepUsage: { input: 50, output: 10 },
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(
+      fixture.messages.some(
+        (message) =>
+          (message as { type?: string; kind?: string }).type === 'system_note' &&
+          (message as { kind?: string }).kind === 'context_provider_dropping',
+      ),
+      false,
+    );
+  });
+
+  test('a provider output-limit finish does not fold', async () => {
+    // A reply cut at `length` can mean the provider ran out of window room or
+    // that its own output cap is lower than the one Maka sends. Those are
+    // indistinguishable from outside, so the signal drives nothing (#4559).
+    const fixture = buildFixture({
+      withoutContextWindow: true,
+      finalAtSecondCall: true,
+      firstStepFinishReason: 'length',
+    });
+    await runFixtureTurn(fixture, consumer);
+
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.equal(fixture.recorded.length, 0);
   });
 
   test("a completed step's assistant text is never dropped from the replacement (review finding B)", async () => {
@@ -1358,7 +1460,7 @@ function defineMidTurnSuite(consumer: ConsumerMode): void {
     const fixture = buildFixture({
       // High water at 100 tokens: the first request's 100 input tokens plus
       // its assistant/tool-result delta crosses it at the step-1 boundary.
-      reserveTokens: 1_900,
+      contextWindow: 100,
       assistantTextInFirstStep: true,
       finalAtSecondCall: true,
     });
@@ -1391,7 +1493,10 @@ describe('mid-turn capacity compaction in the streaming backend', () => {
   defineMidTurnSuite('immediate');
 
   test('dispatches a mid-turn Compaction recipe after persistence without awaiting it', async () => {
-    const fixture = buildFixture({ captureMemoryExtraction: true, systemPromptChars: 32 });
+    const fixture = buildFixture({
+      captureMemoryExtraction: true,
+      systemPromptChars: 32,
+    });
     await runFixtureTurn(fixture);
 
     assert.equal(fixture.recorded.length, 1);
@@ -1498,63 +1603,26 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(promptJson(fixture, 2).includes('RAW_SPAN_ONE_'), true);
   });
 
-  test('compacts one oversized prior turn before an unknown-model request', async () => {
+  test('measures a materialized image by what it bills, not by its serialized bytes', async () => {
+    // apache/maka#4458. The unknown model's 48,384-token fallback capacity is
+    // enforced from step 0. A 200 KB screenshot reaches the request as base64,
+    // so measuring the serialized payload prices these two images at ~130,000
+    // tokens and ends the turn before a single provider call — while the
+    // provider itself would charge a few thousand.
     const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
       withoutContextWindow: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
+      currentImage: true,
+      imageBytes: 200_000,
+      priorShape: 'image_tool',
     });
     await runFixtureTurn(fixture);
 
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(fixture.recorded[0]?.coverage.eventCount, 4);
-    assert.match(fixture.summarizedSources[0] ?? '', /function_call/);
-    assert.match(fixture.summarizedSources[0] ?? '', /function_response/);
-    const firstPrompt = promptJson(fixture, 0);
-    assert.match(firstPrompt, /maka_history_compact_checkpoint/);
-    assert.match(firstPrompt, /MID_TURN_SUMMARY_SENTINEL/);
-    assert.equal(firstPrompt.includes('OVERSIZED_TOOL_RESULT_'), false);
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     const complete = fixture.events.find((event) => event.type === 'complete');
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-  });
-
-  test('rejects one oversized prior turn locally when its summary fails', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-      summarize: () => undefined,
-    });
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'summarizer_failed');
-  });
-
-  test('compacts an oversized latest turn when an older turn is also retained', async () => {
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-    });
-    fixture.priorEvents.unshift(
-      runtimeTextEvent('older-user', 'turn-older', 'user', 'older question'),
-      runtimeTextEvent('older-model', 'turn-older', 'model', 'older answer'),
-    );
-    await runFixtureTurn(fixture);
-
-    assert.equal(fixture.summarizerCalls, 1);
-    assert.equal(fixture.recorded.length, 1);
-    assert.equal(promptJson(fixture, 0).includes('OVERSIZED_TOOL_RESULT_'), false);
+    // Nothing was folded or dropped: at the real cost the request fits.
+    assert.equal(fixture.summarizerCalls, 0);
+    assert.doesNotMatch(promptJson(fixture, 0), /omitted after provider context overflow/);
   });
 
   test('keeps multiple bounded recent turns below the model capacity', async () => {
@@ -1579,7 +1647,12 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('rejects an oversized complete step-zero payload before provider dispatch', async () => {
+  test('lets an undeclared window dispatch a payload no local number can judge', async () => {
+    // A 200,000-char system prompt against a model that declares no window.
+    // The runtime used to add its 32,000-token history budget to the 16,384
+    // reserve, call the sum a context window, and end the turn on it. Both are
+    // policy choices about how much history to keep; neither says what this
+    // model accepts, so the request goes out and the provider answers.
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       withoutContextWindow: true,
@@ -1587,44 +1660,9 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     });
     await runFixtureTurn(fixture);
 
-    assert.equal(fixture.model.doStreamCalls.length, 0);
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
-  });
-
-  test('keeps user_stop when stopping an oversized pre-turn summary', async () => {
-    let markSummaryStarted: (() => void) | undefined;
-    const summaryStarted = new Promise<void>((resolve) => {
-      markSummaryStarted = resolve;
-    });
-    let finishSummary: (() => void) | undefined;
-    const fixture = buildFixture({
-      useRuntimeDefaultPolicy: true,
-      withoutContextWindow: true,
-      priorChars: 180_000,
-      priorShape: 'tool_heavy',
-      summarize: () =>
-        new Promise<undefined>((resolve) => {
-          finishSummary = () => resolve(undefined);
-          markSummaryStarted?.();
-        }),
-    });
-    const turn = runFixtureTurn(fixture);
-    await summaryStarted;
-    await fixture.backend.stop('user_stop');
-    finishSummary?.();
-    await turn;
-
-    assert.equal(fixture.model.doStreamCalls.length, 0);
-    assert.equal(
-      fixture.events.some((event) => event.type === 'abort'),
-      true,
-    );
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'user_stop');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
   test('does not fire for a session without a persisted head anchor (child sessions have no seam)', async () => {
@@ -1650,23 +1688,22 @@ describe('mid-turn capacity default-on safety guards (issue #882 PR 3)', () => {
     assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
   });
 
-  test('never runs a pointless summarizer on a small-window model under the shipped defaults (review P2)', async () => {
-    // gpt-4 shape: an 8192-token window under the runtime-derived defaults.
-    // A flat 16384 reserve used to clamp the mid_turn high water to 1 token —
-    // every boundary triggered, the summarizer ran, and the checkpoint could
-    // never pass the 1-token replay gate: pure waste. With the window-bounded
-    // reserve the payload sits far below the high water, so the default must
-    // be completely inert here: no summarizer call, no checkpoint, and the
-    // turn completes on the raw projection.
-    const fixture = buildFixture({ useRuntimeDefaultPolicy: true, contextWindow: 8_192 });
-    await runFixtureTurn(fixture);
+  test('treats a /models context window as metadata unless the user declares it', async () => {
+    const reported = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 100,
+      declareContextWindow: false,
+    });
+    await runFixtureTurn(reported);
+    assert.equal(reported.summarizerCalls, 0);
 
-    assert.equal(fixture.summarizerCalls, 0);
-    assert.equal(fixture.recorded.length, 0);
-    assert.equal(fixture.model.doStreamCalls.length, 3);
-    const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
-    assert.equal(promptJson(fixture, 2).includes('RAW_SPAN_ONE_'), true);
+    const declared = buildFixture({
+      useRuntimeDefaultPolicy: true,
+      contextWindow: 190,
+    });
+    await runFixtureTurn(declared);
+    assert.equal(declared.summarizerCalls, 1);
+    assert.match(promptJson(declared, 2), /maka_history_compact_checkpoint/);
   });
 });
 
@@ -1675,15 +1712,14 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     // No hand-built policy and no env override: this wires
     // buildDefaultContextBudgetPolicy — the exact default every surface now
     // inherits — into the backend. A long turn whose real usage crosses
-    // `contextWindow - derivedReserve` (window 1000 → reserve 250, high water
-    // 750) must fold a safe completed prefix into a DURABLE mid_turn
+    // Real provider usage crossing the declared window must fold a safe
+    // completed prefix into a DURABLE mid_turn
     // checkpoint and continue the SAME turn to normal completion, never
     // truncate it or surface a raw provider error.
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
-      contextWindow: 1_000,
+      contextWindow: 190,
       priorChars: 1_400,
-      firstStepUsage: { input: 900, output: 20 },
     });
     await runFixtureTurn(fixture);
 
@@ -1692,7 +1728,7 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     assert.equal(fixture.recorded[0]?.phase, 'mid_turn');
     // The continued request rides the compacted projection: the compact block
     // is present and the replaced raw span is gone.
-    const continuedPrompt = promptJson(fixture, 1);
+    const continuedPrompt = promptJson(fixture, 2);
     assert.match(continuedPrompt, /maka_history_compact_checkpoint/);
     assert.match(continuedPrompt, /MID_TURN_SUMMARY_SENTINEL/);
     assert.equal(continuedPrompt.includes('PRIOR_FACT'), false);
@@ -1708,11 +1744,117 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     );
   });
 
-  test('an unrescuable turn under the shipped default ends with the explicit context_budget_exhausted outcome', async () => {
-    // Same runtime-derived default (window 120 → reserve 30, high water 90):
-    // no prior turns leaves no safe completed span, and the request genuinely
-    // exceeds the window — the turn must end with the first-class outcome, not
-    // a raw provider error.
+  test('persists the last request input and output as the anchor', async () => {
+    const fixture = buildFixture({
+      contextWindow: 1_000_000,
+      finalAtSecondCall: true,
+    });
+    await runFixtureTurn(fixture);
+
+    const usage = fixture.messages.find(
+      (
+        message,
+      ): message is {
+        type: 'token_usage';
+        input: number;
+        lastRequestAnchor?: unknown;
+      } => (message as { type?: string }).type === 'token_usage',
+    );
+    // Two steps: 100 + 120 reported input, and the send sum is both.
+    assert.equal(usage?.input, 220);
+    const anchor = usage?.lastRequestAnchor as
+      | { inputTokens: number; outputTokens?: number }
+      | undefined;
+    assert.equal(anchor?.inputTokens, 120);
+    assert.equal(anchor?.outputTokens, 10);
+  });
+
+  test('an anchor is discarded unless a run header proves it came from this model', async () => {
+    // Input tokens are a count in one model's tokenizer; nothing converts them.
+    // The anchor sits ABOVE the declared window, so it is the header check
+    // alone that decides: a matching header folds at step 0, while a header
+    // naming another model and no header at all leave the request alone.
+    const anchor = priorUsageEvent({ inputTokens: 30_000, outputTokens: 10 });
+    for (const [priorRunHeaders, folds] of [
+      [[priorRunHeader()], true],
+      [[{ ...priorRunHeader(), modelId: 'some-other-model' }], false],
+      [[], false],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 2_000,
+        contextWindow: 20_000,
+        finalAtSecondCall: true,
+        extraPriorEvents: [anchor],
+        priorRunHeaders: [...priorRunHeaders],
+      });
+      await runFixtureTurn(fixture);
+
+      assert.equal(fixture.recorded.length, folds ? 1 : 0);
+    }
+  });
+
+  test('a synthetic /compact usage row does not shadow the real anchor', async () => {
+    // A manual /compact writes `input: 0, output: 0` without a provider send,
+    // so it carries no anchor: the reverse scan skips it and still finds the
+    // last real request, which is above the window and folds step 0.
+    const fixture = buildFixture({
+      priorChars: 2_000,
+      contextWindow: 20_000,
+      finalAtSecondCall: true,
+      extraPriorEvents: [
+        priorUsageEvent({ inputTokens: 30_000, outputTokens: 10 }),
+        {
+          ...runtimeTextEvent('prior-compact-usage', 'turn-0', 'model', ''),
+          id: 'prior-compact-usage',
+          runId: 'run-0',
+          invocationId: 'run-0',
+          role: 'system' as const,
+          author: 'system' as const,
+          content: undefined,
+          actions: { tokenUsage: { input: 0, output: 0 } },
+        },
+      ],
+      priorRunHeaders: [priorRunHeader()],
+    });
+    await runFixtureTurn(fixture);
+
+    assert.equal(fixture.recorded.length, 1);
+    const fold = compactionDecisions(fixture).find(
+      (decision) => decision.stage === 'activeStep' && decision.decision === 'replaced',
+    );
+    assert.equal(fold?.phase, 'pre_turn');
+  });
+
+  test('the reserve is twice the last real reply, bounded, not the model output limit', async () => {
+    // With the window declared at the provider's real size, an accepted
+    // request can never exceed it on its own; the reply the next request must
+    // leave room for is what tips it. That room is measured from the reply the
+    // model actually wrote, so a session whose answers are long reserves more
+    // than one whose answers are short, and neither number is a guess. The
+    // model's own output limit is deliberately not the reserve: on k3-256k it
+    // is half the window and would fold at 50% utilization (#4634).
+    for (const [anchorOutput, folds] of [
+      [60, true],
+      [5, false],
+    ] as const) {
+      const fixture = buildFixture({
+        priorChars: 200,
+        contextWindow: 1_000,
+        finalAtSecondCall: true,
+        modelMaxOutputTokens: 600,
+        extraPriorEvents: [priorUsageEvent({ inputTokens: 900, outputTokens: anchorOutput })],
+        priorRunHeaders: [priorRunHeader()],
+      });
+      await runFixtureTurn(fixture);
+      // 960 + 120 crosses 1,000; 905 + 10 does not. The 600-token output limit
+      // is irrelevant to both.
+      assert.equal(fixture.summarizerCalls, folds ? 1 : 0);
+    }
+  });
+
+  test('an unrescuable turn under the shipped default still dispatches', async () => {
+    // No prior turns leaves no safe completed span. The request still goes out
+    // because only the provider can decide whether it fits.
     const fixture = buildFixture({
       useRuntimeDefaultPolicy: true,
       contextWindow: 120,
@@ -1721,16 +1863,54 @@ describe('the shipped runtime default drives the proactive long-turn journey (is
     await runFixtureTurn(fixture);
 
     const complete = fixture.events.find((event) => event.type === 'complete');
-    assert.equal(complete?.type, 'complete');
-    if (complete?.type !== 'complete') return;
-    assert.equal(complete.stopReason, 'context_budget_exhausted');
-    assert.equal(complete.contextBudgetExhaustedDetail, 'no_safe_completed_span');
+    assert.equal(complete?.type === 'complete' ? complete.stopReason : undefined, 'end_turn');
+    assert.equal(fixture.model.doStreamCalls.length > 0, true);
     assert.equal(
       fixture.events.some((event) => event.type === 'error'),
       false,
     );
   });
 });
+
+/**
+ * The turn's durable token_usage RuntimeEvents, re-labelled as a previous turn
+ * so the next fixture turn sees them the way `prior-run-context` serves them
+ * back after a restart.
+ */
+function priorUsageEvent(lastRequestAnchor: {
+  inputTokens: number;
+  outputTokens?: number;
+}): RuntimeEvent {
+  return {
+    ...runtimeTextEvent('prior-usage', 'turn-0', 'model', ''),
+    id: 'prior-usage',
+    runId: 'run-0',
+    invocationId: 'run-0',
+    role: 'system',
+    author: 'system',
+    content: undefined,
+    actions: { tokenUsage: { input: 30_100, output: 30, lastRequestAnchor } },
+  };
+}
+
+function priorRunHeader(): AgentRunHeader {
+  return {
+    runId: 'run-0',
+    invocationId: 'run-0',
+    sessionId: 'session-1',
+    turnId: 'turn-0',
+    status: 'completed',
+    backendKind: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
+    llmConnectionSlug: 'anthropic-main',
+    modelId: 'mock-model-id',
+    cwd: '/tmp/maka',
+    permissionMode: 'ask',
+    createdAt: 1,
+    updatedAt: 2,
+    completedAt: 2,
+  };
+}
 
 function runtimeTextEvent(
   id: string,
@@ -1767,6 +1947,7 @@ function header(): SessionHeader {
     statusUpdatedAt: 1,
     hasUnread: false,
     backend: 'ai-sdk',
+    llmConnectionId: 'test-connection-id',
     llmConnectionSlug: 'anthropic-main',
     connectionLocked: true,
     model: 'mock-model-id',

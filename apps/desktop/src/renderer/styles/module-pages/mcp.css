@@ -98,7 +98,7 @@
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius-control);
   background: var(--muted);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
 }
 
 .maka-mcp-stderr {
@@ -108,7 +108,7 @@
   padding: var(--space-3);
   overflow: auto;
   border-radius: var(--radius-control);
-  background: var(--destructive-wash);
+  background: var(--color-error-muted);
   color: var(--destructive-text);
   white-space: pre-wrap;
 }

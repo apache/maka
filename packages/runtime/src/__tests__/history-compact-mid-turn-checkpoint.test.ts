@@ -298,12 +298,7 @@ describe('mid-turn history compact checkpoint', () => {
     // Normal thresholds: the raw projection is far below the default high
     // water, and the accepted mid_turn checkpoint must STILL replay — the
     // covered raw span may never be re-injected on recovery.
-    const replay = applyRuntimeEventHistoryCompact(
-      events,
-      { enabled: true, checkpoint },
-      1,
-      10_000,
-    );
+    const replay = applyRuntimeEventHistoryCompact(events, { enabled: true, checkpoint });
 
     assert.equal(replay.checkpoint?.checkpointId, checkpoint.checkpointId);
     assert.deepEqual(

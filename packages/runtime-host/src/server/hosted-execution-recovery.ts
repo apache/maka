@@ -106,7 +106,7 @@ export async function prepareHostedExecutionRecovery(
       }
       if (admission.userMessageId === null) {
         if (admission.sourceMessages.length > 0) {
-          verifyQueueSourceMessages(admission, messageIndex);
+          await verifyQueueSourceMessages(admission, messageIndex, input.stores.agentRunStore);
         }
         if (rootUserMessages.length > 0) {
           throw new Error(`Admitted Turn ${admission.turnId} must not record a UserMessage`);
@@ -316,12 +316,35 @@ function verifyOrRecoverUserMessage(
   indexRecoveryMessage(index, recoveredMessage);
 }
 
-function verifyQueueSourceMessages(
+async function verifyQueueSourceMessages(
   admission: RootTurnAdmission,
   index: RecoveryMessageIndex,
-): void {
+  proofReader: Pick<
+    ExecutionStoresWriter<'interactive'>['agentRunStore'],
+    'readRootTurnSourceMessageReceipt'
+  >,
+): Promise<void> {
   for (const source of admission.sourceMessages) {
     const owners = index.messagesById.get(source.messageId) ?? [];
+    if (owners.length === 0) {
+      const proof = await proofReader.readRootTurnSourceMessageReceipt(
+        admission.sessionId,
+        source.messageId,
+      );
+      if (
+        !proof ||
+        proof.admission.sessionId !== admission.sessionId ||
+        proof.admission.turnId !== admission.turnId ||
+        proof.admission.runId !== admission.runId ||
+        proof.sourceMessage.messageId !== source.messageId ||
+        !messageContentsEqual(proof.sourceMessage.content, source.content)
+      ) {
+        throw new Error(
+          `Admitted Turn ${admission.turnId} has no durable proof for queue source ${source.messageId}`,
+        );
+      }
+      continue;
+    }
     if (
       owners.length !== 1 ||
       owners[0]?.type !== 'user' ||

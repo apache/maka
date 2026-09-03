@@ -102,6 +102,7 @@ const LLM_USAGE_LOG_FIELDS = new Set([
   'status',
   'errorClass',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_USAGE_LOG_FIELDS = new Set([
@@ -121,6 +122,7 @@ const TOOL_USAGE_LOG_FIELDS = new Set([
   'bytesOut',
   'startedAt',
   'sessionId',
+  'sessionTitle',
   'turnId',
 ]);
 const TOOL_RESULT_SUMMARY_FIELDS = new Set([
@@ -167,6 +169,8 @@ export interface LlmUsageLogProjection {
   readonly status: 'success' | 'error' | 'aborted';
   readonly errorClass?: string;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -187,6 +191,8 @@ export interface ToolUsageLogProjection {
   readonly bytesOut: number;
   readonly startedAt: number;
   readonly sessionId?: string;
+  /** Human-readable session title, resolved on the Host; absent for untitled sessions. */
+  readonly sessionTitle?: string;
   readonly turnId?: string;
 }
 
@@ -810,15 +816,22 @@ function decodeUsagePagePosition(
 }
 
 function decodeUsageSummary(value: unknown): UsageSummaryV2 {
-  const summary = requireExactRecord(value, 'usage summary', [
-    'range',
-    'totalRequests',
-    'totalCostUsd',
-    'totalTokens',
-    'cacheHitRequests',
-    'cacheCreateRequests',
-    'errorRequests',
-  ]);
+  const summary = requireRecord(value, 'usage summary');
+  assertOptionalExactKeys(
+    summary,
+    'usage summary',
+    [
+      'range',
+      'totalRequests',
+      'totalCostUsd',
+      'totalTokens',
+      'cacheHitRequests',
+      'cacheCreateRequests',
+      'errorRequests',
+      'totalDurationMs',
+    ],
+    ['toolUsage'],
+  );
   const range = requireExactRecord(summary.range, 'usage summary range', ['from', 'to']);
   const tokens = requireExactRecord(summary.totalTokens, 'usage summary tokens', [
     'input',
@@ -848,6 +861,19 @@ function decodeUsageSummary(value: unknown): UsageSummaryV2 {
     cacheHitRequests: requireCount(summary.cacheHitRequests, 'usage cache hit requests'),
     cacheCreateRequests: requireCount(summary.cacheCreateRequests, 'usage cache create requests'),
     errorRequests: requireCount(summary.errorRequests, 'usage error requests'),
+    totalDurationMs: requireCount(summary.totalDurationMs, 'usage total duration'),
+    // Optional for a data reason, not a version one: tool rows that predate
+    // connection attribution cannot answer a `connectionSlug` filter, so the
+    // Host omits the split for that query rather than send an unscoped total.
+    ...(summary.toolUsage !== undefined ? { toolUsage: decodeToolUsage(summary.toolUsage) } : {}),
+  };
+}
+
+function decodeToolUsage(value: unknown): NonNullable<UsageSummaryV2['toolUsage']> {
+  const toolUsage = requireExactRecord(value, 'usage tool usage', ['requests', 'durationMs']);
+  return {
+    requests: requireCount(toolUsage.requests, 'usage tool requests'),
+    durationMs: requireCount(toolUsage.durationMs, 'usage tool duration'),
   };
 }
 
@@ -992,6 +1018,7 @@ function decodeLlmUsageLog(value: unknown): LlmUsageLogProjection {
     status: decodeUsageLogStatus(row.status),
     ...optionalProjectionText(row, 'errorClass'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }
@@ -1030,6 +1057,7 @@ function decodeToolUsageLog(value: unknown): ToolUsageLogProjection {
     bytesOut: requireCount(row.bytesOut, 'tool usage log bytes out'),
     startedAt: nonnegativeFinite(row.startedAt, 'tool usage log start time'),
     ...optionalProjectionText(row, 'sessionId'),
+    ...optionalProjectionText(row, 'sessionTitle'),
     ...optionalProjectionText(row, 'turnId'),
   };
 }

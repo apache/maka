@@ -29,6 +29,10 @@ import type { RunCompositionSnapshot } from '@maka/core/run-composition';
 import { decodeRunCompositionSnapshot } from '@maka/core/run-composition';
 import { DurableStoreWriteError, RunSealedError } from '@maka/core/runtime-event-store';
 import { isSessionInlineRun } from '@maka/core/agent-run';
+import {
+  MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+  type ModelProjectionTransition,
+} from '@maka/core/model-projection-transition';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import {
   ToolLedgerCorruptionError,
@@ -85,10 +89,6 @@ import {
   type RuntimeContinuationStartAdmissionProof,
 } from './runtime-continuation-admission.js';
 import { DEFAULT_TOOL_MODE, isToolMode, type ToolMode } from '@maka/core/tool-mode';
-import type {
-  ProviderRequestAttemptRecord,
-  ProviderRequestCaptureLedgerRecord,
-} from './provider-request-telemetry.js';
 import { materializeRuntimeEventTranscriptProjection } from './runtime-ledger-repair.js';
 import { cloneAndFreezeRuntimeSnapshot } from './runtime-snapshot.js';
 
@@ -124,17 +124,15 @@ export interface AgentRunHooks {
 }
 
 export type AgentRunLineage = Partial<
-  Pick<
-    UserMessageInput,
-    | 'parentRunId'
-    | 'resumedFromRunId'
-    | 'retriedFromRunId'
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
+  Pick<AgentRunHeader, 'parentRunId' | 'resumedFromRunId' | 'retriedFromRunId'> &
+    Pick<
+      UserMessageInput,
+      | 'parentTurnId'
+      | 'retriedFromTurnId'
+      | 'regeneratedFromTurnId'
+      | 'branchOfTurnId'
+      | 'parentSessionId'
+    >
 >;
 
 export type AgentRunDurability = 'best_effort' | 'required';
@@ -143,6 +141,8 @@ export interface AgentRunInput {
   sessionId: string;
   header: SessionHeader;
   userInput: UserMessageInput;
+  /** Internal lineage for runtime-owned continuations; never accepted by live turn input. */
+  runLineage?: Pick<AgentRunLineage, 'parentRunId'>;
   rootExecutionKind?: AgentRunHeader['rootExecutionKind'];
   runId?: string;
   userMessageId?: string | null;
@@ -160,7 +160,6 @@ export interface AgentRunInput {
   /** Commits the claimed continuation provider-call T1 after Run creation. */
   commitContinuationStart?: (startedAt: number) => Promise<{ startEventId: string; created: true }>;
   hooks: AgentRunHooks;
-  recordSessionMessages?: boolean;
   invocationId?: string;
   /** Pre-resolved snapshot used by continuations; normal turns derive it from header + input. */
   effectiveOrchestration?: EffectiveOrchestration;
@@ -203,6 +202,7 @@ export interface AgentRunBeginResult {
 export interface AgentRunOperationBeginResult {
   backend: AgentBackend;
   runtimeContext: RuntimeEvent[];
+  runtimeContextRunHeaders: AgentRunHeader[];
   startedAt: number;
 }
 
@@ -251,6 +251,7 @@ export class AgentRun {
   private finalized = false;
   private terminalRunHeaderCommitted = false;
   private continuationActive = false;
+  private providerStateIdentity: `sha256:${string}` | undefined;
   private terminalClaim:
     | {
         owner: 'event' | 'stop';
@@ -297,15 +298,7 @@ export class AgentRun {
     }
     this.toolMode = requestedToolMode;
     this.lineage = {
-      ...(acceptedInput.userInput.parentRunId
-        ? { parentRunId: acceptedInput.userInput.parentRunId }
-        : {}),
-      ...(acceptedInput.userInput.resumedFromRunId
-        ? { resumedFromRunId: acceptedInput.userInput.resumedFromRunId }
-        : {}),
-      ...(acceptedInput.userInput.retriedFromRunId
-        ? { retriedFromRunId: acceptedInput.userInput.retriedFromRunId }
-        : {}),
+      ...acceptedInput.runLineage,
       ...(acceptedInput.userInput.parentTurnId
         ? { parentTurnId: acceptedInput.userInput.parentTurnId }
         : {}),
@@ -324,16 +317,33 @@ export class AgentRun {
     };
   }
 
-  stop(source: StopSessionInput['source'] | undefined): boolean {
+  stop(
+    source: StopSessionInput['source'] | undefined,
+    workHubActionId?: StopSessionInput['workHubActionId'],
+  ): boolean {
+    const abortSource = normalizeStopSessionSource(source, workHubActionId);
     if (this.terminalClaim) return false;
     this.terminalClaim = { owner: 'stop' };
     this.stopped = true;
-    this.abortSource = normalizeStopSessionSource(source);
+    this.abortSource = abortSource;
     return true;
   }
 
   isStopped(): boolean {
     return this.stopped;
+  }
+
+  headerSnapshot(): SessionHeader {
+    return this.header;
+  }
+
+  bindProviderStateIdentity(identity: `sha256:${string}` | undefined): void {
+    const claimed = this.input.claimedRunHeader?.providerStateIdentity;
+    const expected = claimed ?? this.providerStateIdentity;
+    if (expected !== undefined && expected !== identity) {
+      throw new Error('Prepared backend provider state does not match the AgentRun admission');
+    }
+    this.providerStateIdentity = identity;
   }
 
   isSessionInline(): boolean {
@@ -450,46 +460,6 @@ export class AgentRun {
     });
   }
 
-  recordProviderRequestCapture(capture: ProviderRequestCaptureLedgerRecord): Promise<void> {
-    if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
-    return this.enqueueRequiredRunStoreWrite('append provider request capture', async () => {
-      const {
-        schemaVersion,
-        serializedRequest: _serializedRequest,
-        ...data
-      } = capture as ProviderRequestCaptureLedgerRecord & { serializedRequest?: string };
-      await this.input.runStore?.appendEvent(
-        this.sessionId,
-        this.runId,
-        {
-          type: 'provider_request_captured',
-          id: capture.captureId,
-          runId: this.runId,
-          sessionId: this.sessionId,
-          turnId: capture.turnId,
-          ts: this.input.now(),
-          data: { schemaVersion, ...data },
-        },
-        { durable: true },
-      );
-    });
-  }
-
-  recordProviderRequestAttempt(attempt: ProviderRequestAttemptRecord): void {
-    if (!this.input.runStore) return;
-    this.enqueueBestEffortProviderAttempt('append provider request attempt', async () => {
-      await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
-        type: 'provider_request_attempt_recorded',
-        id: attempt.attemptId,
-        runId: this.runId,
-        sessionId: this.sessionId,
-        turnId: attempt.turnId,
-        ts: attempt.completedAt,
-        data: { ...attempt },
-      });
-    });
-  }
-
   /**
    * Canonical accounting record for one physical provider request (#1679).
    *
@@ -526,6 +496,37 @@ export class AgentRun {
         { durable: true, ...(latestContext ? { latestContext } : {}) },
       );
     });
+  }
+
+  /**
+   * Durable append for one model-projection transition (#4283).
+   *
+   * Rethrows like the checkpoint recorder above: the caller may only show the
+   * replacement once the ledger holds the record, so a failed append must be a
+   * failed prune, not a silent one.
+   */
+  recordModelProjectionTransition(transition: ModelProjectionTransition): Promise<void> {
+    if (!this.input.runStore) return Promise.reject(new Error('AgentRun store is not configured'));
+    if (!this.runStoreAvailable) return Promise.reject(new Error('AgentRun store is unavailable'));
+    return this.enqueueRunStore(
+      'append model projection transition',
+      async () => {
+        await this.input.runStore?.appendEvent(this.sessionId, this.runId, {
+          type: MODEL_PROJECTION_TRANSITION_EVENT_TYPE,
+          id: transition.transitionId,
+          runId: this.runId,
+          sessionId: this.sessionId,
+          turnId: this.turnId,
+          ts: transition.createdAt,
+          data: {
+            runtimeEventId: transition.target.runtimeEventId,
+            part: transition.target.part,
+            transition,
+          },
+        });
+      },
+      { rethrow: true },
+    );
   }
 
   recordHistoryCompactCheckpoint(checkpoint: HistoryCompactCheckpoint): Promise<void> {
@@ -631,13 +632,12 @@ export class AgentRun {
       const steering =
         runtimeEvent.content?.kind === 'text' && runtimeEvent.content.steering === true;
       await this.recordRuntimeEvents([runtimeEvent], steering ? { requireDurableWrite: true } : {});
-      if (this.recordsSessionMessages()) {
-        await materializeRuntimeEventTranscriptProjection(
-          this.input.store,
-          this.sessionId,
-          runtimeEvent,
-        );
-      }
+
+      await materializeRuntimeEventTranscriptProjection(
+        this.input.store,
+        this.sessionId,
+        runtimeEvent,
+      );
     }
   }
 
@@ -645,39 +645,38 @@ export class AgentRun {
     await this.createRunRecord();
 
     let initialRuntimeEventId: string;
-    if (this.recordsSessionMessages()) {
-      const userMessageTs = this.input.now();
-      if (this.input.userMessageId === null) {
-        initialRuntimeEventId = this.input.newId();
-      } else {
-        const userMessageId = this.input.userMessageId ?? this.input.newId();
-        initialRuntimeEventId = userMessageId;
-        const userMsg = cloneAndFreezeRuntimeSnapshot<UserMessage>({
-          type: 'user',
-          id: userMessageId,
-          turnId: this.turnId,
-          ts: userMessageTs,
-          text: this.input.userInput.text,
-          ...(this.input.userInput.displayText !== undefined
-            ? { displayText: this.input.userInput.displayText }
-            : {}),
-          ...(this.input.userInput.attachments
-            ? { attachments: this.input.userInput.attachments }
-            : {}),
-          ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
-          ...(this.input.userInput.inlineReferences
-            ? { inlineReferences: this.input.userInput.inlineReferences }
-            : {}),
-          ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
-        });
-        await appendUserMessageOnce(this.input.store, this.sessionId, userMsg);
-      }
-      await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
-      this.lastTs = userMessageTs;
-    } else {
+
+    const userMessageTs = this.input.now();
+    if (this.input.userMessageId === null) {
       initialRuntimeEventId = this.input.newId();
-      this.lastTs = this.input.now();
+    } else {
+      const userMessageId = this.input.userMessageId ?? this.input.newId();
+      initialRuntimeEventId = userMessageId;
+      const userMsg = cloneAndFreezeRuntimeSnapshot<UserMessage>({
+        type: 'user',
+        id: userMessageId,
+        turnId: this.turnId,
+        ts: userMessageTs,
+        text: this.input.userInput.text,
+        ...(this.input.userInput.displayText !== undefined
+          ? { displayText: this.input.userInput.displayText }
+          : {}),
+        ...(this.input.userInput.attachments
+          ? { attachments: this.input.userInput.attachments }
+          : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
+          : {}),
+        ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
+        ...(this.input.userInput.inlineReferences
+          ? { inlineReferences: this.input.userInput.inlineReferences }
+          : {}),
+        ...(this.input.userInput.origin ? { origin: this.input.userInput.origin } : {}),
+      });
+      await appendUserMessageOnce(this.input.store, this.sessionId, userMsg);
     }
+    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage);
+    this.lastTs = userMessageTs;
 
     const initialRuntimeEvent = cloneAndFreezeRuntimeSnapshot(
       this.buildInitialRuntimeEvent(initialRuntimeEventId, this.lastTs),
@@ -711,9 +710,17 @@ export class AgentRun {
         ...(this.input.userInput.attachments
           ? { attachments: this.input.userInput.attachments }
           : {}),
+        ...(this.input.userInput.directoryReferences
+          ? { directoryReferences: this.input.userInput.directoryReferences }
+          : {}),
         ...(this.input.userInput.quotes ? { quotes: this.input.userInput.quotes } : {}),
         context: projectionContext,
-        ...(priorRuntimeContext ? { runtimeContext: priorRuntimeContext.events } : {}),
+        ...(priorRuntimeContext
+          ? {
+              runtimeContext: priorRuntimeContext.events,
+              runtimeContextRunHeaders: priorRuntimeContext.runs,
+            }
+          : {}),
       }),
       initialRuntimeEvent,
     };
@@ -724,11 +731,10 @@ export class AgentRun {
 
     const startedAt = this.input.now();
     this.lastTs = startedAt;
-    if (this.recordsSessionMessages()) {
-      await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-        ts: startedAt,
-      });
-    }
+
+    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
+      ts: startedAt,
+    });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
@@ -739,6 +745,7 @@ export class AgentRun {
     return {
       backend: this.active.backend,
       runtimeContext: priorRuntimeContext?.events ?? [],
+      runtimeContextRunHeaders: priorRuntimeContext?.runs ?? [],
       startedAt,
     };
   }
@@ -769,11 +776,10 @@ export class AgentRun {
       throw new ContinuationStartCommitError(error);
     }
     await this.input.continuationFailpoint?.('after_continuation_start_committed');
-    if (this.recordsSessionMessages()) {
-      await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
-        ts: startedAt,
-      });
-    }
+
+    await this.input.hooks.appendTurnState(this.sessionId, this.turnId, 'running', this.lineage, {
+      ts: startedAt,
+    });
 
     this.active = await this.input.hooks.reserveRun(this.sessionId, this.header, this);
     await this.markRunStarted(startedAt);
@@ -819,6 +825,7 @@ export class AgentRun {
         ...(input.attachments !== undefined && input.attachments.length > 0
           ? { attachments: input.attachments }
           : {}),
+        ...(input.directoryReferences ? { directoryReferences: input.directoryReferences } : {}),
         ...(input.quotes !== undefined && input.quotes.length > 0 ? { quotes: input.quotes } : {}),
         ...(input.inlineReferences !== undefined
           ? { inlineReferences: input.inlineReferences }
@@ -831,7 +838,6 @@ export class AgentRun {
   }
 
   async recordStoredSessionEvent(ev: SessionEvent): Promise<void> {
-    if (!this.recordsSessionMessages()) return;
     if (ev.type === 'token_usage') {
       await this.input.store.appendMessage(this.sessionId, { ...ev } satisfies StoredMessage);
     }
@@ -894,7 +900,7 @@ export class AgentRun {
         await this.recordStatusFromTransition(ev, transition, ev.ts);
       }
     }
-    if (turnStatus && !this.stopped && this.recordsSessionMessages()) {
+    if (turnStatus && !this.stopped) {
       const appendTurnState = this.input.hooks.appendTurnState(
         this.sessionId,
         this.turnId,
@@ -922,14 +928,14 @@ export class AgentRun {
       } else {
         this.turnFailed = true;
         this.finalStatus = transition ?? { status: 'blocked', blockedReason: 'unknown' };
-        if (this.recordsSessionMessages()) {
-          await this.input.hooks
-            .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-              ts: ev.ts,
-              errorClass: ev.reason ?? ev.code ?? 'unknown',
-            })
-            .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
-        }
+
+        await this.input.hooks
+          .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
+            ts: ev.ts,
+            errorClass: ev.reason ?? ev.code ?? 'unknown',
+          })
+          .catch((error) => this.enqueueTraceWriteFailure(error, 'terminal session projection'));
+
         this.markRunFailed(ev.reason ?? ev.code ?? 'unknown', ev.message, ev.ts);
       }
     }
@@ -1038,13 +1044,13 @@ export class AgentRun {
       return;
     }
     this.finalStatus = { status: 'blocked', blockedReason: 'unknown' };
-    if (this.recordsSessionMessages()) {
-      await this.input.hooks
-        .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
-          errorClass: error instanceof Error ? error.name : 'unknown',
-        })
-        .catch(() => {});
-    }
+
+    await this.input.hooks
+      .appendTurnState(this.sessionId, this.turnId, 'failed', this.lineage, {
+        errorClass: error instanceof Error ? error.name : 'unknown',
+      })
+      .catch(() => {});
+
     this.markRunFailed(
       error instanceof Error ? error.name : 'unknown',
       errorMessage(error),
@@ -1083,7 +1089,7 @@ export class AgentRun {
     } catch {
       // The user-visible turn already completed; preserve existing behavior.
     }
-    if (this.sawCompletion && this.recordsSessionMessages()) {
+    if (this.sawCompletion) {
       await this.input.store
         .appendMessage(this.sessionId, {
           type: 'system_note',
@@ -1097,10 +1103,6 @@ export class AgentRun {
     await this.finishRun(this.finalStatus, lastTs);
   }
 
-  private recordsSessionMessages(): boolean {
-    return this.input.recordSessionMessages !== false;
-  }
-
   private async createRunRecord(continuation?: RuntimeContinuation): Promise<void> {
     if (!this.input.runStore) {
       if (continuation) throw new Error('Runtime continuation requires a durable run store');
@@ -1110,6 +1112,9 @@ export class AgentRun {
       continuation && this.input.claimedRunHeader
         ? this.input.claimedRunHeader.createdAt
         : this.input.now();
+    const providerStateIdentity =
+      this.input.claimedRunHeader?.providerStateIdentity ?? this.providerStateIdentity;
+    this.providerStateIdentity = providerStateIdentity;
     const computedHeader: AgentRunHeader = {
       runId: this.runId,
       invocationId: this.invocationId,
@@ -1120,6 +1125,7 @@ export class AgentRun {
       ...(this.header.llmConnectionId === undefined
         ? {}
         : { llmConnectionId: this.header.llmConnectionId }),
+      ...(providerStateIdentity ? { providerStateIdentity } : {}),
       llmConnectionSlug: this.header.llmConnectionSlug,
       modelId: this.header.model,
       cwd: this.header.cwd,
@@ -1222,10 +1228,6 @@ export class AgentRun {
       sessionId: this.sessionId,
       currentRunId: this.runId,
       currentTurnId: this.turnId,
-      parentRunId: this.lineage.parentRunId,
-      resumedFromRunId: this.lineage.resumedFromRunId,
-      agentId: this.input.userInput.agentId,
-      linkedChildSession: this.input.header.subagentParent?.kind === 'subagent',
       runStore: this.input.runStore,
       runtimeEventStore: this.input.runtimeEventStore,
       runStoreAvailable: this.runStoreAvailable,
@@ -1603,19 +1605,6 @@ export class AgentRun {
   }
 
   /**
-   * Each physical provider request gets its own best-effort diagnostic row.
-   * One failed attempt append must not suppress later attempts or poison the
-   * general AgentRun store latch; a required capture independently gates every
-   * provider dispatch.
-   */
-  private enqueueBestEffortProviderAttempt(label: string, operation: () => Promise<void>): void {
-    const next = this.traceQueue
-      .then(operation, operation)
-      .catch((error) => this.enqueueTraceWriteFailure(error, label));
-    this.traceQueue = next.catch(() => {});
-  }
-
-  /**
    * Serialize a required Run-store write without consulting the best-effort
    * latch. A successful required write proves the store is available again;
    * a failed operation rejects its caller without changing the general latch.
@@ -1915,7 +1904,9 @@ async function appendUserMessageOnce(
 
 function isInteractionResumeAck(event: SessionEvent): boolean {
   return (
-    event.type === 'sandbox_boundary_decision_ack' || event.type === 'user_question_answer_ack'
+    event.type === 'sandbox_boundary_decision_ack' ||
+    event.type === 'user_question_answer_ack' ||
+    event.type === 'form_answer_ack'
   );
 }
 

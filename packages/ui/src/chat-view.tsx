@@ -40,7 +40,7 @@ import type {
   QuoteRef,
   ShellRunUpdate,
 } from '@maka/core/events';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { isDeepResearchSession } from '@maka/core/deep-research';
 import { Button, ButtonGroup, ChatMessageList, EmptyState, HStack, Spinner, Text } from '@astryxdesign/core';
 import { useChatLayoutContext } from '@astryxdesign/core/Chat';
 import { useLayer } from '@astryxdesign/core/Layer';
@@ -53,17 +53,19 @@ import {
   TurnRunningStatus,
   TurnView,
   TransientUserMessage,
-  type ReadAttachmentBytes,
   type TurnFooterActionMeta,
   type TurnPresentationDeriver,
 } from './chat-turn.js';
 import { useChatScroll } from './use-chat-scroll.js';
 import { useTranscriptScrollAuthority } from './transcript-scroll-authority.js';
-import { useTurnVirtualizer } from './use-turn-virtualizer.js';
 import { placeChatConversationItems } from './chat-conversation-items.js';
 import { useUiLocale } from './locale-context.js';
 import { getConversationCopy } from './conversation-copy.js';
 import { SessionContextLayer, type SessionContextGoal } from './session-context-layer.js';
+import {
+  SessionAttachmentProvider,
+  type ReadAttachmentBytes,
+} from './attachment-image.js';
 
 export interface LiveContentActivationSnapshot {
   turnId: string;
@@ -75,6 +77,47 @@ export interface TranscriptHistoryNoticeProps {
   actionLabel: string;
   isPending: boolean;
   onReturnToLatest(): Promise<void> | void;
+}
+
+export interface ChatViewGoalIndicatorProps {
+  /**
+   * Active autonomous-goal indicator for the session, or undefined when no
+   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
+   * pause/resume/clear affordances so a token-burning goal is never invisible
+   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
+   * autonomous continuation; `onPause`/`onResume` control it without a model
+   * turn.
+   */
+  goalIndicator?: SessionContextGoal;
+}
+
+/** A rail click's outstanding request that the reveal for its Turn agree with it. */
+export type RailAlignmentClaim = { turnId: string; nonce?: number };
+
+/**
+ * Which edge the transcript's reveal should use for the target the shell is
+ * publishing, and what is left of the rail's claim afterwards.
+ *
+ * A claim belongs to the one navigation its click asked for, not to the Turn:
+ * it binds to the first target that arrives for that Turn and is spent on
+ * anything else. A later search for the same Turn is a different command with
+ * its own nonce, and gets the search contract back.
+ */
+export function resolveRailAlignedTarget<T extends { turnId: string; nonce: number }>(
+  claim: RailAlignmentClaim | undefined,
+  target: T | undefined,
+): {
+  claim: RailAlignmentClaim | undefined;
+  target: (T & { align: 'start' | 'center' }) | undefined;
+} {
+  if (!target) return { claim, target: undefined };
+  const aimedByRail = claim !== undefined
+    && claim.turnId === target.turnId
+    && (claim.nonce === undefined || claim.nonce === target.nonce);
+  return {
+    claim: aimedByRail ? { turnId: target.turnId, nonce: target.nonce } : undefined,
+    target: { ...target, align: aimedByRail ? 'start' : 'center' },
+  };
 }
 
 /** Persistent navigation position with a direct path back to the transcript tail. */
@@ -124,6 +167,7 @@ export interface TransientUserMessageProjection {
   text: string;
   ts: number;
   attachments?: readonly AttachmentRef[];
+  directoryReferences?: readonly import('@maka/core/events').DirectoryReference[];
   quotes?: readonly QuoteRef[];
   inlineReferences?: readonly InlineReference[];
   /**
@@ -146,7 +190,7 @@ export function ChatView(props: {
   /** Called once the streaming bubble has displayed the final text and can hand off to history. */
   onStreamingSettled?(messageId?: string): void;
   /**
-   * True while the live turn's running status line (spinner · working phrase ·
+   * True while the live turn's running status line (spinner · status label ·
    * elapsed clock) should show, as the trailing entry of the tail turn.
    *
    * One flag for the whole turn, replacing the #646 pair that split the wait
@@ -170,7 +214,6 @@ export function ChatView(props: {
    *  avoid bringing the full provider SVG library into @maka/ui. */
   renderProviderMark?(type: ProviderType): ReactNode;
   modelChoices?: ChatModelChoice[];
-  modelChangePending?: boolean;
   onModelChange?(input: {
     llmConnectionId: string;
     llmConnectionSlug: string;
@@ -202,15 +245,6 @@ export function ChatView(props: {
     renderWhenAnchorMissing?: boolean;
     content: ReactNode;
   }>;
-  /**
-   * Active autonomous-goal indicator for the session, or undefined when no
-   * goal is running. Surfaces the loop (turn counter, elapsed, tokens) with
-   * pause/resume/clear affordances so a token-burning goal is never invisible
-   * or uncontrollable — this IS the desktop kill switch. `onClear` stops
-   * autonomous continuation; `onPause`/`onResume` control it without a model
-   * turn.
-   */
-  goalIndicator?: SessionContextGoal;
   /** Error from loading the active session's persisted message log. */
   messageLoadError?: string;
   messageLoadRetryPending?: boolean;
@@ -259,9 +293,12 @@ export function ChatView(props: {
    * chat view only scrolls/highlights the already-rendered turn.
    */
   scrollTargetTurn?: { turnId: string; nonce: number };
+  /** Runtime-only reading position restored without search focus or highlight. */
+  restoreTargetTurn?: { turnId: string; unavailable?: boolean };
+  onReadingAnchorChange?(turnId?: string): void;
   scrollBehavior: ScrollBehavior;
   hasOlderHistory?: boolean;
-  onLoadEarlierHistory?(): Promise<void> | void;
+  onLoadEarlierHistory?(anchorTurnId?: string): Promise<void> | void;
   returnToLatest?: {
     title: string;
     label: string;
@@ -299,12 +336,9 @@ export function ChatView(props: {
   };
   onRevisionNavigate?: (sessionId: string) => void;
   /**
-   * Host reader for image attachment bytes, threaded to each turn's user-message
-   * thumbnails. The desktop shell passes its preload `attachments.readBytes`;
-   * non-desktop hosts omit it and image thumbnails stay in their pending
-   * skeleton. Keeps @maka/ui host-agnostic with no direct host-global access.
-   * Pass an identity-stable reference so the memoized TurnViews keep skipping
-   * reconciliation on the hot streaming path.
+   * Host reader for image attachment bytes. The desktop shell passes its preload
+   * `attachments.readBytes`; non-desktop hosts may omit it. Keeps @maka/ui
+   * host-agnostic with no direct host-global access.
    */
   onReadAttachmentBytes?: ReadAttachmentBytes;
   /**
@@ -333,7 +367,7 @@ export function ChatView(props: {
    * seeded with the quote. Omitted by hosts that don't support the side panel.
    */
   onAskAboutSelection?(input: { text: string; turnId: string }): void;
-}) {
+} & ChatViewGoalIndicatorProps) {
   const locale = useUiLocale();
   const conversationCopy = getConversationCopy(locale);
   const copy = conversationCopy.chat;
@@ -505,31 +539,27 @@ export function ChatView(props: {
   }
   const scrollRef = chatLayout.scrollContainerRef;
   const scrollAuthority = useTranscriptScrollAuthority();
-  const orderedTurnIds = useMemo(() => turns.map((turn) => turn.turnId), [turns]);
-  const sessionId = props.activeSession?.id;
-  const {
-    start: mountStart,
-    end: mountEnd,
-    beforeHeight,
-    afterHeight,
-    revealTurn,
-  } = useTurnVirtualizer({
-    sessionId,
-    turnIds: orderedTurnIds,
-    scrollRef,
-    targetTurnId: props.scrollTargetTurn?.turnId,
-    targetKey: props.scrollTargetTurn?.nonce,
-  });
+  // A rail click aims itself: it puts the prompt at the top of the scrollport
+  // and holds it there while the loaded range settles. Asking the shell to load
+  // an unloaded prompt also publishes a scroll target, and that reveal centres
+  // the turn with the app's scroll motion — a second answer to "where should
+  // this turn sit", and an animated one, which walks the prompt back off the
+  // top for a second after the rail has landed it. The reveal keeps its other
+  // job of recording the reading position; it just has to agree with the rail
+  // about the edge.
+  const railClaimRef = useRef<RailAlignmentClaim | undefined>(undefined);
   const navigatePromptRailFallback = useCallback((turn: PromptAnchorRailTurn) => {
-    if (turnIdsRef.current.has(turn.turnId)) revealTurn(turn.turnId);
-    else if (turn.sequence !== undefined) {
+    if (!turnIdsRef.current.has(turn.turnId) && turn.sequence !== undefined) {
+      railClaimRef.current = { turnId: turn.turnId };
       loadTranscriptTurnRef.current?.({ turnId: turn.turnId, sequence: turn.sequence });
     }
-  }, [revealTurn]);
-  const mountedTurns = turns.slice(mountStart, mountEnd);
+  }, []);
+  const railAlignment = resolveRailAlignedTarget(railClaimRef.current, props.scrollTargetTurn);
+  railClaimRef.current = railAlignment.claim;
+  const scrollTargetTurn = railAlignment.target;
   const inlineTransientMessages = tailTurnId
     ? transientMessages.filter((message) => {
-        const turn = mountedTurns.find((candidate) => candidate.turnId === tailTurnId);
+        const turn = turns.find((candidate) => candidate.turnId === tailTurnId);
         if (
           turn === undefined
           || turn.user !== undefined
@@ -552,7 +582,9 @@ export function ChatView(props: {
     scrollRef,
     sessionId: props.activeSession?.id,
     messages: props.messages,
-    target: props.scrollTargetTurn,
+    target: scrollTargetTurn,
+    restoreTarget: props.restoreTargetTurn,
+    onReadingAnchorChange: props.onReadingAnchorChange,
     behavior: props.scrollBehavior,
     hasOlderHistory: props.hasOlderHistory,
     onLoadEarlierHistory: props.onLoadEarlierHistory,
@@ -657,11 +689,15 @@ export function ChatView(props: {
         );
 
   return (
-    <section
-      className="maka-main agents-chat-panel agents-chat-view-root"
-      role="region"
-      aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+    <SessionAttachmentProvider
+      sessionId={props.activeSession.id}
+      readBytes={props.onReadAttachmentBytes}
     >
+      <section
+        className="maka-main agents-chat-panel agents-chat-view-root"
+        role="region"
+        aria-label={copy.conversationAriaLabel(props.activeSession.name)}
+      >
       {props.returnToLatest ? (
         <TranscriptHistoryNotice
           title={props.returnToLatest.title}
@@ -714,27 +750,26 @@ export function ChatView(props: {
         >
           {showEmptyState ? null : (
             <>
-              {chat.length === 0 && !streamingActive ? emptyContent : null}
-              {beforeHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: beforeHeight, flex: '0 0 auto', transition: 'none' }}
-                />
-              )}
-              {mountedTurns.map((turn) => {
+              {/* A transient is already the first visible conversation row.
+                  Do not prepend the empty-chat Maka hero while that optimistic
+                  message waits for durable transcript or live-turn identity. */}
+              {chat.length === 0
+                && transientMessages.length === 0
+                && !streamingActive
+                ? emptyContent
+                : null}
+              {turns.map((turn) => {
                 return (
                   <div
                     key={turn.turnId}
-                    className="maka-turn-virtual-item"
-                    data-virtual-turn-id={turn.turnId}
+                    className="maka-transcript-turn"
+                    data-transcript-turn-id={turn.turnId}
                   >
                     {turn.turnId === tailTurnId
                       ? inlineTransientMessages.map((message) => (
                           <TransientUserMessage
                             key={message.id}
                             message={message}
-                            onReadAttachmentBytes={props.onReadAttachmentBytes}
                           />
                         ))
                       : null}
@@ -758,7 +793,6 @@ export function ChatView(props: {
                         : undefined}
                       lineageBadges={turnPresentation?.lineageBadgesByTurn[turn.turnId]}
                       onLineageBadgeClick={stableLineageBadgeClick}
-                      onReadAttachmentBytes={props.onReadAttachmentBytes}
                       onOpenLinkedSession={
                         props.onOpenLinkedSession ? stableOpenLinkedSession : undefined
                       }
@@ -788,20 +822,12 @@ export function ChatView(props: {
                   </div>
                 );
               })}
-              {afterHeight > 0 && (
-                <div
-                  aria-hidden="true"
-                  className="maka-turn-virtual-spacer"
-                  style={{ height: afterHeight, flex: '0 0 auto', transition: 'none' }}
-                />
-              )}
               {transientMessages.filter(
                 (message) => !inlineTransientMessageIds.has(message.id),
               ).map((message) => (
                 <TransientUserMessage
                   key={message.id}
                   message={message}
-                  onReadAttachmentBytes={props.onReadAttachmentBytes}
                 />
               ))}
               {/* #642 fallback: streaming began before the optimistic user turn
@@ -822,7 +848,7 @@ export function ChatView(props: {
                         <ModelProviderRetryIndicator retry={props.liveTurn.providerRetry} />
                       ) : (
                         /* No turn here means no `startedAt`, so this one shows
-                           the working phrase without a clock. */
+                           the status label without a clock. */
                         (props.runningStatus && <TurnRunningStatus />)
                       )}
                     </div>
@@ -891,7 +917,8 @@ export function ChatView(props: {
           )
         ) : null}
       </div>
-    </section>
+      </section>
+    </SessionAttachmentProvider>
   );
 }
 

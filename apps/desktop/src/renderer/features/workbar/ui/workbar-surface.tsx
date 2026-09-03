@@ -42,8 +42,8 @@ import {
   useSortable,
 } from '@dnd-kit/sortable';
 import {
-  TaskLedgerPanel,
-  deriveTaskLedgerPanelModel,
+  SessionTodoPanel,
+  sessionTodoActiveCount,
   IconButton,
   Composer,
   useUiLocale,
@@ -86,7 +86,7 @@ import {
   sessionWorkbarTabsToRight,
   terminalRefFromWorkbarTab,
 } from '../model/workbar-tabs';
-import { useSessionTasks } from '../tools/tasks/use-session-tasks';
+import { useSessionTodo } from '../tools/tasks/use-session-todo';
 import { WorkbarToggle } from './workbar-toggle';
 import { WorkBoardPanel } from '../../../work-board-panel.js';
 import { getDesktopConversationCopy } from '../../../locales/conversation-copy.js';
@@ -241,7 +241,6 @@ function WorkbarTabStrip(props: {
   activeTabId: string | null;
   taskCount: number;
   artifactCount: number;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   onActivate: (tabId: string) => void;
   onClose: (tab: SessionWorkbarTab) => void;
@@ -293,17 +292,6 @@ function WorkbarTabStrip(props: {
         ?.focus();
     });
   };
-  const busyTabIds = new Set(
-    props.tabs
-      .filter(
-        (tab) =>
-          tab.kind === 'side-chat' &&
-          props.preparingSideChatPanelIds?.has(
-            tab.id.slice('side-chat:'.length),
-          ) === true,
-      )
-      .map((tab) => tab.id),
-  );
   useEffect(() => {
     const tabList = tabListRef.current;
     if (!tabList || !props.activeTabId) return;
@@ -356,16 +344,12 @@ function WorkbarTabStrip(props: {
                 index={index}
                 tabs={props.tabs}
                 selected={tab.id === props.activeTabId}
-                busy={
-                  busyTabIds.has(tab.id)
-                }
                 running={
                   tab.kind === 'side-chat' &&
                   props.activeSideChatPanelIds?.has(
                     tab.id.slice('side-chat:'.length),
                   ) === true
                 }
-                busyTabIds={busyTabIds}
                 count={
                   tab.kind === 'tasks'
                     ? props.taskCount
@@ -413,9 +397,7 @@ function SortableWorkbarTab(props: {
   index: number;
   tabs: readonly SessionWorkbarTab[];
   selected: boolean;
-  busy: boolean;
   running: boolean;
-  busyTabIds: ReadonlySet<string>;
   count?: number;
   onActivate: (tabId: string) => void;
   onClose: (tab: SessionWorkbarTab) => void;
@@ -436,7 +418,7 @@ function SortableWorkbarTab(props: {
     setNodeRef,
     transform,
     transition,
-  } = useSortable({ id: props.tab.id, disabled: props.busy });
+  } = useSortable({ id: props.tab.id });
   const style = {
     transform: transform
       ? `translate3d(${Math.round(transform.x)}px, 0, 0)`
@@ -451,7 +433,7 @@ function SortableWorkbarTab(props: {
       activationHistory: [props.tab.id],
     },
     props.tab.id,
-  ).filter((tab) => !props.busyTabIds.has(tab.id));
+  );
   const tabsToRight = sessionWorkbarTabsToRight(
     {
       tabs: [...props.tabs],
@@ -460,7 +442,7 @@ function SortableWorkbarTab(props: {
       activationHistory: [props.tab.id],
     },
     props.tab.id,
-  ).filter((tab) => !props.busyTabIds.has(tab.id));
+  );
 
   return (
     <ContextMenu
@@ -479,12 +461,12 @@ function SortableWorkbarTab(props: {
           : []),
         {
           label: copy.moveLeft,
-          isDisabled: props.busy || props.index === 0,
+          isDisabled: props.index === 0,
           onClick: () => props.onMove(props.tab.id, 'left'),
         },
         {
           label: copy.moveRight,
-          isDisabled: props.busy || props.index === props.tabs.length - 1,
+          isDisabled: props.index === props.tabs.length - 1,
           onClick: () => props.onMove(props.tab.id, 'right'),
         },
         {
@@ -492,7 +474,6 @@ function SortableWorkbarTab(props: {
             props.placement === 'right'
               ? copy.moveToBottom
               : copy.moveToRight,
-          isDisabled: props.busy,
           onClick: () =>
             props.onMoveToPanel(
               props.tab.id,
@@ -502,7 +483,6 @@ function SortableWorkbarTab(props: {
         { type: 'divider' },
         {
           label: copy.close,
-          isDisabled: props.busy,
           onClick: () => props.onClose(props.tab),
         },
         {
@@ -523,7 +503,6 @@ function SortableWorkbarTab(props: {
         data-workbar-tab-id={props.tab.id}
         data-active={props.selected || undefined}
         data-dragging={isDragging || undefined}
-        data-preparing={props.busy || undefined}
         data-running={props.running || undefined}
         data-preview={props.tab.preview || undefined}
         style={style}
@@ -539,7 +518,7 @@ function SortableWorkbarTab(props: {
               : label
           }
           aria-selected={props.selected}
-          aria-busy={props.busy || props.running || undefined}
+          aria-busy={props.running || undefined}
           tabIndex={props.selected ? 0 : -1}
           className="maka-workbar-tab-select"
           onClick={() => props.onActivate(props.tab.id)}
@@ -548,7 +527,7 @@ function SortableWorkbarTab(props: {
           onDoubleClick={() => {
             if (props.tab.preview) props.onPin(props.tab.id);
           }}
-          icon={tabIcon(props.tab, props.busy || props.running)}
+          icon={tabIcon(props.tab, props.running)}
           endContent={props.count !== undefined ? <TabCount count={props.count} /> : undefined}
         >
           <span
@@ -558,18 +537,16 @@ function SortableWorkbarTab(props: {
             {label}
           </span>
         </Button>
-        {!props.busy ? (
-          <Tooltip content={copy.closeTab(label)}>
-            <IconButton
-              label={copy.closeTab(label)}
-              icon={<X size={ICON_SIZE.meta} aria-hidden />}
-              variant="ghost"
-              size="sm"
-              className="maka-workbar-tab-close"
-              onClick={() => props.onClose(props.tab)}
-            />
-          </Tooltip>
-        ) : null}
+        <Tooltip content={copy.closeTab(label)}>
+          <IconButton
+            label={copy.closeTab(label)}
+            icon={<X size={ICON_SIZE.meta} aria-hidden />}
+            variant="ghost"
+            size="sm"
+            className="maka-workbar-tab-close"
+            onClick={() => props.onClose(props.tab)}
+          />
+        </Tooltip>
       </div>
     </ContextMenu>
   );
@@ -709,18 +686,21 @@ export function WorkbarSurface(props: {
   onRemoveQuote?: (target: CompanionQuoteTarget) => void;
   onForkVisibilityChange?: (event: CompanionForkVisibilityEvent) => void;
   onContentStateChange?: (panelId: string, hasContent: boolean) => void;
-  onPreparingStateChange?: (panelId: string, preparing: boolean) => void;
   onInitialPromptStarted?: (panelId: string) => void;
   onPromptAccepted?: (panelId: string, prompt: string) => void;
   onActivityStateChange?: (panelId: string, active: boolean) => void;
-  preparingSideChatPanelIds?: ReadonlySet<string>;
   activeSideChatPanelIds?: ReadonlySet<string>;
   sourceSession?: SessionSummary;
   modelChoices?: readonly ChatModelChoice[];
+  confirmBypass: () => Promise<boolean>;
 }) {
-  const copy = getDesktopConversationCopy(useUiLocale()).workbar;
-  const sessionTasks = useSessionTasks(props.sessionId);
-  const taskCount = deriveTaskLedgerPanelModel(sessionTasks.tasks).activeCount;
+  const locale = useUiLocale();
+  const copy = getDesktopConversationCopy(locale).workbar;
+  const sessionTodo = useSessionTodo(props.sessionId, {
+    locale,
+    loadFailed: copy.todoLoadFailed,
+  });
+  const taskCount = sessionTodoActiveCount(sessionTodo.items);
   const [artifactCount, setArtifactCount] = useState(0);
   const placements: SessionWorkbarPlacement[] = ['right', 'bottom'];
   const positionedTabs = placements.flatMap((placement) =>
@@ -757,7 +737,6 @@ export function WorkbarSurface(props: {
               <WorkbarTabStrip
                 tabs={panel.tabs}
                 activeTabId={showingLauncher ? null : panel.activeTabId}
-                preparingSideChatPanelIds={props.preparingSideChatPanelIds}
                 activeSideChatPanelIds={props.activeSideChatPanelIds}
                 taskCount={taskCount}
                 artifactCount={artifactCount}
@@ -821,11 +800,11 @@ export function WorkbarSurface(props: {
           );
         } else if (tab.kind === 'tasks') {
           content = (
-            <TaskLedgerPanel
-              tasks={sessionTasks.tasks}
-              loading={sessionTasks.loading}
-              error={sessionTasks.error}
-              onRetry={sessionTasks.retry}
+            <SessionTodoPanel
+              items={sessionTodo.items}
+              loading={sessionTodo.loading}
+              error={sessionTodo.error}
+              onRetry={sessionTodo.retry}
             />
           );
         } else if (tab.kind === 'work-board') {
@@ -875,11 +854,11 @@ export function WorkbarSurface(props: {
                 initialPrompt={quote.initialPrompt}
                 sourceSession={props.sourceSession}
                 modelChoices={props.modelChoices ?? []}
+                confirmBypass={props.confirmBypass}
                 onQuotesConsumed={props.onQuotesConsumed ?? (() => {})}
                 onRemoveQuote={props.onRemoveQuote}
                 onForkVisibilityChange={props.onForkVisibilityChange}
                 onContentStateChange={props.onContentStateChange}
-                onPreparingStateChange={props.onPreparingStateChange}
                 onInitialPromptStarted={props.onInitialPromptStarted}
                 onPromptAccepted={props.onPromptAccepted}
                 onActivityStateChange={props.onActivityStateChange}

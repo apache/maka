@@ -235,28 +235,30 @@ export const ContiguousDiffGroup: Story = {
 
 const longIntentItems: ToolActivityItem[] = [
   {
-    toolUseId: 'explore-agent-long-intent',
-    toolName: 'ExploreAgent',
-    displayName: '只读探索',
+    toolUseId: 'grep-long-intent',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     activityKind: 'tool',
     status: 'completed',
-    intent: '审计模型选择、切换、持久化、event log、replay/resume 路径：当前模型事实由谁持有，何时切换，是否已有事件或消息可表达',
-    args: {},
+    intent:
+      '审计模型选择、切换、持久化、event log、replay/resume 路径：当前模型事实由谁持有，何时切换，是否已有事件或消息可表达',
+    args: { pattern: 'model|replay|resume', path: 'packages' },
   },
   {
-    toolUseId: 'explore-agent-long-intent-2',
-    toolName: 'ExploreAgent',
-    displayName: '只读探索',
+    toolUseId: 'grep-long-intent-2',
+    toolName: 'Grep',
+    displayName: 'Search repository',
     activityKind: 'tool',
     status: 'completed',
-    intent: '审计提示词构筑与缓存路径：追踪 durable system prompt、turnTailPrompt、provider-visible messages 与 request shape',
-    args: {},
+    intent:
+      '审计提示词构筑与缓存路径：追踪 durable system prompt、provider-visible messages 与 request shape',
+    args: { pattern: 'systemPrompt|requestShape', path: 'packages' },
   },
 ];
 
-// Regression path: a narrow conversation contains a grouped ExploreAgent run
-// whose intent summaries are much wider than the reading column. Expanding the
-// group must truncate those rows without widening the turn itself.
+// Regression path: a narrow conversation contains a grouped tool run whose
+// intent summaries are much wider than the reading column. Expanding the group
+// must truncate those rows without widening the turn itself.
 export const LongIntentGroupNarrow: Story = {
   args: { items: longIntentItems },
   render: (args) => (

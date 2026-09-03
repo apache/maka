@@ -119,7 +119,6 @@ export const ALLOWED = {
     useCommandPalette: 1,
     useComposerAttachments: 1,
     useEffect: 14,
-    useGoalController: 1,
     useKeyboardHelp: 1,
     useLayoutEffect: 2,
     useModuleHubController: 1,
@@ -137,7 +136,8 @@ export const ALLOWED = {
     // replaces put three `useState`, four effects and a `useStableActions`
     // facade on this fiber.
     useSessionNavigationReads: 1,
-    useSessionSettingIntent: 2,
+    useSessionCollaborationDialog: 1,
+    useSessionSettingIntent: 1,
     useSettingsModal: 1,
     useShellAppearance: 1,
     useShellChatModel: 1,
@@ -147,8 +147,8 @@ export const ALLOWED = {
     useShellResume: 1,
     useShellRunUpdates: 1,
     useShellSearch: 1,
-    useStableActions: 7,
-    useState: 16,
+    useStableActions: 6,
+    useState: 15,
     useTaskEntryController: 1,
     useTaskSubmissionReadiness: 1,
     useToast: 1,

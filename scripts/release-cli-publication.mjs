@@ -22,12 +22,17 @@ import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { CLI_RELEASE_ARTIFACT_LIMITS } from './release-cli-artifact-policy.mjs';
-import { assertProductNightlyVersion, parseProductReleaseVersion } from './release-version.mjs';
+import {
+  assertProductNightlyVersion,
+  parseProductNightlyVersion,
+  parseProductReleaseVersion,
+} from './release-version.mjs';
 
 const PACKAGE_NAME = 'maka-agent';
 const REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const REPOSITORY = 'apache/maka';
 const PUBLICATION_WORKFLOW_PATH = '.github/workflows/npm-publication.yml';
+const REGISTRY_REQUEST_TIMEOUT_MS = 30_000;
 const RELEASE_RECORD_KEYS = [
   'schemaVersion',
   'packageName',
@@ -213,6 +218,54 @@ export async function fetchRegistryRelease({
   return { ...record, tarballPath, sha256 };
 }
 
+export async function resolveRegistryNightlyPredecessor({ fetchImpl = fetch } = {}) {
+  const packageMetadata = await fetchJson(
+    fetchImpl,
+    `${REGISTRY_ORIGIN}/${PACKAGE_NAME}`,
+    'package metadata',
+  );
+  const version = packageMetadata?.['dist-tags']?.nightly;
+  parseProductNightlyVersion(version);
+
+  const versionMetadata = await fetchJson(
+    fetchImpl,
+    `${REGISTRY_ORIGIN}/${PACKAGE_NAME}/${encodeURIComponent(version)}`,
+    'package version metadata',
+    'application/json',
+  );
+  if (versionMetadata.name !== PACKAGE_NAME || versionMetadata.version !== version) {
+    throw new Error('Registry Nightly identity does not match its dist-tag');
+  }
+
+  const tarball = `${PACKAGE_NAME}-${version}.tgz`;
+  const tarballUrl = parseRegistryTarballUrl(versionMetadata.dist?.tarball, tarball);
+  const integrity = parseSha512Integrity(versionMetadata.dist?.integrity);
+  return {
+    version,
+    tarballUrl,
+    integrity,
+  };
+}
+
+export async function assertRegistryNightlyPredecessor({
+  expectedVersion,
+  expectedTarballUrl,
+  expectedIntegrity,
+  fetchImpl = fetch,
+}) {
+  const current = await resolveRegistryNightlyPredecessor({ fetchImpl });
+  if (
+    current.version !== expectedVersion ||
+    current.tarballUrl !== expectedTarballUrl ||
+    current.integrity !== expectedIntegrity
+  ) {
+    throw new Error(
+      `Qualified npm Nightly predecessor ${expectedVersion} is no longer current; found ${current.version}`,
+    );
+  }
+  return current;
+}
+
 export function validateSignatureAudit({ releaseDirectory, audit }) {
   const record = loadReleaseRecord(releaseDirectory);
   if (!Array.isArray(audit?.invalid) || !Array.isArray(audit?.missing)) {
@@ -380,6 +433,7 @@ async function fetchJson(fetchImpl, url, label, accept = 'application/vnd.npm.in
   const response = await fetchImpl(url, {
     headers: { accept },
     redirect: 'error',
+    signal: AbortSignal.timeout(REGISTRY_REQUEST_TIMEOUT_MS),
   });
   if (!response.ok)
     throw new Error(`Registry ${label} request failed with status ${response.status}`);
@@ -436,6 +490,18 @@ function parseRegistryTarballUrl(value, expectedName) {
     throw new Error('Registry package metadata points outside the npm registry release path');
   }
   return url.href;
+}
+
+function parseSha512Integrity(value) {
+  if (typeof value !== 'string' || !value.startsWith('sha512-')) {
+    throw new Error('Registry package metadata has no valid SHA-512 integrity');
+  }
+  const encoded = value.slice('sha512-'.length);
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.byteLength !== 64 || bytes.toString('base64') !== encoded) {
+    throw new Error('Registry package metadata has no valid SHA-512 integrity');
+  }
+  return value;
 }
 
 function exactKeys(value, keys, label) {
@@ -555,6 +621,25 @@ async function main() {
     });
     return;
   }
+  if (command === 'resolve-nightly-predecessor' && args.length === 1) {
+    const [output] = args;
+    const predecessor = await resolveRegistryNightlyPredecessor();
+    appendOutputs(output, {
+      version: predecessor.version,
+      tarball_url: predecessor.tarballUrl,
+      integrity: predecessor.integrity,
+    });
+    return;
+  }
+  if (command === 'assert-nightly-predecessor' && args.length === 3) {
+    const [expectedVersion, expectedTarballUrl, expectedIntegrity] = args;
+    await assertRegistryNightlyPredecessor({
+      expectedVersion,
+      expectedTarballUrl,
+      expectedIntegrity,
+    });
+    return;
+  }
   if (command === 'validate-audit' && args.length === 2) {
     const [releaseDirectory, auditPath] = args;
     validateSignatureAudit({
@@ -564,7 +649,7 @@ async function main() {
     return;
   }
   throw new Error(
-    `Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|validate-audit> ...`,
+    `Usage: release-cli-publication.mjs <prepare-stage|prepare-nightly|prepare-audit|validate-stage-run|fetch-registry|resolve-nightly-predecessor|assert-nightly-predecessor|validate-audit> ...`,
   );
 }
 

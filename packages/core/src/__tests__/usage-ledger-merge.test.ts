@@ -81,6 +81,7 @@ function legacySummary(overrides: Partial<UsageSummaryV2> = {}): UsageSummaryV2 
     cacheHitRequests: 0,
     cacheCreateRequests: 0,
     errorRequests: 1,
+    totalDurationMs: 0,
     ...overrides,
   };
 }
@@ -142,6 +143,34 @@ describe('usage ledger merge', () => {
     assert.equal(merged.provenance.legacyRecords, 2);
     assert.equal(merged.provenance.coverage.attempts, 1);
     assert.equal(merged.provenance.coverage.pricedAttempts, 1);
+  });
+
+  test('merges recorded call time from both ledgers', () => {
+    const merged = mergeUsageSummary(
+      legacySummary({ totalDurationMs: 700 }),
+      {
+        attempts: [attempt({ attemptId: 'a', latencyMs: 500 })],
+        unreadableRecords: 0,
+        pendingRepairs: 0,
+      },
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(merged.totalDurationMs, 1_200);
+
+    // The projection always measures the attempts it counts; a legacy store
+    // with no recorded time simply contributes a zero to the sum.
+    const canonicalOnly = mergeUsageSummary(
+      legacySummary(),
+      {
+        attempts: [attempt({ attemptId: 'a', latencyMs: 500 })],
+        unreadableRecords: 0,
+        pendingRepairs: 0,
+      },
+      { range: 'all' },
+      NOW,
+    );
+    assert.equal(canonicalOnly.totalDurationMs, 500);
   });
 
   test('unpriced canonical spend stays out of the total and is reported instead', () => {

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { withTimeout } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -41,10 +42,8 @@ import type { AgentRunHeader } from '@maka/core/agent-run';
 import type { MessageContent } from '@maka/core/events';
 import type { ConnectionCatalogEntry } from '@maka/core/runtime-policy';
 import type { StoredMessage } from '@maka/core/session';
-import type { Task } from '@maka/core/task-ledger';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
-import { buildTaskLedgerTools } from '@maka/runtime/task-ledger-tools';
 import {
   buildRecoveredTerminalRuntimeEvent,
   classifyTerminalRuntimeLedger,
@@ -67,7 +66,6 @@ import {
   tryAcquireInteractiveRootReader,
   type StorageRootCapability,
 } from '@maka/storage/root-authority';
-import { openInteractiveTaskLedgerStoreForWrite } from '@maka/storage/task-ledger-authority';
 import {
   connectRuntimeHost,
   RuntimeHostOperationError,
@@ -78,17 +76,13 @@ import {
 import {
   decodeHostFrame,
   RUNTIME_HOST_PROTOCOL_VERSION,
-  TASK_LEDGER_PAGE_MAX_ITEMS,
   type ConnectionCatalogQueryResult,
   type InteractionPendingSnapshot,
   type SubscriptionFrame,
-  type TaskLedgerQueryResult,
-  type TaskLedgerRevision,
   type TurnMessageSubmitInput,
   type TurnSnapshot,
 } from '../protocol/index.js';
 import { SessionAdmissionGate } from '../server/session-admission-gate.js';
-import { HostTaskLedgerCoordinator } from '../server/task-ledger-coordinator.js';
 import { FramedTransport } from '../transport/framed-transport.js';
 
 import {
@@ -111,7 +105,6 @@ import {
   waitForTerminalTurn,
   waitForTurn,
   withExecutionRoot,
-  withTimeout,
 } from './fixtures/execution-host-suite.js';
 
 test('subscribed Clients receive the durable steering echo as a session event', async () => {
@@ -287,38 +280,41 @@ test('steering becomes durable and ordered followups automatically start the nex
     }
 
     const chain = await fixture.readAdmissionChain();
-    assert.equal(chain.length, 2);
+    assert.equal(chain.length, 3);
     assert.equal(chain[1]?.previousRootTurnId, firstTurnId);
-    assert.equal(chain[1]?.userMessageId, null);
-    assert.deepEqual(
-      chain[1]?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
-        messageId,
-        content,
-        placement,
-        disposition,
-      })),
-      orderedFollowupSources.map((source) => ({
-        ...source,
-        placement: 'next_turn',
-        disposition: 'followup',
-      })),
+    assert.equal(chain[2]?.previousRootTurnId, chain[1]?.turnId);
+    for (const [index, source] of orderedFollowupSources.entries()) {
+      const admission = chain[index + 1];
+      assert.equal(admission?.userMessageId, source.messageId);
+      assert.deepEqual(
+        admission?.sourceMessages.map(({ messageId, content, placement, disposition }) => ({
+          messageId,
+          content,
+          placement,
+          disposition,
+        })),
+        [{ ...source, placement: 'next_turn', disposition: 'followup' }],
+      );
+    }
+    const followupTurnIds = chain.slice(1).map((admission) => admission.turnId);
+    const followupLedgers = await Promise.all(
+      followupTurnIds.map((turnId) => fixture.readTurn(turnId)),
     );
-    assert.deepEqual(chain[1]?.normalizedInput, {
-      text: `${orderedFollowupSources[0].content.text}\n\n${orderedFollowupSources[1].content.text}`,
-      displayText: `${orderedFollowupSources[0].content.text}\n\n${orderedFollowupSources[1].content.displayText}`,
-      attachments: orderedFollowupSources[1].content.attachments,
-      quotes: orderedFollowupSources.flatMap((source) => source.content.quotes ?? []),
-    });
-    const followupTurnId = chain[1]?.turnId;
-    assert.ok(followupTurnId);
-    const followupLedger = await fixture.readTurn(followupTurnId);
     const expectedQuotes = orderedFollowupSources.flatMap((source) => source.content.quotes ?? []);
-    assert.equal(followupLedger.userMessages.length, followupSources.length);
     assert.deepEqual(
-      followupLedger.userMessages.flatMap((message) => message.quotes ?? []),
+      followupLedgers.map((ledger) => ledger.userMessages.length),
+      [1, 1],
+    );
+    assert.deepEqual(
+      followupLedgers.flatMap((ledger) =>
+        ledger.userMessages.flatMap((message) => message.quotes ?? []),
+      ),
       expectedQuotes,
     );
-    assert.deepEqual(userRuntimeContent(followupLedger.runtimeEvents)?.quotes, expectedQuotes);
+    assert.deepEqual(
+      followupLedgers.flatMap((ledger) => userRuntimeContent(ledger.runtimeEvents)?.quotes ?? []),
+      expectedQuotes,
+    );
     const sessionUserMessages = await fixture.readSessionUserMessages();
     for (const source of orderedFollowupSources) {
       assert.equal(
@@ -327,13 +323,15 @@ test('steering becomes durable and ordered followups automatically start the nex
       );
     }
     assert.equal(
-      sessionUserMessages.filter((message) => message.turnId === followupTurnId).length,
+      sessionUserMessages.filter((message) => followupTurnIds.includes(message.turnId)).length,
       orderedFollowupSources.length,
     );
     assert.deepEqual(
-      sessionUserMessages
-        .filter((message) => message.turnId === followupTurnId)
-        .map((message) => message.id),
+      followupTurnIds.flatMap((turnId) =>
+        sessionUserMessages
+          .filter((message) => message.turnId === turnId)
+          .map((message) => message.id),
+      ),
       orderedFollowupSources.map((source) => source.messageId),
     );
   });

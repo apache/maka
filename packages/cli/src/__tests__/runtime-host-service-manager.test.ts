@@ -76,6 +76,7 @@ import {
   writeRuntimeHostManagedUpdatePolicy,
 } from '../runtime-host-update-policy-store.js';
 import {
+  createSystemdUserRuntimeHostLifecycleProvider,
   createSystemdUserRuntimeHostService,
   renderSystemdUnit,
   renderSystemdUpdateService,
@@ -117,6 +118,21 @@ describe('managed Runtime Host service', () => {
         websocketPort: 7443,
       },
     );
+    assert.equal(
+      parseRuntimeHostCommand([
+        'service',
+        'update',
+        '--expected-host-json',
+        JSON.stringify({ hostEpoch: 'older-host', pid: 42 }),
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+      ]).kind,
+      'error',
+    );
     assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
@@ -153,6 +169,16 @@ describe('managed Runtime Host service', () => {
       framed: true,
     });
     assert.deepEqual(
+      parseRuntimeHostCommand(['service', 'restart', '--framed', '--allow-interrupt-active-tasks']),
+      {
+        kind: 'runtime-host-service-manage',
+        action: 'restart',
+        json: false,
+        framed: true,
+        allowInterruptActiveTasks: true,
+      },
+    );
+    assert.deepEqual(
       parseRuntimeHostCommand([
         'service',
         'peer',
@@ -162,6 +188,9 @@ describe('managed Runtime Host service', () => {
         '/ip4/0.0.0.0/udp/44001/quic-v1',
         '--clear-coordination-relays',
         '--no-automatic-relay-discovery',
+        '--webrtc-stun',
+        'stun:stun.example:3478',
+        '--webrtc-stun-status',
         '--allow-interrupt-active-tasks',
         '--expected-service-id',
         'b'.repeat(64),
@@ -182,6 +211,8 @@ describe('managed Runtime Host service', () => {
         listenAddresses: ['/ip4/0.0.0.0/udp/44001/quic-v1'],
         coordinationRelays: [],
         automaticRelayDiscovery: false,
+        webRtcStunPolicy: { kind: 'custom', urls: ['stun:stun.example:3478'] },
+        webRtcStunStatus: true,
         allowInterruptActiveTasks: true,
         managedRootId: 'a'.repeat(64),
         operatorDeploymentId: '00000000-0000-4000-8000-000000000001',
@@ -190,6 +221,40 @@ describe('managed Runtime Host service', () => {
           rootPath: '/srv/maka',
           rootId: 'a'.repeat(64),
         },
+      },
+    );
+    assert.deepEqual(
+      parseRuntimeHostCommand([
+        'service',
+        'update',
+        '--framed',
+        '--allow-interrupt-active-tasks',
+        '--target',
+        '0.2.0',
+        '--expected-host-json',
+        JSON.stringify({ hostEpoch: 'older-host', pid: 42 }),
+        '--expected-service-id',
+        'b'.repeat(64),
+        '--expected-root-path',
+        '/srv/maka',
+        '--expected-root-id',
+        'a'.repeat(64),
+        '--managed-root-id',
+        'a'.repeat(64),
+      ]),
+      {
+        kind: 'runtime-host-service-update',
+        json: false,
+        framed: true,
+        expectedTarget: {
+          serviceId: 'b'.repeat(64),
+          rootPath: '/srv/maka',
+          rootId: 'a'.repeat(64),
+        },
+        expectedHost: { hostEpoch: 'older-host', pid: 42 },
+        managedRootId: 'a'.repeat(64),
+        selector: { kind: 'exact', version: '0.2.0' },
+        allowInterruptActiveTasks: true,
       },
     );
     assert.equal(parseRuntimeHostCommand(['service', 'peer', 'disable']).kind, 'error');
@@ -1928,6 +1993,7 @@ describe('managed Runtime Host service', () => {
   it('stops partial deployment state when start or restart fails', async (t) => {
     const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-service-start-failure-'));
     t.after(() => rm(base, { recursive: true, force: true }));
+    const root = await resolveStorageRoot({ path: join(base, 'state'), kind: 'interactive' });
     const cliPath = join(base, 'cli.js');
     await writeFile(cliPath, '#!/usr/bin/env node\n', 'utf8');
     let stops = 0;
@@ -1939,6 +2005,15 @@ describe('managed Runtime Host service', () => {
       ...createReadyBackend(),
       start: failedAction,
       restart: failedAction,
+      status: async () => ({
+        manager: 'systemd_user',
+        installed: true,
+        enabled: true,
+        active: false,
+        state: 'stopped',
+        pid: null,
+        lastExitCode: 0,
+      }),
       stop: async () => {
         stops += 1;
         if (stopFails) throw new Error('partial deployment stop failed');
@@ -1946,7 +2021,7 @@ describe('managed Runtime Host service', () => {
     };
     const common = {
       clientDataRoot: join(base, 'config'),
-      defaultRootPath: join(base, 'state'),
+      defaultRootPath: root.canonicalPath,
       nodePath: process.execPath,
       cliPath,
     } as const;
@@ -1982,6 +2057,7 @@ describe('managed Runtime Host service', () => {
     let serviceState: 'running' | 'starting' | 'stopped' = 'running';
     let startingPid: number | null = null;
     let stops = 0;
+    let cleanupStops = 0;
     let observedStartingFence = false;
     let publishPidlessSuccessor = false;
     const backend: RuntimeHostServiceBackend = {
@@ -2002,6 +2078,10 @@ describe('managed Runtime Host service', () => {
           observedStartingFence = contender === undefined;
           await contender?.close();
         }
+        serviceState = 'stopped';
+      },
+      stop: async () => {
+        cleanupStops += 1;
         serviceState = 'stopped';
       },
     };
@@ -2057,6 +2137,14 @@ describe('managed Runtime Host service', () => {
     assert.deepEqual(blockedUninstall.retirement, { kind: 'active_tasks' });
     assert.equal(blockedUninstall.service.installed, true);
     assert.equal(stops, 0);
+
+    await assert.rejects(
+      manageRuntimeHostService({ ...common, action: 'restart', expectedTarget }, backend, deps),
+      (error: unknown) =>
+        error instanceof RuntimeHostServiceManagerError && error.code === 'active_tasks',
+    );
+    assert.equal(stops, 0);
+    assert.equal(cleanupStops, 0);
 
     const retired = await manageRuntimeHostService(
       {
@@ -2952,6 +3040,30 @@ describe('managed Runtime Host service', () => {
       (error: unknown) =>
         error instanceof RuntimeHostServiceManagerError &&
         error.code === 'service_manager_operation_failed',
+    );
+  });
+
+  it('treats an absent systemd supervisor as already retired', async (t) => {
+    const base = await mkdtemp(join(tmpdir(), 'maka-runtime-host-systemd-retire-'));
+    t.after(() => rm(base, { recursive: true, force: true }));
+    const serviceId = resolveRuntimeHostManagedServiceId(join(base, 'config'));
+    const unitPath = resolveSystemdUserRuntimeHostServicePath(serviceId, {
+      XDG_CONFIG_HOME: base,
+    });
+    const systemd = createFakeSystemd(unitPath);
+    const provider = createSystemdUserRuntimeHostLifecycleProvider(serviceId, {
+      env: { XDG_CONFIG_HOME: base },
+      homeDir: base,
+      uid: 1000,
+      runSystemctl: systemd.run,
+      runLoginctl: async () => success('yes\n'),
+    });
+
+    await provider.supervisor.retire();
+
+    assert.equal(
+      systemd.calls.some(([command]) => command === 'stop'),
+      false,
     );
   });
 

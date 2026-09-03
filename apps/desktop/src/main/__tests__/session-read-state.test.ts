@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { SessionSummary } from '@maka/core/session';
@@ -107,15 +108,6 @@ describe('renderer session read state', () => {
     assert.equal(committedContext, 'before');
   });
 });
-
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((innerResolve) => {
-    resolve = innerResolve;
-  });
-  return { promise, resolve };
-}
-
 function session(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
   return {
     id: overrides.id,

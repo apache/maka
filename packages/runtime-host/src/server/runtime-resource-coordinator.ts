@@ -59,6 +59,7 @@ import type {
   ConnectionContext,
   RuntimeResourceOperationHandlerMap,
 } from './operation-dispatcher.js';
+import type { RuntimeHostAccessAuthority } from './access-authority.js';
 import { SessionAdmissionGate } from './session-admission-gate.js';
 import {
   boundedRuntimeResourceSnapshot,
@@ -99,6 +100,7 @@ export interface HostRuntimeResourceCoordinatorInput {
   readonly sessionAdmission: SessionAdmissionGate;
   readonly acquireResidency: () => RuntimeHostResidency;
   readonly requestDrain: () => void;
+  readonly sessionAccessAuthority?: Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>;
   readonly onProjectionChanged?: (update: ShellRunUpdate) => void;
   /**
    * Fallback shell resolution for callers that do not carry a plan (e.g.
@@ -129,7 +131,7 @@ export class HostRuntimeResourceCoordinator
   implements ShellRunLauncher, RuntimeResourceReader, BackgroundTaskStopper, PtyControlWriter
 {
   readonly handlers: RuntimeResourceOperationHandlerMap = {
-    'runtime.resource.query': (input) => this.#query(input),
+    'runtime.resource.query': (input, context) => this.#query(input, context),
     'runtime.resource.start': (input) => this.#start(input),
     'runtime.resource.controller.acquire': (input, context) => this.#acquire(input, context),
     'runtime.resource.controller.control': (input, context) => this.#control(input, context),
@@ -143,6 +145,9 @@ export class HostRuntimeResourceCoordinator
   readonly #sessionAdmission: SessionAdmissionGate;
   readonly #acquireResidency: () => RuntimeHostResidency;
   readonly #requestDrain: () => void;
+  readonly #sessionAccessAuthority:
+    | Pick<RuntimeHostAccessAuthority, 'activeSessionGrant'>
+    | undefined;
   readonly #onProjectionChanged: (update: ShellRunUpdate) => void;
   readonly #resolveShell: () => Promise<ShellPlan> | ShellPlan;
   readonly #resourceQueue = new ResourceSerialQueue();
@@ -159,6 +164,7 @@ export class HostRuntimeResourceCoordinator
     this.#sessionAdmission = input.sessionAdmission;
     this.#acquireResidency = input.acquireResidency;
     this.#requestDrain = input.requestDrain;
+    this.#sessionAccessAuthority = input.sessionAccessAuthority;
     this.#onProjectionChanged = input.onProjectionChanged ?? (() => undefined);
     this.#resolveShell = input.resolveShell ?? defaultShellPlan;
   }
@@ -285,73 +291,100 @@ export class HostRuntimeResourceCoordinator
     return updates.some((update) => isActiveShellRunStatus(update.result.status));
   }
 
-  #query(input: RuntimeResourceQueryInput): Promise<OperationOutcome<'runtime.resource.query'>> {
+  async #query(
+    input: RuntimeResourceQueryInput,
+    context: ConnectionContext,
+  ): Promise<OperationOutcome<'runtime.resource.query'>> {
     if (input.kind === 'get' && !isShellRunResourceRef(input.ref)) {
-      return Promise.resolve(
-        queryFailure('invalid_request', 'Runtime Resource ref is unsupported'),
-      );
+      return queryFailure('invalid_request', 'Runtime Resource ref is unsupported');
     }
-    return this.#sessionAdmission.run(input.sessionId, async () => {
-      try {
-        await this.#sessionHeaders.readHeader(input.sessionId);
-      } catch (error) {
-        if (isSessionNotFoundError(error)) {
-          return queryFailure('not_found', 'Session was not found');
-        }
-        this.#requestDrain();
-        return queryFailure('internal_failure', 'Session state is unavailable');
-      }
-      if (input.kind === 'get') {
+    const guestGrantId = this.#guestObservationGrantId(context, input.sessionId);
+    if (context.principalKind === 'session_guest' && !guestGrantId) {
+      return queryFailure('not_found', 'Session was not found');
+    }
+    const outcome: OperationOutcome<'runtime.resource.query'> = await this.#sessionAdmission.run(
+      input.sessionId,
+      async () => {
         try {
-          const resource = await this.#sessions.getShellRunUpdate(input.sessionId, input.ref);
-          const canonical = resource ? (canonicalRuntimeResources([resource])[0] ?? null) : null;
-          return {
-            ok: true,
-            result: decodeRuntimeResourceQueryResult({
-              kind: 'resource',
-              sessionId: input.sessionId,
-              revision: runtimeResourceRevision(canonical ? [canonical] : []),
-              resource: canonical,
-            }),
-          };
+          await this.#sessionHeaders.readHeader(input.sessionId);
+        } catch (error) {
+          if (isSessionNotFoundError(error)) {
+            return queryFailure('not_found', 'Session was not found');
+          }
+          this.#requestDrain();
+          return queryFailure('internal_failure', 'Session state is unavailable');
+        }
+        if (input.kind === 'get') {
+          try {
+            const resource = await this.#sessions.getShellRunUpdate(input.sessionId, input.ref);
+            const visible =
+              context.principalKind !== 'session_guest' || resource?.sessionId === input.sessionId
+                ? resource
+                : null;
+            const canonical = visible ? (canonicalRuntimeResources([visible])[0] ?? null) : null;
+            return {
+              ok: true,
+              result: decodeRuntimeResourceQueryResult({
+                kind: 'resource',
+                sessionId: input.sessionId,
+                revision: runtimeResourceRevision(canonical ? [canonical] : []),
+                resource: canonical,
+              }),
+            };
+          } catch {
+            this.#requestDrain();
+            return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
+          }
+        }
+        let updates: ShellRunUpdate[];
+        try {
+          updates = await this.#sessions.listShellRunUpdates(input.sessionId);
+          if (context.principalKind === 'session_guest') {
+            updates = updates.filter((update) => update.sessionId === input.sessionId);
+          }
         } catch {
           this.#requestDrain();
           return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
         }
-      }
-      let updates: ShellRunUpdate[];
-      try {
-        updates = await this.#sessions.listShellRunUpdates(input.sessionId);
-      } catch {
-        this.#requestDrain();
-        return queryFailure('internal_failure', 'Runtime Resource state is unavailable');
-      }
-      try {
-        const resources = canonicalRuntimeResources(updates);
-        const revision = runtimeResourceRevision(resources);
-        if (input.kind === 'list_continue' && input.revision !== revision) {
+        try {
+          const resources = canonicalRuntimeResources(updates);
+          const revision = runtimeResourceRevision(resources);
+          if (input.kind === 'list_continue' && input.revision !== revision) {
+            return {
+              ok: true,
+              result: { kind: 'revision_changed', expected: input.revision, actual: revision },
+            };
+          }
+          const offset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
+          if (
+            offset === undefined ||
+            offset > resources.length ||
+            (input.kind === 'list_continue' && offset === 0) ||
+            (input.kind === 'list_continue' && offset === resources.length)
+          ) {
+            return queryFailure('invalid_request', 'Runtime Resource cursor is invalid');
+          }
           return {
             ok: true,
-            result: { kind: 'revision_changed', expected: input.revision, actual: revision },
+            result: createRuntimeResourcePage(input.sessionId, revision, resources, offset),
           };
+        } catch {
+          return queryFailure('internal_failure', 'Runtime Resource projection is unavailable');
         }
-        const offset = input.kind === 'list_start' ? 0 : decodeCursor(input.cursor);
-        if (
-          offset === undefined ||
-          offset > resources.length ||
-          (input.kind === 'list_continue' && offset === 0) ||
-          (input.kind === 'list_continue' && offset === resources.length)
-        ) {
-          return queryFailure('invalid_request', 'Runtime Resource cursor is invalid');
-        }
-        return {
-          ok: true,
-          result: createRuntimeResourcePage(input.sessionId, revision, resources, offset),
-        };
-      } catch {
-        return queryFailure('internal_failure', 'Runtime Resource projection is unavailable');
-      }
-    });
+      },
+    );
+    return guestGrantId && this.#guestObservationGrantId(context, input.sessionId) !== guestGrantId
+      ? queryFailure('not_found', 'Session was not found')
+      : outcome;
+  }
+
+  #guestObservationGrantId(context: ConnectionContext, sessionId: string): string | undefined {
+    if (context.principalKind !== 'session_guest') return;
+    return this.#sessionAccessAuthority?.activeSessionGrant(
+      context.principal,
+      sessionId,
+      'session_observation',
+    )?.grantId;
   }
 
   async #start(

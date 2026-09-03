@@ -29,9 +29,9 @@ import {
 } from '../../renderer/workhub-session-port.js';
 import {
   createDesktopWorkHubCoordinationPort,
+  projectWorkHubActiveDelegations,
   projectWorkHubCoordinationTurns,
 } from '../../renderer/workhub-coordination-port.js';
-import { WorkHubSessionSubmitError } from '../../renderer/workhub-controller.js';
 
 function desktopSession(
   id: string,
@@ -55,6 +55,14 @@ const unusedTranscripts = {
     throw new Error('transcript is not used by this test');
   },
 };
+
+const noMessageExecutions = async () => ({
+  resolutions: [] as Array<
+    | { messageId: string; state: 'pending' }
+    | { messageId: string; state: 'cancelled' }
+    | { messageId: string; state: 'owned'; turnId: string; runId: string }
+  >,
+});
 
 function transcriptsWith(messages: readonly StoredMessage[]) {
   return {
@@ -99,7 +107,7 @@ function transcriptsWith(messages: readonly StoredMessage[]) {
 }
 
 test('projects the durable Coordination transcript into the WorkHub conversation', () => {
-  assert.deepEqual(projectWorkHubCoordinationTurns([
+  const messages: StoredMessage[] = [
     { type: 'user', id: 'user-1', turnId: 'turn-1', ts: 10, text: 'What is next?' },
     {
       type: 'assistant',
@@ -135,7 +143,8 @@ test('projects the durable Coordination transcript into the WorkHub conversation
       disposition: 'delegate_existing',
       userText: 'Continue payments',
     },
-  ]), [{
+  ];
+  assert.deepEqual(projectWorkHubCoordinationTurns(messages), [{
     messageId: 'user-1',
     turnId: 'turn-1',
     text: 'What is next?',
@@ -148,11 +157,255 @@ test('projects the durable Coordination transcript into the WorkHub conversation
     text: 'Continue payments',
     state: 'completed',
     assignment: {
+      actionId: 'action-1',
+      delegationId: 'payments-delegation',
       targetSessionId: 'payments',
       targetSessionName: 'Payments',
+      targetMessageId: 'payments-message',
+      targetTurnId: 'payments-turn',
+      feedbackState: 'accepted',
+      linkState: 'active',
     },
     updatedAt: 20,
   }]);
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{
+    actionId: 'action-1',
+    targetSessionId: 'payments',
+    sequence: 3,
+  }]);
+});
+
+test('rebuilds active linkage outside the bounded visible timeline in transcript order', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 100,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const messages: StoredMessage[] = [
+    assignment,
+    ...Array.from({ length: 45 }, (_, index): StoredMessage => ({
+      type: 'user',
+      id: `later-${index}`,
+      turnId: `later-${index}`,
+      ts: 100,
+      text: `Later coordination ${index}`,
+    })),
+  ];
+
+  assert.equal(
+    projectWorkHubCoordinationTurns(messages).some((turn) => turn.messageId === assignment.id),
+    false,
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{
+    actionId: 'action-old',
+    targetSessionId: 'payments',
+    sequence: 0,
+  }]);
+});
+
+test('projects durable create_new disposition as an explicit new-work announcement', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-created',
+    turnId: 'action-created',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-created',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-created',
+    targetSessionId: 'login',
+    targetSessionName: 'Login stability',
+    targetTurnId: 'login-turn',
+    targetMessageId: 'login-message',
+    delegationId: 'login-delegation',
+    disposition: 'create_new',
+    userText: 'Fix login stability',
+    create: {
+      title: 'Login stability',
+      workspace: { kind: 'host_path', path: '/workspace' },
+    },
+  };
+
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment])[0]?.assignment?.createdNew,
+    true,
+  );
+});
+
+test('a durable replacement abort terminalizes the retired source linkage', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const aborted: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'replacement-aborted',
+    turnId: 'replacement-action',
+    ts: 2,
+    schemaVersion: 2,
+    kind: 'delegation_replacement_aborted',
+    actionId: 'replacement-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'replacement-action',
+    abortedActionId: 'action-old',
+    abortedDelegationId: 'payments-delegation',
+    targetSessionId: 'login',
+    reason: 'target_unavailable',
+  };
+
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: aborted },
+  ]), []);
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment, aborted])[0]?.assignment?.linkState,
+    'aborted',
+  );
+});
+
+test('direct-stop projection is retryable until resolved and preserves not_owned links', () => {
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination', id: 'assignment', turnId: 'source-action', ts: 1,
+    schemaVersion: 1, kind: 'delegation_assigned', actionId: 'source-action',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`, coordinationTurnId: 'source-action',
+    targetSessionId: 'payments', targetSessionName: 'Payments', targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message', delegationId: 'payments-delegation',
+    disposition: 'delegate_existing', userText: 'Fix payment retry',
+  };
+  const requested: StoredMessage = {
+    type: 'workhub_coordination', id: 'stop-request', turnId: 'stop-action', ts: 2,
+    schemaVersion: 3, kind: 'delegation_stop_requested', actionId: 'stop-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'stop-action',
+    stopsActionId: 'source-action', stopsDelegationId: 'payments-delegation',
+    targetSessionId: 'payments', targetMessageId: 'payments-message',
+    targetSessionName: 'Payments', userText: 'Stop Payments',
+  };
+  const notOwned: StoredMessage = {
+    type: 'workhub_coordination', id: 'stop-resolution', turnId: 'stop-action', ts: 3,
+    schemaVersion: 3, kind: 'delegation_stop_resolved', actionId: 'stop-action',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`, coordinationTurnId: 'stop-action',
+    stopsActionId: 'source-action', stopsDelegationId: 'payments-delegation',
+    targetSessionId: 'payments', targetTurnId: 'shared-turn', outcome: 'not_owned',
+  };
+
+  assert.equal(projectWorkHubCoordinationTurns([assignment, requested])[1]?.state, 'running');
+  const projected = projectWorkHubCoordinationTurns([assignment, requested, notOwned]);
+  assert.deepEqual(projected[1]?.stop, {
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    outcome: 'not_owned',
+  });
+  assert.equal(projected[0]?.assignment?.linkState, 'active');
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: requested },
+    { sequence: 2, message: notOwned },
+  ]), [{ actionId: 'source-action', targetSessionId: 'payments', sequence: 0 }]);
+
+  const stopped = { ...notOwned, outcome: 'stop_delivered' as const };
+  assert.equal(
+    projectWorkHubCoordinationTurns([assignment, requested, stopped])[0]?.assignment?.linkState,
+    'stopped',
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations([
+    { sequence: 0, message: assignment },
+    { sequence: 1, message: requested },
+    { sequence: 2, message: stopped },
+  ]), []);
+});
+
+test('durable supersession terminalizes only the replaced linkage', () => {
+  const source: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const replacement: StoredMessage = {
+    ...source,
+    id: 'assignment-new',
+    turnId: 'action-new',
+    ts: 2,
+    schemaVersion: 2,
+    actionId: 'action-new',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'action-new',
+    targetSessionId: 'login',
+    targetSessionName: 'Login',
+    targetTurnId: 'login-turn',
+    targetMessageId: 'login-message',
+    delegationId: 'login-delegation',
+    userText: 'Switch to login',
+    replacesActionId: 'action-old',
+    replacesDelegationId: 'payments-delegation',
+  };
+  const superseded: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'superseded-old',
+    turnId: 'action-new',
+    ts: 3,
+    schemaVersion: 2,
+    kind: 'delegation_superseded',
+    actionId: 'action-new',
+    actionFingerprint: `sha256:${'b'.repeat(64)}`,
+    coordinationTurnId: 'action-new',
+    supersededActionId: 'action-old',
+    supersededDelegationId: 'payments-delegation',
+    replacementDelegationId: 'login-delegation',
+  };
+  const messages = [source, replacement, superseded];
+
+  assert.deepEqual(
+    projectWorkHubCoordinationTurns(messages).map((turn) => turn.assignment?.linkState),
+    ['superseded', 'active'],
+  );
+  assert.deepEqual(projectWorkHubActiveDelegations(
+    messages.map((message, sequence) => ({ message, sequence })),
+  ), [{ actionId: 'action-new', targetSessionId: 'login', sequence: 1 }]);
 });
 
 test('Coordination transcript adapter emits an initial empty ready snapshot and closes cleanly', async () => {
@@ -189,7 +442,6 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
         };
       },
     },
-    answer: async (input) => ({ turnId: input.turnId }),
     record: async (input) => ({ turnId: input.turnId }),
     candidates: async () => ({
       candidateSetId: `sha256:${'a'.repeat(64)}`,
@@ -204,10 +456,167 @@ test('Coordination transcript adapter emits an initial empty ready snapshot and 
     }),
   });
 
-  const handle = await adapter.open((turns) => snapshots.push(turns), () => {});
-  assert.deepEqual(snapshots, [[]]);
+  const handle = await adapter.open(
+    (turns, activeDelegations) => snapshots.push([turns, activeDelegations]),
+    () => {},
+  );
+  assert.deepEqual(snapshots, [[[], []]]);
   await handle.close();
   assert.equal(closes, 1);
+});
+
+test('Coordination transcript reset rebuilds active linkage outside the resident window', async () => {
+  const sessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'coordination' });
+  const assignment: StoredMessage = {
+    type: 'workhub_coordination',
+    id: 'assignment-old',
+    turnId: 'action-old',
+    ts: 1,
+    schemaVersion: 1,
+    kind: 'delegation_assigned',
+    actionId: 'action-old',
+    actionFingerprint: `sha256:${'a'.repeat(64)}`,
+    coordinationTurnId: 'action-old',
+    targetSessionId: 'payments',
+    targetSessionName: 'Payments',
+    targetTurnId: 'payments-turn',
+    targetMessageId: 'payments-message',
+    delegationId: 'payments-delegation',
+    disposition: 'delegate_existing',
+    userText: 'Continue payments',
+  };
+  const recent: StoredMessage = {
+    type: 'user',
+    id: 'recent-user',
+    turnId: 'recent-turn',
+    ts: 2,
+    text: 'Recent coordination',
+  };
+  const fragment = (message: StoredMessage, sequence: number) => {
+    const data = new TextEncoder().encode(JSON.stringify(message));
+    return {
+      source: 'durable' as const,
+      identity: sequence,
+      order: null,
+      byteOffset: 0,
+      totalBytes: data.byteLength,
+      data,
+    };
+  };
+  let deliver: ((batch: DesktopTranscriptBatch) => void) | undefined;
+  let generation = 'generation-1';
+  let historyLoads = 0;
+  let historyBatchReady = true;
+  const snapshots: unknown[] = [];
+  const adapter = createDesktopWorkHubCoordinationPort({
+    sessionId,
+    transcripts: {
+      open: async (_requestedSessionId, handler) => {
+        deliver = handler;
+        handler({
+          sessionId: 'coordination',
+          deliverySequence: 1,
+          generation,
+          hostEpoch: 'epoch-1',
+          durableThrough: 1,
+          fragments: [fragment(recent, 1)],
+          evictedDurableSequences: [],
+          completedOverlayMessageIds: [],
+          hasOlder: true,
+          hasNewer: false,
+          reset: true,
+          ready: true,
+        });
+        return {
+          sessionId,
+          generation,
+          hostEpoch: 'epoch-1',
+          readThroughMessageId: null,
+          loadBefore: async () => {
+            historyLoads += 1;
+            handler({
+              sessionId: 'coordination',
+              deliverySequence: historyLoads + 1,
+              generation,
+              hostEpoch: 'epoch-1',
+              durableThrough: 1,
+              fragments: [fragment(assignment, 0)],
+              evictedDurableSequences: [],
+              completedOverlayMessageIds: [],
+              hasOlder: false,
+              hasNewer: false,
+              reset: false,
+              ready: historyBatchReady,
+            });
+          },
+          loadAround: async () => {},
+          close: async () => {},
+        };
+      },
+    },
+    record: async (input) => ({ turnId: input.turnId }),
+    candidates: async () => ({
+      candidateSetId: `sha256:${'b'.repeat(64)}`,
+      candidates: [],
+    }),
+    act: async () => ({
+      ok: true,
+      result: { disposition: 'answer_here', coordinationTurnId: 'coordination-turn' },
+    }),
+  });
+
+  const handle = await adapter.open(
+    (_turns, activeDelegations) => snapshots.push(activeDelegations),
+    (error) => assert.fail(String(error)),
+  );
+  assert.deepEqual(snapshots.at(-1), [{
+    actionId: 'action-old',
+    targetSessionId: desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' }),
+    sequence: 0,
+  }]);
+
+  generation = 'generation-2';
+  historyBatchReady = false;
+  const snapshotsBeforeReset = snapshots.length;
+  deliver?.({
+    sessionId: 'coordination',
+    deliverySequence: 3,
+    generation,
+    hostEpoch: 'epoch-1',
+    durableThrough: 1,
+    fragments: [fragment(recent, 1)],
+    evictedDurableSequences: [],
+    completedOverlayMessageIds: [],
+    hasOlder: true,
+    hasNewer: false,
+    reset: true,
+    ready: false,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  assert.equal(historyLoads, 2);
+  assert.equal(snapshots.length, snapshotsBeforeReset);
+  deliver?.({
+    sessionId: 'coordination',
+    deliverySequence: 5,
+    generation,
+    hostEpoch: 'epoch-1',
+    durableThrough: 1,
+    fragments: [fragment(recent, 1)],
+    evictedDurableSequences: [],
+    completedOverlayMessageIds: [],
+    hasOlder: false,
+    hasNewer: false,
+    reset: false,
+    ready: true,
+  });
+  assert.deepEqual(snapshots.at(-1), [{
+    actionId: 'action-old',
+    targetSessionId: desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' }),
+    sequence: 0,
+  }]);
+  await handle.close();
 });
 
 test('projects durable Session messages into an ordered WorkHub conversation', () => {
@@ -291,6 +700,7 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -342,7 +752,6 @@ test('desktop adapter rebuilds recent turns from the Session transcript and clos
       },
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   assert.deepEqual(await adapter.recentTurns([{ sessionId }]), [{
@@ -366,6 +775,7 @@ test('desktop adapter cancels an unavailable transcript without hiding ready Ses
     sessions: {
       list: async () => [],
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => { throw new Error('not used'); },
       send: async () => { throw new Error('not used'); },
       stop: async () => {},
@@ -403,7 +813,6 @@ test('desktop adapter cancels an unavailable transcript without hiding ready Ses
       },
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   const turns = adapter.recentTurns([
@@ -448,6 +857,7 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
     sessions: {
       list: async () => source,
       listTurns: async () => [],
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -458,7 +868,6 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
       subscribeChanges: () => () => {},
     },
     projectName: (projectId) => projectId === 'project-maka' ? 'Maka' : undefined,
-    newTurnId: () => 'unused',
   });
 
   assert.deepEqual(await adapter.list(), [
@@ -506,266 +915,163 @@ test('desktop adapter projects Session catalog facts without owning copies', asy
   ]);
 });
 
-test('desktop adapter preserves per-Host catalog coverage for ownership reconciliation', async () => {
-  const localSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'local' });
+test('desktop adapter rebuilds delegation feedback from the Message-owned execution Turn', async () => {
+  const sessions = [
+    desktopSession('accepted'),
+    desktopSession('running', { status: 'running', runningTurnIds: ['turn-running'] }),
+    desktopSession('stale-running'),
+    desktopSession('recorded-running-only', { runningTurnIds: undefined }),
+    desktopSession('waiting', {
+      status: 'waiting_for_user',
+      runningTurnIds: ['turn-waiting'],
+    }),
+    desktopSession('completed', {
+      status: 'waiting_for_user',
+      runningTurnIds: ['later-turn'],
+    }),
+    desktopSession('failed'),
+    desktopSession('aborted'),
+    desktopSession('cancelled'),
+    desktopSession('recovering'),
+  ];
+  const turns = new Map<string, Array<{
+    turnId: string;
+    status: 'running' | 'completed' | 'failed' | 'aborted';
+    statusSource: 'recorded';
+  }>>([
+    ['running', [{ turnId: 'turn-running', status: 'running', statusSource: 'recorded' }]],
+    ['stale-running', [{
+      turnId: 'turn-stale-running',
+      status: 'running',
+      statusSource: 'recorded',
+    }]],
+    ['recorded-running-only', [{
+      turnId: 'turn-recorded-running-only',
+      status: 'running',
+      statusSource: 'recorded',
+    }]],
+    ['waiting', [{ turnId: 'turn-waiting', status: 'running', statusSource: 'recorded' }]],
+    ['completed', [{ turnId: 'turn-completed', status: 'completed', statusSource: 'recorded' }]],
+    ['failed', [{ turnId: 'turn-failed', status: 'failed', statusSource: 'recorded' }]],
+    ['aborted', [{ turnId: 'turn-aborted', status: 'aborted', statusSource: 'recorded' }]],
+  ]);
   const adapter = createDesktopWorkHubSessionPort({
     transcripts: unusedTranscripts,
     sessions: {
-      list: async () => [],
-      listWithCoverage: async () => ({
-        sessions: [desktopSession(localSessionId)],
-        completeHostIds: ['local-host'],
+      list: async () => sessions,
+      listTurns: async (sessionId) => {
+        if (sessionId === 'recovering') throw new Error('Host is recovering');
+        return turns.get(sessionId) ?? [];
+      },
+      queryMessageExecutions: async (sessionId, messageIds) => ({
+        resolutions: sessionId === 'accepted'
+          ? messageIds.map((messageId) => ({ messageId, state: 'pending' as const }))
+          : sessionId === 'cancelled'
+            ? messageIds.map((messageId) => ({ messageId, state: 'cancelled' as const }))
+          : sessionId === 'recovering'
+            ? []
+            : messageIds.map((messageId) => ({
+              messageId,
+              state: 'owned' as const,
+              turnId: `turn-${sessionId}`,
+              runId: `run-${sessionId}`,
+            })),
       }),
-      listTurns: async () => [],
       create: async () => { throw new Error('not used'); },
       send: async () => { throw new Error('not used'); },
       stop: async () => {},
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
+  const references = [
+    ['accepted', 'turn-accepted'],
+    ['running', 'turn-running'],
+    ['stale-running', 'turn-stale-running'],
+    ['recorded-running-only', 'turn-recorded-running-only'],
+    ['waiting', 'turn-waiting'],
+    ['completed', 'turn-completed'],
+    ['failed', 'turn-failed'],
+    ['aborted', 'turn-aborted'],
+    ['cancelled', 'turn-cancelled'],
+    ['recovering', 'turn-recovering'],
+  ].map(([targetSessionId, targetTurnId]) => ({
+    delegationId: `delegation-${targetSessionId}`,
+    targetSessionId: targetSessionId!,
+    targetMessageId: `message-${targetSessionId}`,
+    targetTurnId: targetTurnId!,
+  }));
 
-  const catalog = await adapter.listCatalog?.();
-  assert.ok(catalog);
-  assert.equal(catalog.sessions[0]?.target.sessionId, localSessionId);
-  assert.equal(catalog.isCompleteFor({ sessionId: localSessionId }), true);
-  assert.equal(catalog.isCompleteFor({
-    sessionId: desktopSessionKey({ hostId: 'remote-host', sessionId: 'remote' }),
-  }), false);
-});
+  const feedback = await adapter.delegationFeedback(references);
 
-test('desktop adapter delegates create, send, and invalidation to Session APIs', async () => {
-  const calls: unknown[] = [];
-  let onChanged: (() => void) | undefined;
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [desktopSession('created', {
-        status: 'running',
-        runningTurnIds: ['turn-new'],
-      })],
-      listTurns: async () => [],
-      create: async (input) => {
-        calls.push(['create', input]);
-        return desktopSession('created', { name: input.name });
-      },
-      send: async (sessionId, command) => {
-        calls.push(['send', sessionId, command]);
-        return { ok: true, turnId: command.turnId };
-      },
-      stop: async (sessionId, input) => {
-        calls.push(['stop', sessionId, input]);
-      },
-      subscribeChanges: (handler) => {
-        onChanged = handler;
-        return () => calls.push(['unsubscribe']);
-      },
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'turn-new',
-  });
-
-  const created = await adapter.create({ name: '实现导出发票 PDF 功能' });
-  const turnId = adapter.reserveTurnId();
-  const turn = await adapter.submit(created.target, '实现导出发票 PDF 功能', turnId);
-  await adapter.stop(created.target, 'turn-new');
-  let invalidations = 0;
-  const unsubscribe = adapter.subscribe(() => {
-    invalidations += 1;
-  });
-  onChanged?.();
-  unsubscribe();
-
-  assert.equal(created.kind, 'ordinary');
-  assert.deepEqual(turn, { turnId: 'turn-new' });
-  assert.equal(invalidations, 1);
-  assert.deepEqual(calls, [
-    ['create', { name: '实现导出发票 PDF 功能' }],
-    ['send', 'created', { type: 'send', turnId: 'turn-new', text: '实现导出发票 PDF 功能' }],
-    ['stop', 'created', { source: 'stop_button', expectedTurnId: 'turn-new' }],
-    ['unsubscribe'],
+  assert.deepEqual(feedback.map(({ delegationId, state }) => ({ delegationId, state })), [
+    { delegationId: 'delegation-accepted', state: 'accepted' },
+    { delegationId: 'delegation-running', state: 'running' },
+    { delegationId: 'delegation-stale-running', state: 'accepted' },
+    { delegationId: 'delegation-recorded-running-only', state: 'running' },
+    { delegationId: 'delegation-waiting', state: 'waiting_for_user' },
+    { delegationId: 'delegation-completed', state: 'completed' },
+    { delegationId: 'delegation-failed', state: 'failed' },
+    { delegationId: 'delegation-aborted', state: 'aborted' },
+    { delegationId: 'delegation-cancelled', state: 'aborted' },
+    { delegationId: 'delegation-recovering', state: 'recovering' },
   ]);
 });
 
-test('desktop adapter preserves when Session delivery steered an existing root Turn', async () => {
+test('desktop adapter follows a delegated Message into its successor Turn', async () => {
+  const targetSessionId = desktopSessionKey({ hostId: 'local-host', sessionId: 'payments' });
   const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
+    transcripts: transcriptsWith([{
+      type: 'user',
+      id: 'payment-message',
+      turnId: 'successor-turn',
+      ts: 2,
+      text: 'Continue payment recovery',
+      steeringEventId: 'payment-message',
+    }]),
     sessions: {
-      list: async () => [],
-      listTurns: async () => [],
-      create: async () => {
-        throw new Error('not used');
-      },
-      send: async (_sessionId, command) => ({
-        ok: true,
-        turnId: command.turnId,
-        steered: true,
+      list: async () => [desktopSession(targetSessionId, {
+        status: 'running',
+        runningTurnIds: ['successor-turn'],
+      })],
+      listTurns: async () => [
+        {
+          turnId: 'admission-turn',
+          status: 'completed',
+          statusSource: 'recorded',
+        },
+        {
+          turnId: 'successor-turn',
+          status: 'running',
+          statusSource: 'recorded',
+        },
+      ],
+      queryMessageExecutions: async (_sessionId, messageIds) => ({
+        resolutions: messageIds.map((messageId) => ({
+          messageId,
+          state: 'owned' as const,
+          turnId: 'successor-turn',
+          runId: 'successor-run',
+        })),
       }),
-      stop: async () => {},
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'turn-steered',
-  });
-
-  assert.deepEqual(
-    await adapter.submit(
-      { sessionId: 'busy' },
-      '补充已有执行流',
-      adapter.reserveTurnId(),
-    ),
-    { turnId: 'turn-steered', steered: true },
-  );
-});
-
-test('desktop adapter distinguishes definite rejection from an unknown delivery outcome', async () => {
-  let outcome: 'throw' | 'unknown' | 'reject' = 'throw';
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listTurns: async () => [],
       create: async () => { throw new Error('not used'); },
-      send: async () => {
-        if (outcome === 'throw') throw new Error('transport disconnected');
-        if (outcome === 'unknown') {
-          return {
-            ok: false as const,
-            reason: 'outcome_unknown' as const,
-            messageId: 'reserved-turn',
-            skillInvocation: { loaded: [], failed: [], receipts: [] },
-          };
-        }
-        return {
-          ok: false as const,
-          reason: 'skill_invocation_failed' as const,
-          skillInvocation: {
-            loaded: [],
-            failed: [{ request: 'missing', reason: 'not_found' as const }],
-            receipts: [],
-          },
-        };
-      },
+      send: async () => { throw new Error('not used'); },
       stop: async () => {},
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'reserved-turn',
   });
 
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',
-  );
-  // The Host declining to prove the outcome must stay reconcilable; only a
-  // Host-owned refusal releases the reserved root.
-  outcome = 'unknown';
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'unknown',
-  );
-  outcome = 'reject';
-  await assert.rejects(
-    adapter.submit({ sessionId: 'payment' }, '继续支付', 'reserved-turn'),
-    (error) => error instanceof WorkHubSessionSubmitError && error.admission === 'rejected',
-  );
-});
-
-test('desktop adapter reconciles lost replies from authoritative transcript identity', async () => {
-  const cases: Array<{
-    name: string;
-    message: StoredMessage;
-    expected: { kind: 'root'; turnId: string } | { kind: 'steered' } | { kind: 'unknown' };
-  }> = [
-    {
-      name: 'direct root',
-      message: {
-        type: 'user', id: 'user-root', turnId: 'reserved-turn', ts: 1, text: '开始支付',
-      },
-      expected: { kind: 'root', turnId: 'reserved-turn' },
-    },
-    {
-      name: 'busy-race root',
-      message: {
-        type: 'user', id: 'reserved-turn', turnId: 'host-root', ts: 1, text: '开始支付',
-      },
-      expected: { kind: 'root', turnId: 'host-root' },
-    },
-    {
-      name: 'steering',
-      message: {
-        type: 'user',
-        id: 'reserved-turn',
-        turnId: 'pre-existing-root',
-        steeringEventId: 'steering-event',
-        ts: 1,
-        text: '补充支付测试',
-      },
-      expected: { kind: 'steered' },
-    },
-    {
-      name: 'unrelated message',
-      message: {
-        type: 'user', id: 'other-message', turnId: 'other-root', ts: 1, text: '其他工作',
-      },
-      expected: { kind: 'unknown' },
-    },
-  ];
-
-  for (const fixture of cases) {
-    const adapter = createDesktopWorkHubSessionPort({
-      transcripts: transcriptsWith([fixture.message]),
-      sessions: {
-        list: async () => [],
-        listTurns: async () => [],
-        create: async () => { throw new Error('not used'); },
-        send: async () => { throw new Error('not used'); },
-        stop: async () => {},
-        subscribeChanges: () => () => {},
-      },
-      projectName: () => 'Maka',
-      newTurnId: () => 'reserved-turn',
-    });
-
-    assert.deepEqual(
-      await adapter.reconcileSubmission({
-        sessionId: desktopSessionKey({ hostId: 'local-host', sessionId: fixture.name }),
-      }, 'reserved-turn'),
-      fixture.expected,
-      fixture.name,
-    );
-  }
-});
-
-test('desktop adapter binds stop to the root Turn owned by the WorkHub submission', async () => {
-  const stopped: unknown[] = [];
-  const adapter = createDesktopWorkHubSessionPort({
-    transcripts: unusedTranscripts,
-    sessions: {
-      list: async () => [],
-      listTurns: async () => [],
-      create: async () => {
-        throw new Error('not used');
-      },
-      send: async () => {
-        throw new Error('not used');
-      },
-      stop: async (sessionId, input) => {
-        stopped.push([sessionId, input]);
-      },
-      subscribeChanges: () => () => {},
-    },
-    projectName: () => 'Maka',
-    newTurnId: () => 'unused',
-  });
-
-  await adapter.stop({ sessionId: 'payment' }, 'turn-workhub');
-
-  assert.deepEqual(stopped, [[
-    'payment',
-    { source: 'stop_button', expectedTurnId: 'turn-workhub' },
-  ]]);
+  const references = [{
+    delegationId: 'payment-delegation',
+    targetSessionId,
+    targetTurnId: 'admission-turn',
+    targetMessageId: 'payment-message',
+  }];
+  assert.deepEqual(await adapter.delegationFeedback(references), [{
+    delegationId: 'payment-delegation',
+    state: 'running',
+  }]);
 });
 
 test('desktop adapter derives stable origin evidence from the existing Session log', async () => {
@@ -782,6 +1088,7 @@ test('desktop adapter derives stable origin evidence from the existing Session l
           { userPromptPreview: '把风险按高、中、低分组' },
         ];
       },
+      queryMessageExecutions: noMessageExecutions,
       create: async () => {
         throw new Error('not used');
       },
@@ -792,7 +1099,6 @@ test('desktop adapter derives stable origin evidence from the existing Session l
       subscribeChanges: () => () => {},
     },
     projectName: () => 'Maka',
-    newTurnId: () => 'unused',
   });
 
   const first = await adapter.routingEvidence([{ sessionId: 'payment' }]);

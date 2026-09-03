@@ -19,15 +19,19 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { EnvironmentRuntimeHostProfile } from '@maka/runtime-host/client';
 import type { DesktopRuntimeHostProfileAddInput } from '../../preload/bridge-contract.js';
-import type { DesktopRuntimeHostManagedServiceTarget } from '../runtime-host-managed-services.js';
+import type {
+  DesktopRuntimeHostManagedSshServiceTarget,
+  DesktopRuntimeHostManagedWslServiceTarget,
+} from '../runtime-host-managed-services.js';
 import { createDesktopRuntimeHostOnboarding } from '../runtime-host-onboarding.js';
 
 test('persists a verified on-demand SSH profile without endpoint or credential projection', async () => {
   let setupInput: unknown;
   let saved:
     | (DesktopRuntimeHostProfileAddInput & {
-        readonly managedService?: DesktopRuntimeHostManagedServiceTarget;
+        readonly managedService?: DesktopRuntimeHostManagedSshServiceTarget;
       })
     | undefined;
   const harness = createHarness({
@@ -93,18 +97,28 @@ test('persists a verified on-demand SSH profile without endpoint or credential p
 });
 
 test('onboards WSL as a credential-free environment profile', async () => {
-  let saved: DesktopRuntimeHostProfileAddInput | undefined;
+  let saved:
+    | {
+        readonly profile: EnvironmentRuntimeHostProfile;
+        readonly managedService: DesktopRuntimeHostManagedWslServiceTarget;
+      }
+    | undefined;
   const peerTargets: string[] = [];
   const harness = createHarness({
     profiles: {
-      addAndEnable: async (input) => {
+      addManagedEnvironmentAndEnable: async (input) => {
         saved = input;
-        return { kind: 'connected', snapshot: { entries: [], defaultProfileId: 'local' } };
+        return {
+          profileId: input.profile.id,
+        };
       },
     },
     runWslSetup: async (_input, _onProgress, onComplete) => {
       onComplete();
       return {
+        serviceId: 'a'.repeat(64),
+        deploymentId: '00000000-0000-4000-8000-000000000001',
+        rootPath: '/home/operator/.config/Maka/workspaces/default',
         rootId: 'a'.repeat(64),
         operatorPath: '/home/operator/.local/share/maka/operator',
       };
@@ -121,7 +135,6 @@ test('onboards WSL as a credential-free environment profile', async () => {
   });
 
   assert.equal((result as { kind?: string }).kind, 'complete');
-  assert.equal(saved?.credential, undefined);
   assert.deepEqual(saved?.profile, {
     id: saved?.profile.id,
     name: 'Ubuntu-24.04',
@@ -129,6 +142,13 @@ test('onboards WSL as a credential-free environment profile', async () => {
     provider: { kind: 'wsl', distribution: 'Ubuntu-24.04' },
     rootId: 'a'.repeat(64),
     operatorPath: '/home/operator/.local/share/maka/operator',
+  });
+  assert.deepEqual(saved?.managedService, {
+    deployment: {
+      id: 'a'.repeat(64),
+      rootPath: '/home/operator/.config/Maka/workspaces/default',
+      deploymentId: '00000000-0000-4000-8000-000000000001',
+    },
   });
   assert.deepEqual(peerTargets, ['none']);
   await harness.onboarding.close();
@@ -296,7 +316,7 @@ function createHarness(overrides: HarnessOverrides = {}) {
   const onboarding = createDesktopRuntimeHostOnboarding({
     clientInstanceId: 'stable-client',
     profiles: {
-      addAndEnable: async () => assert.fail('profile must not be saved'),
+      addManagedEnvironmentAndEnable: async () => assert.fail('profile must not be saved'),
       addAndEnableVerified: async () => assert.fail('profile must not be saved'),
       ...profiles,
     },

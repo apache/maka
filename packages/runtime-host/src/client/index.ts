@@ -23,6 +23,11 @@ export {
   type ActivateRuntimeHostManagedDeploymentInput,
   type RuntimeHostManagedActivationErrorCode,
 } from './managed-activation.js';
+export {
+  decodeRuntimeHostWebRtcStunPolicy,
+  resolveRuntimeHostWebRtcStunUrls,
+  type RuntimeHostWebRtcStunPolicy,
+} from '../webrtc-stun-policy.js';
 export { openRuntimeHostManagedStdioBridge } from './managed-stdio-bridge.js';
 export {
   connectRuntimeHost,
@@ -31,6 +36,7 @@ export {
   RuntimeHostOperationError,
   RuntimeHostRequestInterruptedError,
   type RuntimeHostConnection,
+  type RuntimeHostPeerConnectionPath,
   type DirectRequestOperationKey,
 } from './connection.js';
 export {
@@ -44,6 +50,7 @@ export {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createFileRuntimeHostProfileCatalog,
+  createRuntimeHostCapabilityProviderCredentialStore,
   createRuntimeHostProfileCredentialStore,
   connectRuntimeHostProfile,
   connectRemoteRuntimeHostProfile,
@@ -51,15 +58,24 @@ export {
   decodePersistedRuntimeHostProfile,
   decodeRemoteRuntimeHostProfile,
   remoteRuntimeHostUnavailableError,
+  runtimeHostProfileAccess,
+  runtimeHostProfileTargetFingerprint,
   sameRemoteRuntimeHostProfileTarget,
   sameResolvedRuntimeHostProfileTarget,
+  subscribeClientRuntimeHostProfileCatalogChanges,
   type EnvironmentRuntimeHostProfile,
   type PersistedRuntimeHostProfile,
   type RemoteRuntimeHostProfile,
   type RuntimeHostRemoteTransport,
   type ResolvedRuntimeHostProfile,
   type RuntimeHostProfile,
+  type RuntimeHostProfileAccess,
   type RuntimeHostProfileCatalog,
+  type RuntimeHostConnectionPhase,
+  type RuntimeHostRemoteProfileIncarnation,
+  type RuntimeHostCapabilityProviderCredentialStore,
+  RuntimeHostProfileConnectionError,
+  type RuntimeHostProfileConnectionFailureReason,
   type RuntimeHostProfileDocument,
 } from './host-profile.js';
 export {
@@ -113,13 +129,19 @@ export {
 } from './wsl-environment.js';
 export {
   RuntimeHostCatalogReadError,
+  RuntimeHostSessionCatalogRevisionChangedError,
   readRuntimeHostConnectionCatalog,
   readRuntimeHostInvocableSkills,
   readRuntimeHostProjectDetails,
   readRuntimeHostResources,
   readRuntimeHostProjects,
+  readRuntimeHostSessionCatalogPage,
   readRuntimeHostSessions,
   readRuntimeHostSkillCatalog,
+  type RuntimeHostSessionCatalogPage,
+  type RuntimeHostSessionCatalogPageCursor,
+  type RuntimeHostConnectionCatalogEntry,
+  type RuntimeHostConnectionCatalogSnapshot,
 } from './catalog-reader.js';
 export {
   connectOrSpawnRuntimeHost,
@@ -129,7 +151,7 @@ export {
   type RuntimeHostElectionDiagnostic,
   type RuntimeHostSpawnedProcess,
 } from './connect-or-spawn.js';
-export { waitForRuntimeHostReady } from './wait-for-ready.js';
+export { abortable, waitForRuntimeHostReady } from './wait-for-ready.js';
 export {
   createRuntimeHostCandidateLaunchBarrier,
   type RuntimeHostCandidateLaunchBarrier,
@@ -150,12 +172,16 @@ export { consumeAccessCredentialDelivery } from '../control/access-credential-de
 export {
   decodeRuntimeHostOwnerConnectionCode,
   encodeRuntimeHostOwnerConnectionCode,
+  issueRuntimeHostOwnerConnectionCode,
+  REMOTE_DESKTOP_OWNER_ACCESS_POLICY,
+  type IssueRuntimeHostOwnerConnectionCodeInput,
   type RuntimeHostOwnerConnectionCode,
 } from './owner-connection-code.js';
 export { ensureRuntimeHostPeerIdentity } from '../transport/peer-native.js';
 export {
   createRuntimeHostPeerClient,
   createRuntimeHostPeerClientFromEnvironment,
+  RuntimeHostPeerReachabilityUnavailableError,
   type RuntimeHostPeerClient,
   type RuntimeHostPeerConnectInput,
 } from './peer-client.js';

@@ -31,6 +31,7 @@ import {
 import { defineOperation } from './operation-spec.js';
 import {
   decodeMessageContent,
+  decodeMessageAdmissionContent,
   decodeSkillIds,
   decodeTurnOrchestration,
   decodeTurnSnapshot,
@@ -99,15 +100,17 @@ export interface TurnMessageSubmitInput {
   readonly turnOrchestration?: TurnOrchestration;
 }
 
-export type TurnMessageSubmitResult =
-  | { readonly disposition: 'steering'; readonly queueRevision: number }
-  | { readonly disposition: 'followup'; readonly queueRevision: number }
+export type TurnMessageSubmitResult = {
+  readonly skillInvocation: SkillInvocationResult;
+} & (
   | {
-      readonly disposition: 'turn_started';
-      readonly turnId: string;
-      readonly skillInvocation?: SkillInvocationResult;
+      readonly disposition: 'steering' | 'followup';
+      /** Absent when an older Host Epoch can prove admission but not its transient revision. */
+      readonly queueRevision?: number;
     }
-  | { readonly disposition: 'blocked'; readonly skillInvocation: SkillInvocationResult };
+  | { readonly disposition: 'turn_started'; readonly turnId: string }
+  | { readonly disposition: 'blocked' }
+);
 
 export interface TurnMessageQueryInput {
   readonly sessionId: string;
@@ -122,6 +125,25 @@ export interface TurnMessageQueryInput {
 export interface TurnMessageQueryResult {
   readonly cancelledMessageIds: readonly string[];
 }
+
+export interface TurnMessageExecutionQueryInput {
+  readonly sessionId: string;
+  readonly messageIds: readonly string[];
+}
+
+export interface TurnMessageExecutionQueryResult {
+  readonly resolutions: readonly TurnMessageExecutionResolution[];
+}
+
+export type TurnMessageExecutionResolution =
+  | { readonly messageId: string; readonly state: 'pending' }
+  | { readonly messageId: string; readonly state: 'cancelled' }
+  | {
+      readonly messageId: string;
+      readonly state: 'owned';
+      readonly turnId: string;
+      readonly runId: string;
+    };
 
 export interface QueueRetractInput {
   readonly originHostEpoch: string;
@@ -201,6 +223,13 @@ export const MESSAGE_OPERATION_SPECS = {
     errors: MESSAGE_OPERATION_ERRORS,
     decodeInput: decodeTurnMessageQueryInput,
     decodeOutput: decodeTurnMessageQueryResult,
+  }),
+  'turn.message.execution.query': defineOperation({
+    mode: 'query',
+    availability: 'ready',
+    errors: MESSAGE_OPERATION_ERRORS,
+    decodeInput: decodeTurnMessageExecutionQueryInput,
+    decodeOutput: decodeTurnMessageExecutionQueryResult,
   }),
   'turn.message.submit': defineOperation({
     mode: 'command',
@@ -302,7 +331,7 @@ function decodeTurnMessageSubmitInput(value: unknown): TurnMessageSubmitInput {
     originHostEpoch: requireId(record.originHostEpoch, 'originHostEpoch'),
     sessionId: requireEntityId(record.sessionId, 'sessionId'),
     messageId: requireEntityId(record.messageId, 'messageId'),
-    content: decodeMessageContent(record.content, skillIds.length > 0),
+    content: decodeMessageAdmissionContent(record.content, skillIds.length > 0),
     placement,
     ...(skillIds.length > 0 ? { skillIds } : {}),
     ...(turnOrchestration !== undefined ? { turnOrchestration } : {}),
@@ -341,21 +370,71 @@ function decodeTurnMessageQueryResult(value: unknown): TurnMessageQueryResult {
   return { cancelledMessageIds };
 }
 
+function decodeTurnMessageExecutionQueryInput(value: unknown): TurnMessageExecutionQueryInput {
+  return decodeTurnMessageQueryInput(value);
+}
+
+function decodeTurnMessageExecutionQueryResult(value: unknown): TurnMessageExecutionQueryResult {
+  const record = requireExactRecord(value, 'turn.message.execution.query result', ['resolutions']);
+  if (!Array.isArray(record.resolutions) || record.resolutions.length > MESSAGE_QUEUE_MAX_ENTRIES) {
+    throw invalidProtocolFrame('Invalid turn.message.execution.query resolutions');
+  }
+  const resolutions = record.resolutions.map((value): TurnMessageExecutionResolution => {
+    const resolution = requireRecord(value, 'turn.message.execution.query resolution');
+    if (resolution.state === 'pending') {
+      assertExactKeys(resolution, 'turn.message.execution.query pending resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'pending',
+      };
+    }
+    if (resolution.state === 'cancelled') {
+      assertExactKeys(resolution, 'turn.message.execution.query cancelled resolution', [
+        'messageId',
+        'state',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'cancelled',
+      };
+    }
+    if (resolution.state === 'owned') {
+      assertExactKeys(resolution, 'turn.message.execution.query owned resolution', [
+        'messageId',
+        'state',
+        'turnId',
+        'runId',
+      ]);
+      return {
+        messageId: requireEntityId(resolution.messageId, 'messageId'),
+        state: 'owned',
+        turnId: requireEntityId(resolution.turnId, 'turnId'),
+        runId: requireEntityId(resolution.runId, 'runId'),
+      };
+    }
+    throw invalidProtocolFrame('Invalid turn.message.execution.query resolution state');
+  });
+  if (new Set(resolutions.map(({ messageId }) => messageId)).size !== resolutions.length) {
+    throw invalidProtocolFrame('Duplicate turn.message.execution.query messageId');
+  }
+  return { resolutions };
+}
+
 function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult {
   const record = requireRecord(value, 'turn.message.submit result');
   if (record.disposition === 'turn_started') {
-    const shaped = requireShapedRecord(
-      record,
-      'turn.message.submit turn_started result',
-      ['disposition', 'turnId'],
-      ['skillInvocation'],
-    );
+    assertExactKeys(record, 'turn.message.submit turn_started result', [
+      'disposition',
+      'turnId',
+      'skillInvocation',
+    ]);
     return {
       disposition: 'turn_started',
-      turnId: requireEntityId(shaped.turnId, 'turnId'),
-      ...(shaped.skillInvocation !== undefined
-        ? { skillInvocation: decodeSubmitSkillInvocation(shaped.skillInvocation) }
-        : {}),
+      turnId: requireEntityId(record.turnId, 'turnId'),
+      skillInvocation: decodeSubmitSkillInvocation(record.skillInvocation),
     };
   }
   if (record.disposition === 'blocked') {
@@ -370,10 +449,18 @@ function decodeTurnMessageSubmitResult(value: unknown): TurnMessageSubmitResult 
     return { disposition: 'blocked', skillInvocation };
   }
   if (record.disposition === 'steering' || record.disposition === 'followup') {
-    assertExactKeys(record, 'turn.message.submit queued result', ['disposition', 'queueRevision']);
+    const shaped = requireShapedRecord(
+      record,
+      'turn.message.submit queued result',
+      ['disposition', 'skillInvocation'],
+      ['queueRevision'],
+    );
     return {
       disposition: record.disposition,
-      queueRevision: requireCount(record.queueRevision, 'queueRevision'),
+      ...(shaped.queueRevision !== undefined
+        ? { queueRevision: requireCount(shaped.queueRevision, 'queueRevision') }
+        : {}),
+      skillInvocation: decodeSubmitSkillInvocation(shaped.skillInvocation),
     };
   }
   throw invalidProtocolFrame('Invalid turn.message.submit disposition');

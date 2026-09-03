@@ -29,7 +29,7 @@
  * product-specific trust boundaries around that renderer.
  */
 
-import { useContext, type ReactNode } from 'react';
+import { useCallback, useContext, useRef, type ReactNode } from 'react';
 import {
   Markdown as AstryxMarkdown,
   type MarkdownComponents,
@@ -46,7 +46,13 @@ import { MakaUriContext } from './markdown.js';
 import { useUiLocale } from './locale-context.js';
 import { getSharedUiCopy } from './shared-ui-copy.js';
 import { MermaidDiagram } from './mermaid-diagram.js';
-import { prepareMarkdownMath } from './markdown-math.js';
+import {
+  createMarkdownMathCache,
+  MARKDOWN_MATH_PLUGINS,
+  prepareMarkdownMath,
+} from './markdown-math.js';
+import { parseAttachmentResourceRef } from '@maka/core/attachments';
+import { useAttachmentImageSource } from './attachment-image.js';
 
 const BASE_MARKDOWN_COMPONENTS = {
   link: MarkdownLink,
@@ -105,6 +111,17 @@ export function applyMermaidRenderBudget(source: string): string {
   return lines.join('\n');
 }
 
+// Whether the prose (not code) of a markdown source is written in Han script.
+// The document `lang` is the UI locale, which says nothing about what the
+// model wrote, so the CSS that styles Han-specific runs (emphasis has no
+// italic in Han faces) keys on this instead.
+export function hasHanProse(source: string): boolean {
+  const prose = source
+    .replace(/^( {0,3})(`{3,}|~{3,})[^\n]*\n[\s\S]*?\n {0,3}\2[ \t]*$/gm, '')
+    .replace(/`[^`\n]*`/g, '');
+  return /\p{Script=Han}/u.test(prose);
+}
+
 const MARKDOWN_COMPONENTS = {
   default: {
     ...BASE_MARKDOWN_COMPONENTS,
@@ -130,12 +147,12 @@ export function MarkdownBody(props: {
   settledText?: string;
   density?: 'default' | 'compact';
 }) {
-  const source = neutralizeUnsafeMarkdownImages(props.text);
-  const settledSource =
-    props.settledText === undefined ? undefined : neutralizeUnsafeMarkdownImages(props.settledText);
-  const prepared = prepareMarkdownMath(source, settledSource);
-  const safeText = prepared.text;
-  const budgetedText = props.streaming ? safeText : applyMermaidRenderBudget(safeText);
+  const mathCache = useRef(createMarkdownMathCache());
+  const transformMathSource = useCallback(
+    (source: string) => prepareMarkdownMath(source, mathCache.current),
+    [],
+  );
+  const budgetedText = props.streaming ? props.text : applyMermaidRenderBudget(props.text);
   const density = props.density ?? 'default';
   const components = props.streaming
     ? density === 'compact'
@@ -146,6 +163,7 @@ export function MarkdownBody(props: {
   return (
     <div
       data-maka-contract="markdown"
+      data-maka-script={hasHanProse(props.text) ? 'han' : undefined}
       // Migration-only identity wrapper. `display: contents` gives the
       // contract harness a stable declared subtree without adding a layout
       // box or interfering with Astryx's document root.
@@ -176,9 +194,10 @@ export function MarkdownBody(props: {
         // the one combination neither half of the argument asks for.
         density={density}
         components={components}
-        inlinePlugins={[prepared.plugin]}
+        inlinePlugins={MARKDOWN_MATH_PLUGINS}
         isStreaming={props.streaming}
-        settledText={prepared.settledText}
+        settledText={props.settledText}
+        transformSource={transformMathSource}
       >
         {budgetedText}
       </AstryxMarkdown>
@@ -250,92 +269,25 @@ function MarkdownCode(props: {
 }
 
 function MarkdownImage(props: { src: string; alt: string }) {
+  const attachment = parseAttachmentResourceRef(props.src);
+  const attachmentSrc = useAttachmentImageSource(
+    attachment ? { artifactId: attachment.artifactId } : undefined,
+  );
+  if (attachment) {
+    if (!attachmentSrc) return <span>[{props.alt}]</span>;
+    return (
+      <img
+        className="maka-markdown-attachment-image"
+        src={attachmentSrc}
+        alt={props.alt}
+      />
+    );
+  }
   if (!isSafeMarkdownImageUrl(props.src)) return <span>[{props.alt}]</span>;
-  // Astryx calls this component only for images inside a paragraph. The shared
-  // reset makes bare images block-level, so preserve inline flow for badges and
-  // sentence-level icons; the reset keeps max-width/height.
+  // Remote images can be badges or sentence-level icons, so preserve Maka's
+  // existing inline presentation. Session attachments above are content
+  // previews and deliberately own a block presentation instead.
   return <img src={props.src} alt={props.alt} style={{ display: 'inline-block' }} />;
-}
-
-/**
- * Astryx delegates inline images to `components.image`, but its current
- * standalone-image branch renders a native `<img>` directly. Neutralize
- * unsafe direct-image syntax before parsing so both branches retain Maka's
- * existing closed URL allowlist. The scanner follows Astryx's image grammar
- * and leaves fenced/inline code unchanged.
- */
-function neutralizeUnsafeMarkdownImages(source: string): string {
-  let fence: string | null = null;
-  return source
-    .split('\n')
-    .map((line) => {
-      if (fence) {
-        if (line.startsWith(fence)) fence = null;
-        return line;
-      }
-
-      const fenceMatch = line.match(/^(`{3,}|~{3,})(\w*)/);
-      if (fenceMatch) {
-        fence = fenceMatch[1];
-        return line;
-      }
-
-      return neutralizeUnsafeImagesInLine(line);
-    })
-    .join('\n');
-}
-
-function neutralizeUnsafeImagesInLine(line: string): string {
-  let output = '';
-  let cursor = 0;
-
-  while (cursor < line.length) {
-    if (line[cursor] === '`') {
-      const tickCount = line[cursor + 1] === '`'
-        ? line[cursor + 2] === '`' ? 3 : 2
-        : 1;
-      const delimiter = '`'.repeat(tickCount);
-      const close = line.indexOf(delimiter, cursor + tickCount);
-      if (close !== -1) {
-        const end = close + tickCount;
-        output += line.slice(cursor, end);
-        cursor = end;
-        continue;
-      }
-    }
-
-    if (line[cursor] === '!' && line[cursor + 1] === '[') {
-      const altClose = line.indexOf(']', cursor + 2);
-      if (altClose !== -1 && line[altClose + 1] === '(') {
-        const srcStart = altClose + 2;
-        const srcClose = findClosingParen(line, srcStart);
-        if (srcClose !== -1) {
-          const src = line.slice(srcStart, srcClose);
-          if (isSafeMarkdownImageUrl(src)) {
-            output += line.slice(cursor, srcClose + 1);
-          } else {
-            output += `!\\[${line.slice(cursor + 2, srcClose + 1)}`;
-          }
-          cursor = srcClose + 1;
-          continue;
-        }
-      }
-    }
-
-    output += line[cursor];
-    cursor++;
-  }
-
-  return output;
-}
-
-function findClosingParen(text: string, start: number): number {
-  let depth = 1;
-  for (let index = start; index < text.length; index++) {
-    if (text[index] === '(') depth++;
-    if (text[index] === ')' && --depth === 0) return index;
-  }
-  return -1;
 }
 
 function isSafeMarkdownImageUrl(url: string): boolean {

@@ -18,12 +18,34 @@
  */
 
 import type { InteractiveArtifactStoreWriter } from '@maka/storage/artifact-stores';
-import type { InteractiveTaskLedgerWriter } from '@maka/storage/task-ledger-authority';
+import type { InteractiveSessionTodoWriter } from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 
 export interface SessionSidecarPurgeAuthority {
   readonly artifacts: Pick<InteractiveArtifactStoreWriter, 'purgeSessionArtifacts'>;
-  readonly taskLedger: Pick<InteractiveTaskLedgerWriter, 'purgeConversationTaskLedger'>;
+  readonly sessionTodo: Pick<InteractiveSessionTodoWriter, 'purgeSessionState'>;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'retireSession' | 'collectGarbage'
+  >;
   readonly purgeOperationalState: (sessionId: string) => Promise<void>;
+}
+
+const CONTEXT_GARBAGE_BATCH_BLOBS = 64;
+
+async function retireContextSession(
+  contextOffload: Pick<InteractiveContextOffloadWriter, 'retireSession' | 'collectGarbage'>,
+  sessionId: string,
+): Promise<void> {
+  await contextOffload.retireSession(sessionId);
+  for (;;) {
+    const collected = await contextOffload.collectGarbage({
+      olderThan: Number.MAX_SAFE_INTEGER,
+      maxBlobs: CONTEXT_GARBAGE_BATCH_BLOBS,
+      maxBytes: Number.MAX_SAFE_INTEGER,
+    });
+    if (!collected.hasMore) return;
+  }
 }
 
 export async function purgeSessionSidecars(
@@ -32,7 +54,10 @@ export async function purgeSessionSidecars(
 ): Promise<void> {
   const outcomes = await Promise.allSettled([
     authority.artifacts.purgeSessionArtifacts(sessionId),
-    authority.taskLedger.purgeConversationTaskLedger(sessionId),
+    authority.sessionTodo.purgeSessionState(sessionId),
+    ...(authority.contextOffload
+      ? [retireContextSession(authority.contextOffload, sessionId)]
+      : []),
     authority.purgeOperationalState(sessionId),
   ]);
   const failures = outcomes.flatMap((outcome) =>

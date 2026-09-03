@@ -289,6 +289,18 @@ export function projectRuntimeEventsToStoredMessages(
       projected = true;
     }
 
+    if (event.actions?.formRequest) {
+      // The matching function_call/function_response own the legacy rows;
+      // this request is live interaction state only.
+      projected = true;
+    }
+
+    if (event.actions?.formAnswerAccepted) {
+      // InteractionStore owns the canonical result. This Run-local audit fact
+      // intentionally has no legacy chat row.
+      projected = true;
+    }
+
     if (event.actions?.permissionAnswerAccepted) {
       projectCanonicalPermissionOutcome(
         event,
@@ -320,6 +332,13 @@ export function projectRuntimeEventsToStoredMessages(
     if (event.actions?.workspaceFact) {
       // Workspace epoch/version facts belong to the store-owned control-plane
       // stream. They are canonical recovery inputs, never chat messages.
+      projected = true;
+    }
+
+    if (event.actions?.managedMutationTerminal) {
+      // The matching function_response owns the provider-visible row. This
+      // action only proves that the managed reservation reached a no-effect
+      // terminal through its dedicated atomic writer.
       projected = true;
     }
 
@@ -680,7 +699,7 @@ export function projectRuntimeEventUserMessage(
   };
 }
 
-function nonCanonicalContentOrder(
+export function nonCanonicalContentOrder(
   order: readonly AssistantStepContentKind[] | undefined,
 ): AssistantStepContentKind[] | undefined {
   if (!order?.length) return undefined;
@@ -1105,6 +1124,9 @@ function projectTokenUsage(
       : {}),
     ...(usage.promptSegments !== undefined ? { promptSegments: usage.promptSegments } : {}),
     ...(usage.contextBudget !== undefined ? { contextBudget: usage.contextBudget } : {}),
+    ...(usage.lastRequestAnchor !== undefined
+      ? { lastRequestAnchor: usage.lastRequestAnchor }
+      : {}),
     ...(event.refs?.providerRequestTraceId !== undefined
       ? { providerRequestTraceId: event.refs.providerRequestTraceId }
       : {}),
@@ -1265,15 +1287,21 @@ function failureClassFromRuntimeEvent(
   event: RuntimeEvent,
   header: AgentRunHeader,
 ): string | undefined {
-  return (
+  const failureClass =
     stringStateDelta(event, 'failureClass') ??
     stringStateDelta(event, 'errorClass') ??
     stringStateDelta(event, 'reason') ??
     stringStateDelta(event, 'code') ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.reason) : undefined) ??
     (event.content?.kind === 'error' ? nonEmptyString(event.content.code) : undefined) ??
-    header.failureClass
-  );
+    header.failureClass;
+  // Retired outcome. The runtime no longer decides locally that a request
+  // cannot be shaped to fit — the provider rejects it and recovery compacts and
+  // retries — so a turn that ends over the window is a context overflow like any
+  // other. Sessions written before that still carry the old name; fold it here,
+  // at the one place the durable ledger is read, so nothing downstream has to
+  // know two names for one outcome.
+  return failureClass === 'context_budget_exhausted' ? 'context_overflow' : failureClass;
 }
 
 function stringRecordValue(value: unknown, key: string): string | undefined {
@@ -1493,6 +1521,7 @@ function semanticMessage(message: StoredMessage): unknown {
         displayText: message.displayText,
         origin: message.origin,
         attachments: message.attachments ?? [],
+        directoryReferences: message.directoryReferences,
         quotes: message.quotes ?? [],
       };
     case 'assistant':
@@ -1559,6 +1588,7 @@ function semanticMessage(message: StoredMessage): unknown {
         promptSegments: message.promptSegments,
         contextBudget: message.contextBudget,
         providerRequestTraceId: message.providerRequestTraceId,
+        lastRequestAnchor: message.lastRequestAnchor,
       };
     case 'turn_state':
       return {

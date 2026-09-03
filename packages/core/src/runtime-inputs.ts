@@ -34,7 +34,7 @@ import type { PermissionMode } from './permission.js';
 import type { ThinkingLevel } from './model-thinking.js';
 import type { CollaborationMode } from './collaboration.js';
 import type { OrchestrationMode, TurnOrchestration } from './orchestration.js';
-import type { SessionStartMode } from './explore-agent.js';
+import type { SessionStartMode } from './session-start-mode.js';
 import type { SubagentWorkspaceBinding } from './subagent-workspace.js';
 import type { ToolMode } from './tool-mode.js';
 import type { TurnOrigin } from './turn-origin.js';
@@ -117,11 +117,6 @@ export interface UserMessageInput extends MessageContent {
   turnOrchestration?: TurnOrchestration;
   /** Trusted host-supplied tool protocol override for this run only. */
   toolMode?: ToolMode;
-  parentRunId?: string;
-  /** Child AgentRun whose durable conversation this child continues. */
-  resumedFromRunId?: string;
-  /** Immediate child AgentRun retried without appending another user prompt. */
-  retriedFromRunId?: string;
   agentId?: string;
   agentName?: string;
   parentTurnId?: string;
@@ -133,28 +128,18 @@ export interface UserMessageInput extends MessageContent {
   origin?: TurnOrigin;
 }
 
-export interface AgentSpec {
-  id: string;
-  name: string;
-  systemPrompt: string;
-}
-
-export interface ChildAgentTurnInput {
-  turnId: string;
-  parentRunId: string;
-  spec: AgentSpec;
-  prompt: string;
-  /** Trusted, preflighted child AgentRun whose RuntimeEvent history is replayed. */
-  resumedFromRunId?: string;
-}
-
 export interface RegenerateTurnInput {
   sourceTurnId: string;
   turnId?: string;
 }
 
 export interface BranchFromTurnInput {
-  sourceTurnId: string;
+  /**
+   * Settled turn to branch through. Absent forks with an empty context — a side
+   * conversation opened before the source has any completed turn (valid only
+   * with `sideConversation: true`).
+   */
+  sourceTurnId?: string;
   name?: string;
   /** Marks a transient read-only fork whose inherited history is reference-only. */
   sideConversation?: boolean;

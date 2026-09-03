@@ -59,8 +59,9 @@ export interface RuntimeHostPeerMeshManagementCliOptions {
   readonly operatorDeploymentId: string;
   readonly cliPath: string;
   readonly expectedTarget: RuntimeHostManagedServiceTarget;
-  readonly meshId?: string;
+  readonly meshId?: string | null;
   readonly peerId?: string;
+  readonly displayName?: string | null;
 }
 
 interface RuntimeHostPeerMeshManagementCliDeps {
@@ -160,7 +161,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'invite',
         result: await request('peer.mesh.invite', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'join':
@@ -176,7 +177,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'remove',
         result: await request('peer.mesh.remove', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
           peerId: requiredOption(options.peerId, 'Peer ID'),
         }),
       };
@@ -185,7 +186,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'leave',
         result: await request('peer.mesh.leave', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'close':
@@ -193,7 +194,7 @@ async function executePeerMeshAction(
         kind: 'result',
         action: 'close',
         result: await request('peer.mesh.close', {
-          meshId: requiredOption(options.meshId, 'Mesh ID'),
+          meshId: requiredMeshId(options.meshId),
         }),
       };
     case 'reconcile':
@@ -202,11 +203,41 @@ async function executePeerMeshAction(
         action: 'reconcile',
         result: await request('peer.mesh.reconcile', {}),
       };
+    case 'transit':
+      return {
+        kind: 'result',
+        action: 'transit',
+        result: await request('peer.mesh.transit.set', {
+          meshId: requiredOption(options.meshId, 'Mesh ID'),
+        }),
+      };
+    case 'rename':
+      return {
+        kind: 'result',
+        action: 'rename',
+        result: await request('peer.mesh.display-name.set', {
+          displayName: requiredOption(options.displayName, 'Display name'),
+        }),
+      };
+    case 'rename-mesh':
+      return {
+        kind: 'result',
+        action: 'rename-mesh',
+        result: await request('peer.mesh.rename', {
+          meshId: requiredMeshId(options.meshId),
+          displayName: requiredOption(options.displayName, 'Display name'),
+        }),
+      };
   }
 }
 
 function requiredOption<T>(value: T | undefined, label: string): T {
   if (value === undefined) throw new Error(`${label} is required`);
+  return value;
+}
+
+function requiredMeshId(value: string | null | undefined): string {
+  if (typeof value !== 'string') throw new Error('Mesh ID is required');
   return value;
 }
 

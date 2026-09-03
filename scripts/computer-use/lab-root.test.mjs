@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -31,8 +32,23 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { requireComputerUseLabRoot } from './lab-root.mjs';
+
+test('Computer Use CLI advertises only the supported evidence commands', () => {
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL('../computer-use.mjs', import.meta.url)), '--help'],
+    { encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    `Usage: node scripts/computer-use.mjs <command> [options]\n\nCommands:\n  prepare\n  real-ax\n  real-model\n  restart-soak\n  provider-matrix\n`,
+  );
+});
 
 test('rejects missing and invalid Computer Use Lab roots', async () => {
   const root = await mkdtemp(join(tmpdir(), 'maka-cu-lab-root-invalid-'));

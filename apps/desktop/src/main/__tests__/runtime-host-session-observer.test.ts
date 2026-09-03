@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
@@ -36,6 +37,7 @@ import type { DesktopRuntimeHostSession } from "../runtime-host-client.js";
 import {
   DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
   type DesktopTranscriptBatch,
+  type DesktopTranscriptOpenResult,
 } from '../../preload/transcript-contract.js';
 import { RuntimeHostSessionObservationRegistry } from "../runtime-host-session-observation-registry.js";
 import {
@@ -46,6 +48,7 @@ import {
 } from "../runtime-host-session-observer.js";
 import { RuntimeHostSessionSubscriptionOwner } from '../runtime-host-session-subscription-owner.js';
 import { runtimeHostSessionFixture } from "./runtime-host-session-test-fixture.js";
+import { waitFor as pollFor } from '@maka/core/test-only/async-primitives';
 
 test("joins an active Turn without losing or replaying assistant text", async () => {
   const transcript = deferred<StoredMessage[]>();
@@ -483,6 +486,180 @@ test('restores transcript consumers across Host replacement', async () => {
   await observations.close();
 });
 
+test('does not hold Host observation recovery on transcript replay', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const target = eventTarget(18);
+  const transcriptTarget: RuntimeHostTranscriptTarget = {
+    id: 19,
+    send() {},
+    once() {},
+    off() {},
+  };
+  const transcriptResult = (generation: string) => ({
+    sessionId: 'session-1',
+    generation,
+    hostEpoch: `host-${generation}`,
+    readThroughMessageId: null,
+  });
+  const source = (generation: string) => ({
+    async observe() {},
+    async unobserve() {},
+    async openTranscript() {
+      return transcriptResult(generation);
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  });
+  const first = source('first');
+  await observations.attach(first);
+  await observations.observe('session-1', 'observer-1', target);
+  await observations.openTranscript('session-1', 'consumer-1', transcriptTarget);
+  observations.detach(first);
+
+  const observationSeed = deferred<void>();
+  const transcriptReplay = deferred<DesktopTranscriptOpenResult>();
+  let transcriptReplayStarted = false;
+  let transcriptReplayCompleted = false;
+  let transcriptRangeStarted = false;
+  let transcriptAcknowledged = false;
+  const replacement = {
+    async observe() {
+      await observationSeed.promise;
+    },
+    async unobserve() {},
+    async openTranscript() {
+      transcriptReplayStarted = true;
+      const result = await transcriptReplay.promise;
+      transcriptReplayCompleted = true;
+      return result;
+    },
+    async loadTranscriptBefore() {
+      transcriptRangeStarted = true;
+    },
+    async loadTranscriptAround() {},
+    acknowledgeTranscript() {
+      transcriptAcknowledged = true;
+    },
+    async closeTranscript() {},
+  };
+  const attaching = observations.attach(replacement);
+  let attached = false;
+  void attaching.then(() => {
+    attached = true;
+  });
+  await waitFor(() => transcriptReplayStarted);
+  assert.equal(attached, false);
+
+  observationSeed.resolve();
+  assert.deepEqual(await attaching, ['session-1']);
+  assert.equal(attached, true);
+
+  const range = observations.loadTranscriptBefore(
+    {
+      consumerId: 'consumer-1',
+      sessionId: 'session-1',
+      hostEpoch: 'host-second',
+      anchorSequence: null,
+      maxBytes: DESKTOP_TRANSCRIPT_FRAGMENT_MAX_BYTES,
+    },
+    transcriptTarget.id,
+  );
+  observations.acknowledgeTranscript('consumer-1', 'second', 1, transcriptTarget.id);
+  await Promise.resolve();
+  assert.equal(transcriptRangeStarted, false);
+  assert.equal(transcriptAcknowledged, true);
+
+  transcriptReplay.resolve(transcriptResult('second'));
+  await range;
+  assert.equal(transcriptRangeStarted, true);
+  await waitFor(() => transcriptReplayCompleted);
+  await observations.close();
+});
+
+test('releases one renderer target before reload without restoring its observations', async () => {
+  const observations = new RuntimeHostSessionObservationRegistry();
+  const sessionCleanup = deferred<void>();
+  const transcriptCleanup = deferred<void>();
+  const unobserved: string[] = [];
+  const closedTranscripts: string[] = [];
+  const firstSource = {
+    async observe() {},
+    async unobserve(observerId: string) {
+      unobserved.push(observerId);
+      await sessionCleanup.promise;
+    },
+    async openTranscript(sessionId: string) {
+      return {
+        sessionId,
+        generation: 'first',
+        hostEpoch: 'host-first',
+        readThroughMessageId: null,
+      };
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript(consumerId: string) {
+      closedTranscripts.push(consumerId);
+      await transcriptCleanup.promise;
+    },
+  };
+  const targetA = {
+    id: 31,
+    send() {},
+    once() {},
+    off() {},
+  } satisfies RuntimeHostSessionObserverTarget & RuntimeHostTranscriptTarget;
+  const targetB = {
+    id: 32,
+    send() {},
+    once() {},
+    off() {},
+  } satisfies RuntimeHostSessionObserverTarget;
+
+  await observations.attach(firstSource);
+  await observations.observe('session-a', 'observer-a', targetA);
+  await observations.openTranscript('session-a', 'consumer-a', targetA);
+  await observations.observe('session-b', 'observer-b', targetB);
+
+  let released = false;
+  const releasing = observations.releaseTarget(targetA.id).then(() => {
+    released = true;
+  });
+  assert.deepEqual(unobserved, ['observer-a']);
+  assert.deepEqual(closedTranscripts, ['consumer-a']);
+  assert.deepEqual(observations.trackedSessionIds(), ['session-b']);
+  assert.equal(released, false);
+
+  sessionCleanup.resolve();
+  await Promise.resolve();
+  assert.equal(released, false);
+  transcriptCleanup.resolve();
+  await releasing;
+  assert.equal(released, true);
+
+  observations.detach(firstSource);
+  const restoredObservers: string[] = [];
+  const restoredTranscripts: string[] = [];
+  const secondSource = {
+    async observe(_sessionId: string, observerId: string) {
+      restoredObservers.push(observerId);
+    },
+    async unobserve() {},
+    async openTranscript(_sessionId: string, consumerId: string) {
+      restoredTranscripts.push(consumerId);
+      throw new Error('released transcript was restored');
+    },
+    async loadTranscriptBefore() {},
+    async loadTranscriptAround() {},
+    async closeTranscript() {},
+  };
+  assert.deepEqual(await observations.attach(secondSource), ['session-b']);
+  assert.deepEqual(restoredObservers, ['observer-b']);
+  assert.deepEqual(restoredTranscripts, []);
+  await observations.close();
+});
+
 test('fences transcript range failures to the current registration and Host source', async () => {
   const observations = new RuntimeHostSessionObservationRegistry();
   const target: RuntimeHostTranscriptTarget = {
@@ -586,6 +763,8 @@ test('fences transcript range failures across same-source replica recovery', asy
           throughSequence: 1,
           rawBytes: 1,
           fragments: [],
+          rangeBoundarySequence: null,
+          protectedTurnSequence: null,
           nextCursor: 'older',
         };
         return runtimeHostSessionFixture({
@@ -594,6 +773,7 @@ test('fences transcript range failures across same-source replica recovery', asy
           events,
           transcriptBootstrap: {
             throughSequence: 1,
+            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: bootstrap,
             overlay: { ...bootstrap, source: 'overlay', nextCursor: null },
@@ -725,6 +905,8 @@ test('broadcasts durable admission and transcript changes from the same message'
             throughSequence: 0,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async () => ({
@@ -887,6 +1069,7 @@ test('finishes transcript open and replays a stale range request after replaceme
           events,
           transcriptBootstrap: {
             throughSequence: 0,
+            durableCoverage: 'complete',
             overlayMessageCount: 0,
             durable: {
               kind: 'page',
@@ -896,6 +1079,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: 0,
               rawBytes: 1,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: 'older',
             },
             overlay: {
@@ -906,6 +1091,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: null,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             },
           },
@@ -925,6 +1112,8 @@ test('finishes transcript open and replays a stale range request after replaceme
               throughSequence: input.throughSequence,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },
@@ -1068,6 +1257,8 @@ test('coalesces transcript changes into one bounded delta while renderer deliver
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1168,6 +1359,8 @@ test('does not let one backpressured transcript consumer block another', async (
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => {
@@ -1273,6 +1466,8 @@ test('keeps a transcript consumer available after a delivery fails', async () =>
             throughSequence: input.throughSequence,
             rawBytes: 1,
             fragments: [],
+            rangeBoundarySequence: null,
+            protectedTurnSequence: null,
             nextCursor: null,
           }),
           decodeTranscriptPage: async (page) => ({
@@ -1629,9 +1824,10 @@ test("abandons a watched Turn when the initial Host subscription fails", async (
   await observer.close();
 });
 
-test("abandons a watched Turn when the Session is removed", async () => {
+test("abandons a watched Turn and removes it from the catalog when Guest access ends", async () => {
   const events = new AsyncFrameQueue();
   const finishedTurns: Array<[string, "completed" | "abandoned"]> = [];
+  const sessionChanges: string[] = [];
   let closeCount = 0;
   const observer = new RuntimeHostSessionObserver({
     client: {
@@ -1646,7 +1842,9 @@ test("abandons a watched Turn when the Session is removed", async () => {
         },
       }),
     },
-    emitSessionsChanged() {},
+    emitSessionsChanged(reason) {
+      sessionChanges.push(reason);
+    },
     onWatchedTurnFinished: (sessionId, outcome) => {
       finishedTurns.push([sessionId, outcome]);
     },
@@ -1658,11 +1856,12 @@ test("abandons a watched Turn when the Session is removed", async () => {
     hostEpoch: "host-1",
     subscriptionId: "subscription-1",
     sequence: 1,
-    reason: "session_removed",
+    reason: "access_revoked",
   });
 
   await waitFor(() => closeCount === 1);
   assert.deepEqual(finishedTurns, [["session-1", "abandoned"]]);
+  assert.deepEqual(sessionChanges, ["deleted"]);
   await observer.close();
 });
 
@@ -1775,6 +1974,8 @@ test("recovers when transcript paging loses the active subscription", async () =
               throughSequence: 0,
               rawBytes: 0,
               fragments: [],
+              rangeBoundarySequence: null,
+              protectedTurnSequence: null,
               nextCursor: null,
             };
           },
@@ -2810,25 +3011,6 @@ class AsyncFrameQueue implements AsyncIterable<SubscriptionFrame> {
     };
   }
 }
-
-function deferred<T>(): {
-  promise: Promise<T>;
-  resolve(value: T): void;
-  reject(error: Error): void;
-} {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((settle, rejectPromise) => {
-    resolve = settle;
-    reject = rejectPromise;
-  });
-  return { promise, resolve, reject };
-}
-
 async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  assert.fail("Timed out waiting for observer state");
+  await pollFor(predicate, { attempts: 100, message: 'Timed out waiting for observer state' });
 }

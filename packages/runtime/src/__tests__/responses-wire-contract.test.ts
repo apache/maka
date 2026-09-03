@@ -29,8 +29,8 @@ import { buildProviderOptions, getAIModel } from '../model-factory.js';
 import { ModelAdapter } from '../model-adapter.js';
 import { TOOL_SEARCH_PROVIDER_NAME } from '../tool-availability.js';
 import { resolveModelRuntime } from '../model-runtime.js';
+import { resolveRuntimeProviderAdapter } from '../provider-runtime-policy.js';
 import { lowerModelTools } from '../model-adapter.js';
-import { openAiCodexCompactionMessages } from '../openai-codex-history-compactor.js';
 import { openAiResponsesBaseUrl, openResponsesUrl } from '../provider-urls.js';
 
 function conn(providerType: LlmConnection['providerType'], slug = 'test'): LlmConnection {
@@ -137,12 +137,20 @@ describe('responses wire contract', () => {
     );
   });
 
-  test('keeps Qwen3.8 Max on Token Plan Chat until the provider adapter supports Responses', () => {
+  test('routes only Qwen3.8 Max through Token Plan Responses', () => {
     for (const providerType of ['alibaba-token-plan-cn', 'alibaba-token-plan'] as const) {
       assert.equal(
         resolveModelRuntime({ providerType }, 'qwen3.8-max').wire,
-        'openai-chat',
+        'openai-responses',
         providerType,
+      );
+      assert.equal(resolveModelRuntime({ providerType }, 'qwen3.7-max').wire, 'openai-chat');
+      assert.equal(
+        resolveModelRuntime(
+          { providerType, models: [{ id: 'qwen3.8-max', apiProtocol: 'openai-chat' }] },
+          'qwen3.8-max',
+        ).wire,
+        'openai-chat',
       );
     }
   });
@@ -156,8 +164,11 @@ describe('responses wire contract', () => {
 
   test('routes OpenCode Go Muse Spark through the Responses endpoint', async () => {
     const urls: string[] = [];
-    const fetch = (async (url: string | URL | Request) => {
-      urls.push(String(url));
+    const sessionHeaders: Array<string | null> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init);
+      urls.push(request.url);
+      sessionHeaders.push(request.headers.get('x-opencode-session'));
       return Response.json({
         id: 'r',
         object: 'response',
@@ -171,13 +182,76 @@ describe('responses wire contract', () => {
       apiKey: '[redacted]',
       modelId: 'muse-spark-1.2-contributor',
       fetch,
-    });
+      sessionId: 'session-opencode-go',
+    } as Parameters<typeof getAIModel>[0]);
 
     await model.doGenerate({
       prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
     });
 
     assert.deepEqual(urls, ['https://opencode.ai/zen/go/v1/responses']);
+    assert.deepEqual(sessionHeaders, ['session-opencode-go']);
+  });
+
+  test('sends the OpenCode Go session identity through Chat and Messages adapters', async () => {
+    const requests: Array<{ url: string; sessionHeader: string | null }> = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(url, init);
+      requests.push({
+        url: request.url,
+        sessionHeader: request.headers.get('x-opencode-session'),
+      });
+      if (request.url.endsWith('/messages')) {
+        return Response.json({
+          id: 'msg-opencode-go',
+          type: 'message',
+          role: 'assistant',
+          model: 'minimax-m3',
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+          stop_sequence: null,
+          usage: { input_tokens: 1, output_tokens: 1 },
+        });
+      }
+      return Response.json({
+        id: 'chatcmpl-opencode-go',
+        object: 'chat.completion',
+        created: 1,
+        model: 'kimi-k2.7-code',
+        choices: [
+          {
+            index: 0,
+            message: { role: 'assistant', content: 'ok' },
+            finish_reason: 'stop',
+          },
+        ],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      });
+    }) as typeof globalThis.fetch;
+
+    for (const modelId of ['kimi-k2.7-code', 'minimax-m3']) {
+      const model = getAIModel({
+        connection: conn('opencode-go'),
+        apiKey: '[redacted]',
+        modelId,
+        fetch,
+        sessionId: 'session-opencode-go',
+      });
+      await model.doGenerate({
+        prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      });
+    }
+
+    assert.deepEqual(requests, [
+      {
+        url: 'https://opencode.ai/zen/go/v1/chat/completions',
+        sessionHeader: 'session-opencode-go',
+      },
+      {
+        url: 'https://opencode.ai/zen/go/v1/messages',
+        sessionHeader: 'session-opencode-go',
+      },
+    ]);
   });
 
   test('normalizes the upstream Open Responses endpoint exactly once', () => {
@@ -233,6 +307,26 @@ describe('responses wire contract', () => {
       kind: 'responses',
       contract: { adapter: 'open-responses', reasoningReplay: 'plaintext-content' },
     });
+    assert.equal(deepseek.responsesProviderOptionsKey, undefined);
+    assert.equal(deepseek.responsesReplayProfile, undefined);
+
+    const alibaba = resolveModelRuntime({ providerType: 'alibaba-token-plan-cn' }, 'qwen3.8-max');
+    assert.deepEqual(alibaba.reasoningReplay, {
+      kind: 'responses',
+      contract: {
+        adapter: 'open-responses',
+        reasoningReplay: 'plaintext-summary',
+        compatibility: 'alibaba-token-plan',
+      },
+    });
+    assert.equal(alibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(alibaba.responsesReplayProfile, 'alibaba-token-plan-cn');
+    const accountScopedAlibaba = resolveModelRuntime(
+      { providerType: 'alibaba-token-plan-cn', slug: 'token-plan-account-a' },
+      'qwen3.8-max',
+    );
+    assert.equal(accountScopedAlibaba.responsesProviderOptionsKey, 'alibaba-token-plan-cn');
+    assert.equal(accountScopedAlibaba.responsesReplayProfile, 'token-plan-account-a');
 
     const xai = resolveModelRuntime({ providerType: 'xai' }, 'grok-4.5');
     assert.deepEqual(xai.reasoningReplay, {
@@ -283,7 +377,7 @@ describe('responses wire contract', () => {
 
   test('enables Responses only through an explicit supported contract', () => {
     const configured = Object.entries(PROVIDER_REGISTRY).flatMap(([providerType, definition]) => {
-      const adapter = definition.runtimeAdapter;
+      const adapter = resolveRuntimeProviderAdapter(definition.runtimeAdapter);
       return adapter.kind === 'openai-compatible' && adapter.responses
         ? [{ providerType, contract: adapter.responses }]
         : [];
@@ -301,6 +395,22 @@ describe('responses wire contract', () => {
       {
         providerType: 'xai-oauth',
         contract: { adapter: 'openai', reasoningReplay: 'encrypted-content' },
+      },
+      {
+        providerType: 'alibaba-token-plan-cn',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
+      },
+      {
+        providerType: 'alibaba-token-plan',
+        contract: {
+          adapter: 'open-responses',
+          reasoningReplay: 'plaintext-summary',
+          compatibility: 'alibaba-token-plan',
+        },
       },
     ]);
 
@@ -332,7 +442,7 @@ describe('responses wire contract', () => {
         if (
           runtime.wire !== 'openai-responses' ||
           (runtime.reasoningReplay.kind === 'responses' &&
-            runtime.reasoningReplay.contract.reasoningReplay === 'plaintext-content')
+            runtime.reasoningReplay.contract.adapter === 'open-responses')
         ) {
           continue;
         }
@@ -356,6 +466,147 @@ describe('responses wire contract', () => {
 });
 
 describe('responses wire request body', () => {
+  test('Alibaba compatibility owns store:false after request overlays', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const urls: string[] = [];
+    const fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(url));
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'response-1',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+      requestBodyOverlay: { store: true },
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+      providerOptions: buildProviderOptions(connection, 'qwen3.8-max', 'medium'),
+    });
+
+    assert.deepEqual(urls, ['https://token-plan.example/compatible-mode/v1/responses']);
+    assert.equal(bodies[0]?.store, false);
+    assert.deepEqual(bodies[0]?.reasoning, { effort: 'medium' });
+  });
+
+  test('Alibaba compatibility preserves documented required tool choices', async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return Response.json({
+        id: 'response-required-tool',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'look it up' }] }],
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      ],
+      toolChoice: { type: 'required' },
+    });
+
+    const allowedToolsChoice = {
+      type: 'allowed_tools',
+      mode: 'required',
+      tools: [{ type: 'function', name: 'lookup' }],
+    };
+    const overlayModel = getAIModel({
+      connection: { ...connection, requestBodyOverlay: { tool_choice: allowedToolsChoice } },
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      fetch,
+    });
+    await overlayModel.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'look it up again' }] }],
+      tools: [
+        {
+          type: 'function',
+          name: 'lookup',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      ],
+    });
+
+    assert.equal(bodies[0]?.tool_choice, 'required');
+    assert.equal((bodies[0]?.tools as unknown[] | undefined)?.length, 1);
+    assert.equal(bodies[0]?.store, false);
+    assert.deepEqual(bodies[1]?.tool_choice, allowedToolsChoice);
+    assert.equal((bodies[1]?.tools as unknown[] | undefined)?.length, 1);
+    assert.equal(bodies[1]?.store, false);
+  });
+
+  test('Alibaba compatibility survives header-only request customization', async () => {
+    let body: Record<string, unknown> | undefined;
+    let headers: Headers | undefined;
+    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      headers = new Headers(init?.headers);
+      return Response.json({
+        id: 'response-header-customization',
+        object: 'response',
+        created_at: 1,
+        model: 'qwen3.8-max',
+        status: 'completed',
+        output: [],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const connection = {
+      ...conn('alibaba-token-plan-cn'),
+      baseUrl: 'https://token-plan.example/compatible-mode/v1',
+    };
+    const model = getAIModel({
+      connection,
+      apiKey: 'token-plan-key',
+      modelId: 'qwen3.8-max',
+      requestHeaders: { 'x-token-plan-routing': 'custom' },
+      fetch,
+    });
+
+    await model.doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: 'ping' }] }],
+    });
+
+    assert.equal(body?.store, false);
+    assert.equal(headers?.get('x-token-plan-routing'), 'custom');
+  });
+
   test('adds the V2 trigger only through the explicit OpenAI provider option', async () => {
     const bodies: Array<Record<string, unknown>> = [];
     const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
@@ -402,112 +653,6 @@ describe('responses wire request body', () => {
       unmarkedInput.some((item) => item.type === 'compaction_trigger'),
       false,
     );
-  });
-
-  test('keeps provider-executed tool history free of dangling outputs', async () => {
-    let body: Record<string, unknown> | undefined;
-    const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
-      body = JSON.parse(String(init?.body));
-      return Response.json({
-        id: 'r',
-        object: 'response',
-        status: 'completed',
-        output: [],
-        usage: { input_tokens: 1, output_tokens: 1 },
-      });
-    }) as unknown as typeof globalThis.fetch;
-    const event = (
-      id: string,
-      role: RuntimeEvent['role'],
-      author: RuntimeEvent['author'],
-      content: RuntimeEvent['content'],
-      refs?: RuntimeEvent['refs'],
-    ): RuntimeEvent => ({
-      id,
-      invocationId: 'inv-1',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      turnId: 'turn-1',
-      ts: 1,
-      partial: false,
-      role,
-      author,
-      content,
-      ...(refs ? { refs } : {}),
-    });
-    const messages = openAiCodexCompactionMessages([
-      event('user', 'user', 'user', { kind: 'text', text: 'search' }),
-      event(
-        'call',
-        'model',
-        'agent',
-        {
-          kind: 'function_call',
-          id: 'search-1',
-          name: 'WebSearch',
-          args: { query: 'latest Maka' },
-          providerExecuted: true,
-        },
-        { stepId: 'provider-step' },
-      ),
-      event('result', 'tool', 'tool', {
-        kind: 'function_response',
-        id: 'search-1',
-        name: 'WebSearch',
-        result: { type: 'web_search_result', query: 'latest Maka' },
-        providerOutput: { type: 'web_search_result', id: 'ws_123' },
-        providerExecuted: true,
-        isError: false,
-      }),
-      event(
-        'text',
-        'model',
-        'agent',
-        { kind: 'text', text: 'Maka shipped.' },
-        { providerEventId: 'provider-step' },
-      ),
-    ]);
-    assert.deepEqual(
-      messages.map((message) => ({
-        role: message.role,
-        parts:
-          typeof message.content === 'string' ? ['text'] : message.content.map((part) => part.type),
-      })),
-      [
-        { role: 'user', parts: ['text'] },
-        { role: 'assistant', parts: ['tool-call'] },
-        { role: 'tool', parts: ['tool-result'] },
-        { role: 'assistant', parts: ['text'] },
-      ],
-    );
-
-    const model = getAIModel({
-      connection: conn('openai-codex', 'codex-subscription'),
-      apiKey: 'codex-token',
-      modelId: 'gpt-5.3-codex',
-      fetch,
-    });
-    await model.doGenerate({
-      prompt: messages as never,
-      providerOptions: { openai: { store: false, compactionTrigger: true } },
-    });
-
-    const input = body?.input as Array<Record<string, unknown>>;
-    const callIds = new Set(
-      input.filter((item) => item.type === 'function_call').map((item) => String(item.call_id)),
-    );
-    const danglingOutputIds = input
-      .filter((item) => item.type === 'function_call_output')
-      .map((item) => String(item.call_id))
-      .filter((callId) => !callIds.has(callId));
-    assert.deepEqual([...callIds], ['search-1']);
-    assert.deepEqual(
-      input
-        .filter((item) => item.type === 'function_call_output')
-        .map((item) => String(item.call_id)),
-      ['search-1'],
-    );
-    assert.deepEqual(danglingOutputIds, [], JSON.stringify(input));
   });
 
   test('returns native apply_patch results with the provider output item', async () => {

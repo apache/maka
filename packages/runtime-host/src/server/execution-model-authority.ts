@@ -20,7 +20,8 @@
 import { randomUUID } from 'node:crypto';
 import {
   authorizeConnectionModel,
-  PROVIDER_DEFAULTS,
+  effectiveBaseUrl,
+  PROVIDER_REGISTRY,
   type RuntimeExecutionConnection,
 } from '@maka/core/llm-connections';
 import { isModelExplicitlyUnsupportedForChat } from '@maka/core/model-catalog';
@@ -34,6 +35,7 @@ import {
   recordLlmCallStrict,
 } from '@maka/runtime/telemetry';
 import { buildProviderOptions, getAIModel } from '@maka/runtime/model-factory';
+import { stableHash } from '@maka/runtime/request-shape';
 import { buildSessionRecapMessages } from '@maka/runtime/session-recap';
 import {
   buildSessionTitlePrompt,
@@ -225,11 +227,12 @@ export function createHostDailyReviewModel(
         const header = await readAuxiliaryPreflight(authority, effectiveAbortSignal, () =>
           resolveDailyReviewHeader(authority.runtimePolicy, modelKey),
         );
+        const callId = authority.newId();
         const result = await runHostAuxiliaryModelCall(authority, {
-          transportContextId: 'daily-review',
+          transportContextId: callId,
           header,
           callKind: 'daily_review',
-          callId: `daily_review_${authority.newId()}`,
+          callId: `daily_review_${callId}`,
           abortSignal: effectiveAbortSignal,
           buildRequest: () => ({ prompt, maxOutputTokens: 2_048 }),
         });
@@ -511,6 +514,7 @@ async function runHostAuxiliaryModelCall(
           input.header.thinkingLevel,
         );
         const model = getAIModel({
+          sessionId: input.transportContextId,
           connection: target.connection,
           apiKey,
           modelId: target.model,
@@ -729,7 +733,7 @@ class AuxiliaryModelCallConfigurationError extends Error {
   }
 }
 
-interface ResolvedExecutionTarget {
+export interface ResolvedExecutionTarget {
   readonly connection: RuntimeExecutionConnection;
   readonly model: string;
   readonly apiKey: string;
@@ -737,6 +741,40 @@ interface ResolvedExecutionTarget {
   readonly oauthBinding?: HostOAuthExecutionBinding;
   readonly networkProxy: RuntimePolicy['networkProxy'];
   readonly proxySecret?: string;
+  readonly providerStateIdentity: `sha256:${string}`;
+}
+
+type ExecutionRouteHeader = Pick<
+  BackendFactoryContext['header'],
+  'llmConnectionId' | 'llmConnectionSlug' | 'model'
+>;
+
+function executionConnectionRef(header: ExecutionRouteHeader) {
+  return header.llmConnectionId === undefined
+    ? { kind: 'catalog_slug' as const, connectionSlug: header.llmConnectionSlug }
+    : {
+        kind: 'bound' as const,
+        connectionId: header.llmConnectionId,
+        connectionSlug: header.llmConnectionSlug,
+      };
+}
+
+function providerStateIdentityForResolvedExecution(
+  resolved: Extract<
+    Awaited<ReturnType<RuntimePolicyStoresWriter['operations']['resolveExecutionConnection']>>,
+    { kind: 'ready' }
+  >,
+): `sha256:${string}` {
+  const credentialBasis = (material: typeof resolved.secretMaterial.connection) =>
+    material ? { credentialId: material.credentialId, revision: material.revision } : null;
+  return stableHash({
+    protocol: 'provider_state_identity_v1',
+    connectionId: resolved.connection.connectionId,
+    providerType: resolved.connection.providerType,
+    endpoint: new URL(effectiveBaseUrl(resolved.connection)).toString(),
+    credential: credentialBasis(resolved.secretMaterial.connection),
+    requestHeaders: credentialBasis(resolved.secretMaterial.requestHeaders),
+  });
 }
 
 async function resolveDailyReviewHeader(
@@ -801,20 +839,14 @@ export async function resolveExecutionTarget(
   createFetchTransport: (proxy: ProxiedFetchProxy | null) => ProxiedFetchTransport,
 ): Promise<ResolvedExecutionTarget> {
   const resolved = await runtimePolicy.operations.resolveExecutionConnection(
-    header.llmConnectionId === undefined
-      ? { kind: 'catalog_slug', connectionSlug: header.llmConnectionSlug }
-      : {
-          kind: 'bound',
-          connectionId: header.llmConnectionId,
-          connectionSlug: header.llmConnectionSlug,
-        },
+    executionConnectionRef(header),
   );
   if (resolved.kind !== 'ready') {
     throw new AuxiliaryModelCallConfigurationError(
       `Runtime Host model connection is not ready: ${resolved.kind}`,
     );
   }
-  const provider = PROVIDER_DEFAULTS[resolved.connection.providerType];
+  const provider = PROVIDER_REGISTRY[resolved.connection.providerType];
   if (!provider) {
     throw new AuxiliaryModelCallConfigurationError('Runtime Host model provider is not executable');
   }
@@ -852,6 +884,7 @@ export async function resolveExecutionTarget(
   const requestHeaders = resolved.secretMaterial.requestHeaders
     ? parseRequestHeaders(resolved.secretMaterial.requestHeaders.secret)
     : {};
+  const providerStateIdentity = providerStateIdentityForResolvedExecution(resolved);
   if (provider.authKind === 'oauth_token') {
     const material = resolved.secretMaterial.connection;
     if (!material) {
@@ -876,6 +909,7 @@ export async function resolveExecutionTarget(
         createRefreshTransport: () => createFetchTransport(refreshProxy),
       }),
       networkProxy: resolved.networkProxy,
+      providerStateIdentity,
       ...(resolved.secretMaterial.networkProxy
         ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
         : {}),
@@ -888,6 +922,7 @@ export async function resolveExecutionTarget(
     apiKey: resolved.secretMaterial.connection?.secret ?? '',
     requestHeaders,
     networkProxy: resolved.networkProxy,
+    providerStateIdentity,
     ...(resolved.secretMaterial.networkProxy
       ? { proxySecret: resolved.secretMaterial.networkProxy.secret }
       : {}),

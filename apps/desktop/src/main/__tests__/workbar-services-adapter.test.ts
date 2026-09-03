@@ -33,7 +33,7 @@ function createBridgeRecorder(): {
     'sessions.subscribeEvents',
     'shellRuns.subscribePtyData',
     'shellRuns.subscribeResync',
-    'tasks.subscribeChanges',
+    'todo.subscribeChanges',
     'browser.setActiveSession',
     'browser.setViewport',
     'browser.onState',
@@ -70,7 +70,7 @@ function createBridgeRecorder(): {
       gitReview: domain('gitReview'),
       sessions: domain('sessions'),
       shellRuns: domain('shellRuns'),
-      tasks: domain('tasks'),
+      todo: domain('todo'),
       browser: domain('browser'),
       artifacts: domain('artifacts'),
       app: domain('app'),
@@ -122,8 +122,8 @@ describe('createDesktopWorkbarServices', () => {
     services.terminal.subscribePtyData(eventHandler)();
     services.terminal.subscribeResync(eventHandler)();
 
-    await services.tasks.list('s');
-    services.tasks.subscribeChanges(eventHandler)();
+    await services.todo.read('s');
+    services.todo.subscribeChanges(eventHandler)();
 
     services.browser.setActiveSession('s');
     services.browser.setViewport({ sessionId: 's', rect: null });
@@ -166,6 +166,7 @@ describe('createDesktopWorkbarServices', () => {
     });
     await services.sideChat.cleanupSessionCopy('fork');
     await services.sideChat.abandonSessionCopy('s', 'copy');
+    await services.sideChat.compact('fork');
     await services.sideChat.send('fork', {
       type: 'send',
       turnId: 'turn-2',
@@ -179,6 +180,7 @@ describe('createDesktopWorkbarServices', () => {
       turnId: 'turn-3',
     });
     await services.sideChat.respondToSandboxBoundary('fork', {} as never);
+    await services.sideChat.respondToClientCapability('fork', {} as never);
     await services.sideChat.respondToUserQuestion('fork', {} as never);
     services.sideChat.subscribeEvents('fork', eventHandler)();
 
@@ -194,8 +196,8 @@ describe('createDesktopWorkbarServices', () => {
         'shellRuns.write',
         'shellRuns.subscribePtyData',
         'shellRuns.subscribeResync',
-        'tasks.list',
-        'tasks.subscribeChanges',
+        'todo.read',
+        'todo.subscribeChanges',
         'browser.setActiveSession',
         'browser.setViewport',
         'browser.navigate',
@@ -226,12 +228,14 @@ describe('createDesktopWorkbarServices', () => {
         'sessions.branchFromTurn',
         'sessions.cleanupSessionCopy',
         'sessions.abandonSessionCopy',
+        'sessions.compact',
         'sessions.send',
         'sessions.stop',
         'sessions.submitMessage',
         'sessions.setPermissionMode',
         'sessions.regenerateTurn',
         'sessions.respondToSandboxBoundary',
+        'sessions.respondToClientCapability',
         'sessions.respondToUserQuestion',
         'sessions.subscribeEvents',
       ],

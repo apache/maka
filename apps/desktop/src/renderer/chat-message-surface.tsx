@@ -18,17 +18,15 @@
  */
 
 import { useMemo, useState, type ComponentProps, type ReactNode } from 'react';
-import { isDeepResearchSession } from '@maka/core/explore-agent';
+import { isDeepResearchSession } from '@maka/core/deep-research';
 import { type LlmConnection, type ProviderType } from '@maka/core/llm-connections';
 import { type OnboardingState } from '@maka/core/onboarding';
 import { type SettingsSection } from '@maka/core/settings';
 import { Skeleton } from '@astryxdesign/core';
 import {
-  Banner,
-  Button,
   ChatView,
+  ChatViewGoalProjectionConsumer,
   useUiLocale,
-  type LiveContentActivationSnapshot,
   type LiveTurnProjection,
 } from '@maka/ui';
 import { OnboardingHero } from './onboarding-hero';
@@ -41,6 +39,7 @@ import { getDesktopConversationCopy } from './locales/conversation-copy';
 import { selectLiveTurn } from './use-app-shell-session-ui-reads';
 import { useExternalStoreSelector } from './use-external-store-selector';
 import { useDeepResearchRun } from './use-deep-research-run';
+import { ChatRecoveryNotice, SessionHealthRecoveryNotice } from './chat-recovery-notice';
 
 const selectShellRunRecord = (state: AppShellSessionUiState, sessionId: string | undefined) =>
   sessionId ? state.shellRunUpdatesBySession[sessionId] : undefined;
@@ -62,6 +61,7 @@ interface ChatMessageSurfaceProps extends Omit<
   | 'initialLiveContentSnapshot'
   | 'liveTurn'
   | 'shellRunUpdates'
+  | 'goalIndicator'
 > {
   /**
    * #1985: the live projection and the shell-run records are the only session
@@ -75,6 +75,7 @@ interface ChatMessageSurfaceProps extends Omit<
   /** Advances after the active session's current observation generation finishes seeding. */
   liveContentSeedRevision: number;
   sessionHealthNotice?: SessionHealthNoticeView;
+  sessionHealthModelPickerAvailable: boolean;
   workspaceReadinessRecovery?: WorkspaceReadinessRecovery;
   taskReadinessNotice?: TaskReadinessNotice;
   onTaskReadinessAction?: () => void;
@@ -91,13 +92,11 @@ interface ChatMessageSurfaceProps extends Omit<
   hasOlderHistory: boolean;
   hasNewerHistory: boolean;
   historyLoadPending: boolean;
-  onLoadEarlierHistory: () => Promise<void> | void;
+  onLoadEarlierHistory: (anchorTurnId?: string) => Promise<void> | void;
   onReturnToLatestHistory: () => Promise<void> | void;
 }
 
-function captureLiveContent(
-  liveTurn: LiveTurnProjection | undefined,
-): LiveContentActivationSnapshot | undefined {
+function captureLiveContent(liveTurn: LiveTurnProjection | undefined) {
   if (!liveTurn) return undefined;
   return {
     turnId: liveTurn.turnId,
@@ -113,6 +112,7 @@ export function ChatMessageSurface({
   activeSessionId,
   liveContentSeedRevision,
   sessionHealthNotice,
+  sessionHealthModelPickerAvailable,
   workspaceReadinessRecovery,
   taskReadinessNotice,
   onTaskReadinessAction,
@@ -136,8 +136,8 @@ export function ChatMessageSurface({
   const locale = useUiLocale();
   const copy = getShellCopy(locale).app;
   const transcriptCopy = getDesktopConversationCopy(locale).actions;
-  // Every session-health-notice CTA routes to 设置 · 模型 (U1); this is the
-  // action button's visible label.
+  // Configuration notices share the Settings label; identity recovery supplies
+  // its own label because it opens the composer's connection-and-model picker.
   const goToModelsLabel = copy.goToModels;
   const handleWorkspaceRecovery = () => {
     const target = workspaceReadinessRecovery?.target;
@@ -234,73 +234,54 @@ export function ChatMessageSurface({
 
   return (
     <>
-      <ChatView
-        {...chatViewRest}
-        liveTurn={seededLiveTurn}
-        // Every branch above reseeds `sessionId` to `activeSessionId`, and a
-        // render-phase setState re-runs this body before anything commits, so
-        // the activation reaching the DOM is always this session's.
-        initialLiveContentSnapshot={activation.initialLiveContent}
-        shellRunUpdates={shellRunUpdates}
-        deepResearchRun={deepResearchRun}
-        emptyOverride={emptyOverride}
-        hasOlderHistory={hasOlderHistory}
-        onLoadEarlierHistory={onLoadEarlierHistory}
-        returnToLatest={hasNewerHistory ? {
-          title: transcriptCopy.partialHistoryTitle,
-          label: transcriptCopy.returnLatest,
-          isPending: historyLoadPending,
-          onClick: onReturnToLatestHistory,
-        } : undefined}
-      />
+      <ChatViewGoalProjectionConsumer>
+        {(goalProjection) => (
+          <ChatView
+            {...chatViewRest}
+            liveTurn={seededLiveTurn}
+            // Every branch above reseeds `sessionId` to `activeSessionId`, and a
+            // render-phase setState re-runs this body before anything commits, so
+            // the activation reaching the DOM is always this session's.
+            initialLiveContentSnapshot={activation.initialLiveContent}
+            shellRunUpdates={shellRunUpdates}
+            deepResearchRun={deepResearchRun}
+            emptyOverride={emptyOverride}
+            goalIndicator={goalProjection.goalIndicator}
+            hasOlderHistory={hasOlderHistory}
+            onLoadEarlierHistory={onLoadEarlierHistory}
+            returnToLatest={hasNewerHistory ? {
+              title: transcriptCopy.partialHistoryTitle,
+              label: transcriptCopy.returnLatest,
+              isPending: historyLoadPending,
+              onClick: onReturnToLatestHistory,
+            } : undefined}
+          />
+        )}
+      </ChatViewGoalProjectionConsumer>
       {taskReadinessNotice && (
-        <div className="maka-workspace-readiness-notice">
-          <Banner
-            status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
-            className="maka-workspace-readiness-notice-alert"
-            role="status"
-            title={taskReadinessNotice.title}
-            description={taskReadinessNotice.description}
-            endContent={onTaskReadinessAction ? <Button
-              label={taskReadinessNotice.actionLabel}
-              variant="ghost"
-              size="sm"
-              onClick={onTaskReadinessAction}
-            /> : undefined} />
-        </div>
+        <ChatRecoveryNotice
+          status={taskReadinessNotice.tone === 'destructive' ? 'error' : 'warning'}
+          title={taskReadinessNotice.title}
+          description={taskReadinessNotice.description}
+          actionLabel={taskReadinessNotice.actionLabel}
+          onAction={onTaskReadinessAction}
+        />
       )}
       {workspaceReadinessRecovery && (
-        <div className="maka-workspace-readiness-notice">
-          <Banner
-            status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
-            className="maka-workspace-readiness-notice-alert"
-            role="status"
-            title={workspaceReadinessRecovery.title}
-            description={workspaceReadinessRecovery.description}
-            endContent={<Button
-              label={workspaceReadinessRecovery.actionLabel}
-              variant="ghost"
-              size="sm"
-              onClick={handleWorkspaceRecovery}
-            />} />
-        </div>
+        <ChatRecoveryNotice
+          status={workspaceReadinessRecovery.tone === 'destructive' ? 'error' : 'warning'}
+          title={workspaceReadinessRecovery.title}
+          description={workspaceReadinessRecovery.description}
+          actionLabel={workspaceReadinessRecovery.actionLabel}
+          onAction={handleWorkspaceRecovery}
+        />
       )}
       {sessionHealthNotice && (
-        <div className="maka-session-health-notice">
-          <Banner
-            status={sessionHealthNotice.tone === 'destructive' ? 'error' : sessionHealthNotice.tone === 'warning' ? 'warning' : 'info'}
-            className="maka-session-health-notice-alert"
-            role="status"
-            aria-label={sessionHealthNotice.tooltip ?? sessionHealthNotice.label}
-            title={sessionHealthNotice.label}
-            description={sessionHealthNotice.tooltip}
-            endContent={<Button
-              label={goToModelsLabel}
-              variant="ghost"
-              size="sm"
-              onClick={sessionHealthNotice.onClick}
-            />} />
-        </div>
+        <SessionHealthRecoveryNotice
+          notice={sessionHealthNotice}
+          fallbackActionLabel={goToModelsLabel}
+          modelPickerAvailable={sessionHealthModelPickerAvailable}
+        />
       )}
     </>
   );

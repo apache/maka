@@ -178,12 +178,12 @@ test('semantic mutations require an observation created by the owned fixture', a
   assert.deepEqual(calls, ['observe', 'click_element']);
 });
 
-test('wait and cursor_position do not require an impossible observation_id', async () => {
+test('wait does not require an impossible observation_id', async () => {
   const calls: string[] = [];
   const [wrapped] = applyComputerUseRealModelPolicy(toolSet(calls), {
-    allowedActions: ['wait', 'cursor_position'],
-    maxTotalActions: 2,
-    maxActionCounts: { wait: 1, cursor_position: 1 },
+    allowedActions: ['wait'],
+    maxTotalActions: 1,
+    maxActionCounts: { wait: 1 },
     allowedApps: ['Owned Fixture'],
   });
   const context = {
@@ -199,12 +199,6 @@ test('wait and cursor_position do not require an impossible observation_id', asy
     { action: 'wait', duration: 0.01 } as never,
     context,
   ) as { text: string };
-  const cursor = await wrapped.impl(
-    { action: 'cursor_position' } as never,
-    context,
-  ) as { text: string };
-
   assert.equal(wait.text, 'ok');
-  assert.equal(cursor.text, 'ok');
-  assert.deepEqual(calls, ['wait', 'cursor_position']);
+  assert.deepEqual(calls, ['wait']);
 });

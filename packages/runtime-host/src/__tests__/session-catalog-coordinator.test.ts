@@ -24,7 +24,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { createDefaultRuntimePolicy } from '@maka/core/runtime-policy';
 import { createGenesisExecutionBoundary } from '@maka/core/sandbox-boundary';
-import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/explore-agent';
+import { DEEP_RESEARCH_SESSION_LABEL, DEEP_RESEARCH_SESSION_NAME } from '@maka/core/deep-research';
 import { type RelayModelProfile } from '@maka/core/model-thinking';
 import {
   WORKHUB_COORDINATION_SESSION_ID,
@@ -917,6 +917,40 @@ test('creation materializes Deep Research semantics inside the Host transaction'
   assert.ok(created);
   assert.equal(created.input.name, DEEP_RESEARCH_SESSION_NAME);
   assert.deepEqual(created.input.labels, ['customer-label', DEEP_RESEARCH_SESSION_LABEL]);
+  assert.equal(created.input.permissionMode, 'explore');
+  assert.equal(fixture.drainRequests(), 0);
+});
+
+test('bot mode grants explore while keeping the Bot-supplied Session name', async () => {
+  let created: Parameters<CatalogStores['createStableSession']>[0] | undefined;
+  const fixture = createFixture({
+    stores: {
+      createStableSession: async (request) => {
+        created = request;
+        return {
+          kind: 'existing',
+          record: headerSnapshot(sessionHeader(request.sessionId, request.input.labels ?? []), 3),
+        };
+      },
+    },
+  });
+
+  const outcome = await fixture.coordinator.handlers['session.create'](
+    {
+      sessionId: fixture.sessionId,
+      workspace: { kind: 'host_path', path: process.cwd() },
+      mode: 'bot',
+      name: '飞书 任务',
+      labels: ['bot', 'feishu'],
+      modelTarget: { kind: 'default' },
+    },
+    context,
+  );
+
+  assert.equal(outcome.ok, true);
+  assert.ok(created);
+  assert.equal(created.input.name, '飞书 任务');
+  assert.deepEqual(created.input.labels, ['bot', 'feishu', 'mode:bot']);
   assert.equal(created.input.permissionMode, 'explore');
   assert.equal(fixture.drainRequests(), 0);
 });

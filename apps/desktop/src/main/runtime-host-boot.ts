@@ -19,10 +19,11 @@
 
 import {
   app,
+  type BrowserWindow,
   clipboard,
-  dialog,
   ipcMain,
   nativeTheme,
+  powerMonitor,
   powerSaveBlocker,
   shell,
   type MessageBoxOptions,
@@ -30,13 +31,13 @@ import {
 } from "electron";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { type ConnectionEvent } from '@maka/core/connections';
 import { type SessionChangedEvent, type SessionChangedReason } from '@maka/core/session';
 import { isBotDeliveryProvider } from '@maka/core/bot-chat-settings';
 import { resolveSystemUiLocale } from '@maka/core/ui-locale';
 import {
-  PROVIDER_DEFAULTS,
+  PROVIDER_REGISTRY,
   providerAuthRequiresSecret,
 } from "@maka/core/llm-connections";
 import { BotRegistry, type BotIncomingMessage } from '@maka/runtime/bots';
@@ -49,12 +50,20 @@ import {
   createClientRuntimeHostCredentialStore,
   createClientRuntimeHostProfileCatalog,
   createRuntimeHostCandidateLaunchBarrier,
-  createRuntimeHostPeerClientFromEnvironment,
   LOCAL_RUNTIME_HOST_PROFILE,
   loadOrCreateRuntimeHostClientInstanceId,
   listRuntimeHostWslDistributions,
+  runtimeHostProfileAccess,
+  type ResolvedRuntimeHostProfile,
 } from "@maka/runtime-host/client";
-import { openRuntimeHostPeerMeshOwner } from '@maka/runtime-host/peer-mesh';
+import {
+  openRuntimeHostPeerMeshComponent,
+  type RuntimeHostPeerMeshComponent,
+} from '@maka/runtime-host/peer-mesh';
+import {
+  openRuntimeHostPeerEndpointOwner,
+  type RuntimeHostPeerEndpointOwner,
+} from '@maka/runtime-host/peer-reachability';
 import type { WorkspaceTarget } from "@maka/runtime-host/protocol";
 import { runtimeHostProfileUsesHostWorkspace } from "@maka/runtime-host/profile-kind";
 import { createCredentialMcpOAuthStorage, McpClientManager } from "@maka/mcp";
@@ -68,6 +77,7 @@ import { createMcpOAuthController } from "./mcp-oauth-controller.js";
 import { registerAppClientIpc, registerAppIpc } from "./app-ipc-main.js";
 import { createAppQuitCoordinator } from "./app-quit-coordinator.js";
 import {
+  desktopDiagnosticUpdateChannel,
   desktopUpdateChannelFromManifest,
   verifyDownloadedUpdateAttestation,
 } from "./app-update-attestation.js";
@@ -75,9 +85,15 @@ import { createAppUpdateService } from "./app-update-service.js";
 import { createAttachmentApprovalRegistry } from "./attachment-approval.js";
 import { renderAttachmentPreview, resizeImageForAttachment } from "./attachment-resize-native.js";
 import { registerAttachmentPreviewIpc } from "./attachment-preview.js";
-import { readFileCapped } from "./attachment-ingest.js";
+import { readFileCapped, resolvePickedAttachments } from "./attachment-ingest.js";
 import { registerBrowserIpc } from "./browser-ipc-main.js";
+import { browserViewHost } from "./browser/browser-host.js";
 import { releaseBrowserSession } from "./browser/session.js";
+import {
+  isBrowserMessageBoxPresentationActive,
+  showBrowserMessageBox,
+  type BrowserMessageBoxAppearance,
+} from "./browser-message-box.js";
 import { createE2eFixtureBotOnboardingAdapters } from "./bot-onboarding-e2e-fixture.js";
 import { resolveBuildInfo } from "./build-info.js";
 import { computerUseServiceHealth } from "./computer-use-host.js";
@@ -96,11 +112,14 @@ import {
   seedE2eFixture,
 } from "./e2e-fixture.js";
 import { createKeepSystemAwakeController } from "./keep-system-awake.js";
+import { isDarkAppearance } from "./theme-source.js";
 import {
   readWithFallback,
   type ReconnectableReadIpcMain,
 } from "./ipc-reconnect-policy.js";
 import { createMainWindowController } from "./main-window.js";
+import { resolveWindowRevealMode } from "./window-reveal.js";
+import type { DesktopRuntimeHostIdentity } from "../preload/bridge-contract.js";
 import {
   captureDesktopDiagnosticEnvironment,
   copyDesktopDiagnosticReport,
@@ -111,9 +130,12 @@ import {
   type DesktopDiagnosticsDeps,
 } from "./main-process-diagnostics.js";
 import {
+  defaultRuntimeHostRecoveryDialog,
   showMainRendererProcessGoneDialog,
   showMessageBoxWithDiagnostics,
+  showRuntimeHostStartupRecoveryDialog,
 } from "./native-diagnostic-dialog.js";
+import { getNativeDiagnosticDialogCopy } from "./native-diagnostic-dialog-copy.js";
 import {
   resolveDesktopSessionWorkspace,
 } from "./new-session-project.js";
@@ -165,6 +187,11 @@ import {
   startRuntimeHostDesktopManager,
   type RuntimeHostDesktopManager,
 } from "./runtime-host-desktop-manager.js";
+import {
+  canRepairManagedRuntimeHostStartup,
+  DesktopRuntimeHostStartupRecoveryCancelledError,
+  startDesktopRuntimeHostWithRecovery,
+} from "./runtime-host-startup-recovery.js";
 import { buildRuntimeHostQuitFailureDialog } from "./runtime-host-quit-copy.js";
 import { createRuntimeHostUpgradePrompts } from "./runtime-host-upgrade-dialog.js";
 import { registerRuntimeHostMemoryIpc } from "./runtime-host-memory-ipc-main.js";
@@ -174,18 +201,30 @@ import {
   resolveDesktopRuntimeHostStartup,
 } from "./runtime-host-profile-service.js";
 import {
+  createDesktopGuestSessionMountService,
+  createGuestSessionMountStore,
+  registerDesktopGuestSessionMountIpc,
+} from './runtime-host-guest-session-mounts.js';
+import {
   createDesktopRuntimeHostSshTerminal,
 } from "./runtime-host-ssh-terminal.js";
-import { runDesktopRuntimeHostWslSetup } from './runtime-host-wsl-controller.js';
+import {
+  runDesktopRuntimeHostWslManagement,
+  runDesktopRuntimeHostWslSetup,
+} from './runtime-host-wsl-controller.js';
 import {
   createRuntimeHostSetupPackageResolver,
-  desktopRuntimeHostDevelopmentPeerTarget,
 } from "./runtime-host-setup-package.js";
-import { configureDesktopRuntimeHostPeerClient } from './runtime-host-peer-client.js';
+import {
+  configureDesktopRuntimeHostPeerClient,
+  readDesktopRuntimeHostWebRtcStunPolicy,
+  writeDesktopRuntimeHostWebRtcStunPolicy,
+} from './runtime-host-peer-client.js';
 import { createDesktopRuntimeHostLocalOperator } from './runtime-host-local-operator.js';
 import { createDesktopLocalRuntimeHostRemoteAccess } from './runtime-host-local-remote-access.js';
 import { createDesktopRuntimeHostOnboarding } from "./runtime-host-onboarding.js";
 import { createDesktopRuntimeHostManagement } from "./runtime-host-management.js";
+import { createDesktopRuntimeHostLocalManagement } from './runtime-host-local-management.js';
 import { createDesktopRuntimeHostPeerMeshManagement } from './runtime-host-peer-mesh-management.js';
 import { registerRuntimeHostOAuthIpc } from "./runtime-host-oauth-ipc-main.js";
 import { RuntimeHostOAuthPresentation } from "./runtime-host-oauth-presentation.js";
@@ -196,9 +235,8 @@ import { createRuntimeHostProjectCatalog } from "./runtime-host-project-catalog.
 import { createRuntimeHostDefaultRecovery } from "./runtime-host-default-recovery.js";
 import { toDesktopHostSessionSummary } from "./runtime-host-session-catalog-ipc-main.js";
 import {
-  loadRuntimeHostSettings,
+  createRuntimeHostSettingsModule,
   registerRuntimeHostSettingsIpc,
-  updateRuntimeHostSettings,
 } from "./runtime-host-settings-ipc-main.js";
 import { registerRuntimeHostSkillsIpc } from "./runtime-host-skills-ipc-main.js";
 import { registerRuntimeHostUsageIpc } from "./runtime-host-usage-ipc-main.js";
@@ -234,26 +272,42 @@ const runtimeHostPeerConfiguration = await configureDesktopRuntimeHostPeerClient
   resourcesPath: process.resourcesPath,
   clientDataRoot: userDataDir,
 });
-let runtimeHostPeerOwner: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>> | undefined;
-let runtimeHostPeerMesh: Awaited<ReturnType<typeof openRuntimeHostPeerMeshOwner>>['mesh'] | undefined;
-let runtimeHostPeerClient:
-  | ReturnType<typeof createRuntimeHostPeerClientFromEnvironment>
-  | undefined;
+let runtimeHostPeerEndpointOwner: RuntimeHostPeerEndpointOwner | undefined;
+let runtimeHostPeerMeshComponent: RuntimeHostPeerMeshComponent | undefined;
+let runtimeHostPeerMesh: RuntimeHostPeerMeshComponent['mesh'] | undefined;
+let runtimeHostPeerClient: RuntimeHostPeerEndpointOwner['client'] | undefined;
 if (runtimeHostPeerConfiguration) {
   try {
-    runtimeHostPeerOwner = await openRuntimeHostPeerMeshOwner({
+    runtimeHostPeerEndpointOwner = await openRuntimeHostPeerEndpointOwner({
       ...runtimeHostPeerConfiguration,
       dataRoot: join(userDataDir, 'peer-mesh'),
+      onBackgroundReachabilityError: (error) => {
+        console.error('[runtime-host] peer reachability publication failed:', error);
+      },
     });
-    runtimeHostPeerClient = runtimeHostPeerOwner.client;
-    runtimeHostPeerMesh = runtimeHostPeerOwner.mesh;
-    void runtimeHostPeerOwner.closed.catch((error) => {
-      runtimeHostPeerMesh = undefined;
-      console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+    runtimeHostPeerClient = runtimeHostPeerEndpointOwner.client;
+    void runtimeHostPeerEndpointOwner.closed.catch((error) => {
+      console.error('[runtime-host] peer reachability publisher stopped:', error);
     });
+    try {
+      runtimeHostPeerMeshComponent = await openRuntimeHostPeerMeshComponent({
+        dataRoot: join(userDataDir, 'peer-mesh'),
+        endpoint: runtimeHostPeerEndpointOwner,
+        endpointKind: 'client',
+        onBackgroundReconcileError: (error) => {
+          console.error('[runtime-host] Peer Mesh background synchronization failed:', error);
+        },
+      });
+      runtimeHostPeerMesh = runtimeHostPeerMeshComponent.mesh;
+      void runtimeHostPeerMeshComponent.closed.catch((error) => {
+        runtimeHostPeerMesh = undefined;
+        console.error('[runtime-host] Peer Mesh stopped; Direct peer remains available:', error);
+      });
+    } catch (error) {
+      console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
+    }
   } catch (error) {
-    console.error('[runtime-host] Peer Mesh is unavailable; continuing with Direct peer:', error);
-    runtimeHostPeerClient = createRuntimeHostPeerClientFromEnvironment();
+    console.error('[runtime-host] Direct peer is unavailable:', error);
   }
 }
 const runtimeHostDirectPeerAvailable = runtimeHostPeerClient !== undefined;
@@ -290,6 +344,10 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
     captureDesktopDiagnosticEnvironment({
       appVersion: app.getVersion(),
       buildMode: buildInfo.mode,
+      updateChannel: desktopDiagnosticUpdateChannel({
+        isPackaged: app.isPackaged,
+        appPath: app.getAppPath(),
+      }),
       buildCommit: buildInfo.commit,
       locale: app.getLocale(),
       workspacePath: workspaceRoot,
@@ -303,21 +361,35 @@ const desktopDiagnostics: DesktopDiagnosticsDeps = {
   resolveRuntimeHost: resolveRuntimeHostDiagnostics,
   writeClipboard: (report) => clipboard.writeText(report),
 };
+let resolveBrowserDialogParent = (): BrowserWindow | undefined => undefined;
+let resolveBrowserDialogAppearance = async (): Promise<BrowserMessageBoxAppearance> => ({
+  locale: resolveSystemUiLocale(app.getPreferredSystemLanguages()),
+  palette: "default",
+});
+
+async function showDesktopMessageBox(
+  options: MessageBoxOptions,
+  override?: Partial<BrowserMessageBoxAppearance>,
+): Promise<MessageBoxReturnValue> {
+  const appearance = { ...(await resolveBrowserDialogAppearance()), ...override };
+  return showBrowserMessageBox(options, resolveBrowserDialogParent(), appearance);
+}
 
 function showStartupDiagnosticDialog(
   options: MessageBoxOptions,
   locale: ReturnType<typeof resolveSystemUiLocale>,
+  diagnosticDetails = options.detail,
 ): Promise<MessageBoxReturnValue> {
   return showMessageBoxWithDiagnostics(options, {
     locale,
-    showMessageBox: (next) => dialog.showMessageBox(next),
+    showMessageBox: (nextOptions) => showDesktopMessageBox(nextOptions, { locale }),
     copyDiagnostics: () =>
       copyDesktopDiagnosticReport(
         desktopDiagnostics,
         createDesktopStartupDiagnosticInput({
           title: options.title || options.message,
           description: options.message,
-          ...(options.detail ? { details: options.detail } : {}),
+          ...(diagnosticDetails ? { details: diagnosticDetails } : {}),
         }),
       ),
   });
@@ -349,6 +421,21 @@ const desktopLocale = createDesktopLocaleAuthority({
   readSettings: () => settingsStore.get(),
   preferredSystemLanguages: () => app.getPreferredSystemLanguages(),
 });
+resolveBrowserDialogAppearance = async () => {
+  try {
+    const settings = await settingsStore.get();
+    return {
+      locale: desktopLocale.observe(settings),
+      palette: settings.appearance.palette,
+      dark: isDarkAppearance(
+        e2eFixture?.theme ?? settings.appearance.theme,
+        nativeTheme.shouldUseDarkColors,
+      ),
+    };
+  } catch {
+    return { locale: desktopLocale.current(), palette: "default" };
+  }
+};
 const mcpConfigStore = createMcpConfigStore(workspaceRoot);
 const workBoardStore = createWorkBoardStore(workspaceRoot);
 const mcpManager = new McpClientManager({
@@ -386,15 +473,17 @@ function ensureMcpReady(): Promise<void> {
   return mcpStartup;
 }
 const keepSystemAwake = createKeepSystemAwakeController(powerSaveBlocker);
-const startHidden =
-  (Boolean(e2eFixture) || isIsolatedE2e) &&
-  process.env.MAKA_E2E_SHOW_WINDOW !== "1";
+const revealMode = resolveWindowRevealMode(
+  Boolean(e2eFixture) || isIsolatedE2e,
+  process.env.MAKA_E2E_SHOW_WINDOW === "1",
+  app.isPackaged,
+);
 let onMainWindowClose = (): void => {};
 const mainWindowController = createMainWindowController({
   workspaceRoot,
   e2eFixture,
   settingsStore,
-  startHidden,
+  revealMode,
   onClose: () => onMainWindowClose(),
   onRendererProcessGone: async (details) => {
     const diagnosticInput = createDesktopMainRendererDiagnosticInput({
@@ -402,16 +491,24 @@ const mainWindowController = createMainWindowController({
       description: `Reason: ${details.reason}`,
       details: `Exit code: ${details.exitCode}`,
     });
-    const decision = await showMainRendererProcessGoneDialog({
-      locale: desktopLocale.current(),
-      copyDiagnostics: () =>
-        copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
-      showMessageBox: (options) => dialog.showMessageBox(options),
-    });
-    if (decision === "relaunch") app.relaunch();
+    for (;;) {
+      const locale = await desktopLocale.resolve();
+      const decision = await showMainRendererProcessGoneDialog({
+        locale,
+        copyDiagnostics: () =>
+          copyDesktopDiagnosticReport(desktopDiagnostics, diagnosticInput),
+        // showBrowserMessageBox attaches only to a visible, non-minimized
+        // parent. A pre-first-paint crash therefore gets a standalone window.
+        showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
+      });
+      if (decision !== "recover") break;
+      if (await mainWindowController.reloadMainRenderer()) return;
+      if (!mainWindowController.browserWindow()) break;
+    }
     app.quit();
   },
 });
+resolveBrowserDialogParent = () => mainWindowController.browserWindow();
 const runtimeHostSshTerminal = createDesktopRuntimeHostSshTerminal({
   ipcMain,
   send: (channel, event) => mainWindowController.send(channel, event),
@@ -429,10 +526,7 @@ const localRuntimeHostRemoteAccess = createDesktopLocalRuntimeHostRemoteAccess({
   rootId: startupLocalStorageRoot.rootId,
   directPeerAvailable: runtimeHostDirectPeerAvailable,
   manager: () => runtimeHostManager,
-  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolve(
-    desktopRuntimeHostDevelopmentPeerTarget(),
-    signal,
-  ),
+  resolveSetupPackage: (signal) => runtimeHostSetupPackage.resolveForThisDesktop(signal),
   operator: localRuntimeHostOperator,
 });
 const native = assembleDesktopNativeCapabilities({
@@ -471,7 +565,7 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   catalog: runtimeHostProfileCatalog,
   credentialStore: runtimeHostCredentialStore,
   states: () => runtimeHostManager?.entries() ?? [],
-  enable: async (target, sshInteraction) => {
+  enable: async (target, sshInteraction, onPeerEndpoint) => {
     if (target.profile.kind === 'local') {
       throw new Error('A resolved non-local Runtime Host profile is required');
     }
@@ -479,13 +573,20 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
       throw new Error('A remote Runtime Host profile requires an access credential');
     }
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
-    await runtimeHostManager.enable({
-      profile: target.profile,
-      ...(target.credential ? { credential: target.credential } : {}),
-      ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
-        ? { sshInteraction }
-        : {}),
-    });
+    await runtimeHostManager.enable(
+      {
+        profile: target.profile,
+        ...(target.credential ? { credential: target.credential } : {}),
+        ...(target.profile.kind === 'remote' && target.profile.transport.kind === "ssh"
+          ? { sshInteraction }
+          : {}),
+      },
+      onPeerEndpoint
+        ? (status) => {
+            if (status.peerEndpoint) onPeerEndpoint(status.peerEndpoint);
+          }
+        : undefined,
+    );
   },
   disable: async (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
@@ -498,6 +599,31 @@ const runtimeHostProfileService = createDesktopRuntimeHostProfileService({
   setDefault: (profileId) => {
     if (!runtimeHostManager) throw new Error("Runtime Host manager is unavailable");
     runtimeHostManager.setDefaultProfile(profileId);
+  },
+});
+const guestSessionMountService = createDesktopGuestSessionMountService({
+  store: createGuestSessionMountStore(runtimeHostCredentialStore),
+  mount: async (target, signal, onConnectionPhase, onPeerEndpoint) => {
+    if (target.profile.kind !== 'remote' || !target.credential) {
+      throw new Error('A shared Session requires a remote Guest target');
+    }
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.mountGuest(
+      { profile: target.profile, credential: target.credential },
+      signal,
+      onConnectionPhase,
+      (status) => {
+        if (status.peerEndpoint) onPeerEndpoint?.(status.peerEndpoint);
+      },
+    );
+  },
+  finalizeAccess: async (mountId, signal, onAccessActivated) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    return runtimeHostManager.finalizeGuestAccess(mountId, signal, onAccessActivated);
+  },
+  unmount: async (mountId) => {
+    if (!runtimeHostManager) return;
+    await runtimeHostManager.unmountGuest(mountId);
   },
 });
 const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
@@ -513,10 +639,27 @@ const runtimeHostOnboarding = createDesktopRuntimeHostOnboarding({
   send: (snapshot) =>
     mainWindowController.send("runtime-host-onboarding:changed", snapshot),
 });
+const localRuntimeHostManagement = createDesktopRuntimeHostLocalManagement({
+  remoteAccess: localRuntimeHostRemoteAccess,
+  operator: localRuntimeHostOperator,
+  rootPath: startupLocalStorageRoot.canonicalPath,
+  resolveUpdatePackage: () => runtimeHostSetupPackage.resolveForThisDesktop(),
+  currentHostEpoch: () =>
+    runtimeHostManager?.current('local')?.candidate?.client.hostEpoch,
+  awaitUpdatedConnection: async (previousHostEpoch, replacementExpected) => {
+    if (!runtimeHostManager) throw new Error('Runtime Host manager is unavailable');
+    await runtimeHostManager.waitUntilReady(
+      'local',
+      replacementExpected ? previousHostEpoch : undefined,
+      AbortSignal.timeout(MANAGED_UPDATE_RECONNECT_TIMEOUT_MS),
+    );
+  },
+});
 const runtimeHostManagement = createDesktopRuntimeHostManagement({
   ipcMain,
   profiles: runtimeHostProfileService,
   runServiceManagement: runtimeHostSshTerminal.runServiceManagement,
+  runWslManagement: runDesktopRuntimeHostWslManagement,
   runPeerManagement: runtimeHostSshTerminal.runPeerManagement,
   directPeerClientAvailable: runtimeHostDirectPeerAvailable,
   runUpdate: runtimeHostSshTerminal.runUpdate,
@@ -568,12 +711,19 @@ const runtimeHostManagement = createDesktopRuntimeHostManagement({
     mainWindowController.send("runtime-host-management:progress", progress),
   runAccessManagement: runtimeHostSshTerminal.runAccessManagement,
   cleanupManagedDeployment: runtimeHostSshTerminal.cleanupManagedDeployment,
+  providers: [localRuntimeHostManagement],
 });
 const runtimeHostPeerMeshManagement = createDesktopRuntimeHostPeerMeshManagement({
   ipcMain,
   localMesh: () => runtimeHostPeerMesh,
+  localHost: localRuntimeHostRemoteAccess,
+  runLocal: localRuntimeHostOperator.runPeerMesh,
+  liveHost: (profileId) => runtimeHostManager?.current(profileId)?.candidate?.client,
   profiles: runtimeHostProfileService,
   runRemote: runtimeHostSshTerminal.runPeerMeshManagement,
+  readConnectivityPolicy: () => readDesktopRuntimeHostWebRtcStunPolicy(userDataDir),
+  writeConnectivityPolicy: (policy) =>
+    writeDesktopRuntimeHostWebRtcStunPolicy(userDataDir, policy),
 });
 const defaultRuntimeHostRecovery = createRuntimeHostDefaultRecovery({
   defaultProfileId: () =>
@@ -683,16 +833,20 @@ const clientSettingsTools = buildClientSettingsTools({
     return settings;
   },
   confirm: async (changes) => {
-    const copy = clientSettingsConfirmation(changes, await desktopLocale.resolve());
-    const result = await dialog.showMessageBox({
-      type: "question",
-      message: copy.message,
-      detail: copy.detail,
-      buttons: copy.buttons,
-      defaultId: 0,
-      cancelId: 1,
-      noLink: true,
-    });
+    const locale = await desktopLocale.resolve();
+    const copy = clientSettingsConfirmation(changes, locale);
+    const result = await showDesktopMessageBox(
+      {
+        type: "question",
+        message: copy.message,
+        detail: copy.detail,
+        buttons: copy.buttons,
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      },
+      { locale },
+    );
     return result.response === 0;
   },
 });
@@ -735,11 +889,12 @@ const updateService = createAppUpdateService({
   // the Sigstore verifier below.
   verifyDownloadedUpdate: updateTestFeed
     ? async () => {}
-    : ({ downloadedFile, version }) =>
+    : ({ downloadedFile, version, files }) =>
         verifyDownloadedUpdateAttestation({
           channel: desktopUpdateChannel,
           downloadedFile,
           version,
+          files,
           trustRootCacheDirectory: join(userDataDir, "update-trust", "sigstore"),
         }),
   prepareInstall: async (input) => {
@@ -782,7 +937,7 @@ registerNotificationsIpc({
 });
 
 const sessionCopyOwnerProcessId = randomUUID();
-runtimeHostManager = await startRuntimeHostDesktopManager(
+const startLocalRuntimeHostManager = () => startRuntimeHostDesktopManager(
   {
     rootPath: workspaceRoot,
     clientInstanceId: runtimeHostClientInstanceId,
@@ -806,6 +961,17 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     resizeImage: resizeImageForAttachment,
     nativeCapabilities: {
       browserTools: native.browserTools,
+      resolveBrowserUrl: ({ sessionId, toolName, arguments: args }) => {
+        if (toolName === "browser_navigate") {
+          if (typeof args.url !== "string") {
+            throw new Error("Browser navigation URL is unavailable");
+          }
+          return args.url;
+        }
+        const url = browserViewHost().currentUrl(sessionId);
+        if (!url) throw new Error("Browser session has no current URL");
+        return url;
+      },
       releaseBrowserSession,
       computerUseTools: native.computerUseTools,
       additionalGroups: () => {
@@ -895,6 +1061,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     },
     emitSessionsChanged,
     completeComputerUseTurn,
+    enableE2eControls: isE2e,
     createSessionCopyCleanup: ({ removeSession, resumeSessionCopy }) =>
       createSessionCopyCleanupAuthority({
         workspaceRoot,
@@ -908,6 +1075,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
     registerClientIpc: registerHostClientIpc,
     openSshTunnel: runtimeHostSshTerminal.openSshTunnel,
     activateSshOperator: runtimeHostSshTerminal.activateSshOperator,
+    resolveLocalCollaborationConnectionTarget: () =>
+      localRuntimeHostRemoteAccess.createCollaborationConnectionTarget(),
+    resolveProfileCollaborationConnectionTarget: (profile) =>
+      runtimeHostProfileService.resolveCollaborationConnectionTarget(profile),
   },
   {
     upgradePrompts: createRuntimeHostUpgradePrompts(
@@ -923,6 +1094,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: state.readiness,
         isDefault:
@@ -937,7 +1109,10 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
           console.error("[runtime-host] Browser target retirement failed:", error),
         );
       }
-      if (state.readiness === "unavailable") {
+      if (
+        state.readiness === 'unavailable' &&
+        state.target.profile.id === runtimeHostManager?.defaultProfileId()
+      ) {
         defaultRuntimeHostRecovery.offer({
           profileId: state.target.profile.id,
           profileName: state.target.profile.name,
@@ -959,6 +1134,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId: state.target.profile.id,
         profileName: state.target.profile.name,
         profileKind: state.target.profile.kind,
+        profileAccess: runtimeHostProfileAccess(state.target.profile),
         ...(hostId ? { hostId } : {}),
         readiness: "unavailable",
         isDefault:
@@ -982,6 +1158,7 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         profileId,
         profileName: state?.target.profile.name ?? profileId,
         profileKind: state?.target.profile.kind ?? "remote",
+        profileAccess: state ? runtimeHostProfileAccess(state.target.profile) : "owner",
         ...(state?.readiness === "ready"
           ? { hostId: state.candidate.client.hostId }
           : state?.readiness !== "unavailable" && state && "hostId" in state && state.hostId
@@ -991,8 +1168,15 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
         isDefault: true,
       });
     },
-    recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverManagedSetup(signal),
+    recoverLocalHost: (signal) => localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart(signal),
+    resolveLocalHostReplacement: (registration, signal) =>
+      localRuntimeHostRemoteAccess.resolveConflictingHostReplacement(registration, signal),
     onFatalError: (error, target) => {
+      if (
+        !runtimeHostManager &&
+        target.profile.kind === "local" &&
+        canRepairManagedRuntimeHostStartup(error)
+      ) return;
       if (error instanceof RuntimeHostUpgradeCancelledError) {
         if (target.profile.kind === "local") app.quit();
         return;
@@ -1001,8 +1185,49 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
       if (target.profile.kind === "local") app.quit();
     },
   },
-).catch((error: unknown) => {
-  if (error instanceof RuntimeHostUpgradeCancelledError) {
+);
+runtimeHostManager = await startDesktopRuntimeHostWithRecovery({
+  start: async () => {
+    await localRuntimeHostRemoteAccess.recoverBeforeLocalHostStart();
+    return startLocalRuntimeHostManager();
+  },
+  repair: async ({ allowManualUpdate, allowInterruptActiveTasks }) => {
+    console.warn('[runtime-host] repairing the managed Local Host before startup');
+    const result = await localRuntimeHostRemoteAccess.repairManagedStartup({
+      allowManualUpdate,
+      allowInterruptActiveTasks,
+    });
+    console.log(`[runtime-host] managed Local Host repair result: ${result.kind}`);
+    return result;
+  },
+  prompt: async (input) => {
+    console.error('[runtime-host] managed Local Host startup recovery requires attention:', {
+      startupError: input.startupError,
+      repairError: input.repairError,
+      activeTasks: input.activeTasks,
+    });
+    const locale = await desktopLocale.resolve();
+    return showRuntimeHostStartupRecoveryDialog(input, {
+      locale,
+      showMessageBox: (options) => showDesktopMessageBox(options, { locale }),
+      copyDiagnostics: () =>
+        copyDesktopDiagnosticReport(
+          desktopDiagnostics,
+          createDesktopStartupDiagnosticInput({
+            title: 'Runtime Host startup recovery',
+            description: input.startupError.message,
+            details: [input.startupError.stack, input.repairError?.stack]
+              .filter(Boolean)
+              .join('\n\n'),
+          }),
+        ),
+    });
+  },
+}).catch((error: unknown) => {
+  if (
+    error instanceof RuntimeHostUpgradeCancelledError ||
+    error instanceof DesktopRuntimeHostStartupRecoveryCancelledError
+  ) {
     app.quit();
     return new Promise<never>(() => undefined);
   }
@@ -1010,6 +1235,9 @@ runtimeHostManager = await startRuntimeHostDesktopManager(
 });
 wireLifecycle();
 runtimeHostManager.setDefaultProfile(runtimeHostStartup.preferences.defaultProfileId);
+await guestSessionMountService.start().catch((error: unknown) => {
+  console.error('[runtime-host] shared Sessions could not be restored:', error);
+});
 await localRuntimeHostRemoteAccess.recover().catch((error: unknown) => {
   console.error('[runtime-host] interrupted Local Host setup could not be recovered:', error);
 });
@@ -1152,6 +1380,11 @@ function registerHostClientIpc(
     emitTargetConnectionListChanged();
     sendToRenderer("settings:externalChanged", { ts: Date.now() });
   });
+  // No `settings:externalChanged` here: the user's settings did not move, the
+  // Host just resolved the same connections against a newer model catalog.
+  const unsubscribeConnectionCatalogChanges = client.subscribeConnectionCatalogChanges(() => {
+    emitTargetConnectionListChanged();
+  });
   const unsubscribeSessionCatalogChanges = client.subscribeSessionCatalogChanges(
     ({ sessionId }) => emitTargetSessionsChanged("updated", sessionId),
   );
@@ -1228,29 +1461,29 @@ function registerHostClientIpc(
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
-  const settingsIpcDeps = {
-    ipcMain: scopedIpc,
+  const runtimeHostSettings = createRuntimeHostSettingsModule({
     client,
     settingsStore,
     applyClientSettings: async (settings) => {
       await clientSettingsEffects.apply(settings, true);
     },
-  } satisfies Parameters<typeof registerRuntimeHostSettingsIpc>[0];
-  registerRuntimeHostSettingsIpc(settingsIpcDeps);
+  });
+  registerRuntimeHostSettingsIpc({
+    ipcMain: scopedIpc,
+    module: runtimeHostSettings,
+  });
   registerRuntimeHostConfigIpc({
     ipcMain: scopedIpc,
     client,
     mainWindowController,
     appVersion: app.getVersion(),
-    getSettings: () => loadRuntimeHostSettings(settingsIpcDeps),
-    updateSettings: (patch) =>
-      updateRuntimeHostSettings(settingsIpcDeps, patch),
+    settingsModule: runtimeHostSettings,
     emitConnectionsChanged: emitTargetConnectionListChanged,
   });
   registerRuntimeHostPermissionsIpc({
     ipcMain: scopedIpc,
     client,
-    getSettings: () => loadRuntimeHostSettings(settingsIpcDeps),
+    getSettings: () => runtimeHostSettings.get(),
     listConnections: async () =>
       projectHostConnections(await client.loadConnectionCatalog()),
     botRegistry,
@@ -1289,7 +1522,7 @@ function registerHostClientIpc(
       return selectedDesktopWorkspaceTarget(target);
     },
     getDefaultPermissionMode: () =>
-      resolveDefaultPermissionMode(() => loadRuntimeHostSettings(settingsIpcDeps)),
+      resolveDefaultPermissionMode(() => runtimeHostSettings.get()),
     openPath: (path) => shell.openPath(path),
     allowLocalPaths: !usesHostWorkspace,
   });
@@ -1321,6 +1554,7 @@ function registerHostClientIpc(
       getProjectRoot: resolveProjectRootForContext,
       workspaceRoot,
       buildInfo,
+      updateChannel: desktopUpdateChannel,
       e2eFixture,
       projectManagement: targetProjectManagement,
       allowLocalProjectPaths: !usesHostWorkspace,
@@ -1365,7 +1599,7 @@ function registerHostClientIpc(
           ({ slug }) => slug === connection.slug,
         );
         if (!entry) return false;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const status = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
@@ -1397,7 +1631,7 @@ function registerHostClientIpc(
         }
         const entry = catalog.connections.find(({ slug }) => slug === connection.slug);
         if (!entry) return { kind: "connection_missing", connectionSlug } as const;
-        const authKind = PROVIDER_DEFAULTS[entry.providerType].authKind;
+        const authKind = PROVIDER_REGISTRY[entry.providerType].authKind;
         const hasSecret = await client.queryCredential({
           scope: "connection",
           connectionId: entry.connectionId,
@@ -1410,6 +1644,7 @@ function registerHostClientIpc(
   registerTaskSubmissionReadinessIpc(taskSubmissionReadinessService, scopedIpc);
   return async () => {
     unsubscribeConfigurationChanges();
+    unsubscribeConnectionCatalogChanges();
     unsubscribeSessionCatalogChanges();
     unsubscribeProjectCatalogChanges();
     unsubscribeScheduledTaskChanges();
@@ -1448,6 +1683,11 @@ function registerPersistentClientIpc(): void {
   });
   registerMarkdownSaveIpc({ ipcMain, mainWindowController });
   registerDesktopRuntimeHostProfileIpc(ipcMain, runtimeHostProfileService);
+  registerDesktopGuestSessionMountIpc(
+    ipcMain,
+    guestSessionMountService,
+    () => clipboard.readText(),
+  );
   registerClientSettingsIpc({
     ipcMain,
     settingsStore,
@@ -1505,39 +1745,56 @@ function registerPersistentClientIpc(): void {
       );
     },
   );
+  const projectRuntimeHostIdentity = (
+    epoch: string,
+    target: ResolvedRuntimeHostProfile,
+    readiness: 'ready' | 'reconnecting',
+    hostId: string,
+  ): DesktopRuntimeHostIdentity => ({
+    hostId,
+    targetEpoch: epoch,
+    profileId: target.profile.id,
+    profileName: target.profile.name,
+    profileKind: target.profile.kind,
+    profileAccess: runtimeHostProfileAccess(target.profile),
+    readiness,
+  });
   ipcMain.handle("runtime-host:activeIdentity", () => {
     const current = runtimeHostManager?.current();
     if (!current?.hostId) {
       throw new Error("Desktop Runtime Host identity is unavailable");
     }
-    return {
-      hostId: current.hostId,
-      targetEpoch: current.epoch,
-      profileId: current.target.profile.id,
-      profileName: current.target.profile.name,
-      profileKind: current.target.profile.kind,
-      readiness: current.readiness,
-    };
+    return projectRuntimeHostIdentity(
+      current.epoch,
+      current.target,
+      current.readiness,
+      current.hostId,
+    );
   });
   ipcMain.handle("runtime-host:identities", () =>
     (runtimeHostManager?.entries() ?? []).flatMap((state) => {
-      const hostId = state.readiness === "ready"
-        ? state.candidate.client.hostId
-        : state.readiness === "reconnecting"
-          ? state.hostId
-          : undefined;
+      if (state.readiness !== "ready" && state.readiness !== "reconnecting") return [];
+      const hostId = state.readiness === "ready" ? state.candidate.client.hostId : state.hostId;
       if (!hostId) return [];
-      return [{
-        hostId,
-        targetEpoch: state.epoch,
-        profileId: state.target.profile.id,
-        profileName: state.target.profile.name,
-        profileKind: state.target.profile.kind,
-        readiness: state.readiness,
-      }];
+      return [
+        projectRuntimeHostIdentity(state.epoch, state.target, state.readiness, hostId),
+      ];
     }),
   );
   registerDesktopDiagnosticsIpc({ ipcMain, ...desktopDiagnostics });
+  ipcMain.handle('directories:pick', async () => {
+    const local = runtimeHostManager?.entries().find(
+      (state) => state.target.profile.kind === 'local',
+    );
+    if (!local || local.readiness !== 'ready') throw new Error('Local Runtime Host is unavailable');
+    const hostId = local.candidate.client.hostId;
+    const result = await mainWindowController.showOpenDialog({
+      title: 'Reference folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || !result.filePaths[0]) return { ok: false, reason: 'cancelled' };
+    return { ok: true, reference: { hostId, path: result.filePaths[0] } };
+  });
   ipcMain.handle("attachments:pickFiles", async (event) => {
     const result = await mainWindowController.showOpenDialog({
       title: "Add attachments",
@@ -1546,13 +1803,10 @@ function registerPersistentClientIpc(): void {
     if (result.canceled || !result.filePaths[0])
       return { ok: false, reason: "cancelled" };
     const { stat } = await import("node:fs/promises");
-    const chosen = await Promise.all(
-      result.filePaths.map(async (path) => ({
-        path,
-        name: basename(path),
-        size: (await stat(path)).size,
-      })),
-    );
+    // Route by content, not the extension: each picked path is staged under the
+    // kind its sniffed MIME implies, so a real image named `report.pdf` previews
+    // and triggers the vision notice, and a disguised file does neither.
+    const chosen = await resolvePickedAttachments(result.filePaths, (path) => stat(path));
     return {
       ok: true,
       files: attachmentApprovals.issueApprovals(event.sender.id, chosen),
@@ -1645,7 +1899,7 @@ function wireLifecycle(): void {
     resumeQuit: () => app.quit(),
   });
   installDesktopShellPresentation({
-    startHidden,
+    revealMode,
     mainWindowController,
     focusOrCreateWindow: quitCoordinator.focusOrCreateWindow,
     onIconError: (error) =>
@@ -1659,9 +1913,10 @@ function wireLifecycle(): void {
   app.on("window-all-closed", () => {
     native.computerUseOverlay.destroyAll();
     native.computerUsePip.destroyAll();
-    if (process.platform !== "darwin") app.quit();
+    if (process.platform !== "darwin" && !isBrowserMessageBoxPresentationActive()) app.quit();
   });
   app.on("before-quit", quitCoordinator.handleBeforeQuit);
+  powerMonitor.on("resume", wakePeerRecoveryAfterResume);
   quitCoordinator.focusOrCreateWindow();
 }
 
@@ -1677,19 +1932,36 @@ async function prepareRuntimeHostDesktopQuit(): Promise<void> {
 
 async function showRuntimeHostQuitFailure(error: unknown): Promise<void> {
   const locale = await desktopLocale.resolve();
-  await dialog.showMessageBox(buildRuntimeHostQuitFailureDialog(error, locale));
+  await showDesktopMessageBox(buildRuntimeHostQuitFailureDialog(error, locale), { locale });
 }
 
 async function closeRuntimeHostDesktop(): Promise<void> {
+  powerMonitor.off("resume", wakePeerRecoveryAfterResume);
   clientSettingsWatcher.stop();
   updateService.dispose();
   settingsBotsIpc?.dispose();
   permissionOverlay.dismiss();
+  const guestMountShutdown = Promise.resolve().then(() => guestSessionMountService.close());
+  const runtimeHostManagerShutdown = guestMountShutdown
+    .catch(() => undefined)
+    .then(() => runtimeHostManager?.close());
+  const runtimeHostPeerShutdown = runtimeHostManagerShutdown
+    .catch(() => undefined)
+    .then(async () => {
+      const errors: unknown[] = [];
+      await runtimeHostPeerMeshComponent?.close().catch((error: unknown) => errors.push(error));
+      await runtimeHostPeerEndpointOwner?.close().catch((error: unknown) => errors.push(error));
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) {
+        throw new AggregateError(errors, 'Unable to close Desktop peer resources');
+      }
+    });
   const results = await Promise.allSettled([
     Promise.resolve().then(() => runtimeHostManagement.close()),
     Promise.resolve().then(() => runtimeHostPeerMeshManagement.close()),
-    runtimeHostManager?.close(),
-    runtimeHostPeerOwner?.close() ?? runtimeHostPeerClient?.close(),
+    guestMountShutdown,
+    runtimeHostManagerShutdown,
+    runtimeHostPeerShutdown,
     runtimeHostOnboarding.close(),
     localRuntimeHostRemoteAccess.close(),
     runtimeHostSetupPackage.close(),
@@ -1708,6 +1980,10 @@ async function closeRuntimeHostDesktop(): Promise<void> {
     if (result.status === "rejected")
       console.error("[runtime-host] shutdown failed:", result.reason);
   }
+}
+
+function wakePeerRecoveryAfterResume(): void {
+  runtimeHostManager?.wakePeerRecovery();
 }
 
 function resolveDesktopE2eFixture(): ReturnType<typeof resolveE2eFixture> {
@@ -1737,26 +2013,20 @@ async function confirmDesktopStorageRootRepair(
   console.log(
     "[storage-root] root-identity conflict; parking at repair dialog",
   );
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = resolveSystemUiLocale(app.getPreferredSystemLanguages());
+  const copy = getNativeDiagnosticDialogCopy(locale).storageRootRepair;
   const { response } = await showStartupDiagnosticDialog(
     {
       type: "warning",
-      title: isChinese ? "Maka 工作区需要修复" : "Maka workspace needs repair",
-      message: isChinese
-        ? "Maka 无法验证这个工作区。"
-        : "Maka cannot verify this workspace.",
-      detail: isChinese
-        ? `系统中的磁盘标识可能发生了变化。仅当这是本机原来的 Maka 工作区、而不是复制出的工作区时，才选择修复。\n\n${workspaceRoot}`
-        : `The disk identity may have changed. Repair only if this is the original Maka workspace on this computer, not a copied workspace.\n\n${workspaceRoot}`,
-      buttons: isChinese
-        ? ["修复工作区", "退出"]
-        : ["Repair Workspace", "Exit"],
+      title: copy.title,
+      message: copy.message,
+      detail: copy.detail(workspaceRoot),
+      buttons: [copy.repair, copy.exit],
       defaultId: 1,
       cancelId: 1,
       noLink: true,
     },
-    isChinese ? "zh" : "en",
+    locale,
   );
   return response === 0;
 }
@@ -1765,28 +2035,12 @@ async function promptForDefaultRuntimeHostRecovery(input: {
   readonly profileName: string;
   readonly error: Error;
 }): Promise<"retry" | "use_local" | "keep_offline"> {
-  const isChinese =
-    resolveSystemUiLocale(app.getPreferredSystemLanguages()) === "zh";
+  const locale = await desktopLocale.resolve();
+  const dialogInput = defaultRuntimeHostRecoveryDialog({ ...input, locale });
   const { response } = await showStartupDiagnosticDialog(
-    {
-      type: "warning",
-      title: isChinese
-        ? "默认 Runtime Host 无法连接"
-        : "Default Runtime Host is unavailable",
-      message: isChinese
-        ? `无法连接 ${input.profileName}`
-        : `Could not connect to ${input.profileName}`,
-      detail: isChinese
-        ? `${input.error.message}\n\n你可以重试、改用 Local 作为默认 Host，或保持当前选择并稍后在设置中处理。`
-        : `${input.error.message}\n\nRetry, use Local as the default Host, or keep the current selection and resolve it later in Settings.`,
-      buttons: isChinese
-        ? ["重试", "改用 Local", "保持离线"]
-        : ["Retry", "Use Local", "Keep Offline"],
-      defaultId: 0,
-      cancelId: 2,
-      noLink: true,
-    },
-    isChinese ? "zh" : "en",
+    dialogInput.options,
+    locale,
+    dialogInput.diagnosticDetails,
   );
   return response === 0 ? "retry" : response === 1 ? "use_local" : "keep_offline";
 }

@@ -20,11 +20,20 @@
 import type { ForeignSessionDigest, ForeignSessionSummary } from '@maka/core/foreign-session';
 import type { ModelInfo, ProviderType } from '@maka/core/llm-connections';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import type { ConnectionOnboardingTarget } from '@maka/core/runtime-policy';
+import type {
+  ConnectionEffectFailureClass,
+  ConnectionOnboardingSaveResult as RuntimeHostOnboardingSaveResult,
+  ConnectionOnboardingVerifyResult as RuntimeHostOnboardingVerifyResult,
+} from '@maka/runtime-host/protocol';
 import type { MakaPiTuiTurnActivity } from './pi-tui-turn.js';
 
 export interface ModelChoice {
-  /** Immutable account identity; required for a cross-connection selection. */
-  connectionId?: string;
+  /**
+   * Immutable account identity. The slug is renameable, so this is what a
+   * cross-connection selection rebinds the session to.
+   */
+  connectionId: string;
   connectionSlug: string;
   connectionName: string;
   providerType: ProviderType;
@@ -35,64 +44,115 @@ export interface ModelChoice {
   /** Maximum context tokens for this model, resolved from the connection or provider catalog. */
   contextWindow?: number;
   /**
-   * Thinking levels this model exposes. `listReadyModelChoices` always
-   * computes this with the full connection (so an openai-compatible relay's
-   * declared `relayModelProfiles[model].thinkingLevels` are honoured);
-   * optional only so hand-written choice literals stay valid — consumers
-   * must tolerate its absence.
+   * Thinking levels this model exposes, as the Host resolved them — a relay's
+   * declared `relayModelProfiles[model].thinkingLevels` included. Empty for a
+   * model that offers none; never absent, so no caller has to guess from a
+   * bundled metadata copy of its own.
    */
-  thinkingLevels?: readonly ThinkingLevel[];
+  thinkingLevels: readonly ThinkingLevel[];
 }
+
+export type ConnectionIdentity = {
+  readonly connectionId: string;
+  readonly connectionSlug: string;
+  readonly enabled: boolean;
+};
 
 export interface OnboardableProvider {
   providerType: ProviderType;
   label: string;
-  authKind: 'api_key' | 'optional_api_key';
   requiresBaseUrl: boolean;
-  fallbackModels: readonly string[];
 }
 
-export interface OnboardingProviderEntry extends OnboardableProvider {
-  hasConnection: boolean;
-  /** The existing connection's identity, so saving edits it in place. */
-  connectionId?: string;
-  enabledModelIds: readonly string[];
-}
+export type OnboardingIdentityChoice = {
+  /** Caller-chosen slug; null keeps the Host-derived identity. */
+  readonly slug: string | null;
+  /** Caller-chosen display name; null keeps the provider label. */
+  readonly name: string | null;
+};
+
+export type OnboardingProviderEntry = OnboardableProvider &
+  (
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'create' }>;
+        /**
+         * The identity the Host would derive, shown as the prefilled default
+         * on the identity step. Submitting it unchanged (or submitting
+         * nothing) keeps the wire target free of slug/name so any Host
+         * vintage accepts the save.
+         */
+        suggestedSlug: string;
+        enabledModelIds: readonly string[];
+      }
+    | {
+        target: Extract<ConnectionOnboardingTarget, { readonly kind: 'existing' }>;
+        connectionSlug: string;
+        enabledModelIds: readonly string[];
+      }
+  );
 
 export interface OnboardingVerifyInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
 }
+
+export type OnboardingVerifyRejectionReason = Extract<
+  RuntimeHostOnboardingVerifyResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingSaveRejectionReason = Extract<
+  RuntimeHostOnboardingSaveResult,
+  { readonly kind: 'rejected' }
+>['reason'];
+
+export type OnboardingRejectionReason =
+  | OnboardingVerifyRejectionReason
+  | OnboardingSaveRejectionReason;
+
+export type OnboardingFailureClass = ConnectionEffectFailureClass;
+
+export type OnboardingFailure =
+  | { kind: 'rejected'; reason: OnboardingRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
 
 export type OnboardingVerifyResult =
   | { kind: 'ok'; models: ModelInfo[] }
-  | {
-      kind: 'error';
-      text: string;
-      /** The wizard's provider snapshot is outdated (e.g. the targeted
-       *  connection is gone) — retyping the key cannot fix this, so the
-       *  runner shows the text without its retype-the-key framing. */
-      stale?: boolean;
-    };
+  | { kind: 'rejected'; reason: OnboardingVerifyRejectionReason }
+  | { kind: 'failed'; errorClass: ConnectionEffectFailureClass }
+  | { kind: 'unavailable' };
 
 export interface OnboardingSaveInput {
-  providerType: ProviderType;
-  /** The existing connection this edit targets; absent creates/updates the canonical-slug one. */
-  connectionId?: string;
+  target: ConnectionOnboardingTarget;
   apiKey?: string;
   /** Endpoint for `requiresBaseUrl` providers; blank reuses the persisted one. */
   baseUrl?: string;
   enabledModelIds: readonly string[];
-  models: readonly ModelInfo[];
+}
+
+export interface OnboardingSavedConnection {
+  connectionId: string;
+  revision: number;
+  slug: string;
+  providerType: ProviderType;
 }
 
 export type OnboardingSaveResult =
-  | { kind: 'ok'; modelChoices: ModelChoice[] }
-  | { kind: 'error'; text: string };
+  | {
+      kind: 'ok';
+      connection: OnboardingSavedConnection;
+      refresh:
+        | {
+            kind: 'ok';
+            modelChoices: ModelChoice[];
+            connectionIdentities: readonly ConnectionIdentity[];
+          }
+        | { kind: 'failed'; reason: 'catalog_unavailable' };
+    }
+  | OnboardingFailure;
 
 export interface MakaOnboardingSurface {
   listProviders(): Promise<OnboardingProviderEntry[]>;

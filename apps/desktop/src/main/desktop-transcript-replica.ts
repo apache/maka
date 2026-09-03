@@ -24,11 +24,14 @@ import {
   type RuntimeHostSessionProjectionSeed,
 } from '@maka/runtime-host/adapter';
 import { RuntimeHostSubscriptionError } from '@maka/runtime-host/client';
-import type { SessionTranscriptPage } from '@maka/runtime-host/protocol';
 import {
-  DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES,
+  SESSION_TRANSCRIPT_RANGE_MAX_BYTES,
+  type SessionTranscriptPage,
+} from '@maka/runtime-host/protocol';
+import {
+  DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS,
   DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES,
-  DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES,
+  DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES,
 } from '../preload/transcript-contract.js';
 import type { DesktopRuntimeHostSession } from './runtime-host-client.js';
 
@@ -36,6 +39,7 @@ export interface DesktopTranscriptReplicaOptions {
   readonly generation?: string;
   readonly maxMessageBytes?: number;
   readonly maxResidentBytes?: number;
+  readonly maxResidentTurns?: number;
   readonly maxOverlayBytes?: number;
   readonly accountPreparationBytes?: (deltaBytes: number) => void;
   readonly onChange?: (
@@ -78,7 +82,9 @@ export class DesktopTranscriptReplica {
   readonly generation: string;
   readonly hostEpoch: string;
   readonly #handle: DesktopRuntimeHostSession;
+  readonly #durableCoverage: DesktopRuntimeHostSession['transcriptBootstrap']['durableCoverage'];
   readonly #maxResidentBytes: number;
+  readonly #maxResidentTurns: number;
   readonly #maxOverlayBytes: number;
   readonly #maxMessageBytes: number;
   readonly #accountPreparationBytes: (deltaBytes: number) => void;
@@ -105,14 +111,17 @@ export class DesktopTranscriptReplica {
     options: DesktopTranscriptReplicaOptions,
   ) {
     this.#handle = handle;
+    this.#durableCoverage = handle.transcriptBootstrap.durableCoverage;
     this.sessionId = handle.snapshot.session.sessionId;
     this.generation = options.generation ?? randomUUID();
     this.hostEpoch = handle.hostEpoch;
     this.#maxResidentBytes =
-      options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_SESSION_CACHE_MAX_BYTES;
+      options.maxResidentBytes ?? DESKTOP_TRANSCRIPT_RANGE_MAX_BYTES;
+    this.#maxResidentTurns =
+      options.maxResidentTurns ?? DESKTOP_TRANSCRIPT_ACTIVE_RANGE_MAX_TURNS;
     this.#maxOverlayBytes =
       options.maxOverlayBytes ?? DESKTOP_TRANSCRIPT_OVERLAY_CACHE_MAX_BYTES;
-    this.#maxMessageBytes = options.maxMessageBytes ?? DESKTOP_TRANSCRIPT_MESSAGE_MAX_BYTES;
+    this.#maxMessageBytes = options.maxMessageBytes ?? SESSION_TRANSCRIPT_RANGE_MAX_BYTES;
     this.#accountPreparationBytes = options.accountPreparationBytes ?? (() => undefined);
     this.#onChange = options.onChange ?? (() => undefined);
     this.#durableThrough = handle.transcriptBootstrap.throughSequence;
@@ -135,7 +144,13 @@ export class DesktopTranscriptReplica {
         replica.#installDurable(durable.messages);
         replica.#hasOlder = durable.nextCursor !== null;
       });
-      replica.#evictToBudget();
+      replica.#evictToBudget(
+        undefined,
+        'oldest',
+        handle.transcriptBootstrap.durable.protectedTurnSequence ??
+          replica.#durableThrough ??
+          undefined,
+      );
       if (replica.#overlayBytes > replica.#maxOverlayBytes) {
         throw new RangeError('Desktop transcript overlay exceeds the session cache limit');
       }
@@ -242,13 +257,17 @@ export class DesktopTranscriptReplica {
       if (
         anchor !== null &&
         decoded.messages.length > 0 &&
-        decoded.messages.at(-1)!.identity !== anchor - 1
+        !this.#matchesCoverageStep(anchor, decoded.messages.at(-1)!.identity + 1)
       ) {
         throw correlationError('Desktop transcript older page did not meet its anchor');
       }
       const completedOverlayMessageIds = this.#installDurable(decoded.messages);
       this.#hasOlder = decoded.nextCursor !== null;
-      const evictedDurableSequences = this.#evictToBudget(undefined, 'newest');
+      const evictedDurableSequences = this.#evictToBudget(
+        undefined,
+        'newest',
+        anchor ?? undefined,
+      );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
   }
@@ -291,7 +310,7 @@ export class DesktopTranscriptReplica {
       if (
         decoded.messages.length > 0 &&
         (loadTail
-          ? decoded.messages.at(-1)!.identity !== sequence
+          ? !this.#matchesCoverageStep(sequence, decoded.messages.at(-1)!.identity)
           : decoded.messages[0]!.identity !== sequence)
       ) {
         throw correlationError('Desktop transcript range did not meet its anchor');
@@ -303,7 +322,11 @@ export class DesktopTranscriptReplica {
       this.#hasOlder = loadTail ? decoded.nextCursor !== null : sequence > 0;
       this.#hasNewer = loadTail ? false : decoded.nextCursor !== null;
       evictedDurableSequences.push(
-        ...this.#evictToBudget(undefined, loadTail ? 'oldest' : 'newest'),
+        ...this.#evictToBudget(
+          undefined,
+          loadTail ? 'oldest' : 'newest',
+          loadTail ? (page.protectedTurnSequence ?? sequence) : sequence,
+        ),
       );
       this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
     });
@@ -385,7 +408,7 @@ export class DesktopTranscriptReplica {
       }
       let cursor: string | null = null;
       const anchorSequence = this.#durableThrough;
-      let expectedSequence = (anchorSequence ?? -1) + 1;
+      let nextSequence = (anchorSequence ?? -1) + 1;
       do {
         if (!this.#resident) return;
         const page: SessionTranscriptPage = await this.#handle.loadTranscriptPage({
@@ -405,28 +428,32 @@ export class DesktopTranscriptReplica {
           this.#acceptRange(decoded.messages);
           if (
             decoded.messages.length > 0 &&
-            decoded.messages[0]!.identity !== expectedSequence
+            !this.#matchesCoverageStep(decoded.messages[0]!.identity, nextSequence)
           ) {
             throw correlationError('Desktop transcript catch-up has a sequence gap');
           }
           if (decoded.messages.length > 0) {
-            expectedSequence = decoded.messages.at(-1)!.identity + 1;
+            nextSequence = decoded.messages.at(-1)!.identity + 1;
           }
           const completedOverlayMessageIds = this.#installDurable(decoded.messages);
-          const evictedDurableSequences = this.#evictToBudget();
+          const evictedDurableSequences = this.#evictToBudget(
+            undefined,
+            'oldest',
+            page.protectedTurnSequence ?? decoded.messages.at(-1)?.identity,
+          );
           this.#publish(decoded.messages, completedOverlayMessageIds, evictedDurableSequences);
           cursor = decoded.nextCursor;
         });
       } while (cursor !== null);
       // A concurrent `discard()` (LRU reclaim for another observed session) can
       // flip `#resident` to false across any page `await` above. The per-page
-      // callback already returns early in that case, so `expectedSequence` is
+      // callback already returns early in that case, so `nextSequence` is
       // left short of the watermark. Without this guard the check below would
       // turn a benign memory reclaim into a fatal `correlation_changed` that
       // drives the session terminal. A discarded replica has no watermark to
       // meet, so return cleanly and let a later resume re-catch-up.
       if (!this.#resident) return;
-      if (expectedSequence !== target + 1) {
+      if (this.#durableCoverage === 'complete' && nextSequence !== target + 1) {
         throw correlationError('Desktop transcript catch-up ended before its watermark');
       }
       this.#durableThrough = target;
@@ -480,10 +507,16 @@ export class DesktopTranscriptReplica {
     for (let index = 1; index < messages.length; index += 1) {
       const previous = messages[index - 1]!.identity;
       const current = messages[index]!.identity;
-      if (current !== previous + 1) {
+      if (!this.#matchesCoverageStep(current, previous + 1)) {
         throw correlationError('Desktop transcript page has a sequence gap');
       }
     }
+  }
+
+  #matchesCoverageStep(sequence: number, firstPossibleSequence: number): boolean {
+    return this.#durableCoverage === 'complete'
+      ? sequence === firstPossibleSequence
+      : sequence >= firstPossibleSequence;
   }
 
   #publish(
@@ -525,19 +558,71 @@ export class DesktopTranscriptReplica {
   #evictToBudget(
     budget: number | undefined = undefined,
     edge: 'oldest' | 'newest' = 'oldest',
+    protectedSequence?: number,
   ): number[] {
     const residentBudget = budget ?? this.#maxResidentBytes + this.#overlayBytes;
     const evicted: number[] = [];
-    const direction = edge === 'oldest' ? 1 : -1;
-    for (const sequence of [...this.#durable.keys()].sort((left, right) => direction * (left - right))) {
-      if (this.#residentBytes <= residentBudget) break;
+    const sequences = [...this.#durable.keys()].sort((left, right) => left - right);
+    const turnGroups = new Map<string, number[]>();
+    for (const sequence of sequences) {
       const entry = this.#durable.get(sequence);
       if (!entry) continue;
-      this.#durable.delete(sequence);
-      this.#adjustResidentBytes(-entry.encodedBytes);
-      if (edge === 'oldest') this.#hasOlder = true;
+      const turnKey = residentTurnKey(entry);
+      const group = turnGroups.get(turnKey);
+      if (group) group.push(sequence);
+      else turnGroups.set(turnKey, [sequence]);
+    }
+    const orderedTurns = [...turnGroups.entries()];
+    let oldestIndex = 0;
+    let newestIndex = orderedTurns.length - 1;
+    let residentTurns = orderedTurns.length;
+    const protectedEntry = protectedSequence === undefined
+      ? undefined
+      : this.#durable.get(protectedSequence);
+    const protectedTurnKey = protectedEntry === undefined
+      ? undefined
+      : residentTurnKey(protectedEntry);
+    const protectedIndex = protectedTurnKey === undefined
+      ? -1
+      : orderedTurns.findIndex(([turnKey]) => turnKey === protectedTurnKey);
+    const take = (
+      candidateEdge: 'oldest' | 'newest',
+    ): readonly [string, number[]] | undefined => {
+      const index = candidateEdge === 'oldest' ? oldestIndex : newestIndex;
+      if (oldestIndex > newestIndex) return undefined;
+      const turn = orderedTurns[index];
+      if (!turn || turn[0] === protectedTurnKey) return undefined;
+      if (candidateEdge === 'oldest') oldestIndex += 1;
+      else newestIndex -= 1;
+      return turn;
+    };
+    while (
+      this.#residentBytes > residentBudget
+      || residentTurns > this.#maxResidentTurns
+    ) {
+      let evictionEdge = protectedIndex < 0
+        ? edge
+        : protectedIndex - oldestIndex > newestIndex - protectedIndex
+          ? 'oldest'
+          : protectedIndex - oldestIndex < newestIndex - protectedIndex
+            ? 'newest'
+            : edge;
+      let turn = take(evictionEdge);
+      if (turn === undefined) {
+        evictionEdge = edge === 'oldest' ? 'newest' : 'oldest';
+        turn = take(evictionEdge);
+      }
+      if (turn === undefined) break;
+      for (const sequence of turn[1]) {
+        const entry = this.#durable.get(sequence);
+        if (!entry) continue;
+        this.#durable.delete(sequence);
+        this.#adjustResidentBytes(-entry.encodedBytes);
+        evicted.push(sequence);
+      }
+      residentTurns -= 1;
+      if (evictionEdge === 'oldest') this.#hasOlder = true;
       else this.#hasNewer = true;
-      evicted.push(sequence);
     }
     return evicted;
   }
@@ -632,6 +717,16 @@ export class DesktopTranscriptReplica {
 
 function encodedMessageBytes(message: StoredMessage): number {
   return Buffer.byteLength(JSON.stringify(message), 'utf8');
+}
+
+function residentTurnKey(entry: ResidentMessage): string {
+  const turnId = messageTurnId(entry.message);
+  return turnId === undefined ? `sequence:${entry.sequence}` : `turn:${turnId}`;
+}
+
+function messageTurnId(message: StoredMessage): string | undefined {
+  const turnId = 'turnId' in message ? message.turnId : undefined;
+  return typeof turnId === 'string' ? turnId : undefined;
 }
 
 function correlationError(message: string): RuntimeHostSubscriptionError {

@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import { desktopNightlyTargets } from './desktop-nightly.mjs';
 
 async function readWorkflow(name) {
   return parse(await readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
@@ -103,52 +104,98 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   const download = workflow.jobs.publish.steps.find(
     (step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern,
   );
-  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}');
+  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}-${{ matrix.arch }}');
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
-test('the protected Desktop publisher appends payloads before advancing the feed', async () => {
+test('Desktop Nightly packages the GitHub dev feeds and grants write only to its publisher', async () => {
   const workflow = await readWorkflow('desktop-nightly.yml');
-  const publish = workflow.jobs.publish;
-  assert.equal(workflow.jobs.desktop.environment, 'nightly');
-  assert.equal(publish.environment, 'nightly');
-  assert.equal(
-    publish.steps.filter((step) => step.uses?.startsWith('burnett01/rsync-deployments@')).length,
-    0,
+  assert.deepEqual(workflow.permissions, { actions: 'read', contents: 'read' });
+  assert.equal(workflow.jobs.publish.permissions.contents, 'write');
+  assert.equal(workflow.jobs.desktop.permissions, undefined);
+  const stage = workflow.jobs.desktop.steps.find(
+    (step) => step.name === 'Stage the exact Nightly artifacts',
   );
-  const transport = publish.steps.find(
-    (step) => step.name === 'Prepare authenticated Nightlies SSH transport',
+  // The runner never names its own uploads; the target descriptor does.
+  assert.match(stage.run, /desktop-nightly\.mjs stage-target/u);
+  assert.match(stage.run, /\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/u);
+  assert.doesNotMatch(JSON.stringify(workflow), /latest-mac\.yml|latest\.yml/u);
+  // Nor does it name a distributable: the descriptor does, and the verifiers
+  // read it from there.
+  assert.doesNotMatch(JSON.stringify(workflow), /win-x64\.exe/u);
+});
+
+test('every packaged Desktop target ships from a runner of its own architecture', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const targets = workflow.jobs.desktop.strategy.matrix.include;
+  const names = targets.map((entry) => `${entry.platform}-${entry.arch}`);
+  assert.deepEqual(names, ['macos-arm64', 'macos-x64', 'windows-x64', 'linux-x64', 'linux-arm64']);
+  const nightlyTargets = desktopNightlyTargets('0.2.0-dev.42.20260829').map(
+    (target) => target.name,
   );
-  assert.equal(transport.env.NIGHTLIES_RSYNC_KEY, '${{ secrets.NIGHTLIES_RSYNC_KEY }}');
-  assert.equal(
-    transport.env.NIGHTLIES_RSYNC_KNOWN_HOSTS,
-    '${{ secrets.NIGHTLIES_RSYNC_KNOWN_HOSTS }}',
-  );
-  assert.match(transport.run, /StrictHostKeyChecking=yes/u);
-  assert.doesNotMatch(transport.run, /ssh-keyscan|StrictHostKeyChecking=no/u);
-  const steps = publish.steps;
+  assert.deepEqual(names.toSorted(), nightlyTargets.toSorted());
+  // The runner image is the workflow's to choose; what it may not do is choose
+  // one that disagrees with the row it builds. The native Runtime Host peer is
+  // never cross-built, so every row runs on its own platform and architecture.
+  for (const { platform, arch, runner } of targets) {
+    if (platform === 'macos') {
+      assert.match(runner, /^macos-/u);
+      assert.equal(runner.endsWith('-intel'), arch === 'x64', runner);
+    } else if (platform === 'windows') {
+      assert.match(runner, /^windows-/u);
+    } else {
+      assert.match(runner, /^ubuntu-/u);
+      assert.equal(runner.endsWith('-arm'), arch === 'arm64', runner);
+    }
+  }
+});
+
+test('the publisher verifies exact GitHub identity and assets before publishing last', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = workflow.jobs.publish.steps;
   const positions = [
-    'Attest the exact Nightly payloads',
+    'Attest every GitHub Nightly asset subject',
     'Verify the issued Nightly provenance',
-    'Require the Desktop Nightly feed to advance',
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
+    'Add the one offline provenance bundle',
+    'Ensure the exact versioned Nightly tag',
+    'Prepare and verify the draft GitHub Prerelease',
+    'Publish the complete GitHub Prerelease',
   ].map((name) => steps.findIndex((step) => step.name === name));
+  assert.ok(positions.every((position) => position >= 0));
   assert.deepEqual(
     positions,
     positions.toSorted((left, right) => left - right),
   );
-  assert.ok(positions.every((position) => position >= 0));
+  assert.match(steps[positions[0]].with['subject-path'], /\.nightly-stage\/release\/\*/u);
+  assert.match(steps[positions[3]].run, /product-release-tag\.mjs ensure/u);
+  assert.match(steps[positions[4]].run, /desktop-nightly-release\.mjs prepare/u);
+  assert.match(steps[positions[5]].run, /desktop-nightly-release\.mjs publish/u);
   assert.equal(
     steps[positions[1]].env.CERTIFICATE_IDENTITY,
     'https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main',
   );
-  for (const name of [
-    'Publish immutable Nightly payloads',
-    'Advance the Nightly update feed last',
-  ]) {
-    const step = steps.find((candidate) => candidate.name === name);
-    assert.match(step.run, /^rsync -rlptDvz --protect-args /u);
-    assert.doesNotMatch(step.run, /--delete/u);
+});
+
+test('the Nightly Linux verification runs under a virtual display', async () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail every Nightly at its slowest point.
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => typeof step.run === 'string' && step.run.includes('npm run verify:linux'));
+
+  assert.equal(steps.length, 1);
+  for (const step of steps) {
+    assert.match(step.run, /^xvfb-run\b/u, step.name);
   }
+});
+
+test('Desktop Nightly has no Apache Nightlies transport or compatibility state', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  assert.equal(workflow.jobs.publish.environment, 'nightly');
+  assert.doesNotMatch(
+    JSON.stringify(workflow),
+    /nightlies\.apache\.org|NIGHTLIES_RSYNC|resolve-cutover|github-cutover|\brsync\b|\bssh\b/u,
+  );
 });

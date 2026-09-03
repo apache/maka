@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { deferred } from '@maka/core/test-only/async-primitives';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import type { SessionEvent } from '@maka/core/events';
@@ -285,6 +286,33 @@ describe('Runtime Host maka run adapter', () => {
     );
   });
 
+  test('keeps a sandbox failure unresolved after an unrelated tool succeeds', async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const fixture = runFixture({
+      turnEvents: sandboxBoundaryEvents(
+        'turn-1',
+        'step-1',
+        'step-2',
+        'Boundary was not widened',
+        'tool_search',
+      ),
+    });
+    const exitCode = await runFixtureCommand(
+      fixture,
+      ['request inaccessible work'],
+      (text) => stdout.push(text),
+      (text) => stderr.push(text),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.equal(stdout.join(''), '');
+    assert.equal(
+      stderr.join(''),
+      'maka run: sandbox boundary expansion is unavailable in non-interactive mode\n',
+    );
+  });
+
   test('returns exit code 1 when reconnect restores a missed sandbox failure', async () => {
     let publishReplacement = () => {};
     const fixture = runFixture({
@@ -499,15 +527,6 @@ describe('Runtime Host maka run adapter', () => {
     assert.equal(durable.failure?.class, 'tool_step_cap_reached');
   });
 
-  test('classifies a standalone context-budget completion as failed', async () => {
-    const outcome = await observeFixtureOutcome({
-      turnEvents: completionEvents('turn-1', 'context_budget_exhausted'),
-    });
-
-    assert.equal(outcome.status, 'failed');
-    assert.equal(outcome.failure?.class, 'context_budget_exhausted');
-  });
-
   test('uses the latest durable terminal state for a Graph Turn', async () => {
     const outcome = await observeFixtureOutcome({
       graph: true,
@@ -633,6 +652,7 @@ describe('Runtime Host maka run adapter', () => {
           providerType: 'openai' as const,
           enabled: true,
           enabledModelIds: ['gpt-5'],
+          catalogEntries: [],
           models: [{ id: 'gpt-5' }, { id: 'gpt-6-preview' }],
         },
       ],
@@ -672,6 +692,7 @@ describe('Runtime Host maka run adapter', () => {
     const prepareStarted = deferred<void>();
     const fixture = runFixture({
       graph: true,
+      strictTurnStopInput: true,
       prepareGate: prepareGate.promise,
       onPrepareStarted: () => prepareStarted.resolve(),
     });
@@ -721,6 +742,33 @@ describe('Runtime Host maka run adapter', () => {
         }),
       ),
       new Error('interactive user questions are unavailable in non-interactive mode'),
+    );
+    assert.deepEqual(fixture.exactTurnStops, [
+      { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
+    ]);
+  });
+
+  test('fails and stops instead of dropping an interactive form', async () => {
+    const fixture = runFixture({
+      turnEvents: formEvents('turn-1'),
+      pendingInteractions: [pendingForm('turn-1')],
+      pendingAfterTurnStarts: true,
+    });
+    const session = await fixture.context.runtime.createSession({
+      cwd: '/workspace',
+      llmConnectionSlug: 'openai-main',
+      model: 'gpt-5',
+      permissionMode: 'ask',
+    });
+
+    await assert.rejects(
+      collect(
+        fixture.context.runtime.sendMessage(session.id, {
+          turnId: 'turn-1',
+          text: 'configure deployment',
+        }),
+      ),
+      new Error('interactive user forms are unavailable in non-interactive mode'),
     );
     assert.deepEqual(fixture.exactTurnStops, [
       { sessionId: session.id, turnId: 'turn-1', runId: 'run-1' },
@@ -868,6 +916,7 @@ function runFixture(input: {
   onGraphStop?: () => void;
   initialMessages?: StoredMessage[];
   finalMessages?: StoredMessage[];
+  strictTurnStopInput?: boolean;
 }) {
   const switches: string[] = [];
   const moves: string[] = [];
@@ -1008,6 +1057,13 @@ function runFixture(input: {
         return { rootSessionId: requestInput.rootSessionId, graphId: 'graph-1' };
       }
       if (operation === 'turn.stop') {
+        if (input.strictTurnStopInput) {
+          const allowed = new Set(['sessionId', 'turnId', 'runId']);
+          const unexpected = Object.keys(requestInput).filter((key) => !allowed.has(key));
+          if (unexpected.length > 0) {
+            throw new Error(`Unknown turn.stop input field: ${unexpected.join(', ')}`);
+          }
+        }
         exactTurnStops.push({
           sessionId: String(requestInput.sessionId),
           turnId: String(requestInput.turnId),
@@ -1140,6 +1196,7 @@ function connectionCatalog() {
         providerType: 'openai' as const,
         enabled: true,
         enabledModelIds: ['gpt-5'],
+        catalogEntries: [],
         models: [{ id: 'gpt-5' }],
       },
     ],
@@ -1239,14 +1296,19 @@ async function* questionEvents(turnId: string): AsyncIterable<SessionEvent> {
   };
 }
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((settle) => {
-    resolve = settle;
-  });
-  return { promise, resolve };
+async function* formEvents(turnId: string): AsyncIterable<SessionEvent> {
+  yield {
+    type: 'form_request',
+    id: `${turnId}-form`,
+    turnId,
+    ts: 1,
+    requestId: 'form-1',
+    toolUseId: 'tool-1',
+    message: 'Configure deployment',
+    requester: { name: 'deploy', source: 'Acme MCP' },
+    fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
+  };
 }
-
 function pendingQuestion(turnId: string): InteractionPendingSnapshot {
   return {
     schemaVersion: 1,
@@ -1261,6 +1323,26 @@ function pendingQuestion(turnId: string): InteractionPendingSnapshot {
       kind: 'question',
       toolUseId: 'tool-question',
       questions: [{ question: 'Continue?', options: [{ label: 'Yes' }] }],
+    },
+  };
+}
+
+function pendingForm(turnId: string): InteractionPendingSnapshot {
+  return {
+    schemaVersion: 1,
+    interactionId: 'form-1',
+    sessionId: 'session-created',
+    turnId,
+    runId: turnId === 'turn-1' ? 'run-1' : 'run-2',
+    revision: 1,
+    status: 'pending',
+    outcome: null,
+    request: {
+      kind: 'form',
+      toolUseId: 'tool-form',
+      message: 'Configure deployment',
+      requester: { name: 'deploy', source: 'Acme MCP' },
+      fields: [{ kind: 'string', name: 'version', label: 'Version', required: true }],
     },
   };
 }

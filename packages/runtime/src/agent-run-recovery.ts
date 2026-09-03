@@ -23,7 +23,6 @@ import {
 } from '@maka/core/sandbox-boundary';
 import type { AgentRunEvent, AgentRunHeader } from '@maka/core/agent-run';
 import type { SandboxBoundaryRequest } from '@maka/core/sandbox-boundary';
-import type { UserMessageInput } from '@maka/core/runtime-inputs';
 
 export interface AgentRunRecoveryDecision {
   runId: string;
@@ -32,18 +31,20 @@ export interface AgentRunRecoveryDecision {
   failureClass?: string;
   abortSource?: string;
   diagnostic?: Record<string, unknown>;
-  lineage: Partial<
-    Pick<
-      UserMessageInput,
-      | 'parentRunId'
-      | 'parentTurnId'
-      | 'retriedFromTurnId'
-      | 'regeneratedFromTurnId'
-      | 'branchOfTurnId'
-      | 'parentSessionId'
-    >
-  >;
+  lineage: AgentRunRecoveryLineage;
 }
+
+type AgentRunRecoveryLineage = Partial<
+  Pick<
+    AgentRunHeader,
+    | 'parentRunId'
+    | 'parentTurnId'
+    | 'retriedFromTurnId'
+    | 'regeneratedFromTurnId'
+    | 'branchOfTurnId'
+    | 'parentSessionId'
+  >
+>;
 
 export function classifyAgentRunRecovery(
   header: AgentRunHeader,
@@ -196,19 +197,7 @@ function diagnostic(
   };
 }
 
-function headerLineage(
-  header: AgentRunHeader,
-): Partial<
-  Pick<
-    UserMessageInput,
-    | 'parentRunId'
-    | 'parentTurnId'
-    | 'retriedFromTurnId'
-    | 'regeneratedFromTurnId'
-    | 'branchOfTurnId'
-    | 'parentSessionId'
-  >
-> {
+function headerLineage(header: AgentRunHeader): AgentRunRecoveryLineage {
   return {
     ...(header.parentRunId ? { parentRunId: header.parentRunId } : {}),
     ...(header.parentTurnId ? { parentTurnId: header.parentTurnId } : {}),

@@ -30,8 +30,7 @@ import {
   Text,
   VStack,
 } from '@astryxdesign/core';
-import { isRelayProviderType, PROVIDER_DEFAULTS } from '@maka/core/llm-connections';
-import { hasModelMetadata } from '@maka/core/model-metadata';
+import { isRelayProviderType, PROVIDER_REGISTRY } from '@maka/core/llm-connections';
 import {
   DECLARABLE_RELAY_THINKING_LEVELS,
   THINKING_LEVELS,
@@ -52,21 +51,19 @@ import {
 import { PasswordInput } from './password-input';
 import { SettingsExpandableRow } from './settings-expandable-row';
 import { SettingsRow } from './settings-section';
-import { getProviderSettingsCopy } from '../locales/settings-provider-copy';
 import { providerDisplay } from './provider-display';
 import { AddModelDialog } from './provider-add-model-dialog';
 import { EnabledModelManager } from './provider-enabled-model-manager';
-import { useActionGuard } from './use-action-guard';
 import {
   RuntimeHostSettingsGenerationBoundary,
   useRuntimeHostSettingsErrorReporter,
-  useRuntimeHostSettingsTarget,
 } from './runtime-host-settings-target.js';
 import { useOAuthLoginFlow } from './use-oauth-login-flow';
 import {
+  getProviderSettingsCopy,
   providerPanelActionErrorMessage,
   type CredentialPresenceStatus,
-} from './provider-panel-shared';
+} from '../features/connection-settings';
 import type { StatusSemantic } from '@maka/ui';
 import {
   useConnectionDetail,
@@ -86,7 +83,7 @@ import { bulkThinkingLevelStates } from './relay-thinking-bulk';
 import { endpointCarriesCredentials, providerEndpointPresentation } from './provider-endpoint-presentation';
 
 export function ConnectionDetail(props: ConnectionDetailProps) {
-  const defaults = PROVIDER_DEFAULTS[props.connection.providerType];
+  const defaults = PROVIDER_REGISTRY[props.connection.providerType];
   // Unknown providerType (a connection persisted on a branch that registers a
   // provider this build doesn't know) → render a non-actionable fallback so
   // opening the orphan connection doesn't crash on `.authKind`/`.baseUrl`.
@@ -116,7 +113,7 @@ function UnknownConnectionDetail({ props }: { props: ConnectionDetailProps }) {
     if (!mounted.current || !ok) return;
     setDeleting(true);
     try {
-      await props.bridge.delete(connection.slug);
+      await props.bridge.delete({ connectionId: connection.connectionId, slug: connection.slug });
       if (!mounted.current) return;
       await props.onDeleted();
     } catch (error) {
@@ -150,7 +147,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   const locale = useUiLocale();
   const copy = getProviderSettingsCopy(locale).detail;
   const { connection } = props;
-  const defaults = PROVIDER_DEFAULTS[connection.providerType];
+  const defaults = PROVIDER_REGISTRY[connection.providerType];
   const display = providerDisplay(connection.providerType, locale);
   const {
     apiKey,
@@ -170,7 +167,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     supportsApiKey,
     needsOAuth,
     retired,
-    usesGitHubCopilotLogin,
     oauthLoginService,
     supportsRemoteDiscovery,
     credentialProbePending,
@@ -203,24 +199,31 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
   // A model gets capability switches when Maka cannot describe it otherwise.
   // On a custom OpenAI relay that is every model: the id is whatever the
   // operator chose, so even one that collides with a known name may front
-  // something else entirely. Elsewhere it is the models the bundled metadata
-  // has never heard of — a model newer than this build, or one the user typed
-  // in on a provider whose key cannot call a model-list endpoint, which no
-  // refresh will ever describe (#1584).
+  // something else entirely. Elsewhere it is the models the Host-resolved
+  // catalog entry reports no metadata for — one the user typed in on a provider
+  // whose key cannot call a model-list endpoint, which no refresh will ever
+  // describe (#1584). The entry answers this, not the renderer's bundled table:
+  // the Host owns the catalog and may have refreshed it since this build (#4496).
   //
   // A model that already carries a declaration always keeps its row, or a
   // stale declaration would be uneditable and unclearable.
   const isRelay = isRelayProviderType(connection.providerType);
+  const entryById = new Map(modelChoices.map((entry) => [entry.id, entry]));
   // Rows are the enabled models, exactly — the store prunes a model's profile
   // the moment it is disabled, so no declaration can ever belong to a row
   // this list does not show. The editor edits the per-model draft; 保存
   // commits the whole table in one write.
-  const capabilityModelIds = enabledModelIds.filter(
-    (modelId) =>
-      isRelay ||
-      relayProfileDraft[modelId] !== undefined ||
-      !hasModelMetadata(connection.providerType, modelId),
-  );
+  const capabilityModelIds = enabledModelIds.filter((modelId) => {
+    if (isRelay || relayProfileDraft[modelId] !== undefined) return true;
+    // A missing entry is a model the catalog dropped — a quarantined id the
+    // provider registry filters out of the list but `enabledModelIds` still
+    // carries so the user can untick it — not one the Host failed to describe.
+    // Treating absence as "no metadata" would grow a row `main` never showed;
+    // only a present-but-uncovered entry needs the hand row (the #1584 typed id,
+    // which `savedModelIds` always gives an entry).
+    const entry = entryById.get(modelId);
+    return entry !== undefined && !entry.describedByMetadata;
+  });
   const showsCapabilities = capabilityModelIds.length > 0;
   // The bulk control shares the 思考档位 row's relay gate — it edits exactly
   // that row — and needs repetition to be worth a control at all: with one
@@ -257,7 +260,7 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     setHeaderDrafts([]);
     setBodyDraft(formatRequestBodyOverlay(connection.requestBodyOverlay));
     void props.bridge
-      .getRequestHeaders(connection.slug)
+      .getRequestHeaders({ connectionId: connection.connectionId, slug: connection.slug })
       .then(({ names }) => {
         if (!current) return;
         setSavedHeaderNames(names);
@@ -301,7 +304,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     }
     setRequestCustomizationBusy(true);
     try {
-      const saved = await props.bridge.setRequestHeaders(connection.slug, updates);
+      const saved = await props.bridge.setRequestHeaders(
+        { connectionId: connection.connectionId, slug: connection.slug },
+        updates,
+      );
       if (!mounted.current) return true;
       setSavedHeaderNames(saved.names);
       setHeaderDrafts(savedRequestHeaderDrafts(saved.names));
@@ -330,7 +336,10 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
     }
     setRequestCustomizationBusy(true);
     try {
-      await props.bridge.update(connection.slug, { requestBodyOverlay: overlay ?? null });
+      await props.bridge.update(
+        { connectionId: connection.connectionId, slug: connection.slug },
+        { requestBodyOverlay: overlay ?? null },
+      );
       await props.onChanged();
       return true;
     } catch (error) {
@@ -402,8 +411,6 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         {needsOAuth && (
           retired ? (
             <Banner status="error" role="alert" title={copy.oauthRetired} description={copy.oauthRetiredDetail} />
-          ) : usesGitHubCopilotLogin ? (
-            <GitHubCopilotReloginNotice hasSecret={hasSecret} onRelogin={refreshAfterRelogin} />
           ) : oauthLoginService ? (
             <OAuthReloginNotice
               service={oauthLoginService}
@@ -667,12 +674,14 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
         </HStack>
         <AddModelDialog
           isOpen={addModelOpen}
-          /* The catalog, not just the selection: `models` is usually a proper
-             superset of what the user enabled. Checking only the selection lets
-             a listed-but-unchecked id through, and the dialog then requires a
-             hand-typed context window that overrides the one Maka already
-             knows. */
-          existingModelIds={[...enabledModelIds, ...(connection.models ?? []).map(({ id }) => id)]}
+          /* The catalog, not just the selection: the resolved entries are
+             usually a proper superset of what the user enabled. Checking only
+             the selection lets a listed-but-unchecked id through, and the dialog
+             then requires a hand-typed context window that overrides the one
+             Maka already knows. The entries rather than the stored rows, so a
+             provider that ships its inventory instead of storing it still
+             answers "already known" for every model it offers. */
+          existingModelIds={modelChoices.map(({ id }) => id)}
           /* A write started after the dialog opened would make the store drop
              this submission silently, taking the typed id with it. */
           isSubmitDisabled={allActionsBusy}
@@ -854,18 +863,41 @@ function ConnectionDetailInner(props: ConnectionDetailProps) {
                       />
                     </CapabilityRow>
                     <CapabilityRow label={copy.contextWindow} description={copy.contextWindowHelp}>
-                      <DeclaredContextWindowField
-                        declared={declared?.contextWindow}
-                        disabled={allActionsBusy}
-                        /* Named per model, like the three controls around it:
-                           the visible label is the row's, but the field's own
-                           name is all a screen reader gets, and every row in
-                           the section carries the same one. */
-                        label={`${copy.contextWindow} — ${modelId}`}
-                        onCommit={(value) =>
-                          setDraftContextWindow(modelId, value ?? undefined)
-                        }
-                      />
+                      <VStack gap={1} hAlign="start">
+                        <DeclaredContextWindowField
+                          declared={declared?.contextWindow}
+                          disabled={allActionsBusy}
+                          /* Named per model, like the three controls around it:
+                             the visible label is the row's, but the field's own
+                             name is all a screen reader gets, and every row in
+                             the section carries the same one. */
+                          label={`${copy.contextWindow} — ${modelId}`}
+                          onCommit={(value) =>
+                            setDraftContextWindow(modelId, value ?? undefined)
+                          }
+                        />
+                        {declared?.contextWindow === undefined &&
+                          connection.models?.find((model) => model.id === modelId)?.contextWindow !== undefined && (
+                            <HStack gap={1} vAlign="center">
+                              <Text size="sm" type="supporting" color="secondary">
+                                {copy.contextWindowHint(
+                                  connection.models.find((model) => model.id === modelId)!.contextWindow!,
+                                )}
+                              </Text>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                label={copy.contextWindowApplyHint}
+                                isDisabled={allActionsBusy}
+                                onClick={() =>
+                                  setDraftContextWindow(
+                                    modelId,
+                                    connection.models?.find((model) => model.id === modelId)?.contextWindow,
+                                  )}
+                              />
+                            </HStack>
+                          )}
+                      </VStack>
                     </CapabilityRow>
                     {showsFastMode && (
                       <CapabilityRow label={copy.fastMode} description={copy.fastModeHelp}>
@@ -1014,70 +1046,6 @@ function connectionIssueStatus(tone: StatusSemantic): 'error' | 'success' | 'inf
   return 'info';
 }
 
-function GitHubCopilotReloginNotice(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  return (
-    <RuntimeHostSettingsGenerationBoundary>
-      <GitHubCopilotReloginNoticeForCurrentGeneration {...props} />
-    </RuntimeHostSettingsGenerationBoundary>
-  );
-}
-
-function GitHubCopilotReloginNoticeForCurrentGeneration(props: {
-  hasSecret: CredentialPresenceStatus;
-  onRelogin(): Promise<void>;
-}) {
-  const host = useRuntimeHostSettingsTarget();
-  const locale = useUiLocale();
-  const copy = getProviderSettingsCopy(locale).detail;
-  // connectGuard stays: it survives this component's renders and is the
-  // cross-render "one connect at a time" record. The `busy` state it used to
-  // mirror is gone — one button, so clickAction's own disable and spinner are
-  // the whole visible story.
-  const connectGuard = useActionGuard<'connect'>();
-  const mountedRef = useMountedRef();
-  const reportHostError = useRuntimeHostSettingsErrorReporter();
-  const loggedIn = props.hasSecret === true;
-  const loading = props.hasSecret === 'loading';
-
-  async function connect() {
-    if (!connectGuard.begin('connect')) return;
-    try {
-      const result = await window.maka.githubCopilotSubscription.connectExistingLogin(host);
-      // A same-key Runtime Host replacement remounts this controller through
-      // the generation boundary above. The old import cannot report into, or
-      // refresh, the connection detail now owned by the replacement Host.
-      if (!mountedRef.current) return;
-      if (!result.ok) {
-        reportHostError(copy.copilotImportFailed, result.message);
-        return;
-      }
-      await props.onRelogin();
-    } catch (error) {
-      if (mountedRef.current) {
-        reportHostError(
-          copy.copilotImportFailed,
-          providerPanelActionErrorMessage(error, locale),
-        );
-      }
-    } finally {
-      connectGuard.finish();
-    }
-  }
-
-  return (
-    <Banner
-      status="info"
-      title={loggedIn ? copy.copilotLoggedIn : loading ? copy.oauthLoading : copy.copilotWaiting}
-      description={loggedIn ? copy.copilotLoggedInDetail : copy.copilotWaitingDetail}
-      endContent={!loading ? (
-          <Button variant="primary" size="sm" clickAction={() => connect()} label={loggedIn ? copy.reimport : copy.importCredential} />
-      ) : undefined} />
-  );
-}
-
 // The OAuth notice for a re-loginable connection. The 重新登录 button drives
 // the SAME shared browser-assisted OAuth flow the catalog cards use, so an
 // expired connection can be re-authorized right where the problem surfaces.
@@ -1101,11 +1069,15 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
   hasSecret: CredentialPresenceStatus;
   onRelogin(): Promise<void>;
 }) {
-  const copy = getProviderSettingsCopy(useUiLocale()).detail;
+  const providerCopy = getProviderSettingsCopy(useUiLocale());
+  const copy = providerCopy.detail;
   const flow = useOAuthLoginFlow({
-    bridge: props.service.bridge,
+    mode: 'existing',
+    authorizationBridge: props.service.authorizationBridge,
+    accountBridge: props.service.accountBridge,
     display: props.service.display,
-    onLoginSuccess: props.onRelogin,
+    onLoginSuccess: () => props.onRelogin(),
+    onAccountChanged: props.onRelogin,
   });
   const { hasSecret } = props;
   const loggedIn = hasSecret === true;
@@ -1125,12 +1097,19 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
       : errored
         ? copy.oauthUnknownDetail
         : copy.oauthStartDetail;
+  // Device pages without the code in their URL require the surface to show it.
+  const deviceCode = props.service.showsDeviceCode ? flow.stateHint : null;
   return (
     <Banner
       status="info"
       title={title}
-      description={detail}
+      description={deviceCode ? (
+        <>
+          {detail} {providerCopy.oauthSection.deviceCode} <code>{deviceCode}</code>
+        </>
+      ) : detail}
       endContent={!loading ? (
+        <HStack gap={2}>
           <Button
             variant="primary"
             size="sm"
@@ -1138,6 +1117,18 @@ function OAuthReloginNoticeForCurrentGeneration(props: {
             onClick={() => void flow.startLogin()}
             label={flow.pendingAction === 'login' ? copy.loggingIn : loggedIn ? copy.relogin : copy.login}
           />
+          {loggedIn && flow.logout && (
+            <Button
+              variant="ghost"
+              size="sm"
+              isDisabled={flow.actionBusy}
+              onClick={() => void flow.logout?.()}
+              label={flow.pendingAction === 'logout'
+                ? providerCopy.oauthSection.loggingOut
+                : providerCopy.oauthSection.logout}
+            />
+          )}
+        </HStack>
       ) : undefined} />
   );
 }

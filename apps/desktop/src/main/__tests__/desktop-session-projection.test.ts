@@ -30,6 +30,7 @@ import {
   projectDesktopTurnRecord,
   projectDesktopUsageStats,
 } from '../../shared/desktop-session-projection.js';
+import { runtimeHostChangeRetiresSession } from '../../shared/runtime-host-identity.js';
 
 test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   const raw = summary('same-session');
@@ -53,8 +54,45 @@ test('keeps equal raw Session ids distinct across Runtime Hosts', () => {
   );
 
   assert.notEqual(local.id, remote.id);
+  assert.equal(local.revision, 7);
+  assert.equal(remote.revision, 7);
   assert.equal(local.profileKind, 'local');
   assert.equal(remote.profileName, 'Office');
+});
+
+test('retires an active Session only after it leaves the refreshed Host catalog', () => {
+  const owner = projectDesktopSessionSummary(
+    {
+      hostId: 'shared-root',
+      profileId: 'owner',
+      profileName: 'Owner',
+      profileKind: 'remote',
+    },
+    summary('shared-session'),
+  );
+  const guest = projectDesktopSessionSummary(
+    {
+      hostId: 'shared-root',
+      profileId: 'guest',
+      profileName: 'Guest',
+      profileKind: 'remote',
+    },
+    summary('shared-session'),
+  );
+  const removedGuest = {
+    epoch: 'guest-epoch',
+    profileId: 'guest',
+    profileName: 'Guest',
+    profileKind: 'remote',
+    profileAccess: 'session_guest',
+    readiness: 'unavailable',
+    hostId: 'shared-root',
+    isDefault: false,
+    removed: true,
+  } as const;
+
+  assert.equal(runtimeHostChangeRetiresSession(removedGuest, guest.id, [owner]), false);
+  assert.equal(runtimeHostChangeRetiresSession(removedGuest, guest.id, []), true);
 });
 
 test('projects typed linked Session ids without rewriting opaque tool data', () => {
@@ -224,14 +262,18 @@ test('projects durable WorkHub delegation targets into the Desktop host namespac
   );
 
   assert.equal(projected.type, 'workhub_coordination');
-  if (projected.type === 'workhub_coordination') {
+  if (
+    projected.type === 'workhub_coordination' &&
+    projected.kind === 'delegation_assigned'
+  ) {
     assert.equal(projected.targetSessionId, JSON.stringify(['remote-root', 'payments']));
   }
 });
 
-function summary(id: string): SessionSummary {
+function summary(id: string): SessionSummary & { revision: number } {
   return {
     id,
+    revision: 7,
     name: id,
     isFlagged: false,
     isArchived: false,

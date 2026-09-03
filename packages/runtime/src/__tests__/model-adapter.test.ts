@@ -25,6 +25,30 @@ import { ModelAdapter, normalizeAiSdkUsage } from '../model-adapter.js';
 import type { ModelStreamEvent } from '../model-protocol.js';
 
 describe('ModelAdapter stream and error normalization', () => {
+  test('forwards the stable Session identity to the model factory', () => {
+    let observedSessionId: string | undefined;
+    const model = {};
+    const adapter = new ModelAdapter({
+      sessionId: 'session-opencode-go',
+      connection: {
+        slug: 'opencode-go',
+        providerType: 'opencode-go',
+        defaultModel: 'kimi-k2.7-code',
+      },
+      apiKey: 'opencode-go-token',
+      modelId: 'kimi-k2.7-code',
+      modelFactory: (input) => {
+        observedSessionId = (input as { sessionId?: string }).sessionId;
+        return model;
+      },
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.equal(adapter.resolveModel(), model);
+    assert.equal(observedSessionId, 'session-opencode-go');
+  });
+
   test('resolves optional-key LocalAI without fabricating a credential', () => {
     const model = {};
     let observedApiKey: string | undefined;
@@ -64,6 +88,34 @@ describe('ModelAdapter stream and error normalization', () => {
     });
 
     assert.equal(adapter.runtimeEventReplaySupport().signedThinking, true);
+  });
+
+  test('preserves Anthropic redacted thinking metadata at the model boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'anthropic-main',
+        providerType: 'anthropic',
+        defaultModel: 'claude-sonnet-4-5-20250929',
+      },
+      apiKey: 'anthropic-token',
+      modelId: 'claude-sonnet-4-5-20250929',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-start',
+        providerMetadata: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+      }),
+      [
+        {
+          kind: 'thinking-start',
+          providerOptions: { anthropic: { redactedData: 'opaque-redacted-thinking' } },
+        },
+      ],
+    );
   });
 
   test('supports unsigned-thinking replay on Kimi models using the OpenAI wire', () => {
@@ -168,6 +220,142 @@ describe('ModelAdapter stream and error normalization', () => {
       unsignedThinking: false,
       responsesReasoning: 'plaintext-content',
     });
+  });
+
+  test('supports summary-item Responses reasoning replay for Alibaba Token Plan', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'alibaba-token-plan-cn',
+        providerType: 'alibaba-token-plan-cn',
+        defaultModel: 'qwen3.8-max',
+      },
+      apiKey: 'alibaba-token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+
+    assert.deepEqual(adapter.runtimeEventReplaySupport(), {
+      toolCalls: true,
+      toolResults: true,
+      providerExecutedTools: false,
+      signedThinking: false,
+      unsignedThinking: false,
+      responsesReasoning: {
+        kind: 'plaintext-item',
+        profile: 'alibaba-token-plan-cn',
+        providerOptionsKey: 'alibaba-token-plan-cn',
+      },
+    });
+  });
+
+  test('normalizes Alibaba stream item ids into bounded durable state from item start', () => {
+    const providerType = 'alibaba-token-plan-cn';
+    const adapter = new ModelAdapter({
+      connection: { slug: providerType, providerType, defaultModel: 'qwen3.8-max' },
+      apiKey: 'token',
+      modelId: 'qwen3.8-max',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+    const providerOptions = {
+      makaResponses: {
+        version: 1,
+        profile: providerType,
+        itemId: 'alibaba-reasoning-item',
+        summaryPartLengths: [7],
+      },
+    };
+    assert.deepEqual(
+      adapter.translateChunk({ type: 'reasoning-start', id: 'alibaba-reasoning-item' } as Chunk),
+      [{ kind: 'thinking-start', reasoningPartId: 'alibaba-reasoning-item' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'alibaba-reasoning-item',
+        delta: 'summary',
+      } as Chunk),
+      [{ kind: 'thinking', text: 'summary', reasoningPartId: 'alibaba-reasoning-item' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'alibaba-reasoning-item',
+        providerMetadata: {
+          [providerType]: {
+            itemId: 'alibaba-reasoning-item',
+            reasoningSummary: [{ type: 'summary_text', text: 'summary' }],
+          },
+        },
+      } as Chunk),
+      [
+        {
+          kind: 'thinking',
+          text: '',
+          providerOptions,
+          reasoningPartId: 'alibaba-reasoning-item',
+          reasoningSummaryText: 'summary',
+        },
+      ],
+    );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          id: 'unfinished-flush',
+        } as Chunk),
+      /missing final summary metadata/,
+    );
+    assert.throws(
+      () =>
+        adapter.translateChunk({
+          type: 'reasoning-end',
+          id: 'missing-final-summary',
+          providerMetadata: {
+            [providerType]: { itemId: 'missing-final-summary' },
+          },
+        } as Chunk),
+      /missing final summary metadata/,
+    );
+  });
+
+  test('keeps DeepSeek plaintext replay on the main content-only behavior', () => {
+    const adapter = new ModelAdapter({
+      connection: { slug: 'deepseek', providerType: 'deepseek', defaultModel: 'deepseek-v4-flash' },
+      apiKey: 'token',
+      modelId: 'deepseek-v4-flash',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    type Chunk = Parameters<typeof adapter.translateChunk>[0];
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-delta',
+        id: 'deepseek-reasoning-item',
+        delta: 'plaintext reasoning',
+      } as Chunk),
+      [
+        {
+          kind: 'thinking',
+          text: 'plaintext reasoning',
+          reasoningPartId: 'deepseek-reasoning-item',
+        },
+      ],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'reasoning-end',
+        id: 'deepseek-reasoning-item',
+        providerMetadata: { deepseek: { itemId: 'deepseek-reasoning-item' } },
+      } as Chunk),
+      [],
+    );
   });
 
   test('translates provider text, reasoning, tool calls, and errors into ModelStreamEvents', () => {
@@ -391,7 +579,7 @@ describe('ModelAdapter stream and error normalization', () => {
       } as Chunk),
       [
         {
-          kind: 'text-metadata',
+          kind: 'text-end',
           providerOptions: {
             openai: {
               itemId: 'message-1',
@@ -408,6 +596,77 @@ describe('ModelAdapter stream and error normalization', () => {
           },
         },
       ],
+    );
+  });
+
+  test('preserves native Responses item boundaries and terminal metadata', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai',
+        providerType: 'openai',
+        defaultModel: 'gpt-5',
+      },
+      apiKey: 'sk-test',
+      modelId: 'gpt-5',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = {
+      openai: {
+        itemId: 'message-1',
+        phase: 'commentary',
+      },
+    };
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start', providerItemBoundary: true }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata, providerItemBoundary: true }],
+    );
+  });
+
+  test('does not treat Chat Completions metadata as a Responses item boundary', () => {
+    const adapter = new ModelAdapter({
+      connection: {
+        slug: 'openai-chat',
+        providerType: 'openai-compatible',
+        defaultModel: 'chat-model',
+      },
+      apiKey: 'sk-test',
+      modelId: 'chat-model',
+      modelFactory: () => ({}),
+      newId: idGenerator(),
+      now: monotonicClock(),
+    });
+    const metadata = { openai: { itemId: 'message-1', phase: 'commentary' } };
+
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-start',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-start' }],
+    );
+    assert.deepEqual(
+      adapter.translateChunk({
+        type: 'text-end',
+        id: 'message-1',
+        providerMetadata: metadata,
+      }),
+      [{ kind: 'text-end', providerOptions: metadata }],
     );
   });
 
@@ -526,7 +785,7 @@ describe('ModelAdapter stream and error normalization', () => {
 
     assert.deepEqual(
       events.map((event) => event.kind),
-      ['thinking', 'thinking', 'thinking-signature'],
+      ['thinking-start', 'thinking', 'thinking', 'thinking-signature'],
     );
     assert.deepEqual(
       events

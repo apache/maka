@@ -19,9 +19,10 @@
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { expect } from './test-helpers.js';
+import { createHash } from 'node:crypto';
 import {
   decodeMessageContent,
+  isCanonicalStorageRef,
   messageContentsEqual,
   normalizeMessageContent,
   type SessionEvent,
@@ -30,6 +31,8 @@ import { INTERACTION_ID_MAX_BYTES, INTERACTION_TOOL_NAME_MAX_BYTES } from '../in
 import {
   decodeRuntimeEvent,
   isTerminalRuntimeEvent,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+  MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC,
   runtimeEventHasModelVisibleContent,
   type RuntimeEvent,
   type RuntimeEventActions,
@@ -127,7 +130,7 @@ test('shares one decoder across all TurnOrigin variants', () => {
 });
 
 describe('continuation-start protocol', () => {
-  test('accepts only the replay projection version defined by v2', () => {
+  test('reads legacy and current replay projections but rejects unknown versions', () => {
     const continuationStart = {
       protocol: 'continuation_start_v2',
       provenance: 'runtime_admission',
@@ -159,12 +162,21 @@ describe('continuation-start protocol', () => {
       ).actions?.continuationStart,
       continuationStart,
     );
+    assert.equal(
+      decodeRuntimeEvent({
+        ...baseEvent({ role: 'system', author: 'system', content: undefined }),
+        actions: {
+          continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+        },
+      }).actions?.continuationStart?.providerProjectionVersion,
+      2,
+    );
     assert.throws(
       () =>
         decodeRuntimeEvent({
           ...baseEvent({ role: 'system', author: 'system', content: undefined }),
           actions: {
-            continuationStart: { ...continuationStart, providerProjectionVersion: 2 },
+            continuationStart: { ...continuationStart, providerProjectionVersion: 3 },
           },
         }),
       /RuntimeEvent schema/,
@@ -173,6 +185,33 @@ describe('continuation-start protocol', () => {
 });
 
 describe('RuntimeEvent content variants', () => {
+  test('recognizes canonical durable Session context references', () => {
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: 'read-image:owner-1',
+      }),
+      true,
+    );
+    assert.equal(
+      isCanonicalStorageRef({
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: '😀'.repeat(512),
+      }),
+      true,
+    );
+    for (const ref of [
+      { kind: 'session_context', sessionId: 'bad/session', refId: 'ref-1' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '' },
+      { kind: 'session_context', sessionId: 'session-1', refId: '😀'.repeat(513) },
+      { kind: 'session_context', sessionId: 'session-1', refId: 'ref-1', extra: true },
+    ]) {
+      assert.equal(isCanonicalStorageRef(ref), false);
+    }
+  });
+
   test('preserves sent inline references as message identity', () => {
     const inlineReferences = [
       { kind: 'skill', value: '/skill:writer', label: 'Writer', start: 8 },
@@ -324,6 +363,17 @@ describe('RuntimeEvent content variants', () => {
         bytes: 1,
         ref: { kind: 'workspace_file' as const, relativePath: 'a.ts' },
       },
+      {
+        kind: 'image' as const,
+        name: 'snapshot.png',
+        mimeType: 'image/png',
+        bytes: 8,
+        ref: {
+          kind: 'session_context' as const,
+          sessionId: 'session-1',
+          refId: 'read-image:owner-1',
+        },
+      },
     ];
     const quotes = [
       { text: 'first', label: 'Assistant', sourceTurnId: 'turn-1' },
@@ -456,8 +506,124 @@ describe('RuntimeEvent content variants', () => {
   });
 });
 
+test('rejects a Tool Result projection that references another Session artifact', () => {
+  assert.throws(
+    () =>
+      decodeRuntimeEvent(
+        baseEvent({
+          role: 'tool',
+          author: 'tool',
+          content: {
+            kind: 'function_response',
+            id: 'call-1',
+            name: 'Read',
+            result: { kind: 'image' },
+            modelProjection: {
+              version: 1,
+              kind: 'content',
+              parts: [
+                {
+                  kind: 'artifact',
+                  mediaType: 'image/png',
+                  ref: {
+                    kind: 'session_context',
+                    sessionId: 'another-session',
+                    refId: 'image-1',
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      ),
+    /Invalid RuntimeEvent schema/,
+  );
+});
+
 describe('RuntimeEvent actions', () => {
-  test('permission and user-question interactions are first-class actions', () => {
+  test('binds the managed mutation digest to its canonical execution semantics', () => {
+    const canonicalProfile = JSON.stringify({
+      protocol: 'managed_mutation_execution_profile_v1',
+      toolNames: ['Write', 'Edit'],
+      transform: 'pure_frozen_args_only_v1',
+      objectFormat: 'sha1',
+      pathPolicyVersion: 3,
+      resultSnapshot: {
+        maxBytes: 1_048_576,
+        maxDepth: 64,
+        maxNodes: 65_536,
+        maxProperties: 65_536,
+        maxArrayLength: 65_536,
+        format: 'strict_json_v1',
+      },
+      terminalAuthority: 'owner_committed_exact_outcome_v1',
+      genericFallback: 'forbidden',
+    });
+
+    assert.equal(
+      MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+      `sha256:${createHash('sha256').update(canonicalProfile).digest('hex')}`,
+    );
+    assert.equal(JSON.stringify(MANAGED_MUTATION_EXECUTION_PROFILE_V1_SPEC), canonicalProfile);
+  });
+
+  test('decodes only a platform-independent T1-frozen managed mutation identity', () => {
+    const managedMutation = {
+      protocol: 'managed_mutation_v2',
+      repositoryId: 'repository_11111111111111111111111111111111',
+      workspaceId: 'workspace_22222222222222222222222222222222',
+      workspaceEpochId: 'epoch_33333333333333333333333333333333',
+      workspaceInstanceId: 'instance_44444444444444444444444444444444',
+      objectFormat: 'sha1',
+      baseWorkspaceVersionId: 'version_55555555555555555555555555555555',
+      baseAcceptedEventId: 'baseline-event-1',
+      baseHeadRevision: 1,
+      baseCommitOid: '1'.repeat(40),
+      baseTreeOid: '2'.repeat(40),
+      expectedPath: 'src/a.ts',
+      pathPolicyVersion: 3,
+      executionProfileDigest: MANAGED_MUTATION_EXECUTION_PROFILE_V1_DIGEST,
+    } as const;
+    const toolDispatch = {
+      protocol: 't1_after_preflight_v1',
+      operationId: 'operation-1',
+      providerToolCallId: 'call-1',
+      toolName: 'Write',
+      canonicalArgsHash: `sha256:${'b'.repeat(64)}`,
+      recoveryMode: 'reconcile',
+      managedMutation,
+    } as const;
+
+    assert.deepEqual(
+      decodeRuntimeEvent(baseEvent({ role: 'system', author: 'system', actions: { toolDispatch } }))
+        .actions?.toolDispatch?.managedMutation,
+      managedMutation,
+    );
+    for (const invalid of [
+      { ...managedMutation, expectedPath: 'src/../secrets.txt' },
+      { ...managedMutation, expectedPath: 'NoDe_MoDuLeS/pkg/index.js' },
+      { ...managedMutation, expectedPath: '.GiT/config' },
+      { ...managedMutation, expectedPath: 'x'.repeat(4097) },
+      { ...managedMutation, pathPolicyVersion: 2 },
+      { ...managedMutation, executionProfileDigest: `sha256:${'a'.repeat(64)}` },
+      { ...managedMutation, baseAcceptedEventId: 'event id with spaces' },
+      { ...managedMutation, baseHeadRevision: 0 },
+      { ...managedMutation, baseTreeOid: 'not-an-oid' },
+      { ...managedMutation, extra: true },
+    ]) {
+      assert.throws(() =>
+        decodeRuntimeEvent(
+          baseEvent({
+            role: 'system',
+            author: 'system',
+            actions: { toolDispatch: { ...toolDispatch, managedMutation: invalid } as never },
+          }),
+        ),
+      );
+    }
+  });
+
+  test('permission, question, and form interactions are first-class actions', () => {
     const actions: RuntimeEventActions = {
       permissionRequest: {
         kind: 'tool_permission',
@@ -472,9 +638,17 @@ describe('RuntimeEvent actions', () => {
       permissionDecision: { requestId: 'pr-1', decision: 'deny' },
       permissionAnswerAccepted: { requestId: 'hosted-pr-1' },
       userQuestionAnswerAccepted: { requestId: 'question-1' },
+      formRequest: {
+        requestId: 'form-1',
+        toolUseId: 'tc-1',
+        message: 'Choose settings',
+        requester: { name: 'deploy' },
+        fields: [{ kind: 'boolean', name: 'confirm', label: 'Confirm', required: true }],
+      },
+      formAnswerAccepted: { requestId: 'form-1' },
     };
-    expect(actions.permissionRequest?.category).toBe('shell_unsafe');
-    expect(actions.permissionDecision?.decision).toBe('deny');
+    assert.strictEqual(actions.permissionRequest?.category, 'shell_unsafe');
+    assert.strictEqual(actions.permissionDecision?.decision, 'deny');
     assert.deepEqual(decodeRuntimeEvent(baseEvent({ actions })).actions?.permissionDecision, {
       requestId: 'pr-1',
       decision: 'deny',
@@ -483,6 +657,7 @@ describe('RuntimeEvent actions', () => {
     for (const [accepted, requestId] of [
       [decodedActions?.permissionAnswerAccepted, 'hosted-pr-1'],
       [decodedActions?.userQuestionAnswerAccepted, 'question-1'],
+      [decodedActions?.formAnswerAccepted, 'form-1'],
     ] as const) {
       assert.deepEqual(accepted, { requestId });
       assert.ok(accepted);
@@ -493,8 +668,17 @@ describe('RuntimeEvent actions', () => {
     for (const invalidAcceptedAction of [
       { permissionAnswerAccepted: { requestId: 'pr-1', extra: true } },
       { userQuestionAnswerAccepted: { requestId: 'question-1', extra: true } },
+      { formAnswerAccepted: { requestId: 'form-1', extra: true } },
       { permissionAnswerAccepted: Object.create({ requestId: 'inherited-pr-1' }) },
       { userQuestionAnswerAccepted: { requestId: 'x'.repeat(257) } },
+      {
+        formRequest: {
+          ...actions.formRequest,
+          fields: [
+            { kind: 'boolean', name: 'confirm', label: 'Confirm', required: true, extra: true },
+          ],
+        },
+      },
     ]) {
       assert.throws(() =>
         decodeRuntimeEvent({
@@ -607,10 +791,16 @@ describe('RuntimeEvent actions', () => {
 
 describe('isTerminalRuntimeEvent', () => {
   test('classifies terminal status and explicit invocation completion', () => {
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'completed' }))).toBe(true);
-    expect(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' }))).toBe(false);
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } }))).toBe(false);
-    expect(isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } }))).toBe(true);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'completed' })), true);
+    assert.strictEqual(isTerminalRuntimeEvent(baseEvent({ status: 'streaming' })), false);
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: false } })),
+      false,
+    );
+    assert.strictEqual(
+      isTerminalRuntimeEvent(baseEvent({ actions: { endInvocation: true } })),
+      true,
+    );
   });
 });
 
@@ -652,7 +842,8 @@ describe('runtimeEventHasModelVisibleContent', () => {
         },
       }),
     ];
-    for (const event of visible) expect(runtimeEventHasModelVisibleContent(event)).toBe(true);
+    for (const event of visible)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), true);
 
     const hidden = [
       baseEvent({ content: { kind: 'text', text: '' } }),
@@ -660,7 +851,8 @@ describe('runtimeEventHasModelVisibleContent', () => {
       baseEvent({ actions: { tokenUsage: { input: 1, output: 1 } } }),
       baseEvent({ refs: { toolCallId: 'tc-1' } }),
     ];
-    for (const event of hidden) expect(runtimeEventHasModelVisibleContent(event)).toBe(false);
+    for (const event of hidden)
+      assert.strictEqual(runtimeEventHasModelVisibleContent(event), false);
   });
 });
 
@@ -668,7 +860,7 @@ describe('RuntimeEvent reference validation', () => {
   test('accepts only canonical source message digests', () => {
     const digest = `sha256:${'a'.repeat(64)}` as `sha256:${string}`;
     const event = baseEvent({ refs: { sourceMessageDigest: digest } });
-    expect(decodeRuntimeEvent(event).refs?.sourceMessageDigest).toBe(digest);
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.sourceMessageDigest, digest);
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,
@@ -679,7 +871,7 @@ describe('RuntimeEvent reference validation', () => {
 
   test('accepts a provider-request trace reference and rejects a non-string reference', () => {
     const event = baseEvent({ refs: { providerRequestTraceId: 'provider-trace-1' } });
-    expect(decodeRuntimeEvent(event).refs?.providerRequestTraceId).toBe('provider-trace-1');
+    assert.strictEqual(decodeRuntimeEvent(event).refs?.providerRequestTraceId, 'provider-trace-1');
     assert.throws(() =>
       decodeRuntimeEvent({
         ...event,

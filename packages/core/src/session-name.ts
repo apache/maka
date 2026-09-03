@@ -31,7 +31,6 @@
  * module so every write path can call it:
  *   - `sessions:create`  IPC → runtime.create → store.create
  *   - `sessions:rename`  IPC → runtime.renameSession → store.rename
- *   - `sessions:branchFromTurn`  IPC → runtime.branchFromTurn → store.create
  *
  * Pipeline (applied in order):
  *   1. **Runtime type guard**: `typeof input !== 'string'` → typed

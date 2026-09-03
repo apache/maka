@@ -21,8 +21,74 @@ export const ARTIFACT_KINDS = ['file', 'diff', 'html', 'image', 'pdf'] as const;
 
 export type ArtifactKind = (typeof ARTIFACT_KINDS)[number];
 
+/** Maximum encoded image payload admitted to a renderer preview. */
+export const ARTIFACT_IMAGE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+const ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION: Readonly<Record<string, string>> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.avif': 'image/avif',
+};
+
+const ARTIFACT_IMAGE_PREVIEW_MIMES = new Set(
+  Object.values(ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION),
+);
+
+export interface ArtifactImagePreviewInput {
+  name: string;
+  kind: ArtifactKind;
+  mimeType?: string;
+  sizeBytes?: number;
+}
+
+export type ArtifactImagePreviewResolution =
+  | { kind: 'image'; reason: 'mime_match' | 'ext_fallback' }
+  | {
+      kind: 'unsupported';
+      reason: 'kind_disallowed' | 'mime_disallowed' | 'no_mime_no_ext' | 'oversize';
+    };
+
+/** Normalize the raster MIME admitted to renderer image previews. */
+export function normalizeArtifactImagePreviewMime(
+  mimeType: string | undefined,
+  name?: string,
+): string | null {
+  if (typeof mimeType === 'string' && mimeType.trim() !== '') {
+    const normalized = mimeType.trim().toLowerCase();
+    return ARTIFACT_IMAGE_PREVIEW_MIMES.has(normalized) ? normalized : null;
+  }
+  if (!name) return null;
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0 || dot === name.length - 1) return null;
+  return ARTIFACT_IMAGE_PREVIEW_MIME_BY_EXTENSION[name.slice(dot).toLowerCase()] ?? null;
+}
+
+/** One metadata policy shared by preview admission and renderer presentation. */
+export function resolveArtifactImagePreview(
+  input: ArtifactImagePreviewInput,
+): ArtifactImagePreviewResolution {
+  if (input.kind !== 'image') {
+    return { kind: 'unsupported', reason: 'kind_disallowed' };
+  }
+  if (input.sizeBytes !== undefined && input.sizeBytes > ARTIFACT_IMAGE_PREVIEW_MAX_BYTES) {
+    return { kind: 'unsupported', reason: 'oversize' };
+  }
+  if (input.mimeType) {
+    return normalizeArtifactImagePreviewMime(input.mimeType)
+      ? { kind: 'image', reason: 'mime_match' }
+      : { kind: 'unsupported', reason: 'mime_disallowed' };
+  }
+  return normalizeArtifactImagePreviewMime(undefined, input.name)
+    ? { kind: 'image', reason: 'ext_fallback' }
+    : { kind: 'unsupported', reason: 'no_mime_no_ext' };
+}
+
 export const ARTIFACT_SOURCES = [
   'tool_result',
+  'tool_result_projection',
   'tool_result_archive',
   'synthesis_cache_block',
   'history_compact_block',
@@ -87,24 +153,39 @@ export interface ArtifactRecord extends ArtifactDescriptor {
   deepResearchRole?: import('./deep-research-run.js').DeepResearchArtifactRole;
 }
 
-const ARTIFACT_USER_DELETE_ALLOWED_BY_SOURCE = {
-  tool_result: true,
-  tool_result_archive: false,
-  synthesis_cache_block: true,
-  history_compact_block: true,
-  history_compact_source: true,
-  provider_request_capture: true,
-  subagent_writeback: false,
-  deep_research: false,
-  user_upload: true,
-  export: true,
-  snapshot: true,
-  session_effect: false,
-  fixture: true,
-} as const satisfies Record<ArtifactSource, boolean>;
+interface ArtifactSourcePolicy {
+  readonly userDeletable: boolean;
+  readonly userVisible: boolean;
+  readonly sharedReadable: boolean;
+}
+
+const ARTIFACT_SOURCE_POLICIES = {
+  tool_result: { userDeletable: true, userVisible: false, sharedReadable: true },
+  tool_result_projection: { userDeletable: false, userVisible: false, sharedReadable: true },
+  tool_result_archive: { userDeletable: false, userVisible: false, sharedReadable: false },
+  synthesis_cache_block: { userDeletable: true, userVisible: false, sharedReadable: false },
+  history_compact_block: { userDeletable: true, userVisible: false, sharedReadable: false },
+  history_compact_source: { userDeletable: true, userVisible: false, sharedReadable: false },
+  provider_request_capture: { userDeletable: true, userVisible: false, sharedReadable: false },
+  subagent_writeback: { userDeletable: false, userVisible: true, sharedReadable: false },
+  deep_research: { userDeletable: false, userVisible: true, sharedReadable: false },
+  user_upload: { userDeletable: true, userVisible: false, sharedReadable: true },
+  export: { userDeletable: true, userVisible: true, sharedReadable: false },
+  snapshot: { userDeletable: true, userVisible: true, sharedReadable: false },
+  session_effect: { userDeletable: false, userVisible: false, sharedReadable: false },
+  fixture: { userDeletable: true, userVisible: true, sharedReadable: false },
+} as const satisfies Record<ArtifactSource, ArtifactSourcePolicy>;
 
 export function canUserDeleteArtifact(record: Pick<ArtifactRecord, 'source'>): boolean {
-  return record.source === undefined || ARTIFACT_USER_DELETE_ALLOWED_BY_SOURCE[record.source];
+  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userDeletable;
+}
+
+export function isArtifactUserVisible(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return record.source === undefined || ARTIFACT_SOURCE_POLICIES[record.source].userVisible;
+}
+
+export function isArtifactSharedSessionReadable(record: Pick<ArtifactRecord, 'source'>): boolean {
+  return record.source !== undefined && ARTIFACT_SOURCE_POLICIES[record.source].sharedReadable;
 }
 
 export type ArtifactChangedReason = 'created' | 'deleted' | 'purged';

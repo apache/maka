@@ -21,13 +21,25 @@ import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
 import type { RuntimeEvent } from '@maka/core/runtime-event';
+import type { StorageRef } from '@maka/core/events';
 import type { ModelMessage } from '../model-protocol.js';
 import {
   collectHistoricalImageToolResults,
   omitHistoricalImageToolResults,
 } from '../provider-image-overflow-recovery.js';
 
-function imageResultEvent(toolCallId: string, relativePath: string): RuntimeEvent {
+/** A pre-artifact image result: no durable projection, materialized raw. */
+function legacyImageResultEvent(toolCallId: string, relativePath: string): RuntimeEvent {
+  const event = imageResultEvent(toolCallId, {
+    kind: 'session_file',
+    sessionId: 'session-1',
+    relativePath,
+  });
+  delete (event.content as { modelProjection?: unknown }).modelProjection;
+  return event;
+}
+
+function imageResultEvent(toolCallId: string, ref: StorageRef): RuntimeEvent {
   return {
     id: `event-${toolCallId}`,
     sessionId: 'session-1',
@@ -46,7 +58,15 @@ function imageResultEvent(toolCallId: string, relativePath: string): RuntimeEven
       result: {
         kind: 'image',
         mimeType: 'image/png',
-        ref: { kind: 'session_file', sessionId: 'session-1', relativePath },
+        ref,
+      },
+      modelProjection: {
+        version: 1,
+        kind: 'content',
+        parts: [
+          { kind: 'text', text: 'Image read successfully.' },
+          { kind: 'artifact', mediaType: 'image/png', ref },
+        ],
       },
       isError: false,
     },
@@ -84,7 +104,13 @@ function prompt(messages: readonly ModelMessage[]): string {
 
 describe('provider image overflow recovery projection', () => {
   test('omits only eligible historical tool-result images and names their artifact', () => {
-    const priorEvents = [imageResultEvent('prior-image-call', 'screenshots/screenshot.png')];
+    const priorEvents = [
+      imageResultEvent('prior-image-call', {
+        kind: 'session_file',
+        sessionId: 'session-1',
+        relativePath: 'artifact-screenshot-1',
+      }),
+    ];
     const messages = [
       {
         role: 'user',
@@ -103,7 +129,7 @@ describe('provider image overflow recovery projection', () => {
     assert.equal(rendered.includes('USER_IMAGE'), true);
     assert.equal(rendered.includes('NEW_IMAGE'), true);
     assert.equal(rendered.includes('PRIOR_IMAGE'), false);
-    assert.match(rendered, /screenshots\/screenshot\.png/);
+    assert.match(rendered, /artifact-screenshot-1/);
     assert.match(rendered, /repeat the preceding Read tool call/i);
   });
 
@@ -111,7 +137,11 @@ describe('provider image overflow recovery projection', () => {
     const messages = [toolImageMessage('prior-image-call', 'PRIOR_IMAGE')];
     const original = structuredClone(messages);
     const eligible = collectHistoricalImageToolResults([
-      imageResultEvent('prior-image-call', 'screenshot.png'),
+      imageResultEvent('prior-image-call', {
+        kind: 'session_file',
+        sessionId: 'session-1',
+        relativePath: 'artifact-screenshot-1',
+      }),
     ]);
 
     const first = omitHistoricalImageToolResults(messages, eligible);
@@ -123,5 +153,35 @@ describe('provider image overflow recovery projection', () => {
     assert.match(firstJson, /Image read successfully/);
     assert.equal(second.omittedParts, 0);
     assert.deepEqual(second.messages, first.messages);
+  });
+
+  test('uses the durable context identity when an omitted image has no file path', () => {
+    const eligible = collectHistoricalImageToolResults([
+      imageResultEvent('prior-image-call', {
+        kind: 'session_context',
+        sessionId: 'session-1',
+        refId: 'read-image:owner-1',
+      }),
+    ]);
+    const result = omitHistoricalImageToolResults(
+      [toolImageMessage('prior-image-call', 'PRIOR_IMAGE')],
+      eligible,
+    );
+
+    assert.match(prompt(result.messages), /read-image:owner-1/);
+  });
+
+  test('still recovers a pre-artifact image result that has no durable projection', () => {
+    const eligible = collectHistoricalImageToolResults([
+      legacyImageResultEvent('prior-image-call', 'screenshots/screenshot.png'),
+    ]);
+    const result = omitHistoricalImageToolResults(
+      [toolImageMessage('prior-image-call', 'PRIOR_IMAGE')],
+      eligible,
+    );
+
+    assert.equal(eligible.size, 1);
+    assert.equal(result.omittedParts, 1);
+    assert.match(prompt(result.messages), /screenshots\/screenshot\.png/);
   });
 });

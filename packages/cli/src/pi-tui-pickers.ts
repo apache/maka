@@ -27,6 +27,7 @@ import {
   matchesKey,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
   type AutocompleteItem,
   type AutocompleteProvider,
   type AutocompleteSuggestions,
@@ -37,10 +38,103 @@ import {
 import type { UserQuestionOption } from '@maka/core/user-question';
 import type { PermissionMode } from '@maka/core/permission';
 import type { ThinkingLevel } from '@maka/core/model-thinking';
+import {
+  defineUiMessageCatalog,
+  formatUiMessage,
+  resolveUiMessageCatalog,
+  type UiLocale,
+} from '@maka/core/ui-locale';
 import type { InvocableSkillEntry } from '@maka/runtime/skill-invocation';
-import { PROVIDER_DEFAULTS, type ModelInfo, type ProviderType } from '@maka/core/llm-connections';
-import type { ModelChoice, OnboardingProviderEntry } from './pi-tui-contracts.js';
+import {
+  providerDefaultsOf,
+  providerMenuLabel,
+  validateSlug,
+  type ModelInfo,
+  type ProviderType,
+} from '@maka/core/llm-connections';
+import { CONNECTION_NAME_MAX_LENGTH } from '@maka/core/runtime-policy';
+import type {
+  ModelChoice,
+  OnboardingFailure,
+  OnboardingFailureClass,
+  OnboardingIdentityChoice,
+  OnboardingProviderEntry,
+  OnboardingRejectionReason,
+} from './pi-tui-contracts.js';
 import { ansi, editorTheme, selectListTheme, stripAnsi } from './tui-ansi.js';
+import { TUI_COPY_RESOURCES } from './tui-copy-catalog.js';
+
+interface TuiPickerCopy {
+  readonly modelPickerTitle: string;
+  readonly modelSwitchCacheWarning: string;
+  readonly modelSearchHint: string;
+  readonly searchLabel: string;
+  readonly noMatchingModels: string;
+  readonly selectPickerHint: string;
+  readonly providerConfigured: string;
+  readonly addAccount: string;
+  readonly thinkingLevels: Readonly<Record<ThinkingLevel, string>>;
+  readonly defaultThinkingLevel: string;
+  readonly thinkingPickerTitle: string;
+  readonly currentMarker: string;
+  readonly defaultMarker: string;
+  readonly setupTitle: string;
+  readonly baseUrlLabel: string;
+  readonly apiKeyLabel: string;
+  readonly connectionNameLabel: string;
+  readonly connectionSlugLabel: string;
+  readonly identityHint: string;
+  readonly identitySlugInvalid: string;
+  readonly identityNameTooLong: string;
+  readonly onboardingUnavailable: string;
+  readonly onboardingRequestFailed: string;
+  readonly onboardingRejections: Readonly<Record<OnboardingRejectionReason, string>>;
+  readonly onboardingFailures: Readonly<Record<OnboardingFailureClass, string>>;
+  readonly accountSavedRefreshFailed: string;
+  readonly listProvidersFailed: string;
+  readonly noConfigurableProviders: string;
+  readonly baseUrlRequired: string;
+  readonly baseUrlInvalid: string;
+  readonly baseUrlProtocol: string;
+  readonly baseUrlCredentials: string;
+  readonly baseUrlQuery: string;
+  readonly baseUrlTooLong: string;
+  readonly selectModelBeforeSaving: string;
+  readonly reuseBaseUrlHint: string;
+  readonly enterBaseUrlHint: string;
+  readonly continueAction: string;
+  readonly providerSearchHint: string;
+  readonly noMatchingProviders: string;
+  readonly keyHints: Readonly<
+    Record<'reuse' | 'enter', Readonly<Record<'baseUrl' | 'identity' | 'provider', string>>>
+  >;
+  readonly submitAction: string;
+  readonly verifyingKey: string;
+  readonly modelSelectionHint: string;
+  readonly selectedModels: string;
+  readonly selectedModelsAndSave: string;
+  readonly saving: string;
+  readonly complete: string;
+  readonly enabledModels: string;
+  readonly closeAction: string;
+  readonly thinkingUnsupported: string;
+}
+
+const TUI_PICKER_COPY = resolveUiMessageCatalog(
+  defineUiMessageCatalog<TuiPickerCopy>()(TUI_COPY_RESOURCES.pickers),
+);
+
+export function onboardingFailureMessage(failure: OnboardingFailure, locale: UiLocale): string {
+  const copy = TUI_PICKER_COPY[locale];
+  switch (failure.kind) {
+    case 'rejected':
+      return copy.onboardingRejections[failure.reason];
+    case 'failed':
+      return copy.onboardingFailures[failure.errorClass];
+    case 'unavailable':
+      return copy.onboardingRequestFailed;
+  }
+}
 
 export class MakaAutocompleteProvider implements AutocompleteProvider {
   private readonly fileProvider: CombinedAutocompleteProvider | undefined;
@@ -342,7 +436,7 @@ export class PickerOverlay implements Component {
     private readonly input: {
       title: string;
       rightLabel: string;
-      hint?: string;
+      hint: string;
       notice?: string;
       onInput?: (data: string) => boolean;
     },
@@ -361,7 +455,7 @@ export class PickerOverlay implements Component {
     const safeWidth = Math.max(1, width);
     return [
       padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
-      padLine(ansi.dim(this.input.hint ?? 'enter select / esc close'), safeWidth),
+      padLine(ansi.dim(this.input.hint), safeWidth),
       ...(this.input.notice ? [padLine(ansi.yellow(this.input.notice), safeWidth)] : []),
       padLine('', safeWidth),
       ...this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth)),
@@ -448,6 +542,14 @@ export class UserQuestionOverlay implements Component {
       hint: string;
       placeholder: string;
       options: readonly UserQuestionOption[];
+      /**
+       * Live row budget for the overlay (the runner derives it from
+       * `terminal.rows`, so it stays correct across resizes). When the wrapped
+       * content would exceed it, render() degrades gracefully instead of
+       * letting pi-tui clip the tail — the input row and divider must always
+       * render (#4610).
+       */
+      maxRows?(): number;
       onSelectOption(index: number): void;
       onSubmitText(value: string): void;
       onSkip(): void;
@@ -523,25 +625,49 @@ export class UserQuestionOverlay implements Component {
 
   render(width: number): string[] {
     const safeWidth = Math.max(1, width);
-    const lines: string[] = [
-      padLine(`${this.input.title} ${ansi.accent(this.input.rightLabel)}`, safeWidth),
-      padLine(ansi.dim(this.input.hint), safeWidth),
-      padLine('', safeWidth),
+    // The title wraps like the option rows: a long question must not lose its
+    // tail to a hard cut at the terminal width (#4610).
+    const wrappedTitle = wrapTextWithAnsi(
+      `${this.input.title} ${ansi.accent(this.input.rightLabel)}`,
+      safeWidth,
+    );
+    const titleLines = (wrappedTitle.length > 0 ? wrappedTitle : ['']).map((line) =>
+      padLine(line, safeWidth),
+    );
+    const hint = padLine(ansi.dim(this.input.hint), safeWidth);
+    const blank = padLine('', safeWidth);
+    const divider = padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth);
+    const inputRows = this.renderInputRow(safeWidth);
+    const optionRows = this.input.options.map((option, index) =>
+      formatUserQuestionOptionRow(option, index === this.activeIndex, safeWidth),
+    );
+    const assemble = (title: string[], options: string[][]): string[] => [
+      ...title,
+      hint,
+      blank,
+      ...options.flat(),
+      ...inputRows,
+      divider,
     ];
-    this.input.options.forEach((option, index) => {
-      lines.push(this.renderOptionRow(option, index === this.activeIndex, safeWidth));
-    });
-    lines.push(...this.renderInputRow(safeWidth));
-    lines.push(padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth));
-    return lines;
-  }
-
-  private renderOptionRow(option: UserQuestionOption, active: boolean, width: number): string {
-    const prefix = active ? '→ ' : '  ';
-    const body = option.description
-      ? `${option.label}  ${active ? option.description : ansi.dim(option.description)}`
-      : option.label;
-    return formatPickerItemLine(`${prefix}${body}`, width);
+    const full = assemble(titleLines, optionRows);
+    const budget = this.input.maxRows?.() ?? Number.POSITIVE_INFINITY;
+    if (full.length <= budget) return full;
+    // Over budget pi-tui would slice(0, maxHeight) — silently dropping the
+    // input row and divider. Degrade instead: cap the title at two lines and
+    // give every option an equal share of the remaining rows, each ending in
+    // a visible ellipsis when clamped. Only a terminal too short for one row
+    // per option still overflows, falling back to the pre-existing clip.
+    const cappedTitle = clampRowsWithEllipsis(titleLines, 2, safeWidth);
+    const fixedRows = cappedTitle.length + 2 + inputRows.length + 1;
+    const optionBudget = Math.max(this.input.options.length, budget - fixedRows);
+    const perOption = Math.max(
+      1,
+      Math.floor(optionBudget / Math.max(1, this.input.options.length)),
+    );
+    return assemble(
+      cappedTitle,
+      optionRows.map((rows) => clampRowsWithEllipsis(rows, perOption, safeWidth)),
+    );
   }
 
   private renderInputRow(width: number): string[] {
@@ -569,7 +695,9 @@ export class UserQuestionOverlay implements Component {
 export function modelPickerItems(
   currentModel: string,
   models: readonly string[] | undefined,
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   const ids: string[] = [];
   const seen = new Set<string>();
   for (const candidate of [currentModel, ...(models ?? [])]) {
@@ -581,7 +709,7 @@ export function modelPickerItems(
   return ids.map((id) => ({
     value: id,
     label: id,
-    ...(id === currentModel ? { description: 'current' } : {}),
+    ...(id === currentModel ? { description: copy.currentMarker } : {}),
   }));
 }
 
@@ -591,18 +719,60 @@ export function modelPickerItems(
  * caller maps it back to the {@link ModelChoice}. The description carries the
  * owning connection so identical model ids on different providers are readable.
  */
+export function modelChoiceConnectionLabels(choices: readonly ModelChoice[]): Map<string, string> {
+  const connectionBySlug = new Map<
+    string,
+    Pick<ModelChoice, 'connectionId' | 'connectionName' | 'connectionSlug'>
+  >();
+  for (const choice of choices) {
+    if (!connectionBySlug.has(choice.connectionSlug)) {
+      connectionBySlug.set(choice.connectionSlug, choice);
+    }
+  }
+  const connections = [...connectionBySlug.values()]
+    .map((choice) => ({
+      ...choice,
+      base: choice.connectionName.trim()
+        ? `${choice.connectionName.trim()} · ${choice.connectionSlug}`
+        : choice.connectionSlug,
+    }))
+    .sort(
+      (left, right) =>
+        left.base.localeCompare(right.base) ||
+        left.connectionSlug.localeCompare(right.connectionSlug),
+    );
+  const used = new Set<string>();
+  const labels = new Map<string, string>();
+  for (const connection of connections) {
+    let label = connection.base;
+    if (used.has(label)) {
+      label = `${connection.base} · ${connection.connectionId}`;
+    }
+    let suffix = 2;
+    while (used.has(label)) {
+      label = `${connection.base} · ${connection.connectionId} · ${suffix}`;
+      suffix += 1;
+    }
+    used.add(label);
+    labels.set(connection.connectionSlug, label);
+  }
+  return labels;
+}
+
 function modelChoicePickerItems(
   choices: readonly ModelChoice[],
   current: { model: string; connectionId?: string; connectionSlug: string },
+  copy: TuiPickerCopy,
 ): SelectItem[] {
+  const connectionLabels = modelChoiceConnectionLabels(choices);
   return choices.map((choice, index) => {
     const isCurrent =
       choice.model === current.model &&
       choice.connectionId === current.connectionId &&
       choice.connectionSlug === current.connectionSlug;
-    const tags = [choice.connectionName || choice.connectionSlug];
-    if (isCurrent) tags.push('current');
-    else if (choice.isDefaultConnection) tags.push('default');
+    const tags = [connectionLabels.get(choice.connectionSlug) ?? choice.connectionSlug];
+    if (isCurrent) tags.push(copy.currentMarker);
+    else if (choice.isDefaultConnection) tags.push(copy.defaultMarker);
     return {
       value: String(index),
       label: choice.displayName?.trim() || choice.model,
@@ -622,12 +792,18 @@ function matchesModelChoice(choice: ModelChoice, query: string): boolean {
   if (choice.connectionName.toLowerCase().includes(query)) return true;
   if (choice.connectionSlug.toLowerCase().includes(query)) return true;
   if (choice.providerType.toLowerCase().includes(query)) return true;
-  const providerLabel = PROVIDER_DEFAULTS[choice.providerType]?.label;
-  if (providerLabel && providerLabel.toLowerCase().includes(query)) return true;
+  // Both provider names, not just the one the row shows: the dense `menuLabel`
+  // drops the qualifier the full label carries ("Google Gemini" → "Google"), so
+  // searching only the displayed one loses `gemini`, and searching only the full
+  // one loses a qualifier that exists nowhere else ("OpenAI OAuth").
+  const provider = providerDefaultsOf(choice.providerType);
+  if (provider?.label.toLowerCase().includes(query)) return true;
+  if (provider?.menuLabel?.toLowerCase().includes(query)) return true;
   return false;
 }
 
 export interface ModelSearchOverlayInput {
+  locale: UiLocale;
   choices: readonly ModelChoice[];
   current: { model: string; connectionId?: string; connectionSlug: string };
   showCacheWarning?: boolean;
@@ -635,8 +811,9 @@ export interface ModelSearchOverlayInput {
   onCancel: () => void;
 }
 
-export const MODEL_SWITCH_CACHE_WARNING =
-  '⚠ 切换模型可能需要重建提示缓存；下一次请求可能更慢或成本更高。';
+export function getTuiPickerCopy(locale: UiLocale): TuiPickerCopy {
+  return TUI_PICKER_COPY[locale];
+}
 
 /**
  * One bottom search field + a bounded single-select list, for the cross-
@@ -652,11 +829,13 @@ export class ModelSearchOverlay implements Component {
   private filtered: readonly ModelChoice[];
   private list: SelectList;
   private readonly initialIndex: number;
+  private readonly copy: TuiPickerCopy;
 
   constructor(
     private readonly tui: TUI,
     private readonly input: ModelSearchOverlayInput,
   ) {
+    this.copy = getTuiPickerCopy(input.locale);
     this.filtered = [...input.choices];
     this.initialIndex = input.choices.findIndex(
       (choice) =>
@@ -672,7 +851,7 @@ export class ModelSearchOverlay implements Component {
 
   private buildList(): SelectList {
     const list = new SelectList(
-      modelChoicePickerItems(this.filtered, this.input.current),
+      modelChoicePickerItems(this.filtered, this.input.current, this.copy),
       10,
       selectListTheme(),
       { minPrimaryColumnWidth: 24, maxPrimaryColumnWidth: 48 },
@@ -724,16 +903,19 @@ export class ModelSearchOverlay implements Component {
     const safeWidth = Math.max(1, width);
     this.searchEditor.focused = true;
     return [
-      padLine(`Select Model ${ansi.accent(String(this.filtered.length))}`, safeWidth),
-      padLine(ansi.dim('搜索模型 / 服务商 / 连接 · ↑↓ 选择 · Enter 确认 · Esc 取消'), safeWidth),
+      padLine(
+        `${this.copy.modelPickerTitle} ${ansi.accent(String(this.filtered.length))}`,
+        safeWidth,
+      ),
+      padLine(ansi.dim(this.copy.modelSearchHint), safeWidth),
       ...(this.input.showCacheWarning
-        ? [padLine(ansi.yellow(MODEL_SWITCH_CACHE_WARNING), safeWidth)]
+        ? [padLine(ansi.yellow(this.copy.modelSwitchCacheWarning), safeWidth)]
         : []),
       padLine('', safeWidth),
-      ...this.renderFieldRow(this.searchEditor, '搜索', safeWidth),
+      ...this.renderFieldRow(this.searchEditor, this.copy.searchLabel, safeWidth),
       padLine('', safeWidth),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim('没有匹配的模型'), safeWidth)]
+        ? [padLine(ansi.dim(this.copy.noMatchingModels), safeWidth)]
         : this.list.render(safeWidth).map((line) => formatPickerItemLine(line, safeWidth))),
       padLine(ansi.accent('-'.repeat(safeWidth)), safeWidth),
     ];
@@ -791,44 +973,44 @@ export function skillPickerItems(skills: readonly InvocableSkillEntry[]): Select
   }));
 }
 
-/** Provider search items for `/setup`, marking connections that already exist
- *  `已设置` so a re-onboard reads as edit/rotate rather than create. */
+/** Provider search items for `/setup`, distinguishing existing connections. */
 export function onboardingProviderPickerItems(
   providers: readonly OnboardingProviderEntry[],
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   return providers.map((provider) => ({
-    value: provider.providerType,
+    value: onboardingProviderKey(provider),
     label: provider.label,
-    description: provider.hasConnection
-      ? `${provider.providerType} · 已设置`
-      : provider.providerType,
+    description:
+      'connectionSlug' in provider
+        ? `${provider.providerType} · ${provider.connectionSlug} · ${copy.providerConfigured}`
+        : `${provider.providerType} · ${copy.addAccount}`,
   }));
 }
 
-const THINKING_LEVEL_LABELS: Record<ThinkingLevel, string> = {
-  off: '关',
-  minimal: '最小',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '超高',
-  max: '最高',
-};
+function onboardingProviderKey(provider: OnboardingProviderEntry): string {
+  return provider.target.kind === 'existing'
+    ? provider.target.connectionId
+    : `create:${provider.target.providerType}`;
+}
 
 export function thinkingLevelPickerItems(
   levels: readonly ThinkingLevel[],
   current: ThinkingLevel | undefined,
+  locale: UiLocale,
 ): SelectItem[] {
+  const copy = getTuiPickerCopy(locale);
   return [
     {
       value: 'default',
-      label: '默认',
-      ...(current === undefined ? { description: 'current' } : {}),
+      label: copy.defaultThinkingLevel,
+      ...(current === undefined ? { description: copy.currentMarker } : {}),
     },
     ...levels.map((level) => ({
       value: level,
-      label: THINKING_LEVEL_LABELS[level],
-      ...(level === current ? { description: 'current' } : {}),
+      label: copy.thinkingLevels[level],
+      ...(level === current ? { description: copy.currentMarker } : {}),
     })),
   ];
 }
@@ -838,13 +1020,79 @@ function formatPickerItemLine(line: string, width: number): string {
   return stripAnsi(line).startsWith('→ ') ? ansi.reverse(padded) : padded;
 }
 
+/**
+ * One AskUserQuestion option row, wrapped instead of truncated (#4610): the
+ * option body is the decision content, and options routinely carry long
+ * trade-off descriptions that a hard cut at the terminal width made
+ * unreadable. Continuation lines indent under the option body, aligned past
+ * the `→ `/`  ` marker; the active row's highlight band covers every wrapped
+ * line, not just the first.
+ */
+export function formatUserQuestionOptionRow(
+  option: UserQuestionOption,
+  active: boolean,
+  width: number,
+): string[] {
+  const safeWidth = Math.max(1, width);
+  const prefix = active ? '→ ' : '  ';
+  const body = option.description
+    ? `${option.label}  ${active ? option.description : ansi.dim(option.description)}`
+    : option.label;
+  const wrapped = wrapTextWithAnsi(body, Math.max(1, safeWidth - USER_QUESTION_ROW_PREFIX_WIDTH));
+  const continuation = ' '.repeat(USER_QUESTION_ROW_PREFIX_WIDTH);
+  return (wrapped.length > 0 ? wrapped : ['']).map((line, index) => {
+    const padded = padLine(`${index === 0 ? prefix : continuation}${line}`, safeWidth);
+    return active ? ansi.reverse(padded) : padded;
+  });
+}
+
+/**
+ * Cap an already-formatted wrapped row group at `maxRows`, folding the last
+ * kept line into an ellipsis so the elision is visible. truncateToWidth is
+ * ANSI-aware, so an active (reversed) line keeps its closing SGR.
+ */
+export function clampRowsWithEllipsis(rows: string[], maxRows: number, width: number): string[] {
+  if (rows.length <= maxRows) return rows;
+  const keep = Math.max(1, maxRows);
+  const kept = rows.slice(0, keep);
+  // truncateToWidth only appends its marker when it actually cuts, and the
+  // kept row is already padded to full width — so cut one column short and
+  // add the ellipsis by hand to guarantee the elision stays visible.
+  const shortened = truncateToWidth(kept[kept.length - 1] ?? '', Math.max(1, width - 1), '');
+  kept[kept.length - 1] = padLine(`${shortened}…`, width);
+  return kept;
+}
+
 function padLine(text: string, width: number): string {
   const safeWidth = Math.max(1, width);
   const trimmed = visibleWidth(text) > safeWidth ? truncateToWidth(text, safeWidth, '') : text;
   return `${trimmed}${' '.repeat(Math.max(0, safeWidth - visibleWidth(trimmed)))}`;
 }
 
-export type OnboardingWizardPhase = 'search' | 'baseUrl' | 'key' | 'models' | 'success';
+function keyEntryHint(
+  copy: TuiPickerCopy,
+  hasConnection: boolean,
+  returnsTo: 'baseUrl' | 'identity' | 'provider',
+): string {
+  const action = hasConnection ? 'reuse' : 'enter';
+  return copy.keyHints[action][returnsTo];
+}
+
+export type OnboardingWizardPhase =
+  | 'search'
+  | 'identity'
+  | 'baseUrl'
+  | 'key'
+  | 'models'
+  | 'success';
+
+/** The union's discriminant sits on `target.kind`, one level down — TS will
+ *  not narrow the entry from that check alone, so route through this guard. */
+function isCreateEntry(
+  entry: OnboardingProviderEntry,
+): entry is OnboardingProviderEntry & { suggestedSlug: string } {
+  return entry.target.kind === 'create';
+}
 
 export type OnboardingWizardStatus =
   | { kind: 'prompt' }
@@ -853,11 +1101,16 @@ export type OnboardingWizardStatus =
   | { kind: 'saving' };
 
 export interface OnboardingWizardInput {
+  locale: UiLocale;
   providers: readonly OnboardingProviderEntry[];
   /** search→key: the user picked a provider. The runner records it — and the
    *   existing connection's identity, when the catalog resolved one — for
    *   verify/save, so saving edits that connection in place. */
-  onPickProvider: (providerType: ProviderType, existingConnectionId: string | undefined) => void;
+  onPickProvider: (provider: OnboardingProviderEntry) => void;
+  /** identity submit (create targets only). `null` halves mean "keep the
+   *  Host-derived default", so a user who accepts the prefills sends a target
+   *  identical to one from a build without this step. */
+  onSubmitIdentity: (identity: OnboardingIdentityChoice) => void;
   /** baseUrl submit (only for `requiresBaseUrl` providers). Empty means "reuse
    *   the existing connection's persisted endpoint"; the wizard has already
    *   rejected an empty value for a provider with no connection. */
@@ -893,7 +1146,11 @@ export class OnboardingWizard implements Component {
   private readonly searchEditor: Editor;
   private readonly baseUrlEditor: Editor;
   private readonly keyEditor: Editor;
+  private readonly nameEditor: Editor;
+  private readonly slugEditor: Editor;
   private readonly modelsSearchEditor: Editor;
+  private identityFocus: 'name' | 'slug' = 'name';
+  private identityNameDraft = '';
   private filtered: readonly OnboardingProviderEntry[];
   private list: SelectList;
   // Models phase state. Selection seeds from the picked provider's enabled set
@@ -905,11 +1162,14 @@ export class OnboardingWizard implements Component {
   private modelHighlight = 0;
   private modelScroll = 0;
   private successCount = 0;
+  private successWarning: string | undefined;
+  private readonly copy: TuiPickerCopy;
 
   constructor(
     private readonly tui: TUI,
     private readonly input: OnboardingWizardInput,
   ) {
+    this.copy = getTuiPickerCopy(input.locale);
     this.filtered = input.providers;
     this.list = this.buildList();
     this.searchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
@@ -931,19 +1191,34 @@ export class OnboardingWizard implements Component {
     this.keyEditor.onSubmit = (value) => {
       if (this.picked) this.input.onSubmitKey(value);
     };
+    this.nameEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.nameEditor.onSubmit = (value) => {
+      // Enter on the optional name advances to the slug field in-frame. The
+      // Editor clears itself on submit, so capture the value here and restore
+      // the visible text — Esc back from the slug field must not find a blank
+      // name, and the slug submit reads the draft, not the editor.
+      this.identityNameDraft = value;
+      this.nameEditor.setText(value);
+      this.identityFocus = 'slug';
+      this.status = { kind: 'prompt' };
+    };
+    this.slugEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
+    this.slugEditor.onSubmit = (value) => this.submitIdentity(value);
     this.modelsSearchEditor = new Editor(tui, editorTheme(), { paddingX: 0 });
     this.modelsSearchEditor.onChange = (text) => this.applyModelQuery(text);
   }
 
   private buildList(): SelectList {
     const list = new SelectList(
-      onboardingProviderPickerItems(this.filtered),
+      onboardingProviderPickerItems(this.filtered, this.input.locale),
       10,
       selectListTheme(),
       { minPrimaryColumnWidth: 16, maxPrimaryColumnWidth: 32 },
     );
     list.onSelect = (item) => {
-      const provider = this.filtered.find((p) => p.providerType === item.value);
+      const provider = this.filtered.find(
+        (candidate) => onboardingProviderKey(candidate) === item.value,
+      );
       if (!provider) return;
       this.enterKeyPhase(provider);
     };
@@ -952,9 +1227,19 @@ export class OnboardingWizard implements Component {
 
   private enterKeyPhase(provider: OnboardingProviderEntry): void {
     this.picked = provider;
-    // A relay has no registry endpoint, so the wizard must collect one
+    // A create target stops at the identity step first: name and slug come
+    // prefilled with the Host-derived defaults, and accepting them verbatim
+    // sends the same bare target a build without this step would send.
+    // A relay has no registry endpoint, so the wizard must still collect one
     // before the key — the deferred phase-2 step from #1254 (#3405).
-    this.phase = provider.requiresBaseUrl ? 'baseUrl' : 'key';
+    const create = isCreateEntry(provider);
+    this.phase = create ? 'identity' : provider.requiresBaseUrl ? 'baseUrl' : 'key';
+    if (create) {
+      this.identityFocus = 'name';
+      this.nameEditor.setText(provider.label);
+      this.identityNameDraft = provider.label;
+      this.slugEditor.setText(provider.suggestedSlug);
+    }
     this.status = { kind: 'prompt' };
     this.baseUrlEditor.setText('');
     this.keyEditor.setText('');
@@ -968,7 +1253,42 @@ export class OnboardingWizard implements Component {
     this.modelHighlight = 0;
     this.modelScroll = 0;
     this.modelsSearchEditor.setText('');
-    this.input.onPickProvider(provider.providerType, provider.connectionId);
+    this.input.onPickProvider(provider);
+  }
+
+  /**
+   * Slug submit on the identity step. The name field needs no validation of
+   * its own beyond the catalog's length cap: empty or untouched means the
+   * provider label stays. An empty or untouched slug likewise keeps the
+   * Host-derived identity — only a genuinely edited slug crosses the wire,
+   * and it must pass the same rule the catalog decoder enforces.
+   */
+  private submitIdentity(rawSlug: string): void {
+    const picked = this.picked;
+    if (!picked || !isCreateEntry(picked) || this.phase !== 'identity') return;
+    const slug = rawSlug.trim();
+    const name = this.identityNameDraft.trim();
+    if (name.length > CONNECTION_NAME_MAX_LENGTH) {
+      this.identityFocus = 'name';
+      this.status = { kind: 'error', text: this.copy.identityNameTooLong };
+      return;
+    }
+    const customSlug = slug.length > 0 && slug !== picked.suggestedSlug ? slug : null;
+    if (customSlug !== null) {
+      const error = validateSlug(customSlug);
+      if (error) {
+        this.identityFocus = 'slug';
+        this.status = { kind: 'error', text: this.copy.identitySlugInvalid };
+        return;
+      }
+    }
+    const defaultName = picked.label;
+    this.input.onSubmitIdentity({
+      slug: customSlug,
+      name: name.length > 0 && name !== defaultName ? name : null,
+    });
+    this.status = { kind: 'prompt' };
+    this.phase = picked.requiresBaseUrl ? 'baseUrl' : 'key';
   }
 
   private submitBaseUrl(value: string): void {
@@ -991,21 +1311,21 @@ export class OnboardingWizard implements Component {
    */
   private validateBaseUrl(trimmed: string): string | null {
     if (!trimmed) {
-      return this.picked?.hasConnection ? null : '需要填写 Base URL';
+      return this.picked?.target.kind === 'existing' ? null : this.copy.baseUrlRequired;
     }
     let parsed: URL;
     try {
       parsed = new URL(trimmed);
     } catch {
-      return 'Base URL 不是有效的 URL';
+      return this.copy.baseUrlInvalid;
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return 'Base URL 必须使用 http 或 https';
+      return this.copy.baseUrlProtocol;
     }
-    if (parsed.username || parsed.password) return 'Base URL 不能包含账号密码';
-    if (trimmed.includes('?') || trimmed.includes('#')) return 'Base URL 不能包含查询串或片段';
+    if (parsed.username || parsed.password) return this.copy.baseUrlCredentials;
+    if (trimmed.includes('?') || trimmed.includes('#')) return this.copy.baseUrlQuery;
     if (new TextEncoder().encode(parsed.toString()).byteLength > 2_048) {
-      return 'Base URL 不能超过 2048 字节';
+      return this.copy.baseUrlTooLong;
     }
     return null;
   }
@@ -1034,6 +1354,17 @@ export class OnboardingWizard implements Component {
       : this.models;
     this.modelHighlight = 0;
     this.modelScroll = 0;
+  }
+
+  /** Runner hook: the Host rejected the requested slug — bounce back to the
+   *  identity step with the user's text intact so they can edit it. */
+  setIdentityError(text: string): void {
+    if (this.picked?.target.kind !== 'create') return;
+    this.phase = 'identity';
+    this.identityFocus = 'slug';
+    this.status = { kind: 'error', text };
+    this.keyEditor.setText('');
+    this.keyEditor.disableSubmit = false;
   }
 
   /** Runner hook: verify is in flight. Lock the key field and show progress. */
@@ -1086,9 +1417,10 @@ export class OnboardingWizard implements Component {
   }
 
   /** Runner hook: save succeeded — show the enabled-model count in-frame. */
-  setSuccess(enabledCount: number): void {
+  setSuccess(enabledCount: number, warning?: string): void {
     this.phase = 'success';
     this.successCount = enabledCount;
+    this.successWarning = warning;
     this.status = { kind: 'prompt' };
   }
 
@@ -1096,19 +1428,38 @@ export class OnboardingWizard implements Component {
     this.searchEditor.invalidate();
     this.baseUrlEditor.invalidate();
     this.keyEditor.invalidate();
+    this.nameEditor.invalidate();
+    this.slugEditor.invalidate();
     this.modelsSearchEditor.invalidate();
     this.list.invalidate();
   }
 
-  /** Step label: relays have four steps (the base-URL one), the rest three. */
-  private step(position: number): string {
-    return `${position}/${this.picked?.requiresBaseUrl ? 4 : 3}`;
+  /** Step label: relays add a base-URL step, create targets an identity one. */
+  private stepFor(phase: 'search' | 'identity' | 'baseUrl' | 'key' | 'models'): string {
+    const create = this.picked?.target.kind === 'create';
+    const relay = this.picked?.requiresBaseUrl === true;
+    const total = 3 + (create ? 1 : 0) + (relay ? 1 : 0);
+    let position = 1;
+    if (phase === 'search') return `1/${total}`;
+    if (create) {
+      position += 1;
+      if (phase === 'identity') return `${position}/${total}`;
+    }
+    if (relay) {
+      position += 1;
+      if (phase === 'baseUrl') return `${position}/${total}`;
+    }
+    position += 1;
+    if (phase === 'key') return `${position}/${total}`;
+    return `${total}/${total}`;
   }
 
   handleInput(data: string): void {
     switch (this.phase) {
       case 'search':
         return this.handleSearchInput(data);
+      case 'identity':
+        return this.handleIdentityInput(data);
       case 'baseUrl':
         return this.handleBaseUrlInput(data);
       case 'key':
@@ -1120,14 +1471,40 @@ export class OnboardingWizard implements Component {
     }
   }
 
+  private handleIdentityInput(data: string): void {
+    if (matchesKey(data, Key.ctrl('c'))) {
+      this.input.onCancel();
+      return;
+    }
+    if (matchesKey(data, Key.escape)) {
+      // One level back: slug field → name field → provider search.
+      if (this.identityFocus === 'slug') {
+        this.identityFocus = 'name';
+        this.status = { kind: 'prompt' };
+        return;
+      }
+      this.phase = 'search';
+      this.picked = undefined;
+      this.status = { kind: 'prompt' };
+      this.input.onBack();
+      return;
+    }
+    (this.identityFocus === 'name' ? this.nameEditor : this.slugEditor).handleInput(data);
+  }
+
   private handleBaseUrlInput(data: string): void {
     if (matchesKey(data, Key.ctrl('c'))) {
       this.input.onCancel();
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      this.phase = 'search';
-      this.picked = undefined;
+      // One level back: a create target returns to its identity step.
+      if (this.picked?.target.kind === 'create') {
+        this.phase = 'identity';
+      } else {
+        this.phase = 'search';
+        this.picked = undefined;
+      }
       this.status = { kind: 'prompt' };
       this.baseUrlEditor.setText('');
       this.input.onBack();
@@ -1165,10 +1542,12 @@ export class OnboardingWizard implements Component {
       return;
     }
     if (matchesKey(data, Key.escape)) {
-      // One level back: a relay returns to its base-URL step, everything
-      // else to the provider search.
+      // One level back: a relay returns to its base-URL step, a create target
+      // to its identity step, everything else to the provider search.
       if (this.picked?.requiresBaseUrl) {
         this.phase = 'baseUrl';
+      } else if (this.picked?.target.kind === 'create') {
+        this.phase = 'identity';
       } else {
         this.phase = 'search';
         this.picked = undefined;
@@ -1218,7 +1597,7 @@ export class OnboardingWizard implements Component {
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.return)) {
       if (isKeyRepeat(data)) return;
       if (this.selectedIds.size === 0) {
-        this.status = { kind: 'error', text: '至少选择一个模型再保存' };
+        this.status = { kind: 'error', text: this.copy.selectModelBeforeSaving };
         return;
       }
       this.input.onSubmitModels([...this.selectedIds]);
@@ -1258,7 +1637,6 @@ export class OnboardingWizard implements Component {
     if (!model) return;
     if (this.selectedIds.has(model.id)) this.selectedIds.delete(model.id);
     else this.selectedIds.add(model.id);
-    // Clear a stale "至少选择一个模型" error once a selection exists.
     if (this.status.kind === 'error' && this.selectedIds.size > 0) {
       this.status = { kind: 'prompt' };
     }
@@ -1269,6 +1647,8 @@ export class OnboardingWizard implements Component {
     switch (this.phase) {
       case 'search':
         return this.renderSearch(safeWidth);
+      case 'identity':
+        return this.renderIdentity(safeWidth);
       case 'baseUrl':
         return this.renderBaseUrl(safeWidth);
       case 'key':
@@ -1280,23 +1660,63 @@ export class OnboardingWizard implements Component {
     }
   }
 
-  private renderBaseUrl(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = true;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+  private focusOnly(active: Editor | null): void {
+    for (const editor of [
+      this.searchEditor,
+      this.nameEditor,
+      this.slugEditor,
+      this.baseUrlEditor,
+      this.keyEditor,
+      this.modelsSearchEditor,
+    ]) {
+      editor.focused = editor === active;
+    }
+  }
+
+  private renderIdentity(width: number): string[] {
+    this.focusOnly(this.identityFocus === 'name' ? this.nameEditor : this.slugEditor);
     const label = this.picked?.label ?? '';
-    const hint = this.picked?.hasConnection
-      ? '留空复用已保存的 Base URL，或输入新地址替换 · Esc 返回选择服务商'
-      : '输入中转站的 Base URL（http/https）· Esc 返回选择服务商';
     return [
-      padLine(`Set Up Provider ${ansi.dim(`· ${this.step(2)}`)} ${ansi.accent(label)}`, width),
-      padLine(ansi.dim(hint), width),
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('identity')}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(ansi.dim(this.copy.identityHint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.baseUrlEditor, 'Base URL', width),
+      ...this.renderFieldRow(this.nameEditor, this.copy.connectionNameLabel, width),
+      padLine('', width),
+      ...this.renderFieldRow(this.slugEditor, this.copy.connectionSlugLabel, width),
       padLine('', width),
       padLine(
-        this.status.kind === 'error' ? ansi.red(`✗ ${this.status.text}`) : ansi.dim('Enter 继续'),
+        this.status.kind === 'error'
+          ? ansi.red(`✗ ${this.status.text}`)
+          : ansi.dim(this.copy.continueAction),
+        width,
+      ),
+      padLine(ansi.accent('-'.repeat(width)), width),
+    ];
+  }
+
+  private renderBaseUrl(width: number): string[] {
+    this.focusOnly(this.baseUrlEditor);
+    const label = this.picked?.label ?? '';
+    const hint =
+      this.picked?.target.kind === 'existing'
+        ? this.copy.reuseBaseUrlHint
+        : this.copy.enterBaseUrlHint;
+    return [
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('baseUrl')}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(ansi.dim(hint), width),
+      padLine('', width),
+      ...this.renderFieldRow(this.baseUrlEditor, this.copy.baseUrlLabel, width),
+      padLine('', width),
+      padLine(
+        this.status.kind === 'error'
+          ? ansi.red(`✗ ${this.status.text}`)
+          : ansi.dim(this.copy.continueAction),
         width,
       ),
       padLine(ansi.accent('-'.repeat(width)), width),
@@ -1304,44 +1724,45 @@ export class OnboardingWizard implements Component {
   }
 
   private renderSearch(width: number): string[] {
-    this.searchEditor.focused = true;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(this.searchEditor);
     return [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(1)}`)} ${ansi.accent(String(this.filtered.length))}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('search')}`)} ${ansi.accent(String(this.filtered.length))}`,
         width,
       ),
-      padLine(ansi.dim('搜索服务商，↑↓ 选择 · Enter 确认 · Esc 取消'), width),
+      padLine(ansi.dim(this.copy.providerSearchHint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.searchEditor, '搜索', width),
+      ...this.renderFieldRow(this.searchEditor, this.copy.searchLabel, width),
       padLine('', width),
       ...(this.filtered.length === 0
-        ? [padLine(ansi.dim('没有匹配的服务商'), width)]
+        ? [padLine(ansi.dim(this.copy.noMatchingProviders), width)]
         : this.list.render(width).map((line) => formatPickerItemLine(line, width))),
       padLine(ansi.accent('-'.repeat(width)), width),
     ];
   }
 
   private renderKey(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = this.status.kind === 'prompt' || this.status.kind === 'error';
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(
+      this.status.kind === 'prompt' || this.status.kind === 'error' ? this.keyEditor : null,
+    );
     const label = this.picked?.label ?? '';
-    const backTarget = this.picked?.requiresBaseUrl ? 'Esc 返回 Base URL' : 'Esc 返回选择服务商';
-    const hint = this.picked?.hasConnection
-      ? `留空复用已保存的 key，或输入新 key 轮换 · ${backTarget}`
-      : `输入 API key · 仅本机存储 · ${backTarget}`;
+    const hint = keyEntryHint(
+      this.copy,
+      this.picked?.target.kind === 'existing',
+      this.picked?.requiresBaseUrl === true
+        ? 'baseUrl'
+        : this.picked?.target.kind === 'create'
+          ? 'identity'
+          : 'provider',
+    );
     return [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 3 : 2)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('key')}`)} ${ansi.accent(label)}`,
         width,
       ),
       padLine(ansi.dim(hint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.keyEditor, 'API key', width),
+      ...this.renderFieldRow(this.keyEditor, this.copy.apiKeyLabel, width),
       padLine('', width),
       padLine(this.renderKeyStatusLine(), width),
       padLine(ansi.accent('-'.repeat(width)), width),
@@ -1351,34 +1772,31 @@ export class OnboardingWizard implements Component {
   private renderKeyStatusLine(): string {
     switch (this.status.kind) {
       case 'prompt':
-        return ansi.dim('Enter 提交');
+        return ansi.dim(this.copy.submitAction);
       case 'verifying':
-        return `${ansi.yellow('⠋')} 正在验证 key…`;
+        return `${ansi.yellow('⠋')} ${this.copy.verifyingKey}`;
       case 'error':
         return ansi.red(`✗ ${this.status.text}`);
       case 'saving':
-        return ansi.dim('Enter 提交');
+        return ansi.dim(this.copy.submitAction);
     }
   }
 
   private renderModels(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = this.status.kind !== 'saving';
+    this.focusOnly(this.status.kind !== 'saving' ? this.modelsSearchEditor : null);
     const label = this.picked?.label ?? '';
     const lines = [
       padLine(
-        `Set Up Provider ${ansi.dim(`· ${this.step(this.picked?.requiresBaseUrl ? 4 : 3)}`)} ${ansi.accent(label)}`,
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.stepFor('models')}`)} ${ansi.accent(label)}`,
         width,
       ),
-      padLine(ansi.dim('搜索模型，↑↓ 选择 · Space 切换 · Enter 保存 · Esc 返回'), width),
+      padLine(ansi.dim(this.copy.modelSelectionHint), width),
       padLine('', width),
-      ...this.renderFieldRow(this.modelsSearchEditor, '搜索', width),
+      ...this.renderFieldRow(this.modelsSearchEditor, this.copy.searchLabel, width),
       padLine('', width),
     ];
     if (this.filteredModels.length === 0) {
-      lines.push(padLine(ansi.dim('没有匹配的模型'), width));
+      lines.push(padLine(ansi.dim(this.copy.noMatchingModels), width));
     } else {
       const end = Math.min(
         this.modelScroll + ONBOARDING_MODELS_MAX_VISIBLE,
@@ -1401,27 +1819,49 @@ export class OnboardingWizard implements Component {
   private renderModelsStatusLine(): string {
     switch (this.status.kind) {
       case 'prompt':
-        return ansi.dim(`已选 ${this.selectedIds.size} · Enter 保存`);
+        return ansi.dim(
+          formatUiMessage(
+            this.copy.selectedModelsAndSave,
+            { count: this.selectedIds.size },
+            this.input.locale,
+          ),
+        );
       case 'verifying':
-        return ansi.dim(`已选 ${this.selectedIds.size}`);
+        return ansi.dim(
+          formatUiMessage(
+            this.copy.selectedModels,
+            { count: this.selectedIds.size },
+            this.input.locale,
+          ),
+        );
       case 'saving':
-        return `${ansi.yellow('⠋')} 正在保存…`;
+        return `${ansi.yellow('⠋')} ${this.copy.saving}`;
       case 'error':
         return ansi.red(`✗ ${this.status.text}`);
     }
   }
 
   private renderSuccess(width: number): string[] {
-    this.searchEditor.focused = false;
-    this.baseUrlEditor.focused = false;
-    this.keyEditor.focused = false;
-    this.modelsSearchEditor.focused = false;
+    this.focusOnly(null);
     const label = this.picked?.label ?? '';
     return [
-      padLine(`Set Up Provider ${ansi.dim('· 完成')} ${ansi.accent(label)}`, width),
-      padLine(ansi.green(`✓ 已启用 ${this.successCount} 个模型`), width),
+      padLine(
+        `${this.copy.setupTitle} ${ansi.dim(`· ${this.copy.complete}`)} ${ansi.accent(label)}`,
+        width,
+      ),
+      padLine(
+        ansi.green(
+          `✓ ${formatUiMessage(
+            this.copy.enabledModels,
+            { count: this.successCount },
+            this.input.locale,
+          )}`,
+        ),
+        width,
+      ),
+      ...(this.successWarning ? [padLine(ansi.yellow(this.successWarning), width)] : []),
       padLine('', width),
-      padLine(ansi.dim('Enter 关闭'), width),
+      padLine(ansi.dim(this.copy.closeAction), width),
       padLine(ansi.accent('-'.repeat(width)), width),
     ];
   }

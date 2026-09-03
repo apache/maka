@@ -20,6 +20,7 @@
 import { randomUUID } from 'node:crypto';
 import type { BotIncomingMessage } from '@maka/runtime/bots';
 import {
+  abortable,
   RuntimeHostOperationError,
   RuntimeHostPermanentReconnectError,
   RuntimeHostRequestInterruptedError,
@@ -31,10 +32,15 @@ import {
   type ResolvedRuntimeHostProfile,
   type RuntimeHostReconnectBackoff,
   type RuntimeHostReconnectLifecycle,
+  type RuntimeHostConnectionPhase,
   type RuntimeHostRetirementMode,
   type RuntimeHostSshInteraction,
 } from '@maka/runtime-host/client';
-import type { HostRegistration } from '@maka/runtime-host/protocol';
+import {
+  isHostActivityIdle,
+  type HostRegistration,
+  type HostStatusResult,
+} from '@maka/runtime-host/protocol';
 import type { DesktopTargetSessionRef } from '../shared/runtime-host-identity.js';
 import {
   startDesktopRuntimeHostCandidate,
@@ -65,7 +71,21 @@ export interface RuntimeHostDesktopManager {
   unobserveSession(observerId: string): Promise<void>;
   enable(
     profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void>;
+  mountGuest(
+    profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
+    signal?: AbortSignal,
+    onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
+  ): Promise<void>;
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<RuntimeHostGuestAccessFinalization>;
+  unmountGuest(mountId: string): Promise<void>;
+  wakePeerRecovery(): void;
   disable(profileId: string): Promise<void>;
   waitUntilReady(
     profileId: string,
@@ -136,7 +156,15 @@ export class DesktopLocalHostRetirementError extends Error {
 }
 
 export type RuntimeHostRestartDecision = 'restart' | 'wait' | 'cancel';
-export type RuntimeHostWaitDecision = 'wait' | 'cancel';
+export type RuntimeHostNonRestartableDecision = 'replace' | 'wait' | 'cancel';
+export type RuntimeHostNonRestartableAction =
+  | 'replace_may_interrupt_work'
+  | 'wait'
+  | 'cancel_only';
+
+export interface RuntimeHostLocalReplacement {
+  replace(activeWorkPolicy: RuntimeHostRetirementMode): Promise<'replaced' | 'active_tasks'>;
+}
 
 export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconnectError {
   constructor() {
@@ -147,10 +175,12 @@ export class RuntimeHostUpgradeCancelledError extends RuntimeHostPermanentReconn
 
 export class RuntimeHostPairingFinalizationInterruptedError extends Error {
   constructor(options?: ErrorOptions) {
-    super('Runtime Host pairing finalization was deferred until the next startup', options);
+    super('Runtime Host pairing finalization is continuing in the background', options);
     this.name = 'RuntimeHostPairingFinalizationInterruptedError';
   }
 }
+
+export type RuntimeHostGuestAccessFinalization = 'ready' | 'reconnecting';
 
 const DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS = 30_000;
 
@@ -170,7 +200,10 @@ export interface RuntimeHostUpgradePrompts {
   restartable(
     conflict: RuntimeHostRestartableConflict,
   ): Promise<RuntimeHostRestartDecision>;
-  waitOnly(conflict: RuntimeHostWaitConflict): Promise<RuntimeHostWaitDecision>;
+  nonRestartable(
+    conflict: RuntimeHostWaitConflict,
+    action: RuntimeHostNonRestartableAction,
+  ): Promise<RuntimeHostNonRestartableDecision>;
 }
 
 interface DesktopRuntimeHostTargetGeneration {
@@ -182,6 +215,8 @@ interface DesktopRuntimeHostTargetGeneration {
   hostId?: string;
   lifecycle?: RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>;
   unsubscribeLifecycle?: () => void;
+  unsubscribeRoutes?: () => void;
+  skipPeerRouteRefreshOnce?: boolean;
   lastCandidate?: {
     readonly hostId: string;
     readonly hostEpoch: string;
@@ -210,6 +245,10 @@ export async function startRuntimeHostDesktopManager(
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>;
+    resolveLocalHostReplacement?: (
+      registration: HostRegistration,
+      signal: AbortSignal,
+    ) => Promise<RuntimeHostLocalReplacement | undefined>;
     recoverLocalHost?: (signal: AbortSignal) => Promise<boolean>;
     reconnectBackoff?: RuntimeHostReconnectBackoff;
     pairingFinalizationTimeoutMs?: number;
@@ -226,6 +265,7 @@ export async function startRuntimeHostDesktopManager(
     options.upgradePrompts,
     options.waitForHostExit ?? waitForProcessExit,
     options.waitForHostRetirement ?? waitForProcessRetirement,
+    options.resolveLocalHostReplacement,
     options.recoverLocalHost,
     options.reconnectBackoff,
     options.pairingFinalizationTimeoutMs ?? DEFAULT_PAIRING_FINALIZATION_TIMEOUT_MS,
@@ -266,6 +306,12 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       registration: HostRegistration,
       signal: AbortSignal,
     ) => Promise<void>,
+    private readonly resolveLocalHostReplacement:
+      | ((
+          registration: HostRegistration,
+          signal: AbortSignal,
+        ) => Promise<RuntimeHostLocalReplacement | undefined>)
+      | undefined,
     private readonly recoverLocalHost:
       | ((signal: AbortSignal) => Promise<boolean>)
       | undefined,
@@ -315,10 +361,27 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   }
 
   finalizePairing(profileId: string): Promise<void> {
-    return this.#mutateTarget(profileId, () => this.#finalizePairing(profileId));
+    return this.#mutateTarget(profileId, async () => {
+      await this.#finalizeAccessCredential(profileId, 'ready');
+    });
   }
 
-  async #finalizePairing(profileId: string): Promise<void> {
+  finalizeGuestAccess(
+    mountId: string,
+    signal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<RuntimeHostGuestAccessFinalization> {
+    return this.#mutateTarget(mountId, () =>
+      this.#finalizeAccessCredential(mountId, 'activation', signal, onAccessActivated),
+    );
+  }
+
+  async #finalizeAccessCredential(
+    profileId: string,
+    completion: 'activation' | 'ready',
+    externalSignal?: AbortSignal,
+    onAccessActivated?: () => void,
+  ): Promise<RuntimeHostGuestAccessFinalization> {
     const target = this.#requireTarget(profileId);
     if (target.target.profile.kind !== 'remote') {
       throw new Error('Only remote Runtime Host profiles can finalize pairing');
@@ -333,6 +396,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const signal = AbortSignal.any([
       this.#pairingFinalizationShutdown.signal,
       timeout.signal,
+      ...(externalSignal ? [externalSignal] : []),
     ]);
     try {
       let candidate = await this.#waitForReadyCandidate(lifecycle, undefined, signal);
@@ -344,12 +408,34 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         try {
           const remainingMs = deadline - Date.now();
           if (remainingMs <= 0) throw new RuntimeHostPairingFinalizationInterruptedError();
-          const finalized = await candidate.client.finalizeAccessCredential(remainingMs);
+          const finalized = await abortable(
+            () => candidate.client.finalizeAccessCredential(remainingMs),
+            signal,
+          );
+          notifyAccessActivated(onAccessActivated);
           if (finalized.reconnectRequired) {
+            if (
+              target.target.profile.kind === 'remote' &&
+              target.target.profile.transport.kind === 'libp2p-direct'
+            ) {
+              target.skipPeerRouteRefreshOnce = true;
+            }
+            if (completion === 'activation') {
+              try {
+                await candidate.close();
+              } catch (error) {
+                // The Host already committed the credential. Candidate cleanup
+                // cannot turn that durable success into a failed Guest import;
+                // its closed signal still drives the reconnect lifecycle.
+                this.#baseInput.onError?.(error);
+              }
+              return 'reconnecting';
+            }
             await candidate.close();
             await this.#waitForReadyCandidate(lifecycle, candidate, signal);
           }
-          return;
+          if (completion === 'ready') signal.throwIfAborted();
+          return 'ready';
         } catch (error) {
           if (pairingFinalizeTimedOut(error)) {
             throw new RuntimeHostPairingFinalizationInterruptedError({ cause: error });
@@ -448,14 +534,39 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   async enable(
     profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void> {
     if (!profileTarget) throw new Error('A non-local Runtime Host profile is required');
-    return this.#mutateTarget(profileTarget.profile.id, () => this.#enable(profileTarget));
+    if (isSessionGuestProfile(profileTarget.profile)) {
+      throw new Error('Session Guest targets must be mounted instead of enabled as profiles');
+    }
+    return this.#mutateTarget(profileTarget.profile.id, () =>
+      this.#enable(profileTarget, false, undefined, undefined, onHostStatus),
+    );
+  }
+
+  mountGuest(
+    profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
+    signal?: AbortSignal,
+    onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
+  ): Promise<void> {
+    if (!isSessionGuestProfile(profileTarget.profile)) {
+      return Promise.reject(new Error('A Session Guest target is required'));
+    }
+    return this.#mutateTarget(profileTarget.profile.id, () =>
+      this.#enable(profileTarget, true, signal, onConnectionPhase, onHostStatus),
+    );
   }
 
   async #enable(
     profileTarget: NonNullable<DesktopRuntimeHostCandidateStartInput['profileTarget']>,
+    allowSameRoot: boolean,
+    signal?: AbortSignal,
+    onConnectionPhase?: (phase: RuntimeHostConnectionPhase) => void,
+    onHostStatus?: (status: HostStatusResult) => void,
   ): Promise<void> {
+    signal?.throwIfAborted();
     if (this.#closed) throw new Error('Desktop Runtime Host manager is closed');
     const profileId = profileTarget.profile.id;
     if (profileId === LOCAL_RUNTIME_HOST_PROFILE.id) {
@@ -466,7 +577,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       const rootId = target.target.profile.kind !== 'local'
         ? target.target.profile.rootId
         : target.hostId;
-      if (rootId === profileTarget.profile.rootId) {
+      if (
+        rootId === profileTarget.profile.rootId &&
+        !allowSameRoot &&
+        !isSessionGuestProfile(target.target.profile)
+      ) {
         throw new Error(`Runtime Host ${profileTarget.profile.rootId} is already enabled`);
       }
     }
@@ -477,7 +592,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     ) return;
     if (existing) await this.#removeTarget(existing);
 
-    const target = this.#createTarget(withRuntimeHostTarget(this.#baseInput, profileTarget));
+    const target = this.#createTarget({
+      ...withRuntimeHostTarget(this.#baseInput, profileTarget),
+      ...(onConnectionPhase ? { onConnectionPhase } : {}),
+      ...(onHostStatus ? { onHostStatus } : {}),
+    });
     this.#targets.set(profileId, target);
     this.#publishState(target, {
       epoch: target.epoch,
@@ -485,29 +604,60 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       readiness: 'connecting',
     });
     try {
-      target.lifecycle = await this.#startLifecycle(target, false);
+      target.lifecycle = await this.#startLifecycle(target, false, signal);
       if (this.#closed) {
         await target.lifecycle.close();
         throw new Error('Desktop Runtime Host manager is closed');
       }
+      if (!target.valid) {
+        await target.lifecycle.close();
+        throw target.state.readiness === 'unavailable'
+          ? target.state.error
+          : new Error('Desktop Runtime Host target became unavailable during startup');
+      }
       this.#activate(target);
     } catch (error) {
+      const alreadyUnavailable = target.state.readiness === 'unavailable';
       target.valid = false;
       this.#ipcMain.deactivate(target.epoch);
       await this.#closeObservations(target.observations);
-      this.#publishState(target, {
-        epoch: target.epoch,
-        target: target.target,
-        readiness: 'unavailable',
-        ...(target.hostId ? { hostId: target.hostId } : {}),
-        error: error instanceof Error ? error : new Error(String(error)),
-      });
+      if (!alreadyUnavailable) {
+        this.#publishState(target, {
+          epoch: target.epoch,
+          target: target.target,
+          readiness: 'unavailable',
+          ...(target.hostId ? { hostId: target.hostId } : {}),
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
       throw error;
     }
   }
 
   async disable(profileId: string): Promise<void> {
     return this.#mutateTarget(profileId, () => this.#disable(profileId));
+  }
+
+  unmountGuest(mountId: string): Promise<void> {
+    return this.#mutateTarget(mountId, async () => {
+      const target = this.#targets.get(mountId);
+      if (target && !isSessionGuestProfile(target.target.profile)) {
+        throw new Error('Runtime Host target is not a Session Guest mount');
+      }
+      await this.#disable(mountId);
+    });
+  }
+
+  wakePeerRecovery(): void {
+    for (const target of this.#targets.values()) {
+      if (
+        target.valid &&
+        target.target.profile.kind === 'remote' &&
+        target.target.profile.transport.kind === 'libp2p-direct'
+      ) {
+        target.lifecycle?.wake();
+      }
+    }
   }
 
   async waitUntilReady(
@@ -544,14 +694,14 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       const lifecycle = this.#requireLifecycle(
         this.#requireTarget(LOCAL_RUNTIME_HOST_PROFILE.id),
       );
-      const quiescence = await lifecycle.quiesce();
+      const suspension = await lifecycle.suspend();
       try {
-        if (quiescence.current.hostOwnership !== 'supervised') {
+        if (suspension.current?.hostOwnership === 'owned_ephemeral') {
           throw new Error('The Local Runtime Host is not managed by a background service');
         }
         return await change();
       } finally {
-        quiescence.resume();
+        suspension.resume();
       }
     });
   }
@@ -709,12 +859,9 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     const results = await Promise.allSettled(
       [...this.#targets.values()].map((target) => this.#removeTarget(target)),
     );
-    const peerResults = await Promise.allSettled(
-      this.#baseInput.peerClient ? [this.#baseInput.peerClient.close()] : [],
-    );
     this.#baseInput.candidateLaunchBarrier?.release();
     this.#ipcMain.close();
-    const failures = [...results, ...peerResults].filter(
+    const failures = results.filter(
       (result): result is PromiseRejectedResult => result.status === 'rejected',
     );
     if (failures.length > 0) {
@@ -728,23 +875,38 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
   async #startLifecycle(
     target: DesktopRuntimeHostTargetGeneration,
     reportInitialFailure: boolean,
+    initialSignal?: AbortSignal,
   ): Promise<RuntimeHostReconnectLifecycle<DesktopRuntimeHostCandidate>> {
     let starting = true;
+    let initialAttempt = true;
+    let fatalDuringStart: Error | undefined;
+    const retryInitialFailure =
+      target.target.profile.kind === 'remote' &&
+      target.target.profile.transport.kind === 'libp2p-direct';
     try {
-      return await startRuntimeHostReconnectLifecycle({
-        connect: (signal) =>
-          this.connect(
+      const lifecycle = await startRuntimeHostReconnectLifecycle({
+        connect: (signal) => {
+          const first = initialAttempt;
+          initialAttempt = false;
+          return this.connect(
             target,
             signal,
-            starting ? target.input.profileTarget?.sshInteraction : 'batch',
-          ),
+            first ? target.input.profileTarget?.sshInteraction : 'batch',
+            first ? target.input.onConnectionPhase : undefined,
+          );
+        },
+        retryInitialFailure,
+        ...(initialSignal ? { initialSignal } : {}),
         onReconnectError: (error) => {
           console.warn('[runtime-host] reconnect attempt failed:', error);
         },
         onFatalError: (error) => {
-          if (!starting && target.valid) {
+          if (starting) {
+            fatalDuringStart = error;
+          } else if (target.valid) {
             target.valid = false;
             target.unsubscribeLifecycle?.();
+            target.unsubscribeRoutes?.();
             this.#ipcMain.deactivate(target.epoch);
             this.#publishState(target, {
               epoch: target.epoch,
@@ -758,6 +920,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         },
         ...(this.reconnectBackoff ? { backoff: this.reconnectBackoff } : {}),
       });
+      if (fatalDuringStart) {
+        await lifecycle.close();
+        throw fatalDuringStart;
+      }
+      return lifecycle;
     } finally {
       starting = false;
     }
@@ -767,10 +934,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target: DesktopRuntimeHostTargetGeneration,
     signal: AbortSignal,
     sshInteraction: RuntimeHostSshInteraction | undefined,
+    onConnectionPhase: ((phase: RuntimeHostConnectionPhase) => void) | undefined,
   ): Promise<DesktopRuntimeHostCandidate> {
     let takeoverHostEpoch: string | undefined;
     let localRecoveryAttempted = false;
     const inheritedExit = target.input.onExit;
+    let refreshPeerRoutes = target.skipPeerRouteRefreshOnce !== true;
+    target.skipPeerRouteRefreshOnce = false;
     const tryRecoverLocalHost = async (): Promise<boolean> => {
       if (target.input.profileTarget || localRecoveryAttempted || !this.recoverLocalHost) {
         return false;
@@ -796,11 +966,17 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
             ipcMain: this.#ipcMain.createTarget(target.epoch),
             isTargetActive: () => this.#ipcMain.isActive(target.epoch),
             isTargetValid: () => target.valid,
+            // Import progress belongs to the initial connection only. Override
+            // the callback inherited from target.input so reconnects cannot
+            // replay one-shot join progress.
+            onConnectionPhase: (phase) => onConnectionPhase?.(phase),
+            ...(refreshPeerRoutes ? {} : { refreshPeerRoutes: false }),
             signal,
             ...(takeoverHostEpoch === undefined ? {} : { takeoverHostEpoch }),
           },
           target.observations,
         );
+        refreshPeerRoutes = true;
       } catch (error) {
         signal.throwIfAborted();
         if (await tryRecoverLocalHost()) continue;
@@ -832,10 +1008,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       if (result.kind === 'upgrade_required' && result.restartable) {
         const activity = result.handshake?.activity;
         const decision =
-          activity &&
-          activity.connections === 0 &&
-          activity.activeOperations === 0 &&
-          activity.residencies.length === 0
+          activity && isHostActivityIdle(activity)
             ? 'restart'
             : await this.#resolveRestartable(result);
         if (decision === 'cancel') {
@@ -853,8 +1026,45 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
         result.kind === 'incompatible' ||
         (result.kind === 'upgrade_required' && !result.restartable)
       ) {
-        const decision = await this.#resolveWaitOnly(result);
+        const replacement = target.input.profileTarget
+          ? undefined
+          : await this.resolveLocalHostReplacement?.(result.registration, signal);
+        const activity = result.handshake?.activity;
+        if (replacement && activity && isHostActivityIdle(activity)) {
+          // Only a complete, observed snapshot can authorize silent
+          // replacement. The replacement transaction closes races with new
+          // operations; an absent snapshot requires explicit consent because
+          // it cannot prove that other clients are disconnected.
+          const attempt = await replacement.replace('refuse_active_work');
+          if (attempt === 'replaced') {
+            takeoverHostEpoch = undefined;
+            continue;
+          }
+        }
+        // The retirement waiter observes a local PID. Remote targets cannot
+        // use it to prove that a Host on another machine has exited.
+        const action: RuntimeHostNonRestartableAction = replacement
+          ? 'replace_may_interrupt_work'
+          : target.input.profileTarget
+            ? 'cancel_only'
+            : 'wait';
+        const decision = await this.#resolveNonRestartable(result, action);
         if (decision === 'cancel') throw new RuntimeHostUpgradeCancelledError();
+        if (decision === 'replace') {
+          if (!replacement) {
+            throw new RuntimeHostPermanentReconnectError(
+              'This Runtime Host cannot be replaced from the current target',
+            );
+          }
+          const replaced = await replacement.replace('interrupt_active_work');
+          if (replaced === 'active_tasks') {
+            throw new RuntimeHostPermanentReconnectError(
+              'This Runtime Host still owns work that cannot be interrupted safely',
+            );
+          }
+          takeoverHostEpoch = undefined;
+          continue;
+        }
         takeoverHostEpoch = undefined;
         await this.waitForHostRetirement(result.registration, signal);
         continue;
@@ -871,8 +1081,11 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     return this.#missingUpgradePrompt();
   }
 
-  #resolveWaitOnly(conflict: RuntimeHostWaitConflict): Promise<RuntimeHostWaitDecision> {
-    if (this.upgradePrompts) return this.upgradePrompts.waitOnly(conflict);
+  #resolveNonRestartable(
+    conflict: RuntimeHostWaitConflict,
+    action: RuntimeHostNonRestartableAction,
+  ): Promise<RuntimeHostNonRestartableDecision> {
+    if (this.upgradePrompts) return this.upgradePrompts.nonRestartable(conflict, action);
     return this.#missingUpgradePrompt();
   }
 
@@ -971,6 +1184,13 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
 
   #activate(target: DesktopRuntimeHostTargetGeneration): void {
     this.#ipcMain.activate(target.epoch);
+    const profile = target.target.profile;
+    if (profile.kind === 'remote' && profile.transport.kind === 'libp2p-direct') {
+      target.unsubscribeRoutes = this.#baseInput.peerClient?.subscribeRoutes(
+        profile.transport.reachability.lease.peerId,
+        () => target.lifecycle?.wake(),
+      );
+    }
     target.unsubscribeLifecycle = target.lifecycle?.subscribe((candidate) => {
       if (!target.valid) return;
       this.#publishState(
@@ -1016,6 +1236,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
     target.valid = false;
     this.onTargetRemoved?.(target.state);
     target.unsubscribeLifecycle?.();
+    target.unsubscribeRoutes?.();
     this.#ipcMain.deactivate(target.epoch);
     try {
       await target.lifecycle?.close();
@@ -1058,6 +1279,7 @@ class RuntimeHostDesktopManagerImpl implements RuntimeHostDesktopManager {
       );
     }
   }
+
 }
 
 function trackOwnedProcess(
@@ -1099,12 +1321,26 @@ function pairingFinalizeTimedOut(error: unknown): boolean {
   );
 }
 
+function notifyAccessActivated(observer: (() => void) | undefined): void {
+  try {
+    observer?.();
+  } catch {
+    // Presentation progress cannot control credential finalization.
+  }
+}
+
 function withRuntimeHostTarget(
   input: DesktopRuntimeHostCandidateStartInput,
   profileTarget: DesktopRuntimeHostCandidateStartInput['profileTarget'],
 ): DesktopRuntimeHostCandidateStartInput {
   const { profileTarget: _previousProfileTarget, ...base } = input;
   return profileTarget ? { ...base, profileTarget } : base;
+}
+
+function isSessionGuestProfile(
+  profile: ResolvedRuntimeHostProfile['profile'],
+): boolean {
+  return profile.kind === 'remote' && profile.access === 'session_guest';
 }
 
 function waitForAbortableDelay(ms: number, signal: AbortSignal): Promise<void> {
