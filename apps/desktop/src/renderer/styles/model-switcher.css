@@ -40,7 +40,7 @@
   padding-block: var(--space-1);
   padding-inline: var(--space-2);
   font: var(--maka-text-supporting);
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   user-select: none;
   white-space: nowrap;
 }

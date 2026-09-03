@@ -35,6 +35,7 @@ import {
   archivedToolResultContainsConversationOwnedReferences,
   cloneConversationRuntimeLedger,
   collectConversationCopyLinkedChildReferences,
+  collectConversationCopySessionContextRefIds,
   collectConversationCopySessionFileRefs,
   createConversationCopySlice,
   prepareConversationRuntimeLedgerCopy,
@@ -61,6 +62,7 @@ import {
   authenticateInteractiveSessionTodoWriter,
   type InteractiveSessionTodoWriter,
 } from '@maka/storage/session-todo-authority';
+import type { InteractiveContextOffloadWriter } from '@maka/storage/context-offload-store';
 import type {
   OperationOutcome,
   SessionConversationCopyInput,
@@ -106,6 +108,10 @@ export interface HostSessionRevisionCoordinatorOptions {
   readonly stores: ExecutionStoresWriter<'interactive'>;
   readonly artifacts: InteractiveArtifactStoreWriter;
   readonly sessionTodo: InteractiveSessionTodoWriter;
+  readonly contextOffload?: Pick<
+    InteractiveContextOffloadWriter,
+    'copyReferences' | 'retireSession' | 'collectGarbage'
+  >;
   readonly manager: SessionManager;
   readonly admission: SessionAdmissionGate;
   readonly continuity: SessionContinuityCoordinator;
@@ -140,7 +146,7 @@ export class HostSessionRevisionCoordinator {
       (header) => header.conversationCopy !== undefined,
     );
     for (const header of copies) {
-      if (header.conversationCopy!.state === 'preparing') await this.#discard(header);
+      if (header.conversationCopy!.state === 'preparing') await this.#discardDuringRecovery(header);
     }
 
     const committed = copies.filter((header) => header.conversationCopy!.state === 'committed');
@@ -179,8 +185,18 @@ export class HostSessionRevisionCoordinator {
       if (retained.has(header.id)) {
         await this.options.manager.commitRevisionVersion(header.id);
       } else {
-        await this.#discard(header);
+        await this.#discardDuringRecovery(header);
       }
+    }
+  }
+
+  async #discardDuringRecovery(header: SessionHeader): Promise<void> {
+    try {
+      await this.#discard(header);
+    } catch (error) {
+      console.error(
+        `[runtime-host] conversation copy cleanup deferred during recovery (${header.id}): ${conversationCopyCommitFailureDiagnostic(error)}`,
+      );
     }
   }
 
@@ -503,6 +519,29 @@ export class HostSessionRevisionCoordinator {
           )
           .map(({ descriptor, serializedResult }) => [descriptor.artifactId, serializedResult]),
       );
+      const sourceContextRefIds = collectConversationCopySessionContextRefIds({
+        sourceSessionId: input.sourceSessionId,
+        messages: slice.messages,
+        runtimeEvents: plan.runs.flatMap(({ runtimeEvents }) => runtimeEvents),
+        archivedResults: archivePreflight.serializedResults,
+      });
+      if (sourceContextRefIds.length > 0 && !this.options.contextOffload) {
+        throw new Error('Session context copy authority is unavailable');
+      }
+      const contextCopy =
+        sourceContextRefIds.length === 0
+          ? { ok: true as const, copied: [] }
+          : await this.options.contextOffload!.copyReferences({
+              sourceSessionId: input.sourceSessionId,
+              targetSessionId: input.targetSessionId,
+              references: sourceContextRefIds.map((sourceRefId) => ({
+                sourceRefId,
+                targetOwner: { kind: 'read_image_snapshot', ownerId: sourceRefId },
+              })),
+            });
+      if (!contextCopy.ok) {
+        throw new Error(`Session context references could not be copied: ${contextCopy.reason}`);
+      }
       const artifactCopy = await this.#artifacts.copyConversationArtifacts({
         sourceSessionId: input.sourceSessionId,
         targetSessionId: input.targetSessionId,
@@ -528,6 +567,9 @@ export class HostSessionRevisionCoordinator {
         targetSessionId: input.targetSessionId,
         artifactIds: artifactCopy.artifactIds,
         relativePaths: artifactCopy.relativePaths,
+        contextRefs: new Map(
+          contextCopy.copied.map(({ sourceRefId, targetRefId }) => [sourceRefId, targetRefId]),
+        ),
         linkedChildren:
           kind === 'side_conversation'
             ? {
@@ -819,6 +861,7 @@ export class HostSessionRevisionCoordinator {
       {
         artifacts: this.#artifacts,
         sessionTodo: this.#sessionTodo,
+        ...(this.options.contextOffload ? { contextOffload: this.options.contextOffload } : {}),
         purgeOperationalState: (sessionId) =>
           this.#stores.purgeConversationOperationalState(sessionId),
       },

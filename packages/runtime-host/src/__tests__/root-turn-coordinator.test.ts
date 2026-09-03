@@ -2068,10 +2068,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
   });
   const graphId = agentGraphIdForRootSession(fixture.sessionId);
   try {
-    for (const [index, text] of [
-      'provider context overflow',
-      'local context budget exhausted',
-    ].entries()) {
+    for (const [index, text] of ['provider context overflow'].entries()) {
       const turnId = `turn-graph-context-${index}`;
       const outcome = await graphExecutions(fixture).run(
         fixture.sessionId,
@@ -2093,7 +2090,7 @@ test('Agent Graph supervisor wake preserves structured context-overflow outcomes
       assert.deepEqual(outcome, {
         kind: 'context_overflow',
         turnId,
-        reason: index === 0 ? 'context_overflow' : 'context_budget_exhausted',
+        reason: 'context_overflow',
       });
     }
     assert.equal(fixture.drainRequested(), false);
@@ -5751,8 +5748,7 @@ class ContextFailureBackend implements AgentBackend {
       id: randomUUID(),
       turnId: input.turnId,
       ts: Date.now(),
-      stopReason: 'context_budget_exhausted',
-      contextBudgetExhaustedDetail: 'head_anchor_exceeds_capacity',
+      stopReason: 'error',
     };
   }
 

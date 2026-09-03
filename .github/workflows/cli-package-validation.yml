@@ -66,13 +66,13 @@ on:
         value: ${{ jobs.build.outputs.release_candidate_run_attempt }}
       release_predecessor_version:
         description: Exact npm Nightly version qualified against this candidate
-        value: ${{ jobs.build.outputs.release_predecessor_version }}
+        value: ${{ jobs.state-root-qualification.outputs.release_predecessor_version }}
       release_predecessor_tarball_url:
         description: Exact npm Nightly tarball qualified against this candidate
-        value: ${{ jobs.build.outputs.release_predecessor_tarball_url }}
+        value: ${{ jobs.state-root-qualification.outputs.release_predecessor_tarball_url }}
       release_predecessor_integrity:
         description: npm SHA-512 integrity of the Nightly tarball qualified against this candidate
-        value: ${{ jobs.build.outputs.release_predecessor_integrity }}
+        value: ${{ jobs.state-root-qualification.outputs.release_predecessor_integrity }}
   workflow_dispatch:
 
 permissions:
@@ -199,9 +199,6 @@ jobs:
     outputs:
       release_candidate_artifact_id: ${{ steps.release-candidate.outputs.artifact-id }}
       release_candidate_run_attempt: ${{ github.run_attempt }}
-      release_predecessor_version: ${{ steps.predecessor.outputs.version }}
-      release_predecessor_tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
-      release_predecessor_integrity: ${{ steps.predecessor.outputs.integrity }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -213,12 +210,6 @@ jobs:
           cache: npm
       - name: Select the release npm toolchain
         run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
-      # Resolving one npm version is seconds of work against a registry this
-      # job already reaches, so it rides the runner that waits on the addon
-      # builds instead of holding a second one for the whole wait.
-      - name: Resolve the current npm Nightly as immutable evidence
-        id: predecessor
-        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
       - name: Install cargo-deny
         uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2
         with:
@@ -302,7 +293,13 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
+      # The two supported Node versions share a runner, so a failure on the
+      # first would otherwise mean the second never runs — which is the
+      # independence the matrix these replaced bought with `fail-fast: false`.
+      # The outcome is re-raised below, once both have had their turn.
       - name: Validate the installed tarball
+        id: first-node-smoke
+        continue-on-error: true
         run: node scripts/smoke-release-cli-package.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.second_node != ''
@@ -314,12 +311,24 @@ jobs:
       - name: Validate the installed tarball on the second Node
         if: matrix.second_node != ''
         run: node scripts/smoke-release-cli-package.mjs
+      # `always()` because the second Node failing must not swallow the first.
+      - name: Report the first Node result
+        if: always() && steps.first-node-smoke.outcome != 'success'
+        env:
+          NODE_VERSION: ${{ matrix.node }}
+        run: |
+          echo "The installed tarball failed on Node $NODE_VERSION" >&2
+          exit 1
 
   state-root-qualification:
     name: Qualify released State Roots
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      release_predecessor_version: ${{ steps.predecessor.outputs.version }}
+      release_predecessor_tarball_url: ${{ steps.predecessor.outputs.tarball_url }}
+      release_predecessor_integrity: ${{ steps.predecessor.outputs.integrity }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -340,15 +349,26 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.release_candidate_artifact_id }}
           path: packages/cli/release
+      # Resolved here rather than on `build`, which is the most expensive job in
+      # the workflow: a registry blip used to forfeit the tarball build and
+      # every job downstream of it, and this is the only job that reads the
+      # answer. It still costs no runner of its own, and the exported identity
+      # is now this job's output.
+      - name: Resolve the current npm Nightly as immutable evidence
+        id: predecessor
+        run: node scripts/release-cli-publication.mjs resolve-nightly-predecessor "$GITHUB_OUTPUT"
       # Three runs of one script against one sandbox, not three runners. Two of
       # these transitions are between tarballs that were published and frozen,
       # so nothing in a pull request can change their outcome except the
-      # qualifier itself, and the third reads the candidate this run built.
+      # qualifier itself, and the third reads the candidate this run built —
+      # which is why it goes first. Sharing one `set -e` with the frozen pair
+      # meant a flaky `curl` on either of them left the only transition a pull
+      # request can influence unexecuted.
       - name: Qualify the released State Root transitions
         env:
           MAKA_QUALIFICATION_BWRAP_USE_SUDO: '1'
-          PREDECESSOR_TARBALL_URL: ${{ needs.build.outputs.release_predecessor_tarball_url }}
-          PREDECESSOR_INTEGRITY: ${{ needs.build.outputs.release_predecessor_integrity }}
+          PREDECESSOR_TARBALL_URL: ${{ steps.predecessor.outputs.tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ steps.predecessor.outputs.integrity }}
         run: |
           set -euo pipefail
           evidence_root="$RUNNER_TEMP/released-state-root"
@@ -393,6 +413,10 @@ jobs:
             echo "::endgroup::"
           }
 
+          qualify current-nightly-predecessor-to-candidate \
+            "$PREDECESSOR_TARBALL_URL" '' "$PREDECESSOR_INTEGRITY" \
+            candidate '' '' any
+
           qualify cross-epoch-74-to-76 \
             https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.3.20260830.tgz \
             66b1ce9307c9d5c06eaa7a6cbf533d4747d02caf71c1776c69c7dbfa12c3f414 '' \
@@ -404,29 +428,26 @@ jobs:
             b7d48adb466e16be7ffefbda3a0fcd833cc4108ea502b27778d0f4da680e1fc0 '' \
             published https://registry.npmjs.org/maka-agent/-/maka-agent-0.2.0-dev.5.20260830.tgz \
             e7a682157c6899fc7f1be86a2d7b0bd0696195a5771d8cc97bd1389a5b74989f same
-
-          qualify current-nightly-predecessor-to-candidate \
-            "$PREDECESSOR_TARBALL_URL" '' "$PREDECESSOR_INTEGRITY" \
-            candidate '' '' any
       # The three transitions used to be three matrix jobs, so one failing left
       # the others to upload their own reports. Folded into one step they share
-      # a `set -e`, and the reports are wanted most on the run that failed —
-      # `tee` has already written the failing transition's own output by then.
-      # `if-no-files-found` stays `error` so a broken path is still caught on a
-      # green run.
+      # a `set -e`, and `tee` has already written the failing transition's own
+      # output by then. `if-no-files-found` stays `error` on a green run, where
+      # an empty directory means a broken path; on a red one it drops to `warn`,
+      # because a `curl` that failed before any `tee` would otherwise add a
+      # second, unrelated red to a job that already reported the real one.
       - name: Preserve the qualification reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: released-state-root
           path: ${{ runner.temp }}/released-state-root/*-report.json
-          if-no-files-found: error
+          if-no-files-found: ${{ job.status == 'success' && 'error' || 'warn' }}
           retention-days: 7
       - name: Require the qualified Nightly predecessor to remain current
         env:
-          PREDECESSOR_VERSION: ${{ needs.build.outputs.release_predecessor_version }}
-          PREDECESSOR_TARBALL_URL: ${{ needs.build.outputs.release_predecessor_tarball_url }}
-          PREDECESSOR_INTEGRITY: ${{ needs.build.outputs.release_predecessor_integrity }}
+          PREDECESSOR_VERSION: ${{ steps.predecessor.outputs.version }}
+          PREDECESSOR_TARBALL_URL: ${{ steps.predecessor.outputs.tarball_url }}
+          PREDECESSOR_INTEGRITY: ${{ steps.predecessor.outputs.integrity }}
         run: |
           node scripts/release-cli-publication.mjs assert-nightly-predecessor \
             "$PREDECESSOR_VERSION" \

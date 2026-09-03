@@ -473,6 +473,151 @@ test('reconnect lifecycle suspension admits recovery while no connection exists'
   await lifecycle.close();
 });
 
+test('new reachability evidence wakes an existing reconnect loop without starting another lifecycle', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const waitingForBackoff = deferred();
+  let connectCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      connectCalls += 1;
+      if (connectCalls === 1) throw new Error('route is not reachable yet');
+      return replacement.connection;
+    },
+    backoff: {
+      minMs: 30_000,
+      maxMs: 30_000,
+      wait: (_delayMs, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          waitingForBackoff.resolve();
+          const onAbort = () => reject(signal.reason);
+          signal.addEventListener('abort', onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        }),
+    },
+  });
+
+  first.disconnect();
+  await waitingForBackoff.promise;
+  assert.equal(connectCalls, 1);
+
+  lifecycle.wake();
+  assert.equal(await lifecycle.waitForCurrent(), replacement.connection);
+  assert.equal(connectCalls, 2);
+  await lifecycle.close();
+});
+
+test('an initial transient failure keeps a wakeable reconnect lifecycle', async () => {
+  const replacement = connectionHarness('replacement', () => undefined);
+  const waitingForBackoff = deferred();
+  const failures: Error[] = [];
+  let connectCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    retryInitialFailure: true,
+    connect: async () => {
+      connectCalls += 1;
+      if (connectCalls <= 2) throw new Error('the peer is not reachable yet');
+      return replacement.connection;
+    },
+    onReconnectError: (error) => failures.push(error),
+    backoff: {
+      minMs: 30_000,
+      maxMs: 30_000,
+      wait: (_delayMs, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          waitingForBackoff.resolve();
+          const onAbort = () => reject(signal.reason);
+          signal.addEventListener('abort', onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        }),
+    },
+  });
+  try {
+    assert.equal(lifecycle.current, undefined);
+    assert.equal(connectCalls, 2);
+    assert.match(failures[0]?.message ?? '', /not reachable yet/u);
+    await waitingForBackoff.promise;
+
+    lifecycle.wake();
+    assert.equal(await lifecycle.waitForCurrent(), replacement.connection);
+    assert.equal(connectCalls, 3);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
+test('initial retry mode does not outlive caller cancellation', async () => {
+  const controller = new AbortController();
+  const connecting = deferred();
+  const cancelled = new Error('initial connection cancelled');
+  let connectCalls = 0;
+  const starting = startRuntimeHostReconnectLifecycle({
+    retryInitialFailure: true,
+    initialSignal: controller.signal,
+    connect: async (signal): Promise<RuntimeHostConnection> => {
+      connectCalls += 1;
+      connecting.resolve();
+      return new Promise<never>((_resolve, reject) => {
+        const onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+        if (signal.aborted) onAbort();
+      });
+    },
+    backoff: { minMs: 0, maxMs: 0 },
+  });
+
+  await connecting.promise;
+  controller.abort(cancelled);
+  await assert.rejects(starting, (error: unknown) => error === cancelled);
+  await yieldToEventLoop();
+  assert.equal(connectCalls, 1);
+});
+
+test('reachability discovered during a failed attempt skips the next reconnect delay', async () => {
+  const first = connectionHarness('first', () => undefined);
+  const replacement = connectionHarness('replacement', () => undefined);
+  const attemptStarted = deferredValue<void>();
+  const failAttempt = deferredValue<void>();
+  let connectCalls = 0;
+  let delayCalls = 0;
+  const lifecycle = await startRuntimeHostReconnectLifecycle({
+    initial: first.connection,
+    connect: async () => {
+      connectCalls += 1;
+      if (connectCalls === 1) {
+        attemptStarted.resolve(undefined);
+        await failAttempt.promise;
+        throw new Error('the first route stopped working');
+      }
+      return replacement.connection;
+    },
+    backoff: {
+      minMs: 30_000,
+      maxMs: 30_000,
+      wait: (_delayMs, signal) =>
+        new Promise<void>((_resolve, reject) => {
+          delayCalls += 1;
+          const onAbort = () => reject(signal.reason);
+          signal.addEventListener('abort', onAbort, { once: true });
+          if (signal.aborted) onAbort();
+        }),
+    },
+  });
+  try {
+    first.disconnect();
+    await attemptStarted.promise;
+    lifecycle.wake();
+    failAttempt.resolve(undefined);
+
+    await waitForCondition(() => connectCalls === 2);
+    assert.equal(await lifecycle.waitForCurrent(), replacement.connection);
+    assert.equal(delayCalls, 0);
+  } finally {
+    await lifecycle.close();
+  }
+});
+
 test('reconnect delay escalates past maxMs while the Host never stabilizes', async () => {
   const first = connectionHarness('first', () => undefined);
   const delays: number[] = [];

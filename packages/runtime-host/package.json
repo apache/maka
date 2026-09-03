@@ -10,6 +10,7 @@
     "./protocol": "./dist/protocol/index.js",
     "./client": "./dist/client/index.js",
     "./webrtc-stun-policy": "./dist/webrtc-stun-policy.js",
+    "./peer-reachability": "./dist/peer-reachability/index.js",
     "./peer-mesh": "./dist/peer-mesh/index.js",
     "./operator": "./dist/operator/index.js",
     "./operator/update-package-evidence": "./dist/operator/update-package-evidence.js",

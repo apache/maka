@@ -17,32 +17,56 @@
  * under the License.
  */
 
-/** What the rail has marked, and whether the mode is on at all. */
+import type { SessionRailSelectionCommands } from '@maka/ui';
+
+/**
+ * What the rail has picked, and where a Shift range starts.
+ *
+ * There is no `active` flag and no mode to be in. A modifier held during a
+ * click is the whole vocabulary, which is what a Finder, a VS Code explorer and
+ * a Codex task list all use, so there is nothing to enter, nothing to leave,
+ * and no state in which a plain click means something else.
+ */
 export interface SessionSelection {
-  /**
-   * Whether the rail is in selection mode.
-   *
-   * Separate from `selectedIds` being empty, because unticking the master box
-   * is "select none" and not "leave". A mode that exited itself the moment the
-   * last row was cleared would take the checkboxes away mid-gesture, and the
-   * user would have to find the way back in to correct one mis-click.
-   */
-  readonly active: boolean;
   readonly selectedIds: ReadonlySet<string>;
+  /**
+   * The row a Shift range extends from: the last row picked WITHOUT Shift.
+   * Undefined until one is, and again after a clear — a range then starts from
+   * whatever is open, which is where the user's attention already is.
+   */
+  readonly anchorId: string | undefined;
 }
 
+/**
+ * What one click asks of the set — the rail's own contract, not a second copy
+ * of it. The rail is where the gesture is read, so the vocabulary is declared
+ * there and this reducer answers exactly the request the rail sends.
+ */
+export type SessionPickRequest = Parameters<SessionRailSelectionCommands['pick']>[0];
+
+/**
+ * Nothing picked, no anchor — where the rail starts, and what a clear returns
+ * to.
+ *
+ * Clearing is not "collapse to the open row": the open row is painted by the
+ * rail whether or not it is picked, so an empty selection already reads as that
+ * one row, and a set of one that happens to equal the open row is a second way
+ * to say the same thing.
+ */
 export const EMPTY_SESSION_SELECTION: SessionSelection = Object.freeze({
-  active: false,
   selectedIds: Object.freeze(new Set<string>()) as ReadonlySet<string>,
+  anchorId: undefined,
 });
 
 /**
  * Drops ids the catalog no longer lists.
  *
  * A selection outlives the list it was made from: another client deletes a
- * task, a filter narrows, a bulk action removes what it removed. Acting on an
- * id that is gone is at best a no-op and at worst a count that does not add up,
- * so the selection is reconciled against the catalog rather than trusted.
+ * task, a filter narrows, an archive sweep removes what it removed. Acting on
+ * an id that is gone is at best a no-op and at worst a count that does not add
+ * up, so the selection is reconciled against the catalog rather than trusted.
+ * The anchor is reconciled with it — a range from a row that is no longer there
+ * would reach across the rows that took its place.
  */
 export function pruneSessionSelection(
   selection: SessionSelection,
@@ -53,46 +77,47 @@ export function pruneSessionSelection(
   for (const sessionId of selection.selectedIds) {
     if (listed.has(sessionId)) selectedIds.add(sessionId);
   }
-  if (selectedIds.size === selection.selectedIds.size) return selection;
-  // Pruning empties the set; it does not end the mode. The rows went away
-  // because the catalog changed, not because the user was finished.
-  return { active: selection.active, selectedIds };
-}
-
-/** Enters selection mode with nothing marked. */
-export function enterSessionSelection(selection: SessionSelection): SessionSelection {
-  return selection.active ? selection : { ...selection, active: true };
-}
-
-/** Leaves selection mode and drops what was marked. */
-export function exitSessionSelection(): SessionSelection {
-  return EMPTY_SESSION_SELECTION;
+  const anchorId =
+    selection.anchorId !== undefined && listed.has(selection.anchorId)
+      ? selection.anchorId
+      : undefined;
+  if (selectedIds.size === selection.selectedIds.size && anchorId === selection.anchorId) {
+    return selection;
+  }
+  return { selectedIds, anchorId };
 }
 
 /**
- * The master box: every listed row, or none of them.
+ * Applies one click to the selection.
  *
- * "All" means every row the rail is listing right now, which is what the user
- * can see the box sitting above — not every task in the catalog. A box that
- * silently included rows behind a collapsed project, or filtered out of view,
- * would name a number the user never agreed to.
+ * `orderedSessionIds` is the rail's RENDERED order, and it is an argument
+ * rather than state for the reason the rows never receive it: it is a property
+ * of the list, it changes identity whenever the catalog does, and #4365's first
+ * revision handed each row its group's copy — a changed prop on every memoised
+ * row, which turned a two-row session switch into a twelve-row one (#4109).
+ * Read at the moment of a click it costs one query and nothing per render.
+ *
+ * A range runs from the anchor, and the anchor does NOT move: a range can be
+ * re-dragged shorter or longer from the same origin, and the task the main pane
+ * is showing stays the one the user opened.
  */
-export function setAllSessionsSelected(
+export function pickSessionRow(
   selection: SessionSelection,
-  listedSessionIds: readonly string[],
-  selected: boolean,
+  input: SessionPickRequest,
 ): SessionSelection {
-  if (!selected) return { active: selection.active, selectedIds: new Set() };
-  return { active: true, selectedIds: new Set(listedSessionIds) };
-}
-
-/** What the master box shows: all, none, or some. */
-export function sessionSelectionMasterState(
-  selection: SessionSelection,
-  listedSessionIds: readonly string[],
-): boolean | 'indeterminate' {
-  if (selection.selectedIds.size === 0) return false;
-  if (listedSessionIds.length === 0) return false;
-  const allListed = listedSessionIds.every((id) => selection.selectedIds.has(id));
-  return allListed ? true : 'indeterminate';
+  const { sessionId, pick, orderedSessionIds, openSessionId } = input;
+  if (pick === 'replace') return { selectedIds: new Set([sessionId]), anchorId: sessionId };
+  if (pick === 'toggle') {
+    const selectedIds = new Set(selection.selectedIds);
+    if (!selectedIds.delete(sessionId)) selectedIds.add(sessionId);
+    return { selectedIds, anchorId: sessionId };
+  }
+  const anchorId = selection.anchorId ?? openSessionId;
+  const from = anchorId === undefined ? -1 : orderedSessionIds.indexOf(anchorId);
+  const to = orderedSessionIds.indexOf(sessionId);
+  // No anchor to reach from, or a row the list is not showing: the range is the
+  // one row that was actually clicked.
+  if (from === -1 || to === -1) return { selectedIds: new Set([sessionId]), anchorId: sessionId };
+  const run = orderedSessionIds.slice(Math.min(from, to), Math.max(from, to) + 1);
+  return { selectedIds: new Set(run), anchorId };
 }

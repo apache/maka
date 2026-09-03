@@ -40,6 +40,7 @@
  * explain, and none in which a completed tool effect is repeated.
  */
 
+import { MATERIALIZED_IMAGE_TOKENS } from '@maka/core/attachments';
 import type { DurableToolResultProjection } from '@maka/core/durable-tool-result-projection';
 import { DURABLE_TOOL_RESULT_PROJECTION_VERSION } from '@maka/core/durable-tool-result-projection';
 import {
@@ -56,7 +57,10 @@ import {
   turnKey,
   utf8ByteLength,
 } from './context-budget-helpers.js';
-import { durableProjectionToToolResultOutput } from './durable-tool-result-projection.js';
+import {
+  durableProjectionToToolResultOutput,
+  projectionArtifactMedia,
+} from './durable-tool-result-projection.js';
 import { baseToolResultProjection, nextInChain } from './model-projection-transition-ledger.js';
 import {
   ARCHIVED_TOOL_RESULT_REWRITE_VERSION,
@@ -289,8 +293,17 @@ export function collectStaleToolResultArchiveCandidates(
     if (!sourceProjection) continue;
     const serializedResult = serializedToolResultProjection(sourceProjection);
     const originalBytes = utf8ByteLength(serializedResult);
-    const originalEstimatedTokens = estimateTokens(serializedResult.length, charsPerToken);
-    if (originalEstimatedTokens <= maxResultEstimatedTokens) continue;
+    const media = projectionArtifactMedia(sourceProjection);
+    // An artifact serializes to a short reference and materializes to real
+    // image bytes, so the string alone would price a screenshot at nothing.
+    const originalEstimatedTokens =
+      estimateTokens(serializedResult.length, charsPerToken) +
+      media.length * MATERIALIZED_IMAGE_TOKENS;
+    // A result that carries media is always a candidate: archiving it drops
+    // whole images from the request, which is worth doing whatever the
+    // reference text around them happens to weigh. The size gate is there to
+    // spare small text results, so it only decides those.
+    if (media.length === 0 && originalEstimatedTokens <= maxResultEstimatedTokens) continue;
     candidates.push({
       runtimeEventId: event.id,
       turnId: event.turnId,

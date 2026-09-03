@@ -49,7 +49,7 @@
   font: var(--maka-text-supporting);
   display: -webkit-box;
   overflow: hidden;
-  color: var(--foreground-secondary);
+  color: var(--muted-foreground);
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

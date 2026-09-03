@@ -19,7 +19,7 @@
 
 import { FAKE_HOLD_OPEN_PROMPT } from '@maka/runtime/test-only/fake-backend';
 import type { CDPSession, Locator, Page } from '@playwright/test';
-import { expect, test, COMPOSER_INPUT } from './fixtures';
+import { awaitSendReady, expect, test, COMPOSER_INPUT } from './fixtures';
 import { auditAxTree } from '../../../scripts/ax-tree-audit.mjs';
 import { groupedNav } from '../src/renderer/settings/settings-nav';
 
@@ -52,13 +52,27 @@ async function tabTo(page: Page, target: Locator, label: string, limit = 30): Pr
   ).toBe(true);
 }
 
+/**
+ * Walk to the skip link from the document start, taking the start back if a
+ * cold start moves it.
+ *
+ * Parking focus on `body` is not a one-shot the renderer respects: the composer
+ * restores its draft caret with `getSelection().addRange(...)`, and a range set
+ * inside a `contenteditable` focuses it — so once per cold start, tens of
+ * milliseconds after the park and with no `focus()` call to fence on, focus
+ * lands in the composer. A walk that starts there has to run out the tab ring
+ * and wrap around, which is over budget. The restore fires once, so re-park and
+ * walk again rather than widening the budget — the budget is the assertion.
+ */
 async function enterMainFromSkipLink(page: Page): Promise<void> {
-  await page.evaluate(() => {
-    document.body.tabIndex = -1;
-    document.body.focus();
-  });
   const skipLink = page.getByRole('link', { name: '跳到主要内容' });
-  await tabTo(page, skipLink, 'skip link', 10);
+  await expect(async () => {
+    await page.evaluate(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+    });
+    await tabTo(page, skipLink, 'skip link', 10);
+  }).toPass({ timeout: 30_000 });
   await page.keyboard.press('Enter');
   await expect(page.getByRole('main')).toBeFocused();
   await page.evaluate(() => document.body.removeAttribute('tabindex'));
@@ -183,6 +197,7 @@ test('data-backed conversation exposes ordered todos and keyboard access to tool
   await page.keyboard.insertText('/graph on');
   const send = page.getByRole('button', { name: '发送' });
   await tabTo(page, send, 'Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
   await expect(page.getByText('Graph Mode 已开启', { exact: true })).toBeVisible();
   await assertAxHealth(cdp, 'overlay/graph-mode-toast');
@@ -203,6 +218,7 @@ test('toast and error states expose healthy live regions', async ({ window: page
   const cdp = await page.context().newCDPSession(page);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('/graph history');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByText('Graph 历史', { exact: true })).toBeVisible();
   await assertAxHealth(cdp, 'overlay/graph-history-toast');
@@ -224,10 +240,17 @@ test('a streaming answer exposes a healthy live conversation state', async ({ wi
   await tabTo(page, composer, 'streaming composer', 60);
   await page.keyboard.insertText(FAKE_HOLD_OPEN_PROMPT);
   const send = page.getByRole('button', { name: '发送' });
+  // After the Tab walk, not before it: a tooltip-carrying Astryx Button is
+  // disabled via `aria-disabled`, so it stays focusable and `tabTo` would
+  // reach it either way.
   await tabTo(page, send, 'streaming Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
 
-  await expect(page.locator('.maka-bubble-streaming')).toContainText('Fake backend waiting');
+  await expect(page.locator('.maka-bubble-streaming')).toContainText(
+    'Fake backend waiting',
+    { timeout: 20_000 },
+  );
   await expect(page.getByRole('button', { name: '停止' })).toBeEnabled();
   await assertAxHealth(cdp, 'conversation/streaming');
 
@@ -254,8 +277,8 @@ test('composer and workbar entry points expose named actionable controls', async
   await tabTo(page, composer, 'new-task composer', 60);
   await page.keyboard.insertText(prompt);
   const send = page.getByRole('button', { name: '发送' });
-  await expect(send).toBeEnabled();
   await tabTo(page, send, 'new-task Send button', 20);
+  await awaitSendReady(page);
   await page.keyboard.press('Enter');
   await expect(page.getByText(`Fake backend received: ${prompt}`)).toBeVisible({
     timeout: 30_000,

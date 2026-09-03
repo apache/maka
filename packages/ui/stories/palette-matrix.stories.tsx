@@ -83,7 +83,7 @@ export const AllPalettes: Story = {
       <section style={{ display: 'grid', gap: 20, maxWidth: 920 }}>
         <div style={{ display: 'grid', gap: 4 }}>
           <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>Palette Matrix</h2>
-          <p style={{ color: 'var(--foreground-secondary)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
+          <p style={{ color: 'var(--muted-foreground)', fontSize: 12, margin: 0, lineHeight: 1.5 }}>
             {THEME_PALETTES.length} 个 palette,用工具栏切 light/dark 查看另一组。每个块独立应用 data-maka-theme。
           </p>
         </div>

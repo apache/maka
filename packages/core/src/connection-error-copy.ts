@@ -18,67 +18,49 @@
  */
 
 /**
- * Human-readable copy for a not-ready chat connection: maps each
- * `NO_REAL_CONNECTION:<reason>` code to one fix sentence so a first-run / CLI
- * surface does not hand-roll its own table.
+ * Canonical parser for `NO_REAL_CONNECTION:<reason>` failures.
  *
- * Pure & sync. `describeChatConfigurationReason` turns a reason into a Chinese
- * sentence naming what is missing and where to fix it (设置 · 模型);
- * `parseNoRealConnectionError` reports whether an error is a NO_REAL_CONNECTION
- * failure and recovers its reason, tolerating both the bare CLI form and the
- * `NO_REAL_CONNECTION:<reason>: <message>` form that IPC wrapping produces.
+ * The `NO_REAL_CONNECTION` code, its reason tokens, and the
+ * `NO_REAL_CONNECTION:<reason>: <message>` wire shape that IPC wrapping
+ * produces are locale-independent protocol values. Presentation copy is a
+ * surface concern: the Desktop resolves its own localized table from the
+ * parsed reason, and the CLI renders its own line, so this module owns
+ * parsing only — producers stay free to word the embedded message in their
+ * own language because consumers never display it.
  *
- * This module is the canonical parser and copy table for both CLI and desktop;
- * surfaces adapt their local event shape here instead of duplicating the rules.
+ * Pure & sync.
  */
 
 import type { ChatConfigurationReason } from './connection-readiness.js';
 
 export const NO_REAL_CONNECTION_CODE = 'NO_REAL_CONNECTION';
 
-const GENERIC_FIX_COPY = '模型连接暂时无法用于发送，请到 设置 · 模型 检查后重试。';
-
 /**
- * The one hand-maintained table: reason → fix copy. Typed as
- * `Record<ChatConfigurationReason, string>`, so adding a reason to the union
- * fails the build until its copy is added here — completeness and copy live in
- * one place. `CHAT_CONFIGURATION_REASONS` and the parser's known-token set are
- * derived from its keys, so neither can drift from it.
+ * Every reason, mirroring the canonical union in `connection-readiness`.
+ * `satisfies` rejects tokens that are not in the union, and the
+ * `AssertNever` alias below fails the build when the union gains a reason
+ * this list is missing, so the parser's known-token set cannot silently
+ * drift from the taxonomy.
  */
-const REASON_FIX_COPY: Record<ChatConfigurationReason, string> = {
-  missing_default_connection: '等待配置默认模型。请到 设置 · 模型 添加一个可用模型连接后再发送。',
-  connection_missing: '该任务依赖的模型连接已删除，请到 设置 · 模型 重新选择或重建连接。',
-  connection_disabled: '当前模型连接已禁用。请到 设置 · 模型 启用或选择其他默认模型。',
-  missing_api_key: '当前模型连接还没有可用凭据。请到 设置 · 模型 补齐 API key 或重新登录后再发送。',
-  missing_model: '当前模型连接还没有可用模型。请到 设置 · 模型 选择默认模型后再发送。',
-  empty_model_list: '当前模型连接没有启用模型。请到 设置 · 模型 添加或启用模型后再发送。',
-  model_not_enabled: '当前任务选择的模型未启用。请到 设置 · 模型 重新选择可用模型后再发送。',
-  model_not_chat_capable:
-    '当前任务选择的模型不能用于聊天。请到 设置 · 模型 重新选择支持聊天的模型后再发送。',
-  fake_backend: '当前任务来自旧的本地模拟连接。请到 设置 · 模型 添加真实模型后新建任务。',
-  provider_retired:
-    '当前模型连接的登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后再发送。',
-};
+export const CHAT_CONFIGURATION_REASONS = [
+  'missing_default_connection',
+  'connection_missing',
+  'connection_disabled',
+  'missing_api_key',
+  'missing_model',
+  'empty_model_list',
+  'model_not_enabled',
+  'model_not_chat_capable',
+  'fake_backend',
+  'provider_retired',
+] as const satisfies readonly ChatConfigurationReason[];
 
-/**
- * Every reason, derived from the copy table so test coverage and the parser's
- * known-token set track the union automatically. Module-scoped (the package
- * index does not re-export it) — only the parser and the tests read it.
- */
-export const CHAT_CONFIGURATION_REASONS = Object.keys(REASON_FIX_COPY) as ChatConfigurationReason[];
+type AssertNever<T extends never> = T;
+type MissingChatConfigurationReasons = AssertNever<
+  Exclude<ChatConfigurationReason, (typeof CHAT_CONFIGURATION_REASONS)[number]>
+>;
 
 const KNOWN_CHAT_CONFIGURATION_REASONS: ReadonlySet<string> = new Set(CHAT_CONFIGURATION_REASONS);
-
-/**
- * Fix instructions for a not-ready connection. `undefined` (a missing or
- * unrecognized reason) returns the generic fallback; every known reason has its
- * own line, guaranteed present by the `Record` type above.
- */
-export function describeChatConfigurationReason(reason: string | undefined): string {
-  return reason !== undefined && KNOWN_CHAT_CONFIGURATION_REASONS.has(reason)
-    ? REASON_FIX_COPY[reason as ChatConfigurationReason]
-    : GENERIC_FIX_COPY;
-}
 
 // `\bNO_REAL_CONNECTION\b` pins the whole code: the trailing boundary stops it
 // matching a longer word like `NO_REAL_CONNECTIONS` (the reason group is

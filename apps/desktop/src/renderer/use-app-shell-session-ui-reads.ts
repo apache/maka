@@ -17,22 +17,27 @@
  * under the License.
  */
 
-import type { InteractionQueues } from '@maka/ui';
 import type {
   AppShellSessionUiState,
   AppShellSessionUiStateController,
-  MessageQueueUiState,
 } from './app-shell-session-ui-state.js';
 import {
   deriveLiveTurnSnapshot,
   liveTurnSnapshotsEqual,
   selectStreamingSessionIds,
   sessionIdSetsEqual,
-  type LiveTurnSnapshot,
 } from './live-turn-snapshot.js';
 import { useExternalStoreSelector } from './use-external-store-selector.js';
 
-const selectMessageLoadError = (state: AppShellSessionUiState) => state.messageLoadErrorBySession;
+const selectMessageLoadState = (state: AppShellSessionUiState) => ({
+  messageLoadErrorBySession: state.messageLoadErrorBySession,
+  transcriptRestoreUnavailableBySession: state.transcriptRestoreUnavailableBySession,
+});
+const messageLoadStateEqual = (
+  left: ReturnType<typeof selectMessageLoadState>,
+  right: ReturnType<typeof selectMessageLoadState>,
+) => left.messageLoadErrorBySession === right.messageLoadErrorBySession
+  && left.transcriptRestoreUnavailableBySession === right.transcriptRestoreUnavailableBySession;
 const selectMessageRetryPending = (state: AppShellSessionUiState) => state.messageRetryPendingBySession;
 const selectStopPending = (state: AppShellSessionUiState) => state.stopPendingBySession;
 const selectInteraction = (state: AppShellSessionUiState) => state.interactionBySession;
@@ -69,17 +74,15 @@ const selectActiveSnapshot = (state: AppShellSessionUiState, sessionId: string |
 export function useAppShellSessionUiReads(
   controller: AppShellSessionUiStateController,
   activeId: string | undefined,
-): {
-  messageLoadErrorBySession: Record<string, string>;
-  messageRetryPendingBySession: Record<string, boolean>;
-  stopPendingBySession: Record<string, boolean>;
-  interactionBySession: InteractionQueues;
-  messageQueueBySession: Record<string, MessageQueueUiState>;
-  streamingSessionIds: Set<string>;
-  activeLiveTurnSnapshot: LiveTurnSnapshot;
-} {
+) {
+  const messageLoadState = useExternalStoreSelector(
+    controller,
+    selectMessageLoadState,
+    undefined,
+    messageLoadStateEqual,
+  );
   return {
-    messageLoadErrorBySession: useExternalStoreSelector(controller, selectMessageLoadError),
+    ...messageLoadState,
     messageRetryPendingBySession: useExternalStoreSelector(controller, selectMessageRetryPending),
     stopPendingBySession: useExternalStoreSelector(controller, selectStopPending),
     interactionBySession: useExternalStoreSelector(controller, selectInteraction),

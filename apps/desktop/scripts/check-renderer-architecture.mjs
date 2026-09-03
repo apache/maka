@@ -688,6 +688,54 @@ function environmentIdentifierIsShadowed(node, name, parents) {
   return false;
 }
 
+const NAMED_KEY_OWNERS = new Set([
+  'ClassMethod',
+  'ClassPrivateMethod',
+  'ClassPrivateProperty',
+  'ClassProperty',
+  'ObjectMethod',
+  'ObjectProperty',
+  'PropertyDefinition',
+  'TSMethodSignature',
+  'TSPropertySignature',
+]);
+// TS wrapper nodes whose descendants still execute at runtime; every other
+// TS-prefixed ancestor puts an identifier in erased type space.
+const TS_RUNTIME_NODES = new Set([
+  'TSAsExpression',
+  'TSDeclareFunction',
+  'TSDeclareMethod',
+  'TSEnumDeclaration',
+  'TSEnumMember',
+  'TSExportAssignment',
+  'TSExternalModuleReference',
+  'TSImportEqualsDeclaration',
+  'TSInstantiationExpression',
+  'TSModuleBlock',
+  'TSModuleDeclaration',
+  'TSNonNullExpression',
+  'TSParameterProperty',
+  'TSSatisfiesExpression',
+  'TSTypeAssertion',
+]);
+
+function isValueReferencePosition(node, parent, parents) {
+  if (parent) {
+    if (NAMED_KEY_OWNERS.has(parent.type) && parent.key === node && !parent.computed) return false;
+    if (isMemberExpression(parent) && parent.property === node && !parent.computed) return false;
+    if (
+      ['BreakStatement', 'ContinueStatement', 'LabeledStatement'].includes(parent.type) &&
+      parent.label === node
+    ) {
+      return false;
+    }
+  }
+  for (let current = parent; current && current.type !== 'Program'; current = parents.get(current)) {
+    if (current.type.startsWith('TS') && !TS_RUNTIME_NODES.has(current.type)) return false;
+  }
+  return true;
+}
+
 function collectAliases(program, parents) {
   const hookAliases = new Map();
   const hookAliasBindings = new Map();
@@ -1073,7 +1121,8 @@ export function analyzeRendererSource(source, file = 'fixture.ts') {
     if (
       directEnvironmentPath &&
       !directEnvironmentPath.startsWith('window.maka') &&
-      !(isMemberExpression(parent) && unwrapExpression(parent.object) === node)
+      !(isMemberExpression(parent) && unwrapExpression(parent.object) === node) &&
+      isValueReferencePosition(node, parent, parents)
     ) {
       recordEnvironmentCapability(directEnvironmentPath);
     }
@@ -1431,7 +1480,7 @@ function validateDependencies({
     }
 
     if (sourceZone.kind === 'feature') {
-      if (targetZone.kind === 'legacy') {
+      if (targetZone.kind === 'legacy' && !isValidatedCopyCatalog(desktopRoot, targetRelative)) {
         const edge = `${fileRelative} -> ${targetRelative}`;
         observedLegacyFeatureImports.add(edge);
         if (!allowedLegacyFeatureImports.has(edge)) {
@@ -1511,7 +1560,7 @@ function validateDependencies({
       if (targetZone.kind === 'application' && !isPublicApplicationPath(targetRelative)) {
         violations.push(`${fileRelative}: Desktop adapter imports application implementation instead of a public entry: ${dependency}`);
       }
-      if (targetZone.kind === 'legacy') {
+      if (targetZone.kind === 'legacy' && !isValidatedCopyCatalog(desktopRoot, targetRelative)) {
         const edge = `${fileRelative} -> ${targetRelative}`;
         observedLegacyPlatformImports.add(edge);
         if (!allowedLegacyPlatformImports.has(edge)) {
@@ -2172,6 +2221,182 @@ function metricTotal(value) {
   return Object.values(value).reduce((total, count) => total + count, 0);
 }
 
+const COPY_CATALOG_PATH = /^src\/renderer\/locales\/[a-z0-9-]+-copy\.ts$/u;
+const COPY_CATALOG_MARKER_MODULE = '@maka/core/ui-locale';
+const COPY_CATALOG_MARKER_TYPE = 'UiCatalog';
+const copyCatalogValidationCache = new Map();
+
+function inspectCopyCatalog(source, file) {
+  const ast = parse(source, {
+    createImportExpressions: true,
+    errorRecovery: false,
+    plugins: PARSER_PLUGINS.filter((plugin) => plugin !== 'jsx'),
+    sourceFilename: file,
+    sourceType: 'module',
+  });
+  let markerLocalName;
+  const runtimeDependencies = [];
+  for (const statement of ast.program.body) {
+    if (statement.type === 'ImportDeclaration') {
+      if (statement.source.value === COPY_CATALOG_MARKER_MODULE) {
+        for (const specifier of statement.specifiers) {
+          if (specifier.type === 'ImportSpecifier' && specifier.imported.name === COPY_CATALOG_MARKER_TYPE) {
+            markerLocalName = specifier.local.name;
+          }
+        }
+      }
+      const typeOnly =
+        statement.importKind === 'type' ||
+        (statement.specifiers.length > 0 &&
+          statement.specifiers.every((specifier) => specifier.importKind === 'type'));
+      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+    }
+    if (
+      (statement.type === 'ExportNamedDeclaration' || statement.type === 'ExportAllDeclaration') &&
+      statement.source
+    ) {
+      const typeOnly =
+        statement.exportKind === 'type' ||
+        (statement.specifiers?.length > 0 &&
+          statement.specifiers.every((specifier) => specifier.exportKind === 'type'));
+      if (!typeOnly) runtimeDependencies.push(statement.source.value);
+    }
+    if (
+      statement.type === 'TSImportEqualsDeclaration' &&
+      statement.moduleReference?.type === 'TSExternalModuleReference' &&
+      staticString(statement.moduleReference.expression) !== undefined
+    ) {
+      runtimeDependencies.push(staticString(statement.moduleReference.expression));
+    }
+  }
+  let markerFound = false;
+  function referencesMarker(typeAnnotation) {
+    return (
+      typeAnnotation?.type === 'TSTypeReference' &&
+      typeAnnotation.typeName.type === 'Identifier' &&
+      typeAnnotation.typeName.name === markerLocalName
+    );
+  }
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      for (const child of node) visit(child);
+      return;
+    }
+    if (typeof node.type !== 'string') return;
+    if (markerLocalName) {
+      if (node.type === 'TSSatisfiesExpression' && referencesMarker(node.typeAnnotation)) markerFound = true;
+      if (node.type === 'TSTypeAnnotation' && referencesMarker(node.typeAnnotation)) markerFound = true;
+    }
+    if (node.type === 'ImportExpression' && staticString(node.source) !== undefined) {
+      runtimeDependencies.push(staticString(node.source));
+    }
+    if (
+      (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') &&
+      (node.callee?.type === 'Import' ||
+        (node.callee?.type === 'Identifier' && node.callee.name === 'require')) &&
+      staticString(node.arguments?.[0]) !== undefined
+    ) {
+      runtimeDependencies.push(staticString(node.arguments[0]));
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'loc' || key === 'start' || key === 'end') continue;
+      visit(value);
+    }
+  }
+  visit(ast.program.body);
+  return { markerFound, runtimeDependencies };
+}
+
+// A "validated copy catalog" is the one dependency class the migration ratchet
+// admits into legacy files: the locale policy (#2672) forces user-visible copy
+// OUT of business files and INTO locales/ catalogs, which necessarily ADDS an
+// import edge the debt ratchet would otherwise forbid. The admission is
+// structural, re-verified on every run, and never extends to the catalog's own
+// runtime dependencies: bare package specifiers only, so a catalog cannot
+// become a tunnel to renderer implementation modules. Type-only imports are
+// erased at compile time and carry no runtime edge, so they stay admitted
+// regardless of target.
+function isValidatedCopyCatalog(desktopRoot, path) {
+  return copyCatalogFailure(desktopRoot, path) === undefined;
+}
+
+function copyCatalogFailure(desktopRoot, path) {
+  const relativePath = /\.[a-z]+$/u.test(path) ? path : `${path}.ts`;
+  const cacheKey = `${desktopRoot}|${relativePath}`;
+  if (copyCatalogValidationCache.has(cacheKey)) return copyCatalogValidationCache.get(cacheKey);
+  const failure = validateCopyCatalog(desktopRoot, relativePath);
+  copyCatalogValidationCache.set(cacheKey, failure);
+  return failure;
+}
+
+function validateCopyCatalog(desktopRoot, relativePath) {
+  if (!COPY_CATALOG_PATH.test(relativePath)) {
+    return 'path does not match src/renderer/locales/*-copy.ts';
+  }
+  const absolutePath = resolve(desktopRoot, relativePath);
+  if (!existsSync(absolutePath)) return 'file does not exist';
+  const source = readFileSync(absolutePath, 'utf8');
+  let analysis;
+  let inspection;
+  try {
+    analysis = analyzeRendererSource(source, relativePath);
+    inspection = inspectCopyCatalog(source, relativePath);
+  } catch (error) {
+    return `could not analyze source: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (!inspection.markerFound) {
+    return `missing ${COPY_CATALOG_MARKER_TYPE} marker from ${COPY_CATALOG_MARKER_MODULE}`;
+  }
+  const capabilityMetrics = {
+    actionFactories: analysis.actionFactories,
+    bridgePaths: analysis.bridgePaths,
+    environmentCapabilities: analysis.environmentCapabilities,
+    hookCalls: analysis.hookCalls,
+    lifecycleMethods: analysis.lifecycleMethods,
+    unresolvedDependencies: analysis.unresolvedDependencies,
+  };
+  for (const [metric, value] of Object.entries(capabilityMetrics)) {
+    if (metricTotal(value) > 0) return `catalog carries ${metric} (${describeMetric(value)})`;
+  }
+  const forbidden = inspection.runtimeDependencies.find(
+    (dependency) => dependency.startsWith('.') || dependency.startsWith(DESKTOP_SELF_PREFIX),
+  );
+  if (forbidden !== undefined) {
+    return `runtime import ${forbidden} is not a bare package specifier`;
+  }
+  return undefined;
+}
+
+function describeMetric(value) {
+  if (typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.join(', ');
+  return Object.keys(value).join(', ');
+}
+
+function validateCopyCatalogFiles(desktopRoot, violations) {
+  const localesRoot = resolve(desktopRoot, 'src/renderer/locales');
+  if (!existsSync(localesRoot)) return;
+  for (const file of sourceFiles(localesRoot)) {
+    const fileRelative = normalizePath(relative(desktopRoot, file));
+    if (!/-copy\.(?:(?:c|m)?ts)$/u.test(fileRelative)) continue;
+    const failure = copyCatalogFailure(desktopRoot, fileRelative);
+    if (failure !== undefined) {
+      violations.push(`${fileRelative}: copy catalog validation failed: ${failure}`);
+    }
+  }
+}
+
+function withoutValidatedCatalogDependencies(desktopRoot, importerPath, dependencyPaths) {
+  const filtered = {};
+  for (const [dependency, count] of Object.entries(dependencyPaths)) {
+    const target = resolveDependency(desktopRoot, resolve(desktopRoot, importerPath), dependency);
+    if (target && isValidatedCopyCatalog(desktopRoot, normalizePath(relative(desktopRoot, target)))) continue;
+    filtered[dependency] = count;
+  }
+  return filtered;
+}
+
 function allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section }) {
   if (metricTotal(current.dependencyPaths) > metricTotal(base.dependencyPaths)) return false;
   const target = resolveDependency(desktopRoot, resolve(desktopRoot, path), dependency);
@@ -2208,6 +2433,7 @@ function collectLegacyImportEdges(desktopRoot) {
       if (!target) continue;
       const targetRelative = normalizePath(relative(desktopRoot, target));
       if (zoneFor(targetRelative).kind !== 'legacy') continue;
+      if (isValidatedCopyCatalog(desktopRoot, targetRelative)) continue;
       const edge = `${fileRelative} -> ${targetRelative}`;
       if (sourceZone.kind === 'feature') feature.add(edge);
       else platform.add(edge);
@@ -2286,7 +2512,11 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
     for (const path of Object.keys(currentFiles)) {
       const shiftedAppShellBase =
         section === 'rootDebtClosure' ? baseConfig.legacyAppShell.closure[path] : undefined;
-      if (!baseFiles[path] && !shiftedAppShellBase) {
+      if (
+        !baseFiles[path] &&
+        !shiftedAppShellBase &&
+        !(section.endsWith('Closure') && isValidatedCopyCatalog(desktopRoot, path))
+      ) {
         violations.push(`${path}: new ${section} debt entries are forbidden`);
       }
     }
@@ -2302,10 +2532,18 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
         baseFiles[path] ??
         (section === 'rootDebtClosure' ? baseConfig.legacyAppShell.closure[path] : undefined);
       if (!base) continue;
+      const currentView = {
+        ...current,
+        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, current.dependencyPaths),
+      };
+      const baseView = {
+        ...base,
+        dependencyPaths: withoutValidatedCatalogDependencies(desktopRoot, path, base.dependencyPaths),
+      };
       const metrics = section.endsWith('Closure') ? CAPABILITY_DEBT_METRICS : ROOT_DEBT_METRICS;
       for (const metric of metrics) {
-        if (metricTotal(current[metric]) > metricTotal(base[metric])) {
-          violations.push(`${path}: ${metric} debt increased from ${metricTotal(base[metric])} to ${metricTotal(current[metric])}`);
+        if (metricTotal(currentView[metric]) > metricTotal(baseView[metric])) {
+          violations.push(`${path}: ${metric} debt increased from ${metricTotal(baseView[metric])} to ${metricTotal(currentView[metric])}`);
         }
         if (['bridgePaths', 'environmentCapabilities', 'hookCalls', 'lifecycleMethods'].includes(metric)) {
           const increases = Object.fromEntries(
@@ -2325,10 +2563,17 @@ function validateMonotonicDebt(config, baseConfig, desktopRoot, violations) {
           }
         }
         if (metric === 'dependencyPaths') {
-          for (const [dependency, count] of Object.entries(current.dependencyPaths)) {
+          for (const [dependency, count] of Object.entries(currentView.dependencyPaths)) {
             if (
-              count > (base.dependencyPaths[dependency] ?? 0) &&
-              !allowsMigrationDependency({ base, current, dependency, desktopRoot, path, section })
+              count > (baseView.dependencyPaths[dependency] ?? 0) &&
+              !allowsMigrationDependency({
+                base: baseView,
+                current: currentView,
+                dependency,
+                desktopRoot,
+                path,
+                section,
+              })
             ) {
               violations.push(`${path}: new dependency debt ${dependency}`);
             }
@@ -2376,6 +2621,7 @@ export function checkRendererArchitecture({
     validateRendererEntryContract(resolvedDesktopRoot, resolvedConfig, violations);
   }
   validateLegacyLedger(resolvedDesktopRoot, resolvedConfig, violations);
+  validateCopyCatalogFiles(resolvedDesktopRoot, violations);
   validateMonotonicDebt(resolvedConfig, baseConfig, resolvedDesktopRoot, violations);
   const allowedLegacyFeatureImports = new Set(resolvedConfig.legacyFeatureImports);
   const allowedLegacyPlatformImports = new Set(resolvedConfig.legacyPlatformImports);

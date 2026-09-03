@@ -21,7 +21,7 @@ import { RuntimeHostProtocolError } from '../protocol/errors.js';
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 import { MAX_ATTACHMENT_BYTES, MAX_ATTACHMENT_COUNT } from '@maka/core/attachments';
-import { CONTEXT_BUDGET_EXHAUSTED_DETAILS, TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
+import { TOOL_OUTPUT_DELTA_MAX_CHARS } from '@maka/core/events';
 import { CONNECTION_CATALOG_MAX_ENABLED_MODEL_IDS } from '@maka/core/runtime-policy';
 import {
   decodeClientCapabilityReplaceInput,
@@ -138,6 +138,10 @@ describe('Runtime Host bootstrap protocol', () => {
     // Submit Skill outcomes and explicit OAuth Connection targets independently
     // claimed epoch 78, so their merge requires a distinct compatibility boundary.
     assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 78);
+  });
+
+  test('publishes a new compatibility epoch for Read image Session context refs', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 95);
   });
 
   test('rejects the legacy connection update result in the current compatibility epoch', () => {
@@ -2131,6 +2135,7 @@ describe('Runtime Host bootstrap protocol', () => {
   });
 
   test('publishes a bounded live Direct peer endpoint through Host status', () => {
+    assert.ok(RUNTIME_HOST_COMPATIBILITY_EPOCH > 94);
     const status = {
       hostEpoch: 'epoch-1',
       compositionId: 'maka.interactive',
@@ -2140,9 +2145,17 @@ describe('Runtime Host bootstrap protocol', () => {
       activeOperations: 0,
       activeResidencies: 0,
       peerEndpoint: {
-        peerId: '12D3KooWhost',
-        routeHints: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
-        coordinationRelays: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        lease: {
+          version: 1,
+          peerId: '12D3KooWhost',
+          revision: 1,
+          issuedAt: 1,
+          expiresAt: 2,
+          directRoutes: ['/ip4/192.0.2.1/udp/41000/quic-v1'],
+          coordinationRoutes: ['/dns4/relay.example/udp/443/quic-v1/p2p/12D3KooWrelay'],
+        },
+        publicKey: 'AA',
+        signature: 'AA',
       },
     };
     assert.deepEqual(HOST_BOOTSTRAP_OPERATION_SPECS['host.status'].decodeOutput(status), status);
@@ -2151,10 +2164,13 @@ describe('Runtime Host bootstrap protocol', () => {
         ...status,
         peerEndpoint: {
           ...status.peerEndpoint,
-          coordinationRelays: [
-            status.peerEndpoint.coordinationRelays[0],
-            status.peerEndpoint.coordinationRelays[0],
-          ],
+          lease: {
+            ...status.peerEndpoint.lease,
+            coordinationRoutes: [
+              status.peerEndpoint.lease.coordinationRoutes[0],
+              status.peerEndpoint.lease.coordinationRoutes[0],
+            ],
+          },
         },
       }),
     );
@@ -2238,28 +2254,6 @@ describe('Runtime Host bootstrap protocol', () => {
     };
 
     assert.deepEqual(decodeHostFrame(response), response);
-    for (const contextBudgetExhaustedDetail of CONTEXT_BUDGET_EXHAUSTED_DETAILS) {
-      const withContextDetail = {
-        ...response,
-        result: {
-          ...response.result,
-          failureClass: 'context_budget_exhausted',
-          contextBudgetExhaustedDetail,
-        },
-      };
-      assert.deepEqual(decodeHostFrame(withContextDetail), withContextDetail);
-    }
-    assert.throws(
-      () =>
-        decodeHostFrame({
-          ...response,
-          result: {
-            ...response.result,
-            contextBudgetExhaustedDetail: 'unknown_detail',
-          },
-        }),
-      isInvalidFrame,
-    );
     assert.throws(
       () =>
         decodeHostFrame({

@@ -178,7 +178,11 @@ export function SessionCollaborationJoinDialog(props: {
       const result = await services.cancelImport(operationId);
       if (!open.current || activeOperationId.current !== operationId) return;
       if (result === 'settling') {
-        setJoinState({ kind: 'working', phase: 'finalizing_access' });
+        setJoinState((current) =>
+          current.kind === 'working' && current.phase === 'loading_session'
+            ? current
+            : { kind: 'working', phase: 'finalizing_access' },
+        );
         return;
       }
       finishClose();

@@ -18,15 +18,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { access, readFile, rm } from 'node:fs/promises';
+import { access, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveDesktopBuildVersion } from './desktop-nightly.mjs';
+import { resolveDesktopReleaseTarget } from './desktop-nightly.mjs';
+import { desktopPublishedFeeds } from './desktop-release-targets.mjs';
 
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const desktopRoot = join(repoRoot, 'apps', 'desktop');
-const releaseDirectory = join(desktopRoot, 'release');
 // electron is declared by apps/desktop, so resolve its install directory from
 // there rather than assuming node_modules hoisted it to the repo root. This
 // pre-flight guard exists to catch a missing electron dist before packaging;
@@ -73,16 +73,28 @@ function runCommand(command, args) {
   });
 }
 
-export async function packageMacosArm64({
+const macosPackageArchitectures = Object.freeze(['arm64', 'x64']);
+
+export async function packageMacos({
+  targetArch = process.arch,
   platform = process.platform,
   arch = process.arch,
   env = process.env,
   run = runCommand,
   remove = rm,
+  move = rename,
   assertFile = access,
 } = {}) {
-  if (platform !== 'darwin' || arch !== 'arm64') {
-    throw new Error('Release packaging requires an Apple Silicon macOS host.');
+  if (!macosPackageArchitectures.includes(targetArch)) {
+    throw new Error(
+      `Release packaging supports ${macosPackageArchitectures.join(' and ')}, not ${targetArch}.`,
+    );
+  }
+  // The native Runtime Host peer and the packaged smoke probes are built and
+  // run for the host, so each architecture ships from a runner of its own
+  // rather than cross-building both from one.
+  if (platform !== 'darwin' || arch !== targetArch) {
+    throw new Error(`Release packaging of ${targetArch} requires a ${targetArch} macOS host.`);
   }
 
   for (const name of requiredSigningEnvironment) {
@@ -91,14 +103,20 @@ export async function packageMacosArm64({
     }
   }
 
-  const manifest = JSON.parse(await readFile(join(desktopRoot, 'package.json'), 'utf8'));
-  const buildVersion = resolveDesktopBuildVersion(manifest.version, env);
-  const dmgPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.dmg`);
-  const zipPath = join(releaseDirectory, `Maka-${buildVersion}-mac-arm64.zip`);
+  const target = await resolveDesktopReleaseTarget(`macos-${targetArch}`, { environment: env });
+  const dmgPath = target.payloadPath('.dmg');
+  const zipPath = target.payloadPath('.zip');
+  // Both architectures write the one feed clients read, and both uploads land
+  // in one directory before publication. Naming the feed after its architecture
+  // here is what keeps the two from overwriting each other; they are merged
+  // back into the single feed at publication time.
   const updateMetadataPath = join(
-    releaseDirectory,
-    buildVersion === manifest.version ? 'latest-mac.yml' : 'dev-mac.yml',
+    target.releaseDirectory,
+    desktopPublishedFeeds(target.version, { nightly: target.nightly }).find((feed) =>
+      feed.mergedFrom?.includes(target.feed),
+    ).name,
   );
+  const architectureMetadataPath = join(target.releaseDirectory, target.feed);
 
   for (const path of requiredElectronLicensePaths) {
     await assertFile(path);
@@ -109,17 +127,23 @@ export async function packageMacosArm64({
   await run('npm', ['run', 'build:runtime-host-peer']);
   await run('npm', ['run', 'check:runtime-host-peer-notices']);
   await run('npm', ['run', 'check:release']);
-  await remove(releaseDirectory, { recursive: true, force: true });
-  await run('npm', ['--workspace', '@maka/desktop', 'run', 'package:macos-arm64']);
+  await remove(target.releaseDirectory, { recursive: true, force: true });
+  await run('npm', ['--workspace', '@maka/desktop', 'run', `package:macos-${targetArch}`]);
   await assertFile(dmgPath);
   await assertFile(zipPath);
   await assertFile(updateMetadataPath);
-  await remove(join(releaseDirectory, 'mac-arm64'), { recursive: true, force: true });
+  await move(updateMetadataPath, architectureMetadataPath);
+  // electron-builder names the unpacked staging directory after the target:
+  // `mac` for x64, `mac-<arch>` for everything else.
+  await remove(join(target.releaseDirectory, targetArch === 'x64' ? 'mac' : `mac-${targetArch}`), {
+    recursive: true,
+    force: true,
+  });
 
   return dmgPath;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const dmgPath = await packageMacosArm64();
+  const dmgPath = await packageMacos({ targetArch: process.argv[2] || process.arch });
   console.log(`Created ${dmgPath}`);
 }

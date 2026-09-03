@@ -285,6 +285,10 @@ export class DesktopRuntimeHostClient {
   }
 
   get hostId(): string {
+    return this.rootId;
+  }
+
+  get rootId(): string {
     return this.connection.rootId;
   }
 

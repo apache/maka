@@ -50,7 +50,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: '数据', description: '本地工作区路径、备份与恢复。' },
       permissions: { label: '权限与能力', description: '系统权限授予状态与 Maka 能力运行时检查。' },
       health: { label: '健康', description: '运行时连接、模型探针与本地健康状态。' },
-      about: { label: '关于', description: '版本、运行环境与隐私承诺。' },
+      about: { label: '关于', description: '版本、更新与隐私承诺。' },
     },
   },
   en: {
@@ -76,7 +76,7 @@ const SETTINGS_NAVIGATION_COPY_BY_LOCALE = {
       data: { label: 'Data', description: 'Local workspace paths, backup, and restore.' },
       permissions: { label: 'Permissions & Capabilities', description: 'System grants and runtime checks for Maka capabilities.' },
       health: { label: 'Health', description: 'Runtime connections, model probes, and local health status.' },
-      about: { label: 'About', description: 'Version, runtime environment, and privacy commitments.' },
+      about: { label: 'About', description: 'Version, updates, and privacy commitments.' },
     },
   },
 } satisfies UiCatalog<SettingsNavigationCopy>;

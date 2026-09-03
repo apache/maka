@@ -118,9 +118,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       onRename: (sessionId, name) => {
         void controller.commands.renameSession(sessionId, name);
       },
-      onDelete: (sessionId) => {
-        void controller.commands.deleteSession(sessionId);
-      },
+      // No `onDelete`: the rail cannot delete. `deleteSession` is still a
+      // command, reached from Settings › 已归档任务, where the task has already
+      // been archived once.
     }),
     [controller.commands],
   );
@@ -227,7 +227,6 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       data={data}
       chrome={chrome}
       selection={controller.selection}
-      rowSelection={controller.rowSelection}
     >
       {props.children}
     </SessionRailProvider>

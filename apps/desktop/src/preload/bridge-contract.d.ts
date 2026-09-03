@@ -711,6 +711,10 @@ export interface DesktopAppInfo {
   readonly projectGit: { readonly isGitRepo: boolean; readonly branch?: string };
   readonly buildMode: 'dev' | 'packaged';
   readonly buildCommit: string | null;
+  /** Packaged update channel, resolved from the packaged manifest — the same
+   *  authority the updater itself reads. 'release' is also the dev-mode
+   *  fallback, where the channel is meaningless. */
+  readonly updateChannel: 'release' | 'nightly';
 }
 
 /**
@@ -868,6 +872,7 @@ export interface MakaBridge {
       automaticRelayDiscovery: boolean,
       webRtcStunPolicy?: import('@maka/runtime-host/operator').RuntimeHostWebRtcStunPolicy,
     ): Promise<DesktopRuntimeHostDirectPeerSnapshot>;
+    createConnectionCode(profileId: string): Promise<string>;
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     rotateCredential(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot>;
     revokeCredential(

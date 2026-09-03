@@ -19,10 +19,13 @@
 
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
+import {
+  mergeDesktopUpdateFeeds,
+  verifyDesktopUpdateArtifacts,
+} from './desktop-update-contract.mjs';
 import {
   parseAsfSourceReferenceTag,
   readProductReleaseIdentity,
@@ -96,6 +99,26 @@ export async function verifyProductReleaseArtifactDirectory(directory, expectedN
   return assertExactArtifactSet(await regularFileNames(directory), expectedNames);
 }
 
+/**
+ * A macOS client reads one feed covering both architectures, but each
+ * architecture is packaged on a runner of its own and can only write a feed
+ * naming its own payload. Publication is where the two become the feed clients
+ * read; the per-architecture copies are consumed here and never published.
+ */
+export async function mergeProductReleaseUpdateFeeds(directory, identity) {
+  const merged = [];
+  for (const feed of identity.updateFeeds) {
+    if (!feed.mergedFrom) continue;
+    await mergeDesktopUpdateFeeds({
+      sourcePaths: feed.mergedFrom.map((name) => join(directory, name)),
+      outputPath: join(directory, feed.name),
+    });
+    await Promise.all(feed.mergedFrom.map((name) => rm(join(directory, name))));
+    merged.push(feed.name);
+  }
+  return merged;
+}
+
 function digestFile(path, algorithm = 'sha256') {
   return new Promise((resolvePromise, reject) => {
     const hash = createHash(algorithm);
@@ -120,8 +143,8 @@ export async function productReleaseArtifactRecords(directory, names) {
 }
 
 export async function verifyProductReleaseArtifactIntegrity(directory, identity) {
-  await verifyProductReleaseArtifactDirectory(directory, allArtifactNames(identity));
-  const checksumNames = allArtifactNames(identity).filter((name) => name.endsWith('.sha256'));
+  await verifyProductReleaseArtifactDirectory(directory, identity.releaseAssets);
+  const checksumNames = identity.releaseAssets.filter((name) => name.endsWith('.sha256'));
   for (const checksumName of checksumNames) {
     const artifactName = checksumName.slice(0, -'.sha256'.length);
     const source = await readFile(join(directory, checksumName), 'utf8');
@@ -134,25 +157,17 @@ export async function verifyProductReleaseArtifactIntegrity(directory, identity)
       throw new Error(`Product release checksum does not match: ${artifactName}`);
     }
   }
-  await Promise.all([
-    verifyDesktopUpdateArtifacts({
-      directory,
-      metadataName: 'latest-mac.yml',
-      version: identity.version,
-      artifactName: `Maka-${identity.version}-mac-arm64.zip`,
-    }),
-    verifyDesktopUpdateArtifacts({
-      directory,
-      metadataName: 'latest.yml',
-      version: identity.version,
-      artifactName: identity.exe,
-    }),
-  ]);
-  return allArtifactNames(identity);
-}
-
-function allArtifactNames(identity) {
-  return Object.values(identity.artifacts).flat();
+  await Promise.all(
+    identity.updateFeeds.map((feed) =>
+      verifyDesktopUpdateArtifacts({
+        directory,
+        metadataName: feed.name,
+        version: identity.version,
+        artifactNames: feed.advertised,
+      }),
+    ),
+  );
+  return identity.releaseAssets;
 }
 
 function exactKeys(value, expected, label) {
@@ -259,7 +274,7 @@ export async function createProductReleasePublicationRecord({
     sourceCommit: identity.sourceCommit,
     tag: identity.tag,
     version: identity.version,
-    assets: await productReleaseArtifactRecords(artifactDirectory, allArtifactNames(identity)),
+    assets: await productReleaseArtifactRecords(artifactDirectory, identity.releaseAssets),
   });
 }
 
@@ -301,6 +316,14 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     await stageProductReleaseArtifactGroup({ sourceDirectory, targetDirectory, expectedNames });
     console.log(`Staged exact ${group} product artifacts in ${targetDirectory}`);
+  } else if (command === 'merge-feeds') {
+    const identity = await readProductReleaseIdentity();
+    const [directory] = args;
+    if (!directory) {
+      throw new Error('usage: product-release-artifacts.mjs merge-feeds <artifact-directory>');
+    }
+    const merged = await mergeProductReleaseUpdateFeeds(directory, identity);
+    console.log(`Merged the per-architecture update feeds into ${merged.join(', ')}`);
   } else if (command === 'verify') {
     const identity = await readProductReleaseIdentity();
     const [directory] = args;
@@ -356,10 +379,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.log(`Verified immutable product release evidence for ${tag}`);
   } else if (command === 'list' && args.length === 0) {
     const identity = await readProductReleaseIdentity();
-    console.log(JSON.stringify(identity.artifacts, null, 2));
+    console.log(JSON.stringify(identity.releaseAssets, null, 2));
   } else {
     throw new Error(
-      'usage: product-release-artifacts.mjs <list|stage|verify|record|inspect-record> ...',
+      'usage: product-release-artifacts.mjs <list|stage|merge-feeds|verify|record|inspect-record> ...',
     );
   }
 }

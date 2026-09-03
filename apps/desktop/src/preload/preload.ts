@@ -1587,6 +1587,9 @@ const makaBridge = {
         webRtcStunPolicy,
       );
     },
+    createConnectionCode(profileId: string): Promise<string> {
+      return ipcRenderer.invoke('runtime-host-management:create-connection-code', profileId);
+    },
     listCredentials(profileId: string): Promise<DesktopRuntimeHostAccessSnapshot> {
       return ipcRenderer.invoke('runtime-host-management:list-credentials', profileId);
     },
@@ -3728,6 +3731,9 @@ if (process.env.MAKA_E2E === '1' && process.env.MAKA_E2E_USER_DATA_DIR) {
         waiters.push(resolve);
         invocableSkillsWaiters.set(sessionId, waiters);
       });
+    },
+    releaseRendererObservations() {
+      return invokeActiveRuntimeHost<void>('sessions:e2e:release-renderer-observations');
     },
     rejectNextSessionObservation(message: string) {
       nextSessionObservationError = new Error(message);

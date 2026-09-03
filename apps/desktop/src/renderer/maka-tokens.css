@@ -146,19 +146,9 @@
      built on. zinc-family hue 286 at the same chroma reads clean and
      cool like the reference sidebar. */
   --foreground: oklch(0.17 0.005 286);
-  /* Alias, not a tier. It was written as "80% ink" like --foreground-secondary
-     but mixed in srgb where that one mixes in oklch, so the same words gave
-     two different colours (10.51:1 vs 12.01:1 measured). One family, one
-     colour space: derive every ink in oklch. */
-  /* `--foreground-dimmed` is gone as of Visual System 2.0 (T4). It was an alias
-     of --foreground-secondary kept alive for five call sites in the former
-     task-ledger.css (now session-todo-panel.css), which were migrated to name
-     the tier directly. Two names for one ink
-     tier is how the original bug happened: both were written as "80% ink",
-     one mixed in srgb and the other in oklch, and they resolved 10.51:1 against
-     12.01:1. The contract test still runs — it now asserts the token has no
-     independent definition, which an absent token satisfies and a
-     reintroduced color-mix does not. */
+  /* Prose has exactly two rungs — --foreground and --muted-foreground — and
+     everything below them is size, weight and case. The two retired middle
+     greys stay retired, enforced by ink-ladder-contract. See DESIGN.md §3. */
 
   /* Brand accent = logo blue (oklch L0.70 C0.135 h250), sampled from
      apps/desktop/assets/icon.png (owner decision 2026-07-03). --success stays
@@ -170,11 +160,20 @@
      accent-colored text/icons on a plain surface. --action (L0.85 chip) is too
      light to clear 1.4.3's 4.5:1 for text, so it cannot back a solid button
      label.
-     L0.52 is the lowest lightness that clears 4.5:1 against white for EVERY
-     palette (weakest is tokyo-night at 4.78:1); chroma and hue follow --accent
-     so palettes still read as themselves. This is the token the Astryx bridge
-     below hands to --color-accent. */
-  --accent-solid: oklch(from var(--accent) 0.52 c h);
+     L0.48; chroma and hue follow --accent so palettes still read as
+     themselves. This is the token the Astryx bridge below hands to
+     --color-accent.
+
+     It was L0.52, picked as the lowest lightness clearing 4.5:1 against WHITE.
+     That is the wrong reading surface: only two of the eleven palettes have a
+     white --background, and the tinted ones sit brighter (tokyo-night #f2f6f8,
+     nord #f2f6f7, coral #fffbfa), which lowers the ratio rather than raising
+     it. Measured against each palette's own light --background, L0.52 gave
+     tokyo-night 4.39:1 — under AA — with onedark 4.62:1 and nord 4.64:1 barely
+     over. L0.48 puts all eleven at 5.15:1 or better (tokyo-night 5.15, onedark
+     5.37, nord 5.46, default 6.51). Dark stays at L0.76, which already ranges
+     6.98-9.76:1 against the dark backgrounds. */
+  --accent-solid: oklch(from var(--accent) 0.48 c h);
   --link: var(--accent-solid);
   --focus-ring: var(--accent);
   --status-running: var(--accent);
@@ -234,8 +233,8 @@
   /* === foreground solid mix scale ===
      foreground-N = N% of foreground interpolated INTO background.
      These are surface wash stops for backgrounds, borders, and other
-     non-text surfaces only. Text color uses --foreground (primary),
-     --foreground-secondary, or --muted-foreground — never these. */
+     non-text surfaces only. Text color uses --foreground (primary) or
+     --muted-foreground — never these. */
   --foreground-2:  color-mix(in oklch, var(--foreground) 2%,  var(--background));
   --foreground-3:  color-mix(in oklch, var(--foreground) 3%,  var(--background));
   --foreground-5:  color-mix(in oklch, var(--foreground) 5%,  var(--background));
@@ -247,11 +246,12 @@
       30% ink fails 4.5:1); decorative uses inlined their color-mix.
       Fewer tiers = crisper hierarchy.
       P-FOREGROUND-TIER-CONVERGE (issue #430 PR4, 2026-07-03): the 5-step
-      text ladder (40/50/60/70/80) collapsed to 3 semantic tiers —
-      primary (var(--foreground), 100% ink), secondary (--foreground-
-      secondary, 80% ink), muted (--muted-foreground, 50% ink). The raw
-      mix stops are gone; the aliases ARE the definitions. Text call
-      sites use the semantic aliases only. */
+      text ladder (40/50/60/70/80) collapsed to semantic tiers, and
+      issue #3446 collapsed those to the two that survive —
+      primary (var(--foreground), 100% ink) and muted
+      (--muted-foreground, 68% ink). The raw mix stops are gone; the
+      aliases ARE the definitions. Text call sites use the semantic
+      aliases only. */
 
   /* === alpha overlays via oklch(from ...) ===
      Use these when stacking on a tinted surface (e.g. a card on background-elevated).
@@ -288,18 +288,25 @@
   --border-width-hairline: 1px;
   --border-width-thick:    2px;
   --muted:         oklch(from var(--foreground) l c h / 0.05);
-  /* Ink ladder (visual system 2.0, T1): three tiers about 2x apart, all above
-     4.5:1. Measured against --surface-raised, light reads 19.1 / 9.8 / 4.8.
+  /* Ink ladder (issue #3446): TWO tiers, --foreground and --muted-foreground,
+     which is Astryx's own shape. One mix serves both modes.
 
-     The audit asked for a 3x gap, copied from a reference that reaches 3.6x
-     with only TWO text tiers. Three tiers standing on a 4.5:1 AA floor cannot
-     span 3x without the bottom two colliding, so the rhythm is even instead:
-     roughly geometric, which is what three tiers can actually hold.
+     Three tiers standing on a 4.5:1 AA floor never had room to space
+     themselves. 54% muted cleared AA on the default palette (4.84:1 light) and
+     failed it on nine of the other ten in light — onedark 3.4, catppuccin 3.6,
+     nord 3.7, tokyo-night 3.9, dusk 4.2, forest 4.2, sand 4.3, coral 4.3,
+     azure 4.4 — because it only sat that low to stay a visible step below the
+     tier above it. That is the direct reason the middle rung goes: a ladder
+     whose bottom rung is illegible on nine palettes out of eleven is not a
+     hierarchy, it is a bug with a token name.
 
-     50% muted was the one real defect — 4.21:1 in light and 3.89:1 in dark,
-     already under AA in the mode nobody checked. */
-  --muted-foreground: color-mix(in oklch, var(--foreground) 54%, var(--background));
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 74%, var(--background));
+     68% is chosen so the DEFAULT palette lands on Astryx's own
+     --color-text-secondary (#525252 light / #a3a3a3 dark, 7.8:1 / 7.1:1):
+     68% ink measures #525153 / #a2a2a4, 7.9:1 / 7.0:1. Every one of the eleven
+     palettes then clears AA in both modes — worst light is onedark 5.0:1,
+     worst dark is onedark 6.1:1. Hierarchy below these two rungs comes from
+     size, weight and case — never a third grey. */
+  --muted-foreground: color-mix(in oklch, var(--foreground) 68%, var(--background));
   --state-hover-bg:    oklch(from var(--foreground) l c h / 0.04);
   --state-selected-bg: oklch(from var(--foreground) l c h / 0.065);
   /* PR5 FOREGROUND-ALPHA-TOKEN-0: raw foreground-alpha tiers for component
@@ -936,9 +943,11 @@
   --background-elevated: var(--surface-overlay);
   /* 0.92 measured 14.11:1, just under the 15:1 the reading tier asks for. */
   --foreground: oklch(0.95 0.004 286);
-  /* Dark's ink-to-surface gap differs, so one percentage cannot put secondary
-     in the 8.5-10:1 band for both modes: 74% gives 9.8 light but 8.2 dark. */
-  --foreground-secondary: color-mix(in oklch, var(--foreground) 78%, var(--background));
+  /* No dark override for the muted rung: 68% ink is the one mix that puts both
+     modes on Astryx's --color-text-secondary (7.9:1 light, 7.0:1 dark on the
+     default palette). The per-mode percentage that used to live here existed
+     to keep a THIRD tier from colliding with muted; with the middle rung gone
+     there is nothing left to separate. */
 
   --accent: oklch(0.74 0.15 250);
   /* Dark mode keeps the same pale-blue CTA chip + deep-blue text as light
@@ -1252,8 +1261,8 @@
    §4's One Means Rule.
 
    --color-accent-muted is the informational tint on the SAME rung. Maka has
-   no --info hue: "info" is a semantic slot (Banner status, StatTile tone), so
-   it paints with the accent at 0.24 like its three siblings. It has to be the
+   no --info hue: "info" is a semantic slot (Banner status), so it paints with
+   the accent at 0.24 like its three siblings. It has to be the
    same CONSTRUCTION and not just the same weight — an opaque tint does not
    compose, so a tinted chip on a tinted panel (deep-research's count pill,
    plan-mode's in-progress marker) resolves to the parent's exact pixel and
@@ -1261,14 +1270,29 @@
    0.20); theme-neutral is what flattens it to an opaque #f1f1f1.
 
    ONLY THE ACCENT TOKENS ARE BRIDGED HERE. The three status rungs live in
-   makaTheme.ts alongside --color-border, because nothing re-declares them
-   below the root. The accent four cannot: maka.css re-declares
+   makaTheme.ts alongside --color-border, the text/icon ink pair and the
+   emphasis hairline, because nothing re-declares those below the root. The
+   accent four cannot: maka.css re-declares
    --color-accent / --color-accent-muted at component level
    (.astryx-banner.info, .astryx-progressbar.accent, the on-dark/on-light
    blocks), and those beat a root declaration inside the same layer. This
    block is unlayered, so it outranks the whole @layer astryx-tokens import
-   regardless of specificity. What it still cannot beat is a declaration on
-   the banner ELEMENT itself — see the info note in DESIGN.md §8.
+   regardless of specificity. What it cannot beat is a declaration on the
+   banner ELEMENT itself: `.astryx-banner.info` pins the tint, the accent and
+   the text pair there, to upstream's fixed blue. So that selector is listed
+   here too — the same unlayered block, so the 0.24 construction is spelled
+   once.
+
+   ITS TEXT IS --foreground, NOT THE ACCENT. --accent-solid is calibrated
+   against --background only; measured on the 0.24 accent tint it falls to
+   4.2–4.6 on six light palettes and to 2.0–3.75 on all eleven in dark mode,
+   so it clears AA on neither. --foreground on the same tint measures ≥9.9 in
+   light and ≥5.0 in dark (mono dark's 3.76 is the near-white accent of a
+   greyscale palette, an inherent property of that palette, not of this rule).
+   --muted-foreground on the tint is under 2.9 on every dark palette. So a
+   tinted surface has ONE ink tier — primary — and hierarchy on it comes from
+   weight (DESIGN.md §3, The Tinted Surface Rule). --color-accent stays the
+   solid accent here: it paints the banner's icon and button, not its prose.
 
    Scoped to [data-astryx-theme] — the attribute Astryx's <Theme> writes on
    both <html> and its own wrapper — so only the Astryx token surface moves,
@@ -1279,11 +1303,20 @@
    --accent-solid tier in both modes (see the contrast notes at that token).
 ============================================================================= */
 
-[data-astryx-theme] {
+[data-astryx-theme],
+.astryx-banner.info {
   --color-accent: var(--accent-solid);
+  --color-accent-muted: oklch(from var(--accent) l c h / 0.24);
+}
+
+[data-astryx-theme] {
   --color-text-accent: var(--accent-solid);
   --color-icon-accent: var(--accent-solid);
-  --color-accent-muted: oklch(from var(--accent) l c h / 0.24);
+}
+
+.astryx-banner.info {
+  --color-text-primary: var(--foreground);
+  --color-text-secondary: var(--foreground);
 }
 
 /* =============================================================================

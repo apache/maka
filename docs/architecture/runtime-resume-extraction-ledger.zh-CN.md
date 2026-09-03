@@ -304,7 +304,7 @@ B3（typed retry/reattach branch）仍然 defer，不进入本 PR。
 | 文件 | PR B 职责 |
 |---|---|
 | `continuation-replay.ts` | 每个 lineage segment 的唯一 provider replay materializer |
-| `model-history.ts` | 冻结 `PROVIDER_REPLAY_PROJECTION_VERSION = 1` |
+| `model-history.ts` | 冻结 `PROVIDER_REPLAY_PROJECTION_VERSION`（PR B 时为 1；#4286 起为 2） |
 | `runtime-resume.ts` | immutable lineage planner、V2 replay-edge 与历史 claim authority 校验、exact claim/start/terminal 分类 |
 | `runtime-kernel.ts` | immediate-source latest 重验、exact tool equality、原子 claim、provider T1 顺序 |
 | `agent-run.ts` | Run create 与 backend reservation 之间提交 continuation-start |

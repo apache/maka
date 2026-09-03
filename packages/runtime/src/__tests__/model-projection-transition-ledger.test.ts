@@ -255,6 +255,52 @@ describe('effective model projection reduction', () => {
     assert.equal(rawCandidates.length, 1);
     assert.deepEqual(effectiveCandidates, []);
   });
+
+  test('collects a media-bearing result whose reference text is tiny', () => {
+    const event = toolResultEvent('rt-1', 'turn-1', 'ok', {
+      content: {
+        kind: 'function_response',
+        id: 'tool-1',
+        name: 'Screenshot',
+        result: 'ok',
+        modelProjection: {
+          version: 1,
+          kind: 'content',
+          parts: [
+            { kind: 'text', text: 'ok' },
+            {
+              kind: 'artifact',
+              mediaType: 'image/png',
+              ref: { kind: 'session_file', sessionId: 'session-1', relativePath: 'artifact-1' },
+            },
+          ],
+        },
+      },
+    } as Partial<RuntimeEvent>);
+
+    const candidates = collectStaleToolResultArchiveCandidates(
+      [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
+      { enabled: true, maxResultEstimatedTokens: 2048, minRecentTurnsFull: 1 },
+      4,
+    );
+
+    assert.deepEqual(
+      candidates.map((candidate) => candidate.runtimeEventId),
+      ['rt-1'],
+    );
+  });
+
+  test('leaves a text result under the size gate alone', () => {
+    const event = toolResultEvent('rt-1', 'turn-1', { body: 'x'.repeat(4_000) });
+
+    const candidates = collectStaleToolResultArchiveCandidates(
+      [event, toolResultEvent('rt-2', 'turn-2', { body: 'tail' })],
+      { enabled: true, maxResultEstimatedTokens: 2048, minRecentTurnsFull: 1 },
+      4,
+    );
+
+    assert.deepEqual(candidates, []);
+  });
 });
 
 describe('durable transition writer', () => {

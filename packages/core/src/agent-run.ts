@@ -87,7 +87,12 @@ export type RootExecutionDescriptor =
     }
   | { kind: 'regenerate'; sourceTurnId: string }
   | { kind: 'context_compact' }
-  | { kind: 'scheduled_task'; scheduledTaskId: string }
+  | {
+      kind: 'scheduled_task';
+      scheduledTaskId: string;
+      /** Includes the immutable Connection target for Agent ScheduledTasks. */
+      executionFingerprint?: `sha256:${string}`;
+    }
   | { kind: 'legacy_automation'; automationId: string }
   | { kind: 'goal'; goalId: string }
   | {

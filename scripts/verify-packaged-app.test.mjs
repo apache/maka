@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -191,6 +191,65 @@ const options = {
   collectClosure: () => [{ name: 'react', version: '19.2.0' }],
   collectPackagedAllowlist: () => allowlistOf(PTY_PACKAGES),
 };
+
+test('accepts the Intel Mach-O architecture for an x64 package', async () => {
+  const { verifyPackagedMacApp } = await import('./verify-macos-dmg.mjs');
+  const asarPackages = await Promise.all(
+    PTY_PACKAGES.map(async (name) => {
+      const manifest = JSON.parse(
+        await readFile(new URL(`../node_modules/${name}/package.json`, import.meta.url), 'utf8'),
+      );
+      return `${name}@${manifest.version}`;
+    }),
+  );
+  const resources = await makeResources({
+    asarPackages,
+    notices: await readFile(
+      new URL('../apps/desktop/resources/licenses/npm/THIRD_PARTY_NOTICES.txt', import.meta.url),
+      'utf8',
+    ),
+    rendererLicenses: [
+      'licenses/renderer/GEIST_LICENSE.txt',
+      'licenses/renderer/GEIST_MONO_LICENSE.txt',
+    ],
+  });
+  await writeFile(
+    join(resources, 'app-update.yml'),
+    'provider: github\nowner: apache\nrepo: maka\nchannel: dev\nupdaterCacheDirName: "@makadesktop-updater"\n',
+  );
+  const version = '0.2.0-dev.14.20260902';
+  const app = join(dirname(resources), 'Maka.app');
+  await mkdir(join(app, 'Contents'), { recursive: true });
+  await rename(resources, join(app, 'Contents', 'Resources'));
+  // The archive and update configuration are real; macOS command output and
+  // app launches are the system boundaries this portable test substitutes.
+  await verifyPackagedMacApp(app, {
+    expectedArch: 'x64',
+    channel: 'nightly',
+    environment: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
+    requirePath: async () => {},
+    smokeFilesystemWorker: async () => {},
+    smokeRenderer: async () => {},
+    run: async (command, args) => {
+      if (command === 'plutil') {
+        const values = {
+          CFBundleIdentifier: 'com.maka.desktop',
+          CFBundleShortVersionString: version,
+          CFBundleExecutable: 'Maka',
+        };
+        assert.ok(Object.hasOwn(values, args[1]));
+        return { stdout: `${values[args[1]]}\n` };
+      }
+      if (command === 'lipo') return { stdout: 'x86_64\n' };
+      if (
+        ['codesign', 'spctl', 'xcrun', join(app, 'Contents', 'MacOS', 'Maka')].includes(command)
+      ) {
+        return { stdout: '' };
+      }
+      throw new Error(`Unexpected command: ${command}`);
+    },
+  });
+});
 
 describe('assertPackagedDependencyClosure', () => {
   test('accepts an artifact whose asar, bundle record, and shipped notices match', async () => {

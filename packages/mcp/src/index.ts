@@ -90,6 +90,7 @@ import {
   type McpOAuthStorage,
 } from './oauth.js';
 
+export { formatMcpDiagnosticText } from './diagnostic-text.js';
 export { McpToolCallError } from './tool-call-error.js';
 export {
   createCredentialMcpOAuthStorage,

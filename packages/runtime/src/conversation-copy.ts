@@ -25,7 +25,7 @@ import type {
 } from '@maka/core/agent-run';
 import type { RuntimeEvent } from '@maka/core/runtime-event';
 import type { RuntimeEventStore } from '@maka/core/runtime-event-store';
-import type { StorageRef, ToolResultContent } from '@maka/core/events';
+import { type StorageRef, type ToolResultContent } from '@maka/core/events';
 import { parseAttachmentResourceRef } from '@maka/core/attachments';
 import { markPersisted } from '@maka/core/persisted-value';
 import type { StoredMessage } from '@maka/core/session';
@@ -104,6 +104,7 @@ export type ConversationCopyArtifactReferenceMap =
       readonly mode: 'exact';
       readonly artifactIds: ReadonlyMap<string, string>;
       readonly relativePaths: ReadonlyMap<string, string>;
+      readonly contextRefs?: ReadonlyMap<string, string>;
       readonly linkedChildren:
         | { readonly mode: 'reject' }
         | {
@@ -157,6 +158,64 @@ export interface ConversationRuntimeLedgerCopyPlan {
     readonly runtimeEvents: readonly RuntimeEvent[];
     readonly operationalEvents: readonly AgentRunEvent[];
   }[];
+}
+
+interface ConversationCopyStorageReferenceInput {
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
+}
+
+/** Walks every typed StorageRef site reached by conversation-copy rewriting. */
+function collectConversationCopyStorageRefs(
+  input: ConversationCopyStorageReferenceInput,
+): readonly StorageRef[] {
+  const refs: StorageRef[] = [];
+  const addContent = (content: ToolResultContent): void => {
+    if (content.kind === 'image') refs.push(content.ref);
+  };
+  const addSerialized = (value: unknown): void => {
+    if (isArchivedToolResultPlaceholder(value)) return;
+    try {
+      addContent(decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)));
+    } catch {
+      // Opaque tool results carry no typed StorageRef.
+    }
+  };
+  for (const message of input.messages) {
+    if (message.type === 'user' && message.attachments) {
+      for (const attachment of message.attachments) refs.push(attachment.ref);
+    } else if (message.type === 'tool_result') {
+      addContent(message.content);
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'text' && event.content.attachments) {
+      for (const attachment of event.content.attachments) refs.push(attachment.ref);
+    } else if (event.content?.kind === 'function_response') {
+      addSerialized(event.content.result);
+    }
+  }
+  for (const serializedResult of input.archivedResults) {
+    addSerialized(deserializeToolResultArchive(serializedResult));
+  }
+  return refs;
+}
+
+/** Finds durable Session context references that the exact copy will rewrite. */
+export function collectConversationCopySessionContextRefIds(input: {
+  readonly sourceSessionId: string;
+  readonly messages: readonly StoredMessage[];
+  readonly runtimeEvents: readonly RuntimeEvent[];
+  readonly archivedResults: readonly string[];
+}): readonly string[] {
+  const refIds = new Set<string>();
+  for (const ref of collectConversationCopyStorageRefs(input)) {
+    if (ref.kind === 'session_context' && ref.sessionId === input.sourceSessionId) {
+      refIds.add(ref.refId);
+    }
+  }
+  return [...refIds].sort();
 }
 
 export interface CloneConversationRuntimeLedgerResult {
@@ -646,7 +705,10 @@ export function archivedToolResultContainsConversationOwnedReferences(
 
   if (content.kind === 'archived_tool_result') return true;
   if (content.kind === 'image') {
-    return content.ref.kind === 'session_file' && content.ref.sessionId === sourceSessionId;
+    return (
+      (content.ref.kind === 'session_file' || content.ref.kind === 'session_context') &&
+      content.ref.sessionId === sourceSessionId
+    );
   }
   if (content.kind === 'subagent') {
     const [linked] = conversationCopyLinkedChildReferences(content);
@@ -771,38 +833,10 @@ export function collectConversationCopySessionFileRefs(input: {
   readonly archivedResults: readonly string[];
 }): ReadonlySet<string> {
   const refs = new Set<string>();
-  const addRef = (ref: StorageRef): void => {
+  for (const ref of collectConversationCopyStorageRefs(input)) {
     if (ref.kind === 'session_file' && ref.sessionId === input.sourceSessionId) {
       refs.add(ref.relativePath);
     }
-  };
-  const addContent = (content: ToolResultContent): void => {
-    if (content.kind === 'image') addRef(content.ref);
-  };
-  const addSerialized = (value: unknown): void => {
-    if (isArchivedToolResultPlaceholder(value)) return;
-    try {
-      addContent(decodePersistedToolResultContent(markPersisted<ToolResultContent>(value)));
-    } catch {
-      // Opaque tool results carry no typed Session file reference.
-    }
-  };
-  for (const message of input.messages) {
-    if (message.type === 'user' && message.attachments) {
-      for (const attachment of message.attachments) addRef(attachment.ref);
-    } else if (message.type === 'tool_result') {
-      addContent(message.content);
-    }
-  }
-  for (const event of input.runtimeEvents) {
-    if (event.content?.kind === 'text' && event.content.attachments) {
-      for (const attachment of event.content.attachments) addRef(attachment.ref);
-    } else if (event.content?.kind === 'function_response') {
-      addSerialized(event.content.result);
-    }
-  }
-  for (const serializedResult of input.archivedResults) {
-    addSerialized(deserializeToolResultArchive(serializedResult));
   }
   return refs;
 }
@@ -1779,12 +1813,22 @@ function rewriteStorageRef(
   ref: StorageRef,
   references: ConversationCopyArtifactReferenceMap,
 ): StorageRef {
-  if (ref.kind === 'session_context' && ref.sessionId === references.sourceSessionId) {
-    if (references.mode === 'preserve_external') return ref;
-    throw new Error('Conversation copy does not support Session context references yet');
+  if (
+    (ref.kind !== 'session_file' && ref.kind !== 'session_context') ||
+    ref.sessionId !== references.sourceSessionId
+  ) {
+    return ref;
   }
-  if (ref.kind !== 'session_file' || ref.sessionId !== references.sourceSessionId) return ref;
   if (references.mode === 'preserve_external') return ref;
+  if (ref.kind === 'session_context') {
+    const refId = references.contextRefs?.get(ref.refId);
+    if (!refId) throw new Error(`Conversation copy is missing Session context ${ref.refId}`);
+    return {
+      ...ref,
+      sessionId: references.targetSessionId,
+      refId,
+    };
+  }
   const artifactId = references.artifactIds.get(ref.relativePath);
   if (artifactId) {
     return {

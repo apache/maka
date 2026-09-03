@@ -23,7 +23,13 @@ import {
   FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
 } from '@maka/runtime/test-only/fake-backend';
 import type { Locator } from '@playwright/test';
-import { COMPOSER_INPUT, ensureSidebarExpanded, expect, test } from './fixtures';
+import {
+  awaitSendReady,
+  COMPOSER_INPUT,
+  ensureSidebarExpanded,
+  expect,
+  test,
+} from './fixtures';
 
 interface SessionObservationLatchWindow extends Window {
   /** E2E-only preload affordance; see the MAKA_E2E block in preload.ts. */
@@ -54,10 +60,12 @@ test('a failed first observation seed reconnects to the live Turn', async ({ win
 
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting',
+    { timeout: 20_000 },
   );
   await page.getByRole('button', { name: '停止' }).click();
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
@@ -73,11 +81,12 @@ test('remounting a live surface leaves accumulated output settled', async ({
 
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_HOLD_OPEN_REWRITE_PROMPT);
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   const accumulatedOutput = 'prefix sk-123456789012345';
   const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput);
+  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await ensureSidebarExpanded(page);
@@ -137,8 +146,12 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill('temporary conversation');
+  await awaitSendReady(page);
   await composer.press('Enter');
-  await expect(page.getByRole('log')).toContainText('Fake backend received: temporary conversation');
+  await expect(page.getByRole('log')).toContainText(
+    'Fake backend received: temporary conversation',
+    { timeout: 20_000 },
+  );
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,
   });
@@ -157,9 +170,11 @@ test('keeps a completed reply after an interrupted turn and conversation remount
   await expect(composer).toHaveText('');
 
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.locator('.maka-bubble-streaming')).toContainText(
     'Fake backend waiting',
+    { timeout: 20_000 },
   );
   const originalSessionId = await sidebar
     .locator('[data-session-id]:has([aria-current="page"])')
@@ -178,9 +193,7 @@ test('keeps a completed reply after an interrupted turn and conversation remount
     { timeout: 20_000 },
   ).toBe(0);
   await composer.fill(FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT);
-  await expect(page.getByRole('button', { name: '发送' })).toBeEnabled({
-    timeout: 20_000,
-  });
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.locator('.maka-user-message', {
     hasText: FAKE_WAIT_FOR_STEERING_LARGE_RESPONSE_PROMPT,
@@ -220,11 +233,12 @@ test('returning to a live conversation settles output accumulated while away', a
   expect(await page.evaluate(() => matchMedia('(prefers-reduced-motion: reduce)').matches)).toBe(false);
   const composer = page.locator(COMPOSER_INPUT);
   await composer.fill(FAKE_HOLD_OPEN_PROMPT);
+  await awaitSendReady(page);
   await composer.press('Enter');
 
   const accumulatedOutput = 'Fake backend waiting for the test to stop the Turn.';
   const liveBubble = page.locator('.maka-bubble-streaming');
-  await expect(liveBubble).toContainText(accumulatedOutput);
+  await expect(liveBubble).toContainText(accumulatedOutput, { timeout: 20_000 });
 
   const sidebar = page.getByRole('navigation', { name: '任务列表' });
   await page.getByRole('button', { name: '展开侧边栏' }).click();
@@ -239,9 +253,11 @@ test('returning to a live conversation settles output accumulated while away', a
   await sidebar.getByRole('button', { name: '新任务', exact: true }).click();
   await expect(composer).toHaveText('');
   await composer.fill('temporary second conversation');
+  await awaitSendReady(page);
   await composer.press('Enter');
   await expect(page.getByRole('log')).toContainText(
     'Fake backend received: temporary second conversation',
+    { timeout: 20_000 },
   );
   await expect(page.getByRole('button', { name: '重新生成' })).toHaveCount(1, {
     timeout: 20_000,

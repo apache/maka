@@ -20,8 +20,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Dialog, DialogHeader } from '@astryxdesign/core/Dialog';
 import { Layout, LayoutContent, LayoutFooter } from '@astryxdesign/core/Layout';
-import { Text } from '@astryxdesign/core/Text';
-import { Switch } from '@astryxdesign/core/Switch';
 import { Tooltip } from '@astryxdesign/core/Tooltip';
 import {
   Badge,
@@ -31,6 +29,8 @@ import {
   MoreMenu,
   Selector,
   Spinner,
+  Switch,
+  Text,
   TextInput,
   useToast,
   useUiLocale,
@@ -58,6 +58,7 @@ import {
   RuntimeHostProjectDirectoryEditor,
   type ProjectDirectoryRootDraft,
 } from './runtime-host-project-directory-editor.js';
+import { RuntimeHostConnectionCodeButton } from '../features/runtime-host-management';
 
 type RuntimeHostManagementConfirmation =
   | { readonly kind: 'uninstall'; readonly allowInterruptActiveTasks: boolean }
@@ -124,6 +125,10 @@ export function RuntimeHostManagementDialog(props: {
   readonly target: RuntimeHostManagementTarget | undefined;
   readonly onClose: () => void;
   readonly onManagePeerMesh?: (target: RuntimeHostManagementTarget) => void;
+  readonly onConnectionCodeCreated?: (
+    target: RuntimeHostManagementTarget,
+    connectionCode: string,
+  ) => void;
 }) {
   const locale = useUiLocale();
   const copy = getSettingsProjectsCopy(locale).runtimeHost;
@@ -927,6 +932,20 @@ export function RuntimeHostManagementDialog(props: {
                             </details>
                           ) : null}
                           <div className="settingsRuntimeHostUpdatePolicyActions">
+                            {directPeer.state === 'enabled' &&
+                            result?.accessManagementAvailable &&
+                            props.onConnectionCodeCreated ? (
+                              <RuntimeHostConnectionCodeButton
+                                profileId={target.id}
+                                label={copy.createConnectionCode}
+                                failureTitle={copy.remoteAccessFailed}
+                                isDisabled={loading}
+                                errorMessage={(error) => settingsActionErrorMessage(error, locale)}
+                                onCreated={(connectionCode) =>
+                                  props.onConnectionCodeCreated?.(target, connectionCode)}
+                                onWorkingChange={setLoading}
+                              />
+                            ) : null}
                             {target && props.onManagePeerMesh ? (
                               <Button
                                 variant="secondary"

@@ -72,7 +72,7 @@
 .maka-error-copy p {
     font: var(--maka-text-body);
     margin: 0;
-    color: var(--foreground-secondary);
+    color: var(--muted-foreground);
     max-width: 56ch;
   }
 
@@ -89,9 +89,10 @@
     cursor: progress;
   }
 
+/* Ink only: the label already states the failure, and a second tinted edge
+   beside it is the One Means Rule (DESIGN.md §8). */
 .maka-error-copy-action[data-copy-state="failed"] {
     color: var(--destructive);
-    border-color: var(--color-error-muted);
   }
 
 .maka-error-copy-status {

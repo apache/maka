@@ -21,7 +21,11 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { createCredentialMcpOAuthStorage, McpClientManager } from '@maka/mcp';
+import {
+  createCredentialMcpOAuthStorage,
+  formatMcpDiagnosticText,
+  McpClientManager,
+} from '@maka/mcp';
 import { createFileCredentialStore } from '@maka/storage/credential-store';
 import { normalizeMcpConfig } from '@maka/storage/mcp-config-store';
 import {
@@ -123,9 +127,7 @@ export async function runRuntimeHostCapabilityProviderCli(
     });
     await runRuntimeHostProcessLifecycle(service, {
       onReady: () => {
-        process.stdout.write(
-          `Runtime Host capability provider is connected (${manager.toolSnapshot().tools.length} MCP tools)\n`,
-        );
+        process.stdout.write(formatRuntimeHostCapabilityProviderReadyMessage(manager));
       },
     });
     return 0;
@@ -189,6 +191,30 @@ async function connectRemoteCapabilityProvider(input: {
 }
 
 export { createMcpCapabilityProvider } from './mcp-capability-provider.js';
+
+export function formatRuntimeHostCapabilityProviderReadyMessage(
+  manager: Pick<McpClientManager, 'statuses' | 'toolSnapshot'>,
+): string {
+  const failures = manager
+    .statuses()
+    .filter(
+      (status) =>
+        status.state === 'error' ||
+        status.state === 'disconnected' ||
+        status.state === 'needs-auth',
+    )
+    .sort((left, right) => left.serverId.localeCompare(right.serverId));
+  const failureSummary =
+    failures.length === 0
+      ? ''
+      : `; ${failures.length} ${failures.length === 1 ? 'server' : 'servers'} failed: ${failures
+          .map(
+            (status) =>
+              `${formatMcpDiagnosticText(status.serverId)} — ${status.error ?? status.state}`,
+          )
+          .join('; ')}`;
+  return `Runtime Host capability provider is connected (${manager.toolSnapshot().tools.length} MCP tools${failureSummary})\n`;
+}
 
 function reportRefreshFailure(error: unknown): void {
   const message = error instanceof Error ? error.message : String(error);

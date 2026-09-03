@@ -22,6 +22,7 @@ import { spawnSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import { parse } from 'yaml';
+import { desktopNightlyTargets } from './desktop-nightly.mjs';
 
 async function readWorkflow(name) {
   return parse(await readFile(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8'));
@@ -103,7 +104,7 @@ test('a failed Desktop Nightly is retried through a fresh npm Nightly', async ()
   const download = workflow.jobs.publish.steps.find(
     (step) => step.uses?.startsWith('actions/download-artifact@') && step.with?.pattern,
   );
-  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}');
+  assert.equal(upload.with.name, 'desktop-nightly-${{ matrix.platform }}-${{ matrix.arch }}');
   assert.equal(download.with.pattern, 'desktop-nightly-*');
 });
 
@@ -115,9 +116,38 @@ test('Desktop Nightly packages the GitHub dev feeds and grants write only to its
   const stage = workflow.jobs.desktop.steps.find(
     (step) => step.name === 'Stage the exact Nightly artifacts',
   );
-  assert.match(stage.run, /apps\/desktop\/release\/dev-mac\.yml/u);
-  assert.match(stage.run, /apps\/desktop\/release\/dev\.yml/u);
-  assert.doesNotMatch(stage.run, /latest-mac\.yml|latest\.yml/u);
+  // The runner never names its own uploads; the target descriptor does.
+  assert.match(stage.run, /desktop-nightly\.mjs stage-target/u);
+  assert.match(stage.run, /\$\{\{ matrix\.platform \}\}-\$\{\{ matrix\.arch \}\}/u);
+  assert.doesNotMatch(JSON.stringify(workflow), /latest-mac\.yml|latest\.yml/u);
+  // Nor does it name a distributable: the descriptor does, and the verifiers
+  // read it from there.
+  assert.doesNotMatch(JSON.stringify(workflow), /win-x64\.exe/u);
+});
+
+test('every packaged Desktop target ships from a runner of its own architecture', async () => {
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const targets = workflow.jobs.desktop.strategy.matrix.include;
+  const names = targets.map((entry) => `${entry.platform}-${entry.arch}`);
+  assert.deepEqual(names, ['macos-arm64', 'macos-x64', 'windows-x64', 'linux-x64', 'linux-arm64']);
+  const nightlyTargets = desktopNightlyTargets('0.2.0-dev.42.20260829').map(
+    (target) => target.name,
+  );
+  assert.deepEqual(names.toSorted(), nightlyTargets.toSorted());
+  // The runner image is the workflow's to choose; what it may not do is choose
+  // one that disagrees with the row it builds. The native Runtime Host peer is
+  // never cross-built, so every row runs on its own platform and architecture.
+  for (const { platform, arch, runner } of targets) {
+    if (platform === 'macos') {
+      assert.match(runner, /^macos-/u);
+      assert.equal(runner.endsWith('-intel'), arch === 'x64', runner);
+    } else if (platform === 'windows') {
+      assert.match(runner, /^windows-/u);
+    } else {
+      assert.match(runner, /^ubuntu-/u);
+      assert.equal(runner.endsWith('-arm'), arch === 'arm64', runner);
+    }
+  }
 });
 
 test('the publisher verifies exact GitHub identity and assets before publishing last', async () => {
@@ -144,6 +174,21 @@ test('the publisher verifies exact GitHub identity and assets before publishing 
     steps[positions[1]].env.CERTIFICATE_IDENTITY,
     'https://github.com/${{ github.repository }}/.github/workflows/desktop-nightly.yml@refs/heads/main',
   );
+});
+
+test('the Nightly Linux verification runs under a virtual display', async () => {
+  // The last thing `verify:linux` does is launch the extracted AppImage's
+  // renderer. A headless runner has no display, so a step that dropped
+  // `xvfb-run` would fail every Nightly at its slowest point.
+  const workflow = await readWorkflow('desktop-nightly.yml');
+  const steps = Object.values(workflow.jobs)
+    .flatMap((job) => job.steps ?? [])
+    .filter((step) => typeof step.run === 'string' && step.run.includes('npm run verify:linux'));
+
+  assert.equal(steps.length, 1);
+  for (const step of steps) {
+    assert.match(step.run, /^xvfb-run\b/u, step.name);
+  }
 });
 
 test('Desktop Nightly has no Apache Nightlies transport or compatibility state', async () => {
