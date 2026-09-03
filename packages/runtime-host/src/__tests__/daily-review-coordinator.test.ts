@@ -22,7 +22,12 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { localDayBoundsAt, type DailyReviewArchive } from '@maka/core/daily-review';
+import {
+  dailyReviewArchiveId,
+  localDayBoundsAt,
+  localDayBoundsForInstant,
+  type DailyReviewArchive,
+} from '@maka/core/daily-review';
 import { openInteractiveDailyReviewAuthorityForWrite } from '@maka/storage/daily-review-authority';
 import { acquireOperationalStateDatabase } from '@maka/storage/operational-state-store';
 import { resolveStorageRoot, tryAcquireInteractiveRootOwner } from '@maka/storage/root-authority';
@@ -218,6 +223,55 @@ test('Daily Review joins an in-flight generation even when its own reads land la
       },
     },
   );
+});
+
+test('Daily Review regenerates for a replace that arrives during a non-replacing run', async () => {
+  await withCoordinator(async ({ coordinator, store }) => {
+    const archiveId = dailyReviewArchiveId(localDayBoundsForInstant(Date.now()), 1);
+    const existing = await store.publishArchive(archive(archiveId), 180);
+    const run = {
+      kind: 'run' as const,
+      range: 1 as const,
+      offsetDays: 0,
+      modelKeyOverride: '',
+      replaceExisting: false,
+    };
+    const keep = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+    const replace = coordinator.handlers['daily-review.mutate'](
+      { ...run, replaceExisting: true },
+      CONTEXT,
+    );
+    const [kept, replaced] = await Promise.all([keep, replace]);
+    assert.deepEqual(kept, { ok: true, result: { kind: 'archive', archive: existing } });
+    assert.equal(replaced.ok, true);
+    if (!replaced.ok || replaced.result.kind !== 'archive') return;
+    assert.equal(replaced.result.archive.status, 'no_data');
+    assert.deepEqual(await store.getArchive(archiveId), replaced.result.archive);
+  });
+});
+
+test('Daily Review lets a non-replacing run join a replace already in flight', async () => {
+  await withCoordinator(async ({ coordinator, store }) => {
+    const archiveId = dailyReviewArchiveId(localDayBoundsForInstant(Date.now()), 1);
+    await store.publishArchive(archive(archiveId), 180);
+    const run = {
+      kind: 'run' as const,
+      range: 1 as const,
+      offsetDays: 0,
+      modelKeyOverride: '',
+      replaceExisting: true,
+    };
+    const replace = coordinator.handlers['daily-review.mutate'](run, CONTEXT);
+    const keep = coordinator.handlers['daily-review.mutate'](
+      { ...run, replaceExisting: false },
+      CONTEXT,
+    );
+    const [replaced, kept] = await Promise.all([replace, keep]);
+    assert.equal(replaced.ok, true);
+    if (!replaced.ok || replaced.result.kind !== 'archive') return;
+    assert.equal(replaced.result.archive.status, 'no_data');
+    assert.deepEqual(kept, replaced);
+  });
 });
 
 test('Daily Review does not coalesce cron and manual archive provenance', async () => {

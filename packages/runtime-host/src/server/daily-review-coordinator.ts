@@ -93,6 +93,7 @@ export class HostDailyReviewCoordinator {
     {
       readonly modelKeyOverride: string;
       readonly trigger: 'cron' | 'manual';
+      readonly replaceExisting: boolean;
       readonly promise: Promise<DailyReviewArchive>;
     }
   >();
@@ -292,13 +293,23 @@ export class HostDailyReviewCoordinator {
     // published, and each Client then saw its own archive.
     const inFlight = this.#inFlight.get(archiveId);
     if (inFlight) {
-      if (inFlight.modelKeyOverride === modelKeyOverride && inFlight.trigger === input.trigger) {
-        return inFlight.promise;
+      if (inFlight.modelKeyOverride !== modelKeyOverride || inFlight.trigger !== input.trigger) {
+        throw new DailyReviewRunConflictError(archiveId);
       }
-      throw new DailyReviewRunConflictError(archiveId);
+      if (!input.replaceExisting || inFlight.replaceExisting) return inFlight.promise;
+      // A non-replacing leader may hand back an archive it merely found. A
+      // replace must not inherit that, so it waits its turn and claims for
+      // itself.
+      await inFlight.promise.catch(() => undefined);
+      return this.#run(input);
     }
     const pending = this.#generateArchive(archiveId, day, now, modelKeyOverride, input);
-    const entry = { modelKeyOverride, trigger: input.trigger, promise: pending };
+    const entry = {
+      modelKeyOverride,
+      trigger: input.trigger,
+      replaceExisting: input.replaceExisting,
+      promise: pending,
+    };
     this.#inFlight.set(archiveId, entry);
     try {
       return await pending;
