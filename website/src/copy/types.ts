@@ -27,6 +27,9 @@ export interface Copy {
   siteName: string;
   positioning: string;
   theme: { toDark: string; toLight: string };
+  // The alt text of the social preview image, which shows the hero headline
+  // and the turn scene.
+  socialImageAlt: string;
   nav: {
     docs: string;
     downloads: string;

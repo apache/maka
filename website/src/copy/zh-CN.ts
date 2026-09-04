@@ -26,6 +26,8 @@ export const zhCN: Copy = {
   siteName: 'Apache Maka (Incubating)',
   positioning: 'Apache Maka（孵化中）是一个高性能的 Agent 工作台，并完整记录它做过的每一件事。',
   theme: { toDark: '切换到深色模式', toLight: '切换到浅色模式' },
+  socialImageAlt:
+    'Apache Maka：一个高性能的 Agent 工作台，并完整记录它做过的每一件事。一轮交互的运行时事件：模型说、执行命令、请求权限、你批准了、拿到结果、编辑文件、本轮结束。',
   nav: {
     docs: '文档',
     downloads: '下载',
