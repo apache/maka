@@ -51,20 +51,20 @@ export function decodeArtifactRecordJsons(values: readonly unknown[]): ArtifactR
   const records: ArtifactRecord[] = [];
   const ids = new Set<string>();
   for (const [index, value] of values.entries()) {
+    if (typeof value !== 'string') continue;
+    let parsed: unknown;
     try {
-      if (typeof value !== 'string') throw invalidMetadataRecord(index + 1);
-      const parsed = JSON.parse(value);
-      if (!hasSupportedArtifactSource(parsed)) continue;
+      parsed = JSON.parse(value);
+    } catch {
+      continue;
+    }
+    if (!hasSupportedArtifactSource(parsed)) continue;
+    try {
       const record = decodeArtifactRecord(parsed, index + 1);
-      if (ids.has(record.id)) throw invalidMetadataRecord(index + 1);
+      if (ids.has(record.id)) continue;
       ids.add(record.id);
       records.push(record);
-    } catch (error) {
-      if (error instanceof Error && error.message.startsWith('Invalid artifact metadata record')) {
-        throw error;
-      }
-      throw invalidMetadataRecord(index + 1, error);
-    }
+    } catch {}
   }
   return records;
 }
@@ -141,11 +141,8 @@ function isCompatibleArtifactName(name: string): boolean {
   return true;
 }
 
-function invalidMetadataRecord(index: number, cause?: unknown): Error {
-  return new Error(
-    `Invalid artifact metadata record ${index}`,
-    cause === undefined ? {} : { cause },
-  );
+function invalidMetadataRecord(index: number): Error {
+  return new Error(`Invalid artifact metadata record ${index}`);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

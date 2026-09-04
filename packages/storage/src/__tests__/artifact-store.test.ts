@@ -541,15 +541,17 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('rejects metadata names that neither writer could have produced', async () => {
+  test('ignores metadata names that neither writer could have produced', async () => {
     for (const name of ['short ', 'embedded\ttab', 'embedded\nnewline']) {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [
           canonicalRecord({ id: 'invalid-name', sessionId: 'session-1', name, sizeBytes: 0 }),
         ]);
-        await assert.rejects(
-          () => listArtifacts(createArtifactStore(root), 'session-1'),
-          /Invalid artifact metadata record 1/,
+        const store = createArtifactStore(root);
+        assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+        assert.equal(
+          (await store.create(artifactInput('replacement', 'kept', 1))).id,
+          'replacement',
         );
       });
     }
@@ -947,7 +949,7 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('metadata fails closed on invalid path identities and bounded turn keys', async () => {
+  test('invalid path identities and turn keys cannot block later artifact writes', async () => {
     const invalidIdentities = [
       { field: 'id', value: 'a'.repeat(ARTIFACT_ENTITY_ID_MAX_CHARS + 1) },
       { field: 'id', value: '.' },
@@ -959,9 +961,11 @@ describe('SQLite Artifact store', () => {
     for (const { field, value } of invalidIdentities) {
       await withWorkspace(async (root) => {
         await writeArtifactMetadata(root, [recordWithIdentity(field, value)]);
-        await assert.rejects(
-          () => listArtifacts(createArtifactStore(root), 'session-1'),
-          /Invalid artifact metadata record 1/,
+        const store = createArtifactStore(root);
+        assert.deepEqual(await listArtifacts(store, 'session-1'), []);
+        assert.equal(
+          (await store.create(artifactInput('replacement', 'kept', 1))).id,
+          'replacement',
         );
       });
     }
