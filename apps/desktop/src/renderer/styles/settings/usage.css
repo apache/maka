@@ -209,7 +209,6 @@
    only the metric-strip density override. */
 .settingsMetricCard {
   min-height: 52px;
-  justify-content: center;
   gap: var(--space-0-5);
   padding: var(--space-1-5) var(--space-2-5);
 }

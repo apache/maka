@@ -188,3 +188,4 @@ export {
   type SearchSource,
   type SearchableItem,
 } from '@astryxdesign/core';
+export { formatCompactTokenCount } from './compact-token-count.js';

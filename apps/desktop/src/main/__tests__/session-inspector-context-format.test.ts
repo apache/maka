@@ -19,26 +19,24 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compactNumberFormatter } from '../../renderer/features/workbar/testing.js';
+import { formatCompactTokenCount } from '@maka/ui';
 
-test('formats context-window capacity with stable K/M units in every UI locale', () => {
-  for (const locale of ['en', 'zh'] as const) {
-    const format = compactNumberFormatter(locale);
-
-    assert.equal(format(256_000), '256K');
-    assert.equal(format(1_000_000), '1M');
-  }
+test('formats context-window capacity with locale-independent K/M units', () => {
+  assert.equal(formatCompactTokenCount(256_000), '256K');
+  assert.equal(formatCompactTokenCount(1_000_000), '1M');
 });
 
-test('formats context-window capacity with at most one decimal and promotes rounded K values to M', () => {
-  const format = compactNumberFormatter('en');
-
-  assert.equal(format(999), '999');
-  assert.equal(format(1_000), '1K');
-  assert.equal(format(8_192), '8.2K');
-  assert.equal(format(69_000), '69K');
-  assert.equal(format(69_194), '69.2K');
-  assert.equal(format(990_000), '990K');
-  assert.equal(format(999_950), '1M');
-  assert.equal(format(1_250_000), '1.3M');
+test('formats token counts with at most one decimal and promotes rounded values', () => {
+  assert.equal(formatCompactTokenCount(999), '999');
+  assert.equal(formatCompactTokenCount(1_000), '1K');
+  assert.equal(formatCompactTokenCount(8_192), '8.2K');
+  assert.equal(formatCompactTokenCount(69_000), '69K');
+  assert.equal(formatCompactTokenCount(69_194), '69.2K');
+  assert.equal(formatCompactTokenCount(990_000), '990K');
+  assert.equal(formatCompactTokenCount(999_950), '1M');
+  assert.equal(formatCompactTokenCount(1_250_000), '1.3M');
+  assert.equal(formatCompactTokenCount(999_950_000), '1B');
+  assert.equal(formatCompactTokenCount(1_250_000_000), '1.3B');
+  assert.equal(formatCompactTokenCount(999_950_000_000), '1T');
+  assert.equal(formatCompactTokenCount(1_250_000_000_000), '1.3T');
 });

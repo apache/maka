@@ -17,24 +17,24 @@
  * under the License.
  */
 
-import { StatTile, type StatTileProps } from '@maka/ui';
+const COMPACT_TOKEN_UNITS = [
+  { value: 1_000, suffix: 'K' },
+  { value: 1_000_000, suffix: 'M' },
+  { value: 1_000_000_000, suffix: 'B' },
+  { value: 1_000_000_000_000, suffix: 'T' },
+] as const;
 
-/** Thin alias over the shared StatTile — feature-local copy of the settings
- *  MetricCard so the Usage feature carries no legacy import (#4425). */
-export function MetricCard(props: {
-  title: string;
-  value: StatTileProps['value'];
-  detail?: string;
-}) {
-  return (
-    /* One tile language across every settings summary strip: this used to ask
-       for a gray-plate variant while the Permission/Health summaries used the
-       outlined one. StatTile has no variants left to disagree about. */
-    <StatTile
-      className="settingsMetricCard"
-      label={props.title}
-      value={props.value}
-      detail={props.detail}
-    />
-  );
+export function formatCompactTokenCount(value: number): string {
+  if (value < 1_000) return String(value);
+
+  let unitIndex = COMPACT_TOKEN_UNITS.length - 1;
+  while (unitIndex > 0 && value < COMPACT_TOKEN_UNITS[unitIndex].value) unitIndex -= 1;
+
+  let compactValue = Math.round((value / COMPACT_TOKEN_UNITS[unitIndex].value) * 10) / 10;
+  if (compactValue >= 1_000 && unitIndex < COMPACT_TOKEN_UNITS.length - 1) {
+    unitIndex += 1;
+    compactValue = 1;
+  }
+
+  return `${compactValue}${COMPACT_TOKEN_UNITS[unitIndex].suffix}`;
 }

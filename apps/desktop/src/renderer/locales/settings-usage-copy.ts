@@ -22,7 +22,8 @@ import type { UiCatalog, UiLocale } from '@maka/core/ui-locale';
 export type UsageSettingsCopy = {
   saveFailed: string; toolbarAria: string; rangeAria: string; ranges: readonly [string, string, string, string];
   refreshingAria: string; refreshAria: string; summaryAria: string; totalRequests: string; totalCost: string; costHelp: string;
-  totalTokens: string; tokenDetail(input: number, output: number): string; cacheTokens: string; cacheDetail(miss: number, read: number, creation: number): string;
+  totalTokens: string; tokenDetail(input: string, output: string): string; cacheTokens: string; cacheDetail(miss: string, read: string, creation: string): string;
+  tokenTooltip: { total: string; input: string; output: string; cached: string; new: string; hit: string; created: string };
   viewAria: string; tabs: readonly [string, string, string, string, string]; filtersAria: string; filterPlaceholder: string; filterAria: string;
   statusAria: string; statuses: readonly [string, string, string, string]; details: string; detailsAria: string; recordCount(count: number): string; clearFilters: string;
   summaryOnly: string; showDetails: string; filteredEmpty: string; filteredEmptyHelp: string; requestEmpty: string;
@@ -42,6 +43,7 @@ const SETTINGS_USAGE_COPY = {
     refreshingAria: '正在刷新使用统计', refreshAria: '刷新使用统计', summaryAria: '使用统计汇总指标', totalRequests: '模型调用', totalCost: '总费用', costHelp: '以模型供应商最终结算为准',
     totalTokens: '总 Token', tokenDetail: (input, output) => `输入 ${input} / 输出 ${output}`, cacheTokens: '缓存 Token',
     cacheDetail: (miss, read, creation) => `新 ${miss} / 命中 ${read} / 创建 ${creation}`, viewAria: '使用统计视图', tabs: ['活动记录', '供应商统计', '模型统计', '工具统计', '定价配置'],
+    tokenTooltip: { total: '总计', input: '输入', output: '输出', cached: '缓存', new: '新', hit: '命中', created: '创建' },
     filtersAria: '活动记录筛选', filterPlaceholder: '按模型或工具筛选…', filterAria: '按模型或工具筛选活动记录', statusAria: '活动状态筛选',
     statuses: ['全部状态', '成功', '错误', '已中止'], details: '详情记录', detailsAria: '显示使用统计详情记录', recordCount: (count) => `共 ${count} 条记录`, clearFilters: '清除筛选',
     summaryOnly: '当前仅显示汇总指标。打开详情记录后，可以查看逐条模型调用和工具调用，按模型、工具或状态筛选，并用于排查费用与失败调用。',
@@ -64,6 +66,7 @@ const SETTINGS_USAGE_COPY = {
     refreshingAria: 'Refreshing usage', refreshAria: 'Refresh usage', summaryAria: 'Usage summary metrics', totalRequests: 'Model calls', totalCost: 'Total cost', costHelp: 'Final billing is determined by the model provider',
     totalTokens: 'Total tokens', tokenDetail: (input, output) => `Input ${input} / output ${output}`, cacheTokens: 'Cache tokens',
     cacheDetail: (miss, read, creation) => `New ${miss} / hit ${read} / created ${creation}`, viewAria: 'Usage view', tabs: ['Activity log', 'Providers', 'Models', 'Tools', 'Pricing'],
+    tokenTooltip: { total: 'Total', input: 'Input', output: 'Output', cached: 'Cached', new: 'New', hit: 'Hit', created: 'Created' },
     filtersAria: 'Activity filters', filterPlaceholder: 'Filter by model or tool…', filterAria: 'Filter activity by model or tool', statusAria: 'Filter by activity status',
     statuses: ['All statuses', 'Success', 'Error', 'Aborted'], details: 'Detailed records', detailsAria: 'Show detailed usage records', recordCount: (count) => `${count} ${count === 1 ? 'record' : 'records'}`, clearFilters: 'Clear filters',
     summaryOnly: 'Only summary metrics are shown. Enable detailed records to inspect individual model calls and tool calls, filter by model, tool, or status, and investigate costs or failures.',
