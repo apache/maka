@@ -1072,38 +1072,28 @@ function CapabilityField(props: { label: string; description: string; children: 
   );
 }
 
-// A context-window draft commits on blur/Enter only: NumberInput fires
-// onChange per *valid* keystroke, and "128000" must arrive as one draft edit,
-// not six. The committed draft stays local until the row's 保存 — nothing
-// here writes the connection itself. The draft resyncs from the controller's
-// draft whenever it changes (seed, save round-trip, or an unrelated field).
+// NumberInput already owns the text draft and calls onChange only when the
+// whole value commits on blur/Enter. Forward that commit directly to the
+// row-level draft: adding another local draft here creates a second commit
+// boundary, so the first blur only updates this component and Save can write
+// the previous value.
 function DeclaredContextWindowField(props: {
   declared: number | undefined;
   disabled: boolean;
   label: string;
   onCommit: (value: number | null) => void;
 }) {
-  const [draft, setDraft] = useState<number | null>(props.declared ?? null);
-  useEffect(() => {
-    setDraft(props.declared ?? null);
-  }, [props.declared]);
-  function commit() {
-    if ((draft ?? undefined) === props.declared) return;
-    props.onCommit(draft);
-  }
   return (
     <NumberInput
       size="sm"
       width={200}
       label={props.label}
       isLabelHidden
-      value={draft}
+      value={props.declared ?? null}
       hasClear
       isIntegerOnly
       min={1}
-      onChange={setDraft}
-      onBlur={commit}
-      onEnter={commit}
+      onChange={props.onCommit}
       isDisabled={props.disabled}
     />
   );

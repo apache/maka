@@ -3086,11 +3086,11 @@
         "environmentCapabilities": {},
         "hookCalls": {
           "useConnectionDetail": 1,
-          "useEffect": 2,
+          "useEffect": 1,
           "useMountedRef": 2,
           "useOAuthLoginFlow": 1,
           "useRuntimeHostSettingsErrorReporter": 2,
-          "useState": 8,
+          "useState": 7,
           "useToast": 2,
           "useUiLocale": 3
         },
