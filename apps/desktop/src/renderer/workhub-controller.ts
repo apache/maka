@@ -208,6 +208,13 @@ export type WorkHubSubmission = (
       outcome: Extract<WorkHubCoordinationActResult, { disposition: 'stop_work' }>['outcome'];
       targetTurnId?: string;
     }
+  | {
+      kind: 'resume';
+      requestId: string;
+      target: WorkHubSessionTarget;
+      outcome: Extract<WorkHubCoordinationActResult, { disposition: 'resume_work' }>['outcome'];
+      targetTurnId?: string;
+    }
 ) & { strategyId: WorkHubRoutingStrategyId };
 
 /**
@@ -451,6 +458,59 @@ export function createWorkHubController(deps: {
       const sessions = await deps.sessions.list();
       reconcileFocus(submissionPolicy, sessions);
       const ordinary = sessions.filter((session) => session.kind === 'ordinary');
+      const resumeDecision = submissionPolicy.resolveResume({
+        text: input.text,
+        sessions: ordinary,
+      });
+      if (resumeDecision.kind !== 'not_requested') {
+        if (resumeDecision.kind === 'clarification') {
+          return {
+            kind: 'clarification',
+            strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+            requestId: input.requestId,
+            text: input.text,
+            options: [],
+            reason: resumeDecision.reason,
+          };
+        }
+        const { target } = resumeDecision;
+        let resumed;
+        try {
+          resumed = await coordination.act({
+            actionId: input.requestId,
+            userText: input.text,
+            // No confirmation: resume ends nothing. Which delegation it carries
+            // on, and whether the Host can, is decided where the stop is.
+            proposal: {
+              disposition: 'resume_work',
+              expects: { targetSessionId: target.sessionId },
+            },
+          });
+        } catch (error) {
+          if (error instanceof WorkHubCoordinationFailure && error.code === 'operation_conflict') {
+            return {
+              kind: 'clarification',
+              strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+              requestId: input.requestId,
+              text: input.text,
+              options: [],
+              reason: 'resume_target_unavailable',
+            };
+          }
+          throw error;
+        }
+        if (resumed.disposition !== 'resume_work') {
+          throw new Error('WorkHub Action Gate returned an unexpected disposition');
+        }
+        return {
+          kind: 'resume',
+          strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+          requestId: input.requestId,
+          target,
+          outcome: resumed.outcome,
+          ...(resumed.targetTurnId ? { targetTurnId: resumed.targetTurnId } : {}),
+        };
+      }
       const stopDecision = submissionPolicy.resolveStop({
         text: input.text,
         sessions: ordinary,

@@ -176,7 +176,8 @@ export async function submitAndRecordWorkHubSurfaceInput(input: {
     result.kind === 'discussion' ||
     result.kind === 'waiting' ||
     result.kind === 'submitted' ||
-    result.kind === 'stop'
+    result.kind === 'stop' ||
+    result.kind === 'resume'
   ) {
     return result;
   }
@@ -320,7 +321,8 @@ export function WorkHubSurface(props: {
             ? { ...turn, state: 'settled', outcome: result }
             : turn,
         ));
-        if (result.kind === 'submitted' || result.kind === 'stop') await refresh();
+        if (result.kind === 'submitted' || result.kind === 'stop' || result.kind === 'resume')
+          await refresh();
         return result;
       } catch (error) {
         if (isTerminalWorkHubSurfaceFailure(error)) {
@@ -639,6 +641,8 @@ function workHubClarificationPrompt(
   if (reason === 'stop_target_required') return copy.stopTargetRequired;
   if (reason === 'stop_target_ambiguous') return copy.stopTargetAmbiguous;
   if (reason === 'stop_target_unavailable') return copy.stopTargetUnavailable;
+  if (reason === 'resume_target_ambiguous') return copy.resumeTargetAmbiguous;
+  if (reason === 'resume_target_unavailable') return copy.resumeTargetUnavailable;
   return undefined;
 }
 
@@ -660,6 +664,7 @@ export function workHubCoordinationSummary(
     return `${copy.waitingForDecision} ${copy.requestNotSent}`;
   }
   if (result.kind === 'stop') return copy.stopOutcomes[result.outcome];
+  if (result.kind === 'resume') return copy.resumeOutcomes[result.outcome];
   const target = projection.sessions.find(
     (session) => session.target.sessionId === result.target.sessionId,
   );
@@ -856,6 +861,13 @@ function workHubCopy(locale: UiLocale) {
         already_terminal: '这项工作已经结束：',
         not_owned: '未停止共享或用户拥有的 Turn：',
       },
+      resumeOutcomes: {
+        resume_started: '已让中断的工作继续：',
+        already_running: '这项工作还在跑，不需要恢复：',
+        parked: '无法继续这项工作；请打开该 Session 查看原因：',
+      },
+      resumeTargetAmbiguous: '这个名称对应多项工作；请打开具体的 Session 继续它。',
+      resumeTargetUnavailable: '这项工作现在没有可以继续的单个 WorkHub 委派；请打开该 Session 查看。',
       waitingForDecision: '这项工作正在等待你的决定。',
       requestNotSent: '新请求尚未发送；处理原 Session 中的交互后可以再次发送。',
       routing: '正在判断应该交给哪个 Session…', loadFailed: '无法读取已有工作。',
@@ -980,6 +992,15 @@ function workHubCopy(locale: UiLocale) {
       already_terminal: 'This work had already ended:',
       not_owned: 'Did not stop a shared or user-owned Turn:',
     },
+    resumeOutcomes: {
+      resume_started: 'Carried on the interrupted work:',
+      already_running: 'This work is still running, so there was nothing to resume:',
+      parked: 'Could not carry this work on. Open its Session to see why:',
+    },
+    resumeTargetAmbiguous:
+      'That name matches more than one work item. Open the exact Session to resume it.',
+    resumeTargetUnavailable:
+      'This work has no single WorkHub delegation to resume right now. Open its Session to see what is running.',
     waitingForDecision: 'This work is waiting for your decision.',
     requestNotSent: 'The new request was not sent. Resolve the interaction in its Session, then send again.',
     routing: 'Choosing the right Session…', loadFailed: 'Could not read existing work.',

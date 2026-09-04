@@ -79,7 +79,11 @@ export type WorkHubStopClarificationReason =
   /** The stop names more than one existing Session. */
   | 'stop_target_ambiguous'
   /** The Host refused the stop; its conflict is the whole answer. */
-  | 'stop_target_unavailable';
+  | 'stop_target_unavailable'
+  /** The resume names more than one existing Session. */
+  | 'resume_target_ambiguous'
+  /** The Host refused the resume; its conflict is the whole answer. */
+  | 'resume_target_unavailable';
 
 /**
  * A stop clarification never offers route options. Choosing one re-sends the
@@ -93,6 +97,15 @@ export type WorkHubStopRouteDecision =
 
 export interface WorkHubRoutePolicy {
   resolveStop(input: {
+    text: string;
+    sessions: WorkHubRoutableSession[];
+  }): WorkHubStopRouteDecision;
+  /**
+   * Resume reads the same way a stop does and refuses on the same terms. The
+   * two share one resolver and one tail rule so `Resume Payments` and
+   * `Stop Payments` cannot disagree about which Session they mean.
+   */
+  resolveResume(input: {
     text: string;
     sessions: WorkHubRoutableSession[];
   }): WorkHubStopRouteDecision;
@@ -133,6 +146,67 @@ const MAX_UNCERTAINTY_OPTIONS = 5;
 const MAX_RELATED_CLARIFICATION_OPTIONS = 4;
 
 /**
+ * The reference half of a direct action over one existing delegation.
+ *
+ * Action Intent says only that the user issued this imperative and what work it
+ * refers to; the shared Session Resolver recalls which visible Sessions that
+ * reference names; this decides whether the resolution is sufficient to submit.
+ *
+ * Stop and resume ask exactly this, so they share it. What the Host then does
+ * with the named Session — end its delegation, or carry it on — is the Host's,
+ * and neither action claims to know whether there is one to act on.
+ */
+function resolveNamedDelegationAction(
+  sessionResolver: WorkHubSessionResolver,
+  action: { readonly cue: boolean; readonly imperative: boolean; readonly target?: string },
+  sessions: WorkHubRoutableSession[],
+  reasons: {
+    /**
+     * What an unnamed reference means. A stop must say so: it is destructive,
+     * and `Stop it` has to be answered rather than delivered as work. A resume
+     * must not: `继续这个工作` is how a user carries on with the Session they
+     * are already in, and answering it would take an ordinary instruction away
+     * from ordinary routing. Resuming nothing costs nothing, so it falls
+     * through and only an explicitly named resume becomes an action.
+     */
+    readonly unnamed: WorkHubStopClarificationReason | 'not_requested';
+    readonly ambiguous: WorkHubStopClarificationReason;
+  },
+): WorkHubStopRouteDecision {
+  if (!action.cue) return { kind: 'not_requested' };
+  const reference = action.imperative ? action.target : undefined;
+  if (!reference) {
+    return reasons.unnamed === 'not_requested'
+      ? { kind: 'not_requested' }
+      : { kind: 'clarification', reason: reasons.unnamed };
+  }
+  const sessionByRef = new Map(sessions.map((session) => [session.target.sessionId, session]));
+  const resolution = sessionResolver.resolve({
+    reference: { text: reference },
+    sessions: sessions.map(resolverSession),
+  });
+  if (resolution.kind === 'none') return { kind: 'not_requested' };
+  // The tail rule. The Resolver reports what the reference said after the name;
+  // one of these commands may add punctuation and nothing else, so
+  // `Stop Payments and Login` names no target here even though `Payments`
+  // matched.
+  const admissible = resolution.candidates.filter(
+    ({ evidence }) =>
+      evidence.kind === 'elided_name_punctuation' ||
+      /^[.!?。！？]*$/u.test(evidence.remainder),
+  );
+  if (admissible.length === 0) return { kind: 'not_requested' };
+  // One candidate only. A ranked resolver may return several; neither action
+  // picks a winner from a ranking it cannot justify.
+  if (resolution.kind === 'ambiguous' || admissible.length > 1) {
+    return { kind: 'clarification', reason: reasons.ambiguous };
+  }
+  const resolved = sessionByRef.get(admissible[0]!.ref);
+  if (!resolved) return { kind: 'not_requested' };
+  return { kind: 'target', target: resolved.target };
+}
+
+/**
  * Deep routing module for R2.4.
  *
  * It owns only transient inference context. Session identity, transcript,
@@ -163,41 +237,23 @@ function createWorkHubRoutePolicyVisit(
     // reference still fails closed, and a resolved Session that is not uniquely
     // stoppable says why.
     resolveStop({ text, sessions }) {
-      const intent = readWorkHubRequestIntent(text);
-      if (!intent.stop.cue) return { kind: 'not_requested' };
-      const reference = intent.stop.imperative ? intent.stop.target : undefined;
-      if (!reference) {
-        return { kind: 'clarification', reason: 'stop_target_required' };
-      }
-      const sessionByRef = new Map(
-        sessions.map((session) => [session.target.sessionId, session]),
+      return resolveNamedDelegationAction(
+        sessionResolver,
+        readWorkHubRequestIntent(text).stop,
+        sessions,
+        { unnamed: 'stop_target_required', ambiguous: 'stop_target_ambiguous' },
       );
-      const resolution = sessionResolver.resolve({
-        reference: { text: reference },
-        sessions: sessions.map(resolverSession),
-      });
-      if (resolution.kind === 'none') return { kind: 'not_requested' };
-      // Stop's own tail rule. The Resolver reports what the reference said
-      // after the name; a destructive command may add punctuation and nothing
-      // else, so `Stop Payments and Login` names no stoppable target here even
-      // though `Payments` matched.
-      const admissible = resolution.candidates.filter(
-        ({ evidence }) =>
-          evidence.kind === 'elided_name_punctuation' ||
-          /^[.!?。！？]*$/u.test(evidence.remainder),
+    },
+    // Resume asks the same question of the same words, so it asks it with the
+    // same code. Two copies of this would be two chances for `Resume Payments`
+    // and `Stop Payments` to disagree about which Session they name.
+    resolveResume({ text, sessions }) {
+      return resolveNamedDelegationAction(
+        sessionResolver,
+        readWorkHubRequestIntent(text).resume,
+        sessions,
+        { unnamed: 'not_requested', ambiguous: 'resume_target_ambiguous' },
       );
-      if (admissible.length === 0) return { kind: 'not_requested' };
-      // Stop admits one candidate only. A ranked resolver may return several;
-      // this action never picks a winner from a ranking it cannot justify.
-      if (resolution.kind === 'ambiguous' || admissible.length > 1) {
-        return { kind: 'clarification', reason: 'stop_target_ambiguous' };
-      }
-      const resolved = sessionByRef.get(admissible[0]!.ref);
-      if (!resolved) return { kind: 'not_requested' };
-      // The reference resolved, which is everything this policy can prove.
-      // Which delegation to end, and whether there is one at all, is the
-      // Host's answer and is made under the lease that performs the stop.
-      return { kind: 'target', target: resolved.target };
     },
     resolve({ text, sessions, originPromptBySessionId, explicitTarget }) {
       const intent = readWorkHubRequestIntent(text);

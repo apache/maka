@@ -416,6 +416,132 @@ test('an anaphoric stop asks for a fresh named imperative without offering a rou
   await handle.close();
 });
 
+test('a named resume submits and reports what the Host did', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const actions: WorkHubCoordinationActInput[] = [];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([], []);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('a resume must not read route candidates'),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'resume_work',
+          outcome: 'resume_started',
+          targetSessionId: 'payments',
+          targetTurnId: 'resumed-turn',
+        };
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  const result = await controller.submit({ requestId: 'resume-1', text: 'Resume Payments' });
+
+  assert.deepEqual(result, {
+    kind: 'resume',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-1',
+    target: { sessionId: 'payments' },
+    outcome: 'resume_started',
+    targetTurnId: 'resumed-turn',
+  });
+  // The proposal names the Session and carries no confirmation: resume ends
+  // nothing, so it needs no authority a delegation did not already grant.
+  assert.deepEqual(actions, [{
+    actionId: 'resume-1',
+    userText: 'Resume Payments',
+    proposal: { disposition: 'resume_work', expects: { targetSessionId: 'payments' } },
+  }]);
+  await handle.close();
+});
+
+test('a resume the Host will not admit becomes its clarification', async () => {
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([], []);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => assert.fail('a resume must not read route candidates'),
+      act: async () => {
+        throw new WorkHubCoordinationFailure(
+          'operation_conflict',
+          'WorkHub has no active durable delegation to resume on that Session',
+        );
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  assert.deepEqual(await controller.submit({ requestId: 'resume-2', text: 'Resume Payments' }), {
+    kind: 'clarification',
+    strategyId: WORKHUB_ROUTING_STRATEGY_ID,
+    requestId: 'resume-2',
+    text: 'Resume Payments',
+    options: [],
+    reason: 'resume_target_unavailable',
+  });
+  await handle.close();
+});
+
+test('resume-shaped ordinary work routes normally instead of resuming', async () => {
+  // `Continue` is an ordinary English verb. A resume that recalls no WorkHub
+  // identity is work to do, not a command over a delegation.
+  const sessions = port([session('payments', { sessionName: 'Payments' })]);
+  const actions: WorkHubCoordinationActInput[] = [];
+  const controller = createGatedWorkHubController({
+    sessions,
+    coordination: {
+      open: async (handler) => {
+        handler([], []);
+        return { close: async () => undefined };
+      },
+      record: async (input) => ({ turnId: input.turnId }),
+      candidates: async () => ({
+        candidateSetId: `sha256:${'c'.repeat(64)}`,
+        candidates: [{
+          candidateRef: 'ref-payments',
+          sessionId: 'payments',
+          sessionName: 'Payments',
+          workspace: {
+            target: { kind: 'host_path' as const, path: '/workspace/payments' },
+            hostCwd: '/workspace/payments',
+          },
+          state: 'active' as const,
+          updatedAt: 1,
+        }],
+      }),
+      act: async (input) => {
+        actions.push(input);
+        return {
+          disposition: 'delegate_existing',
+          targetSessionId: 'payments',
+          targetTurnId: 'delegated-turn',
+        };
+      },
+    },
+  });
+  const handle = await controller.openConversation(() => undefined, () => undefined);
+
+  const result = await controller.submit({
+    requestId: 'ordinary-1',
+    text: 'Continue the refactor in Payments',
+  });
+
+  assert.equal(result.kind, 'submitted');
+  assert.equal(actions[0]?.proposal.disposition, 'delegate_existing');
+  await handle.close();
+});
+
 test('a named stop reports the Gate refusal instead of judging the target itself', async () => {
   // The renderer no longer decides whether a Session can be stopped, so it
   // submits and lets the Gate answer. Its refusal is the clarification, which
