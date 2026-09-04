@@ -36,6 +36,7 @@ import {
   WORKHUB_COORDINATION_SESSION_ID,
   WORKHUB_COORDINATION_REPLACEMENT_SCHEMA_VERSION,
 } from '@maka/core/session';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 import { AgentGraphCoordinator } from '@maka/runtime/stream-graph-coordinator';
 import { AgentGraphSupervisorWakeCoordinator } from '@maka/runtime/agent-graph-supervisor-wake';
 import {
@@ -793,6 +794,7 @@ export async function createExecutionRuntimeHostComposition(
       readonly boundTools?: readonly MakaTool[];
       readonly childTools?: readonly MakaTool[];
       readonly parentAgentTools?: readonly MakaTool[];
+      readonly allowParentAgentTools?: boolean;
     }) => {
       const [runtimePolicy, resolved] = await Promise.all([
         runtimePolicyStores.runtimePolicy.getSnapshot(),
@@ -823,6 +825,9 @@ export async function createExecutionRuntimeHostComposition(
           ...(input.boundTools ? { boundTools: input.boundTools } : {}),
           ...(input.childTools ? { childTools: input.childTools } : {}),
           ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+          ...(input.allowParentAgentTools === undefined
+            ? {}
+            : { allowParentAgentTools: input.allowParentAgentTools }),
           worktreePatchWriteBackAvailable: true,
           tavilyReady,
         }),
@@ -866,6 +871,7 @@ export async function createExecutionRuntimeHostComposition(
           hostTools: [...hostTools, ...graphTools],
           childTools: childAgentTools.childTools,
           parentAgentTools: childAgentTools.parentTools,
+          allowParentAgentTools: !isSideConversationSession(header.labels),
         });
         const runProfile = hostedExecutionRunProfile(header.toolProfile);
         return createInteractiveRunComposer({

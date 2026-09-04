@@ -286,6 +286,8 @@ export interface InteractiveRunToolSurfaceInput {
   readonly boundTools?: readonly MakaTool[];
   readonly childTools?: readonly MakaTool[];
   readonly parentAgentTools?: readonly MakaTool[];
+  /** Side conversations are explicitly prohibited from delegating further work. */
+  readonly allowParentAgentTools?: boolean;
   readonly worktreePatchWriteBackAvailable?: boolean;
   readonly tavilyReady: boolean;
 }
@@ -316,7 +318,7 @@ export function routeInteractiveRunToolSurface(input: InteractiveRunToolSurfaceI
     hostTools: route(input.hostTools),
     ...(input.boundTools ? { boundTools: route(input.boundTools) } : {}),
     ...(childTools ? { childTools } : {}),
-    ...(childTools
+    ...(input.allowParentAgentTools !== false && childTools
       ? {
           parentAgentTools: buildParentAgentTools({
             definitions: listRunnableBuiltinAgentDefinitions({
@@ -325,7 +327,7 @@ export function routeInteractiveRunToolSurface(input: InteractiveRunToolSurfaceI
             }),
           }),
         }
-      : input.parentAgentTools
+      : input.allowParentAgentTools !== false && input.parentAgentTools
         ? { parentAgentTools: input.parentAgentTools }
         : {}),
   };
@@ -353,7 +355,10 @@ export function createInteractiveRunComposerFactory(
             )
           : undefined;
       const rootTools =
-        input.resolveRootTools && !backendContext.tools && !backendContext.header.subagentParent
+        input.resolveRootTools &&
+        !backendContext.tools &&
+        !backendContext.header.subagentParent &&
+        !isSideConversationSession(backendContext.header.labels)
           ? await readDuringBackendCreation(
               () => input.resolveRootTools!(backendContext.sessionId),
               backendContext.abortSignal,
@@ -374,6 +379,7 @@ export function createInteractiveRunComposerFactory(
         ...(backendContext.tools ? { boundTools: backendContext.tools } : {}),
         ...(input.childTools ? { childTools: input.childTools } : {}),
         ...(input.parentAgentTools ? { parentAgentTools: input.parentAgentTools } : {}),
+        allowParentAgentTools: !isSideConversationSession(backendContext.header.labels),
         worktreePatchWriteBackAvailable: input.worktreePatchWriteBackAvailable,
         tavilyReady,
       });

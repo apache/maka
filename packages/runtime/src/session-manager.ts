@@ -89,6 +89,7 @@ import {
 } from '@maka/core/plan';
 import { DEFAULT_SESSION_NAME } from '@maka/core/session-name';
 import { DEEP_RESEARCH_SESSION_LABEL, isDeepResearchSession } from '@maka/core/deep-research';
+import { isSideConversationSession } from '@maka/core/side-conversation';
 import {
   SUBAGENT_SESSION_RUNTIME_SCHEMA_VERSION,
   SUBAGENT_SESSION_SPAWN_SCHEMA_VERSION,
@@ -3069,6 +3070,9 @@ export class SessionManager {
     ]);
     if (parentHeader.subagentParent) {
       throw new Error('Nested child session creation is not permitted');
+    }
+    if (isSideConversationSession(parentHeader.labels)) {
+      throw new Error('Side conversation child session creation is not permitted');
     }
     this.assertActiveParentRun(parentSessionId, parentRun, input.spawnedBy.parentTurnId);
 

@@ -3698,9 +3698,9 @@
           "useRef": 2,
           "useRuntimeHostSettingsErrorReporter": 1,
           "useSettingsRouteFocus": 1,
-          "useState": 5,
+          "useState": 6,
           "useToast": 1,
-          "useUiLocale": 2
+          "useUiLocale": 3
         },
         "lifecycleMethods": {},
         "unresolvedDependencies": 0,

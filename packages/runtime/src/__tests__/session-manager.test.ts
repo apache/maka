@@ -48,6 +48,7 @@ import {
 } from '@maka/core/sandbox-boundary';
 import { createWorkspaceWritePermissionProfile } from '@maka/core/permission-profile';
 import { DEEP_RESEARCH_SESSION_LABEL } from '@maka/core/deep-research';
+import { SIDE_CONVERSATION_SESSION_LABEL } from '@maka/core/side-conversation';
 import { RUNTIME_CONTINUATION_AUTHORITY_V1 } from '@maka/core/runtime-event-store';
 import { deriveTurnRecords } from '@maka/core/session';
 import { isTerminalRuntimeEvent } from '@maka/core/runtime-event';
@@ -2356,6 +2357,65 @@ describe('SessionManager child-session runtime primitive', () => {
         prompt: 'Search the web.',
       }),
       /exceeds the parent execution boundary/,
+    );
+    assert.equal(
+      (await store.list()).some((session) => session.subagent),
+      false,
+    );
+    parentGate.release();
+    while (!(await parentTurn.next()).done) {}
+  });
+
+  test('rejects side conversations from creating child sessions', async () => {
+    const store = new MemorySessionStore();
+    const runStore = new MemoryAgentRunStore();
+    const backends = new BackendRegistry();
+    const parentGate = makeGate();
+    backends.register('ai-sdk', (ctx) => new TestBackend(ctx, parentGate));
+    const manager = new SessionManager({
+      store,
+      runStore,
+      runtimeEventStore: runStore,
+      backends,
+      childTools: [testTool('Read'), testTool('Glob'), testTool('Grep')],
+      subagentCatalog: {
+        list: async () => [],
+        resolve: async (id) => ({
+          id,
+          name: 'Temporary bounded',
+          description: 'one-off',
+          profile: LOCAL_READ_AGENT_PROFILE,
+          connectionSlug: 'approved-connection',
+          connectionId: '88888888-8888-4888-8888-888888888888',
+          model: 'approved-model',
+          enabled: true,
+        }),
+      },
+      newId: nextId(),
+      now: nextNow(127),
+    });
+    const parent = await manager.createSession(makeInput());
+    await store.updateHeader(parent.id, { labels: [SIDE_CONVERSATION_SESSION_LABEL] });
+    const parentTurn = manager
+      .sendMessage(parent.id, { turnId: 'parent-turn-side-conversation', text: 'delegate' })
+      [Symbol.asyncIterator]();
+    await parentTurn.next();
+    const [parentRun] = await runStore.listSessionRuns(parent.id);
+    if (!parentRun) throw new Error('parent run was not recorded');
+
+    await assert.rejects(
+      manager.spawnChildSession(parent.id, {
+        spawnedBy: {
+          parentRunId: parentRun.runId,
+          parentTurnId: parentRun.turnId,
+          toolCallId: 'tool-call-side-conversation',
+        },
+        subagentId: 'temporary-bounded',
+        agentProfile: LOCAL_READ_AGENT_PROFILE,
+        temporaryRole: { name: 'Side child' },
+        prompt: 'This must not create a child.',
+      }),
+      /Side conversation child session creation is not permitted/,
     );
     assert.equal(
       (await store.list()).some((session) => session.subagent),
