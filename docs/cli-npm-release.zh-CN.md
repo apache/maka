@@ -43,6 +43,22 @@ source RC 阶段的 [npm 预检](../.github/ASF_NPM_RELEASE.md) 是更早执行�
 - validation、staging、approval 和 finalization 之间不得重新构建；
 - 已公开的版本不得复用。正式产品修复必须使用新的 patch、minor 或 major 版本。
 
+## Runtime Host 兼容性矩阵
+
+Desktop 与 npm CLI 发布物携带同一个 `makaReleaseIdentity`：schema version、产品版本、精确
+source commit 以及 Runtime Host compatibility epoch。发布校验要求这些身份在各 artifact
+之间一致；网络握手随后要求 epoch 精确相等，并在接纳任何 Domain command 前完成检查。
+
+| Client artifact | Runtime Host artifact | 结果 |
+| --- | --- | --- |
+| 来自同一产品 source identity 的 Desktop/CLI | 来自同一 identity 的 Runtime Host | 支持 |
+| 任意 Client | compatibility epoch 不同的 Runtime Host | 握手阶段返回 `incompatible` 并拒绝 |
+| Desktop `0.1.11`（epoch 25） | `maka-agent@0.1.0-beta.1`（epoch 24） | 不支持；升级到新发布的匹配版本 |
+
+source commit 和版本属于发布元数据，不是额外的 wire-handshake 字段；仅 epoch 相等并不使
+独立构建的 artifact 自动成为受支持的版本组合。由于公开 npm 版本不可覆盖，不要改写
+`0.1.0-beta.1`；应从一个精确批准的 source commit 发布新版本，并更新远程 Host 包。
+
 workflow 边界分别是：
 
 1. [npm publication](../.github/workflows/npm-publication.yml) 是唯一的 Trusted Publisher

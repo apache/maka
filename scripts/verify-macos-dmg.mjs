@@ -32,6 +32,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FILESYSTEM_WORKER_PROTOCOL_VERSION } from '../packages/runtime/dist/filesystem-worker/protocol.js';
 import { readProductManifestIdentity } from './product-release-identity.mjs';
+import { resolveMakaReleaseIdentity } from './release-cli-compatibility.mjs';
 import { assertPackagedUpdateConfiguration } from './desktop-update-contract.mjs';
 import {
   resolveDesktopBuildVersion,
@@ -160,6 +161,14 @@ export async function verifyPackagedMacApp(
   if (version !== expectedVersion) {
     throw new Error(`Expected app version ${expectedVersion}, found ${version}.`);
   }
+  const sourceCommit =
+    environment.MAKA_RELEASE_SOURCE_COMMIT?.trim() ||
+    (await run('git', ['rev-parse', 'HEAD'])).stdout.trim();
+  const makaReleaseIdentity = resolveMakaReleaseIdentity({
+    version: expectedVersion,
+    sourceCommit,
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+  });
   const executableName = await readPlistValue(run, infoPlist, 'CFBundleExecutable');
   const executable = join(contents, 'MacOS', executableName);
   const filesystemWorker = join(resources, 'workers', 'filesystem-worker.js');
@@ -180,6 +189,7 @@ export async function verifyPackagedMacApp(
     '/bin/echo',
     ['maka-node-pty-ok'],
     resolveRuntimeHostSetupPackage(product.version, environment),
+    makaReleaseIdentity,
   );
   await run(executable, ['-e', ptyProbe, join(appAsar, 'package.json')], {
     env: {
@@ -238,6 +248,7 @@ export async function verifyMacosDmg(
       workingDirectory: temporaryDirectory,
       expectedArch: arch,
       channel: target.nightly ? 'nightly' : 'release',
+      environment,
     });
     // Which payloads a formal release publishes a `.sha256` beside is the
     // descriptor's to decide, the way `verify:linux` already reads it.

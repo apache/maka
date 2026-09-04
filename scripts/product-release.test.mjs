@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -60,6 +60,7 @@ import {
   standaloneInstallRootManifest,
 } from './package-macos-arm64-cli.mjs';
 import { resolveWorkspaceReleaseFiles } from './release-cli-file-policy.mjs';
+import { readRuntimeHostCompatibilityEpoch } from './release-cli-compatibility.mjs';
 import { isTuiReadyOutput, verifyQuarantinedExecution } from './verify-macos-arm64-cli.mjs';
 import { makePtyProbe } from './verify-packaged-app.mjs';
 import { ensureProductTag } from './product-release-tag.mjs';
@@ -354,11 +355,31 @@ test('Desktop packaging derives the Runtime Host setup package from product mani
   const checkedRootManifest = JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8'));
   assert.deepEqual(desktopBuilderConfig.extraMetadata, {
     runtimeHostSetupPackage: `maka-agent@${checkedRootManifest.version}`,
+    makaReleaseIdentity: {
+      schemaVersion: 1,
+      product: 'Maka',
+      version: checkedRootManifest.version,
+      sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+      compatibilityEpoch: readRuntimeHostCompatibilityEpoch(
+        join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      ),
+    },
     makaUpdateChannel: 'release',
   });
   assert.deepEqual(desktopBuilderConfig.publish, [
     { provider: 'github', owner: 'apache', repo: 'maka' },
   ]);
+});
+
+test('Desktop builder binds a supplied source commit to its release identity', async () => {
+  const sourceCommit = 'a'.repeat(40);
+  const config = resolveDesktopBuilderConfig({ MAKA_RELEASE_SOURCE_COMMIT: sourceCommit });
+
+  assert.equal(config.extraMetadata.makaReleaseIdentity.sourceCommit, sourceCommit);
+  assert.equal(
+    config.extraMetadata.makaReleaseIdentity.version,
+    JSON.parse(await readFile(join(repoRoot, 'package.json'), 'utf8')).version,
+  );
 });
 
 test('Desktop stages release manifests before electron-builder builds the archive', async (t) => {
@@ -480,6 +501,11 @@ test('platform package verifiers keep Git checks out of every artifact', async (
 
   const macosSource = await readFile(join(repoRoot, 'scripts', 'verify-macos-dmg.mjs'), 'utf8');
   assert.doesNotMatch(macosSource, /requirePath\(join\(resources, ['"]git['"]/u);
+  assert.match(macosSource, /await verifyApp\(copiedApp, \{[\s\S]*?environment,\s*\}\);/u);
+  assert.match(
+    windowsSource,
+    /await verifyApp\(unpackedDirectory, \{[\s\S]*?environment,\s*\}\);/u,
+  );
 
   // The channel is the release descriptor's, resolved once beside the artifact
   // names. Reading the nightly environment variable a second time here would
@@ -496,29 +522,79 @@ test('the packaged-app probe rejects a mismatched Runtime Host setup package', a
   try {
     const manifestPath = join(fixture, 'package.json');
     const ptyDirectory = join(fixture, 'node_modules', 'node-pty');
+    const runtimeHostDirectory = join(fixture, 'node_modules', '@maka', 'runtime-host');
+    const releaseIdentity = {
+      schemaVersion: 1,
+      product: 'Maka',
+      version: '1.2.3',
+      sourceCommit: 'a'.repeat(40),
+      compatibilityEpoch: 72,
+    };
     await mkdir(ptyDirectory, { recursive: true });
+    await mkdir(join(runtimeHostDirectory, 'dist', 'protocol'), { recursive: true });
     await Promise.all([
-      writeFile(manifestPath, JSON.stringify({ runtimeHostSetupPackage: 'maka-agent@1.2.3' })),
+      writeFile(
+        manifestPath,
+        JSON.stringify({
+          runtimeHostSetupPackage: 'maka-agent@1.2.3',
+          makaReleaseIdentity: releaseIdentity,
+        }),
+      ),
       writeFile(
         join(ptyDirectory, 'index.js'),
         `module.exports = { spawn() { return {
   onData(listener) { queueMicrotask(() => listener('maka-node-pty-ok')); },
   onExit(listener) { setImmediate(() => listener({ exitCode: 0 })); },
-}; } };\n`,
+        }; } };\n`,
+      ),
+      writeFile(
+        join(runtimeHostDirectory, 'package.json'),
+        JSON.stringify({
+          name: '@maka/runtime-host',
+          type: 'module',
+          exports: { './protocol': './dist/protocol/index.js' },
+        }),
+      ),
+      writeFile(
+        join(runtimeHostDirectory, 'dist', 'protocol', 'index.js'),
+        'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 72;\n',
       ),
     ]);
     await execFileAsync(process.execPath, [
       '-e',
-      makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.3'),
+      makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.3', releaseIdentity),
       manifestPath,
     ]);
     await assert.rejects(
       execFileAsync(process.execPath, [
         '-e',
-        makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.4'),
+        makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.4', releaseIdentity),
         manifestPath,
       ]),
       /Packaged Runtime Host setup package mismatch/u,
+    );
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        '-e',
+        makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.3', {
+          ...releaseIdentity,
+          sourceCommit: 'b'.repeat(40),
+        }),
+        manifestPath,
+      ]),
+      /Packaged Maka release identity mismatch/u,
+    );
+    await writeFile(
+      join(runtimeHostDirectory, 'dist', 'protocol', 'index.js'),
+      'export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 71;\n',
+    );
+    await assert.rejects(
+      execFileAsync(process.execPath, [
+        '-e',
+        makePtyProbe('/bin/echo', ['maka-node-pty-ok'], 'maka-agent@1.2.3', releaseIdentity),
+        manifestPath,
+      ]),
+      /Packaged Runtime Host compatibility epoch mismatch/u,
     );
   } finally {
     await rm(fixture, { recursive: true, force: true });
@@ -906,6 +982,12 @@ test('one product workflow gates one draft release on every required artifact', 
       String(step.uses).startsWith('actions/checkout@'),
     );
     assert.equal(checkout.with.ref, '${{ needs.release-identity.outputs.source_commit }}');
+  }
+  for (const name of ['desktop', 'cli-macos-arm64']) {
+    assert.equal(
+      jobs[name].env.MAKA_RELEASE_SOURCE_COMMIT,
+      '${{ needs.release-identity.outputs.source_commit }}',
+    );
   }
 
   const desktopStepNames = jobs.desktop.steps.map((step) => step.name);

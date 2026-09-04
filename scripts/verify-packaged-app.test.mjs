@@ -226,7 +226,10 @@ test('accepts the Intel Mach-O architecture for an x64 package', async () => {
   await verifyPackagedMacApp(app, {
     expectedArch: 'x64',
     channel: 'nightly',
-    environment: { MAKA_DESKTOP_NIGHTLY_VERSION: version },
+    environment: {
+      MAKA_DESKTOP_NIGHTLY_VERSION: version,
+      MAKA_RELEASE_SOURCE_COMMIT: 'a'.repeat(40),
+    },
     requirePath: async () => {},
     smokeFilesystemWorker: async () => {},
     smokeRenderer: async () => {},

@@ -627,12 +627,13 @@ export async function stopChild(child) {
   }
 }
 
-export function makePtyProbe(shellFile, shellArgs, runtimeHostSetupPackage) {
+export function makePtyProbe(shellFile, shellArgs, runtimeHostSetupPackage, releaseIdentity) {
   return String.raw`
 const { createRequire } = require('node:module');
 const requireFromApp = createRequire(process.argv[1]);
 const appManifest = requireFromApp('./package.json');
 const expectedRuntimeHostSetupPackage = ${JSON.stringify(runtimeHostSetupPackage)};
+const expectedMakaReleaseIdentity = ${JSON.stringify(releaseIdentity)};
 if (
   expectedRuntimeHostSetupPackage !== undefined &&
   appManifest.runtimeHostSetupPackage !== expectedRuntimeHostSetupPackage
@@ -644,6 +645,33 @@ if (
       JSON.stringify(appManifest.runtimeHostSetupPackage),
   );
   process.exit(1);
+}
+if (
+  expectedMakaReleaseIdentity !== undefined &&
+  JSON.stringify(appManifest.makaReleaseIdentity) !== JSON.stringify(expectedMakaReleaseIdentity)
+) {
+  console.error(
+    'Packaged Maka release identity mismatch: expected ' +
+      JSON.stringify(expectedMakaReleaseIdentity) +
+      ', found ' +
+      JSON.stringify(appManifest.makaReleaseIdentity),
+  );
+  process.exit(1);
+}
+if (expectedMakaReleaseIdentity !== undefined) {
+  const runtimeHostProtocol = requireFromApp('@maka/runtime-host/protocol');
+  if (
+    runtimeHostProtocol.RUNTIME_HOST_COMPATIBILITY_EPOCH !==
+    expectedMakaReleaseIdentity.compatibilityEpoch
+  ) {
+    console.error(
+      'Packaged Runtime Host compatibility epoch mismatch: expected ' +
+        expectedMakaReleaseIdentity.compatibilityEpoch +
+        ', found ' +
+        runtimeHostProtocol.RUNTIME_HOST_COMPATIBILITY_EPOCH,
+    );
+    process.exit(1);
+  }
 }
 const pty = requireFromApp('node-pty');
 const child = pty.spawn(${JSON.stringify(shellFile)}, ${JSON.stringify(shellArgs)}, {

@@ -89,6 +89,7 @@ export async function packageWindowsAutoupdateNext({
     '--publish',
     'never',
     `-c.extraMetadata.version=${nextVersion}`,
+    `-c.extraMetadata.makaReleaseIdentity.version=${nextVersion}`,
     '-c.directories.output=release-autoupdate-next',
   ]);
 

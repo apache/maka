@@ -68,6 +68,7 @@ export async function packageMacosAutoupdateNext({
     '--publish',
     'never',
     `-c.extraMetadata.version=${nextVersion}`,
+    `-c.extraMetadata.makaReleaseIdentity.version=${nextVersion}`,
     '-c.extraMetadata.makaUpdateTestProfile=true',
     '-c.mac.notarize=false',
     '-c.directories.output=release-autoupdate-next',

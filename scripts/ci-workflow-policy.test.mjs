@@ -466,6 +466,19 @@ test('installed-package validation discards superseded pull request runs', () =>
   );
 });
 
+test('CLI package validation watches every release smoke helper', () => {
+  const filtered = new Set(readPullRequestPathFilter('cli-package-validation.yml'));
+  for (const path of [
+    'scripts/release-cli-compatibility.mjs',
+    'scripts/release-cli-compatibility.test.mjs',
+    'scripts/release-cli-websocket-smoke.mjs',
+    'scripts/release-cli-websocket-smoke.test.mjs',
+    'scripts/smoke-release-cli-package.mjs',
+  ]) {
+    assert.ok(filtered.has(path), `${path} is not covered by the CLI validation path filter`);
+  }
+});
+
 test('the recovery lane keeps every run kind out of one shared concurrency group', () => {
   const workflow = readWorkflow('windows-recovery.yml');
 

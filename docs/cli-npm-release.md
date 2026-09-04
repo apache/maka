@@ -49,6 +49,24 @@ retaining Maka's stronger protected-Environment, staged-publishing, 2FA, and Fin
 - Do not rebuild between validation, staging, approval, and finalization.
 - Never reuse a public version. Formal product fixes require a new patch, minor, or major version.
 
+## Runtime Host compatibility matrix
+
+Desktop and npm CLI release artifacts carry the same `makaReleaseIdentity`: schema version,
+product version, exact source commit, and Runtime Host compatibility epoch. Release validation
+requires this identity to match across artifacts. The network handshake then requires an exact
+epoch match before admitting any Domain command.
+
+| Client artifact | Runtime Host artifact | Result |
+| --- | --- | --- |
+| Desktop/CLI from the same product source identity | Runtime Host from that same identity | Supported |
+| Any client | Runtime Host with a different compatibility epoch | Rejected as `incompatible` during handshake |
+| Desktop `0.1.11` (epoch 25) | `maka-agent@0.1.0-beta.1` (epoch 24) | Unsupported; upgrade to a newly published matching release |
+
+The source commit and version are release metadata, not additional wire-handshake fields; equal
+epochs alone do not make independently built artifacts a supported release pair. Because public
+npm versions are immutable, do not overwrite `0.1.0-beta.1`; publish a new version from one exact
+approved source commit and update the remote Host package.
+
 The workflow boundaries are:
 
 1. [npm publication](../.github/workflows/npm-publication.yml) is the only Trusted Publisher caller.

@@ -20,6 +20,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { readFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { basename, dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -261,4 +262,16 @@ test('packaging observes a valid nightly version without changing product manife
     }),
     'maka-agent@0.2.0-dev.42.20260829',
   );
+});
+
+test('version-bumped auto-update builds carry the matching release identity version', async () => {
+  const scripts = await Promise.all(
+    ['package-windows-autoupdate-next.mjs', 'package-macos-autoupdate-next.mjs'].map((name) =>
+      readFile(new URL(`./${name}`, import.meta.url), 'utf8'),
+    ),
+  );
+
+  for (const source of scripts) {
+    assert.match(source, /`-c\.extraMetadata\.makaReleaseIdentity\.version=\$\{nextVersion\}`/u);
+  }
 });

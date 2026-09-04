@@ -17,15 +17,20 @@
  * under the License.
  */
 
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   resolveDesktopBuildVersion,
   resolveRuntimeHostSetupPackage,
 } from '../../scripts/desktop-nightly.mjs';
 import { workspaceReleaseManifest } from '../../scripts/release-cli-file-policy.mjs';
 import { resolveProductManifestIdentity } from '../../scripts/product-release-identity.mjs';
+import { resolveMakaReleaseIdentity } from '../../scripts/release-cli-compatibility.mjs';
+
+const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 function readManifest(relativePath) {
   return JSON.parse(readFileSync(new URL(relativePath, import.meta.url), 'utf8'));
@@ -61,19 +66,21 @@ async function stageReleaseManifests({ packager }) {
 }
 
 const rootManifest = readManifest('../../package.json');
-const { runtimeHostSetupPackage } = resolveProductManifestIdentity({
+const { runtimeHostSetupPackage, version: productVersion } = resolveProductManifestIdentity({
   rootManifest,
   desktopManifest: readManifest('./package.json'),
   cliManifest: readManifest('../../packages/cli/package.json'),
 });
-
 const baseDesktopBuilderConfig = {
   appId: 'com.maka.desktop',
   productName: 'Maka',
   artifactName: 'Maka-${version}-mac-${arch}.${ext}',
   asar: true,
   beforePack: stageReleaseManifests,
-  extraMetadata: { runtimeHostSetupPackage, makaUpdateChannel: 'release' },
+  extraMetadata: {
+    runtimeHostSetupPackage,
+    makaUpdateChannel: 'release',
+  },
   directories: {
     output: 'release',
   },
@@ -319,18 +326,49 @@ const baseDesktopBuilderConfig = {
 
 export function resolveDesktopBuilderConfig(environment = process.env) {
   const nightlyVersion = environment.MAKA_DESKTOP_NIGHTLY_VERSION?.trim();
-  if (!nightlyVersion) return baseDesktopBuilderConfig;
-  const version = resolveDesktopBuildVersion(rootManifest.version, environment);
+  const version = nightlyVersion
+    ? resolveDesktopBuildVersion(rootManifest.version, environment)
+    : productVersion;
+  const makaReleaseIdentity = resolveMakaReleaseIdentity({
+    version,
+    sourceCommit: resolvePackagingSourceCommit(environment),
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+  });
+  if (!nightlyVersion) {
+    return {
+      ...baseDesktopBuilderConfig,
+      extraMetadata: {
+        ...baseDesktopBuilderConfig.extraMetadata,
+        makaReleaseIdentity,
+      },
+    };
+  }
   return {
     ...baseDesktopBuilderConfig,
     extraMetadata: {
       ...baseDesktopBuilderConfig.extraMetadata,
       version,
       runtimeHostSetupPackage: resolveRuntimeHostSetupPackage(rootManifest.version, environment),
+      makaReleaseIdentity,
       makaUpdateChannel: 'nightly',
     },
     publish: [{ provider: 'github', owner: 'apache', repo: 'maka', channel: 'dev' }],
   };
+}
+
+function resolvePackagingSourceCommit(environment = process.env) {
+  const configured = environment.MAKA_RELEASE_SOURCE_COMMIT?.trim();
+  if (configured) return configured;
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim();
+  } catch (error) {
+    const githubSha = environment.GITHUB_SHA?.trim();
+    if (githubSha) return githubSha;
+    throw new Error('Desktop packaging requires an exact source commit SHA', { cause: error });
+  }
 }
 
 export default resolveDesktopBuilderConfig();

@@ -39,12 +39,18 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import {
+  assertMakaReleaseIdentity,
+  assertRuntimeHostCompatibilityEpoch,
+  resolveMakaReleaseIdentity,
+} from './release-cli-compatibility.mjs';
 import { findReleaseTarball } from './release-cli-eval-support.mjs';
 import {
   collectRuntimeHostFailureDiagnostic,
   renderRuntimeHostFailureDiagnostic,
   retireCollectedRuntimeHostStartupDiagnostic,
 } from './release-cli-runtime-host-diagnostics.mjs';
+import { encodeReleaseSmokeFrame } from './release-cli-websocket-smoke.mjs';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -145,6 +151,13 @@ async function validateInstalledProduct(root) {
   const maka = process.platform === 'win32' ? join(prefix, 'maka.cmd') : join(prefix, 'bin/maka');
   const cliEntrypoint = join(packageRoot, 'dist/cli.js');
   const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+  const releaseIdentity = manifest.makaReleaseIdentity
+    ? resolveMakaReleaseIdentity({
+        version: manifest.version,
+        sourceCommit: resolveSmokeSourceCommit(),
+        sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      })
+    : undefined;
   const crossSpawnModule = await importInstalled(packageRoot, 'node_modules/cross-spawn/index.js');
   const crossSpawn = crossSpawnModule.default ?? crossSpawnModule;
   if (typeof crossSpawn.sync !== 'function') {
@@ -161,7 +174,7 @@ async function validateInstalledProduct(root) {
     runSync(crossSpawn.sync, maka, ['eval', '--help'], baseEnvironment, root),
     'usage: maka eval run',
   );
-  validateInstalledRuntimeFiles(packageRoot);
+  validateInstalledRuntimeFiles(packageRoot, releaseIdentity);
 
   logStep('checking installed Eval spec decoding and framework preflight');
   smokeEvalPreflight({ crossSpawn: crossSpawn.sync, environment: baseEnvironment, maka, root });
@@ -208,6 +221,14 @@ async function validateInstalledProduct(root) {
     root: join(root, 'runtime-host-service'),
   });
 
+  if (releaseIdentity) {
+    logStep('checking the cross-artifact Runtime Host handshake');
+    await smokeCrossArtifactRuntimeHostCompatibility({
+      packageRoot,
+      releaseIdentity,
+      root: join(root, 'cross-artifact-runtime-host'),
+    });
+  }
   console.log(
     `[release-cli-validation] OK — installed ${basename(tarballPath)} offline as ${version}`,
   );
@@ -590,12 +611,13 @@ function validateReleaseArtifact(path) {
   });
 }
 
-function validateInstalledRuntimeFiles(packageRoot) {
+function validateInstalledRuntimeFiles(packageRoot, expectedReleaseIdentity) {
   for (const path of [
     // Incubator policy: the installed package carries the incubating
     // disclaimer next to LICENSE/NOTICE, like every other Maka release.
     'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/index.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -604,6 +626,18 @@ function validateInstalledRuntimeFiles(packageRoot) {
     if (!existsSync(join(packageRoot, path))) {
       throw new Error(`Installed runtime file is missing: ${path}`);
     }
+  }
+  assertRuntimeHostCompatibilityEpoch({
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+    packagedPath: join(packageRoot, 'node_modules/@maka/runtime-host/dist/protocol/index.js'),
+  });
+  if (expectedReleaseIdentity) {
+    const manifest = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8'));
+    assertMakaReleaseIdentity({
+      expected: expectedReleaseIdentity,
+      actual: manifest.makaReleaseIdentity,
+      label: 'Installed CLI release identity',
+    });
   }
   assertOutput(
     readFileSync(join(packageRoot, 'node_modules/node-pty/lib/unixTerminal.js'), 'utf8'),
@@ -814,6 +848,179 @@ async function smokeRuntimeHostService({ packageRoot, cliEntrypoint, ptySpawn, r
     },
     (completed) => settleRuntimeHost(packageRoot, stateRoot, completed),
   );
+}
+
+async function smokeCrossArtifactRuntimeHostCompatibility({ packageRoot, releaseIdentity, root }) {
+  const server = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/server/index.js',
+  );
+  const hostProtocol = await importInstalled(
+    packageRoot,
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
+  );
+  // The smoke job deliberately does not build the source workspaces. The
+  // checked-out source identity supplies the Client epoch, while this raw
+  // canonical hello supplies the equivalent Client wire probe; the Host and
+  // response decoder come from the installed npm artifact.
+  const access = await importInstalled(packageRoot, 'dist/runtime-host-access-command.js');
+  const wsModule = await importInstalled(packageRoot, 'node_modules/ws/index.js');
+  const WebSocket = wsModule.default ?? wsModule.WebSocket ?? wsModule;
+  if (typeof WebSocket !== 'function') throw new Error('Installed ws WebSocket API is unavailable');
+
+  const hostRoot = join(root, 'host');
+  mkdirSync(hostRoot, { recursive: true });
+  let host;
+  const sockets = [];
+  try {
+    host = await server.startExecutionRuntimeHostService({
+      rootPath: hostRoot,
+      websocket: { host: '127.0.0.1', port: 0 },
+    });
+    const issued = await access.issueRuntimeHostAccessCredential({
+      rootPath: hostRoot,
+      expectedRootId: host.rootId,
+      principalKind: 'remote_owner',
+      principalId: 'release-cross-artifact-client',
+      operationGrants: [],
+      canPublishClientCapabilities: false,
+      canUseHostPaths: false,
+      preset: 'terminal-client',
+    });
+    const endpoint = host.websocketEndpoints[0];
+    if (!endpoint) throw new Error('Cross-artifact Runtime Host has no WebSocket endpoint');
+
+    const matchingSocket = await openReleaseSmokeWebSocket(WebSocket, endpoint, issued.credential);
+    sockets.push(matchingSocket);
+    matchingSocket.send(
+      encodeReleaseSmokeFrame(releaseSmokeHello(releaseIdentity.compatibilityEpoch, 'matching')),
+    );
+    const accepted = await readReleaseSmokeHandshake(matchingSocket, hostProtocol.decodeHostFrame);
+    if (
+      accepted.kind !== 'accepted' ||
+      accepted.rootId !== host.rootId ||
+      accepted.compatibilityEpoch !== releaseIdentity.compatibilityEpoch
+    ) {
+      throw new Error('Cross-artifact Runtime Host handshake did not accept the matching identity');
+    }
+    await closeReleaseSmokeWebSocket(matchingSocket);
+
+    const mismatchedEpoch =
+      releaseIdentity.compatibilityEpoch > 1
+        ? releaseIdentity.compatibilityEpoch - 1
+        : releaseIdentity.compatibilityEpoch + 1;
+    const mismatchedSocket = await openReleaseSmokeWebSocket(
+      WebSocket,
+      endpoint,
+      issued.credential,
+    );
+    sockets.push(mismatchedSocket);
+    mismatchedSocket.send(
+      encodeReleaseSmokeFrame(releaseSmokeHello(mismatchedEpoch, 'mismatched')),
+    );
+    const incompatible = await readReleaseSmokeHandshake(
+      mismatchedSocket,
+      hostProtocol.decodeHostFrame,
+    );
+    if (
+      incompatible.kind !== 'incompatible' ||
+      incompatible.compatibilityEpoch !== releaseIdentity.compatibilityEpoch
+    ) {
+      throw new Error(
+        'Cross-artifact Runtime Host handshake did not reject the mismatched epoch before admission',
+      );
+    }
+    await closeReleaseSmokeWebSocket(mismatchedSocket);
+  } finally {
+    for (const socket of sockets) await closeReleaseSmokeWebSocket(socket).catch(() => undefined);
+    await host?.close().catch(() => undefined);
+  }
+}
+
+function releaseSmokeHello(compatibilityEpoch, suffix) {
+  return {
+    kind: 'hello',
+    clientInstanceId: `release-cross-artifact-${suffix}`,
+    surface: 'desktop',
+    protocolMin: 0,
+    protocolMax: 0,
+    compatibilityEpoch,
+    compositionId: 'maka.interactive',
+  };
+}
+
+function openReleaseSmokeWebSocket(WebSocket, endpoint, credential) {
+  return new Promise((resolvePromise, reject) => {
+    const socket = new WebSocket(endpoint, {
+      headers: { authorization: `Bearer ${credential}` },
+      handshakeTimeout: 10_000,
+      perMessageDeflate: false,
+    });
+    const fail = (error) => {
+      socket.terminate();
+      reject(error);
+    };
+    const onOpen = () => {
+      socket.off('error', fail);
+      socket.once('error', () => undefined);
+      resolvePromise(socket);
+    };
+    socket.once('open', onOpen);
+    socket.once('error', fail);
+  });
+}
+
+function readReleaseSmokeHandshake(socket, decodeHostFrame) {
+  return new Promise((resolvePromise, reject) => {
+    const onMessage = (data) => {
+      cleanup();
+      try {
+        resolvePromise(decodeHostFrame(JSON.parse(data.toString())));
+      } catch (error) {
+        reject(error);
+      }
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('Cross-artifact Runtime Host closed before its handshake response'));
+    };
+    const cleanup = () => {
+      socket.off('message', onMessage);
+      socket.off('error', onError);
+      socket.off('close', onClose);
+    };
+    socket.once('message', onMessage);
+    socket.once('error', onError);
+    socket.once('close', onClose);
+  });
+}
+
+function closeReleaseSmokeWebSocket(socket) {
+  if (!socket || socket.readyState === socket.CLOSED) return Promise.resolve();
+  return new Promise((resolvePromise) => {
+    const timer = setTimeout(() => {
+      socket.terminate();
+      resolvePromise();
+    }, 5_000);
+    socket.once('close', () => {
+      clearTimeout(timer);
+      resolvePromise();
+    });
+    socket.close();
+  });
+}
+
+function resolveSmokeSourceCommit() {
+  const configured = process.env.MAKA_RELEASE_SOURCE_COMMIT?.trim();
+  if (configured) return configured;
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  }).trim();
 }
 
 async function allocateLoopbackPort() {

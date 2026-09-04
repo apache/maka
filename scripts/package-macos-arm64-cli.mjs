@@ -41,6 +41,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveProductReleaseIdentity } from './product-release-identity.mjs';
 import {
+  assertRuntimeHostCompatibilityEpoch,
+  resolveMakaReleaseIdentity,
+} from './release-cli-compatibility.mjs';
+import {
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
   releaseNpmEnvironment,
@@ -862,14 +866,20 @@ export async function packageMacosArm64Cli({
       readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8').then(JSON.parse),
       readFile(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8').then(JSON.parse),
       resolveCliWorkspacePackages(),
-      inspect('git', ['rev-parse', 'HEAD']),
+      env.MAKA_RELEASE_SOURCE_COMMIT?.trim() || inspect('git', ['rev-parse', 'HEAD']),
     ]);
-  const sourceCommit = sourceCommitResult.stdout.trim();
+  const sourceCommit =
+    typeof sourceCommitResult === 'string' ? sourceCommitResult : sourceCommitResult.stdout.trim();
   const identity = resolveProductReleaseIdentity({
     rootManifest,
     desktopManifest,
     cliManifest,
     sha: sourceCommit,
+  });
+  const runtimeHostReleaseIdentity = resolveMakaReleaseIdentity({
+    version: identity.version,
+    sourceCommit,
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
   });
   if (releaseSigning) assertReleaseSigningEnvironment(env);
   if (!nodeArchivePath) {
@@ -961,6 +971,13 @@ export async function packageMacosArm64Cli({
       chmod(join(binDirectory, 'maka'), 0o755),
     ]);
     await assertWorkspaceLinks(archiveRoot, workspacePackages);
+    assertRuntimeHostCompatibilityEpoch({
+      sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      packagedPath: join(
+        archiveRoot,
+        'libexec/node_modules/@maka/runtime-host/dist/protocol/index.js',
+      ),
+    });
 
     const thirdPartyNoticesPath = join(archiveRoot, 'THIRD_PARTY_NOTICES.txt');
     await copyFile(
@@ -976,6 +993,7 @@ export async function packageMacosArm64Cli({
       product: 'Maka',
       version,
       sourceCommit,
+      makaReleaseIdentity: runtimeHostReleaseIdentity,
       platform: 'macos',
       architecture: 'arm64',
       publicCommands: identity.publicCommands,

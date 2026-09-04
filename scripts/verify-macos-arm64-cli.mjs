@@ -49,6 +49,11 @@ import {
   resolveMacosArm64CliArtifactPaths,
 } from './package-macos-arm64-cli.mjs';
 import { resolveProductReleaseIdentity } from './product-release-identity.mjs';
+import {
+  assertMakaReleaseIdentity,
+  assertRuntimeHostCompatibilityEpoch,
+  resolveMakaReleaseIdentity,
+} from './release-cli-compatibility.mjs';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -525,6 +530,7 @@ export async function verifyMacosArm64Cli(
     run = runCommand,
     smokeTui = smokeTuiInPty,
     requireReleaseSigning = process.env.MAKA_CLI_REQUIRE_RELEASE_SIGNING === '1',
+    environment = process.env,
   } = {},
 ) {
   assertMacosArm64CliHost(platform, arch);
@@ -532,13 +538,21 @@ export async function verifyMacosArm64Cli(
     readFile(join(repoRoot, 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8').then(JSON.parse),
     readFile(join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8').then(JSON.parse),
-    run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
+    environment.MAKA_RELEASE_SOURCE_COMMIT?.trim() ||
+      run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }),
   ]);
+  const sourceCommit =
+    typeof sourceCommitResult === 'string' ? sourceCommitResult : sourceCommitResult.stdout.trim();
   const identity = resolveProductReleaseIdentity({
     rootManifest,
     desktopManifest,
     cliManifest,
-    sha: sourceCommitResult.stdout.trim(),
+    sha: sourceCommit,
+  });
+  const runtimeHostReleaseIdentity = resolveMakaReleaseIdentity({
+    version: identity.version,
+    sourceCommit: identity.sourceCommit,
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
   });
   const version = identity.version;
   const expectedPaths = resolveMacosArm64CliArtifactPaths(version);
@@ -570,11 +584,16 @@ export async function verifyMacosArm64Cli(
     const nodePath = join(archiveRoot, 'libexec', 'node', 'bin', 'node');
     const makaPath = join(archiveRoot, 'bin', 'maka');
     const metadataPath = join(archiveRoot, 'RELEASE.json');
+    const runtimeHostProtocolPath = join(
+      archiveRoot,
+      'libexec/node_modules/@maka/runtime-host/dist/protocol/index.js',
+    );
     const thirdPartyNoticesPath = join(archiveRoot, 'THIRD_PARTY_NOTICES.txt');
     const requiredPaths = [
       nodePath,
       makaPath,
       metadataPath,
+      runtimeHostProtocolPath,
       thirdPartyNoticesPath,
       join(archiveRoot, 'DISCLAIMER-WIP'),
       join(archiveRoot, 'LICENSE'),
@@ -614,6 +633,15 @@ export async function verifyMacosArm64Cli(
     ) {
       throw new Error('CLI release metadata does not match the product release identity.');
     }
+    assertMakaReleaseIdentity({
+      expected: runtimeHostReleaseIdentity,
+      actual: metadata.makaReleaseIdentity,
+      label: 'CLI release Runtime Host identity',
+    });
+    assertRuntimeHostCompatibilityEpoch({
+      sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      packagedPath: runtimeHostProtocolPath,
+    });
     if (JSON.stringify(metadata.dependencyPatches) !== JSON.stringify(expectedDependencyPatches)) {
       throw new Error('CLI release metadata does not match the repository dependency patches.');
     }

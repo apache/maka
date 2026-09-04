@@ -34,6 +34,7 @@ on:
       - 'packages/cli/src/runtime-host-service-*'
       - 'packages/cli/src/runtime-host-windows-*'
       - 'packages/runtime-host/package.json'
+      - 'packages/runtime-host/src/protocol/**'
       - 'packages/runtime-host/src/client/peer-client.ts'
       - 'packages/runtime-host/src/peer-mesh/**'
       - 'packages/runtime-host/src/server/peer-listener.ts'
@@ -42,7 +43,11 @@ on:
       - 'packages/storage/src/file-lifetime-owner.ts'
       - 'packages/storage/src/native-file-lock.ts'
       - 'scripts/generate-runtime-host-peer-*'
+      - 'scripts/release-cli-compatibility.mjs'
+      - 'scripts/release-cli-compatibility.test.mjs'
       - 'scripts/release-cli-package.mjs'
+      - 'scripts/release-cli-websocket-smoke.mjs'
+      - 'scripts/release-cli-websocket-smoke.test.mjs'
       - 'scripts/qualify-released-cli-state-root.mjs'
       - 'scripts/qualify-released-cli-state-root.test.mjs'
       - 'scripts/released-cli-state-root-fixture.mjs'
@@ -225,6 +230,7 @@ jobs:
       - name: Build the release tarball once
         env:
           MAKA_CLI_NIGHTLY_VERSION: ${{ inputs.package_version }}
+          MAKA_RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
           MAKA_RUNTIME_HOST_PEER_PREBUILDS: ${{ runner.temp }}/runtime-host-peer-prebuilds
         run: npm run release:cli:pack
       - name: Upload the immutable release candidate
@@ -302,6 +308,8 @@ jobs:
       - name: Validate the installed tarball
         id: first-node-smoke
         continue-on-error: true
+        env:
+          MAKA_RELEASE_SOURCE_COMMIT: ${{ inputs.source_commit || github.sha }}
         run: node scripts/smoke-release-cli-package.mjs
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         if: matrix.second_node != ''

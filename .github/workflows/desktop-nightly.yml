@@ -109,6 +109,7 @@ jobs:
         shell: bash
     env:
       MAKA_DESKTOP_NIGHTLY_VERSION: ${{ needs.identity.outputs.version }}
+      MAKA_RELEASE_SOURCE_COMMIT: ${{ needs.identity.outputs.source_commit }}
     steps:
       - name: Reject in-place workflow reruns
         if: github.run_attempt != 1

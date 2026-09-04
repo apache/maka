@@ -38,6 +38,11 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { npmSpawnOptions } from './npm-spawn.mjs';
 import { validateCliReleaseArtifactMetrics } from './release-cli-artifact-policy.mjs';
+import {
+  assertMakaReleaseIdentity,
+  assertRuntimeHostCompatibilityEpoch,
+  resolveMakaReleaseIdentity,
+} from './release-cli-compatibility.mjs';
 import { assertProductNightlyVersion } from './release-version.mjs';
 import {
   isCurrentDevelopmentJavaScript,
@@ -638,9 +643,17 @@ function writeReleaseManifest(cli, publishable) {
       'CLI manifest must define a positive managed Runtime Host update compatibility',
     );
   }
+  const version = publishable && nightlyVersion ? nightlyVersion : source.version;
+  const releaseIdentity = publishable
+    ? resolveMakaReleaseIdentity({
+        version,
+        sourceCommit: process.env.MAKA_RELEASE_SOURCE_COMMIT?.trim(),
+        sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      })
+    : undefined;
   const manifest = {
     name: source.name,
-    version: publishable && nightlyVersion ? nightlyVersion : source.version,
+    version,
     description: nightlyVersion
       ? 'Apache Maka (Incubating) developer snapshot; not an Apache release.'
       : 'Apache Maka (Incubating), a local-first agent workspace for the terminal.',
@@ -649,6 +662,7 @@ function writeReleaseManifest(cli, publishable) {
     exports: {},
     bin: source.bin,
     maka: { managedRuntimeHostUpdateCompatibility: updateCompatibility },
+    ...(releaseIdentity ? { makaReleaseIdentity: releaseIdentity } : {}),
     engines: root.engines,
     repository: {
       type: 'git',
@@ -716,6 +730,7 @@ function validateStaging(publishable) {
     'RUNTIME_HOST_PEER_DEPENDENCIES.rust.tsv',
     'RUNTIME_HOST_PEER_THIRD_PARTY_NOTICES.txt',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/dist/harbor-external-subject.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
@@ -741,6 +756,22 @@ function validateStaging(publishable) {
   for (const path of required) {
     if (!existsSync(join(stageRoot, path)))
       throw new Error(`Required release file is missing: ${path}`);
+  }
+  assertRuntimeHostCompatibilityEpoch({
+    sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+    packagedPath: join(stageRoot, 'node_modules/@maka/runtime-host/dist/protocol/index.js'),
+  });
+  if (publishable) {
+    const manifest = readJson(join(stageRoot, 'package.json'));
+    assertMakaReleaseIdentity({
+      expected: resolveMakaReleaseIdentity({
+        version: manifest.version,
+        sourceCommit: process.env.MAKA_RELEASE_SOURCE_COMMIT?.trim(),
+        sourcePath: join(repoRoot, 'packages/runtime-host/src/protocol/index.ts'),
+      }),
+      actual: manifest.makaReleaseIdentity,
+      label: 'CLI release identity',
+    });
   }
   assertPatchedFile(
     'node_modules/node-pty/lib/unixTerminal.js',
@@ -817,9 +848,11 @@ function validatePackedFiles(files, expectedDependencyManifests, publishable) {
     }
   }
   const requiredPacked = [
+    'package.json',
     'dist/cli.js',
     'DISCLAIMER-WIP',
     'node_modules/@maka/runtime/dist/workers/filesystem-worker.js',
+    'node_modules/@maka/runtime-host/dist/protocol/index.js',
     'node_modules/@maka/runtime-host/dist/execution-candidate-main.js',
     'node_modules/@maka/eval/harbor/relay_agent.py',
     ...(publishable || privatePeerTarget !== 'none' ? ['native/runtime-host-peer/prebuilds/'] : []),
