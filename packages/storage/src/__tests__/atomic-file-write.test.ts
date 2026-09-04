@@ -36,6 +36,7 @@ import { join } from 'node:path';
 import { describe, test } from 'node:test';
 import {
   AtomicFileWriteCommitUnknownError,
+  hardenDirectory,
   writeAtomicFile,
   type AtomicFileWriteDependencies,
   type AtomicFileWriteHandle,
@@ -66,7 +67,7 @@ describe('writeAtomicFile', () => {
     test(`removes its temp file and rethrows after a ${failurePhase} failure`, async () => {
       await withTempDir(async (dir) => {
         const path = join(dir, 'settings.json');
-        const temporaryPath = `${path}.fault.tmp`;
+        const temporaryPath = join(dir, '.settings.json.fault.tmp');
         const fault = new Error(`${failurePhase} failed`);
         await assert.rejects(
           () =>
@@ -86,7 +87,7 @@ describe('writeAtomicFile', () => {
   }, async () => {
     await withTempDir(async (dir) => {
       const path = join(dir, 'settings.json');
-      const temporaryPath = `${path}.fault.tmp`;
+      const temporaryPath = join(dir, '.settings.json.fault.tmp');
       const fault = new Error('chmod failed');
       await assert.rejects(
         () =>
@@ -186,28 +187,25 @@ describe('writeAtomicFile', () => {
     });
   });
 
-  test("dir 'harden' creates a 0700 directory chain for a nested target", {
+  test('hardenDirectory creates a 0700 directory chain', {
     skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
-      const path = join(dir, 'secrets', 'sub', 'credentials.json');
-      await writeAtomicFile(path, '{}\n', { fileMode: 0o600, dir: 'harden' });
+      const targetDir = join(dir, 'secrets', 'sub');
+      await hardenDirectory(targetDir);
       assert.equal((await stat(join(dir, 'secrets'))).mode & 0o777, 0o700);
-      assert.equal((await stat(join(dir, 'secrets', 'sub'))).mode & 0o777, 0o700);
-      assert.equal((await stat(path)).mode & 0o777, 0o600);
+      assert.equal((await stat(targetDir)).mode & 0o777, 0o700);
     });
   });
 
-  test("dir 'harden' re-chmods a pre-existing world-accessible directory to 0700", {
+  test('hardenDirectory re-chmods a pre-existing world-accessible directory to 0700', {
     skip: process.platform === 'win32',
   }, async () => {
     await withTempDir(async (dir) => {
       const loose = join(dir, 'loose');
       await mkdir(loose, { recursive: true, mode: 0o777 });
       await chmod(loose, 0o777); // mkdir's mode only applies on creation
-      await writeAtomicFile(join(loose, 'credentials.json'), '{}\n', { dir: 'harden' });
-      // hardenDirectory re-chmods an existing dir; a failure would fail the
-      // write rather than leave secrets in a world-readable directory.
+      await hardenDirectory(loose);
       assert.equal((await stat(loose)).mode & 0o777, 0o700);
     });
   });
@@ -221,7 +219,8 @@ describe('writeAtomicFile', () => {
       await writeFile(plantedTarget, 'do not touch\n', 'utf8');
       // The injected randomUUID makes the unpredictable temp path knowable,
       // which is exactly the attacker model 'wx'/O_EXCL answers.
-      await symlink(plantedTarget, `${path}.planted.tmp`);
+      const plantedTemp = join(dir, '.credentials.json.planted.tmp');
+      await symlink(plantedTarget, plantedTemp);
       await assert.rejects(
         () => writeAtomicFile(path, '{}\n', undefined, { randomUUID: () => 'planted' }),
         { code: 'EEXIST' },
@@ -230,7 +229,7 @@ describe('writeAtomicFile', () => {
       assert.equal(await stat(path).catch(() => null), null);
       // Cleanup removes only what the writer created: the planted entry is
       // still a symlink, exactly where it was.
-      assert.equal((await lstat(`${path}.planted.tmp`)).isSymbolicLink(), true);
+      assert.equal((await lstat(plantedTemp)).isSymbolicLink(), true);
     });
   });
 });

@@ -79,8 +79,8 @@ Total Windows-excluded declarations: **83**
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` removes its temp file and rethrows after a chmod failure | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` creates the target 0600 on POSIX | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` re-chmods a pre-existing world-readable target to 0600 on the next write | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` dir 'harden' creates a 0700 directory chain for a nested target | `process.platform === 'win32'` |
-| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` dir 'harden' re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` hardenDirectory creates a 0700 directory chain | `process.platform === 'win32'` |
+| portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` hardenDirectory re-chmods a pre-existing world-accessible directory to 0700 | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/atomic-file-write.test.ts` refuses to write through a pre-planted symlink at the temp path | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` accepts a POSIX package bin symlink whose target remains inside the dependency root | `process.platform === 'win32'` |
 | portable-candidate | `packages/storage/src/__tests__/managed-dependency-environment.test.ts` isolates published POSIX content from a producer-retained writable handle | `process.platform === 'win32'` |

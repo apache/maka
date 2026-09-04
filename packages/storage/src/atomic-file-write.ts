@@ -19,36 +19,34 @@
 
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { syncDirectory } from './stable-storage.js';
 
 /**
- * Owner-only atomic write for JSON config files: an exclusive temp file
- * ('wx'/O_EXCL so a pre-planted symlink at the predictable-ish temp path is
- * never followed), a durability fence before AND after the atomic rename, and
- * temp cleanup on failure. This is the single write-side authority for the
- * package's JSON stores (settings / mcp / credentials) so their strictness
- * cannot drift apart again.
+ * Owner-only atomic writer shared by the legacy settings, MCP, and credentials
+ * JSON stores. It publishes an exclusive hidden temp file with rename and
+ * removes that temp on failures before publication.
  *
- * chmod policy is a documented invariant of this module, not a per-call
+ * Durability support depends on the platform and storage stack:
+ *  - Linux and POSIX systems other than macOS: sync the temp file before
+ *    rename and fsync the parent directory afterwards. Persistence still
+ *    depends on the filesystem, mount, device, and hardware honoring them.
+ *  - macOS: use Node's ordinary fsync operations; Node does not expose
+ *    F_FULLFSYNC here, so this is not a uniform sudden-power-loss guarantee.
+ *  - Windows: sync the temp file before rename, but parent-directory sync is a
+ *    no-op because Node does not provide an equivalent directory fence.
+ *
+ * File chmod policy is a documented invariant of this module, not a per-call
  * choice:
  *  - file chmod: fail-loud on POSIX, skipped on Windows (no POSIX mode).
  *    Applies after the exclusive open so umask can never loosen the file.
- *  - `dir: 'harden'`: mkdir + fail-closed chmod — we must not write plaintext
- *    secrets into a directory we could not lock down. Windows is best-effort
- *    for the same reason as above.
+ * Directory creation and permission policy belong to each caller.
  */
 
 export interface AtomicFileWriteOptions {
   /** Mode for the final file. The temp is opened with it and re-chmod'd, so a
    * pre-existing looser target is always tightened on the next write. */
   fileMode?: number;
-  /** Directory handling. 'none' (default) leaves the directory entirely to
-   * the caller; 'harden' creates/locks down an owner-only directory before
-   * the temp is written (the credentials-store semantics). */
-  dir?: 'none' | 'harden';
-  /** Mode for `dir: 'harden'`. */
-  dirMode?: number;
 }
 
 /** The fs surface `writeAtomicFile` needs; injectable for fault-injection
@@ -89,10 +87,7 @@ export async function writeAtomicFile(
 ): Promise<void> {
   const deps = { ...defaultDependencies, ...dependencies };
   const fileMode = options.fileMode ?? 0o600;
-  if (options.dir === 'harden') {
-    await hardenDirectory(dirname(path), options.dirMode ?? 0o700);
-  }
-  const tempPath = `${path}.${deps.randomUUID()}.tmp`;
+  const tempPath = join(dirname(path), `.${basename(path)}.${deps.randomUUID()}.tmp`);
   // Only the entry this call created — and hasn't renamed away — may be
   // cleaned up. A pre-existing file or planted symlink the 'wx' open refused
   // must not be deleted as "our" temp.
@@ -128,9 +123,8 @@ export async function writeAtomicFile(
 
 /**
  * Create (or harden) an owner-only directory: recursive mkdir plus a
- * fail-closed chmod, since mkdir's mode only applies on creation. Shared by
- * the 'harden' write path and the credentials lock so their directory
- * strictness cannot drift apart.
+ * fail-closed chmod, since mkdir's mode only applies on creation. Callers that
+ * store secrets use this before creating their file or update lock.
  */
 export async function hardenDirectory(dir: string, mode: number = 0o700): Promise<void> {
   await mkdir(dir, { recursive: true, mode });
