@@ -1607,6 +1607,9 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
   }).flat();
 }
 
+/** Stops the harness below, so the tail can be read against a settled transcript. */
+let stopTailStream: (() => void) | undefined;
+
 /**
  * Streams one line per frame into a live Turn. The E2E original drove a fake
  * backend echoing a 60-line prompt; what the assertion needs is growth past a
@@ -1615,16 +1618,26 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
 function StreamingTailHarness() {
   const [lines, setLines] = useState(1);
   useEffect(() => {
-    const id = window.setInterval(() => {
-      setLines((count) => {
-        if (count >= TAIL_LINES.length) {
-          window.clearInterval(id);
-          return count;
-        }
-        return count + 1;
-      });
-    }, 16);
-    return () => window.clearInterval(id);
+    // Paced by frames, not by the clock. The sampler reads per frame too, so
+    // the two stay in step on a slow runner instead of the story taking
+    // proportionally longer than the machine it was sized on.
+    let frame = 0;
+    let stopped = false;
+    const tick = (): void => {
+      if (stopped) return;
+      setLines((count) => (count >= TAIL_LINES.length ? count : count + 1));
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    const stop = (): void => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+    };
+    stopTailStream = stop;
+    return () => {
+      stop();
+      stopTailStream = undefined;
+    };
   }, []);
   return (
     <ComposedShell
@@ -1665,7 +1678,10 @@ function StreamingTailHarness() {
 export const StreamingTailFollow: Story = {
   render: () => <StreamingTailHarness />,
   play: async () => {
-    const lag = await measureTailLag(1_200);
+    // A fuse, not a duration: the sampler stops on the content, after a few
+    // dozen frames. Sized to run out well inside the smoke's per-story budget,
+    // so a stalled stream fails saying so instead of timing the story out.
+    const lag = await measureTailLag(600);
 
     // The samples have to have covered more than a viewport of real growth, or
     // every reading above is a stationary transcript and proves nothing.
@@ -1673,14 +1689,17 @@ export const StreamingTailFollow: Story = {
     expect(lag.worstLag).toBeLessThanOrEqual(lag.worstFrameGrowth + 8);
 
     // Settle against a transcript that stopped growing, or the reading only
-    // says the sampler happened to catch a frame between deltas.
-    await waitFor(() => {
-      expect(tailScroller().textContent).toContain(TAIL_LINES[TAIL_LINES.length - 1]);
-    });
-    await waitFor(() => {
-      const settled = tailMetrics();
-      expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
-    });
+    // says the sampler happened to catch a frame between deltas. Stopping it
+    // here rather than waiting the stream out keeps the story's length tied to
+    // the growth the assertion needed, which is already behind us.
+    stopTailStream?.();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
   },
 };
 
@@ -1921,6 +1940,105 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
         JSON.stringify({ anchor, inserted, now: turnTop(anchor.turnId), ...tailMetrics() }),
       ).toBeLessThanOrEqual(Math.max(4, inserted * 0.02));
     });
+  },
+};
+
+/**
+ * The reader going *up* through Turns that have never rendered.
+ *
+ * New coverage rather than a restoration (#4761): the removed specs asserted
+ * turn-level anchoring against arrivals and tail-following lag while pinned,
+ * and both watch content coming to a reader who stays put. Neither watches a
+ * reader travelling through `content-visibility` placeholders as those
+ * materialise, because #4206 gives each Turn one boundary and made that stable
+ * by construction. #4259 moves the boundaries inside the Turn, where an upward
+ * traversal was measured moving `scrollHeight` by 63%.
+ *
+ * What is asserted is a bound, not stillness. A Turn off screen is laid out at
+ * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
+ * the way past; unless every Turn happens to be 280px tall, travelling through
+ * them moves things by construction, and measured here it moves the transcript
+ * about 8%. That is the cost #4206 already accepted. The bound is what #4206
+ * buys on top of it — one estimate to correct per Turn, so the correction
+ * stays proportional to how many Turns were crossed rather than to how much is
+ * inside them. #4259 puts several boundaries in each Turn, and its measured
+ * 63% is what this fails on.
+ */
+const TRAVERSAL_STEP = 700;
+
+/** What one Turn is worth, measured after everything has rendered once. */
+function medianTurnHeight(): number {
+  const heights = [...tailScroller().querySelectorAll<HTMLElement>('[data-turn-id]')]
+    .map((turn) => turn.getBoundingClientRect().height)
+    .sort((a, b) => a - b);
+  if (heights.length === 0) throw new Error('the transcript has no mounted turn');
+  return heights[Math.floor(heights.length / 2)];
+}
+
+/** The first Turn whose box is still on screen, and where it starts. */
+function anchorInView(): { turnId: string; top: number } {
+  const root = tailScroller();
+  const rootTop = root.getBoundingClientRect().top;
+  const turn = [...root.querySelectorAll<HTMLElement>('[data-turn-id]')].find(
+    (candidate) => candidate.getBoundingClientRect().bottom > rootTop,
+  );
+  if (!turn?.dataset.turnId) throw new Error('no turn is on screen');
+  return { turnId: turn.dataset.turnId, top: Math.round(turn.getBoundingClientRect().top) };
+}
+
+export const UpwardTraversalHoldsTurnGeometry: Story = {
+  render: () => <SettledTranscriptHarness turns={40} />,
+  play: async () => {
+    const root = tailScroller();
+    await waitFor(() => expect(tailMetrics().distance).toBeLessThanOrEqual(4));
+    const heightBefore = root.scrollHeight;
+    expect(
+      heightBefore / root.clientHeight,
+      'the transcript has to be deep enough to hold unrendered Turns',
+    ).toBeGreaterThan(6);
+
+    const drifts: number[] = [];
+    let steps = 0;
+    while (root.scrollTop > 0 && steps < 40) {
+      const anchor = anchorInView();
+      const scrollBefore = root.scrollTop;
+      root.scrollTop = Math.max(0, scrollBefore - TRAVERSAL_STEP);
+      await painted(4);
+
+      // The reader moved by what the scroller actually moved, so the Turn under
+      // them comes down the viewport by that much plus whatever the estimates
+      // above them were off by.
+      const travelled = scrollBefore - root.scrollTop;
+      drifts.push(Math.round(turnTop(anchor.turnId) - (anchor.top + travelled)));
+      steps += 1;
+    }
+    expect(steps, 'the traversal has to have taken real steps').toBeGreaterThan(6);
+
+    const worstDrift = Math.max(...drifts.map(Math.abs));
+    const turnHeight = medianTurnHeight();
+    // No single step throws the reader past a whole exchange. One Turn's worth
+    // of correction is the most one Turn can owe.
+    expect(worstDrift, `per-step drift: ${drifts.join(' ')} against a Turn of ${turnHeight}`)
+      .toBeLessThanOrEqual(turnHeight);
+
+    // And over the whole traversal the corrections stay proportional to the
+    // Turns crossed. Measured at ~8% here; #4259's 63% is the failure this
+    // exists to catch.
+    const heightAfter = root.scrollHeight;
+    expect(
+      Math.abs(heightAfter - heightBefore) / heightBefore,
+      JSON.stringify({ heightBefore, heightAfter, steps, turnHeight }),
+    ).toBeLessThanOrEqual(0.15);
+
+    // And the reader can still get back.
+    dockButton().click();
+    await waitFor(
+      () => {
+        const settled = tailMetrics();
+        expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
+      },
+      { timeout: 5_000 },
+    );
   },
 };
 
