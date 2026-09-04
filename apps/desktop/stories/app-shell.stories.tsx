@@ -1432,22 +1432,16 @@ export const GoalDialogOpen: Story = {
 };
 
 /**
- * Where the transcript is looking while an answer streams into it.
+ * Transcript geometry.
  *
- * This is the tier `transcript-scroll.spec.ts` was removed from in #4741: the
- * assertions need a real layout engine, not Electron, and under a shared
- * compositor they read a scroller mid-pin. Chromium settles per story here
- * instead of per application launch.
- *
- * Positions are asserted against the scroller's own end, never as a pixel
- * delta: a delta is satisfiable by two wrongs, where the content grew by as
- * much as the view moved.
+ * Assert positions against the scroller's own end, never as a pixel delta: a
+ * delta is satisfiable by two wrongs, where the content grew by as much as the
+ * view moved.
  */
 const TAIL_SCROLLER = '[data-chat-scroll-container="true"]';
 
-// Enough paragraphs to push the transcript past a viewport twice over, and
-// few enough that the stream ends while the story is still settling — the
-// final reading has to be taken against a transcript that stopped growing.
+// Enough to push the transcript past a viewport twice, few enough that a
+// stream of them ends while a story is still settling.
 const TAIL_LINES = Array.from(
   { length: 60 },
   (_, index) => `第 ${index} 行：这一段用来把转录推过滚动视口的高度。`,
@@ -1476,10 +1470,9 @@ function tailMetrics(): {
 }
 
 /**
- * Samples every frame while the answer grows. The failure this guards against
- * is the tail slipping away *while* content arrives, which a single reading
- * afterwards cannot tell apart from a view dragged back at the last delta.
- * Stops on the content rather than on a frame count.
+ * Samples every frame while the answer grows: a tail slipping away *while*
+ * content arrives is indistinguishable, afterwards, from a view dragged back
+ * at the last delta. Stops on the content; the budget is only a fuse.
  */
 function measureTailLag(frameBudget: number): Promise<{
   worstLag: number;
@@ -1543,9 +1536,9 @@ function firstResidentTurnId(): string | null {
 }
 
 /**
- * Whether the dock affordance is actually offered. It is always in the DOM —
- * Astryx toggles opacity and pointer-events — so presence proves nothing and
- * a visibility check passes on the transparent one.
+ * The dock affordance is always in the DOM — Astryx toggles opacity and
+ * pointer-events — so presence proves nothing and a visibility check passes on
+ * the transparent one. `dockOffered` is the real question.
  */
 function dockButton(): HTMLButtonElement {
   const button = [...document.querySelectorAll('button')].find((candidate) =>
@@ -1563,24 +1556,20 @@ function dockOffered(): boolean {
 }
 
 /**
- * A wheel the reader turned, delivered as an event rather than as input.
- *
- * The rule under test reads `composedPath()` and the overflow of what it
- * crosses — DOM state, not compositor state — so a dispatched wheel exercises
- * the same branch a real one does. What a dispatched wheel cannot do is scroll,
- * which is why the cases below set `scrollTop` themselves where the reader's
- * movement matters. Gestures that turn on Chromium's own scroll chaining stay
- * in E2E.
+ * The rule this drives reads `composedPath()` and the overflow of what the
+ * wheel crossed — DOM state — so a dispatched wheel takes the same branch a
+ * real one does. What it cannot do is scroll, so cases that need the reader to
+ * move set `scrollTop` themselves.
  */
 function wheelUp(target: Element): void {
   target.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
 }
 
 /** A scroller inside the transcript, standing in for a tool-output box. */
-function injectNestedScroller(parent: Element, style: string): HTMLElement {
+function injectNestedScroller(parent: Element): HTMLElement {
   const box = document.createElement('div');
   box.dataset.nestedScroller = 'true';
-  box.style.cssText = style;
+  box.style.cssText = 'height:120px;overflow-y:auto';
   const filler = document.createElement('div');
   filler.style.height = '2000px';
   box.append(filler);
@@ -1590,13 +1579,13 @@ function injectNestedScroller(parent: Element, style: string): HTMLElement {
   return box;
 }
 
-/** Answered turns, oldest first. `index` may go negative as history loads. */
+/** Answered turns, oldest first. `from` may go negative as history loads. */
 function transcriptTurns(from: number, count: number): StoredMessage[] {
   return Array.from({ length: count }, (_, offset) => {
     const index = from + offset;
     const turnId = `turn-scroll-${index}`;
     return [
-      user(`msg-scroll-${index}-u`, turnId, 500 - index * 2, `第 ${index} 轮：把转录推长一点。`),
+      user(`msg-scroll-${index}-u`, turnId, 500 - index * 2, `第 ${index} 个问题`),
       assistant(
         `msg-scroll-${index}-a`,
         turnId,
@@ -1610,17 +1599,12 @@ function transcriptTurns(from: number, count: number): StoredMessage[] {
 /** Stops the harness below, so the tail can be read against a settled transcript. */
 let stopTailStream: (() => void) | undefined;
 
-/**
- * Streams one line per frame into a live Turn. The E2E original drove a fake
- * backend echoing a 60-line prompt; what the assertion needs is growth past a
- * viewport with the Turn still live, which the props express directly.
- */
+/** Streams one line per frame into a live Turn. */
 function StreamingTailHarness() {
   const [lines, setLines] = useState(1);
   useEffect(() => {
-    // Paced by frames, not by the clock. The sampler reads per frame too, so
-    // the two stay in step on a slow runner instead of the story taking
-    // proportionally longer than the machine it was sized on.
+    // Paced by frames, not by the clock, so it stays in step with the
+    // per-frame sampler on a slow runner.
     let frame = 0;
     let stopped = false;
     const tick = (): void => {
@@ -1678,9 +1662,8 @@ function StreamingTailHarness() {
 export const StreamingTailFollow: Story = {
   render: () => <StreamingTailHarness />,
   play: async () => {
-    // A fuse, not a duration: the sampler stops on the content, after a few
-    // dozen frames. Sized to run out well inside the smoke's per-story budget,
-    // so a stalled stream fails saying so instead of timing the story out.
+    // The fuse runs out inside the smoke's per-story budget, so a stalled
+    // stream fails saying so instead of timing the story out.
     const lag = await measureTailLag(600);
 
     // The samples have to have covered more than a viewport of real growth, or
@@ -1689,9 +1672,7 @@ export const StreamingTailFollow: Story = {
     expect(lag.worstLag).toBeLessThanOrEqual(lag.worstFrameGrowth + 8);
 
     // Settle against a transcript that stopped growing, or the reading only
-    // says the sampler happened to catch a frame between deltas. Stopping it
-    // here rather than waiting the stream out keeps the story's length tied to
-    // the growth the assertion needed, which is already behind us.
+    // says the sampler caught a frame between deltas.
     stopTailStream?.();
     await waitFor(
       () => {
@@ -1703,11 +1684,7 @@ export const StreamingTailFollow: Story = {
   },
 };
 
-/**
- * Set by the harness below so a play function can drive the props React owns.
- * One story renders per page, so a module-level handle addresses exactly one
- * mounted harness.
- */
+/** Lets a play function drive props React owns. One story renders per page. */
 let appendTurn: (() => void) | undefined;
 
 /** Every `onLoadEarlierHistory` the transcript asked for, anchor turn first. */
@@ -1715,10 +1692,9 @@ const historyLoads: string[] = [];
 
 const HISTORY_BATCH = 4;
 
-// More batches than any story here consumes. A load chain stops on its own
-// once a batch carries the reader past the band; running the history out
-// instead retires the "earlier history" notice, and that removal is a height
-// change above the reader with no arrival to explain it.
+// More than any story here consumes. Running the history out retires the
+// "earlier history" notice, and that removal is a height change above the
+// reader with no arrival to explain it.
 const HISTORY_BATCHES_AVAILABLE = 8;
 
 /** A settled transcript with a turn the play function can make arrive. */
@@ -1733,11 +1709,7 @@ function SettledTranscriptHarness({ turns }: { turns: number }) {
   return <ComposedShell chat={{ messages: transcriptTurns(0, turns + extra) }} />;
 }
 
-/**
- * The history-loading seam as props, which is all it ever was: the shell hands
- * ChatView `hasOlderHistory` and a loader, and the loader prepends. The E2E
- * original reached the same two props through a paginating fake backend.
- */
+/** The history seam is two props: `hasOlderHistory`, and a loader that prepends. */
 function HistoryHarness({ turns }: { turns: number }) {
   const [range, setRange] = useState({ from: 0, count: turns });
   useEffect(() => {
@@ -1844,7 +1816,7 @@ export const NestedScrollerNearHistoryBoundaryAsksForNothing: Story = {
       expect(settled.distance, JSON.stringify(settled)).toBeLessThanOrEqual(4);
     });
 
-    const nested = injectNestedScroller(messageList(), 'height:120px;overflow-y:auto');
+    const nested = injectNestedScroller(messageList());
     await painted(6);
     historyLoads.length = 0;
 
@@ -1946,23 +1918,12 @@ export const EarlierHistoryLandsAboveTheReader: Story = {
 /**
  * The reader going *up* through Turns that have never rendered.
  *
- * New coverage rather than a restoration (#4761): the removed specs asserted
- * turn-level anchoring against arrivals and tail-following lag while pinned,
- * and both watch content coming to a reader who stays put. Neither watches a
- * reader travelling through `content-visibility` placeholders as those
- * materialise, because #4206 gives each Turn one boundary and made that stable
- * by construction. #4259 moves the boundaries inside the Turn, where an upward
- * traversal was measured moving `scrollHeight` by 63%.
- *
- * What is asserted is a bound, not stillness. A Turn off screen is laid out at
+ * A bound, not stillness. A Turn off screen is laid out at
  * `contain-intrinsic-block-size: auto 280px` and swaps to its real height on
- * the way past; unless every Turn happens to be 280px tall, travelling through
- * them moves things by construction, and measured here it moves the transcript
- * about 8%. That is the cost #4206 already accepted. The bound is what #4206
- * buys on top of it — one estimate to correct per Turn, so the correction
- * stays proportional to how many Turns were crossed rather than to how much is
- * inside them. #4259 puts several boundaries in each Turn, and its measured
- * 63% is what this fails on.
+ * the way past, so travelling through them moves things by construction —
+ * about 8% of the transcript here. What the bound says is that one Turn owes
+ * at most one estimate, keeping the correction proportional to Turns crossed
+ * rather than to what is inside them.
  */
 const TRAVERSAL_STEP = 700;
 
@@ -2071,27 +2032,14 @@ export const HistoryAtTheTopStillLandsAboveTheReader: Story = {
 };
 
 /**
- * The prompt anchor rail (#563), rebuilt from `prompt-rail.spec.ts` (#4741).
+ * The prompt anchor rail (#563). All three of its shipped regressions had the
+ * same shape — the code kept working and the pixels stopped — so the
+ * assertions here are geometric.
  *
- * That spec exists because the rail failed three times in a row the same way:
- * the code kept working and the pixels stopped. #2161 pinned it against
- * `.maka-chat-shell` while Astryx's ChatLayout owned the scroll container, so
- * the rail laid out across the whole conversation and scrolled off screen.
- * #2338 parked it under macOS's overlay scrollbar, which takes no layout space
- * but still swallows the pointer, so every tick rendered and none could be
- * clicked. #2580 moved the tick onto Astryx's `Button`, whose label span put
- * the bar back into normal flow — an inline box takes no width or height, so
- * the bars computed to 0x0 and the rail shipped invisible in 0.1.9 and 0.1.10.
- *
- * None is visible to a static read of the CSS, and none is reachable from
- * jsdom. All three need a real scroller with a real transcript, and none needs
- * Electron.
- *
- * The E2E fixture reached these through a 120-prompt seeded session. Here the
- * two props ChatView actually reads express it directly: the transcript holds
- * only the Host's active range, and `transcriptTurnIndex` carries the rest of
- * the landmarks. So the rail gets its full tick count without 120 Turns in the
- * DOM — which is what the Host does in production too.
+ * Tick count comes from `transcriptTurnIndex`, not from mounted Turns: the
+ * transcript holds only the Host's active range and the index carries the rest
+ * of the landmarks, so the rail gets all 64 ticks against 10 Turns. That is
+ * what the Host does in production.
  */
 const PROMPT_RAIL_TURN_COUNT = 120;
 
@@ -2101,32 +2049,15 @@ const PROMPT_RAIL_ACTIVE_RANGE = 10;
 /** `MAX_PROMPT_RAIL_TICKS` in prompt-anchor-rail.tsx, which does not export it. */
 const PROMPT_RAIL_MAX_TICKS = 64;
 
+const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
+
 const promptRailIndex = Array.from({ length: PROMPT_RAIL_TURN_COUNT }, (_, offset) => ({
-  turnId: `turn-prompt-rail-${offset + 1}`,
+  turnId: `turn-scroll-${offset + 1}`,
   sequence: offset + 1,
   label: `第 ${offset + 1} 个问题`,
 }));
 
-/** One Host active range, the way the Host hands it over: bounded and moving. */
-function promptRailMessagesFrom(firstIndex: number): StoredMessage[] {
-  return Array.from({ length: PROMPT_RAIL_ACTIVE_RANGE }, (_, offset) => {
-    const index = firstIndex + offset;
-    const turnId = `turn-prompt-rail-${index}`;
-    return [
-      user(`msg-rail-${index}-u`, turnId, 500 - index * 2, `第 ${index} 个问题`),
-      assistant(
-        `msg-rail-${index}-a`,
-        turnId,
-        499 - index * 2,
-        TAIL_LINES.slice(0, 4).join('\n\n'),
-      ),
-    ];
-  }).flat();
-}
-
-const PROMPT_RAIL_TAIL_RANGE_START = PROMPT_RAIL_TURN_COUNT - PROMPT_RAIL_ACTIVE_RANGE + 1;
-
-const promptRailMessages = promptRailMessagesFrom(PROMPT_RAIL_TAIL_RANGE_START);
+const promptRailMessages = transcriptTurns(PROMPT_RAIL_TAIL_RANGE_START, PROMPT_RAIL_ACTIVE_RANGE);
 
 function PromptRailHarness() {
   return (
@@ -2207,19 +2138,9 @@ export const PromptRailStaysInsideTheScrollport: Story = {
       await waitFor(() => {
         const insets = railInsets();
         expect(
-          {
-            insetTop: insets.insetTop >= 0,
-            insetBottom: insets.insetBottom >= 0,
-            insetRight: insets.insetRight >= 0,
-            dockClearance: insets.dockClearance >= 0,
-          },
+          Object.entries(insets).filter(([, inset]) => inset < 0),
           `rail geometry at the ${position}: ${JSON.stringify(insets)}`,
-        ).toEqual({
-          insetTop: true,
-          insetBottom: true,
-          insetRight: true,
-          dockClearance: true,
-        });
+        ).toEqual([]);
       });
     }
   },
@@ -2230,11 +2151,18 @@ export const PromptRailHasNoGapsBetweenTicks: Story = {
   play: async () => {
     await waitFor(() => expect(railBars().length).toBeGreaterThan(1));
 
-    // The hover falloff reads which tick the pointer entered. A gap between
-    // the hit boxes is a band where it is over the rail and over no tick, so
-    // the effect drops out and picks up again every few pixels of travel.
-    // Walked a pixel at a time rather than sampled between two ticks: a single
-    // midpoint would pass on a rail whose gaps sat anywhere else.
+    // Two things at once, both by walking the rail a pixel at a time: no gap
+    // between hit boxes, where the hover falloff would drop out and pick up
+    // again every few pixels; and nothing occluding the ticks, which is #2338
+    // — macOS's overlay scrollbar takes no layout space but still swallows the
+    // pointer. `elementFromPoint`, not a dispatched pointer event, because a
+    // dispatched event cannot see occlusion at all.
+    //
+    // The occlusion half is load-bearing on macOS only: Linux's in-flow
+    // scrollbar moves the content column left instead of overlaying it, so
+    // #2338 goes green on CI here exactly as it did in E2E. Run this story
+    // locally on macOS before merging anything that touches the rail's right
+    // edge.
     const bars = railBars();
     const first = bars[0].getBoundingClientRect();
     const last = bars[bars.length - 1].getBoundingClientRect();
@@ -2250,30 +2178,6 @@ export const PromptRailHasNoGapsBetweenTicks: Story = {
 
     expect(Math.round(last.bottom - first.top)).toBeGreaterThan(0);
     expect(misses, `misses at y=${misses.slice(0, 12).join(',')}`).toHaveLength(0);
-  },
-};
-
-export const PromptRailTickOwnsItsOwnHitBox: Story = {
-  render: () => <PromptRailHarness />,
-  play: async () => {
-    await waitFor(() => expect(railTicks().length).toBeGreaterThan(0));
-
-    // `elementFromPoint`, not a dispatched pointer event: dispatched events
-    // cannot see occlusion, and macOS's overlay scrollbar occludes without
-    // taking layout space.
-    //
-    // Worth knowing before trusting a green run: this is load-bearing on macOS
-    // only. Linux's in-flow scrollbar moves the content column left instead of
-    // overlaying it, so the #2338 regression goes green on CI here exactly as
-    // it did in E2E. Run this story locally on macOS before merging anything
-    // that touches the rail's right edge.
-    const box = railTicks()[0].getBoundingClientRect();
-    const found = document.elementFromPoint(
-      Math.round(box.left + box.width / 2),
-      Math.round(box.top + box.height / 2),
-    );
-
-    expect(found?.closest('.maka-prompt-rail')).not.toBe(null);
   },
 };
 
@@ -2325,7 +2229,7 @@ export const ScrollingAwayPreservesTurnOwnedFocus: Story = {
     await waitFor(() => expect(railBars().length).toBeGreaterThan(0));
     await scrollTranscriptTo('bottom');
 
-    const tailTurnId = `turn-prompt-rail-${PROMPT_RAIL_TURN_COUNT}`;
+    const tailTurnId = `turn-scroll-${PROMPT_RAIL_TURN_COUNT}`;
     const turn = document.querySelector<HTMLElement>(`[data-turn-id="${tailTurnId}"]`);
     if (!turn) throw new Error('the tail Turn is missing');
 
@@ -2419,7 +2323,7 @@ function PromptRailStreamingHarness() {
         transcriptTurnIndex: promptRailIndex,
         runningStatus: true,
         liveTurn: {
-          turnId: `turn-prompt-rail-${PROMPT_RAIL_TURN_COUNT}`,
+          turnId: `turn-scroll-${PROMPT_RAIL_TURN_COUNT}`,
           phase: 'streamed',
           steps: [
             {
@@ -2497,7 +2401,7 @@ function PromptRailNavigationHarness() {
   return (
     <ComposedShell
       chat={{
-        messages: promptRailMessagesFrom(firstIndex),
+        messages: transcriptTurns(firstIndex, PROMPT_RAIL_ACTIVE_RANGE),
         transcriptTurnIndex: promptRailIndex,
         onLoadTranscriptTurn: (target) => setFirstIndex(target.sequence),
       }}
@@ -2516,7 +2420,7 @@ export const FirstRailClickLandsOnItsPromptAndHolds: Story = {
     // scroll-ups arriving with a changed height stays on and pulls the
     // transcript back to the bottom — the click looks dead until the reader
     // scrolls by hand.
-    const targetTurnId = 'turn-prompt-rail-1';
+    const targetTurnId = 'turn-scroll-1';
     expect(document.querySelector(`[data-turn-id="${targetTurnId}"]`)).toBe(null);
 
     railTicks()[0].click();
@@ -2637,7 +2541,7 @@ export const RailStaysOnTheVisiblePrompt: Story = {
 
       railTicks()[0].click();
       await waitFor(
-        () => expect(document.querySelector('[data-turn-id="turn-prompt-rail-1"]')).not.toBe(null),
+        () => expect(document.querySelector('[data-turn-id="turn-scroll-1"]')).not.toBe(null),
         { timeout: 10_000 },
       );
       await scrollTranscriptTo('top');
