@@ -59,7 +59,9 @@ export function buildRuntimeHostUpgradeDialog(
         : undefined;
   const canWait =
     availability === 'wait' ||
-    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service');
+    (availability === 'restart' && conflict.registration.lifecycleMode !== 'service') ||
+    (availability === 'replace_may_interrupt_work' &&
+      conflict.registration.lifecycleMode === 'ephemeral');
   if (action) {
     choices.push({
       label: action === 'restart' ? copy.restart : copy.replace,
