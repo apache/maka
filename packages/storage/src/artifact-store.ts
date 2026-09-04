@@ -85,25 +85,6 @@ const PURGE_INTENT_SCHEMA_VERSION = 1 as const;
 
 const MAX_PURGE_INTENT_BYTES = 64 * 1024 * 1024;
 const ARTIFACT_PURGE_RESOLVE_CONCURRENCY = 8;
-/**
- * The source of the artifacts the retired capture sink wrote. The value stays
- * a valid source so the records still decode; nothing produces new ones.
- */
-const RETIRED_CAPTURE_ARTIFACT_SOURCE: ArtifactSource = 'provider_request_capture';
-
-/**
- * A record on its way off disk, which no copy may carry anywhere.
- *
- * Copying one would hand the target Session bytes already condemned, and would
- * put records back after the sweep finished and stopped looking. Leaving them
- * out also keeps the two from racing: the sweep can no longer delete a record a
- * copy is holding. That property belongs to the copy, not to one of its three
- * selection passes, so every pass asks the same question here.
- */
-function isRetiredCapture(record: ArtifactRecord): boolean {
-  return record.source === RETIRED_CAPTURE_ARTIFACT_SOURCE;
-}
-
 interface ArtifactSessionSnapshot {
   readonly records: readonly ArtifactRecord[];
   readonly revision: ArtifactListRevision;
@@ -237,8 +218,6 @@ export interface ArtifactAuthorityStore extends ArtifactStore {
     input: ConversationArtifactCopyInput,
   ): Promise<ConversationArtifactCopyResult>;
   purgeSessionArtifacts(sessionId: string): Promise<void>;
-  /** Drops up to `limit` retired prepared-request captures; reports what remains. */
-  purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }>;
   deleteUserArtifactInSession(
     sessionId: string,
     artifactId: string,
@@ -441,8 +420,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           (record) =>
             record.sessionId === input.sourceSessionId &&
             turnIds.has(record.turnId) &&
-            !excludedArtifactIds.has(record.id) &&
-            !isRetiredCapture(record),
+            !excludedArtifactIds.has(record.id),
         )
         .map((record) => ({ ...record }));
       for (const [sessionId, artifactIds] of requestedLinkedArtifactIds) {
@@ -451,8 +429,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
             (candidate) =>
               candidate.sessionId === sessionId &&
               candidate.id === artifactId &&
-              candidate.status !== 'deleted' &&
-              !isRetiredCapture(candidate),
+              candidate.status !== 'deleted',
           );
           // A linked child result names every Artifact its turn held, and the
           // ledger naming them cannot be rewritten. One that is no longer
@@ -468,8 +445,7 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
           record.sessionId === input.sourceSessionId &&
           includedArtifactIds.has(record.id) &&
           !excludedArtifactIds.has(record.id) &&
-          !selectedIds.has(record.id) &&
-          !isRetiredCapture(record)
+          !selectedIds.has(record.id)
         ) {
           selected.push({ ...record });
           selectedIds.add(record.id);
@@ -911,30 +887,6 @@ class SqliteArtifactStore implements ArtifactAuthorityStore {
       const ids = new Set(acceptedArtifactIds);
       await this.purgeRecordsUnlocked(this.records.filter((record) => ids.has(record.id)));
     });
-  }
-
-  /**
-   * Drops a bounded batch of the prepared-request captures left behind by the
-   * retired capture sink, and reports what is still there.
-   *
-   * These are not the user's to clean up: they never appear in the UI, and the
-   * only thing that ever reclaimed one was purging its whole conversation. The
-   * store made them, so the store disposes of them.
-   *
-   * Bounded so a large residue cannot monopolise the mutation queue, and safe
-   * to stop at any point: purge publishes its intent before touching a file,
-   * and the next call reads whatever is left.
-   */
-  async purgeRetiredCaptures(limit: number): Promise<{ purged: number; remaining: number }> {
-    let outcome = { purged: 0, remaining: 0 };
-    await this.enqueueMutation(async () => {
-      await this.prepareMutationUnlocked({ kind: 'purge' });
-      const retired = this.records.filter(isRetiredCapture);
-      const batch = retired.slice(0, limit);
-      await this.purgeRecordsUnlocked(batch);
-      outcome = { purged: batch.length, remaining: retired.length - batch.length };
-    });
-    return outcome;
   }
 
   private async purgeRecordsUnlocked(records: readonly ArtifactRecord[]): Promise<void> {

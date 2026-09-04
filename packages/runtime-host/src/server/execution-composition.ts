@@ -80,10 +80,7 @@ import { type MakaTool } from '@maka/runtime/tool-runtime';
 import { type RuntimeHostedRootAuthority } from '@maka/runtime/message-authority';
 import { isHostedExecutionTerminal } from './hosted-execution-authority.js';
 import { createAgentGraphControlStore } from '@maka/storage/agent-graph-control-store';
-import {
-  createArtifactAttachmentResourceReader,
-  startRetiredCaptureSweep,
-} from '@maka/storage/artifact-stores';
+import { createArtifactAttachmentResourceReader } from '@maka/storage/artifact-stores';
 import { createReadImageSnapshotStore } from '@maka/storage/read-image-snapshot-store';
 import { isSessionNotFoundError } from '@maka/storage/execution-stores';
 import { createExternalSessionAdapterRegistry } from '@maka/storage/external-sessions';
@@ -266,7 +263,6 @@ export async function createExecutionRuntimeHostComposition(
       `[runtime-host] optional context-offload Store could not be opened: ${generalizedErrorMessage(storage.contextOffloadUnavailable.cause)}`,
     );
   }
-  let stopRetiredCaptureSweep: (() => void) | undefined;
   const stores = storage.execution;
   let graphControlStore: ReturnType<typeof createAgentGraphControlStore> | undefined;
   let graphClient: HostAgentGraphCoordinator | undefined;
@@ -1763,21 +1759,6 @@ export async function createExecutionRuntimeHostComposition(
           state: async () => {
             await skills.recover();
             await openedArtifactStore.recover();
-            // Only now: a write authority refuses every mutation until it has
-            // recovered, and the sweep gives up on its first failure.
-            stopRetiredCaptureSweep = startRetiredCaptureSweep(storage.artifacts, {
-              onError: async (error) => {
-                console.error(
-                  `[runtime-host] retired provider-request captures could not be reclaimed: ${generalizedErrorMessage(error)}`,
-                );
-                // A purge that fails part way leaves the write authority
-                // refusing every mutation until something recovers it -- not
-                // just this sweep's, but the live turn's tool results and the
-                // user's uploads. Recovering here is what hands those back,
-                // and it replays the purge intent the failed batch left.
-                await openedArtifactStore.recover();
-              },
-            });
           },
         },
         drain: [
@@ -1794,7 +1775,6 @@ export async function createExecutionRuntimeHostComposition(
           () => {
             unsubscribeTranscriptChanges?.();
             unsubscribeUsageChanges?.();
-            stopRetiredCaptureSweep?.();
           },
         ],
         releaseConnection: [(connectionId) => artifacts.releaseConnection(connectionId)],

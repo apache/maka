@@ -426,7 +426,7 @@ test('Session Guests can read only shared attachment Artifacts from their grante
       turnId: 'turn-1',
       name: 'private.txt',
       kind: 'file',
-      source: 'provider_request_capture',
+      source: 'session_effect',
       content: Buffer.from('private'),
       now: 2,
     });
