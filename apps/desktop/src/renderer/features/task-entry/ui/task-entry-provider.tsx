@@ -50,11 +50,6 @@ export interface TaskEntryShellProjection {
   readonly selectors: Omit<TaskEntryControllerSelectors, 'workspacePicker'>;
 }
 
-interface TaskEntryProviderProps {
-  readonly owner: TaskEntryOwner;
-  readonly children?: ReactNode;
-}
-
 export interface TaskEntryRootProps {
   readonly children: (taskEntry: TaskEntryShellProjection) => ReactNode;
 }
@@ -206,9 +201,9 @@ function sameHost(previous: TaskEntryHostModel, next: TaskEntryHostModel): boole
 }
 
 /**
- * Creates the stable bridge AppShell reads without owning the Task Entry controller.
- * Controller-only updates keep the same shell projection identity and therefore
- * stop at the provider or the matching leaf reader.
+ * Creates the stable bridge AppShell reads. Controller-only updates keep the
+ * same shell projection identity and therefore stop at the owner or the
+ * matching leaf reader.
  */
 function useTaskEntryOwnership(): TaskEntryShellProjection & { readonly owner: TaskEntryOwner } {
   const owner = useMemo(createTaskEntryOwner, []);
@@ -219,12 +214,19 @@ function useTaskEntryOwnership(): TaskEntryShellProjection & { readonly owner: T
   );
 }
 
-/** Owns Task Entry catalog/selection lifecycle below AppShell. */
-export function TaskEntryProvider({
-  owner: ownerInput,
-  children,
-}: TaskEntryProviderProps) {
-  const owner = ownerInput as ReturnType<typeof createTaskEntryOwner>;
+/**
+ * Owns the Task Entry controller below AppShell and hands only its stable
+ * shell projection outward.
+ *
+ * The render prop is memoized on that projection, so a controller-only update
+ * re-renders this one fiber and reuses the frame element it built last time;
+ * React bails out of the frame, and only the Host and Workspace Picker readers
+ * whose selection changed wake through the owner store. The shell's own reads
+ * arrive as `taskEntry`, whose identity moves only on a semantic change.
+ */
+export function TaskEntryRoot({ children }: TaskEntryRootProps) {
+  const ownership = useTaskEntryOwnership();
+  const owner = ownership.owner as ReturnType<typeof createTaskEntryOwner>;
   const toastApi = useToast();
   const reportError = useCallback(
     ({ title, description, profileId }: TaskEntryError) => {
@@ -234,31 +236,21 @@ export function TaskEntryProvider({
   );
   const controller = useTaskEntryController({ reportError, manageProjects: ignoreManageProjects });
   useLayoutEffect(() => owner.publish(controller), [controller, owner]);
-
-  return (
-    <TaskEntryOwnerContext.Provider value={owner}>
-      {children}
-    </TaskEntryOwnerContext.Provider>
-  );
-}
-
-/** Mounts the controller owner and hands only its stable shell projection outward. */
-export function TaskEntryRoot({ children }: TaskEntryRootProps) {
-  const ownership = useTaskEntryOwnership();
   const taskEntry = useMemo<TaskEntryShellProjection>(
     () => ({ commands: ownership.commands, selectors: ownership.selectors }),
     [ownership.commands, ownership.selectors],
   );
+  const frame = useMemo(() => children(taskEntry), [children, taskEntry]);
   return (
-    <TaskEntryProvider owner={ownership.owner}>
-      {children(taskEntry)}
-    </TaskEntryProvider>
+    <TaskEntryOwnerContext.Provider value={owner}>
+      {frame}
+    </TaskEntryOwnerContext.Provider>
   );
 }
 
 function useTaskEntryOwner(): TaskEntryOwner {
   const owner = useContext(TaskEntryOwnerContext);
-  if (!owner) throw new Error('TaskEntryProvider is missing');
+  if (!owner) throw new Error('TaskEntryRoot is missing');
   return owner;
 }
 

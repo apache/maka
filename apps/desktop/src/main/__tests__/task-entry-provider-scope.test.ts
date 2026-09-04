@@ -137,7 +137,7 @@ afterEach(() => {
   cleanupFakeDom();
 });
 
-describe('TaskEntryProvider render scope', () => {
+describe('TaskEntryRoot render scope', () => {
   it('keeps a controller-only directory handoff below the shell frame', async () => {
     const { root } = installReactRenderer();
     const services = createFakeTaskEntryServices({
