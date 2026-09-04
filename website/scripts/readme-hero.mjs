@@ -23,12 +23,15 @@
  * `npm --workspace @maka/website run readme-hero` after changing the hero
  * copy or styles and commit the PNGs it writes to `.github/assets/`.
  */
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { chromium } from '@playwright/test';
+
+import { heroText } from './hero-text.mjs';
 
 const dist = fileURLToPath(new URL('../dist/', import.meta.url));
 const assets = fileURLToPath(new URL('../../.github/assets/', import.meta.url));
@@ -64,9 +67,30 @@ const readmeOnly = `
   .scene { margin-top: 36px !important; }
 `;
 
+// npm ci installs the Playwright package but not a browser, so a clean
+// checkout has to be able to fetch one before this command can run.
+const executable = (() => {
+  try {
+    return chromium.executablePath();
+  } catch {
+    return undefined;
+  }
+})();
+if (!executable || !existsSync(executable)) {
+  execFileSync(
+    process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    ['playwright', 'install', 'chromium'],
+    {
+      stdio: 'inherit',
+    },
+  );
+}
+
+const manifest = {};
 const browser = await chromium.launch();
 try {
   for (const locale of ['en', 'zh-CN']) {
+    manifest[locale] = heroText(readFileSync(join(dist, locale, 'index.html'), 'utf8'));
     for (const colorScheme of ['light', 'dark']) {
       const page = await browser.newPage({
         viewport: { width: 1600, height: 1000 },
@@ -83,6 +107,11 @@ try {
       await page.close();
     }
   }
+  // The copy these images were made from, so the site test can tell when the
+  // pages have moved on and the committed images have not.
+  const path = join(assets, 'readme-hero.json');
+  writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  console.log(path);
 } finally {
   await browser.close();
   server.close();

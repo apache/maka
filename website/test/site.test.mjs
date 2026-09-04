@@ -25,6 +25,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
+import { heroText } from '../scripts/hero-text.mjs';
+
 const dist = new URL('../dist/', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
@@ -121,6 +123,22 @@ test('the READMEs and the repository description open with the same sentence', (
   );
   const [, description] = read('.asf.yaml').match(/description: >-\n((?: {4}.*\n)+)/u);
   assert.equal(description.replace(/\s+/gu, ' ').trim(), positioning);
+});
+
+// The README heroes are screenshots of these pages, so the copy the render
+// baked in has to be the copy the pages carry now. Compare through the
+// manifest the render writes, which needs no browser and no pixels.
+test('the committed README heroes were rendered from the current hero copy', () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL('../../.github/assets/readme-hero.json', import.meta.url), 'utf8'),
+  );
+  for (const locale of locales) {
+    assert.equal(
+      heroText(page(`${locale}/index.html`)),
+      manifest[locale],
+      `${locale}: run \`npm --workspace @maka/website run readme-hero\` and commit the images`,
+    );
+  }
 });
 
 test('both languages link the same documents', () => {
