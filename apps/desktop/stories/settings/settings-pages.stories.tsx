@@ -313,7 +313,6 @@ const usageStats: UsageStats = {
     },
     { tool: 'Bash', calls: 120, success: 118, errors: 2, avgDurationMs: 840 },
   ],
-  pricing: [{ provider: 'zai-coding-plan', model: 'glm-4.7', inputPerMTokUsd: 0, outputPerMTokUsd: 0 }],
   provenance: STORY_USAGE_PROVENANCE,
 };
 
@@ -334,7 +333,6 @@ const emptyUsageStats: UsageStats = {
   byProvider: [],
   byModel: [],
   byTool: [],
-  pricing: [],
   provenance: EMPTY_USAGE_PROVENANCE,
 };
 

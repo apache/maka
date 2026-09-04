@@ -17,15 +17,18 @@
  * under the License.
  */
 
-// Public API of the Usage settings feature (issue #4425). Legacy consumers
-// import only from this barrel.
+// Test-only entry point for the Usage feature (issue #4425 / #2015). External
+// test consumers import feature internals through this barrel so the
+// renderer-architecture ratchet's "features import via index/testing/stories"
+// rule stays satisfied.
 
-export { UsageSettingsView } from './ui/usage-settings-view.js';
-export { UsageFeatureScope, type UsageScopeHandle } from './services-context.js';
-export type { UsageServices } from './ports.js';
-// The editable Pricing surface (#2015) is a Usage tab, but its services are
-// assembled in `composition/desktop-feature-services.tsx` (not the legacy
-// settings-surface that assembles `UsageServices`), so its bridge access stays
-// out of the frozen legacy-AppShell closure.
+export {
+  derivePricingRows,
+  validatePricingDraft,
+  type PricingDraft,
+} from './pricing-view-model.js';
+export { PricingEditor, formatCache, formatUsd } from './ui/pricing-editor.js';
 export { UsagePricingServicesProvider } from './pricing-services-context.js';
 export type { UsagePricingServices } from './pricing-ports.js';
+export type { UsageHostRef } from './ports.js';
+export { getPricingSettingsCopy } from './pricing-copy.js';

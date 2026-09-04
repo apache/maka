@@ -19,6 +19,18 @@
 
 import type { UsageRange, UsageSettings, UsageStats } from '@maka/core/settings';
 
+/**
+ * Minimal Runtime Host identity the feature threads for Host-scoped reads/writes
+ * (pricing overrides are per-Host / root-scoped). It is structurally compatible
+ * with the preload `DesktopRuntimeHostRef`, so the legacy surface can pass its
+ * `selectedRuntimeHost` straight through as a prop — without the feature
+ * importing the preload type.
+ */
+export interface UsageHostRef {
+  readonly profileId: string;
+  readonly hostId: string;
+}
+
 // Dependency-inversion boundary for the Usage settings feature (issue #4425).
 // The feature controller owns draft/state and reads these ports; it never
 // touches `window.maka` or legacy settings helpers directly. Both are narrow —

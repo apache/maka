@@ -650,12 +650,6 @@ export interface UsageStats {
     errors: number;
     avgDurationMs: number;
   }>;
-  pricing: Array<{
-    provider: string;
-    model: string;
-    inputPerMTokUsd: number;
-    outputPerMTokUsd: number;
-  }>;
   /**
    * Coverage/legacy/unreadable/pending accounting behind these totals, so the
    * page can qualify a cost that reads low (unpriced/unreadable/pending) rather

@@ -687,6 +687,27 @@ export class DesktopRuntimeHostClient {
     }
   }
 
+  /**
+   * Reconcile a pricing write whose outcome the dispatching connection could not
+   * settle, run against a replacement Host by the Desktop reconciled-control IPC
+   * after a response-losing disconnect. It reloads fresh authority and compares
+   * the intended end state; it must never replay the write, and it deliberately
+   * skips the connection stale-guard because `base` legitimately belongs to the
+   * previous connection.
+   */
+  async reconcilePricingMutation(
+    input: DesktopPricingMutationInput,
+    reason: "revision_conflict" | "outcome_unknown",
+  ): Promise<DesktopPricingMutationOutcome> {
+    this.#assertOpen();
+    const request = decodePricingMutateInput({
+      expectedRevision: input.base.revision,
+      mutation: input.mutation,
+    });
+    const target = createPricingReconciliationTarget(input.base, request.mutation);
+    return this.#reconcilePricingMutation(target, reason);
+  }
+
   async listSessions(): Promise<SessionCatalogProjection[]> {
     this.#assertOpen();
     try {

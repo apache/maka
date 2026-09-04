@@ -26,6 +26,7 @@ import { SessionCollaborationServicesProvider } from '../features/session-collab
 import { SessionNavigationServicesProvider } from '../features/session-navigation';
 import { SessionSettingsServicesProvider } from '../features/session-settings';
 import { TaskEntryServicesProvider } from '../features/task-entry';
+import { UsagePricingServicesProvider } from '../features/usage';
 import { WorkbarServicesProvider } from '../features/workbar';
 import { createDesktopGoalServices } from '../platform/desktop/create-goal-services';
 import { createDesktopConnectionSettingsServices } from '../platform/desktop/create-connection-settings-services';
@@ -35,6 +36,7 @@ import { createDesktopSessionCollaborationServices } from '../platform/desktop/c
 import { createDesktopSessionNavigationServices } from '../platform/desktop/create-session-navigation-services';
 import { createDesktopSessionSettingsServices } from '../platform/desktop/create-session-settings-services';
 import { createDesktopTaskEntryServices } from '../platform/desktop/create-task-entry-services';
+import { createDesktopUsagePricingServices } from '../platform/desktop/create-usage-pricing-services';
 import { createDesktopWorkbarServices } from '../platform/desktop/create-workbar-services';
 
 export function createDesktopFeatureServices() {
@@ -47,6 +49,7 @@ export function createDesktopFeatureServices() {
     sessionNavigation: createDesktopSessionNavigationServices(),
     sessionSettings: createDesktopSessionSettingsServices(),
     taskEntry: createDesktopTaskEntryServices(),
+    usagePricing: createDesktopUsagePricingServices(),
     workbar: createDesktopWorkbarServices(),
   };
 }
@@ -65,7 +68,9 @@ export function DesktopFeatureServicesProvider(props: {
               <ModuleHubServicesProvider services={props.services.moduleHub}>
                 <GoalServicesProvider services={props.services.goal}>
                   <WorkbarServicesProvider services={props.services.workbar}>
-                    {props.children}
+                    <UsagePricingServicesProvider services={props.services.usagePricing}>
+                      {props.children}
+                    </UsagePricingServicesProvider>
                   </WorkbarServicesProvider>
                 </GoalServicesProvider>
               </ModuleHubServicesProvider>
