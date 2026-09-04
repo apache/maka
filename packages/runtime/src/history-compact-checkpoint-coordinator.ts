@@ -177,6 +177,7 @@ function hasSameEffectiveCoverage(
       checkpointId: _checkpointId,
       createdAt: _createdAt,
       highWaterSeq: _highWaterSeq,
+      previousCheckpointId: _previousCheckpointId,
       ...rest
     } = checkpoint;
     return JSON.stringify(rest);
