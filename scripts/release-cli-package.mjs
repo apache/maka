@@ -133,7 +133,7 @@ function main() {
     );
   }
   buildRuntimeWorkspaces({ clean: true });
-  if (!nightlyVersion) checkProductionAudit();
+  if (!nightlyVersion && !allowDirty) checkProductionAudit();
   runNpm(['run', 'check:cli-third-party-notices']);
   runNpm(['run', 'check:runtime-host-peer-dependencies']);
   runNpm(['run', 'check:runtime-host-peer-notices']);

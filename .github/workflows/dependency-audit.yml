@@ -70,10 +70,7 @@ jobs:
         # the renderer roots, which npm labels dev even though they ship.
         run: npm ci --ignore-scripts
 
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=moderate
-
-      - name: Audit shipped desktop closure
+      - name: Audit shipped product closure
         run: node scripts/audit-shipped-dependencies.mjs
 
       - name: Verify registry signatures

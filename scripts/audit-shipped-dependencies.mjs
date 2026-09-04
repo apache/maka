@@ -19,13 +19,13 @@
 
 // Audits what the product artifacts ship, not what npm labels production.
 //
-// `npm audit --omit=dev` covers the Node production closure, but the renderer
-// roots live in `devDependencies` (so electron-builder keeps their unread
-// sources out of `app.asar`) while vite still bundles them into
-// `dist-renderer`. A vulnerability in react would therefore ship without the
-// production audit ever seeing it. This audits one full npm report and fails
-// on anything that lands in the shipped CLI or Desktop closure — Node
-// production plus everything reachable from the declared renderer roots.
+// The renderer roots live in `devDependencies` (so electron-builder keeps
+// their unread sources out of `app.asar`) while vite still bundles them into
+// `dist-renderer`. An `npm audit --omit=dev` would therefore miss shipped
+// vulnerabilities such as one in react. This is the product audit authority:
+// one full npm report, filtered to anything that lands in the shipped CLI or
+// Desktop closure — Node production plus everything reachable from the
+// declared renderer roots.
 //
 // An advisory names a package and npm resolves it to the installed copies it
 // actually reaches (`nodes`). Only a copy whose exact version is in the
