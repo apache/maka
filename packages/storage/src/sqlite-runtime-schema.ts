@@ -512,6 +512,9 @@ const MIGRATIONS: ReadonlyMap<number, string> = new Map([
       turn_id TEXT NOT NULL,
       opened_at INTEGER NOT NULL,
       opening_json TEXT NOT NULL,
+      -- UNIQUE is what indexes this side of the foreign key. SQLite indexes only
+      -- the parent, so without it every deleted RuntimeEvent scans this whole
+      -- table looking for rows to cascade.
       anchor_event_id TEXT NOT NULL UNIQUE
         REFERENCES runtime_events(event_id) ON DELETE CASCADE
     ) WITHOUT ROWID;
@@ -605,17 +608,14 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
         r.session_id,
         r.run_id,
         r.record_json,
-        (
-          SELECT e.invocation_id FROM runtime_events e
-          WHERE e.session_id = r.session_id AND e.run_id = r.run_id
-          ORDER BY e.event_seq ASC LIMIT 1
-        ) AS existing_invocation_id,
-        (
-          SELECT e.event_id FROM runtime_events e
-          WHERE e.session_id = r.session_id AND e.run_id = r.run_id
-          ORDER BY e.event_seq ASC LIMIT 1
-        ) AS anchor_event_id
+        first_event.invocation_id AS existing_invocation_id,
+        first_event.event_id AS anchor_event_id
       FROM core_agent_runs r
+      LEFT JOIN runtime_events first_event ON first_event.event_id = (
+        SELECT e.event_id FROM runtime_events e
+        WHERE e.session_id = r.session_id AND e.run_id = r.run_id
+        ORDER BY e.event_seq ASC LIMIT 1
+      )
       ORDER BY r.created_at ASC, r.run_id ASC
     `)
     .all() as Array<{
@@ -662,13 +662,10 @@ function backfillInvocationOpeningFacts(db: DatabaseSync): void {
     } catch (error) {
       throw unreadable(row, error);
     }
-    if (row.existing_invocation_id !== null) {
+    if (row.existing_invocation_id !== null && row.anchor_event_id !== null) {
       // The invocation id its own events already carry is the one every reader
       // joins on, so the legacy row is keyed by that rather than by the header's
       // copy, which older builds minted independently.
-      if (row.anchor_event_id === null) {
-        throw unreadable(row, new Error('run has events but no first event to anchor its opening'));
-      }
       insertLegacyOpening.run(
         row.existing_invocation_id,
         header.sessionId,

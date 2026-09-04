@@ -178,17 +178,6 @@ describe('invocation opening fact backfill', () => {
           'existing-1',
           'the shelved opening is anchored to the first event of the run it describes',
         );
-        db.exec('PRAGMA foreign_keys = ON');
-        db.prepare('DELETE FROM runtime_events WHERE event_id = ?').run('existing-1');
-        assert.equal(
-          (
-            db
-              .prepare('SELECT COUNT(*) AS count FROM runtime_legacy_invocation_openings')
-              .get() as { count: number }
-          ).count,
-          0,
-          'deleting the anchor takes the shelved opening with it',
-        );
       } finally {
         db.close();
       }

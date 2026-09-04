@@ -134,6 +134,19 @@ export { SQLITE_RUNTIME_SCHEMA_VERSION } from './sqlite-runtime-schema.js';
 
 export type { ToolRecoveryMode } from '@maka/core/runtime-event';
 
+/**
+ * `isTerminalRuntimeEvent` asked in SQL.
+ *
+ * The TypeScript predicate stays the authority; this only lets a query find the
+ * terminal event without decoding every row it passes over. Both have to say the
+ * same thing, so the SQL half is written once here instead of at each query.
+ */
+const TERMINAL_RUNTIME_EVENT_SQL = `(
+            json_extract(payload_json, '$.actions.endInvocation') = 1
+            OR json_extract(payload_json, '$.status')
+              IN ('completed', 'failed', 'aborted', 'cancelled')
+          )`;
+
 const RUNTIME_EVENT_SCAN_BATCH_SIZE = 128;
 const RUNTIME_PARTIAL_SEGMENT_TARGET_BYTES = 64 * 1024;
 
@@ -772,11 +785,7 @@ export class SqliteRuntimeStore
         SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
         FROM runtime_events
         WHERE invocation_id = ?
-          AND (
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
         ORDER BY event_seq ASC
         LIMIT 1
       `)
@@ -3632,11 +3641,7 @@ export class SqliteRuntimeStore
         SELECT event_id, session_id, invocation_id, run_id, turn_id, payload_json
         FROM runtime_events
         WHERE session_id = ? AND run_id = ?
-          AND (
-            json_extract(payload_json, '$.actions.endInvocation') = 1
-            OR json_extract(payload_json, '$.status')
-              IN ('completed', 'failed', 'aborted', 'cancelled')
-          )
+          AND ${TERMINAL_RUNTIME_EVENT_SQL}
         ORDER BY event_seq ASC
       `)
       .all(event.sessionId, event.runId) as unknown as RuntimeEventStorageRow[];
