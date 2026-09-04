@@ -30,6 +30,7 @@ import { z } from 'zod';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { RuntimeInvocationRecord } from '@maka/core/runtime-invocation';
 import { decodeModelCallAttempt, type ModelCallAttempt } from '@maka/core/model-call-attempt';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import { AiSdkBackend } from '../ai-sdk-backend.js';
 import {
   LATEST_CONTEXT_PROJECTION_TYPE,
@@ -1265,8 +1266,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
     const checkpoint = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: fixture.priorEvents,
-      summary: 'EARLIER_TURN_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('EARLIER_TURN_SUMMARY'),
     });
     carried = checkpoint;
     await runTurn(fixture);
@@ -1295,8 +1295,7 @@ describe('reactive overflow recovery in the streaming backend', () => {
       coveredRuntimeEvents: [
         runtimeTextEvent('never-happened', 'turn-x', 'user', 'AN EVENT THIS LEDGER NEVER HELD'),
       ],
-      summary: 'SUMMARY_OF_ANOTHER_HISTORY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('SUMMARY_OF_ANOTHER_HISTORY'),
     });
     const fixture = buildReactiveFixture({
       script: ['done'],

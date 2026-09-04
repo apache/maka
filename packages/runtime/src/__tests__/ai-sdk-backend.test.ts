@@ -43,6 +43,7 @@ import {
   mapSessionEventToRuntimeEvent,
 } from '../session-event-runtime-mapper.js';
 import { projectRuntimeEventsToStoredMessages } from '../runtime-event-read-model.js';
+import { sectionedSummary } from './history-compact-test-fixtures.js';
 import type { RuntimeEventMapContext } from '../session-event-runtime-mapper.js';
 import type { AssistantMessage, StoredMessage, ToolResultMessage } from '@maka/core/session';
 import { z } from 'zod';
@@ -4730,8 +4731,7 @@ describe('AiSdkBackend model history', () => {
     const previous = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: oldEvents.slice(0, 1),
-      summary: 'MANUAL_V2_PREVIOUS_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('MANUAL_V2_PREVIOUS_SUMMARY'),
       charsPerToken: 1,
     });
     const summaryInputs: Array<{ previous?: string; newlyFoldedIds: string[] }> = [];
@@ -4782,7 +4782,7 @@ describe('AiSdkBackend model history', () => {
 
     assert.deepEqual(summaryInputs, [
       {
-        previous: 'MANUAL_V2_PREVIOUS_SUMMARY',
+        previous: previous.summary,
         newlyFoldedIds: ['manual-v2-roll-old-2', 'manual-v2-roll-recent'],
       },
     ]);
@@ -4817,8 +4817,7 @@ describe('AiSdkBackend model history', () => {
     const previous = buildHistoryCompactCheckpoint({
       sessionId: 'session-1',
       coveredRuntimeEvents: [...oldEvents, recentEvent],
-      summary: 'MANUAL_V2_REUSED_SUMMARY',
-      summaryFormat: 'legacy_freeform',
+      summary: sectionedSummary('MANUAL_V2_REUSED_SUMMARY'),
       charsPerToken: 1,
     });
     let summarizeCalls = 0;
