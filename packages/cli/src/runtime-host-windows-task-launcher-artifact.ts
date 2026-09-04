@@ -24,6 +24,16 @@ const LAUNCHER_FILE = 'maka-runtime-host-task-launcher.exe';
 
 export async function resolveRuntimeHostWindowsTaskLauncherPath(cliPath: string): Promise<string> {
   const packageRoot = dirname(dirname(await realpath(cliPath)));
+  const projected = projectedLauncherPath(packageRoot);
+  if (projected && (await isReadable(projected))) return realpath(projected);
+
+  return resolvePackagedRuntimeHostWindowsTaskLauncherPath(cliPath);
+}
+
+export async function resolvePackagedRuntimeHostWindowsTaskLauncherPath(
+  cliPath: string,
+): Promise<string> {
+  const packageRoot = dirname(dirname(await realpath(cliPath)));
   const packaged = join(
     packageRoot,
     'native',
@@ -49,6 +59,17 @@ export async function resolveRuntimeHostWindowsTaskLauncherPath(cliPath: string)
   }
 
   throw new Error('Maka does not include the Windows Runtime Host task launcher');
+}
+
+export function runtimeHostManagedWindowsTaskLauncherPath(deploymentRoot: string): string {
+  return join(deploymentRoot, LAUNCHER_FILE);
+}
+
+function projectedLauncherPath(packageRoot: string): string | undefined {
+  const versionsRoot = dirname(packageRoot);
+  return basename(versionsRoot) === 'versions'
+    ? runtimeHostManagedWindowsTaskLauncherPath(dirname(versionsRoot))
+    : undefined;
 }
 
 async function isReadable(path: string): Promise<boolean> {

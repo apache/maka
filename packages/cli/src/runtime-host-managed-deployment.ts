@@ -41,6 +41,10 @@ import {
   type RuntimeHostManagedDeploymentAuthorityOptions,
   type RuntimeHostManagedDeploymentConfig,
 } from '@maka/runtime-host/operator';
+import {
+  resolvePackagedRuntimeHostWindowsTaskLauncherPath,
+  runtimeHostManagedWindowsTaskLauncherPath,
+} from './runtime-host-windows-task-launcher-artifact.js';
 
 export { RuntimeHostPackageDeploymentError as RuntimeHostManagedDeploymentError } from './runtime-host-package-deployment.js';
 
@@ -63,6 +67,7 @@ interface RuntimeHostManagedDeploymentCleanupReceipt {
 }
 
 const CLEANUP_RECEIPT_FILE = 'cleanup-approved.json';
+const WINDOWS_TASK_LAUNCHER_MAX_BYTES = 1024 * 1024;
 
 export function resolveRuntimeHostManagedPackageCliPath(
   deploymentRoot: string,
@@ -641,15 +646,15 @@ async function writeOperatorLauncher(
     managedRootId,
     deploymentId,
   );
-  await writeStableOperator(path, contents);
+  await writeStableArtifact(path, contents);
 }
 
-async function writeStableOperator(path: string, contents: string): Promise<void> {
+async function writeStableArtifact(path: string, contents: string | Uint8Array): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`;
   try {
     const file = await open(temporaryPath, 'wx', 0o700);
     try {
-      await file.writeFile(contents, 'utf8');
+      await file.writeFile(contents);
       await file.sync();
     } finally {
       await file.close();
@@ -735,6 +740,9 @@ export async function convergeRuntimeHostManagedOperator(
     desired.root.id,
     desired.deploymentId,
   );
+  if (process.platform === 'win32') {
+    await convergeRuntimeHostManagedWindowsTaskLauncher(desired);
+  }
   await forwardLegacyOperatorIfPresent(
     deployment.deploymentRoot,
     desired.launch.nodePath,
@@ -761,7 +769,7 @@ async function forwardLegacyOperatorIfPresent(
     },
   );
   if (exists) {
-    await writeStableOperator(path, legacyOperatorLauncherContents(nodePath, modulePath));
+    await writeStableArtifact(path, legacyOperatorLauncherContents(nodePath, modulePath));
   }
 }
 
@@ -811,6 +819,9 @@ export async function verifyRuntimeHostManagedOperator(
       cause: error,
     });
   });
+  if (process.platform === 'win32') {
+    await verifyRuntimeHostManagedWindowsTaskLauncher(config, { allowAbsent: true });
+  }
   const legacyOperatorPath = join(config.deploymentRoot, 'operator');
   const legacyExpected = legacyOperatorLauncherContents(config.launch.nodePath, operatorPath);
   const legacyExists = await access(legacyOperatorPath, constants.F_OK).then(
@@ -837,6 +848,56 @@ export async function verifyRuntimeHostManagedOperator(
       });
     });
   }
+}
+
+export async function convergeRuntimeHostManagedWindowsTaskLauncher(
+  config: RuntimeHostManagedDeploymentConfig,
+): Promise<void> {
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  const sourcePath = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(layout.cliPath);
+  await writeStableArtifact(
+    runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot),
+    await readWindowsTaskLauncher(sourcePath),
+  );
+}
+
+export async function verifyRuntimeHostManagedWindowsTaskLauncher(
+  config: RuntimeHostManagedDeploymentConfig,
+  options: { readonly allowAbsent?: boolean } = {},
+): Promise<void> {
+  const projectedPath = runtimeHostManagedWindowsTaskLauncherPath(config.deploymentRoot);
+  const projectedExists = await access(projectedPath, constants.F_OK).then(
+    () => true,
+    (error: unknown) => {
+      if (isNodeError(error, 'ENOENT')) return false;
+      throw error;
+    },
+  );
+  if (!projectedExists && options.allowAbsent) return;
+
+  const layout = resolveRuntimeHostNpmDeploymentLayout(
+    config.deploymentRoot,
+    config.launch.package.integrity,
+  );
+  const sourcePath = await resolvePackagedRuntimeHostWindowsTaskLauncherPath(layout.cliPath);
+  const [expected, observed] = await Promise.all([
+    readWindowsTaskLauncher(sourcePath),
+    readWindowsTaskLauncher(projectedPath),
+  ]);
+  if (!observed.equals(expected)) {
+    throw new Error('The managed Runtime Host Windows task launcher does not match its deployment');
+  }
+}
+
+function readWindowsTaskLauncher(path: string): Promise<Buffer> {
+  return readStableBoundedFile({
+    path,
+    maxBytes: WINDOWS_TASK_LAUNCHER_MAX_BYTES,
+    invalidFile: () => new Error('The managed Runtime Host Windows task launcher is invalid'),
+  });
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
