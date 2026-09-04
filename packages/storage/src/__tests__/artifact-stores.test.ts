@@ -27,7 +27,7 @@ import {
   openInteractiveArtifactStoreForWrite,
   type InteractiveArtifactStoreWriter,
 } from '../artifact-stores.js';
-import { ARTIFACT_WRITER_LOCK_FILE } from '../artifact-storage-layout.js';
+import { ARTIFACT_WRITER_LOCK_FILE } from '../artifact-writer-lock.js';
 import {
   resolveStorageRoot,
   StorageRootAuthorityError,

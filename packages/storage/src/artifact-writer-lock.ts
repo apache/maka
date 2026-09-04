@@ -23,7 +23,6 @@ import { constants as fsConstants } from 'node:fs';
 import { lstat, mkdir, open, realpath, type FileHandle } from 'node:fs/promises';
 import { join } from 'node:path';
 import { unlock, waitForLock } from 'fs-native-extensions';
-import { ARTIFACT_WRITER_LOCK_FILE } from './artifact-storage-layout.js';
 import { withArtifactWriterBootstrapLock } from './artifact-writer-bootstrap-lock.js';
 import {
   prepareArtifactWriterBootstrapAuthority,
@@ -149,3 +148,4 @@ function releaseLock(handle: FileHandle): void {
     // Closing the handle is the final OS-level release path.
   }
 }
+export const ARTIFACT_WRITER_LOCK_FILE = '.maka-artifact-writer.lock';
