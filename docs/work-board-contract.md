@@ -163,8 +163,9 @@ establishes a deliberately small link contract while it stays experimental:
 - **Single-link bound** (`WORK_BOARD_MAX_LINKED_SESSIONS = 1`): a project-scoped
   item owns at most one started Session at a time. Linking a freshly started
   Session replaces any previous link, so `linkedSessions` stays bounded instead
-  of growing on repeated starts. Read paths stay tolerant of legacy arrays with
-  more than one entry (they fail normalization rather than silently truncating).
+  of growing on repeated starts. The stored-item decoder tolerates legacy arrays
+  by preserving valid distinct entries while dropping malformed or duplicate
+  ones; the strict mutation normalizer rejects arrays with more than one entry.
 - **Project ownership**: `workBoard:linkSession` is the single main-process
   mutation boundary. It resolves the item, requires a project scope, passes the
   canonical board `projectId` into the Host validator, and requires the Session's
@@ -173,7 +174,8 @@ establishes a deliberately small link contract while it stays experimental:
   Host validation, so a concurrent scope/revision change cannot write a Session
   validated for one project into an item that has moved to another.
 - **Surface ownership**: a pending start claim is owned by one specific New Task
-  surface instance (its owner nonce), not by the target-scoped draft key. A
+  surface instance (its Session selection revision), not by the target-scoped
+  draft key. A
   first send from any other surface—including a New Task reopened on the same
   Host/project—cannot consume the claim.
 - **Retry durability (spike limitation)**: the pending-link claim lives in the

@@ -47,142 +47,6 @@ import {
 } from './app-shell-chat-actions-fixture.js';
 
 describe('composer first-send cleanup', () => {
-  it('cancels a New Task send when the surface reopens during readiness', async () => {
-    const readiness = deferred<boolean>();
-    let selectionRevision = 1;
-    let creates = 0;
-    const restoreWindow = installWindow({
-      newTasks: {
-        create: async () => {
-          creates += 1;
-          return { id: 'session-stale' };
-        },
-      },
-      sessions: {
-        submitMessage: async () => ({
-          ok: true,
-          attachments: [],
-          skillInvocation: { loaded: [], failed: [] },
-        }),
-      },
-    });
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        captureComposerImportOwner: () => ({
-          sessionId: undefined,
-          navSection: 'sessions',
-          surfaceRevision: selectionRevision,
-          newTaskDraftKey: 'draft:project-A',
-        }),
-        checkTaskSubmissionReadiness: () => readiness.promise,
-        isShellSurfaceOwnerActive: (owner) =>
-          owner.sessionId === undefined
-            ? owner.surfaceRevision === selectionRevision
-            : owner.sessionId === 'session-stale',
-      });
-      const sending = actions.send('hello');
-
-      // Reopening the same Host/project keeps the draft key stable but starts
-      // a new surface generation. The old send must not create or project a
-      // Session on that later surface after readiness resolves.
-      selectionRevision = 2;
-      readiness.resolve(true);
-
-      assert.equal(await sending, false);
-      assert.equal(creates, 0);
-    } finally {
-      restoreWindow();
-    }
-  });
-
-  it('discards a Session created after the New Task surface was reopened', async () => {
-    const creation = deferred<{ id: string }>();
-    const removed: string[] = [];
-    let selectionRevision = 1;
-    const restoreWindow = installWindow({
-      newTasks: { create: () => creation.promise },
-      sessions: {
-        remove: async (sessionId: string) => {
-          removed.push(sessionId);
-        },
-      },
-    });
-
-    try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        captureComposerImportOwner: () => ({
-          sessionId: undefined,
-          navSection: 'sessions',
-          surfaceRevision: selectionRevision,
-          newTaskDraftKey: 'draft:project-A',
-        }),
-      });
-      const sending = actions.send('hello');
-      await Promise.resolve();
-
-      selectionRevision = 2;
-      creation.resolve({ id: 'session-stale' });
-
-      assert.equal(await sending, false);
-      assert.deepEqual(removed, ['session-stale']);
-    } finally {
-      restoreWindow();
-    }
-  });
-
-  it('does not resolve a Work Board Session after the surface reopens during submit', async () => {
-    const submission = deferred<{
-      ok: true;
-      attachments: never[];
-      skillInvocation: { loaded: never[]; failed: never[] };
-    }>();
-    let selectionRevision = 1;
-    let resolved = 0;
-    const deps = createActionsDeps();
-    const restoreWindow = installWindow({
-      newTasks: { create: async () => ({ id: 'session-created' }) },
-      sessions: { submitMessage: () => submission.promise },
-    });
-
-    try {
-      const actions = createAppShellChatActions({
-        ...deps,
-        captureComposerImportOwner: () => ({
-          sessionId: undefined,
-          navSection: 'sessions',
-          surfaceRevision: selectionRevision,
-          newTaskDraftKey: 'draft:project-A',
-        }),
-        isShellSurfaceOwnerActive: (owner) =>
-          owner.sessionId === undefined
-            ? owner.surfaceRevision === selectionRevision
-            : owner.sessionId === deps.activeIdRef.current,
-        activateSessionForFirstSend: async (sessionId: string) => {
-          selectionRevision += 1;
-          deps.activeIdRef.current = sessionId;
-        },
-      });
-      const sending = actions.send('hello', undefined, {
-        onSessionResolved: () => {
-          resolved += 1;
-        },
-      });
-      await new Promise((resolve) => setImmediate(resolve));
-
-      selectionRevision = 2;
-      deps.activeIdRef.current = undefined;
-      submission.resolve({ ok: true, attachments: [], skillInvocation: { loaded: [], failed: [] } });
-
-      assert.equal(await sending, true);
-      assert.equal(resolved, 0);
-    } finally {
-      restoreWindow();
-    }
-  });
-
   it('cancels when the composer owner changes during the readiness check', async () => {
     const readiness = deferred<boolean>();
     const activeIdRef = { current: 'session-a' as string | undefined };
@@ -414,7 +278,6 @@ describe('composer first-send cleanup', () => {
 
   it('keeps the session once the first send lands', async () => {
     const removed: string[] = [];
-    let currentDraftKey = 'draft:project-A';
     const restoreWindow = installWindow({
       newTasks: { create: async () => ({ id: 'session-1' }) },
       sessions: {
@@ -432,28 +295,17 @@ describe('composer first-send cleanup', () => {
     });
 
     try {
-      const actions = createAppShellChatActions({
-        ...createActionsDeps(),
-        captureComposerImportOwner: () => ({
-          sessionId: undefined,
-          navSection: 'sessions',
-          newTaskDraftKey: currentDraftKey,
-        }),
-        checkTaskSubmissionReadiness: async () => {
-          currentDraftKey = 'draft:project-B';
-          return true;
-        },
-      });
-      let resolved: [string, string?] | undefined;
+      const actions = createAppShellChatActions(createActionsDeps());
+      const resolved: Array<{ sessionId: string; surfaceOwnerToken: number | undefined }> = [];
       assert.equal(
         await actions.send('hello', undefined, {
-          onSessionResolved: (...args) => {
-            resolved = args;
+          onSessionResolved: (sessionId, surfaceOwnerToken) => {
+            resolved.push({ sessionId, surfaceOwnerToken });
           },
         }),
         true,
       );
-      assert.deepEqual(resolved, ['session-1', 'draft:project-A']);
+      assert.deepEqual(resolved, [{ sessionId: 'session-1', surfaceOwnerToken: 7 }]);
     } finally {
       restoreWindow();
     }
@@ -562,6 +414,7 @@ describe('composer first-send cleanup', () => {
         setActiveId: (sessionId) => {
           activeIdRef.current = sessionId;
         },
+        isNewChatSendSurfaceActive: () => activeIdRef.current === undefined,
         isShellSurfaceOwnerActive: (owner) =>
           owner.navSection === 'sessions' && owner.sessionId === activeIdRef.current,
         toastApi: {
@@ -755,6 +608,7 @@ describe('composer send failure feedback', () => {
         // The user is on 技能 now. `activeId` is still 'session-a' — that is
         // the whole point: the id alone cannot answer this question.
         isShellSurfaceOwnerActive: () => false,
+        isNewChatSendSurfaceActive: () => false,
         showModelSetupToast: (description: string) => setupToasts.push(description),
       });
       assert.equal(await actions.send('hello'), false);

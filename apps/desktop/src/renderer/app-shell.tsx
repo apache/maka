@@ -229,6 +229,7 @@ type ComposerImportOwner = {
   sessionId: string | undefined;
   navSection: NavSelection['section'];
   newTaskDraftKey?: string;
+  newTaskSurfaceOwnerToken?: number;
 };
 
 /**
@@ -237,11 +238,6 @@ type ComposerImportOwner = {
  */
 const SETTLE_FALLBACK_GRACE_MS = 1000;
 const FIRST_SEND_OBSERVATION_TIMEOUT_MS = 30_000;
-// Owner token for the currently projected new-task surface. Incremented on
-// every surface open so Work Board start claims can tell surfaces apart even
-// when they share a target-scoped draft key. Kept as a plain module variable:
-// it never renders, and app-shell must not grow new hooks or debt tokens.
-let newTaskSurfaceNonce = 0;
 const { useSessionCollaborationDialog } = SessionCollaboration;
 type FirstSendObservationWaiter = {
   promise: Promise<void>;
@@ -348,6 +344,7 @@ function AppShellContent({
     bootstrapSelectionLease,
     setActiveId,
     startNewSession,
+    readSelectionRevision,
     clearOwnedSessionState,
     messages,
     transientMessages,
@@ -1498,9 +1495,8 @@ function AppShellContent({
     toastApi,
   });
   const openNewTaskSurface = useCallback(() => {
-    newTaskSurfaceNonce++;
     imageNoticeLifecycle.reset(NEW_TASK_PENDING_KEY);
-    startNewSession();
+    const ownerToken = startNewSession();
     // Only Plan resets: a new task starts out of Plan, in whatever
     // orchestration the last one was set to.
     setNewChatPlanModeActive(false);
@@ -1509,6 +1505,7 @@ function AppShellContent({
     // New-task affordances reset to the empty-state composer; move focus
     // there so the user can start typing immediately.
     window.requestAnimationFrame(() => composerRef.current?.focus());
+    return ownerToken;
   }, [imageNoticeLifecycle, setNavSelection, setSearchScrollTarget, startNewSession]);
 
   const createSession = useCallback(async () => {
@@ -1609,7 +1606,6 @@ function AppShellContent({
     openSessionInChat,
     resolveWorkBoardTarget,
     prepareWorkBoardDraft,
-    newTaskSurfaceNonce,
   });
 
   const exitWorkHub = useCallback(() => setWorkHubActive(false), []);
@@ -2392,7 +2388,10 @@ function AppShellContent({
       sessionId: activeIdRef.current,
       navSection: navSelectionRef.current.section,
       ...(activeIdRef.current === undefined
-        ? { newTaskDraftKey: currentNewTaskDraftKey }
+        ? {
+            newTaskDraftKey: currentNewTaskDraftKey,
+            newTaskSurfaceOwnerToken: readSelectionRevision(),
+          }
         : {}),
     };
   }
