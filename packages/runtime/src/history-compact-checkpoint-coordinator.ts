@@ -101,9 +101,12 @@ export class HistoryCompactCheckpointCoordinator {
         // from the summarizer coalescer. Keep its run-local ledger event too so
         // the rider Turn retains provenance even though the session checkpoint
         // itself is already current.
-        await run.recordHistoryCompactCheckpoint(checkpoint);
-        this.checkpoints.set(sessionId, checkpoint);
-        this.scheduleCleanup(sessionId, checkpoint);
+        const checkpointToRecord = sameEffectiveCheckpoint ? durableCheckpoint! : checkpoint;
+        await run.recordHistoryCompactCheckpoint(checkpointToRecord);
+        if (!sameEffectiveCheckpoint) {
+          this.checkpoints.set(sessionId, checkpoint);
+          this.scheduleCleanup(sessionId, checkpoint);
+        }
       })
       .finally(() => {
         if (this.writes.get(sessionId) === tracked) {
@@ -169,29 +172,14 @@ function hasSameEffectiveCoverage(
   candidate: HistoryCompactCheckpoint,
 ): boolean {
   if (!current) return false;
-  const currentContent = checkpointContent(current);
-  const candidateContent = checkpointContent(candidate);
-  return (
-    current.sessionId === candidate.sessionId &&
-    current.version === candidate.version &&
-    current.highWaterName === candidate.highWaterName &&
-    current.phase === candidate.phase &&
-    current.coverage.eventCount === candidate.coverage.eventCount &&
-    current.coverage.turnCount === candidate.coverage.turnCount &&
-    current.coverage.sourceDigest === candidate.coverage.sourceDigest &&
-    current.coverage.through.runId === candidate.coverage.through.runId &&
-    current.coverage.through.turnId === candidate.coverage.through.turnId &&
-    current.coverage.through.runtimeEventId === candidate.coverage.through.runtimeEventId &&
-    JSON.stringify(current.source) === JSON.stringify(candidate.source) &&
-    JSON.stringify(current.headAnchor) === JSON.stringify(candidate.headAnchor) &&
-    JSON.stringify(current.memoryExtractionBoundary) ===
-      JSON.stringify(candidate.memoryExtractionBoundary) &&
-    JSON.stringify(currentContent) === JSON.stringify(candidateContent)
-  );
-}
-
-function checkpointContent(checkpoint: HistoryCompactCheckpoint): unknown {
-  return checkpoint.version === 2
-    ? { summary: checkpoint.summary, summaryFormat: checkpoint.summaryFormat }
-    : { providerState: checkpoint.providerState };
+  const stable = (checkpoint: HistoryCompactCheckpoint): string => {
+    const {
+      checkpointId: _checkpointId,
+      createdAt: _createdAt,
+      highWaterSeq: _highWaterSeq,
+      ...rest
+    } = checkpoint;
+    return JSON.stringify(rest);
+  };
+  return stable(current) === stable(candidate);
 }

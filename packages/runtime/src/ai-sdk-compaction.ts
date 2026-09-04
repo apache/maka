@@ -302,13 +302,6 @@ export class AiSdkCompaction {
     input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
     automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
   ): Promise<AiSdkCompactHistoryResult> {
-    return this.compactHistoryOnce(input, automaticMemoryBoundary);
-  }
-
-  private async compactHistoryOnce(
-    input: Omit<BackendCompactHistoryInput, 'runId'> & { runId: string | undefined },
-    automaticMemoryBoundary?: HistoryCompactMemoryExtractionBoundary,
-  ): Promise<AiSdkCompactHistoryResult> {
     const historyCompactAbortController = new AbortController();
     this.historyCompactAbortControllers.add(historyCompactAbortController);
     try {
