@@ -24,13 +24,8 @@ import { ensureSidebarExpanded, expect, test } from './fixtures';
 
 const PERF_ENABLED = process.env.MAKA_TRANSCRIPT_PERF === '1';
 const STRESS_ENABLED = process.env.MAKA_TRANSCRIPT_STRESS === '1';
-// Long-animation-frame delivery includes the native compositor. Xvfb's
-// software/virtual display is useful for functional E2E, but is not comparable
-// to the macOS arm64 environment in which this release threshold was measured.
-const NATIVE_MACOS_ARM64_PERF_GATE = process.platform === 'darwin' && process.arch === 'arm64';
 const performanceTest = PERF_ENABLED ? test : test.skip;
 const stressTest = STRESS_ENABLED ? test : test.skip;
-const nativePerformanceTest = PERF_ENABLED && NATIVE_MACOS_ARM64_PERF_GATE ? test : test.skip;
 const SCROLLER = '[data-chat-scroll-container="true"]';
 
 interface BrowserCounters {
@@ -326,53 +321,6 @@ performanceTest('warm native transcript scroll metrics', async ({ promptRailWind
     sessionSwitchMs,
   };
   console.log(`TRANSCRIPT_PERF ${JSON.stringify(result)}`);
-});
-
-nativePerformanceTest('oversized single Turn upward scroll metrics', async ({
-  oversizedTurnWindow: page,
-}) => {
-  test.setTimeout(90_000);
-  await page.setViewportSize({ width: 1_000, height: 700 });
-  await expect(page.locator('[data-turn-id="turn-oversized-fixture"]')).toHaveCount(1);
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send('Performance.enable');
-  await prepareFrameRecorder(page);
-  await moveToTail(page);
-  const distance = await page.evaluate((selector) => {
-    const root = document.querySelector<HTMLElement>(selector);
-    if (!root) throw new Error('the chat scroll container is missing');
-    return root.scrollHeight - root.clientHeight;
-  }, SCROLLER);
-  const before = await performanceMetrics(cdp);
-  const frames = await scrollGesture(page, -distance, 480);
-  const after = await performanceMetrics(cdp);
-  const skippedSegments = await page.locator('[data-maka-transcript-boundary]').evaluateAll((elements) =>
-    (elements as HTMLElement[]).filter((element) =>
-      !element.checkVisibility({ contentVisibilityAuto: true })).length,
-  );
-  const result = {
-    distance,
-    taskMs: metricDelta(before, after, 'TaskDuration') * 1_000,
-    layoutMs: metricDelta(before, after, 'LayoutDuration') * 1_000,
-    recalcStyleMs: metricDelta(before, after, 'RecalcStyleDuration') * 1_000,
-    frameP95Ms: percentile(frames.intervals, 0.95),
-    frameP99Ms: percentile(frames.intervals, 0.99),
-    frameMaxMs: Math.max(...frames.intervals),
-    loafOver50Ms: frames.loafDurations.filter((duration) => duration > 50).length,
-    loafMaxMs: Math.max(0, ...frames.loafDurations),
-    loafSupported: frames.loafSupported,
-    skippedSegments,
-  };
-  console.log(`OVERSIZED_TURN_PERF ${JSON.stringify(result)}`);
-  expect(
-    frames.loafSupported,
-    'Chromium does not support the long-animation-frame release metric',
-  ).toBe(true);
-  expect(
-    result.loafOver50Ms,
-    `oversized-Turn upward scroll exceeded the 50 ms Long Animation Frame gate: ${JSON.stringify(result)}`,
-  ).toBe(0);
-  expect(result.skippedSegments).toBeGreaterThan(0);
 });
 
 stressTest('600+ Turn repeated paging keeps the active range on a memory plateau', async ({

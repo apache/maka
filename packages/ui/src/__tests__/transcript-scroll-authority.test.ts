@@ -36,6 +36,8 @@ interface FakeRoot {
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
+  /** The pin owns `overflow-anchor`, so the authority writes it here. */
+  style: { overflowAnchor: string };
   /** The boxes `scrollHeight` is made of, which is what the authority watches. */
   children: readonly unknown[];
   addEventListener(type: string, listener: () => void): void;
@@ -53,6 +55,7 @@ function fakeRoot(options?: { scrollHeight?: number; clientHeight?: number }): F
     scrollTop: 0,
     scrollHeight: options?.scrollHeight ?? 3_000,
     clientHeight: options?.clientHeight ?? 600,
+    style: { overflowAnchor: '' },
     children: [{}],
     addEventListener(type, listener) {
       if (type === 'scroll') listeners.add(listener);
@@ -231,32 +234,6 @@ test('a scroll event that arrives late is still this authority\'s own write', ()
   });
 });
 
-test('growth that outruns the write does not read as the reader scrolling up', () => {
-  withObservers((resize) => {
-    const root = fakeRoot();
-    const authority = createTranscriptScrollAuthority();
-    authority.attach(root as unknown as HTMLElement);
-    assert.equal(root.scrollTop, 2_400);
-
-    // The transcript grew, and the scroll event for it arrives before this
-    // authority has been told to follow it. The offset is 302px from a tail
-    // that moved — identical, as a distance, to a reader who scrolled up 300px.
-    // But the reader would have moved the offset *up*, below this authority's
-    // last write; this one sits at or past that write, so it is growth and the
-    // pin must hold or the follow releases itself.
-    root.grow(302);
-    root.scrollTop = 2_402;
-    root.emitScroll();
-    assert.equal(authority.getSnapshot().pinned, true);
-
-    // The affordance still knows how far the tail now is, and the next growth
-    // signal takes the reader back to it.
-    assert.equal(authority.getSnapshot().awayFromTail, true);
-    resize();
-    assert.equal(root.scrollTop, 2_702);
-  });
-});
-
 test('a reader scroll under changing geometry still releases the tail', () => {
   withObservers((resize) => {
     const root = fakeRoot();
@@ -322,13 +299,8 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     root.emitScroll();
     assert.equal(heard, 0);
 
-    // Content arriving, with anchoring moving the offset to hold the reader.
-    root.grow(500);
-    root.scrollTop = 2_900;
-    root.emitScroll();
-    assert.equal(heard, 0);
-
-    // The reader, at last.
+    // The reader moves the offset the authority did not write. With anchoring
+    // off under the pin, this is the only thing a non-echo event can be.
     root.scrollTop = 900;
     root.emitScroll();
     assert.equal(heard, 1);
@@ -337,5 +309,34 @@ test('only the reader\'s own movement reaches a reader-scroll listener', () => {
     root.scrollTop = 400;
     root.emitScroll();
     assert.equal(heard, 1);
+  });
+});
+
+test('the pin owns overflow anchoring, off while pinned and back on release', () => {
+  withObservers(() => {
+    const root = fakeRoot();
+    const authority = createTranscriptScrollAuthority();
+    const detach = authority.attach(root as unknown as HTMLElement);
+
+    // Pinned from the start: the browser must not anchor under a following tail,
+    // or its adjustments arrive as scroll events indistinguishable from the
+    // reader — the #4269 snap-back.
+    assert.equal(authority.getSnapshot().pinned, true);
+    assert.equal(root.style.overflowAnchor, 'none');
+
+    // The reader leaves the tail; anchoring is handed back so content landing
+    // above holds their place.
+    root.scrollTop = 900;
+    root.emitScroll();
+    assert.equal(authority.getSnapshot().pinned, false);
+    assert.equal(root.style.overflowAnchor, '');
+
+    // Returning to the tail re-pins and takes anchoring back.
+    authority.pinToTail();
+    assert.equal(root.style.overflowAnchor, 'none');
+
+    // Detaching restores the browser default.
+    detach();
+    assert.equal(root.style.overflowAnchor, '');
   });
 });

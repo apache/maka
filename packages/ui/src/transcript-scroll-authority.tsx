@@ -29,9 +29,15 @@
  *   !pinned → nothing here writes `scrollTop`, ever
  *
  * "Keep the reader where they were reading" is the definition of
- * `overflow-anchor: auto`, which is already the initial value and costs nothing,
- * and "the reader is dragging" is also just don't touch it — so both of those
- * are the same instruction to this code: stay out of the way.
+ * `overflow-anchor`, and once the reader has left the tail that is exactly the
+ * behaviour this code wants — so on release it hands anchoring back to the
+ * browser and stays out of the way. While pinned it does the opposite and turns
+ * anchoring off, because a second writer moving `scrollTop` under a following
+ * tail is not help: its adjustments are overwritten on the next frame, but the
+ * `scroll` events they emit are indistinguishable from the reader, and the
+ * guard would swallow a real upward gesture along with them (#4269). The pin
+ * owns anchoring, so while it is set this authority is genuinely the only
+ * writer.
  *
  * Being the only writer is what makes the state exact rather than guessed. It
  * remembers the offset it wrote, so a scroll event that finds the scroller
@@ -135,6 +141,13 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
     publish();
   };
 
+  // The pin owns overflow anchoring. Off while following the tail so the browser
+  // is not a competing writer; handed back on release so a reader who left the
+  // tail keeps their place as turns land above them.
+  const ownAnchoring = (): void => {
+    if (root) root.style.overflowAnchor = pinned ? 'none' : '';
+  };
+
   return {
     attach(next) {
       root = next;
@@ -152,44 +165,26 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
           lastClientHeight = target.clientHeight;
           return;
         }
-        // An event that arrives with the scroll geometry changed cannot be read
-        // as the reader from distance alone: anchoring holding them still as
-        // turns land above, growth that outran this authority's own write, or a
-        // resize the browser answered by clamping the offset all enlarge the
-        // distance to the tail without the reader asking. So this branch never
-        // *re-pins* from position — that would follow the tail on the strength
-        // of a content jump. #4269 is the mirror of the same ambiguity: once
-        // #4206 put `content-visibility` on every turn, scrolling up itself
-        // expands placeholders, so the reader's own gesture changes
-        // `scrollHeight` too, and a guard that refused to act on any moved event
-        // left the pin set and let the ResizeObserver snap them back every
-        // frame. What still separates growth from the reader is direction: this
-        // authority only ever wrote the offset toward the tail, so an offset now
-        // *above* its last write is the reader having moved up — monotonic, and
-        // owned by no write here. Release the pin for that, and only that; a
-        // moved event that finds the offset at or past the last write is growth
-        // outrunning the follow, and must keep the pin so the follow survives.
-        // Re-pinning still needs the stable-geometry path below or an explicit
-        // pinToTail(). The affordance follows the new distance either way,
-        // because that is a fact about the viewport rather than about them.
+        // While pinned, anchoring is off — the pin owns it — so no second writer
+        // moves the offset: any event that is not this authority's echo is the
+        // reader, and reading their position is exact even when growth changed
+        // the geometry in the same frame. Once released, anchoring is back and a
+        // geometry-changing event is the content or the viewport moving under a
+        // reader this code no longer follows, not a re-pin signal — so a `moved`
+        // event while unpinned is left alone. Only a stable-geometry event, or
+        // the reader arriving back at the tail, moves the pin.
         const moved =
           target.scrollHeight !== lastScrollHeight || target.clientHeight !== lastClientHeight;
         lastScrollHeight = target.scrollHeight;
         lastClientHeight = target.clientHeight;
         const distance = distanceToTail();
         awayFromTail = distance > BUTTON_THRESHOLD_PX;
-        if (moved) {
-          if (
-            lastWrittenTop !== undefined
-            && target.scrollTop < lastWrittenTop
-            && distance > PIN_THRESHOLD_PX
-          ) {
-            pinned = false;
-          }
+        if (moved && !pinned) {
           publish();
           return;
         }
         pinned = distance <= PIN_THRESHOLD_PX;
+        ownAnchoring();
         publish();
         for (const listener of [...readerListeners]) listener();
       };
@@ -225,22 +220,28 @@ export function createTranscriptScrollAuthority(): TranscriptScrollAuthority {
       const childList = new MutationObserver(observeBox);
       childList.observe(target, { childList: true });
       observeBox();
+      ownAnchoring();
       if (pinned) writeToTail();
       return () => {
         childList.disconnect();
         box.disconnect();
         target.removeEventListener('scroll', onScroll);
+        // Hand anchoring back to the browser: the pin no longer owns this
+        // scroller, so its default `overflow-anchor` must be restored.
+        target.style.overflowAnchor = '';
         lastWrittenTop = undefined;
         if (root === target) root = null;
       };
     },
     pinToTail() {
       pinned = true;
+      ownAnchoring();
       writeToTail();
       publish();
     },
     releasePin() {
       pinned = false;
+      ownAnchoring();
       awayFromTail = distanceToTail() > BUTTON_THRESHOLD_PX;
       publish();
     },

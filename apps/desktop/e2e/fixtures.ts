@@ -580,7 +580,6 @@ type E2eTestFixtures = {
   promptRailWindow: Page;
   partialHistoryWindow: Page;
   oversizedTurnWindow: Page;
-  promptRailMotionWindow: Page;
   requestHeaderRowWindow: Page;
   newTaskTargetWindow: Page;
   directoryReferenceWindow: { page: Page; folder: string };
@@ -781,28 +780,6 @@ export const test = base.extend<E2eTestFixtures, E2eWorkerFixtures>({
       e2eFixtureScenario: 'chat-oversized-turn',
       locale: 'zh',
       showWindow: true,
-    }, use);
-  },
-  // The same transcript, scrolling the way the shipped app scrolls. Separate
-  // from `promptRailWindow` because it is only the jump that needs a scroll
-  // still in flight, and paying for one everywhere costs several seconds per
-  // window and settles less predictably.
-  promptRailMotionWindow: async ({}, use) => {
-    await withE2eWindow({
-      seed: false,
-      // The transcript and the fixture attributes arrive on two unordered
-      // async paths: `runDeferredStartupRefreshes` fires `refreshSessions()`
-      // and `applyE2eFixture()` side by side, and only the second one — after
-      // its `e2eFixture.getState()` IPC resolves — writes
-      // `data-maka-scroll-motion`. A turn can therefore paint while the
-      // document still says nothing about scroll motion. Requiring both in one
-      // selector is what makes "this window scrolls smoothly" true by the time
-      // a test body reads it.
-      readinessSelector: 'html[data-maka-scroll-motion="smooth"] [data-turn-id]',
-      e2eFixtureScenario: 'chat-prompt-rail',
-      locale: 'zh',
-      showWindow: true,
-      scrollMotion: 'smooth',
     }, use);
   },
   // Settings → 模型, where `no-models` is the seeded openai-compatible relay —
