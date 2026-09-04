@@ -376,6 +376,7 @@ describe('agent graph client read model', () => {
       undefined,
     );
 
+    assert.ok(forward.activity);
     const canonicalRecords = forward.snapshot.recentActivity.map((activity, index) =>
       graphRecordFromActivity(graphId, activity, index),
     );
@@ -401,6 +402,9 @@ describe('agent graph client read model', () => {
     };
     canonicalObservation.projection.state.operators[operatorId]!.currentActivationId = 'run-0';
     canonicalObservation.projection.state.operators[operatorId]!.status = 'completed';
+    const forwardOutput = forward.operator.operator.output;
+    assert.ok(forwardOutput);
+    canonicalObservation.projection.operatorOutputs = [{ operatorId, ...forwardOutput }];
     const rebuilt = materializeAgentGraphClientProjection({
       ...baseInput,
       observation: canonicalObservation,
@@ -418,6 +422,92 @@ describe('agent graph client read model', () => {
     assert.deepEqual(rebuiltContent, forwardContent);
     assert.equal(rebuilt.snapshot.snapshotVersion, forward.snapshot.snapshotVersion);
     assert.deepEqual(rebuilt.snapshot.recentActivity, forward.snapshot.recentActivity);
+  });
+
+  test('advances a bounded streaming preview and provider-reported TPS without activity records', () => {
+    const graphId = 'graph-output';
+    const operatorId = 'operator-output';
+    const childSessionId = 'child-output';
+    const initial = materializeAgentGraphClientProjection(
+      runningInput(graphId, operatorId, childSessionId),
+    );
+    const first = advanceMaterializedAgentGraphClientProjection(
+      initial.snapshot,
+      initial.operators[0]!,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'delta-1',
+        type: 'text_delta',
+        ts: 1_000,
+        messageId: 'message-1',
+        startOffset: 0,
+        text: 'Reviewing ',
+      }),
+      false,
+    )!;
+    assert.equal(first.activity, undefined);
+    assert.equal(first.operator.operator.output?.preview, 'Reviewing ');
+
+    const replayed = advanceMaterializedAgentGraphClientProjection(
+      first.snapshot,
+      first.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'delta-replay',
+        type: 'text_delta',
+        ts: 1_500,
+        messageId: 'message-1',
+        startOffset: 0,
+        text: 'Reviewing ',
+      }),
+      false,
+    )!;
+    assert.equal(replayed.operator.operator.output?.preview, 'Reviewing ');
+
+    const second = advanceMaterializedAgentGraphClientProjection(
+      replayed.snapshot,
+      replayed.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'delta-2',
+        type: 'text_delta',
+        ts: 2_000,
+        messageId: 'message-1',
+        startOffset: 10,
+        text: 'projection',
+      }),
+      false,
+    )!;
+    assert.equal(second.operator.operator.output?.preview, 'Reviewing projection');
+
+    const usage = advanceMaterializedAgentGraphClientProjection(
+      second.snapshot,
+      second.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'usage-1',
+        type: 'token_usage',
+        ts: 3_000,
+        input: 80,
+        output: 20,
+      }),
+      false,
+    )!;
+    assert.equal(usage.activity?.facets[0], 'usage');
+    assert.equal(usage.operator.operator.output?.outputTokens, 20);
+    assert.equal(usage.operator.operator.output?.sampleDurationMs, 2_000);
+    assert.equal(usage.operator.operator.output?.tokensPerSecond, 10);
+    assert.equal(usage.operator.operator.output?.sourceEventId, 'delta-2');
+
+    const settled = advanceMaterializedAgentGraphClientProjection(
+      usage.snapshot,
+      usage.operator,
+      outputRuntimeEvent(graphId, operatorId, childSessionId, {
+        id: 'complete-1',
+        type: 'complete',
+        ts: 4_000,
+        stopReason: 'end_turn',
+      }),
+      false,
+    )!;
+    assert.equal(settled.operator.operator.output?.phase, 'completed');
+    assert.equal(settled.snapshot.operators[0]?.output?.phase, 'completed');
   });
 });
 
@@ -654,6 +744,29 @@ function supervisorRuntimeEvent(input: {
       runId: 'run-0',
       turnId: 'turn-0',
       ...(input.eventType === 'complete' ? { stopReason: 'end_turn' } : { text: 'message' }),
+    },
+  } as unknown as AgentGraphSupervisorRuntimeEvent;
+}
+
+function outputRuntimeEvent(
+  graphId: string,
+  operatorId: string,
+  childSessionId: string,
+  event: Record<string, unknown>,
+): AgentGraphSupervisorRuntimeEvent {
+  return {
+    intent: { graphId },
+    claim: {
+      targetOperatorId: operatorId,
+      targetSessionId: childSessionId,
+      targetRunId: 'run-0',
+      targetTurnId: 'turn-0',
+    },
+    event: {
+      sessionId: childSessionId,
+      runId: 'run-0',
+      turnId: 'turn-0',
+      ...event,
     },
   } as unknown as AgentGraphSupervisorRuntimeEvent;
 }

@@ -29,6 +29,7 @@ import type {
 } from './stream-graph-dispatch.js';
 import type {
   AgentGraphActivationStatus,
+  AgentGraphOperatorOutputProjection,
   AgentGraphRecord,
   AgentGraphRecordFacet,
   AgentGraphSupervisorSignal,
@@ -65,6 +66,7 @@ const MAX_OPERATOR_INSPECTION_EDGES = 512;
 const MAX_OPERATOR_INSPECTION_WORK = 256;
 const MAX_OPERATOR_INSPECTION_CLAIMS = 256;
 const MAX_INSTRUCTION_PREVIEW_CHARS = 500;
+const MAX_OUTPUT_PREVIEW_CODE_POINTS = 280;
 
 export type AgentGraphClientOperatorStatus =
   | 'not_started'
@@ -121,6 +123,21 @@ export interface AgentGraphClientOperator {
     terminalRecordId?: string;
     run: AgentGraphClientRunRef;
   };
+  output?: AgentGraphClientOperatorOutput;
+}
+
+export interface AgentGraphClientOperatorOutput {
+  activationId: string;
+  preview: string;
+  previewTruncated: boolean;
+  phase: 'streaming' | 'completed';
+  previewUpdatedAt: number;
+  sourceEventId: string;
+  messageId?: string;
+  sampleStartedAt: number;
+  outputTokens?: number;
+  sampleDurationMs?: number;
+  tokensPerSecond?: number;
 }
 
 export interface AgentGraphClientEdge {
@@ -291,7 +308,7 @@ export interface AgentGraphClientMaterialization {
 export interface AdvancedAgentGraphClientProjection {
   snapshot: AgentGraphClientSnapshot;
   operator: AgentGraphOperatorInspection;
-  activity: AgentGraphClientActivity;
+  activity?: AgentGraphClientActivity;
   terminalActivity?: AgentGraphClientActivity;
 }
 
@@ -315,8 +332,9 @@ interface BuiltReadModel {
 /**
  * Durable, bounded graph-facing projection for untrusted presentation clients.
  *
- * Payloads remain in Session/Runtime stores. This surface carries only
- * identities, lifecycle state, wait reasons, and bounded instruction previews.
+ * Full payloads remain in Session/Runtime stores. This surface carries only
+ * identities, lifecycle state, wait reasons, bounded instruction/output
+ * previews, and provider-reported usage-derived throughput.
  */
 export function buildAgentGraphClientSnapshot(
   input: BuildAgentGraphClientReadModelInput,
@@ -352,7 +370,13 @@ export function advanceMaterializedAgentGraphClientProjection(
   activationHadError: boolean,
 ): AdvancedAgentGraphClientProjection | undefined {
   const projected = projectClientSessionEvent(runtime.event, activationHadError);
-  if (!projected) return undefined;
+  const output = advanceClientOperatorOutput(
+    inspectionInput.operator.output,
+    runtime.event,
+    runtime.claim.targetRunId,
+    ['completed', 'failed', 'aborted', 'cancelled'].includes(inspectionInput.operator.status),
+  );
+  if (!projected && !output) return undefined;
   if (
     snapshotInput.graphId !== runtime.intent.graphId ||
     inspectionInput.graphId !== runtime.intent.graphId ||
@@ -361,21 +385,36 @@ export function advanceMaterializedAgentGraphClientProjection(
   ) {
     throw new Error('Agent graph runtime activity does not match its materialized projection');
   }
-  const activity: AgentGraphClientActivity = {
-    recordId: clientRuntimeRecordId(runtime),
-    operatorId: runtime.claim.targetOperatorId,
-    activationId: runtime.claim.targetRunId,
-    eventTime: runtime.event.ts,
-    facets: projected.facets,
-    signals: projected.signals,
-    run: {
-      sessionId: runtime.claim.targetSessionId,
-      agentRunId: runtime.claim.targetRunId,
-      turnId: runtime.claim.targetTurnId,
-    },
-  };
+  const activity: AgentGraphClientActivity | undefined = projected
+    ? {
+        recordId: clientRuntimeRecordId(runtime),
+        operatorId: runtime.claim.targetOperatorId,
+        activationId: runtime.claim.targetRunId,
+        eventTime: runtime.event.ts,
+        facets: projected.facets,
+        signals: projected.signals,
+        run: {
+          sessionId: runtime.claim.targetSessionId,
+          agentRunId: runtime.claim.targetRunId,
+          turnId: runtime.claim.targetTurnId,
+        },
+      }
+    : undefined;
   const snapshot = structuredClone(snapshotInput);
   const inspection = structuredClone(inspectionInput);
+  if (output) inspection.operator.output = output;
+  const visibleOperatorIndex = snapshot.operators.findIndex(
+    (operator) => operator.operatorId === inspection.operator.operatorId,
+  );
+  if (visibleOperatorIndex >= 0 && output) {
+    snapshot.operators[visibleOperatorIndex] = structuredClone(inspection.operator);
+  }
+  if (!projected || !activity) {
+    snapshot.latestEventTime = Math.max(snapshot.latestEventTime ?? 0, runtime.event.ts);
+    snapshot.snapshotVersion = clientSnapshotVersion(snapshot);
+    inspection.snapshotVersion = snapshot.snapshotVersion;
+    return { snapshot, operator: inspection };
+  }
   if (
     snapshot.recentActivity.some((record) => record.recordId === activity.recordId) ||
     inspection.recentRecords.some((record) => record.recordId === activity.recordId)
@@ -487,9 +526,6 @@ export function advanceMaterializedAgentGraphClientProjection(
     .slice(-MAX_OPERATOR_INSPECTION_RECORDS);
   inspection.omitted.records = Math.max(0, inspectionRecordCount - inspection.recentRecords.length);
 
-  const visibleOperatorIndex = snapshot.operators.findIndex(
-    (operator) => operator.operatorId === inspection.operator.operatorId,
-  );
   if (visibleOperatorIndex >= 0) {
     snapshot.operators[visibleOperatorIndex] = structuredClone(inspection.operator);
   }
@@ -665,6 +701,12 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
     .map(clientActivity)
     .sort(compareClientActivity);
   const work = schedule.work.map(clientWork);
+  const outputByOperator = new Map(
+    (input.observation.projection.operatorOutputs ?? []).map((output) => [
+      output.operatorId,
+      output,
+    ]),
+  );
   const operators = input.observation.projection.operators.map((binding) => {
     const provision = provisionByOperator.get(binding.operatorId);
     if (!provision || provision.targetSessionId !== binding.sessionId) {
@@ -683,6 +725,7 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
     const readiness = allReadiness.slice(0, MAX_OPERATOR_READINESS);
     const state = input.observation.projection.state.operators[binding.operatorId];
     const currentActivation = state?.activations[state.currentActivationId];
+    const output = outputByOperator.get(binding.operatorId);
     const currentClaim = currentActivation
       ? claims.find(
           (claim) =>
@@ -750,6 +793,9 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
             },
           }
         : {}),
+      ...(currentActivation && output?.activationId === currentActivation.activationId
+        ? { output: clientOperatorOutput(output) }
+        : {}),
     } satisfies AgentGraphClientOperator;
   });
   const stoppedTargets = schedule.stoppedTargets.map(clientStoppedTarget);
@@ -794,6 +840,117 @@ function buildReadModel(input: BuildAgentGraphClientReadModelInput): BuiltReadMo
       ]),
     ),
   };
+}
+
+function clientOperatorOutput(
+  output: AgentGraphOperatorOutputProjection,
+): AgentGraphClientOperatorOutput {
+  return {
+    activationId: output.activationId,
+    preview: output.preview,
+    previewTruncated: output.previewTruncated,
+    phase: output.phase,
+    previewUpdatedAt: output.previewUpdatedAt,
+    sourceEventId: output.sourceEventId,
+    ...(output.messageId ? { messageId: output.messageId } : {}),
+    sampleStartedAt: output.sampleStartedAt,
+    ...(output.outputTokens !== undefined ? { outputTokens: output.outputTokens } : {}),
+    ...(output.sampleDurationMs !== undefined ? { sampleDurationMs: output.sampleDurationMs } : {}),
+    ...(output.tokensPerSecond !== undefined ? { tokensPerSecond: output.tokensPerSecond } : {}),
+  };
+}
+
+function advanceClientOperatorOutput(
+  current: AgentGraphClientOperatorOutput | undefined,
+  event: SessionEvent,
+  activationId: string,
+  operatorSettled: boolean,
+): AgentGraphClientOperatorOutput | undefined {
+  if (current?.activationId === activationId && current.sourceEventId === event.id) {
+    return undefined;
+  }
+  const existing = current?.activationId === activationId ? current : undefined;
+  if (
+    existing &&
+    (event.type === 'text_delta' || event.type === 'text_complete') &&
+    event.ts < existing.previewUpdatedAt
+  ) {
+    return undefined;
+  }
+  if (event.type === 'text_delta' || event.type === 'text_complete') {
+    const sameMessage = existing?.messageId === event.messageId;
+    const append = event.type === 'text_delta' && sameMessage;
+    const text = append ? foldClientOutputDelta(existing, event) : event.text;
+    const preview = boundClientOutputPreview(
+      text,
+      event.type === 'text_complete' ? 'head' : 'tail',
+    );
+    if (!preview.text) return undefined;
+    return {
+      activationId,
+      preview: preview.text,
+      previewTruncated: preview.truncated || (append && existing.previewTruncated),
+      phase: operatorSettled || existing?.phase === 'completed' ? 'completed' : 'streaming',
+      previewUpdatedAt: event.ts,
+      sourceEventId: event.id,
+      ...(event.messageId ? { messageId: event.messageId } : {}),
+      sampleStartedAt: existing?.sampleStartedAt ?? event.ts,
+      ...(existing?.outputTokens !== undefined ? { outputTokens: existing.outputTokens } : {}),
+      ...(existing?.sampleDurationMs !== undefined
+        ? { sampleDurationMs: existing.sampleDurationMs }
+        : {}),
+      ...(existing?.tokensPerSecond !== undefined
+        ? { tokensPerSecond: existing.tokensPerSecond }
+        : {}),
+    };
+  }
+  if (event.type === 'token_usage' && existing) {
+    const sampleDurationMs = Math.max(0, event.ts - existing.sampleStartedAt);
+    return {
+      ...existing,
+      outputTokens: event.output,
+      sampleDurationMs,
+      ...(sampleDurationMs > 0
+        ? { tokensPerSecond: roundClientTokensPerSecond((event.output * 1_000) / sampleDurationMs) }
+        : {}),
+    };
+  }
+  if ((event.type === 'complete' || event.type === 'abort') && existing) {
+    return { ...existing, phase: 'completed' };
+  }
+  return undefined;
+}
+
+function foldClientOutputDelta(
+  existing: AgentGraphClientOperatorOutput,
+  event: Extract<SessionEvent, { type: 'text_delta' }>,
+): string {
+  if (event.startOffset === undefined || existing.previewTruncated) {
+    return `${existing.preview}${event.text}`;
+  }
+  if (event.startOffset <= existing.preview.length) {
+    return `${existing.preview.slice(0, event.startOffset)}${event.text}`;
+  }
+  return event.text;
+}
+
+function boundClientOutputPreview(
+  text: string,
+  edge: 'head' | 'tail',
+): { text: string; truncated: boolean } {
+  const codePoints = Array.from(edge === 'head' ? text.trim() : text);
+  if (codePoints.length <= MAX_OUTPUT_PREVIEW_CODE_POINTS) {
+    return { text: codePoints.join(''), truncated: false };
+  }
+  const visible =
+    edge === 'head'
+      ? codePoints.slice(0, MAX_OUTPUT_PREVIEW_CODE_POINTS)
+      : codePoints.slice(-MAX_OUTPUT_PREVIEW_CODE_POINTS);
+  return { text: visible.join(''), truncated: true };
+}
+
+function roundClientTokensPerSecond(value: number): number {
+  return Math.round(value * 10) / 10;
 }
 
 function operatorStatus(

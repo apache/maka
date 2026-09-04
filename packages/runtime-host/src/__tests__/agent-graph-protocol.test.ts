@@ -148,6 +148,17 @@ describe('Agent Graph Client protocol', () => {
         operators: [
           {
             ...snapshot.operators[0],
+            output: { ...snapshot.operators[0]!.output, tokensPerSecond: -1 },
+          },
+        ],
+      }),
+    );
+    assertInvalid(() =>
+      decodeAgentGraphClientSnapshot({
+        ...snapshot,
+        operators: [
+          {
+            ...snapshot.operators[0],
             readiness: [{ ...snapshot.operators[0]!.readiness[0], policyKind: 'map' }],
           },
         ],
@@ -266,6 +277,19 @@ function graphSnapshot(): AgentGraphClientSnapshot {
           firstEventTime: 10,
           lastEventTime: 10,
           run: { sessionId: 'child-1', agentRunId: 'run:1', turnId: 'turn:1' },
+        },
+        output: {
+          activationId: 'activation:1',
+          preview: 'Reviewing the graph projection.',
+          previewTruncated: false,
+          phase: 'streaming',
+          previewUpdatedAt: 10,
+          sourceEventId: 'event:1',
+          messageId: 'message:1',
+          sampleStartedAt: 1,
+          outputTokens: 18,
+          sampleDurationMs: 9,
+          tokensPerSecond: 2_000,
         },
       },
     ],
