@@ -101,7 +101,10 @@ export const RUNTIME_HOST_REGISTRATION_SCHEMA_VERSION = 1 as const;
 export const RUNTIME_HOST_PROTOCOL_VERSION = 0 as const;
 // Increment when the same protocol version no longer guarantees safe Client-Host
 // interoperability. Mismatches are rejected before domain commands are admitted.
-export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
+export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 113 as const;
+// 113: Session Turn projections carry bounded provider failure summaries for
+// live and reloaded failed-turn diagnostics. Older peers cannot preserve or
+// render this additional failure context safely.
 // 112: Owners can query the Host execution environment through an extensible,
 // bounded resource-envelope contract. Older Hosts do not implement the query.
 // 111: Client Capability tool schemas may use draft-07 tuple additionalItems.
@@ -138,9 +141,6 @@ export const RUNTIME_HOST_COMPATIBILITY_EPOCH = 112 as const;
 // canonical OAuth material with an empty enable-all-discovered selection.
 // Older peers reject these wire values, so incompatible pairs must fail the
 // handshake. Re-derived from current `main`; epoch 102 is claimed by open PRs.
-// 110: Session Turn projections carry bounded provider failure summaries for
-// live and reloaded failed-turn diagnostics. Older peers cannot preserve or
-// render this additional failure context safely.
 // 101: Session Turn requests can carry regeneration intents and Guests can
 // atomically withdraw pending requests. Older peers do not share this command
 // vocabulary or the expanded Guest operation grant.
