@@ -42,11 +42,20 @@ const MESSAGE_VALUES = {
   recovery: 'Add or enable a connection first.',
 } as const;
 
+// TODO #3975: remove helper after UI_LOCALES includes 'ko' and catalog.ko is typed
+function getKoCatalog(
+  catalog: (typeof TUI_COPY_RESOURCES)[keyof typeof TUI_COPY_RESOURCES],
+): Record<string, unknown> {
+  return (catalog as unknown as { ko: Record<string, unknown> }).ko;
+}
+
 describe('TUI copy resources', () => {
   test('registers every domain without a locale-specific getter branch', () => {
     for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
       assert.ok(catalog.en, `${domain}/en`);
       assert.ok(catalog.zh, `${domain}/zh`);
+      // TODO #3975: ko staged off enabled union — verified via raw as const, will become typed catalog.ko after UI_LOCALES adds 'ko'
+      assert.ok(getKoCatalog(catalog), `${domain}/ko`);
     }
   });
 
@@ -72,6 +81,21 @@ describe('TUI copy resources', () => {
           zhTemplate,
           `${domain}/zh/${path}`,
         );
+      }
+    }
+  });
+
+  // TODO #3975: remove as-unknown cast after UI_LOCALES includes 'ko' and catalog.ko is typed
+  test('keeps Korean coverage and variables aligned with English', () => {
+    for (const [domain, catalog] of Object.entries(TUI_COPY_RESOURCES)) {
+      const enLeaves = new Map(leafEntries(catalog.en));
+      const koLeaves = new Map(leafEntries(getKoCatalog(catalog)));
+      assert.deepEqual([...koLeaves.keys()].sort(), [...enLeaves.keys()].sort(), `${domain}/ko`);
+      for (const [path, enTemplate] of enLeaves) {
+        const koTemplate = koLeaves.get(path)!;
+        const enVariables = messageVariables(enTemplate);
+        const koVariables = messageVariables(String(koTemplate));
+        assert.deepEqual(koVariables, enVariables, `${domain}/ko/${path}`);
       }
     }
   });
