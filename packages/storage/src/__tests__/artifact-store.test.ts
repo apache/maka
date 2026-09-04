@@ -567,14 +567,9 @@ describe('SQLite Artifact store', () => {
 
       const created = await createArtifactStore(root).create(input);
       assert.equal(created.name, 'a'.repeat(119));
-      const targetPath = join(root, 'artifacts', created.relativePath);
-      const stagingPath = publicationStagingPath(targetPath);
-      await writeFile(stagingPath, input.content, { flag: 'wx' });
-
       const authority = createArtifactStoreWriteAuthority(root);
       const reopened = authority.store;
       await authority.recover();
-      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
       assert.deepEqual(await reopened.create(input), created);
       assert.deepEqual(await readArtifactText(reopened, created.id), {
         ok: true,
@@ -821,60 +816,23 @@ describe('SQLite Artifact store', () => {
     });
   });
 
-  test('explicit write recovery removes an uncommitted publication and permits stable-id retry', async () => {
+  test('legacy publication residue cannot block stable-id creation', async () => {
     await withWorkspace(async (root) => {
       const residue = await createPublicationResidue(root, 'stable-retry', 'retry.txt', 'old');
       const authority = createArtifactStoreWriteAuthority(root);
       const { store } = authority;
-
-      await assert.rejects(
-        () =>
-          store.create({
-            ...artifactInput('stable-retry', 'new', 1),
-            name: 'retry.txt',
-          }),
-        /Artifact write recovery is required/,
-      );
-      await assert.rejects(
-        () => store.deleteUserArtifactInSession('session-1', 'missing'),
-        /Artifact write recovery is required/,
-      );
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
-      assert.equal(await readFile(residue.targetPath, 'utf8'), 'old');
-
       await authority.recover();
-      await assert.rejects(() => stat(residue.stagingPath), { code: 'ENOENT' });
-      await assert.rejects(() => stat(residue.targetPath), { code: 'ENOENT' });
-
       const retried = await store.create({
         ...artifactInput('stable-retry', 'new', 1),
         name: 'retry.txt',
       });
       assert.equal(retried.id, 'stable-retry');
       assert.deepEqual(await readArtifactText(store, retried.id), { ok: true, text: 'new' });
+      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'old');
     });
   });
 
-  test('explicit write recovery completes a committed publication without removing its payload', async () => {
-    await withWorkspace(async (root) => {
-      const first = createArtifactStore(root);
-      const record = await first.create(artifactInput('committed', 'durable', 1));
-      const targetPath = join(root, 'artifacts', record.relativePath);
-      const stagingPath = publicationStagingPath(targetPath);
-      await writeFile(stagingPath, await readFile(targetPath));
-      assert.notEqual((await stat(targetPath)).ino, (await stat(stagingPath)).ino);
-
-      const authority = createArtifactStoreWriteAuthority(root);
-      const reopened = authority.store;
-      await authority.recover();
-
-      await assert.rejects(() => stat(stagingPath), { code: 'ENOENT' });
-      assert.equal(await readFile(targetPath, 'utf8'), 'durable');
-      assert.deepEqual(await readArtifactText(reopened, record.id), { ok: true, text: 'durable' });
-    });
-  });
-
-  test('write authority adopts an exact stable-id orphan', async () => {
+  test('stable-id creation replaces an untracked payload', async () => {
     await withWorkspace(async (root) => {
       const input = {
         ...artifactInput('target-orphan', 'orphan bytes', 1),
@@ -892,60 +850,6 @@ describe('SQLite Artifact store', () => {
         ok: true,
         text: input.content,
       });
-    });
-  });
-
-  test('authority recovery adopts only its pre-existing exact stable-id orphan snapshot', async () => {
-    await withWorkspace(async (root) => {
-      const input = artifactInput('drifted-orphan', 'expected bytes', 1);
-      const orphanPath = join(root, 'artifacts', 'session-1', 'drifted-orphan-drifted-orphan.txt');
-      await mkdir(dirname(orphanPath), { recursive: true });
-      await writeFile(orphanPath, 'drifted bytes!', { flag: 'wx' });
-      const authority = createArtifactStoreWriteAuthority(root);
-      const authorized = authority.store;
-      await authority.recover();
-      await rm(orphanPath);
-      await writeFile(orphanPath, input.content, { flag: 'wx' });
-
-      await assert.rejects(
-        () => authorized.create(input),
-        /already exists with different metadata or content/,
-      );
-      assert.equal(await readFile(orphanPath, 'utf8'), input.content);
-      await assert.rejects(() => stat(join(root, 'artifacts', 'metadata.jsonl')), {
-        code: 'ENOENT',
-      });
-    });
-
-    await withWorkspace(async (root) => {
-      const input = artifactInput('late-payload', 'same bytes', 1);
-      const authority = createArtifactStoreWriteAuthority(root);
-      const store = authority.store;
-      await authority.recover();
-      const residue = await createPublicationResidue(
-        root,
-        input.id,
-        input.name,
-        input.content as string,
-      );
-
-      await assert.rejects(() => store.create(input), /Artifact write recovery is required/);
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), input.content);
-      assert.equal(await readFile(residue.targetPath, 'utf8'), input.content);
-    });
-  });
-
-  test('fails closed on mismatched publication residue', async () => {
-    await withWorkspace(async (root) => {
-      const residue = await createPublicationResidue(root, 'mismatch', 'file.txt', 'payload');
-      await rm(residue.targetPath);
-      await writeFile(residue.targetPath, 'different inode', 'utf8');
-      await assert.rejects(
-        () => createArtifactStoreWriteAuthority(root).recover(),
-        /Artifact publication residue does not match canonical state/,
-      );
-      assert.equal(await readFile(residue.stagingPath, 'utf8'), 'payload');
-      assert.equal(await readFile(residue.targetPath, 'utf8'), 'different inode');
     });
   });
 

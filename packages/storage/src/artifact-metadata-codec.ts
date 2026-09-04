@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { isAbsolute, basename } from 'node:path';
+import { isAbsolute } from 'node:path';
 import {
   ARTIFACT_KINDS,
   ARTIFACT_SOURCES,
@@ -28,7 +28,6 @@ import {
   isCanonicalArtifactEntityId,
 } from '@maka/core/artifacts';
 import { isDeepResearchArtifactRole } from '@maka/core/deep-research-run';
-import { ARTIFACT_PUBLICATION_STAGING_PATTERN } from './artifact-storage-layout.js';
 
 const ARTIFACT_KIND_SET = new Set<ArtifactKind>(ARTIFACT_KINDS);
 const ARTIFACT_SOURCE_SET = new Set<ArtifactSource>(ARTIFACT_SOURCES);
@@ -92,12 +91,6 @@ export function validateRelativeArtifactPath(relativePath: string): void {
   }
 }
 
-export function validateCanonicalArtifactTargetName(targetName: string): void {
-  if (ARTIFACT_PUBLICATION_STAGING_PATTERN.test(targetName)) {
-    throw new Error('Artifact target name uses the reserved publication staging namespace');
-  }
-}
-
 function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
   if (!isRecord(value)) throw invalidMetadataRecord(index);
   if (Object.keys(value).some((key) => !ARTIFACT_RECORD_KEYS.has(key))) {
@@ -125,7 +118,6 @@ function decodeArtifactRecord(value: unknown, index: number): ArtifactRecord {
     throw invalidMetadataRecord(index);
   }
   validateRelativeArtifactPath(value.relativePath);
-  validateCanonicalArtifactTargetName(basename(value.relativePath));
   if (!isCompatibleArtifactName(value.name)) throw invalidMetadataRecord(index);
   if (value.relativePath !== `${value.sessionId}/${value.id}-${value.name}`) {
     throw invalidMetadataRecord(index);
