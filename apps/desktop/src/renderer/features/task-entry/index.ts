@@ -22,5 +22,6 @@ export {
   TaskEntryRoot,
   TaskEntryWorkspacePickerConsumer,
 } from './ui/task-entry-provider.js';
+export type { TaskEntryShellProjection } from './ui/task-entry-provider.js';
 export { TaskEntryServicesProvider } from './services-context.js';
 export type { TaskEntryServices } from './ports.js';

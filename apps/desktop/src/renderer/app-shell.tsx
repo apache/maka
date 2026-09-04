@@ -25,7 +25,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type ComponentProps,
   type Dispatch,
   type SetStateAction,
 } from 'react';
@@ -100,6 +99,7 @@ import {
   type SessionNavigationRowActions,
 } from './features/session-navigation';
 import * as TaskEntry from './features/task-entry';
+import type { TaskEntryShellProjection } from './features/task-entry';
 import { useNewTaskChoice } from './use-new-task-choice';
 import { SessionCollaborationDialog } from './session-collaboration-dialog';
 import * as SessionCollaboration from './features/session-collaboration';
@@ -257,10 +257,6 @@ type AppShellProps = {
   initialOnboardingSnapshot?: OnboardingSnapshot | null;
 };
 
-type TaskEntryShellProjection = Parameters<
-  ComponentProps<typeof TaskEntry.TaskEntryRoot>['children']
->[0];
-
 export function AppShell({ initialOnboardingSnapshot = null }: AppShellProps = {}) {
   const [uiLocalePreference, setUiLocalePreference] = useState<UiLocalePreference>('auto');
   const [uiLocaleOverride, setUiLocaleOverride] = useState<UiLocale | null>(null);
@@ -395,7 +391,7 @@ function AppShellContent({
   } = useSettingsModal();
 
   const onboarding = useOnboardingSnapshot(initialOnboardingSnapshot);
-  // The owner bridge keeps commands stable while TaskEntryProvider swaps the
+  // The owner bridge keeps commands stable while TaskEntryRoot swaps the
   // current feature-owned implementation below the shell.
   const { selectLocalProject } = taskEntry.commands;
   const currentNewTaskDraftKey = taskEntry.selectors.draftKey;

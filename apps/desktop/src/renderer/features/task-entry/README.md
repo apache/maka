@@ -28,7 +28,7 @@ add/relink plus remote-directory handoff lifecycles.
 
 - Consumers import production APIs from `features/task-entry`.
 - Tests and stories may additionally import `features/task-entry/testing`.
-- `TaskEntryRoot` / `TaskEntryProvider` are the only production owners of the
+- `TaskEntryRoot` is the only production owner of the
   controller hook. Renderer roots receive a stable semantic projection rather
   than catalog lifecycle state or the controller itself.
 - Task Entry may use shared renderer copy, shared project UI, core/runtime-host
